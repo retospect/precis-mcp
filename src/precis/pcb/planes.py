@@ -725,6 +725,7 @@ def derive_regions(
     edge_clearance_mm: float,
     clearance_mm: float,
     reach_mm: float | dict[str, float],
+    current_a: dict[str, float] | None = None,
 ) -> tuple[list[DerivedRegion], list[str]]:
     """Fill regions for power nets on one layer (pcb-stackup-regions slice
     4; Reto: regions are derived, never drawn).
@@ -733,8 +734,10 @@ def derive_regions(
     ``reach_mm`` (how far from its pad a drop via may land; one figure, or
     one per net), trimmed to the
     outline inset by ``edge_clearance_mm`` and to the regions already taken,
-    grown by ``clearance_mm``. Nets go in pin-count order (most first, name
-    on a tie), and the pin count is the priority. A net is given a region
+    grown by ``clearance_mm``. Nets go in CURRENT order when ``current_a``
+    supplies one (most first — the net that cannot route as a trace is the
+    one that most needs the pour), then pin count, then name; the pin
+    count is still the priority. A net is given a region
     only when every pin's whole drop-via reach (inside the board) lies in
     it, as ONE polygon: a pin outside its region would drop a via into
     another net's copper, and a region in two pieces would pour a split
@@ -753,7 +756,11 @@ def derive_regions(
         return [], notes
     order = sorted(
         (n for n, pts in net_pins.items() if len(pts) >= 2),
-        key=lambda n: (-len(net_pins[n]), n),
+        key=lambda n: (
+            -float((current_a or {}).get(n) or 0.0),
+            -len(net_pins[n]),
+            n,
+        ),
     )
     first, first_notes = _derive_pass(
         net_pins, order, inset, clearance_mm, reach_mm, cells=None
@@ -763,12 +770,14 @@ def derive_regions(
     # Some net got no region. First come, first served can starve the
     # later-ranked rail of a load that straddles the split, so retry with
     # the contested ground cut at the bisector between the competing pins.
-    # Kept only when no net that had a region loses it.
     cells = _pin_cells(net_pins, inset)
     fair, fair_notes = _derive_pass(
         net_pins, order, inset, clearance_mm, reach_mm, cells=cells
     )
-    if {r.net for r in first} <= {r.net for r in fair} and len(fair) > len(first):
+    # The bisector pass wins when it serves MORE nets — a net that loses
+    # its region still routes as traces, while a refused high-current
+    # trunk may not fit any corridor at all.
+    if len(fair) > len(first):
         return fair, notes + fair_notes
     return first, notes + first_notes
 

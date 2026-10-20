@@ -1351,33 +1351,50 @@ def routed_drc_findings(
 def power_drop_shortfalls(
     ir: pcb_ir.PcbIR, rres: RealizeResult
 ) -> list[tuple[str, tuple[float, float], float, float]]:
-    """``(net, pad point, via ampacity A, net current A)`` for every
-    plane-net pad whose drop vias together carry less than the net's
-    current. A pad whose only pour is on its own layer needs no via path and
-    is exempt, as is a net with no current annotation."""
-    from precis.pcb.ir import plane_layers_of
-    from precis.pcb.rules import net_current_a_or_none, via_capacity_a
+    """``(net, pad point, via ampacity A, pin current A)`` for every
+    plane-net pad whose drop vias together carry less than the pin's
+    resolved exchange current (gr497904 — a stub serves its own pin, not
+    the net's peak). A pad whose only pour is on its own layer needs no
+    via path and is exempt, as is a pin with no current annotation."""
+    from precis.pcb.ir import pin_point, plane_layers_of
+    from precis.pcb.rules import (
+        net_current_a_or_none,
+        pin_current_a_or_none,
+        via_capacity_a,
+    )
 
+    pid_at: dict[tuple[float, float], int] = {}
+    for pid in range(ir.n_pins):
+        pt = pin_point(ir, pid)
+        if pt is not None:
+            pid_at[(round(pt[0], 3), round(pt[1], 3))] = pid
     vias_at = {(round(v.x, 3), round(v.y, 3)): v for v in rres.vias}
     per_pad: dict[tuple[int, tuple[float, float]], float] = {}
+    need_at: dict[tuple[int, tuple[float, float]], float] = {}
     for t in rres.tracks:
         if not t.is_dogbone or not t.segments:
-            continue
-        current = net_current_a_or_none(float(ir.net_current_a[t.net_id]))
-        if current is None:
             continue
         if set(plane_layers_of(int(ir.net_plane_layers[t.net_id]))) == {t.layer}:
             continue
         start = t.segments[0]["start"]
         end = t.segments[-1]["end"]
         key = (t.net_id, (round(float(start[0]), 3), round(float(start[1]), 3)))
+        pad_pid = pid_at.get(key[1])
+        current = (
+            pin_current_a_or_none(ir, pad_pid)
+            if pad_pid is not None
+            else net_current_a_or_none(float(ir.net_current_a[t.net_id]))
+        )
+        if current is None:
+            continue
         via = vias_at.get((round(float(end[0]), 3), round(float(end[1]), 3)))
         per_pad[key] = per_pad.get(key, 0.0) + (
             via_capacity_a(float(via.dia_mm)) if via is not None else 0.0
         )
+        need_at[key] = current
     out = []
     for (net_id, pt), cap in sorted(per_pad.items()):
-        current = float(ir.net_current_a[net_id])
+        current = need_at[(net_id, pt)]
         if cap + 1e-9 < current:
             out.append((str(ir.net_name[net_id]), pt, cap, current))
     return out
@@ -1396,7 +1413,7 @@ def power_drop_findings(ir: pcb_ir.PcbIR, rres: RealizeResult) -> list[DrcFindin
             severity="warn",
             where=f"{net} pad ({pt[0]:.2f}, {pt[1]:.2f})",
             detail=(
-                f"drop vias carry {cap:.1f} A of the net's {current:.1f} A; "
+                f"drop vias carry {cap:.1f} A of the pin's {current:.1f} A; "
                 "no room for more drops"
             ),
             margin_mm=None,

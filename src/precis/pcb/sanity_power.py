@@ -5,8 +5,18 @@ current-carrying nets, in the same pure in-memory style (no store, no DB).
   connector on the left edge and a 2-pin VOUT/GND load connector on the
   right edge (VIN and VOUT are one net, 5 A), six 0805 decoupling caps in a
   row between that rail and GND.
+- ``p2`` — "regulator hub": a SOT-223 regulator fed 8 A from the input
+  connector, its VOUT running 8 A to a 9-pin distribution hub, eight 1 A
+  loads on a ring around it. The hub stands in for per-segment current:
+  the IR carries ``net_current_a``/``seg_current_a`` per net/segment
+  (gr497904), but the IR and DRC have NO net-tie or shorted-pin footprint
+  concept, so VOUT and LD1..LD8 are modelled as separate nets that a real
+  board would join inside the hub. Nothing here may assert anything that
+  depends on VOUT and LDn being separate or joined.
 - ``p3`` — ``p1`` plus the 20 crossing signal nets of the signal sanity
   board (four fixed 10-pin headers, straight 1:1).
+- ``p4`` — two rails (3V3 left, 5V right) split the In2 region layer; one
+  3-pin load straddles the split (gr497905).
 
 Every part is fixed: the router is the only thing under test. Stackup is
 the ``4l-two-sided`` preset (F/B GND fill, In1 a GND plane, In2 the
@@ -19,6 +29,7 @@ the route job applies them.
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from collections import defaultdict
@@ -30,7 +41,9 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb import sanity_board as sb
 from precis.pcb import session as pcb_session
 from precis.pcb.ir import pin_point
-from precis.pcb.rules import ipc2221_track_width_mm
+from precis.pcb.optimize import OptimizeConfig, optimize
+from precis.pcb.rules import ipc2221_track_width_mm, net_current_a_or_none
+from precis.workers.job_types.pcb_place import _DEFAULT_ITERS, _PLACE_ONLY_SCHEDULE
 from precis.workers.job_types.pcb_route import _graph_net_rules
 
 PRESET = "4l-two-sided"
@@ -51,8 +64,11 @@ class PowerSpec:
     name: str
     #: Add the 20 crossing signal nets of the signal sanity board.
     signals: bool = False
-    #: ``"cross"`` (P1/P3) or ``"split"`` (P4: two rails share In2).
+    #: ``"cross"`` (P1/P3), ``"split"`` (P4: two rails share In2) or
+    #: ``"hub"`` (P2: regulator feeding a distribution hub).
     kind: str = "cross"
+    #: refdes left unpinned — placed by the anneal before routing.
+    free: tuple[str, ...] = ()
 
 
 SPECS: dict[str, PowerSpec] = {
@@ -61,6 +77,19 @@ SPECS: dict[str, PowerSpec] = {
         PowerSpec("p1"),
         PowerSpec("p3", signals=True),
         PowerSpec("p4", kind="split"),
+    )
+}
+
+#: Fixtures a `bench power <name>` accepts but the assert gate does not
+#: run yet — p2/p2u land their VOUT region and connect 11/11, but the
+#: hub pin's stub still drops to the fab floor next to the regulator's
+#: crowded drop-via groups (and p2u's anneal parks U1 past the hub).
+#: They move into SPECS when those site-search misses are fixed.
+PENDING: dict[str, PowerSpec] = {
+    s.name: s
+    for s in (
+        PowerSpec("p2", kind="hub"),
+        PowerSpec("p2u", kind="hub", free=("U1",)),
     )
 }
 
@@ -115,7 +144,73 @@ def cap_footprint() -> dict[str, Any]:
     }
 
 
-def _inst(refdes: str, lcsc: str, x: float, y: float, rot: float) -> dict[str, Any]:
+def reg_footprint() -> dict[str, Any]:
+    """SOT-223: pads 1-3 are 1.5x2.0 mm at 2.3 mm pitch along local y; pad
+    4 is the 3.4x2.0 tab on the other side, mapped to pin 2 (VOUT)."""
+    pads = [
+        {
+            "number": str(n),
+            "x": 0.0,
+            "y": round((n - 2) * 2.3, 4),
+            "w": 1.5,
+            "h": 2.0,
+            "rot": 0.0,
+            "layer": "F.Cu",
+            "drill": None,
+            "shape": "rect",
+        }
+        for n in (1, 2, 3)
+    ]
+    pads.append(
+        {
+            "number": "4",
+            "x": 3.0,
+            "y": 0.0,
+            "w": 3.4,
+            "h": 2.0,
+            "rot": 0.0,
+            "layer": "F.Cu",
+            "drill": None,
+            "shape": "rect",
+        }
+    )
+    return {
+        "pads": pads,
+        "pin_map": {
+            "1": {"name": "1", "tags": []},
+            "2": {"name": "2", "tags": ["power_out"]},
+            "3": {"name": "3", "tags": ["power_in"]},
+            "4": {"name": "2", "tags": []},
+        },
+    }
+
+
+def hub_footprint() -> dict[str, Any]:
+    """The P2 distribution hub: 9 pads 1.5x1.5 at 2.54 mm pitch along
+    local x — pin 1 takes the VOUT trunk, pins 2-9 fan out to LD1..LD8."""
+    pads = [
+        {
+            "number": str(n),
+            "x": round((n - 5) * 2.54, 4),
+            "y": 0.0,
+            "w": 1.5,
+            "h": 1.5,
+            "rot": 0.0,
+            "layer": "F.Cu",
+            "drill": None,
+            "shape": "rect",
+        }
+        for n in range(1, 10)
+    ]
+    return {
+        "pads": pads,
+        "pin_map": {str(n): {"name": str(n), "tags": []} for n in range(1, 10)},
+    }
+
+
+def _inst(
+    refdes: str, lcsc: str, x: float, y: float, rot: float, fixed: str | None = "both"
+) -> dict[str, Any]:
     return {
         "refdes": refdes,
         "part_lcsc": lcsc,
@@ -123,17 +218,21 @@ def _inst(refdes: str, lcsc: str, x: float, y: float, rot: float) -> dict[str, A
         "y": y,
         "rot": rot,
         "layer": "top",
-        "fixed": "both",
+        "fixed": fixed,
     }
 
 
-def _power_nets(rails: dict[str, list[tuple[str, str]]], amps: float) -> list[dict]:
+def _power_nets(
+    rails: dict[str, list[tuple[str, str]]], amps: float | dict[str, float]
+) -> list[dict]:
+    if not isinstance(amps, dict):
+        amps = {name: amps for name in rails}
     return [
         {
             "name": name,
             "net_class": "power",
             "domain": "electrical",
-            "est_current_a": amps,
+            "est_current_a": amps[name],
             "members": [{"refdes": r, "pin": p} for r, p in members],
         }
         for name, members in rails.items()
@@ -170,10 +269,90 @@ def build_graph_split(spec: PowerSpec) -> dict[str, Any]:
     }
 
 
+#: P2: the hub stands in for per-segment current (gr497904). VOUT is the
+#: 8 A trunk net (regulator pin 2 → hub pin 1); LD1..LD8 are the 1 A
+#: branch nets (hub pins 2-9 → the loads' ring). The IR and DRC have no
+#: net-tie or shorted-pin footprint, so the hub's short between VOUT and
+#: every LDn is modelled as separate nets rather than joined.
+REG_FOOTPRINT = "SOT223-SANITY"
+HUB_FOOTPRINT = "HUB-SMT-1x9"
+HUB_CURRENT_A = 8.0
+BRANCH_CURRENT_A = 1.0
+LOADS = 8
+HUB_X_MM = 62.0
+#: Ring radius — large enough that no load's Voronoi territory walls off
+#: the VOUT trunk corridor between the regulator and the hub pin.
+LOAD_RING_R_MM = 30.0
+
+
+def build_graph_hub(spec: PowerSpec) -> dict[str, Any]:
+    """P2: J_IN feeds the regulator 8 A; VOUT runs 8 A to the hub; each
+    LDn is a 1 A two-pin load on a ring around it. ``spec.free`` leaves
+    U1 unpinned — the anneal then places it (between J_IN and the hub)."""
+    mid = sb.BOARD_MM / 2.0
+    free = set(spec.free)
+    instances = [
+        _inst("J_IN", CONN_FOOTPRINT, 8.0, mid, 0.0),
+        _inst(
+            "U1",
+            REG_FOOTPRINT,
+            # The pinned variant sits between feed and hub; the unpinned
+            # one starts far away (bottom edge) so the anneal must move it.
+            30.0 if "U1" not in free else sb.BOARD_MM - 8.0,
+            mid - 4.0 if "U1" not in free else sb.BOARD_MM - 8.0,
+            0.0,
+            None if "U1" in free else "both",
+        ),
+        _inst("HUB", HUB_FOOTPRINT, HUB_X_MM, mid, 0.0),
+    ]
+    for k in range(LOADS):
+        # Half-step offset: no load sits on the J_IN→HUB trunk line, so a
+        # VOUT region can form a corridor between the regulator and the hub.
+        theta = 2.0 * math.pi * (k + 0.5) / LOADS
+        instances.append(
+            _inst(
+                f"LD{k + 1}",
+                CONN_FOOTPRINT,
+                HUB_X_MM + LOAD_RING_R_MM * math.cos(theta),
+                mid + LOAD_RING_R_MM * math.sin(theta),
+                0.0,
+            )
+        )
+    rails: dict[str, list[tuple[str, str]]] = {
+        "VIN": [("J_IN", "1"), ("U1", "3")],
+        "VOUT": [("U1", "2"), ("HUB", "1")],
+        GND: [("J_IN", "2"), ("U1", "1")]
+        + [(f"LD{k}", "2") for k in range(1, LOADS + 1)],
+    }
+    rails.update(
+        {f"LD{k}": [("HUB", str(k + 1)), (f"LD{k}", "1")] for k in range(1, LOADS + 1)}
+    )
+    amps = {name: HUB_CURRENT_A for name in rails}
+    amps.update({f"LD{k}": BRANCH_CURRENT_A for k in range(1, LOADS + 1)})
+    nets = _power_nets(rails, amps)
+    # The regulator's roles ride the members: pin 2 sources VOUT, pin 3
+    # draws from VIN (est_current_a stays net-level on this board — the
+    # hub nets are the per-segment stand-in, not per-pin declarations).
+    for n in nets:
+        for m in n["members"]:
+            if m["refdes"] == "U1" and m["pin"] == "2":
+                m["tags"] = ["power_out"]
+            elif m["refdes"] == "U1" and m["pin"] == "3":
+                m["tags"] = ["power_in"]
+    return {
+        "instances": instances,
+        "nets": nets,
+        "net_classes": {},
+        "board": {"stackup": [dict(e) for e in STACKUP_PRESETS[PRESET]]},
+    }
+
+
 def build_graph(spec: PowerSpec) -> dict[str, Any]:
     """A ``Store.pcb_graph``-shaped dict, no DB."""
     if spec.kind == "split":
         return build_graph_split(spec)
+    if spec.kind == "hub":
+        return build_graph_hub(spec)
     mid = sb.BOARD_MM / 2.0
     instances = [
         _inst("J_IN", CONN_FOOTPRINT, 8.0, mid, 0.0),
@@ -226,9 +405,18 @@ def build(spec: PowerSpec) -> Built:
         CONN_FOOTPRINT: conn_footprint(),
         CAP_FOOTPRINT: cap_footprint(),
         STRADDLE_FOOTPRINT: conn_footprint(3),
+        REG_FOOTPRINT: reg_footprint(),
+        HUB_FOOTPRINT: hub_footprint(),
         sb.FOOTPRINT: sb.footprint(),
     }
     ir = pcb_session.build_ir(graph, outline=sb.outline(), footprints_by_lcsc=by_lcsc)
+    if spec.free:
+        # Place the unpinned parts before the regions derive — a region's
+        # hull is drawn from pin positions, so it must see the settled pose.
+        optimize(
+            ir,
+            OptimizeConfig(iters=_DEFAULT_ITERS, seed=1, schedule=_PLACE_ONLY_SCHEDULE),
+        )
     pcb_session.apply_plane_assignments(ir, [])
     footprints = pcb_session.footprints_by_refdes(ir, by_lcsc)
     fab_caps = pcb_session.board_capability(ir.stackup, None)
@@ -308,10 +496,7 @@ def check(built: Built, rres: Any, findings: Any) -> dict[str, dict[str, Any]]:
             )
     for t in rres.tracks:
         net = str(ir.net_name[t.net_id])
-        cur = next(
-            (n.get("est_current_a") for n in built.graph["nets"] if n["name"] == net),
-            None,
-        )
+        cur = net_current_a_or_none(float(ir.seg_current_a[t.seg_id]))
         if not cur:
             continue
         outer = layers[t.layer] in (layers[0], layers[-1])
@@ -360,6 +545,14 @@ def check(built: Built, rres: Any, findings: Any) -> dict[str, dict[str, Any]]:
             "ok": have == want,
             "poured": sorted(have),
             "missing": sorted(want - have),
+        }
+    if built.spec.free:
+        x_of = {str(r): float(ir.inst_x[i]) for i, r in enumerate(ir.instance_refdes)}
+        out["placement_order"] = {
+            # The anneal settles the free regulator between its feed and
+            # its hub: J_IN.x < U1.x < HUB.x.
+            "ok": x_of["J_IN"] < x_of["U1"] < x_of["HUB"],
+            "x_mm": {r: round(x_of[r], 2) for r in ("J_IN", "U1", "HUB")},
         }
     if built.spec.signals:
         out["signal_on_pour_layer"] = _signal_on_pour_layer(built, rres)
@@ -422,11 +615,12 @@ def _cols(results: list[PowerResult]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     names = (argv if argv is not None else sys.argv[1:]) or list(SPECS)
-    unknown = [n for n in names if n not in SPECS]
+    known = {**SPECS, **PENDING}
+    unknown = [n for n in names if n not in known]
     if unknown:
-        print(f"unknown variant(s) {unknown}; known: {list(SPECS)}", file=sys.stderr)
+        print(f"unknown variant(s) {unknown}; known: {list(known)}", file=sys.stderr)
         return 2
-    results = [route(SPECS[n]) for n in names]
+    results = [route(known[n]) for n in names]
     print(report(results))
     return 0 if all(r.clean for r in results) else 1
 

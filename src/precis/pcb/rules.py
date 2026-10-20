@@ -68,7 +68,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
-from precis.pcb.ir import UNSET_LAYER, PcbIR
+from precis.pcb.ir import NO_NET, UNSET_LAYER, PcbIR
 
 #: IPC-2221 external/internal constants (module docstring, verbatim).
 IPC2221_K_EXTERNAL = 0.048
@@ -729,6 +729,34 @@ def net_current_a_or_none(value: float | None) -> float | None:
     return float(value)
 
 
+def seg_current_a_or_none(ir: PcbIR, seg_id: int) -> float | None:
+    """The current segment ``seg_id`` carries — its own resolved figure
+    (:attr:`precis.pcb.ir.PcbIR.seg_current_a`, gr497904: a trunk carries
+    the sum of its downstream loads, a branch its own pin's), falling
+    back to the net's ``est_current_a`` annotation when the IR has no
+    per-pin model for it. Same ``None`` = "no annotation" contract as
+    :func:`net_current_a_or_none`, whose normalizer this reuses."""
+    seg = net_current_a_or_none(float(ir.seg_current_a[seg_id]))
+    if seg is not None:
+        return seg
+    return net_current_a_or_none(float(ir.net_current_a[int(ir.seg_net[seg_id])]))
+
+
+def pin_current_a_or_none(ir: PcbIR, pin_id: int) -> float | None:
+    """The current pin ``pin_id`` exchanges with its net — the resolved
+    per-pin figure (:attr:`precis.pcb.ir.PcbIR.pin_current_a`), falling
+    back to the net's ``est_current_a``. What a pad's drop vias or stub
+    must carry (gr497904); ``None`` = "no annotation", same contract as
+    :func:`net_current_a_or_none`."""
+    pin = net_current_a_or_none(float(ir.pin_current_a[pin_id]))
+    if pin is not None:
+        return pin
+    net_id = int(ir.pin_net[pin_id])
+    if net_id == NO_NET:
+        return None
+    return net_current_a_or_none(float(ir.net_current_a[net_id]))
+
+
 #: The ROUTER's own fixed reference layer for via-transition bookkeeping —
 #: NOT "which copper layer a pad's real land sits on" (gr341516 split that
 #: question off, once the IR gained a real per-instance mount-side field:
@@ -829,7 +857,7 @@ def implied_via_count(
         return 0
     net_class = str(ir.net_class[net_id])
     overrides = (class_rules or {}).get(net_class)
-    current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
+    current_a = seg_current_a_or_none(ir, seg_id)
     resolved = resolve_net_rules(
         net_class,
         layer_is_outer=layer_is_outer(ir, layer),
@@ -863,8 +891,10 @@ __all__ = [
     "ipc2221_track_width_mm",
     "layer_is_outer",
     "net_current_a_or_none",
+    "pin_current_a_or_none",
     "required",
     "resolve_net_rules",
+    "seg_current_a_or_none",
     "via_capacity_a",
     "via_count_for_current",
     "voltage_spacing_mm",

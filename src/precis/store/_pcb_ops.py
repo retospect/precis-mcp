@@ -2256,6 +2256,7 @@ class PcbMixin:
             "vih",
             "vil",
             "max_current_a",
+            "est_current_a",
             "current_role",
             "nc",
             "unused",
@@ -2266,7 +2267,13 @@ class PcbMixin:
     )
 
     #: ``op='pins'`` keys that are numbers when present.
-    _PIN_PATCH_NUMERIC = ("max_voltage_v", "vih", "vil", "max_current_a")
+    _PIN_PATCH_NUMERIC = (
+        "max_voltage_v",
+        "vih",
+        "vil",
+        "max_current_a",
+        "est_current_a",
+    )
 
     #: ``op='pins'`` keys stored verbatim in ``pcb_pins.meta``.
     #: ``min_dielectric`` (slice 3) is the design-layer stand-in for the
@@ -2279,6 +2286,7 @@ class PcbMixin:
         "vih",
         "vil",
         "max_current_a",
+        "est_current_a",
         "current_role",
         "min_dielectric",
         "source",

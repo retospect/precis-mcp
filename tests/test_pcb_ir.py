@@ -771,3 +771,79 @@ def test_compute_gap_capacity_seg_ids_restricts_recompute():
     # the pre-existing (seg_ids=None) behaviour.
     compute_gap_capacity(ir, pitch_mm=1.0)
     assert not math.isnan(ir.seg_gap_capacity[1])
+
+
+def _current_graph():
+    """A trunk-and-two-branch net (gr497904): U1 feeds, L1/L2 draw 1 A
+    each. Members are ordered so the star's hub is NOT the source — the
+    hub-to-source segment is then the trunk carrying both loads."""
+    return {
+        "instances": [{"refdes": r} for r in ("HUB", "L1", "L2", "U1")],
+        "nets": [
+            {
+                "name": "VOUT",
+                "net_class": "power",
+                "domain": "electrical",
+                "est_current_a": 2.0,
+                "members": [
+                    {"refdes": "HUB", "pin": "1"},
+                    {"refdes": "L1", "pin": "1", "meta": {"est_current_a": 1.0}},
+                    {"refdes": "L2", "pin": "1", "meta": {"est_current_a": 1.0}},
+                    {
+                        "refdes": "U1",
+                        "pin": "2",
+                        "tags": ["power_out"],
+                        "meta": {"est_current_a": 2.0},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def _seg_current_by_members(ir):
+    out = {}
+    for s in range(ir.n_segments):
+        a = str(ir.instance_refdes[int(ir.pin_instance[int(ir.seg_pin_a[s])])])
+        b = str(ir.instance_refdes[int(ir.pin_instance[int(ir.seg_pin_b[s])])])
+        out[frozenset((a, b))] = float(ir.seg_current_a[s])
+    return out
+
+
+def test_seg_current_a_trunk_sums_downstream_branch_draws():
+    ir = from_graph(_current_graph())
+    by_ends = _seg_current_by_members(ir)
+    # Hub = HUB (first member). Branches carry their own pin's draw; the
+    # segment to the declared power_out pin is the trunk and carries the
+    # sum of both loads.
+    assert by_ends[frozenset(("HUB", "L1"))] == pytest.approx(1.0)
+    assert by_ends[frozenset(("HUB", "L2"))] == pytest.approx(1.0)
+    assert by_ends[frozenset(("HUB", "U1"))] == pytest.approx(2.0)
+
+
+def test_seg_current_a_implicit_feed_covers_the_residual():
+    # Same net, but the source pin declares nothing: the residual is
+    # carried by the undeclared pins (no driver etype anywhere, so every
+    # undeclared pin is a potential feed) — never an under-sized segment.
+    graph = _current_graph()
+    u1 = next(m for m in graph["nets"][0]["members"] if m["refdes"] == "U1")
+    del u1["tags"], u1["meta"]
+    ir = from_graph(graph)
+    by_ends = _seg_current_by_members(ir)
+    assert by_ends[frozenset(("HUB", "L1"))] == pytest.approx(1.0)
+    assert by_ends[frozenset(("HUB", "L2"))] == pytest.approx(1.0)
+    assert by_ends[frozenset(("HUB", "U1"))] == pytest.approx(2.0)
+
+
+def test_seg_current_a_falls_back_to_the_net_annotation():
+    ir = from_graph(_star_graph())
+    # _star_graph declares no per-pin or per-net current: everything nan.
+    assert all(math.isnan(c) for c in ir.seg_current_a)
+    assert all(math.isnan(c) for c in ir.pin_current_a)
+    graph = _star_graph()
+    graph["nets"][0]["est_current_a"] = 3.0
+    ir = from_graph(graph)
+    n1_segs = [
+        s for s in range(ir.n_segments) if str(ir.net_name[int(ir.seg_net[s])]) == "N1"
+    ]
+    assert all(ir.seg_current_a[s] == pytest.approx(3.0) for s in n1_segs)

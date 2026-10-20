@@ -172,7 +172,9 @@ from precis.pcb.rules import (
     implied_via_count,
     layer_is_outer,
     net_current_a_or_none,
+    pin_current_a_or_none,
     resolve_net_rules,
+    seg_current_a_or_none,
     via_count_for_current,
 )
 
@@ -715,15 +717,26 @@ def through_span(n_layers: int) -> tuple[int, int]:
 
 
 def _resolve_track_rules(
-    ir: PcbIR, net_id: int, layer: int, config: RealizeConfig
+    ir: PcbIR,
+    net_id: int,
+    layer: int,
+    config: RealizeConfig,
+    *,
+    current_a: float | None = None,
 ) -> NetRules:
     """This net's resolved geometry rules (module docstring's single
     resolver, shared with :mod:`precis.pcb.drc` and :mod:`precis.pcb.cost`)
     — the ``track_width_mm`` every :class:`RealizedTrack` this module emits
-    carries."""
+    carries.
+
+    ``current_a`` overrides the net's ``est_current_a`` — the per-segment
+    and per-pin callers pass the SEGMENT or PIN's resolved current
+    (gr497904: a trunk carries the sum of its downstream loads, a branch
+    only its own pin's). ``None`` keeps the net's own annotation."""
     net_class = str(ir.net_class[net_id])
     overrides = (config.class_rules or {}).get(net_class)
-    current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
+    if current_a is None:
+        current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
     return resolve_net_rules(
         net_class,
         layer_is_outer=layer_is_outer(ir, layer),
@@ -733,6 +746,26 @@ def _resolve_track_rules(
         temp_rise_c=config.temp_rise_c,
         copper_oz=config.copper_oz,
     )
+
+
+def _seg_rules(
+    ir: PcbIR,
+    seg_id: int,
+    rules_by_net: dict[int, NetRules],
+    config: RealizeConfig,
+) -> NetRules:
+    """``rules_by_net`` for ``seg_id``'s net, re-resolved against the
+    SEGMENT's own current (gr497904) when it differs from the net's —
+    a trunk segment sizes wider than a branch of the same net. Via
+    diameter and clearance are current-independent, so a segment
+    carrying the net's whole annotation reuses the net row. Resolved at
+    :data:`PAD_LAYER`, the same layer basis ``rules_by_net`` itself uses."""
+    net_id = int(ir.seg_net[seg_id])
+    rules = rules_by_net[net_id]
+    seg_a = seg_current_a_or_none(ir, seg_id)
+    if seg_a is None or seg_a == net_current_a_or_none(float(ir.net_current_a[net_id])):
+        return rules
+    return _resolve_track_rules(ir, net_id, PAD_LAYER, config, current_a=seg_a)
 
 
 def realize_segment(
@@ -747,7 +780,9 @@ def realize_segment(
         return None
     net_id = int(ir.seg_net[seg_id])
     layer = int(ir.seg_layer[seg_id])
-    width_mm = _resolve_track_rules(ir, net_id, layer, config).track_width_mm
+    width_mm = _resolve_track_rules(
+        ir, net_id, layer, config, current_a=seg_current_a_or_none(ir, seg_id)
+    ).track_width_mm
 
     if int(ir.net_plane_layers[net_id]) != 0:
         # Dog-bone fanout: a short stub off the near pad, not a full route
@@ -2345,6 +2380,7 @@ def _realize_maze(
         signal_layers,
         rules_by_net,
         config.max_expansions,
+        config,
         fixed_copper=fixed_copper,
         npth_clearance_mm=_npth_clearance_mm(config),
         net_layer_lock_fail=net_layer_lock_fail,
@@ -2377,6 +2413,7 @@ def _diagnose_all(
     signal_layers: list[int],
     rules_by_net: dict[int, NetRules],
     max_expansions: int,
+    config: RealizeConfig,
     *,
     fixed_copper: list[dict[str, Any]] | None = None,
     npth_clearance_mm: float = 0.0,
@@ -2438,8 +2475,8 @@ def _diagnose_all(
                 )
             )
             continue
-        rules = rules_by_net[net_id]
-        n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
+        rules = _seg_rules(ir, seg_id, rules_by_net, config)
+        n_vias, group_extent = _via_group_extent(ir, seg_id, rules, clearance)
         if probe is None:
             probe = _pads_only_probe(
                 ir, spec, pads, clearance, fixed_copper, npth_clearance_mm
@@ -2802,15 +2839,17 @@ def _stamp_pads(
 
 
 def _via_group_extent(
-    ir: PcbIR, net_id: int, rules: NetRules, clearance: float
+    ir: PcbIR, seg_id: int, rules: NetRules, clearance: float
 ) -> tuple[int, float | None]:
-    """``(n_vias, group_extent_mm)`` for a layer change on ``net_id`` — the
+    """``(n_vias, group_extent_mm)`` for a layer change on ``seg_id`` — the
     exact figure :func:`_route_pass` feeds ``grid.route``'s ``via_dia_mm``
     with, hoisted out so :func:`_diagnose_unrouted` asks the search the
-    same question it already asked rather than a smaller, unvalidated one."""
+    same question it already asked rather than a smaller, unvalidated one.
+    Sized by the SEGMENT's current (:func:`seg_current_a_or_none`,
+    gr497904): a branch's layer change needs only its own pin's vias."""
     n_vias = (
         via_count_for_current(
-            net_current_a_or_none(float(ir.net_current_a[net_id])),
+            seg_current_a_or_none(ir, seg_id),
             rules.via_dia_mm,
         )
         if rules.via_dia_mm is not None
@@ -3305,7 +3344,7 @@ def _seg_request(
     if start is None or end is None:
         return None
     net_id = int(ir.seg_net[seg_id])
-    rules = rules_by_net[net_id]
+    rules = _seg_rules(ir, seg_id, rules_by_net, config)
 
     def failed() -> _SegRequest:
         return _SegRequest(
@@ -3329,7 +3368,7 @@ def _seg_request(
     # somebody else's copper. So the search is told the group's full
     # extent up front and only changes layer where the whole group
     # fits.
-    n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
+    n_vias, group_extent = _via_group_extent(ir, seg_id, rules, clearance)
     terms = (island_terminals or {}).get(seg_id)
     term_a = terms[0] if terms else ()
     term_b = terms[1] if terms else ()
@@ -4192,6 +4231,11 @@ def derive_power_regions(
         edge_clearance_mm=max(clearance, _board_edge_min_mm(config)) + 0.01,
         clearance_mm=clearance,
         reach_mm=reach,
+        current_a={
+            str(ir.net_name[n]): c
+            for n in range(ir.n_nets)
+            if (c := net_current_a_or_none(float(ir.net_current_a[n]))) is not None
+        },
     )
     by_name = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
     return [(by_name[r.net], layer, r) for r in regions], notes
@@ -4692,13 +4736,22 @@ def _plane_fanout(
             # numbers for the same pad.
             geom = pad_geoms[pid]
             pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
-            # The stub carries the pad's current, so it keeps the net's
-            # derived width, necked to the pad where the pad is narrower
-            # (never under the fab floor).
-            stub_rules = rules
+            # The stub carries the pad's own current — the pin's resolved
+            # exchange (gr497904), not the net's peak — necked to the pad
+            # where the pad is narrower (never under the fab floor). A pin
+            # with no resolved figure keeps the net's rules row.
+            pin_a = pin_current_a_or_none(ir, pid)
+            pin_rules = rules
+            if pin_a is not None and pin_a != net_current_a_or_none(
+                float(ir.net_current_a[net_id])
+            ):
+                pin_rules = _resolve_track_rules(
+                    ir, net_id, PAD_LAYER, config, current_a=pin_a
+                )
+            stub_rules = pin_rules
             neck = max(floor_width, min(geom.w_mm, geom.h_mm))
-            if neck < rules.track_width_mm:
-                stub_rules = replace(rules, track_width_mm=neck)
+            if neck < pin_rules.track_width_mm:
+                stub_rules = replace(pin_rules, track_width_mm=neck)
             primary = _FanoutPin(
                 pid,
                 net_id,
@@ -4716,7 +4769,7 @@ def _plane_fanout(
                     _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
                 ),
                 region_areas.get(net_id),
-                replace(rules, track_width_mm=floor_width)
+                replace(pin_rules, track_width_mm=floor_width)
                 if floor_width < stub_rules.track_width_mm
                 else None,
                 key=pid,
@@ -4729,7 +4782,7 @@ def _plane_fanout(
             # extra drop never takes a neighbour's primary site.
             if not pour_reaches_pad and rules.via_dia_mm is not None:
                 need = via_count_for_current(
-                    net_current_a_or_none(float(ir.net_current_a[net_id])),
+                    pin_a,
                     rules.via_dia_mm,
                 )
                 for c in range(1, need):

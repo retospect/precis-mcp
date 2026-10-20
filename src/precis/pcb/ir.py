@@ -342,6 +342,14 @@ class PcbIR:
     #: rails on one net is a ``rail_crossing`` error unless a member is a
     #: declared level shifter.
     pin_rail: np.ndarray
+    #: float64[n_pins], nan = no pin-level current model — the pin's
+    #: RESOLVED exchange current with its net (gr497904): a member's
+    #: declared ``meta['est_current_a']`` magnitude, or for an undeclared
+    #: pin on a net where other pins declare, the residual share it could
+    #: carry (:func:`_seg_currents` — undeclared driver-etype pins are the
+    #: potential feeds, else every undeclared pin). ``nan`` when no pin on
+    #: the net declares, so readers fall back to the net's annotation.
+    pin_current_a: np.ndarray
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
@@ -354,6 +362,16 @@ class PcbIR:
     #: no store column yet -- see ``net_impedance_ohm`` at the tail of this
     #: class, which migration 0171 gave real columns to.
     net_current_a: np.ndarray
+    #: float64[n_seg], nan = no current annotation at all — the current
+    #: this SEGMENT carries (gr497904). ``net_current_a`` is one figure
+    #: per net, but a trunk segment carries the sum of its downstream
+    #: loads where a branch carries only its own pin's draw
+    #: (:func:`_seg_currents` resolves each segment's share over the
+    #: net's segment tree from the members' per-pin ``est_current_a``).
+    #: A net whose members declare nothing takes the net's own value
+    #: here, so a reader may treat this as "the current to size this
+    #: segment by" without knowing whether per-pin data exists.
+    seg_current_a: np.ndarray
 
     # ---- L1: integer layer per segment; vias as transitions -----------
     seg_net: np.ndarray  # int32[n_seg]
@@ -1122,6 +1140,122 @@ def _net_tree_edges(
     return [(hub, p) for i, p in enumerate(member_pins) if i != hub_index]
 
 
+#: Pin etypes that INJECT current into a net (:func:`_seg_currents`) — a
+#: regulator's ``power_out``, a driver's ``output``. Every other pin that
+#: declares ``est_current_a`` is a draw. This is the same split the ERC's
+#: exclusive-driver set makes (``precis.pcb.drc``); it is spelled out
+#: here rather than imported because ``ir → drc → rules → ir`` is an
+#: import cycle.
+_CURRENT_DRIVER_ETYPES = frozenset({"power_out", "output"})
+
+
+def _seg_currents(
+    member_pins: list[int],
+    edges: list[tuple[int, int]],
+    *,
+    pin_declared_a: list[float],
+    pin_etype: list[str | None],
+    fallback_a: float,
+) -> tuple[list[float], dict[int, float]]:
+    """One net's per-segment currents and resolved per-pin exchanges
+    (gr497904 — the trunk-vs-branch half of ``net_current_a``).
+
+    ``pin_declared_a[pid]`` is a member's ``meta['est_current_a']``
+    magnitude, or NaN when undeclared. Declared pins are signed by etype:
+    :data:`_CURRENT_DRIVER_ETYPES` inject, every other declared pin
+    draws. Undeclared pins cover the residual (what the declared pins
+    leave unbalanced): they are the potential feeds the author did not
+    annotate. When undeclared DRIVER pins exist, only those may carry
+    the residual — a tagged ``power_out`` with no number is still the
+    supply, so the caps next to it do not get sized for it; otherwise
+    every undeclared pin is a potential feed.
+
+    A segment cuts the net's segment tree in two; the current through it
+    is the magnitude of the injection sum on either side, where the
+    residual counts toward a side only when that side holds a potential
+    feed. A feed-free side is EXACT — what its declared pins exchange
+    must cross the cut — so a branch under its leaf load reads the
+    leaf's own draw even when the feed's identity is unknown. When both
+    sides hold feeds the allocation between them is unknowable, so the
+    bound takes the worst case: a segment is never sized under the
+    current it could carry, the safe direction for power copper.
+
+    Returns ``(per-edge currents in ``edges`` order, pid -> resolved pin
+    exchange)``. With no declared pin on the net, the per-edge list is
+    ``fallback_a`` (the net's own annotation) and the pin map is empty —
+    the net behaves exactly as it did before this field existed. For a
+    declared net, a pin's resolved exchange is its declared magnitude;
+    an undeclared potential feed's is the residual it might carry; an
+    undeclared pin that cannot be a feed exchanges nothing (0.0).
+    """
+    declared = {
+        p: float(pin_declared_a[p])
+        for p in member_pins
+        if not math.isnan(pin_declared_a[p])
+    }
+    if not declared:
+        return [fallback_a] * len(edges), {}
+    q = {
+        p: (declared[p] if pin_etype[p] in _CURRENT_DRIVER_ETYPES else -declared[p])
+        if p in declared
+        else 0.0
+        for p in member_pins
+    }
+    residual = -sum(q.values())
+    undeclared = [p for p in member_pins if p not in declared]
+    feeds = {p for p in undeclared if pin_etype[p] in _CURRENT_DRIVER_ETYPES} or set(
+        undeclared
+    )
+    resolved = {p: abs(q[p]) for p in member_pins}
+    for p in feeds:
+        resolved[p] = abs(residual)
+    if not edges:
+        return [], resolved
+    adj: dict[int, list[tuple[int, int]]] = {p: [] for p in member_pins}
+    for i, (a, b) in enumerate(edges):
+        adj[a].append((b, i))
+        adj[b].append((a, i))
+    root = member_pins[0]
+    order = [root]
+    seen = {root}
+    parent: dict[int, tuple[int, int]] = {}
+    for p in order:
+        for nbr, ei in adj[p]:
+            if nbr in seen:
+                continue
+            seen.add(nbr)
+            parent[nbr] = (p, ei)
+            order.append(nbr)
+    total = sum(q.values())
+    sub = {p: q[p] for p in member_pins}
+    nfeed = {p: int(p in feeds) for p in member_pins}
+    total_feeds = sum(nfeed.values())
+    currents = [fallback_a] * len(edges)
+    for child in reversed(order[1:]):
+        par, ei = parent[child]
+        s_in, s_out = sub[child], total - sub[child]
+        f_in, f_out = nfeed[child], total_feeds - nfeed[child]
+        if f_in == 0 and f_out == 0:
+            # Every pin declared on both sides: the two sums are the same
+            # magnitude unless the declared data itself is unbalanced —
+            # take the larger rather than pretend a favourite.
+            currents[ei] = max(abs(s_in), abs(s_out))
+        elif f_in == 0:
+            currents[ei] = abs(s_in)
+        elif f_out == 0:
+            currents[ei] = abs(s_out)
+        else:
+            currents[ei] = max(
+                abs(s_in),
+                abs(s_in + residual),
+                abs(s_out),
+                abs(s_out + residual),
+            )
+        sub[par] += s_in
+        nfeed[par] += f_in
+    return currents, resolved
+
+
 def from_graph(
     graph: dict[str, Any],
     *,
@@ -1179,6 +1313,10 @@ def from_graph(
     pin_etype: list[str | None] = []
     pin_max_voltage_v: list[float] = []
     pin_rail: list[str | None] = []
+    #: The member's DECLARED ``meta['est_current_a']`` (nan when absent) —
+    #: :func:`_seg_currents`'s input; :attr:`PcbIR.pin_current_a` itself
+    #: is the resolved per-pin exchange it returns.
+    pin_declared_a: list[float] = []
     pin_lookup: dict[tuple[str, str], int] = {}
 
     def _pin(
@@ -1201,6 +1339,8 @@ def from_graph(
         pin_max_voltage_v.append(math.nan if mv is None else float(mv))
         rail = meta.get("rail")
         pin_rail.append(None if rail is None else str(rail))
+        pc = meta.get("est_current_a")
+        pin_declared_a.append(math.nan if pc is None else float(pc))
         return pid
 
     # Placement and board side, read BEFORE the net loop: segment
@@ -1225,6 +1365,10 @@ def from_graph(
     seg_net: list[int] = []
     seg_pin_a: list[int] = []
     seg_pin_b: list[int] = []
+    seg_current_a: list[float] = []
+    #: pid -> resolved pin exchange for nets with pin-level declarations
+    #: (:func:`_seg_currents`); absent pins stay NaN in ``pin_current_a``.
+    pin_resolved_a: dict[int, float] = {}
 
     # A graph rebound by a resolved netlist snapshot (`pcb.resolved.rebind`)
     # carries the AUTHORED pin creation order: pins are created in it first,
@@ -1269,11 +1413,21 @@ def from_graph(
             if pid not in seen_pins:
                 seen_pins.add(pid)
                 member_pins.append(pid)
-        for pin_a, pin_b in _net_tree_edges(
+        edges = _net_tree_edges(
             member_pins,
             pin_instance=pin_instance,
             inst_bottom=inst_is_bottom,
-        ):
+        )
+        seg_a, pin_res = _seg_currents(
+            member_pins,
+            edges,
+            pin_declared_a=pin_declared_a,
+            pin_etype=pin_etype,
+            fallback_a=math.nan if current is None else float(current),
+        )
+        seg_current_a.extend(seg_a)
+        pin_resolved_a.update(pin_res)
+        for pin_a, pin_b in edges:
             seg_net.append(net_id)
             seg_pin_a.append(pin_a)
             seg_pin_b.append(pin_b)
@@ -1383,10 +1537,15 @@ def from_graph(
         pin_etype=_obj_array(pin_etype),
         pin_max_voltage_v=np.array(pin_max_voltage_v, dtype=np.float64),
         pin_rail=_obj_array(pin_rail),
+        pin_current_a=np.array(
+            [pin_resolved_a.get(p, math.nan) for p in range(n_pins)],
+            dtype=np.float64,
+        ),
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
         net_current_a=np.array(net_current_a, dtype=np.float64),
+        seg_current_a=np.array(seg_current_a, dtype=np.float64),
         net_impedance_ohm=np.array(net_impedance_ohm, dtype=np.float64),
         net_edge_rate_v_per_ns=np.array(net_edge_rate_v_per_ns, dtype=np.float64),
         net_function_hint=_obj_array(net_function_hint),
