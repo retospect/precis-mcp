@@ -37,8 +37,9 @@ as ``chase``/``segment_toc``.
 Event vocabulary (shared across sources): ``fetch_ok`` (url+bytes+license
 payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
 ``rate_limited``, ``api_error``, ``invalid_identifier``,
-``identifier_missing``, ``circuit_open`` (leg skipped — its provider's
-per-pass breaker is open; see :class:`_ProviderBreaker`).
+``identifier_missing``, ``provider_wait`` (leg deferred — its provider's
+gate could not admit it before the leg's wall; not a provider miss, the
+leg is retried on the stub's next pass; see :class:`_ProviderGate`).
 ``precis stubs`` reads the latest event per stub
 for the backlog.
 
@@ -74,9 +75,11 @@ DB writes — coexists.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import math
 import os
+import random
 import re
 import threading
 import time
@@ -250,29 +253,67 @@ _FETCH_EXPLORE_FRACTION_DEFAULT = 0.1
 # * Metadata leg ``PRECIS_OA_FETCH_META_WALL_S`` — same deadline shape
 #   on the small JSON round-trips that used to retry 5×30 s.
 #
-# On top of the budgets a per-pass provider breaker
-# (:class:`_ProviderBreaker`) skips a provider for the rest of the pass
-# after :data:`_BREAKER_THRESHOLD` consecutive *slow* failures — a fast
-# ``fetch_failed``/``api_error`` is a normal miss and doesn't count; a
-# ≥``_SLOW_FAIL_MS`` one is a dead endpoint taxing every later stub.
+# On top of the budgets a per-provider admission gate
+# (:class:`_ProviderGate`) makes a sick provider's legs *wait* rather
+# than skip (gr500153, Reto 2026-10-20: "skip is not the right thing,
+# just wait for it" — the first pass breaker tripped circuit_open ~20/h
+# on crossref and wiley, burning real OA copies). Each provider key has
+# an in-flight cap (default :data:`_PROVIDER_INFLIGHT_DEFAULT`,
+# ``PRECIS_OA_FETCH_INFLIGHT``) so a dead endpoint can hold at most that
+# many workers in actual HTTP waits, and a shared full-jitter
+# exponential backoff armed by consecutive *slow* failures — a fast
+# ``fetch_failed``/``api_error`` is a normal miss and resets it, a
+# ≥``_SLOW_FAIL_MS`` one is the dead-endpoint signature. A leg that
+# can't be admitted before its own wall *defers* with a
+# ``provider_wait`` event — never a provider miss — and the stub is
+# retried on its next claim (the claim query's ``attempts`` count
+# ignores deferral-containing passes). A slow provider delays only its
+# own legs: other providers and other stubs keep going on the other
+# workers. 429/Retry-After needs no extra wiring: the leg's own
+# ``call_with_backoff``/``require_rate_limit`` already parks the shared
+# limiter row for the hinted seconds, so the next attempt's token-take
+# waits it out cluster-wide.
 _PASS_WORKERS_DEFAULT = 6
 _STUB_WALL_S_DEFAULT = 120.0
 _LEG_WALL_S_DEFAULT = 150.0
 _META_WALL_S_DEFAULT = 45.0
 _SLOW_FAIL_MS = 20_000
-_BREAKER_THRESHOLD = 2
 
-#: Outcome events that count as a provider failure for the pass breaker —
-#: only when the leg also took at least ``_SLOW_FAIL_MS`` (a dead-endpoint
-#: signature). ``fetch_ok``/``no_oa_version``/identifier misses are healthy.
-_BREAKER_FAIL_EVENTS = frozenset({"api_error", "fetch_failed", "rate_limited"})
+#: In-flight cap per provider key — how many of the pass's workers may
+#: sit inside one provider's legs at once. ``PRECIS_OA_FETCH_INFLIGHT``
+#: overrides: a bare int caps all keyed providers, a JSON object caps
+#: named ones (``{"crossref": 2, "wiley": 1, "*": 3}``); a value ≤0
+#: means *uncapped* for that key (the escape hatch, not a deadlock).
+_PROVIDER_INFLIGHT_DEFAULT = 2
 
-#: ref_events ``source`` → the external provider a failure should be
-#: charged to. Markup legs share their PDF sibling's provider (the JATS
-#: leg queries the same Europe PMC API; the arXiv legs hit the same
-#: host). ``fetcher:publisher`` has no key: its hosts vary per DOI, so a
-#: dead Springer tells us nothing about PLOS.
-_BREAKER_KEYS: dict[str, str | None] = {
+#: Shared per-provider backoff after a slow failure: the next leg waits
+#: ``uniform(0, min(_PROVIDER_BACKOFF_MAX_S, base * 2**(fails-1)))`` —
+#: the same full-jitter shape ``precis.utils.http._delay`` uses. With
+#: the defaults a dead provider is probed ~every 5 s at first, decaying
+#: to one probe per two minutes while failures keep landing; one healthy
+#: outcome resets it. Constants, not env knobs — the leg/stub walls are
+#: the operator-facing bounds; this shape only sets the probe cadence.
+_PROVIDER_BACKOFF_BASE_S = 5.0
+_PROVIDER_BACKOFF_MAX_S = 120.0
+
+#: Poll interval for :meth:`_ProviderGate.acquire` — how often a waiting
+#: leg re-checks for a freed slot once the provider's backoff has
+#: expired. Small against network-second leg costs; a Condition would
+#: save the wakeup but couldn't ride an injected clock in tests.
+_GATE_POLL_S = 0.05
+
+#: Outcome events that count as a provider failure for the gate's shared
+#: backoff — only when the leg also took at least ``_SLOW_FAIL_MS`` (a
+#: dead-endpoint signature). ``fetch_ok``/``no_oa_version``/identifier
+#: misses are healthy.
+_GATE_FAIL_EVENTS = frozenset({"api_error", "fetch_failed", "rate_limited"})
+
+#: ref_events ``source`` → the external provider a leg is admitted under
+#: (and a slow failure charged to). Markup legs share their PDF
+#: sibling's provider (the JATS leg queries the same Europe PMC API; the
+#: arXiv legs hit the same host). ``fetcher:publisher`` has no key: its
+#: hosts vary per DOI, so a dead Springer tells us nothing about PLOS.
+_PROVIDER_KEYS: dict[str, str | None] = {
     _SOURCE_PUBLISHER: None,
     _SOURCE_ELSEVIER: "elsevier",
     _SOURCE_ELSEVIER_XML: "elsevier",
@@ -291,64 +332,237 @@ _BREAKER_KEYS: dict[str, str | None] = {
 }
 
 
-class _ProviderBreaker:
-    """Per-pass circuit breaker on external providers.
+def _provider_inflight_caps() -> dict[str, int]:
+    """``PRECIS_OA_FETCH_INFLIGHT`` → ``{provider_key: cap}``; ``"*"`` is
+    the fallback for unlisted keys.
 
-    Counts **consecutive slow failures** per provider key
-    (:data:`_BREAKER_KEYS`): an outcome in :data:`_BREAKER_FAIL_EVENTS`
-    that took at least :data:`_SLOW_FAIL_MS`. A fast failure is a normal
-    miss (paywalled copy, 403'd TDM link) and resets the count — it costs
-    the pass almost nothing, so the provider keeps being asked. At
-    :data:`_BREAKER_THRESHOLD` the provider is *open* for the rest of the
-    pass and its legs are skipped with a ``circuit_open`` event instead
-    of re-paying 30–360 s per stub. State dies with the pass: the next
-    pass probes the provider again (a genuinely dead one is re-broken
-    after two stubs, a recovered one serves immediately).
+    Bare int (JSON or not) caps every keyed provider; a JSON object caps
+    named ones. Unset/unparseable → ``{}`` (everything takes
+    :data:`_PROVIDER_INFLIGHT_DEFAULT`). Values ≤0 mean uncapped —
+    refusing to admit a provider forever would be a worse failure mode
+    than an uncapped one. Never raises (same convention as
+    :func:`_fetch_explore_fraction`): a typo'd knob must not take the
+    pass down.
+    """
+    raw = os.environ.get("PRECIS_OA_FETCH_INFLIGHT", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = raw
+    if isinstance(parsed, dict):
+        caps: dict[str, int] = {}
+        for k, v in parsed.items():
+            try:
+                caps[str(k)] = int(v)
+            except (TypeError, ValueError):
+                log.warning(
+                    "fetch_oa: ignoring non-int PRECIS_OA_FETCH_INFLIGHT[%r]=%r",
+                    k,
+                    v,
+                )
+        return caps
+    try:
+        return {"*": int(parsed)}
+    except (TypeError, ValueError):
+        log.warning("fetch_oa: ignoring unparseable PRECIS_OA_FETCH_INFLIGHT=%r", raw)
+        return {}
 
-    Thread-safe — stub workers record outcomes concurrently.
+
+@dataclass
+class _GateLane:
+    """One provider key's gate state (mutated under the gate's lock)."""
+
+    in_flight: int = 0
+    fails: int = 0
+    #: ``perf_counter`` instant the next leg may not start before — the
+    #: armed shared backoff (0 while the provider is healthy).
+    not_before: float = 0.0
+    cap: int = _PROVIDER_INFLIGHT_DEFAULT
+
+
+class _ProviderGate:
+    """Per-provider admission control — wait, not skip (gr500153).
+
+    Replaces the per-pass skip breaker: after
+    :data:`_SLOW_FAIL_MS`-class failures a provider's legs used to be
+    skipped for the rest of the pass (``circuit_open``), which tripped
+    ~20×/hour on crossref/wiley in prod and starved stubs of providers
+    that were merely slow. Now a leg that wants a degraded provider
+    *waits* — bounded by the caller's deadline (the leg/stub wall) —
+    for both:
+
+    * **a free in-flight slot** — at most ``cap`` legs per provider key
+      run at once across the pass's worker threads, so a dead endpoint
+      can't park every worker inside its timeouts; and
+    * **the shared backoff** — a slow failure pushes ``not_before`` out
+      by a full-jitter exponential delay, so the whole pass probes a
+      dead provider at a decaying cadence instead of every stub paying
+      its timeout. A healthy outcome resets it; a fast failure is a
+      normal miss, not a sickness signal.
+
+    :meth:`acquire` returns ``False`` when the leg can't be admitted
+    before ``deadline`` — the caller defers it (``provider_wait`` event,
+    retried next pass, never a miss). Retry-After/429 honouring lives
+    one layer down: a hinted response parks the provider's shared
+    limiter row inside ``call_with_backoff``, so the *next* attempt's
+    token-take waits out the hint for every host — the gate's own
+    backoff stacks on top for slow-failure sickness, not per-status
+    politeness.
+
+    Thread-safe — stub workers contend on the same lanes. State dies
+    with the pass (constructed per :func:`run_oa_fetch_pass`): a
+    recovered provider serves the next pass immediately, a still-dead
+    one re-earns its backoff one probe at a time. ``now``/``sleep``/
+    ``uniform`` are injectable so tests drive a fake clock instead of
+    sleeping.
     """
 
     def __init__(
         self,
         *,
-        threshold: int = _BREAKER_THRESHOLD,
+        caps: dict[str, int] | None = None,
+        now: Callable[[], float] = time.perf_counter,
+        sleep: Callable[[float], object] | None = None,
+        uniform: Callable[[float, float], float] = random.uniform,
+        base_s: float = _PROVIDER_BACKOFF_BASE_S,
+        max_s: float = _PROVIDER_BACKOFF_MAX_S,
         slow_ms: int = _SLOW_FAIL_MS,
     ) -> None:
-        self._threshold = threshold
+        self._caps = _provider_inflight_caps() if caps is None else caps
+        self._now = now
+        self._sleep = sleep if sleep is not None else _gate_sleep
+        self._uniform = uniform
+        self._base_s = base_s
+        self._max_s = max_s
         self._slow_ms = slow_ms
-        self._fails: dict[str, int] = {}
-        self._open: set[str] = set()
+        self._lanes: dict[str, _GateLane] = {}
         self._lock = threading.Lock()
 
-    def is_open(self, key: str | None) -> bool:
+    def _lane(self, key: str) -> _GateLane:
+        """Fetch-or-create the lane — call only under ``self._lock``."""
+        lane = self._lanes.get(key)
+        if lane is None:
+            lane = _GateLane(
+                cap=self._caps.get(key, self._caps.get("*", _PROVIDER_INFLIGHT_DEFAULT))
+            )
+            self._lanes[key] = lane
+        return lane
+
+    def acquire(self, key: str | None, *, deadline: float | None = None) -> bool:
+        """Wait for a provider slot; ``False`` if none frees before ``deadline``.
+
+        On ``True`` the caller holds one of the lane's ``cap`` slots and
+        MUST :meth:`release` it when the leg ends. A ``None`` key (the
+        publisher leg's per-DOI hosts) is never gated. The wait ends
+        early when the process starts draining — a parked leg must not
+        outlive the SIGTERM budget.
+        """
         if key is None:
-            return False
+            return True
+        while True:
+            with self._lock:
+                lane = self._lane(key)
+                now = self._now()
+                if lane.not_before <= now and (
+                    lane.cap <= 0 or lane.in_flight < lane.cap
+                ):
+                    lane.in_flight += 1
+                    return True
+                if deadline is not None:
+                    # A backoff that outlives the leg's wall can never be
+                    # waited out in time — defer now rather than burn the
+                    # budget parked on a provider that stays sick.
+                    if lane.not_before > now and lane.not_before >= deadline:
+                        return False
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        return False
+                    wait = min(max(lane.not_before - now, _GATE_POLL_S), remaining)
+                else:
+                    wait = max(lane.not_before - now, _GATE_POLL_S)
+            if self._sleep(wait):
+                return False  # draining
+
+    def release(self, key: str | None) -> None:
+        """Free the slot an :meth:`acquire` took (a no-op on a ``None`` key)."""
+        if key is None:
+            return
         with self._lock:
-            return key in self._open
+            lane = self._lanes[key]
+            lane.in_flight = max(0, lane.in_flight - 1)
 
     def healthy(self, key: str | None) -> None:
+        """A leg answered (any non-sick outcome): clear the provider's backoff."""
         if key is None:
             return
         with self._lock:
-            self._fails[key] = 0
+            lane = self._lane(key)
+            lane.fails = 0
+            lane.not_before = 0.0
 
-    def slow_fail(self, key: str | None) -> None:
+    def fail(self, key: str | None) -> None:
+        """A leg showed the dead-endpoint signature: arm the shared backoff.
+
+        The next leg on this provider may not start before
+        ``not_before`` — a full-jitter ``base * 2**(fails-1)`` wait that
+        decays the probe cadence while failures keep landing.
+        """
         if key is None:
             return
         with self._lock:
-            n = self._fails.get(key, 0) + 1
-            self._fails[key] = n
-            if n >= self._threshold:
-                self._open.add(key)
+            lane = self._lane(key)
+            lane.fails += 1
+            delay = self._uniform(
+                0.0, min(self._max_s, self._base_s * 2 ** (lane.fails - 1))
+            )
+            lane.not_before = self._now() + delay
 
     def note_outcome(
         self, key: str | None, event: str, duration_ms: int | None
     ) -> None:
-        """Classify a leg outcome: slow failure counts, anything else resets."""
-        if event in _BREAKER_FAIL_EVENTS and (duration_ms or 0) >= self._slow_ms:
-            self.slow_fail(key)
+        """Classify a leg outcome: slow failure arms backoff, else healthy."""
+        if event in _GATE_FAIL_EVENTS and (duration_ms or 0) >= self._slow_ms:
+            self.fail(key)
         else:
             self.healthy(key)
+
+
+def _gate_sleep(seconds: float) -> bool:
+    """Default gate wait — wakes early (``True``) when the process drains."""
+    from precis.liveness import drain_sleep
+
+    return drain_sleep(seconds)
+
+
+def _record_deferral(
+    store: Store, stub: StubRef, source: str, key: str | None, t0: float
+) -> None:
+    """Breadcrumb a leg the provider gate couldn't admit before its wall.
+
+    ``provider_wait`` is deliberately **not** a provider miss — nothing
+    about the provider's answer was learned — and the claim query's
+    ``attempts`` count ignores any pass that contains one, so the stub
+    comes back on its base retry instead of backing off as if tried
+    (gr500153; the legacy ``circuit_open`` event is excluded from the
+    count the same way, which is what returns today's skipped stubs to
+    the next-day retry).
+    """
+    store.append_event(
+        stub.ref_id,
+        source=source,
+        event="provider_wait",
+        payload={"provider": key},
+        duration_ms=_ms(t0),
+    )
+    log.info(
+        "fetch_oa: %s leg deferred for ref_id=%s — provider %s saturated "
+        "or backing off; retried on the stub's next claim",
+        source,
+        stub.ref_id,
+        key,
+    )
 
 
 # DOI shape validation. Loose but rejects obviously-broken inputs
@@ -553,11 +767,30 @@ def claim_stubs_to_fetch(
                 -- Collapsing to hour-buckets (passes are >=24h apart under the
                 -- backoff, a pass's own legs land within the same hour) recovers
                 -- the pass count so the first retry is next-day, not next-month.
-                SELECT count(DISTINCT date_trunc('hour', e.ts)) AS attempts,
-                       max(e.ts) AS last_ts
-                  FROM ref_events e
-                 WHERE e.ref_id = r.ref_id
-                   AND e.source LIKE 'fetcher:%%'
+                --
+                -- A pass containing a deferral (``provider_wait``, and the
+                -- retired skip-breaker's ``circuit_open``) didn't finish trying
+                -- the stub — some provider's legs were parked, not answered —
+                -- so its bucket is excluded from ``attempts`` entirely
+                -- (gr500153): a stub whose providers couldn't be reached stays
+                -- on the base window instead of backing off as if tried. The
+                -- exclusion is retroactive through ref_events, which is what
+                -- returns today's circuit-skipped stubs to the next-day retry.
+                -- ``last_ts`` still sees those events — the pass did happen —
+                -- so the window anchors at the most recent contact attempt.
+                SELECT count(*) FILTER (WHERE NOT b.deferred) AS attempts,
+                       max(b.last_ts) AS last_ts
+                  FROM (
+                        SELECT date_trunc('hour', e.ts) AS bucket,
+                               bool_or(e.event IN
+                                       ('circuit_open', 'provider_wait'))
+                                 AS deferred,
+                               max(e.ts) AS last_ts
+                          FROM ref_events e
+                         WHERE e.ref_id = r.ref_id
+                           AND e.source LIKE 'fetcher:%%'
+                         GROUP BY 1
+                  ) b
           ) fe ON TRUE
           -- Quest reweighting (slice 2): a stub that `serves` an active quest
           -- jumps the fetch queue, weighted by that quest's striving weight
@@ -725,12 +958,25 @@ def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
     return result
 
 
+def _meta_wait_deadline(stop_at: float | None) -> float | None:
+    """Wait bound for an *optional* provider call (retraction gate, DOI→arXiv
+    resolve): the earlier of the metadata wall and the stub wall. These
+    checks enrich but never gate the fetch, so they wait for a degraded
+    provider only as long as one metadata leg would take, then skip."""
+    wall = _meta_wall_s()
+    d = time.perf_counter() + wall if wall > 0 else None
+    if stop_at is not None and (d is None or stop_at < d):
+        return stop_at
+    return d
+
+
 def _apply_retraction_gate(
     store: Store,
     stub: StubRef,
     *,
     mailto: str,
-    breaker: _ProviderBreaker | None = None,
+    gate: _ProviderGate | None = None,
+    stop_at: float | None = None,
 ) -> bool:
     """Stamp the stub's provenance status; skip the cascade only if retracted.
 
@@ -766,27 +1012,41 @@ def _apply_retraction_gate(
     finding that walked through the paper. The soft-flag downstream
     (search downrank / citation flag) lands separately.
 
-    ``breaker`` is the pass provider breaker: the check is a Crossref
-    call, so a dead Crossref endpoint skips it outright (the docstring
-    contract is already "a provenance-check outage must never block
-    acquiring a PDF" — skipping produces the same proceed decision,
-    without the ~45 s timeout per stub), and a slow ``None`` result —
-    the timeout signature — counts toward opening it.
+    ``gate`` is the pass provider gate: the check is a Crossref call,
+    so it takes a ``crossref`` lane slot like any leg. When Crossref is
+    saturated or backing off past the metadata wait bound
+    (:func:`_meta_wait_deadline`) the check skips outright — the
+    docstring contract is already "a provenance-check outage must never
+    block acquiring a PDF", so skipping produces the same proceed
+    decision without parking a worker on a dead endpoint. A slow
+    ``None`` result — the timeout signature — arms the lane's backoff.
     """
-    if breaker is not None and breaker.is_open("crossref"):
-        return False
+    acquired = False
+    if gate is not None:
+        acquired = gate.acquire("crossref", deadline=_meta_wait_deadline(stop_at))
+        if not acquired:
+            log.info(
+                "fetch_oa: retraction gate deferred for ref_id=%s — "
+                "crossref lane busy; proceeding without the check",
+                stub.ref_id,
+            )
+            return False
     gate_t0 = time.perf_counter()
-    result = _check_stub_retraction(stub, mailto=mailto)
-    if breaker is not None:
+    try:
+        result = _check_stub_retraction(stub, mailto=mailto)
+    finally:
+        if acquired and gate is not None:
+            gate.release("crossref")
+    if gate is not None and acquired:
         gate_ms = _ms(gate_t0)
         # A fast ``None`` is ambiguous (no DOI, unknown DOI, or a fast
         # swallowed error) — it carries no health signal, so it neither
-        # counts toward nor resets the breaker. A slow ``None`` is the
+        # arms nor resets the backoff. A slow ``None`` is the
         # dead-endpoint signature; a real result is a healthy answer.
         if result is None and gate_ms >= _SLOW_FAIL_MS:
-            breaker.slow_fail("crossref")
+            gate.fail("crossref")
         elif result is not None:
-            breaker.healthy("crossref")
+            gate.healthy("crossref")
     if result is None:
         return False
 
@@ -2341,7 +2601,7 @@ def run_oa_fetch_pass(
     total = len(stubs)
     wall_s = _pass_wall_s()
     started = _clock()
-    breaker = _ProviderBreaker()
+    gate = _ProviderGate()
     stub_iter = iter(enumerate(stubs, start=1))
     counts = {"attempted": 0, "ok": 0, "failed": 0}
     pull_lock = threading.Lock()
@@ -2386,7 +2646,7 @@ def run_oa_fetch_pass(
                 wiley_token,
                 core_key,
                 openalex_content_key,
-                breaker,
+                gate,
             )
             with pull_lock:
                 counts[outcome] += 1
@@ -2418,7 +2678,7 @@ def _process_stub(
     wiley_token: str,
     core_key: str,
     openalex_content_key: str,
-    breaker: _ProviderBreaker,
+    gate: _ProviderGate,
 ) -> str:
     """Run one claimed stub through the gate + markup + PDF cascades.
 
@@ -2428,7 +2688,7 @@ def _process_stub(
 
     The stub wall (``_stub_wall_s``) bounds the whole stub: no *new* leg
     starts past it; a leg in flight finishes on its own timeouts.
-    ``breaker`` is the shared per-pass provider breaker.
+    ``gate`` is the shared per-pass provider gate.
     """
     # gr191337-style monopolization is exactly what this pass is prone
     # to (up to ~11 network legs per stub, each capped at
@@ -2442,7 +2702,9 @@ def _process_stub(
         # other leg (including the markup-first pass): a retracted
         # paper has nothing worth chasing an OA copy for, so decide
         # this before paying for any download attempt.
-        if _apply_retraction_gate(store, stub, mailto=email, breaker=breaker):
+        if _apply_retraction_gate(
+            store, stub, mailto=email, gate=gate, stop_at=stop_at
+        ):
             return "ok"
 
         # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
@@ -2456,7 +2718,7 @@ def _process_stub(
                 stub,
                 inbox_path,
                 api_key,
-                breaker=breaker,
+                gate=gate,
                 stop_at=stop_at,
             )
         except Exception as exc:  # pragma: no cover — defensive
@@ -2480,7 +2742,7 @@ def _process_stub(
             core_key,
             openalex_content_key,
             printable_only=staged_markup is not None,
-            breaker=breaker,
+            gate=gate,
             stop_at=stop_at,
         )
         if staged_markup is not None:
@@ -2752,7 +3014,7 @@ def _run_markup_cascade(
     inbox_dir: Path,
     elsevier_api_key: str = "",
     *,
-    breaker: _ProviderBreaker | None = None,
+    gate: _ProviderGate | None = None,
     stop_at: float | None = None,
 ) -> _StagedMarkup | None:
     """Try each markup leg; on first hit drop the trigger + sidecar into
@@ -2777,9 +3039,11 @@ def _run_markup_cascade(
     three), so it doesn't fit the plain ``url_for(stub)`` shape those
     share. See :func:`_try_elsevier_markup` for why this leg exists.
 
-    ``breaker``/``stop_at`` are the same per-pass breaker and stub wall
-    :func:`_run_cascade` honours: an open provider is skipped with a
-    ``circuit_open`` event, and no new leg starts past ``stop_at``.
+    ``gate``/``stop_at`` are the same per-pass provider gate and stub
+    wall :func:`_run_cascade` honours: a leg the gate can't admit before
+    its wall defers with a ``provider_wait`` event (never a provider
+    miss — retried on the stub's next claim), and no new leg starts past
+    ``stop_at``.
     """
     if not _markup_fetch_enabled():
         return None
@@ -2801,41 +3065,41 @@ def _run_markup_cascade(
     def _expired() -> bool:
         return stop_at is not None and time.perf_counter() >= stop_at
 
-    if breaker is None:
-        breaker = _ProviderBreaker()
+    if gate is None:
+        gate = _ProviderGate()
 
     elsevier_outcome: FetchOutcome | None = None
-    elsevier_key = _BREAKER_KEYS.get(_SOURCE_ELSEVIER_XML)
-    if breaker.is_open(elsevier_key):
-        store.append_event(
-            stub.ref_id,
-            source=_SOURCE_ELSEVIER_XML,
-            event="circuit_open",
-            payload={"provider": elsevier_key, "breaker": "pass"},
-        )
-    elif not _expired():
+    elsevier_key = _PROVIDER_KEYS.get(_SOURCE_ELSEVIER_XML)
+    if not _expired():
         elsevier_t0 = time.perf_counter()
-        try:
-            elsevier_outcome = _try_elsevier_markup(
-                stub,
-                inbox_dir=staging_dir,
-                api_key=elsevier_api_key,
-                deadline=_leg_deadline(),
+        if not gate.acquire(elsevier_key, deadline=_leg_deadline()):
+            _record_deferral(
+                store, stub, _SOURCE_ELSEVIER_XML, elsevier_key, elsevier_t0
             )
-        except Exception as exc:  # pragma: no cover — defensive
-            elsevier_outcome = None
-            breaker.note_outcome(elsevier_key, "api_error", _ms(elsevier_t0))
-            log.warning(
-                "fetch_oa markup: elsevier_xml leg errored for ref_id=%s: %s",
-                stub.ref_id,
-                exc,
-            )
-        if elsevier_outcome is not None:
-            breaker.note_outcome(
-                elsevier_key,
-                elsevier_outcome.event,
-                elsevier_outcome.duration_ms,
-            )
+        else:
+            try:
+                elsevier_outcome = _try_elsevier_markup(
+                    stub,
+                    inbox_dir=staging_dir,
+                    api_key=elsevier_api_key,
+                    deadline=_leg_deadline(),
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                elsevier_outcome = None
+                gate.note_outcome(elsevier_key, "api_error", _ms(elsevier_t0))
+                log.warning(
+                    "fetch_oa markup: elsevier_xml leg errored for ref_id=%s: %s",
+                    stub.ref_id,
+                    exc,
+                )
+            finally:
+                gate.release(elsevier_key)
+            if elsevier_outcome is not None:
+                gate.note_outcome(
+                    elsevier_key,
+                    elsevier_outcome.event,
+                    elsevier_outcome.duration_ms,
+                )
     if elsevier_outcome is not None:
         store.append_event(
             stub.ref_id,
@@ -2883,124 +3147,135 @@ def _run_markup_cascade(
     for leg in _MARKUP_LEGS:
         if _expired():
             break
-        key = _BREAKER_KEYS.get(leg.source)
-        if breaker.is_open(key):
-            store.append_event(
-                stub.ref_id,
-                source=leg.source,
-                event="circuit_open",
-                payload={"provider": key, "breaker": "pass"},
-            )
-            continue
+        key = _PROVIDER_KEYS.get(leg.source)
         t0 = time.perf_counter()
-        try:
-            url = leg.url_for(stub)
-        except Exception as exc:
-            leg_ms = _ms(t0)
-            breaker.note_outcome(key, "api_error", leg_ms)
-            store.append_event(
-                stub.ref_id,
-                source=leg.source,
-                event="api_error",
-                payload={"error": str(exc)[:200]},
-                duration_ms=leg_ms,
-            )
+        if not gate.acquire(key, deadline=_leg_deadline()):
+            _record_deferral(store, stub, leg.source, key, t0)
             continue
-        if url is None:
-            continue  # no identifier for this leg — silent skip
-        if leg.limiter is not None:
+        # The slot is held through the leg's whole tail and released in
+        # the finally — an unexpected raise mid-leg (classify, sidecar
+        # write, event append) must not leak it and silently shrink the
+        # provider's cap for the rest of the pass.
+        try:
             try:
-                if leg.limiter in refused:
-                    raise RateLimited(leg.limiter)
-                require_rate_limit(leg.limiter)
-            except RateLimited:
-                refused.add(leg.limiter)
+                url = leg.url_for(stub)
+            except Exception as exc:
                 leg_ms = _ms(t0)
-                breaker.note_outcome(key, "rate_limited", leg_ms)
+                gate.note_outcome(key, "api_error", leg_ms)
                 store.append_event(
                     stub.ref_id,
                     source=leg.source,
-                    event="rate_limited",
-                    payload={"url": url, "provider": leg.limiter, "limiter": "shared"},
+                    event="api_error",
+                    payload={"error": str(exc)[:200]},
                     duration_ms=leg_ms,
                 )
                 continue
-        final_path = inbox_dir / (_stub_filename(stub) + leg.suffix)
-        staged_path = staging_dir / final_path.name
-        try:
-            size = _download_markup(url, staged_path, deadline=_leg_deadline())
-        except Exception as exc:
-            log.warning(
-                "fetch_oa markup: %s leg failed for ref_id=%s (%s): %s",
-                leg.source,
-                stub.ref_id,
-                url,
-                exc,
-            )
-            leg_ms = _ms(t0)
-            breaker.note_outcome(key, "fetch_failed", leg_ms)
-            store.append_event(
-                stub.ref_id,
-                source=leg.source,
-                event="fetch_failed",
-                payload={"url": url, "error": str(exc)[:200]},
-                duration_ms=leg_ms,
-            )
-            continue
-        if leg.source == _SOURCE_ARXIV_SOURCE:
-            skip_reason, tex_bytes = _classify_eprint(staged_path)
-            if skip_reason is not None:
-                staged_path.unlink(missing_ok=True)
-                breaker.healthy(key)
+            if url is None:
+                continue  # no identifier for this leg — silent skip
+            if leg.limiter is not None:
+                try:
+                    if leg.limiter in refused:
+                        raise RateLimited(leg.limiter)
+                    require_rate_limit(leg.limiter)
+                except RateLimited:
+                    refused.add(leg.limiter)
+                    leg_ms = _ms(t0)
+                    gate.note_outcome(key, "rate_limited", leg_ms)
+                    store.append_event(
+                        stub.ref_id,
+                        source=leg.source,
+                        event="rate_limited",
+                        payload={
+                            "url": url,
+                            "provider": leg.limiter,
+                            "limiter": "shared",
+                        },
+                        duration_ms=leg_ms,
+                    )
+                    continue
+            final_path = inbox_dir / (_stub_filename(stub) + leg.suffix)
+            staged_path = staging_dir / final_path.name
+            try:
+                size = _download_markup(url, staged_path, deadline=_leg_deadline())
+                if leg.source == _SOURCE_ARXIV_SOURCE:
+                    skip_reason, tex_bytes = _classify_eprint(staged_path)
+                    if skip_reason is not None:
+                        staged_path.unlink(missing_ok=True)
+                        gate.note_outcome(key, "no_oa_version", _ms(t0))
+                        store.append_event(
+                            stub.ref_id,
+                            source=leg.source,
+                            event="no_oa_version",
+                            payload={
+                                "url": url,
+                                "reason": skip_reason,
+                                "bytes": size,
+                            },
+                            duration_ms=_ms(t0),
+                        )
+                        continue
+                    if tex_bytes is not None:
+                        # Single-file TeX: restage under a ``.tex`` name so
+                        # the watcher's reader takes its single-file branch
+                        # (the sidecar and publish step key on the staged
+                        # filename).
+                        staged_path.unlink(missing_ok=True)
+                        final_path = inbox_dir / (_stub_filename(stub) + ".tex")
+                        staged_path = staging_dir / final_path.name
+                        staged_path.write_bytes(tex_bytes)
+                        size = len(tex_bytes)
+                write_sidecar(
+                    staged_path,
+                    ref_id=stub.ref_id,
+                    identifiers={
+                        k: v
+                        for k, v in {
+                            "doi": stub.doi,
+                            "arxiv": stub.arxiv,
+                            "s2": stub.s2_id,
+                            "cite_key": stub.cite_key,
+                        }.items()
+                        if v
+                    },
+                    source=leg.source,
+                    source_format=leg.fmt,
+                )
+            except Exception as exc:
+                log.warning(
+                    "fetch_oa markup: %s leg failed for ref_id=%s (%s): %s",
+                    leg.source,
+                    stub.ref_id,
+                    url,
+                    exc,
+                )
+                leg_ms = _ms(t0)
+                gate.note_outcome(key, "fetch_failed", leg_ms)
                 store.append_event(
                     stub.ref_id,
                     source=leg.source,
-                    event="no_oa_version",
-                    payload={"url": url, "reason": skip_reason, "bytes": size},
-                    duration_ms=_ms(t0),
+                    event="fetch_failed",
+                    payload={"url": url, "error": str(exc)[:200]},
+                    duration_ms=leg_ms,
                 )
                 continue
-            if tex_bytes is not None:
-                # Single-file TeX: restage under a ``.tex`` name so the
-                # watcher's reader takes its single-file branch (the sidecar
-                # and publish step key on the staged filename).
-                staged_path.unlink(missing_ok=True)
-                final_path = inbox_dir / (_stub_filename(stub) + ".tex")
-                staged_path = staging_dir / final_path.name
-                staged_path.write_bytes(tex_bytes)
-                size = len(tex_bytes)
-        write_sidecar(
-            staged_path,
-            ref_id=stub.ref_id,
-            identifiers={
-                k: v
-                for k, v in {
-                    "doi": stub.doi,
-                    "arxiv": stub.arxiv,
-                    "s2": stub.s2_id,
-                    "cite_key": stub.cite_key,
-                }.items()
-                if v
-            },
-            source=leg.source,
-            source_format=leg.fmt,
-        )
-        breaker.healthy(key)
-        store.append_event(
-            stub.ref_id,
-            source=leg.source,
-            event="fetch_ok",
-            payload={"url": url, "bytes": size, "format": leg.fmt},
-            duration_ms=_ms(t0),
-        )
-        log.info(
-            "fetch_oa markup: %s landed for ref_id=%s (%s, %d bytes)",
-            leg.source,
-            stub.ref_id,
-            leg.fmt,
-            size,
-        )
-        return _StagedMarkup(staged_path=staged_path, final_path=final_path)
+            gate.healthy(key)
+            store.append_event(
+                stub.ref_id,
+                source=leg.source,
+                event="fetch_ok",
+                payload={"url": url, "bytes": size, "format": leg.fmt},
+                duration_ms=_ms(t0),
+            )
+            log.info(
+                "fetch_oa markup: %s landed for ref_id=%s (%s, %d bytes)",
+                leg.source,
+                stub.ref_id,
+                leg.fmt,
+                size,
+            )
+            return _StagedMarkup(staged_path=staged_path, final_path=final_path)
+        finally:
+            gate.release(key)
     return None
 
 
@@ -3014,7 +3289,7 @@ def _run_cascade(
     core_key: str,
     openalex_content_key: str = "",
     printable_only: bool = False,
-    breaker: _ProviderBreaker | None = None,
+    gate: _ProviderGate | None = None,
     stop_at: float | None = None,
 ) -> Path | None:
     """Walk providers in order; stop at first fetch_ok. Returns the PDF path
@@ -3051,28 +3326,39 @@ def _run_cascade(
         last so it only spends after every free leg fails. A low-balance alert
         (:func:`check_openalex_balance`) warns before the runway runs out.
 
-    ``breaker`` is the pass provider breaker: a provider with an open
-    circuit is skipped for every later stub (one ``circuit_open`` event
-    per skipped leg instead of another 30–360 s timeout). ``stop_at`` is
-    a ``perf_counter`` instant (the stub wall): no new leg starts past it
-    and it caps each leg's download-retry tail.
+    ``gate`` is the pass provider gate: a leg the gate can't admit
+    before its wall defers with a ``provider_wait`` event — never a
+    provider miss — and the stub is retried on its next claim; a healthy
+    provider admits immediately, so nothing is skipped outright.
+    ``stop_at`` is a ``perf_counter`` instant (the stub wall): no new
+    leg starts past it and it caps each leg's download-retry tail.
     """
-    if breaker is None:
-        breaker = _ProviderBreaker()
+    if gate is None:
+        gate = _ProviderGate()
     # A DOI-only stub may still have a free arXiv copy: resolve the id from
     # metadata so the arxiv leg runs instead of the stub falling to
     # ``no_oa_version`` (gr453862).
-    if not stub.arxiv and not breaker.is_open("openalex"):
-        arxiv_t0 = time.perf_counter()
-        resolved_arxiv = _resolve_arxiv_id(stub, email=email)
-        arxiv_ms = _ms(arxiv_t0)
-        if resolved_arxiv:
-            stub = dataclasses.replace(stub, arxiv=resolved_arxiv)
-            breaker.healthy("openalex")
-        elif arxiv_ms >= _SLOW_FAIL_MS:
-            breaker.slow_fail("openalex")
-        # A fast ``None`` is ambiguous (no arXiv location, or a fast
-        # swallowed error) — no health signal, like the gate above.
+    if not stub.arxiv:
+        if gate.acquire("openalex", deadline=_meta_wait_deadline(stop_at)):
+            arxiv_t0 = time.perf_counter()
+            try:
+                resolved_arxiv = _resolve_arxiv_id(stub, email=email)
+            finally:
+                gate.release("openalex")
+            arxiv_ms = _ms(arxiv_t0)
+            if resolved_arxiv:
+                stub = dataclasses.replace(stub, arxiv=resolved_arxiv)
+                gate.healthy("openalex")
+            elif arxiv_ms >= _SLOW_FAIL_MS:
+                gate.fail("openalex")
+            # A fast ``None`` is ambiguous (no arXiv location, or a fast
+            # swallowed error) — no health signal, like the gate above.
+        else:
+            log.info(
+                "fetch_oa: arxiv id resolve deferred for ref_id=%s — "
+                "openalex lane busy",
+                stub.ref_id,
+            )
     providers: list[tuple[str, Any]] = [
         (
             _SOURCE_PUBLISHER,
@@ -3171,15 +3457,7 @@ def _run_cascade(
     for source, runner in providers:
         if stop_at is not None and time.perf_counter() >= stop_at:
             break
-        key = _BREAKER_KEYS.get(source)
-        if breaker.is_open(key):
-            store.append_event(
-                stub.ref_id,
-                source=source,
-                event="circuit_open",
-                payload={"provider": key, "breaker": "pass"},
-            )
-            continue
+        key = _PROVIDER_KEYS.get(source)
         leg_t0 = time.perf_counter()
         # The leg's retry tail ends at the earlier of its own wall and the
         # stub's — the in-flight request still gets its full timeout.
@@ -3187,32 +3465,42 @@ def _run_cascade(
         deadline = leg_t0 + leg_wall if leg_wall > 0 else None
         if stop_at is not None and (deadline is None or stop_at < deadline):
             deadline = stop_at
+        # A leg the gate can't admit before its wall defers — the
+        # provider is saturated or backing off, and this stub's leg is
+        # retried on its next claim rather than recorded as a miss.
+        if not gate.acquire(key, deadline=deadline):
+            _record_deferral(store, stub, source, key, leg_t0)
+            continue
+        # Held for the leg's whole tail; the finally's release keeps an
+        # unexpected raise from shrinking the provider's cap this pass.
         try:
-            outcome = runner(deadline)
-        except Exception as exc:
-            leg_ms = _ms(leg_t0)
-            breaker.note_outcome(key, "api_error", leg_ms)
+            try:
+                outcome = runner(deadline)
+            except Exception as exc:
+                leg_ms = _ms(leg_t0)
+                gate.note_outcome(key, "api_error", leg_ms)
+                store.append_event(
+                    stub.ref_id,
+                    source=source,
+                    event="api_error",
+                    payload={"error": str(exc)[:200]},
+                    duration_ms=leg_ms,
+                )
+                continue
+            if outcome is None:
+                # No identifier for this source — silent skip; no event.
+                continue
+            gate.note_outcome(key, outcome.event, outcome.duration_ms)
             store.append_event(
                 stub.ref_id,
                 source=source,
-                event="api_error",
-                payload={"error": str(exc)[:200]},
-                duration_ms=leg_ms,
+                event=outcome.event,
+                payload=outcome.payload,
+                duration_ms=outcome.duration_ms,
+                cost_usd=outcome.cost_usd,
             )
-            continue
-        if outcome is None:
-            # No identifier for this source — silent skip; no event.
-            continue
-        breaker.note_outcome(key, outcome.event, outcome.duration_ms)
-        store.append_event(
-            stub.ref_id,
-            source=source,
-            event=outcome.event,
-            payload=outcome.payload,
-            duration_ms=outcome.duration_ms,
-            cost_usd=outcome.cost_usd,
-        )
-        if outcome.event == "fetch_ok":
+            if outcome.event != "fetch_ok":
+                continue
             # Drop an acquisition manifest next to the PDF so ingest folds
             # into *this* stub (keeping its good title/DOI) instead of
             # re-deriving identity from the bytes and minting a duplicate
@@ -3234,6 +3522,8 @@ def _run_cascade(
                 printable_only=printable_only,
             )
             return pdf_path
+        finally:
+            gate.release(key)
     return None
 
 

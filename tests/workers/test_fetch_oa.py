@@ -398,6 +398,38 @@ class TestClaimStubs:
         # 12 events but 1 pass → 24h window → 25h-old attempt re-qualifies.
         assert [s.ref_id for s in stubs] == [ref_id]
 
+    @pytest.mark.parametrize("ev", ["circuit_open", "provider_wait"])
+    def test_backoff_ignores_deferral_passes(self, store: Store, ev: str) -> None:
+        # gr500153 (retroactive over ref_events): a pass containing a
+        # deferral — provider_wait now, circuit_open under the retired
+        # skip-breaker — didn't finish trying the stub, so its
+        # hour-bucket is excluded from `attempts`. Here one clean pass
+        # 50h ago + one deferral-containing pass 26h ago: counted, that
+        # is attempts=2 → 48h window → the 26h-old last attempt would
+        # still suppress; excluded, attempts=1 → 24h base window → the
+        # stub re-qualifies (today's circuit-skipped stubs return to the
+        # next-day retry).
+        ref_id = _seed_paper_stub(store, doi="10.1234/deferred")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                "now() - make_interval(hours => 50))",
+                (ref_id,),
+            )
+            for event in ("no_oa_version", ev):
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, 'fetcher:crossref', %s, '{}'::jsonb, "
+                    "now() - make_interval(hours => 26))",
+                    (ref_id, event),
+                )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
     def test_backoff_is_capped(self, store: Store) -> None:
         # The doubling is capped (default 720h / 30d) so a chronically
         # un-fetchable stub still gets one more try per ~month — never a
@@ -3363,15 +3395,18 @@ class TestDownloadByteCap:
 
 
 # ---------------------------------------------------------------------------
-# Throughput bounds — worker pool, per-pass provider breaker, deadlines
+# Throughput bounds — worker pool, per-provider gate, deadlines
 # ---------------------------------------------------------------------------
 
 
 class TestThroughputBounds:
     """d-fetchrate: the pass used to drain 1–4 of 32 claimed stubs in its
     300 s wall budget — serial legs × a dead provider's timeout×retry
-    product. These tests pin the three bounds that fix it: concurrent
-    stub workers, the per-pass provider breaker, and the leg deadline."""
+    product; d-fetchwait (gr500153) then replaced the per-pass skip
+    breaker with the *waiting* provider gate ("skip is not the right
+    thing, just wait for it"). These tests pin the bounds: concurrent
+    stub workers, the per-provider in-flight cap + shared backoff, and
+    the leg deadline."""
 
     @pytest.fixture(autouse=True)
     def _enable(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3409,6 +3444,13 @@ class TestThroughputBounds:
         )
         # Same for the DOI→arXiv id resolver (a live OpenAlex call).
         monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+
+    @staticmethod
+    def _gate_knobs(monkeypatch: pytest.MonkeyPatch, **kw: Any) -> None:
+        """Make every ``_ProviderGate()`` the pass builds use the given
+        test knobs (tiny real-second backoffs, a pinned ``uniform``)."""
+        cls = fetch_oa._ProviderGate
+        monkeypatch.setattr(fetch_oa, "_ProviderGate", lambda: cls(**kw))
 
     def test_workers_process_stubs_concurrently(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3455,12 +3497,14 @@ class TestThroughputBounds:
         assert result["claimed"] == 4
         assert len(set(ran)) == 4  # every stub ran exactly once
 
-    def test_breaker_skips_provider_after_two_slow_fails(
+    def test_gate_waits_and_still_calls_slow_provider(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A provider that fails slowly (dead-endpoint signature) is asked
-        for the first two stubs only; later stubs get a circuit_open event."""
-        ref_ids = [_seed_paper_stub(store, doi=f"10.1234/brk-{n}") for n in range(4)]
+        """gr500153: a provider that fails slowly (dead-endpoint signature)
+        makes later legs WAIT out a jittered backoff — not skip. Every
+        stub still gets its crossref leg."""
+        ref_ids = [_seed_paper_stub(store, doi=f"10.1234/wait-{n}") for n in range(4)]
+        self._gate_knobs(monkeypatch, base_s=0.01, max_s=0.02)
         calls: list[int] = []
 
         def dead_crossref(stub, *, inbox_dir, email, deadline=None):
@@ -3470,21 +3514,54 @@ class TestThroughputBounds:
         monkeypatch.setattr(fetch_oa, "_try_crossref", dead_crossref)
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 4, "ok": 4, "failed": 0}
-        # Two stubs pay the dead endpoint, the other two get circuit_open
-        # (claim order is prio+explore — which two is not deterministic).
-        assert len(calls) == 2
+        assert sorted(calls) == sorted(ref_ids)  # waited, not skipped
         with store.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT ref_id FROM ref_events "
-                "WHERE source='fetcher:crossref' AND event='circuit_open'"
-            ).fetchall()
-        assert sorted(r[0] for r in rows) == sorted(set(ref_ids) - set(calls))
+            row = conn.execute(
+                "SELECT count(*) FROM ref_events "
+                "WHERE event IN ('circuit_open', 'provider_wait')"
+            ).fetchone()
+        assert row is not None and row[0] == 0
 
-    def test_breaker_ignores_fast_failures(
+    def test_gate_defers_leg_when_backoff_outlives_wall(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A leg the gate can't admit before its wall defers with a
+        ``provider_wait`` event — never a provider miss, so the stub's
+        backoff doesn't advance on work it never got."""
+        _seed_paper_stub(store, doi="10.1234/defer-a")
+        _seed_paper_stub(store, doi="10.1234/defer-b")
+        # Backoff pinned at 1000 s — far past the 150 s leg wall, so the
+        # second stub's crossref leg defers without waiting.
+        self._gate_knobs(
+            monkeypatch, base_s=1000.0, max_s=2000.0, uniform=lambda lo, hi: hi
+        )
+        calls: list[int] = []
+
+        def dead_crossref(stub, *, inbox_dir, email, deadline=None):
+            calls.append(stub.ref_id)
+            return fetch_oa.FetchOutcome("api_error", {"error": "timed out"}, 30_000)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", dead_crossref)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
+        assert len(calls) == 1  # only the first stub paid the dead endpoint
+        with store.pool.connection() as conn:
+            waits = conn.execute(
+                "SELECT ref_id FROM ref_events "
+                "WHERE source='fetcher:crossref' AND event='provider_wait'"
+            ).fetchall()
+            misses = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE source='fetcher:crossref' "
+                "AND event IN ('api_error', 'fetch_failed', 'no_oa_version')"
+            ).fetchone()
+        assert len(waits) == 1  # the other stub deferred, not missed
+        assert misses is not None and misses[0] == 1
+
+    def test_gate_ignores_fast_failures(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A fast fetch_failed is a normal miss (403'd TDM link), not a
-        dead endpoint — it never opens the breaker."""
+        dead endpoint — it never arms the gate's backoff."""
         ref_ids = [_seed_paper_stub(store, doi=f"10.1234/fast-{n}") for n in range(4)]
         calls: list[int] = []
 
@@ -3497,17 +3574,19 @@ class TestThroughputBounds:
         assert sorted(calls) == sorted(ref_ids)
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT count(*) FROM ref_events WHERE event='circuit_open'"
+                "SELECT count(*) FROM ref_events "
+                "WHERE event IN ('circuit_open', 'provider_wait')"
             ).fetchone()
         assert row is not None and row[0] == 0
 
-    def test_breaker_reopens_next_pass(
+    def test_gate_state_dies_with_pass(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Breaker state dies with the pass — the next pass probes the
+        """Gate state dies with the pass — the next pass probes the
         provider again (a recovered one serves immediately)."""
         _seed_paper_stub(store, doi="10.1234/recover-a")
         _seed_paper_stub(store, doi="10.1234/recover-b")
+        self._gate_knobs(monkeypatch, base_s=0.01, max_s=0.02)
         calls = [0]
 
         def flaky(stub, *, inbox_dir, email, deadline=None):
@@ -3518,12 +3597,142 @@ class TestThroughputBounds:
 
         monkeypatch.setattr(fetch_oa, "_try_crossref", flaky)
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
-        # The breaker opened within pass 1 (two slow fails)…
+        # Pass 1 armed the shared backoff (two slow fails) but every leg
+        # still ran after waiting it out.
         assert calls[0] == 2
         _seed_paper_stub(store, doi="10.1234/recover-c")
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
-        # …but pass 2 (fresh breaker) asked again — and got the healthy answer.
+        # …but pass 2 (fresh gate) asked again — and got the healthy answer.
         assert calls[0] == 3
+
+    def test_gate_backoff_grows_then_defers(self) -> None:
+        """Gate unit shape (fake clock): a slow fail arms a jittered
+        exponential backoff; a leg walled inside it defers without
+        sleeping; a wider-walled leg waits it out and is admitted."""
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def _sleep(s: float) -> None:
+            sleeps.append(s)
+            clock[0] += s
+
+        gate = fetch_oa._ProviderGate(
+            base_s=10.0,
+            max_s=100.0,
+            now=lambda: clock[0],
+            sleep=_sleep,
+            uniform=lambda lo, hi: hi,  # deterministic top-of-range draw
+        )
+        gate.note_outcome("crossref", "api_error", 30_000)  # slow fail
+        # Backoff armed to t=10: a leg walled at t=5 can't wait it out.
+        assert not gate.acquire("crossref", deadline=5.0)
+        assert sleeps == []  # deferred without sleeping
+        # A leg with a wider wall waits the backoff then is admitted.
+        assert gate.acquire("crossref", deadline=20.0)
+        assert sleeps == [10.0]
+        gate.release("crossref")
+        # Two more slow fails double then quadruple the wait.
+        gate.note_outcome("crossref", "fetch_failed", 25_000)
+        assert not gate.acquire("crossref", deadline=clock[0] + 15.0)
+        gate.note_outcome("crossref", "api_error", 25_000)
+        assert not gate.acquire("crossref", deadline=clock[0] + 35.0)
+        # …and one healthy answer resets it to zero.
+        gate.note_outcome("crossref", "no_oa_version", 500)
+        assert gate.acquire("crossref", deadline=clock[0] + 1.0)
+        gate.release("crossref")
+
+    def test_gate_cap_bounds_inflight(self) -> None:
+        """cap=N admits at most N concurrent legs per provider key;
+        other providers are unaffected."""
+        gate = fetch_oa._ProviderGate(caps={"crossref": 2, "*": 1})
+        assert gate.acquire("crossref")
+        assert gate.acquire("crossref")
+        # The third concurrent leg can't start — a deadline of "now"
+        # means it can't be admitted in time, so it defers.
+        assert not gate.acquire("crossref", deadline=gate._now())
+        assert gate.acquire("wiley")  # unaffected provider still admits
+        gate.release("wiley")
+        gate.release("crossref")
+        assert gate.acquire("crossref")  # a freed slot admits again
+        gate.release("crossref")
+        gate.release("crossref")
+
+    def test_inflight_cap_holds_under_concurrency(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """4 workers racing crossref legs: at most ``cap`` of a provider's
+        legs are in flight at once, however many stubs are queued."""
+        import threading
+        import time as _time
+
+        for n in range(6):
+            _seed_paper_stub(store, doi=f"10.1234/cap-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "4")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "0")
+        monkeypatch.setenv("PRECIS_OA_FETCH_INFLIGHT", '{"crossref": 1}')
+        self._gate_knobs(monkeypatch, base_s=0.01, max_s=0.02)
+        lock = threading.Lock()
+        in_flight = [0]
+        peak = [0]
+
+        def slow_crossref(stub, *, inbox_dir, email, deadline=None):
+            with lock:
+                in_flight[0] += 1
+                peak[0] = max(peak[0], in_flight[0])
+            _time.sleep(0.05)
+            with lock:
+                in_flight[0] -= 1
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 50)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", slow_crossref)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 6, "ok": 6, "failed": 0}
+        assert peak[0] == 1
+
+    def test_sick_provider_does_not_stall_other_stubs(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """While one worker sits inside a blocked crossref leg, the other
+        worker's stubs keep running their other-provider legs."""
+        import threading
+
+        _seed_paper_stub(store, doi="10.1234/iso-a")
+        _seed_paper_stub(store, doi="10.1234/iso-b")
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "2")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "0")
+        crossref_entered = threading.Event()
+        release_crossref = threading.Event()
+        unpaywall_done = threading.Event()
+
+        def hung_crossref(stub, *, inbox_dir, email, deadline=None):
+            crossref_entered.set()
+            assert release_crossref.wait(timeout=15)
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 10)
+
+        seen_unpaywall: list[int] = []
+
+        def quick_unpaywall(stub, *, inbox_dir, email, deadline=None):
+            seen_unpaywall.append(stub.ref_id)
+            if len(seen_unpaywall) == 2:
+                unpaywall_done.set()
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 10)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", hung_crossref)
+        monkeypatch.setattr(fetch_oa, "_try_unpaywall", quick_unpaywall)
+        result: dict[str, int] = {}
+        t = threading.Thread(
+            target=lambda: result.update(
+                run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+            )
+        )
+        t.start()
+        assert crossref_entered.wait(10)
+        # A worker is parked inside crossref — the other stub's unpaywall
+        # leg still ran to completion rather than queueing behind it.
+        assert unpaywall_done.wait(10)
+        release_crossref.set()
+        t.join(15)
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
 
     def test_stub_wall_stops_new_legs(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3574,6 +3783,32 @@ class TestThroughputBounds:
         assert out is not None and out.event == "fetch_failed"
         assert attempted == ["https://a/1.pdf"]
         assert "deadline" in out.payload["error"]
+
+    def test_download_backoff_honours_retry_after(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 429 carrying ``Retry-After`` makes the download retry wait
+        the hinted seconds (not the jittered default) — the gate's own
+        backoff stacks on top of, never replaces, the per-attempt
+        politeness."""
+        request = httpx.Request("GET", "https://dead.example/x.pdf")
+        resp = httpx.Response(429, headers={"Retry-After": "7"}, request=request)
+        calls = [0]
+        sleeps: list[float] = []
+
+        def always_429(url, target, extra_headers=None):
+            calls[0] += 1
+            raise httpx.HTTPStatusError("429", request=request, response=resp)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf_once", always_429)
+        monkeypatch.setattr(
+            "precis.utils.http._default_sleep", lambda s: sleeps.append(s)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_oa._download_pdf("https://dead.example/x.pdf", tmp_path / "x.pdf")
+        # _DOWNLOAD_POLICY: 3 attempts, cap 8 s — each retry waits the
+        # hinted 7 s, and the response also parked the shared limiter row.
+        assert sleeps == [7.0, 7.0]
 
     def test_download_pdf_deadline_stops_retries(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
