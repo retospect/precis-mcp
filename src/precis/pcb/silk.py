@@ -974,6 +974,20 @@ def _stroke_crosses_stroke(
     return False
 
 
+def _obstacle_sort_key(o: dict[str, Any]) -> tuple[float, float, float, float, str]:
+    """Canonical order for the seed obstacle lists (gr498680): the same
+    copper handed in in a different list order must seed the same
+    obstacle set, so the checks that scan it (:func:`_stroke_hits` names
+    the FIRST hit) can't ride on caller order."""
+    return (
+        float(o.get("x", 0.0)),
+        float(o.get("y", 0.0)),
+        float(o.get("w", 0.0)),
+        float(o.get("h", o.get("w", 0.0))),
+        str(o.get("obstacle") or o.get("refdes") or ""),
+    )
+
+
 def _via_pad(via: dict[str, Any]) -> dict[str, Any]:
     """A via's exposed annulus, reshaped into a circle-``pads`` dict --
     the SAME shape :func:`_box_overlaps_pad`/:func:`_polygon_overlaps_circle`
@@ -1355,6 +1369,15 @@ class PartOutline:
     meets: tuple[str, ...] = ()
     #: Length of ring buried inside those earlier outlines (mm).
     buried_mm: float = 0.0
+    #: Refdes of the neighbours this ring shares a coincident wall
+    #: segment with (gr496366 comment 5): the split between the two hulls,
+    #: drawn identically by both, never crossed by either.
+    shared: tuple[str, ...] = ()
+    #: Length of ring left open where the shared wall would sit inside
+    #: the pad-clearance floor (mm) — the pair is packed tighter than two
+    #: floors, so no legal line exists there and the facing sides stay
+    #  open rather than invade.
+    floor_open_mm: float = 0.0
     #: The routed vias this ring was redrawn around instead of printing on
     #: them (:func:`_bend_around_vias`), each named by
     #: :func:`_obstacle_label`.
@@ -1420,6 +1443,14 @@ def _clip_runs(
 #: off the true midline by about ``step**2 / (8 * gap)`` — 2 um at a
 #: 0.8 mm gap — far below a silk stroke.
 _CELL_SAMPLE_MM = 0.1
+
+#: The slack the sub-floor wall cut leaves under ``floor``, mm
+#: (:func:`part_outlines`): a ring stretch on the split is left open only
+#: when it sits at least this far INSIDE the pad-clearance floor — wide
+#: enough that the floor ring itself (computed as the floor buffer's own
+#: boundary, so its sampled distance lands exactly on it) is never in
+#: doubt, and a wall's sub-floor stretch is still cut whole.
+_WALL_FLOOR_EPS_MM = 0.01
 
 
 def _hull_cells(hulls: list[tuple[int, Any]], *, margin_mm: float) -> dict[int, Any]:
@@ -1699,17 +1730,24 @@ def part_outlines(
     1. Grow the part's own pad hull to the ``target`` offset
        (:func:`outline_offsets_mm`): two line widths of clear board beyond
        the legal silk clearance.
-    2. Where a neighbour on the same side is close, yield toward it: each
-       part keeps to its own side of the line equidistant from the two
-       hulls (their Voronoi split, :func:`_hull_cells`), half the outline
-       spacing (``1 + OUTLINE_GAP_STROKES`` stroke widths centreline to
-       centreline) back from it, so the two lines stay two clear line
-       widths apart. When the half-gap cannot hold that spacing but still
-       clears ``floor``, both run ON the split as one shared wall (each
-       still one closed line); below that both stay at ``floor``, and
-       where the later of the two (natural refdes order) then runs inside
-       the earlier it leaves that stretch out, so overlapping parts read
-       as one merged outline (``PartOutline.meets``).
+    2. Where a neighbour on the same side is close, the two share ONE
+       line on the split between them (gr496366 comment 5, Reto
+       2026-10-19: "just overlap the lines, don;t invade the neighbour.
+       So two things adjacent share one line if they are as close as
+       possibel"). Silk adds no spacing of its own: each part keeps to
+       its own side of the line equidistant from the two hulls (their
+       Voronoi split, :func:`_hull_cells`) and is EXTENDED to it where its
+       target ring would otherwise sit less than the outline spacing
+       (``1 + OUTLINE_GAP_STROKES`` stroke widths centreline to
+       centreline) off the neighbour's — so the two rings coincide as one
+       shared segment rather than print as two nearly-touching lines.
+       Neither ring ever crosses the split, and where the split itself
+       sits inside ``floor`` (a pair packed tighter than two floors) the
+       facing stretch is left open — the clearance floor still applies
+       (``PartOutline.floor_open_mm``). A later outline running inside an
+       earlier one's area still leaves that stretch out
+       (``PartOutline.meets``), now a guard for degenerate splits rather
+       than the common path.
     3. Yield to the board edge the same way: no further out than the silk
        edge margin (:func:`_silk_edge_margin_mm`, plus half a stroke).
     4. Never inside ``floor``. If ``floor`` itself crosses the edge margin
@@ -1766,6 +1804,14 @@ def part_outlines(
         hull = _ShapelyMultiPoint(world).convex_hull
         hulls.append((inst, side, hull))
 
+    # Natural refdes order, not ``ir`` array order (gr498680): the Voronoi
+    # split below gives a sample point shared by two touching hulls to the
+    # FIRST hull in this list, and the rings themselves are resolved in
+    # list order — upstream netlist/DB iteration order deciding either is
+    # the same unprincipled input-order dependence the module docstring's
+    # "Order is instance-independent" section names for the label pass.
+    hulls.sort(key=lambda h: _refdes_sort_key(str(ir.instance_refdes[h[0]])))
+
     inside = None
     if outline is not None and len(outline) >= 3:
         board = _ShapelyPolygon([(float(p[0]), float(p[1])) for p in outline]).buffer(0)
@@ -1773,7 +1819,17 @@ def part_outlines(
             -(_silk_edge_margin_mm(capability) + stroke_width_mm / 2.0), join_style=2
         )
 
-    reach_limit = 2.0 * target + spacing
+    # A crowded pair shares ONE line on the split between their hulls
+    # (gr496366 comment 5, Reto 2026-10-19: "just overlap the lines, don;t
+    # invade the neighbour. So two things adjacent share one line if they
+    # are as close as possibel"). Silk adds no spacing: the outlines are
+    # either far enough apart to keep ``spacing`` between them, or they
+    # are the same segment. ``reach`` is how far onto the gap the merged
+    # pair's wall reaches: the target offset plus half ``spacing``, so the
+    # trigger "the two target rings can't hold the spacing" and the wall
+    # fill agree on one number.
+    reach = target + spacing / 2.0
+    reach_limit = 2.0 * reach
     cells: dict[int, Any] = {}
     for side_name in ("top", "bottom"):
         cells.update(
@@ -1782,13 +1838,47 @@ def part_outlines(
                 margin_mm=reach_limit,
             )
         )
+    # The sampled Voronoi cells OVERLAP where two hulls sit close (the
+    # union of boundary-sample cells is not a clean partition there), so
+    # each part gets an EXCLUSIVE cell: its own minus the cells of
+    # earlier-refdes same-side neighbours. The contested strip goes to the
+    # earlier part — arbitrary but deterministic (gr498680) — and makes
+    # the frontier between any pair a single line, `own ∩ other`, which
+    # is the wall both rings then share. Subtracting raw would slit a
+    # ring through the part's own body (the wander reaches inside its
+    # hull), so the floor zone is protected: nothing inside ``base`` is
+    # ever subtracted.
+    exclusive: dict[int, Any] = {}
+    for pos, (inst, side, hull) in enumerate(hulls):
+        cell = cells.get(inst)
+        if cell is None:
+            continue
+        lowers = [
+            cells[other]
+            for other, other_side, _h in hulls[:pos]
+            if other_side == side and other in cells
+        ]
+        if not lowers:
+            exclusive[inst] = cell
+            continue
+        protected = hull.buffer(floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
+        rest = _shapely_unary_union(lowers).difference(protected)
+        exclusive[inst] = cell.difference(rest) if not rest.is_empty else cell
+
     rings: dict[int, tuple[str, list[Point]]] = {}
+    shared_with: dict[int, tuple[str, ...]] = {}
     for inst, side, hull in hulls:
         grown = hull.buffer(target, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
         base = hull.buffer(floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
         region = grown if inside is None else grown.intersection(inside)
         x0, y0, x1, y1 = hull.bounds
-        cuts = []
+        own_cell = exclusive.get(inst)
+        if own_cell is not None:
+            # Never past the split ("don't invade the neighbour"): the
+            # ring keeps to its own exclusive cell.
+            region = region.intersection(own_cell)
+        walls: list[Any] = []
+        shared: list[str] = []
         for other, other_side, other_hull in hulls:
             if other == inst or other_side != side or other not in cells:
                 continue
@@ -1803,20 +1893,43 @@ def part_outlines(
             gap = hull.distance(other_hull)
             if gap >= reach_limit:
                 continue
-            # Half the spacing back from the split where the half-gap
-            # holds it above `floor`; otherwise on the split (shared wall).
-            back = spacing / 2.0 if gap / 2.0 - spacing / 2.0 >= floor else 0.0
-            cell = cells[other]
-            cuts.append(cell.buffer(back, quad_segs=4) if back > 0.0 else cell)
-        if cuts:
-            region = region.difference(_shapely_unary_union(cuts))
-        region = region.union(base)
+            if own_cell is None:
+                continue
+            other_cell = exclusive.get(other)
+            if other_cell is None:
+                continue
+            edge = own_cell.intersection(other_cell)
+            if edge.is_empty or edge.length <= 1e-6:
+                continue
+            # ...and EXTENDS to the shared frontier: the strip from the
+            # ring's own reach out to it fills in the same wall segment
+            # the neighbour's ring is being given, so the two coincide.
+            # Bounded by EITHER hull's reach so both parts draw the same
+            # span — with only the nearer hull's reach the two walls
+            # could leave a sliver of boundary undrawn on one side.
+            wall = edge.buffer(spacing / 2.0).intersection(
+                hull.buffer(reach).union(other_hull.buffer(reach))
+            )
+            if inside is not None:
+                wall = wall.intersection(inside)
+            wall = own_cell.intersection(wall)
+            if not wall.is_empty:
+                walls.append(wall)
+                shared.append(str(ir.instance_refdes[other]))
+        if walls:
+            region = region.union(_shapely_unary_union(walls))
+        # The floor-offset ring still applies where the part's own cell
+        # allows it: never inside the pad-clearance floor off its own
+        # pads, and never across the split.
+        region = region.union(base if own_cell is None else base.intersection(own_cell))
         poly = max(
             getattr(region, "geoms", [region]),
             key=lambda g: g.intersection(base).area,
         )
         exterior = _shapely_orient(_ShapelyPolygon(poly.exterior), 1.0).exterior
         rings[inst] = (side, [(float(x), float(y)) for x, y in exterior.coords])
+        if shared:
+            shared_with[inst] = tuple(sorted(shared, key=_refdes_sort_key))
 
     bent: dict[int, tuple[str, ...]] = {}
     bulged: dict[int, tuple[tuple[str, float, float], ...]] = {}
@@ -1854,12 +1967,25 @@ def part_outlines(
                 bulged[w.inst] = tuple(w.bulged)
 
     # Draw order is natural refdes order, as everywhere in this module. A
-    # later outline that runs INSIDE an earlier one (parts closer than two
-    # floors, i.e. overlapping) leaves out that stretch, so the two read as
-    # one merged outline instead of crossing boxes. A shared midline wall
-    # is not cut: both rings run exactly along the same split, so each
-    # stays one closed line and the wall prints as one.
+    # later outline that runs INSIDE an earlier one leaves out that
+    # stretch — with every ring already clipped to its own cell this can
+    # only fire on degenerate splits, but it stays as the guard. A shared
+    # midline wall is not cut: both rings run exactly along the same
+    # split, so each stays one closed line and the wall prints as one.
     min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
+    # One union per side: anywhere within ``floor`` of a same-side pad
+    # hull. A shared-wall stretch landing in it cannot print — the line
+    # would sit inside someone's pad clearance — so it is left open on
+    # both rings at once.
+    subfloor: dict[str, Any] = {}
+    for side_name in ("top", "bottom"):
+        zones = [
+            hull.buffer(floor - _WALL_FLOOR_EPS_MM)
+            for _inst, s, hull in hulls
+            if s == side_name
+        ]
+        if zones:
+            subfloor[side_name] = _shapely_unary_union(zones)
     order = sorted(rings, key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])))
     drawn: list[tuple[int, str, Any]] = []
     out: dict[int, PartOutline] = {}
@@ -1871,6 +1997,23 @@ def part_outlines(
             runs = _clip_runs(runs, keep=inside, min_run_mm=min_run)
             edge_cut = True
             edge_open = line.length - sum(_polyline_length(r) for r in runs)
+        # The pad-clearance floor still applies to a shared wall: where
+        # the split itself is closer than ``floor`` to EITHER part's pad
+        # hull (a pair packed tighter than two floors), no line can print
+        # there at all, so the facing stretch is left open rather than
+        # invading the neighbour or breaking clearance. Checked against
+        # EVERY same-side hull, not just this part's own — the sampled
+        # split can wiggle off the true midline onto one side, and the
+        # same stretch has to come off both rings for the wall to stay
+        # coincident.
+        below = subfloor.get(side)
+        floor_open = 0.0
+        if below is not None and below.intersects(line):
+            clipped = _clip_runs(runs, cut=below, min_run_mm=min_run)
+            floor_open = sum(_polyline_length(r) for r in runs) - sum(
+                _polyline_length(r) for r in clipped
+            )
+            runs = clipped
         area = _ShapelyPolygon(ring).buffer(0)
         over = [
             (other, other_area)
@@ -1898,6 +2041,8 @@ def part_outlines(
             edge_open_mm=edge_open,
             buried_mm=buried,
             meets=tuple(str(ir.instance_refdes[o]) for o, _a in over),
+            shared=shared_with.get(inst, ()),
+            floor_open_mm=floor_open,
             bent_around=bent.get(inst, ()),
             bulged=bulged.get(inst, ()),
         )
@@ -3341,17 +3486,24 @@ def _repair_dropped_labels(
         strokes_a = _label_strokes(
             dropped.refdes, cand_a, mirror=dropped.mirror, height_mm=height_mm
         )
-        movers = [
-            owners[id(o)]
-            for o in dropped.side_obstacles
-            if id(o) in owners
-            and (
-                _box_overlaps_pad(cand_a[2], o)
-                or any(
-                    _stroke_overlaps_any_pad(p, [o], stroke_width_mm) for p in strokes_a
+        movers = sorted(
+            (
+                owners[id(o)]
+                for o in dropped.side_obstacles
+                if id(o) in owners
+                and (
+                    _box_overlaps_pad(cand_a[2], o)
+                    or any(
+                        _stroke_overlaps_any_pad(p, [o], stroke_width_mm)
+                        for p in strokes_a
+                    )
                 )
-            )
-        ]
+            ),
+            # Natural refdes order, not obstacle-list order: which label
+            # moves first cannot ride on where the caller happened to
+            # append it (gr498680).
+            key=lambda m: _refdes_sort_key(m.refdes),
+        )
         if not movers or len(movers) > _LABEL_REPAIR_MAX_MOVERS:
             return None
         if any(m.candidates[m.taken or 0][0] == m.pinned_spot for m in movers):
@@ -3449,7 +3601,7 @@ def _aligned_label_groups(
         box = shapes[members[0]][2]
         extent = max(p[along] for p in box) - min(p[along] for p in box)
         limit = _LABEL_GROUP_MAX_PITCH_EXTENTS * extent
-        members.sort(key=lambda i: shapes[i][1][along])
+        members.sort(key=lambda i: (shapes[i][1][along], shapes[i][1][axis]))
         run = [members[0]]
         for prev, cur in itertools.pairwise(members):
             if shapes[cur][1][along] - shapes[prev][1][along] > limit:
@@ -3460,7 +3612,10 @@ def _aligned_label_groups(
         if len(run) > 1:
             runs.append((axis, tuple(run)))
 
-    runs.sort(key=lambda r: (-len(r[1]), r[0], min(r[1])))
+    # Ordering ties geometrically (smallest member origin), never by
+    # instance index — ``ir`` array order must not shape the silk
+    # (gr498680).
+    runs.sort(key=lambda r: (-len(r[1]), r[0], min(shapes[m][1] for m in r[1])))
     taken: set[int] = set()
     groups: list[tuple[int, ...]] = []
     for _axis, members_run in runs:
@@ -3702,9 +3857,18 @@ def _build_silk_pass(
     # geometry -- then grown in place as each instance's own silk survives,
     # so it is simultaneously "what this instance must avoid" and "what the
     # NEXT instance (and this instance's later draws) must avoid".
+    # Sorted canonically (:func:`_obstacle_sort_key`): the set is what
+    # matters, and the first-hit naming in `_stroke_hits` shouldn't see
+    # the caller's list order either.
     obstacles_by_side: dict[str, list[dict[str, Any]]] = {
-        "top": [*pads, *top_via_pads, *reserved_by_side.get("top", [])],
-        "bottom": [*pads, *bottom_via_pads, *reserved_by_side.get("bottom", [])],
+        "top": sorted(
+            [*pads, *top_via_pads, *reserved_by_side.get("top", [])],
+            key=_obstacle_sort_key,
+        ),
+        "bottom": sorted(
+            [*pads, *bottom_via_pads, *reserved_by_side.get("bottom", [])],
+            key=_obstacle_sort_key,
+        ),
     }
 
     pins_of_inst: dict[int, list[int]] = {}
@@ -3904,9 +4068,14 @@ def _build_silk_pass(
                 runs += pieces
                 kept_mm += kept
             # What the outline draws on a bare board: the ring less the
-            # designed board-edge gap. The share kept is measured against
-            # this, so an edge connector's gap never counts as loss.
-            designed_mm = _polyline_length(box_pts) - part_outline.edge_open_mm
+            # designed gaps (board edge, and the below-floor stretch of a
+            # shared wall). The share kept is measured against this, so
+            # an edge connector's gap never counts as loss.
+            designed_mm = (
+                _polyline_length(box_pts)
+                - part_outline.edge_open_mm
+                - part_outline.floor_open_mm
+            )
             causes = []
             if hit is not None:
                 causes.append(f"overlaps {_obstacle_label(hit)}")
@@ -3959,6 +4128,12 @@ def _build_silk_pass(
                     notes.append(
                         "courtyard outline leaves out the stretch on or inside "
                         "the outline of " + ", ".join(part_outline.meets)
+                    )
+                if part_outline.floor_open_mm:
+                    notes.append(
+                        "courtyard outline leaves open "
+                        f"{part_outline.floor_open_mm:.2f}mm where the shared "
+                        "line would sit inside the pad-clearance floor"
                     )
                 if part_outline.bent_around:
                     notes.append(

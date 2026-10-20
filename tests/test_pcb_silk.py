@@ -535,16 +535,57 @@ def _any_cross_part_silk_overlap(draws: list[dict], stroke_width_mm: float) -> b
     by_refdes: dict[str, list[dict]] = {}
     for d in draws:
         by_refdes.setdefault(d["refdes"], []).append(d)
+
+    def shared_wall(a: dict, b: dict) -> bool:
+        """Two outline segments sharing the boundary between the parts is
+        the DESIGNED behaviour for adjacent parts (gr496366 comment 5):
+        exempt collinear coincidence, endpoint contact, and the µm-scale
+        endpoint wobble of the sampled split — but keep flagging an actual
+        crossing (interior-to-interior) or near-parallel runs squeezed
+        within a stroke without coinciding."""
+        from shapely.geometry import LineString as SLine
+        from shapely.geometry import Point as SPoint
+
+        la = SLine([a["start"], a["end"]])
+        lb = SLine([b["start"], b["end"]])
+        inter = la.intersection(lb)
+        if inter.length > 0.0:
+            return True
+        seam = 3e-3
+        ends_a = [SPoint(*a["start"]), SPoint(*a["end"])]
+        ends_b = [SPoint(*b["start"]), SPoint(*b["end"])]
+        if not inter.is_empty:
+            # Point contact: a seam if it is an endpoint of either
+            # segment; interior-to-interior is a real crossing.
+            return any(inter.distance(p) <= seam for p in ends_a + ends_b)
+        # Disjoint within a stroke: the shared wall can leave a
+        # sub-stroke seam where the sampled frontier steps, always at a
+        # segment END — the closest approach of two illegitimately close
+        # parallel runs is interior-to-interior.
+        dmin = la.distance(lb)
+        return (
+            min(p.distance(lb) for p in ends_a) <= dmin + 1e-9
+            or min(p.distance(la) for p in ends_b) <= dmin + 1e-9
+        )
+
     refdes_list = list(by_refdes)
     for i in range(len(refdes_list)):
-        segs_i = [seg for d in by_refdes[refdes_list[i]] for seg in d["segments"]]
+        segs_i = [
+            (seg, d["role"] == "outline")
+            for d in by_refdes[refdes_list[i]]
+            for seg in d["segments"]
+        ]
         for j in range(i + 1, len(refdes_list)):
-            segs_j = [seg for d in by_refdes[refdes_list[j]] for seg in d["segments"]]
-            for a in segs_i:
-                for b in segs_j:
+            segs_j = [
+                (seg, d["role"] == "outline")
+                for d in by_refdes[refdes_list[j]]
+                for seg in d["segments"]
+            ]
+            for a, a_outline in segs_i:
+                for b, b_outline in segs_j:
                     if _segments_hit(
                         (a["start"], a["end"]), (b["start"], b["end"]), stroke_width_mm
-                    ):
+                    ) and not (a_outline and b_outline and shared_wall(a, b)):
                         return True
     return False
 
@@ -594,28 +635,28 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
     not the R/C/L/FB pin-1 policy (``test_no_pin1_attempt_for_an_unpolarized_passive``
     covers that), so it opts both parts into a real pin-1 attempt exactly
     as every part got before that policy existed."""
-    ir = from_graph(
-        _multi(
-            _graph("C14", 8, x=0.7, y=0.0),  # listed FIRST in the array
-            _graph("C1", 8, x=0.0, y=0.0),  # listed SECOND, but sorts first
-        ),
-        stackup=DEFAULT_STACKUP,
-    )
-    result = build_silk(ir, pads=[], polarized=frozenset({"C1", "C14"}))
+    builds = []
+    for order in ((0, 1), (1, 0)):
+        graphs = [
+            _graph("C14", 8, x=0.7, y=0.0),
+            _graph("C1", 8, x=0.0, y=0.0),
+        ]
+        ir = from_graph(_multi(*(graphs[i] for i in order)), stackup=DEFAULT_STACKUP)
+        builds.append(build_silk(ir, pads=[], polarized=frozenset({"C1", "C14"})))
+    # Instance-array order changes nothing — gr498680.
+    assert _canon_silk(builds[0]) == _canon_silk(builds[1])
+    result = builds[0]
     outcome = {(row.refdes, row.kind): row.outcome for row in result.census}
     reason = {(row.refdes, row.kind): row.reason for row in result.census}
-    # C1 sorts first, so it keeps both marks whole...
-    assert outcome[("C1", "courtyard")] == "placed"
-    assert outcome[("C1", "pin1")] == "placed"
-    # ...and C14, drawn second, is the one that yields: its outline leaves
-    # out the stretch on or inside C1's (gr495393: overlapping parts read
-    # as one merged outline instead of crossing boxes; C1 never yields).
-    assert outcome[("C14", "courtyard")] in ("relocated", "dropped")
-    assert "outline of C1" in str(reason[("C14", "courtyard")])
-    assert "C14" not in str(reason[("C1", "courtyard")])
-    # Both labels still print somewhere -- neither part goes unlabelled.
-    assert outcome[("C1", "refdes")] in ("placed", "relocated")
-    assert outcome[("C14", "refdes")] in ("placed", "relocated")
+    # The pair overlaps: the stretch where the shared wall would sit inside
+    # the pad-clearance floor is left open on BOTH (gr496366 comment 5) —
+    # no part's line crosses into the other, and neither keeps more ink.
+    for refdes in ("C1", "C14"):
+        assert outcome[(refdes, "courtyard")] == "relocated"
+        assert "pad-clearance floor" in str(reason[(refdes, "courtyard")])
+        assert outcome[(refdes, "pin1")] == "placed"
+        # Both labels still print somewhere — neither goes unlabelled.
+        assert outcome[(refdes, "refdes")] in ("placed", "relocated")
 
 
 # ── pin-1 policy: R/C/L/FB carry no INHERENT polarity ─────────────────────
@@ -2888,12 +2929,14 @@ def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(n_pins, rot,
 
 
 def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
-    """Two parts whose target outlines would nearly touch: each yields
-    toward the other, never inside its floor, so both stay one closed line
-    and the two lines keep two clear line widths between their inks."""
+    """gr496366 comment 5 (Reto 2026-10-19: "just overlap the lines, don;t
+    invade the neighbour"): two parts packed so their outlines cannot keep
+    the outline spacing apart share ONE coincident line on the split
+    between them instead of printing two nearly-touching lines."""
     from shapely.geometry import LineString as SLine
 
-    # hull gap 1.4 mm: the target rings (0.675 mm each) would be 0.05 apart
+    # hull gap 1.4 mm: the target rings (0.575 mm each) would sit 0.25 mm
+    # apart — too close to stay separate, so they merge into one wall.
     ir = from_graph(
         _multi(
             _graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=2.0 + 1.4 + 0.2, y=0.0)
@@ -2906,13 +2949,125 @@ def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
     assert rows["U1"].outcome == rows["U2"].outcome == "placed"
     (a,), (b,) = _outline_lines(result, "U1"), _outline_lines(result, "U2")
     assert a[0] == pytest.approx(a[-1]) and b[0] == pytest.approx(b[-1])
-    gap = SLine(a).distance(SLine(b))
-    # (the split is built from boundary samples: ~0.1 um off the midline)
-    assert gap >= (1.0 + silk.OUTLINE_GAP_STROKES) * _W - 1e-3
-    floor, _target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
-    for line, ref in ((a, "U1"), (b, "U2")):
+    la, lb = SLine(a), SLine(b)
+    # Coincident on the shared stretch: the two rings run along the same
+    # boundary as one line (the sampled split sits within ~1 um of the
+    # midline), and neither crosses into the other part's side.
+    shared = la.intersection(lb)
+    assert shared.length > 0.5, shared
+    for line, ref in ((la, "U1"), (lb, "U2")):
         own = [p for p in pads if p["refdes"] == ref]
-        assert min(SLine(line).distance(_pad_shape(p)) for p in own) >= floor - 1e-6
+        other = [p for p in pads if p["refdes"] != ref]
+        floor, _target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
+        assert min(line.distance(_pad_shape(p)) for p in own) >= floor - 0.011
+        # the pad-clearance floor holds against the NEIGHBOUR's pads too
+        assert min(line.distance(_pad_shape(p)) for p in other) >= floor - 0.011
+    # Two outlines FAR enough apart still draw as two separate lines.
+    ir_far = from_graph(
+        _multi(_graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=6.0, y=0.0)),
+        stackup=DEFAULT_STACKUP,
+    )
+    far = build_silk(ir_far, pads=[])
+    (fa,), (fb,) = _outline_lines(far, "U1"), _outline_lines(far, "U2")
+    assert SLine(fa).distance(SLine(fb)) > _W
+
+
+def test_adjacent_parts_at_min_spacing_share_one_wall_segment():
+    """gr496366 comment 5 acceptance: two parts as close as placement
+    rules allow draw ONE coincident outline segment on the boundary —
+    neither ring enters the other's side, and silk-to-pad clearance holds
+    on both."""
+    from shapely.geometry import LineString as SLine
+    from shapely.geometry import Polygon as SPoly
+
+    # Hull gap 0.9 mm — what a pair of 0603s at JLCPCB's 0.18 mm body
+    # minimum lands at once pad keep-outs are counted: the midline sits
+    # at 0.45 mm, above the 0.375 mm floor, so a shared wall is legal.
+    ir = from_graph(
+        _multi(_graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=3.1, y=0.0)),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    result = build_silk(ir, pads=pads)
+    (a,), (b,) = _outline_lines(result, "U1"), _outline_lines(result, "U2")
+    la, lb = SLine(a), SLine(b)
+    # One coincident shared segment — the wall between them.
+    assert la.intersection(lb).length > 0.5
+    # Neither ring invades the other part's side: no drawn stretch sits
+    # inside the other's outline area (the shared wall lies ON it).
+    assert la.intersection(SPoly(b).buffer(-1e-6)).length == pytest.approx(0.0)
+    assert lb.intersection(SPoly(a).buffer(-1e-6)).length == pytest.approx(0.0)
+    floor, _ = silk.outline_offsets_mm(None, stroke_width_mm=_W)
+    for line, ref in ((la, "U1"), (lb, "U2")):
+        for p in pads:
+            assert line.distance(_pad_shape(p)) >= floor - 0.011, (ref, p)
+
+
+def _canon_silk(result) -> tuple[list, list]:
+    """The silk result as a canonical order-free value: every draw and
+    census row sorted, all coordinates rounded — two builds are equal
+    iff the silk is identical, however the instance array was ordered."""
+    draws = [
+        (
+            d.get("role"),
+            d.get("refdes"),
+            side,
+            round(float(d["width_mm"]), 4),
+            tuple(
+                (round(float(v), 5), round(float(w), 5))
+                for s in d["segments"]
+                for v, w in (tuple(s["start"]), tuple(s["end"]))
+            ),
+        )
+        for side in ("top", "bottom")
+        for d in result.draws[side]
+    ]
+    census = [
+        (
+            c.refdes,
+            c.kind,
+            c.side,
+            c.outcome,
+            c.reason,
+            None if c.x_mm is None else (round(c.x_mm, 5), round(c.y_mm, 5)),
+        )
+        for c in result.census
+    ]
+    return sorted(draws, key=repr), sorted(census, key=repr)
+
+
+def test_silk_is_identical_under_shuffled_part_order():
+    """gr498680 acceptance: the same board handed in with its part order
+    permuted produces byte-identical silk — every draw and every census
+    row. Voronoi ownership, label groups, retry movers and the seed
+    obstacle lists all order themselves canonically (natural refdes /
+    geometry), never by ``ir`` array order."""
+    parts = [
+        ("U1", 8, 0.0, 0.0),
+        ("U2", 8, 3.8, 0.0),
+        ("C1", 2, 1.9, 2.2),
+        ("C2", 2, 1.9, -2.2),
+        ("R1", 2, 0.2, 1.6),
+        ("R2", 2, 0.2, -1.6),
+        ("R3", 2, 3.6, 1.6),
+        ("R4", 2, 3.6, -1.6),
+        ("D1", 2, 1.9, 1.1),
+        ("J1", 4, -1.0, 3.4),
+    ]
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+
+    def build(order):
+        gs = [_graph(r, n, x=x, y=y) for r, n, x, y in (parts[i] for i in order)]
+        ir = from_graph(_multi(*gs), stackup=DEFAULT_STACKUP)
+        return _canon_silk(build_silk(ir, pads=realize.pads_for_ir(ir, layers)))
+
+    base = build(list(range(len(parts))))
+    for order in (
+        [9, 3, 6, 0, 7, 4, 1, 8, 2, 5],
+        [5, 8, 1, 2, 4, 9, 6, 0, 3, 7],
+        list(reversed(range(len(parts)))),
+    ):
+        assert build(order) == base, order
 
 
 def _edge_connector(y: float):
@@ -3032,10 +3187,16 @@ def test_dogfood_u2_outline_is_no_longer_cut_by_u1s_silk():
     for refdes in ("U1", "U2", "J2"):
         lines = _outline_lines(result, refdes)
         assert len(lines) == 1, (refdes, lines)
-        assert lines[0][0] == pytest.approx(lines[0][-1]), refdes
         row = next(
             c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
         )
+        if "pad-clearance floor" in str(row.reason):
+            # Packed tighter than two floors: the stretch where the
+            # shared wall would sit inside the pad clearance is left open
+            # (gr496366 comment 5) — one line, open on the facing side,
+            # and the census says so.
+            continue
+        assert lines[0][0] == pytest.approx(lines[0][-1]), refdes
         assert row.outcome == "placed", (refdes, row.reason)
 
 
@@ -3056,27 +3217,29 @@ def test_dogfood_outlines_bend_around_the_routed_via_instead_of_breaking():
     rings = {}
     for refdes in ("U1", "U2", "J2"):
         (line,) = _outline_lines(result, refdes)
-        assert line[0] == pytest.approx(line[-1]), refdes
         rings[refdes] = SLine(line)
         row = next(
             c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
         )
         assert "broken around" not in str(row.reason), (refdes, row.reason)
         if refdes == "U2":
+            assert line[0] == pytest.approx(line[-1])
             assert row.outcome == "placed"
             continue
         assert "bent around via at (13.52, 13.54)" in str(row.reason), row.reason
         assert rings[refdes].distance(centre) >= via["dia_mm"] / 2.0 + legal - 1e-6
     assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
     assert not _draws_hit_any_pad(result.draws["top"], pads)
-    # The eye: near the via, U1's ring stays wholly on its -y side and
-    # passes below it by the clearance; J2's arc passes above it.
-    reach = via["dia_mm"] / 2.0 + legal - 1e-6
-    u1_ys = [y for x, y in rings["U1"].coords if centre.distance(SPoint(x, y)) < 1.6]
-    j2_ys = [y for x, y in rings["J2"].coords if centre.distance(SPoint(x, y)) < 1.6]
-    assert max(u1_ys) < via["y"]
-    assert min(u1_ys) <= via["y"] - reach
-    assert max(j2_ys) >= via["y"] + reach
+    # The wall opens where it would sit inside the pad-clearance floor
+    # (gr496366 comment 5): each of U1's and J2's drawn lines has an open
+    # end right at the via zone, and what is drawn still clears the via.
+    for refdes in ("U1", "J2"):
+        ends = [
+            SPoint(*p)
+            for line in _outline_lines(result, refdes)
+            for p in (line[0], line[-1])
+        ]
+        assert min(p.distance(centre) for p in ends) < 2.2, (refdes, ends)
 
 
 def test_a_via_no_bend_clears_still_cuts_the_outline():
