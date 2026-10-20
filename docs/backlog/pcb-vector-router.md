@@ -126,10 +126,10 @@ Reto, ~16:0xZ in the coordinator window, verbatim: "So, push the vector stuff, a
 | # | Question | Ruling |
 |---|---|---|
 | 13 | Priority | **Vector first, best algorithm.** This item is the pcb routing critical path. Work that only tunes the maze (stackup default change, placer silk spacing, THT pad model, plane stitching) is held, and nothing new targets maze floors. |
-| 14 | Target | **Absolute, not ratcheted.** The goal on the benchmark boards is every net routed with 0 DRC errors. Until slice 4, the maze floors stay only as regression guards. Reto is "thinking of dropping the limits for the grid router"; that is not ruled yet. When slice 4 lands, the per-seed counts are replaced by the absolute target, not re-tuned. |
+| 14 | Target | **Absolute, not ratcheted.** The goal on the benchmark boards is every net routed with 0 DRC errors. Maze per-seed floors are dropped now (Reto 2026-10-19); the target stays absolute: every net routed, 0 DRC. The benches keep printing their numbers. |
 | 15 | Shove | **Batch shove of parts and vias as needed.** The router may move vias, and nudge parts, to open a route, using gradual weights that shift things rather than hard keep-outs. This is batch, not interactive; Non-goals keeps "interactive push-and-shove". |
 | 16 | Place-route loop | **Multiple place-route iterations.** Placement and routing alternate, with placement costs fed by routing congestion and failures, rather than a single place-then-route pass. Builder proposes the slice shape (proposal 13–16 below), coordinated with `pcb-guided-place-route.md` and `pcb-global-codesign-north-star.md`. |
-| 17 | Via spans | **Every via is a through via** (Reto 2026-10-18, gr495289: "Buried (partial) vias cost a lot extra, and we don't want to pay"). A via reserves its disk on every copper layer and the pour pass cuts an antipad on each layer where it does not connect. The maze router (`realize.through_span`) and the vector router both emit through spans only. IDEA, Reto: not stoked, low priority: a `blind_buried_vias` flag on the capability row (default False) that lets the router emit partial spans again. |
+| 17 | Via spans | **Every via is a through via** (Reto 2026-10-18, gr495289: "Buried (partial) vias cost a lot extra, and we don't want to pay"). A via reserves its disk on every copper layer and the pour pass cuts an antipad on each layer where it does not connect. The maze router (`realize.through_span`) and the vector router both emit through spans only. |
 
 **Proposal (needs a builder's design, then Reto):** how 15–16 slot in. Via shove belongs with slice 3/4 (vector escape: a via that blocks a walled-in segment may move within its net's legal region). Part nudge plus the place-route loop is a new slice after slice 5's region-graph probe, because congestion per region is the signal the placer consumes.
 Placement, ruled 2026-10-18: §Decisions 15–16 in the vector slices
@@ -704,7 +704,8 @@ slice):
 - **Noise.** Nano swings about ±2 nets on small routing changes (gr491588).
   Reto 2026-10-18: nano floor = mean over seeds, per-seed catastrophe floor
   28; the product keeps single-seed placement for now, best-of-N not yet.
-  (`NANO_SEEDS`, `NANO_MEAN_ROUTED_FLOOR` in the nano test.)
+  The floors are dropped (§Decisions row 14, 2026-10-19); the nano test
+  still runs `NANO_SEEDS` and prints the per-seed counts and the mean.
 - **Fixture.** The source of the failing pad geometry is gr489923: CN4
   `CONN-SMD_APCI0136-P001A`, 69 pads 0.3 × 1.55 mm in two staggered rows at
   0.5 mm pitch, pad gap 0.2 mm; a 0.3 mm track along the pad axis clears a

@@ -70,7 +70,7 @@ note in slice 3); they are quoted here from the brief.
 | Maze: ~0.1 mm grid, 8-direction A*, via 3 mm, rip-up by re-ordering | Yes. Pitch = `clearance × realize._PITCH_PER_CLEARANCE` (2/3) capped by `maze.grid_for` (0.0675 mm on the ewod replay); `maze._STEPS` is 8 moves; weighted A* `HEURISTIC_WEIGHT = 1.15`; `VIA_COST_MM = 3.0`, `VIA_UNDER_BODY_COST_MM = 3.0`; rip-up is re-ordering in `realize._realize_maze` (maze docstring "Rip-up and retry"). | `maze.py`, `realize.py` |
 | Only F.Cu and B.Cu are routable | **No.** Routable layers are the stackup's: `realize._signal_layers` → `ir.routable_layers` (per-layer routable flag/role). The ewod replay routes on In2.Cu + B.Cu; esp32c3 is four layers. Two-layer boards (nano) route F.Cu and B.Cu because that is their stackup. | `realize.py`, `ir.py` |
 | Silk labels built at render/DRC time, not placed by the optimizer | Yes. `silk.build_silk` is a pure function of the settled `PcbIR`; the label spot is a candidate search (`LABEL_SPOT_ORDER`, `_outline_spot_candidates`, radial `_CANDIDATES`, `_inside_candidates`, else dropped → `silk_missing`). Glyphs are pinned to 0° (Reto, gr495394). Callers: `realize` (via keep-outs, off by default), `drc`, `check_run`, `handlers/pcb`. | `silk.py` docstring |
-| Floors: nano seed 1 35/29, silk_missing 35; 8-seed mean 34.375, min 28 | Yes. `BASELINE_ROUTED = 35`, `BASELINE_FAILED = 29`, `BASELINE_DRC_ERRORS_BY_RULE["silk_missing"] = 35`, `NANO_MEAN_ROUTED_FLOOR = 34.375`, `NANO_SEED_ROUTED_MIN = 28`. | `tests/test_pcb_nano_usb_pd_testboard.py` |
+| Floors: nano seed 1 35/29, silk_missing 35; 8-seed mean 34.375, min 28 | Dropped 2026-10-19 (Reto; pcb-vector-router §Decisions row 14): the nano test prints these numbers and no longer gates on them. Last pinned: seed 1 35/29, silk_missing 35, 8-seed mean 34.375, min 28. | `tests/test_pcb_nano_usb_pd_testboard.py` |
 | Vector router slices 0–1 landed, slice 2 WIP; VP probe 2cedf6b13 | **Not on main.** No `clearance.py`, `vroute.py`, `topo.py`, `tests/test_pcb_topo.py`, no `rules.required`/`clearance_by_layer`. They live in builder trees. The CDT-portal finding (14/14 ewod, 26/27 qfp-plaza, vs the tile model) is taken from the brief. | `ls src/precis/pcb`, grep |
 | Tile-plan corridors hurt (38–47 vs 51/55) | Yes. | [pcb-global-plan-probe](pcb-global-plan-probe.md) Parts 3–4 |
 
@@ -377,12 +377,11 @@ Per board, every run, written by the vector slice 0 harness
 warns by rule, labels placed / total, vias, track length, islands, wall time,
 seconds per net.
 
-Gates. Every slice is never-worse on every bench board (the existing
-floors: nano mean ≥ 34.375, seed min ≥ 28, `silk_missing` ≤ 35, `clearance`
-warns ≤ 9, ewod ≥ 51, qfp ≥ 53, and nano r2's floors in
-`tests/test_pcb_nano_usb_pd_testboard_r2.py`, `BASELINE_DRC_ERRORS_BY_RULE`)
-and under the never-worse ratchet. 100 %
-routed and labelled is the thread exit only.
+Gates. The grid router's per-seed floors (nano mean ≥ 34.375, seed min ≥
+28, `silk_missing` ≤ 35, `clearance` warns ≤ 9, ewod ≥ 51, qfp ≥ 53, nano
+r2's) were dropped 2026-10-19 (Reto; pcb-vector-router §Decisions row 14).
+The benches print their numbers. 100 % routed and labelled, 0 DRC, is the
+target and the thread exit.
 
 Exit (the thread's, not a slice's): on nano (8 seeds), r2, dogfood-b (named by
 the coordinator's brief; r2 has a fixture, only dogfood-b lacks one — slice 0 of

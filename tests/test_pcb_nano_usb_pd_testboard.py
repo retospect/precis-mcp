@@ -8,15 +8,13 @@ with the doc's corrections applied — fixed PDO set 5/9/15/20 V, one
 channels, per-net ``current``/``working_voltage_v`` so widths and
 pairwise clearances resolve per net.
 
-**This test PINS the honest current state — it does not assert clean.**
-``_BASELINE_*`` below are the measured counts of the first seeded run,
-recorded so the anneal work can show improvement off a fixed reference
-(the two-tier discipline of ``test_pcb_reference_end_to_end.py``: errors
-are below-fab-floor violations, warnings are class/house shortfalls —
-both are pinned, and the per-rule breakdowns are kept as evidence so a
-regression names the rule, not just the count). Neither number is a
-verdict that the board is manufacturable; synthesized bounds and
-provisional topology are documented in the fixture.
+**This test MEASURES; it no longer gates on counts.** Reto 2026-10-19:
+the grid router's per-seed floors are dropped ("Drop the grid router's
+floors? yes"); the target stays absolute — every net routed, 0 DRC. The
+routed counts and the per-rule DRC breakdowns below are printed as
+evidence so a regression stays visible, and the runs still have to drain
+cleanly. Synthesized bounds and provisional topology are documented in the
+fixture.
 """
 
 from __future__ import annotations
@@ -37,90 +35,14 @@ from tests.fixtures.pcb import nano_usb_pd_testboard as fx
 SLUG = "nano-usb-pd-test"
 SEED = 1
 
-#: Measured 2026-10-13 on this tree at ``SEED`` — the fixture's honest
-#: first-run state, pinned so the anneal item measures deltas against it.
-#: Keys are DRC rule names; values are finding counts at that severity.
-#:
-#: The mix is the honest part: ``unrouted`` is the 29 nets the maze
-#: could not realize on the two routable layers (F.Cu/B.Cu — the default
-#: stackup pours In1/In2); ``connectivity`` is the 11 of them left with
-#: partial copper (gr488909: the 18 with none are the ``unrouted``
-#: question only, not a second error per net), ``silk_missing`` is
-#: 35 refdes labels with no legal spot, and the warn tier is real margin
-#: spend (clearance 0.100 vs required 0.150 mm, board-edge). Zero errors
-#: alone would NOT satisfy the authored requirements here (doc Blockers
-#: §3 residue: the shared router clearance is one value, so per-net
-#: shortfalls land as warnings) — the pin is the whole tuple.
-#:
-#: Re-pinned 2026-10-15 after slice 6 dropped ``MoveKind.PIN_SWAP``: its
-#: 0.2 final-stage weight was a no-op draw on a board with no swap groups,
-#: so removing it changes the anneal's move mix, not any cost. Restoring
-#: that no-op draw reproduces 38 routed at ``SEED`` exactly; over seeds
-#: 1-8 the new mix leaves 6 of 8 placements legal (old: 2 of 8) and
-#: routes 30-37 (mean 34.5) where the old mix routed 38 and 35.
-#:
-#: One-way floors: raising routed, or lowering a failure count, is routine
-#: — tighten the constant in the same commit. Loosening any floor needs
-#: Reto's ruling. gr489909: seeds 1-8 route 30-37 (mean 34.5) under the
-#: post-PIN_SWAP mix, and 38 was seed luck.
-#:
-#: Tightened 2026-10-17 (gr495393/gr495394): one closed outline per part,
-#: an edge gap for J_USB, labels outside outlines on a 4x16 ladder took
-#: silk_missing 36 -> 35, silk_edge_clearance 1 -> 0 errors and 3 -> 1
-#: warns, outline_containment 1 -> 0.
-#:
-#: Loosened by Reto 2026-10-19 ~07:3xZ, gr489175 (a drilled pad's
-#: far-layer landings stay route seeds): seed 1 loses one net (D11
-#: J_ISP.4|U1.PB3, a congestion race), so unrouted 29 -> 30, clearance
-#: warns 9 -> 10, routed 35 -> 34 and failed 29 -> 30 below; the same
-#: run tightens silk_missing 35 -> 32.
-#:
-#: Tightened 2026-10-19 (vector router slice 3a, the gridless escape
-#: post-pass, on main ed617d0ef): routed 34 -> 39, failed 30 -> 25,
-#: unrouted 30 -> 25, connectivity 11 -> 9; the rest unchanged.
-BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 9,
-    "unrouted": 25,
-    "silk_missing": 32,
-}
-BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
-    "clearance": 10,
-    "board_edge_clearance": 2,
-    "silk_edge_clearance": 1,
-}
-BASELINE_DRC_ERRORS = sum(BASELINE_DRC_ERRORS_BY_RULE.values())
-BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
-
-#: Route status over nets with fanout >= 2 (the honest denominator —
-#: single-member nets trivially "route" and are never the question).
-#: 35 of 64 nets realized; the 29 failures are congestion-dominated
-#: (the route job's failure reasons: congestion, same-layer-crossing,
-#: width) — the residue the anneal feedback loop exists to close.
-#: Reto 2026-10-19 ~07:3xZ, gr489175: 35 -> 34 routed, 29 -> 30 failed.
-#: Vector router slice 3a (2026-10-19): 34 -> 39 routed, 30 -> 25 failed.
+#: Last measured routed count at ``SEED`` over nets with fanout >= 2 (39 of
+#: 64, 2026-10-19, vector router slice 3a). Not asserted here any more;
+#: ``test_pcb_route_loop.py`` still reads it as its reference.
 BASELINE_ROUTED = 39
-BASELINE_FAILED = 25
 
-#: gr489909: routed nets (fanout >= 2) are judged across placements, not
-#: on ``SEED``'s draw alone. Reto 2026-10-18: the floor is the MEAN over
-#: ``NANO_SEEDS`` ("one can be worse"), plus a per-seed catastrophe floor
-#: so one broken seed still fails. The mean floor is one-way: raise it when
-#: the mean improves. Measured 2026-10-18 on main 902fd6a80, routed per
-#: seed 1/3/5/6/7/8 = 35/34/36/30/35/37, mean 34.5 (the 2026-10-15 sweep's
-#: mean too). gr496151's outline settle (both jobs, Reto 2026-10-18) let
-#: seeds 2 and 4 route: they had left C_B5 / C_AREF 0.041 mm past a
-#: rounded corner and the route job refused the placement. Seeds 1-8 then
-#: route 35/31/39/34/36/28/35/37: the six old seeds' mean rose to 35.0,
-#: and over all eight it is 34.375. gr489175 (a drilled pad's far-layer
-#: landings stay route seeds) moved seeds 1-8 to 34/33/43/34/31/33/31/37,
-#: mean 34.5 and per-seed min 31, measured 2026-10-19 on main b1a055f14
-#: and again on 234fa2d3d. Vector router slice 3a (the gridless escape
-#: post-pass, measured 2026-10-19 on main ed617d0ef): seeds 1-8 route
-#: 39/35/46/35/33/35/35/38, mean 37.0, no seed worse; the mean floor is
-#: set 1.0 under it and the per-seed floor at the new minimum, 33.
+#: Seeds the cross-placement sweep runs (gr489909); the routed count of each
+#: and the mean are printed, not floored.
 NANO_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
-NANO_MEAN_ROUTED_FLOOR = 36.0
-NANO_SEED_ROUTED_MIN = 33
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
@@ -335,17 +257,17 @@ def _place_and_route(
 
 @pytest.mark.slow
 def test_nano_board_mean_routed_floor_over_seeds(store: Store) -> None:
+    """Name kept for tests/shard_weights.json. No longer a floor (Reto
+    2026-10-19): every seed's place and route job must drain cleanly
+    (``_place_and_route`` asserts that); the routed count per seed and the
+    mean are printed as evidence."""
     routed = {
         seed: _place_and_route(store, seed, slug=f"{SLUG}-s{seed}")[2]
         for seed in NANO_SEEDS
     }
     mean = sum(routed.values()) / len(routed)
     print(f"\nnano routed by seed: {routed}; mean {mean:.3f}")
-    broken = {s: n for s, n in routed.items() if n < NANO_SEED_ROUTED_MIN}
-    assert not broken, f"seeds under {NANO_SEED_ROUTED_MIN} routed: {broken}"
-    assert mean >= NANO_MEAN_ROUTED_FLOOR, (
-        f"mean routed {mean:.3f} < floor {NANO_MEAN_ROUTED_FLOOR} ({routed})"
-    )
+    assert set(routed) == set(NANO_SEEDS)
 
 
 @pytest.mark.slow
@@ -382,18 +304,3 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
             f"  {f['severity']:5s} {f['rule']:28s} {f.get('where') or ''} "
             f"{str(f.get('detail'))[:120]}"
         )
-
-    assert routed >= BASELINE_ROUTED, f"routed {routed} < floor {BASELINE_ROUTED}"
-    assert failed <= BASELINE_FAILED, f"failed {failed} > floor {BASELINE_FAILED}"
-    for rule, count in errors_by_rule.items():
-        floor = BASELINE_DRC_ERRORS_BY_RULE.get(rule, 0)
-        assert count <= floor, f"error rule {rule!r}: {count} > floor {floor}"
-    for rule, count in warns_by_rule.items():
-        floor = BASELINE_DRC_WARNS_BY_RULE.get(rule, 0)
-        assert count <= floor, f"warn rule {rule!r}: {count} > floor {floor}"
-    assert n_errors <= BASELINE_DRC_ERRORS, (
-        f"errors {n_errors} > floor {BASELINE_DRC_ERRORS}"
-    )
-    assert n_warns <= BASELINE_DRC_WARNS, (
-        f"warns {n_warns} > floor {BASELINE_DRC_WARNS}"
-    )

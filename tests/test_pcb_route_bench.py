@@ -30,8 +30,6 @@ def test_qfp_plaza_bench_is_deterministic() -> None:
     second = rb.bench_qfp_plaza()
     assert first.key() == second.key()
     assert first.nets == 55
-    # The plaza floor of test_pcb_qfp_fanout's scoreboard.
-    assert first.routed >= 50
 
 
 def test_render_table_reports_rate_per_net_and_connection() -> None:

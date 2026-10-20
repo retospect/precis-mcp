@@ -1170,10 +1170,12 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # invalid anyway (plaza vias inside `ARR1_SINK_0`'s footprint), so no
     # count here earns a bisect until that is fixed. The gate-time tripwire
     # for exactly this is tests/test_pcb_generator_version_tripwire.py.
-    assert len(realized_escapes) >= 16, (
-        "electrode escapes no longer route through the plaza fabric — the "
-        f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
-    )
+    #
+    # FLOOR DROPPED 2026-10-19 (Reto: "Drop the grid router's floors? yes";
+    # the target stays absolute — every net routed, 0 DRC). The count is
+    # printed so a collapse (0 realized = the gripe-346962 disc wall is
+    # back) stays visible; the legality checks below still gate.
+    print(f"\newod escapes realized: {diag}")
     for net in escape_nets:
         if status_by_net[net] == "realized":
             continue
@@ -1333,10 +1335,9 @@ def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
     # pinned at 50, because the router is seeded but its rip-up ORDERING is
     # not a contract. The thing worth catching is a collapse back toward
     # the one-routing-layer 28, not a one- or two-escape tuning wobble.
-    assert len(realized) >= 46, (
-        f"opening In2.Cu no longer buys the escapes — {diag}; a drop toward "
-        "28 means the second routing layer stopped being reachable"
-    )
+    # FLOOR DROPPED 2026-10-19 (Reto): printed, not gated. The shorts check
+    # below still gates.
+    print(f"\newod In2.Cu escapes realized: {diag}")
 
     # Still zero shorts. Yield alone could not tell "routed" from "routed
     # through a land" — that is how 35/54 stood for a week with 24 shorts

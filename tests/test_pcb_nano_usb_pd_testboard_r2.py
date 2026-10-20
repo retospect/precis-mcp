@@ -43,44 +43,12 @@ from tests.fixtures.pcb import nano_usb_pd_testboard_r2 as fx
 SLUG = "nano-usb-pd-r2-test"
 SEED = 1
 
-#: Measured 2026-10-17 at ``SEED`` on this r2 netlist (default 4-layer
-#: stackup, F.Cu/B.Cu routable). These are ONE-WAY FLOORS: routed may only
-#: rise, failures, errors and warnings (total and per rule) may only fall.
-#: Improving the board means lowering the numbers here in the same commit;
-#: never raise a ceiling. The original board's exact pins live in
-#: ``test_pcb_nano_usb_pd_testboard.py`` and guard the router; r2 has a
-#: different netlist (sink switch, P-FET + level-shifter channels, gate
-#: clamps) and so its own floors. The first r2 draft (1 k/10 k divider
-#: without clamps) measured 29/71 and 118 errors; the gate-clamp netlist
-#: measured 35/72, 106 errors, 15 warnings. Zero errors alone would NOT
-#: satisfy the authored requirements (doc Blockers §3: the shared router
-#: clearance is one value, so per-net shortfalls land as warnings).
-#: Tightened 2026-10-17 (gr495393/gr495394): silk_missing 54 -> 51,
-#: silk_edge_clearance 3 -> 0 errors and 1 -> 0 warns,
-#: outline_containment 2 -> 0.
-#: Loosened by Reto 2026-10-19 ~09:0xZ, gr489175 (drilled pads route
-#: from every copper layer; the rip-up order shifts and one net is lost):
-#: connectivity 10 -> 13, unrouted 37 -> 38, board_edge_clearance warns
-#: 3 -> 4, total errors 98 -> 101. The same run tightens silk_missing
-#: 51 -> 50 and clearance warns 11 -> 10.
-BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 13,
-    "unrouted": 38,
-    "silk_missing": 50,
-}
-BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
-    "clearance": 10,
-    "board_edge_clearance": 4,
-}
-BASELINE_DRC_ERRORS = sum(BASELINE_DRC_ERRORS_BY_RULE.values())
-BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
-
-#: Route status over nets with fanout >= 2 (the honest denominator —
-#: single-member nets trivially "route" and are never the question).
-#: Floor: at least 34 of 72 nets realized, at most 38 failed.
-#: Reto 2026-10-19 ~09:0xZ, gr489175: 35 -> 34 routed, 37 -> 38 failed.
-MIN_ROUTED = 34
-MAX_FAILED = 38
+#: This r2 netlist (sink switch, P-FET + level-shifter channels, gate
+#: clamps; default 4-layer stackup, F.Cu/B.Cu routable) is MEASURED, not
+#: gated on counts: Reto 2026-10-19 dropped the grid router's floors ("Drop
+#: the grid router's floors? yes"); the target stays absolute — every net
+#: routed, 0 DRC. Routed over nets with fanout >= 2 (the honest
+#: denominator) and the per-rule DRC counts are printed below as evidence.
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
@@ -421,12 +389,3 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
             f"  {f['severity']:5s} {f['rule']:28s} {f.get('where') or ''} "
             f"{str(f.get('detail'))[:120]}"
         )
-
-    assert routed >= MIN_ROUTED
-    assert failed <= MAX_FAILED
-    for rule, n in errors_by_rule.items():
-        assert n <= BASELINE_DRC_ERRORS_BY_RULE.get(rule, 0), f"error {rule}: {n}"
-    for rule, n in warns_by_rule.items():
-        assert n <= BASELINE_DRC_WARNS_BY_RULE.get(rule, 0), f"warn {rule}: {n}"
-    assert n_errors <= BASELINE_DRC_ERRORS
-    assert n_warns <= BASELINE_DRC_WARNS

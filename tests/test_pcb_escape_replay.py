@@ -135,21 +135,13 @@ def test_connected_via_channel_assignment_replay(store, open_inner, method):
     result = realize.realize(
         ir, config=config, footprints=footprints, fixed_copper=fixed
     )
-    # ("radial", True) was 42 until the courtyard hulled the sink's FULL
-    # pad set (gr451276): the pins-only hull of the 58 declared pads cut
-    # the PQFP-80's corners where no declared pin sat (459 -> 476 mm^2,
-    # same bounds), so the via body-cost preference now prices the real
-    # part body and two escapes lose their corner via sites. Measured
-    # with the pad set on the IR but the router's claims and
-    # connectivity's same-pin union each disabled in turn: both 40 --
-    # the courtyard is the only cause.
-    expected = {
-        ("distance", False): 31,
-        ("distance", True): 51,
-        ("radial", False): 22,
-        ("radial", True): 40,
-    }
-    assert 55 - len(_failed(ir, result)) == expected[method, open_inner]
+    # The per-method routed counts (last pinned: distance 31/51, radial 22/40
+    # without/with In2.Cu open) are printed, not gated: Reto 2026-10-19
+    # dropped the grid router's floors. Legality still gates.
+    print(
+        f"\nescape replay {method} open_inner={open_inner}: "
+        f"{55 - len(_failed(ir, result))}/55 routed"
+    )
     _assert_legal(ir, graph, features, footprints, fixed, config, result, layers)
 
 
@@ -257,7 +249,7 @@ def test_route_op_distance_warm_start_replay(store):
     entry = last["warm_start"][0]
     assert entry["method"] == "match"
     assert 0 < entry["cost_mm"] <= entry["prior_cost_mm"] + 1e-6
-    assert last["realized"] >= 51
+    print(f"\nroute op distance warm start: realized {last['realized']}")
     snapshot = store.pcb_netlist_snapshot_latest(ref.id)
     assert snapshot is not None
     # The job's solved swaps persist as pins whose net differs from the
@@ -340,7 +332,7 @@ def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
         before = realize.realize(
             ir, config=config, footprints=footprints, fixed_copper=fixed
         )
-    assert len(_failed(ir, before)) == 33
+    print(f"\ncoarse pitch: {len(_failed(ir, before))} failed")
     _assert_legal(ir, graph, features, footprints, fixed, config, before)
     # Fine pitch remains an explicit experiment: its net+1 on this fixture
     # regresses reference/fab seeds and must not silently become the default.
@@ -352,13 +344,13 @@ def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
         repeated = realize.realize(
             ir, config=config, footprints=footprints, fixed_copper=fixed
         )
-    assert len(_failed(ir, after)) == 32
+    print(f"fine pitch: {len(_failed(ir, after))} failed")
     assert _failed(ir, repeated) == _failed(ir, after)
     assert _without_clock(asdict(repeated)) == _without_clock(asdict(after))
     _assert_legal(ir, graph, features, footprints, fixed, config, after)
     recovered = _failed(ir, before) - _failed(ir, after)
     lost = _failed(ir, after) - _failed(ir, before)
-    assert len(recovered) == 12 and len(lost) == 11
+    print(f"recovered {len(recovered)}, lost {len(lost)}")
     assert {
         f"ARR1_{name}" for name in ("R1C3", "R1C5", "R1C6", "R2C3", "R6C1")
     } <= recovered

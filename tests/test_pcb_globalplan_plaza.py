@@ -212,8 +212,9 @@ def test_plaza_escape_on_the_qfp_member(tmp_path):
     )
     assert poses_after == poses_before
     # 53 -> 54 with the vector escape post-pass (vector router slice 3a:
-    # N27 routes gridless; N49 is the one left).
-    assert routed >= 54
+    # N27 routes gridless; N49 is the one left). Printed, not gated (Reto
+    # 2026-10-19 dropped the grid router's floors).
+    print(f"\nplaza escape, qfp member: {routed}/{built.ir.n_segments} routed")
 
 
 @pytest.mark.slow
@@ -259,4 +260,6 @@ def test_plaza_escape_on_the_ewod_replay(store, tmp_path):
         ),
         encoding="utf-8",
     )
-    assert routed >= 51
+    # Printed, not gated (Reto 2026-10-19 dropped the grid router's floors);
+    # the run completing without raising is the contract here.
+    print(f"\nplaza escape, ewod replay: {routed}/{ir.n_segments} routed")

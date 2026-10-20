@@ -102,8 +102,7 @@ def test_ewod_like_member_scoreboard():
     assert warm.routed >= cold.routed
     assert plaza_warm.routed >= plaza_cold.routed
     # 2026-10-13: grid 46 -> 55/55 (4 vias), plaza 41 -> 53/55 (35 vias):
-    # the plaza packing is the dogfood's wall. When the plaza member
-    # reaches 55/55 the plan-router slices did their job — move this
-    # floor up with the measurement in the plan doc.
+    # the plaza packing is the dogfood's wall. The plaza member's absolute
+    # floor (>= 50) is dropped (Reto 2026-10-19); the scoreboard above
+    # prints it.
     assert warm.complete
-    assert plaza_warm.routed >= 50
