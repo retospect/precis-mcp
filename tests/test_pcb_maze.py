@@ -398,6 +398,87 @@ def test_stamp_pad_records_pad_and_still_claims_copper_like_stamp_disk():
     assert (grid.owner[0] == 3).any(), "stamp_pad must still claim copper"
 
 
+def _edge_spec() -> GridSpec:
+    """A 6mm board whose outline gives an edge keep-out: for a 0.1mm
+    track at the base clearance the allowed centreline band is
+    ``0.55 <= x, y <= 5.45`` (``max(clearance, 0.5mm edge) + w/2``) —
+    rows above y=5.45 are the band a pad near the edge stretches the
+    grid across (gr497865)."""
+    return GridSpec(
+        0.0,
+        0.0,
+        0.1,
+        60,
+        60,
+        1,
+        edge=maze.EdgeKeepout(bbox=(0.0, 0.0, 6.0, 6.0), min_mm=0.5),
+    )
+
+
+def test_an_edge_pad_escapes_through_its_own_cells_but_the_band_is_closed():
+    """gr497865: a pad outside the edge clip still sits on the grid and
+    still routes, but the band it opens is kept out of every net's search
+    — only the pad's OWN cells carry its escape. Before this, the band
+    was ordinary routable grid and a wide power trace's copper was
+    measured ON the outline."""
+    spec = _edge_spec()
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    # Net 1's edge pad: centre in the band (y=5.6 > 5.45), its claim
+    # reaching back inside the allowed rect — the escape this keeps.
+    grid.stamp_pad((0,), 1.0, 5.6, 0.3, 1)
+    grid.stamp_pad((0,), 3.0, 4.0, 0.3, 1)
+    path = grid.route(1, (1.0, 5.6), (3.0, 4.0), layers=[0], width_mm=0.1)
+    assert path is not None, "an edge pad must stay routable through its own cells"
+    for x, y, layer in path.points:
+        if y > 5.45 + 1e-9:
+            ix, iy = spec.to_cell(x, y)
+            assert grid.owner[layer, iy, ix] == 1, (
+                f"band point {(x, y)} off the pad's own claim"
+            )
+    # The same band is closed to a foreign net: net 2's pads sit beyond
+    # their own reach of the rect, so the honest answer is unrouted —
+    # where an edge-less grid (the old world) routes the identical ask.
+    grid2 = OccupancyGrid(spec, clearance_mm=0.05)
+    grid2.stamp_pad((0,), 4.0, 5.8, 0.2, 2)
+    grid2.stamp_pad((0,), 5.0, 5.8, 0.2, 2)
+    assert grid2.route(2, (4.0, 5.8), (5.0, 5.8), layers=[0], width_mm=0.1) is None
+    grid3 = OccupancyGrid(GridSpec(0.0, 0.0, 0.1, 60, 60, 1), clearance_mm=0.05)
+    grid3.stamp_pad((0,), 4.0, 5.8, 0.2, 2)
+    grid3.stamp_pad((0,), 5.0, 5.8, 0.2, 2)
+    assert grid3.route(2, (4.0, 5.8), (5.0, 5.8), layers=[0], width_mm=0.1) is not None
+
+
+def test_the_edge_inset_is_per_net_so_a_narrow_net_keeps_the_band_a_wide_one_loses():
+    """The keep-out is each net's OWN inset, not the widest feature's —
+    a 0.1mm net may centreline at y=5.0 where a 2.0mm net may not
+    (``0.5 + w/2``): the wide net's honest answer there is unrouted."""
+    spec = _edge_spec()
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    grid.stamp_pad((0,), 1.0, 5.0, 0.15, 2)
+    grid.stamp_pad((0,), 5.0, 5.0, 0.15, 2)
+    assert grid.route(2, (1.0, 5.0), (5.0, 5.0), layers=[0], width_mm=0.1) is not None
+    # The wide net's own pads — too small to reach its (0.5 + 1.0mm)
+    # inset back — leave no escape cells at all.
+    grid.stamp_pad((0,), 1.0, 5.0, 0.4, 3)
+    grid.stamp_pad((0,), 5.0, 5.0, 0.4, 3)
+    assert grid.route(3, (1.0, 5.0), (5.0, 5.0), layers=[0], width_mm=2.0) is None
+
+
+def test_the_edge_inset_sizes_to_the_feature_and_via_sites_get_no_escape():
+    """`edge_clear` is the continuous form of the search's band rule —
+    a track answer at its own half-width, a via answer at the via's —
+    and unlike a track cell it has no own-copper exemption: a via site
+    in the band is wrong even where the net owns the cell."""
+    spec = _edge_spec()
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    assert grid.edge_clear(1, 3.0, 5.4, 0.05)  # 0.1mm track inside its 5.45
+    assert not grid.edge_clear(1, 3.0, 5.6, 0.05)
+    assert not grid.edge_clear(1, 3.0, 5.4, 0.15)  # a via's own, wider inset
+    assert grid.edge_clear(1, 3.0, 5.3, 0.15)
+    grid2 = OccupancyGrid(GridSpec(0.0, 0.0, 0.1, 60, 60, 1), clearance_mm=0.05)
+    assert grid2.edge_clear(1, 3.0, 5.9, 0.15)  # edge-less grid: always True
+
+
 def test_via_clears_pads_is_net_blind():
     """The one deliberately net-BLIND query on this grid: same-net copper
     is legal everywhere else (that is how a trace joins a pad), but a via

@@ -222,6 +222,29 @@ def preferred_directions(layers: list[int]) -> dict[int, str]:
 
 
 @dataclass(frozen=True, slots=True)
+class EdgeKeepout:
+    """The board outline's bounding box plus the fab's copper-to-edge
+    figure (``board_edge_clearance_*_mm``, house tier where published) —
+    the two numbers :meth:`OccupancyGrid.route` needs to keep each net's
+    copper out of the band a PAD stretched the grid across (gr497865).
+
+    ``grid_for`` clips the pad hull to ``bounds`` but deliberately grows
+    back over a pad that sits outside the clip (its own comment: a pad
+    off the grid is a silent routing failure). That makes the band
+    between the clip and the grid edge real grid — and a shared grid with
+    no notion of the edge lets EVERY net route there at ANY width, which
+    is how a wide power trace ends up with copper on the board's outline.
+    With ``edge`` set, each net instead gets its own allowed rectangle:
+    the bbox inset by ``max(net clearance, min_mm) + feature half-width``
+    (per layer for a track, widest for a via), and a cell outside it is
+    passable only while this net already owns it — the pad's own escape
+    cells. ``None`` is every caller's old behaviour: no edge, no band."""
+
+    bbox: tuple[float, float, float, float]
+    min_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class GridSpec:
     """The routing grid's placement in board coordinates. ``(x0, y0)`` is
     the centre of cell ``(0, 0)``; cell ``(ix, iy)`` is centred at
@@ -233,6 +256,12 @@ class GridSpec:
     nx: int
     ny: int
     n_layers: int
+    #: The board-edge keep-out the searches on this grid honour — see
+    #: :class:`EdgeKeepout`. Carried on the spec rather than the grid so
+    #: every :class:`OccupancyGrid` built over the same routing region
+    #: (route attempts, the negotiation planner, diagnostics, the
+    #: post-pour rescue board) answers the edge question identically.
+    edge: EdgeKeepout | None = None
 
     @property
     def n_cells(self) -> int:
@@ -258,10 +287,16 @@ def grid_for(
     min_pitch_mm: float = 0.05,
     max_pitch_mm: float | None = None,
     max_cells_per_axis: int = MAX_CELLS_PER_AXIS,
+    edge: EdgeKeepout | None = None,
 ) -> GridSpec:
     """A grid covering ``points`` plus ``margin_mm``, clipped to
     ``bounds``, with the pitch chosen so neither axis exceeds
     ``target_cells_per_axis`` — unless ``max_pitch_mm`` asks for finer.
+
+    ``edge`` is stored verbatim on the returned :class:`GridSpec` — the
+    grid's EXTENT is still the pad hull (an edge pad stays routable onto),
+    and :class:`EdgeKeepout` documents what the band between ``bounds``
+    and that extent means at search time.
 
     ``max_pitch_mm`` is the coarsest pitch the design rules can be drawn
     on (the caller derives it from track width and clearance). Span / 400
@@ -315,7 +350,7 @@ def grid_for(
     # "how far from the board edge may copper be" stays the only place.
     nx = _nodes_within(x0, x1, pitch, cover_to=max(xs))
     ny = _nodes_within(y0, y1, pitch, cover_to=max(ys))
-    return GridSpec(x0, y0, pitch, nx, ny, max(1, n_layers))
+    return GridSpec(x0, y0, pitch, nx, ny, max(1, n_layers), edge=edge)
 
 
 def _nodes_within(lo: float, hi: float, pitch: float, *, cover_to: float) -> int:
@@ -634,6 +669,100 @@ class OccupancyGrid:
         half-width plus its own clearance. What another net owes on top
         of this is that net's half-width, applied at query time."""
         return width_mm / 2.0 + self.clearance_mm
+
+    def _edge_inset_mm(
+        self, net_id: int, half_mm: float, layer: int | None = None
+    ) -> float | None:
+        """The centreline inset ``net_id``'s copper of half-width
+        ``half_mm`` must keep off the outline bbox, or ``None`` when this
+        grid knows no edge (:attr:`GridSpec.edge`). The per-net form of
+        the one inset ``bounds`` used to impose on every net alike —
+        ``realize._outline_clip``'s ``max(clearance_max, edge_min) +
+        widest/2`` evaluated with THIS net's clearance (per layer for a
+        track, the net's widest for a via that spans layers) and THIS
+        feature's half-width."""
+        edge = self.spec.edge
+        if edge is None:
+            return None
+        return (
+            max(self.clearance_mm + self.extra_mm(net_id, layer), edge.min_mm) + half_mm
+        )
+
+    def edge_clear(self, net_id: int, x: float, y: float, half_mm: float) -> bool:
+        """May a feature of half-width ``half_mm`` be centred at board
+        point ``(x, y)`` under this net's edge inset — the continuous
+        question via-placement sites outside the search
+        (``realize._shove_vias``, the plane-fragment stitcher) ask, where
+        "inside the grid" used to be the whole answer because the grid
+        never outreached the clip. Always True on an edge-less grid."""
+        edge = self.spec.edge
+        if edge is None:
+            return True
+        inset = self._edge_inset_mm(net_id, half_mm)
+        assert inset is not None
+        ox0, oy0, ox1, oy1 = edge.bbox
+        return (
+            ox0 + inset - 1e-9 <= x <= ox1 - inset + 1e-9
+            and oy0 + inset - 1e-9 <= y <= oy1 - inset + 1e-9
+        )
+
+    def _edge_track_rect(
+        self, net_id: int, width_mm: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """Per-layer allowed-centreline cell bounds ``(x0, x1, y0, y1)``
+        for a ``width_mm`` track of ``net_id``, or ``None`` on an
+        edge-less grid — the cell form of :meth:`edge_clear`. A cell
+        outside its layer's rect is the band :class:`EdgeKeepout`
+        describes; :meth:`_route_in` lets it stay passable only while
+        this net owns it (the pad's own escape cells)."""
+        edge = self.spec.edge
+        if edge is None:
+            return None
+        spec = self.spec
+        ox0, oy0, ox1, oy1 = edge.bbox
+        e_x0 = np.zeros(spec.n_layers, dtype=np.int64)
+        e_x1 = np.full(spec.n_layers, spec.nx - 1, dtype=np.int64)
+        e_y0 = np.zeros(spec.n_layers, dtype=np.int64)
+        e_y1 = np.full(spec.n_layers, spec.ny - 1, dtype=np.int64)
+        for layer in range(spec.n_layers):
+            inset = self._edge_inset_mm(net_id, width_mm / 2.0, layer)
+            # The cell range whose centres sit inside the inset rect —
+            # the same floor/ceil convention the pad/keep-out windows
+            # use, with the boundary cell kept only when its centre is
+            # truly inside (a centre ON the line is legal: the inset is
+            # already the fab's own figure).
+            assert inset is not None
+            e_x0[layer] = max(0, math.ceil((ox0 + inset - spec.x0) / spec.pitch - 1e-9))
+            e_x1[layer] = min(
+                spec.nx - 1, math.floor((ox1 - inset - spec.x0) / spec.pitch + 1e-9)
+            )
+            e_y0[layer] = max(0, math.ceil((oy0 + inset - spec.y0) / spec.pitch - 1e-9))
+            e_y1[layer] = min(
+                spec.ny - 1, math.floor((oy1 - inset - spec.y0) / spec.pitch + 1e-9)
+            )
+        return e_x0, e_x1, e_y0, e_y1
+
+    def _edge_via_rect(
+        self, net_id: int, via_dia_mm: float
+    ) -> tuple[int, int, int, int] | None:
+        """The same rect for a via site of this diameter — one rect, not
+        per layer, because a via's barrel lands on every layer it spans
+        and must satisfy the net's widest inset. No own-cell exemption
+        ever applies (a via in the band is wrong even under its own pad,
+        which ``_pad_keepout_mask`` already refuses anyway)."""
+        edge = self.spec.edge
+        if edge is None:
+            return None
+        inset = self._edge_inset_mm(net_id, via_dia_mm / 2.0)
+        assert inset is not None
+        spec = self.spec
+        ox0, oy0, ox1, oy1 = edge.bbox
+        return (
+            max(0, math.ceil((ox0 + inset - spec.x0) / spec.pitch - 1e-9)),
+            min(spec.nx - 1, math.floor((ox1 - inset - spec.x0) / spec.pitch + 1e-9)),
+            max(0, math.ceil((oy0 + inset - spec.y0) / spec.pitch - 1e-9)),
+            min(spec.ny - 1, math.floor((oy1 - inset - spec.y0) / spec.pitch + 1e-9)),
+        )
 
     def stamp_disk(
         self,
@@ -965,12 +1094,30 @@ class OccupancyGrid:
         n: int,
         radius_mm: float,
         net_id: int,
+        edge_half_mm: float | None = None,
     ) -> bool:
         """:meth:`disk_is_free` at the ``n + 1`` evenly spaced points from
         ``a`` to ``b`` on one layer, all of which must be free — the same
         answer, compiled (`_chord_free_kernel`): path straightening asked
-        it ~10 M times on a 140-part board, 137 s as Python."""
+        it ~10 M times on a 140-part board, 137 s as Python.
+
+        ``edge_half_mm`` is the feature's own half-width for the edge
+        keep-out (:class:`EdgeKeepout` — deliberately NOT folded into
+        ``radius_mm``, which carries a whole cell of discretisation slack
+        no continuous distance test should pay). When given, a sample
+        outside this net's allowed rect must sit on a cell the net owns —
+        the pad-escape rule the search itself honours; a taut pull that
+        would cut the corner off the pad's own claim is refused."""
         spec = self.spec
+        has_edge = False
+        ex0 = ex1 = ey0 = ey1 = 0.0
+        if edge_half_mm is not None and spec.edge is not None:
+            inset = self._edge_inset_mm(net_id, edge_half_mm, layer)
+            if inset is not None:
+                has_edge = True
+                ox0, oy0, ox1, oy1 = spec.edge.bbox
+                ex0, ex1 = ox0 + inset - 1e-9, ox1 - inset + 1e-9
+                ey0, ey1 = oy0 + inset - 1e-9, oy1 - inset + 1e-9
         return bool(
             _chord_free_kernel(
                 self._owner,
@@ -985,6 +1132,11 @@ class OccupancyGrid:
                 float(spec.x0),
                 float(spec.y0),
                 float(spec.pitch),
+                has_edge,
+                ex0,
+                ex1,
+                ey0,
+                ey1,
             )
         )
 
@@ -1218,6 +1370,17 @@ class OccupancyGrid:
             return False
         extra = self.extra_mm(path.net_id)
         r_track = math.ceil((width_mm / 2.0 + extra) / self.spec.pitch) + 1
+        spec = self.spec
+        edge_track = self._edge_track_rect(path.net_id, width_mm)
+        if edge_track is None:
+            edge_track = (
+                np.zeros(spec.n_layers, dtype=np.int64),
+                np.full(spec.n_layers, spec.nx - 1, dtype=np.int64),
+                np.zeros(spec.n_layers, dtype=np.int64),
+                np.full(spec.n_layers, spec.ny - 1, dtype=np.int64),
+            )
+        e_tx0, e_tx1, e_ty0, e_ty1 = edge_track
+        e_vx0, e_vx1, e_vy0, e_vy1 = 0, spec.nx - 1, 0, spec.ny - 1
         if via_dia_mm is None:
             if viy.shape[0]:
                 return False
@@ -1226,6 +1389,9 @@ class OccupancyGrid:
             r_via = math.ceil((via_dia_mm / 2.0 + extra) / self.spec.pitch) + 1
             half_via = _disk_half_chords(r_via)
             pad_keep = self._pad_keepout_mask(via_dia_mm / 2.0)
+            edge_via = self._edge_via_rect(path.net_id, via_dia_mm)
+            if edge_via is not None:
+                e_vx0, e_vx1, e_vy0, e_vy1 = edge_via
         return bool(
             _path_legal_kernel(
                 self._owner,
@@ -1242,6 +1408,14 @@ class OccupancyGrid:
                 pad_keep,
                 bool(start_exempt),
                 bool(goal_exempt),
+                e_tx0,
+                e_tx1,
+                e_ty0,
+                e_ty1,
+                int(e_vx0),
+                int(e_vx1),
+                int(e_vy0),
+                int(e_vy1),
             )
         )
 
@@ -1549,6 +1723,23 @@ class OccupancyGrid:
         r_cells = math.ceil((width_mm / 2.0 + extra) / spec.pitch) + 1
         half_track = _disk_half_chords(r_cells)
         owner = self._owner
+        # The board-edge band (:class:`EdgeKeepout`): which cells this
+        # net's centreline may occupy on each layer, and the one rect a
+        # via site must fall inside. A cell outside the track rect stays
+        # passable ONLY while this net owns it — the edge pad's own
+        # escape cells; the grid's extent deliberately covers pads past
+        # the clip (`grid_for`), and without this the band is open to
+        # every net at every width (gr497865).
+        edge_track = self._edge_track_rect(net_id, width_mm)
+        if edge_track is None:
+            edge_track = (
+                np.zeros(spec.n_layers, dtype=np.int64),
+                np.full(spec.n_layers, spec.nx - 1, dtype=np.int64),
+                np.zeros(spec.n_layers, dtype=np.int64),
+                np.full(spec.n_layers, spec.ny - 1, dtype=np.int64),
+            )
+        e_tx0, e_tx1, e_ty0, e_ty1 = edge_track
+        e_vx0, e_vx1, e_vy0, e_vy1 = 0, spec.nx - 1, 0, spec.ny - 1
         # A via is not a track. It is wider (an annulus, not a trace) and
         # it exists on every layer it spans, so a cell the TRACK may
         # legally occupy is routinely a cell the via may not — the search
@@ -1564,6 +1755,9 @@ class OccupancyGrid:
         else:
             via_r_cells = math.ceil((via_dia_mm / 2.0 + extra) / spec.pitch) + 1
             half_via = _disk_half_chords(via_r_cells)
+            edge_via = self._edge_via_rect(net_id, via_dia_mm)
+            if edge_via is not None:
+                e_vx0, e_vx1, e_vy0, e_vy1 = edge_via
             # A pad keep-out on top of the other-net disk above, not
             # instead of it: those two answer different questions
             # (another net's copper vs. ANY net's pad — see
@@ -1582,6 +1776,13 @@ class OccupancyGrid:
             if not (wy0 <= iy < wy1 and wx0 <= ix < wx1):
                 return False
             if mask is not None and not mask[layer, iy, ix]:
+                return False
+            if (
+                ix < e_tx0[layer]
+                or ix > e_tx1[layer]
+                or iy < e_ty0[layer]
+                or iy > e_ty1[layer]
+            ) and owner[layer, iy, ix] != net_id:
                 return False
             return not _disk_hits_foreign(
                 owner, layer, iy, ix, r_cells, half_track, net_id
@@ -1778,6 +1979,14 @@ class OccupancyGrid:
             no_hist if negotiation is None else negotiation.hist,
             0.0 if negotiation is None else float(negotiation.pres_fac),
             0.0 if negotiation is None else float(negotiation.hist_fac),
+            e_tx0,
+            e_tx1,
+            e_ty0,
+            e_ty1,
+            int(e_vx0),
+            int(e_vx1),
+            int(e_vy0),
+            int(e_vy1),
         )
         if outcome == _EXHAUSTED:
             self.last_route_exhausted = True
@@ -1880,11 +2089,19 @@ def _chord_free_kernel(
     x0: float,
     y0: float,
     pitch: float,
+    has_edge: bool,
+    ex0: float,
+    ex1: float,
+    ey0: float,
+    ey1: float,
 ) -> bool:
     """:meth:`OccupancyGrid.chord_is_free`, compiled. Each sample point is
     :meth:`OccupancyGrid.disk_is_free` term for term: the same nearest-cell
     rounding (half to even, as Python's ``round``), the same clamped box,
-    the same ``<= r**2`` disc."""
+    the same ``<= r**2`` disc. With ``has_edge`` a sample outside
+    ``(ex0, ey0)-(ex1, ey1)`` — this net's edge-inset rect in mm — must
+    additionally sit on a cell the net itself owns (the pad-escape rule,
+    :class:`EdgeKeepout`)."""
     n_layers, ny, nx = owner.shape
     if layer < 0 or layer >= n_layers:
         return False
@@ -1895,6 +2112,12 @@ def _chord_free_kernel(
         y = ay + (by - ay) * k / n
         cx = min(max(int(np.rint((x - x0) / pitch)), 0), nx - 1)
         cy = min(max(int(np.rint((y - y0) / pitch)), 0), ny - 1)
+        if (
+            has_edge
+            and (x < ex0 or x > ex1 or y < ey0 or y > ey1)
+            and owner[layer, cy, cx] != net_id
+        ):
+            return False
         lo_x, hi_x = max(0, cx - r_cells), min(nx - 1, cx + r_cells)
         lo_y, hi_y = max(0, cy - r_cells), min(ny - 1, cy + r_cells)
         if lo_x > hi_x or lo_y > hi_y:
@@ -2028,6 +2251,14 @@ def _astar_kernel(
     hist: np.ndarray,
     pres_fac: float,
     hist_fac: float,
+    e_tx0: np.ndarray,
+    e_tx1: np.ndarray,
+    e_ty0: np.ndarray,
+    e_ty1: np.ndarray,
+    e_vx0: int,
+    e_vx1: int,
+    e_vy0: int,
+    e_vy1: int,
 ) -> tuple[int, int, float, np.ndarray]:
     """The A* loop of :meth:`OccupancyGrid._route_in`, compiled.
 
@@ -2045,8 +2276,11 @@ def _astar_kernel(
     Keep-outs are decided when the search first reaches a cell and
     memoised in ``state``: a track cell is blocked when
     :func:`_disk_hits_foreign` finds another net's copper within
-    ``r_track`` on its layer; a via site when it does so within ``r_via``
-    on ANY layer, or ``pad_keep`` marks it.
+    ``r_track`` on its layer, or when it lies outside its layer's
+    ``e_t*`` edge-inset rect while some OTHER net (or no net) owns it —
+    the pad-escape band rule of :class:`EdgeKeepout`; a via site when it
+    does so within ``r_via`` on ANY layer, sits outside ``e_v*``, or
+    ``pad_keep`` marks it.
 
     With ``negotiate`` (:class:`Negotiation`), entering a cell also pays
     for other nets' claims in the same keep-out disk: the step cost plus
@@ -2160,7 +2394,15 @@ def _astar_kernel(
             sv = state[nli]
             if not sv & 8:
                 sv |= 8
-                if _disk_hits_foreign(
+                if (
+                    (
+                        nxi < e_tx0[layer]
+                        or nxi > e_tx1[layer]
+                        or nyi < e_ty0[layer]
+                        or nyi > e_ty1[layer]
+                    )
+                    and owner[layer, nyi, nxi] != net_id
+                ) or _disk_hits_foreign(
                     owner, layer, nyi, nxi, r_track, half_track, net_id
                 ):
                     sv |= 16
@@ -2199,7 +2441,7 @@ def _astar_kernel(
         vs = via_state[lrem]
         if vs == 0:
             vs = 1
-            if pad_keep[iy, ix]:
+            if ix < e_vx0 or ix > e_vx1 or iy < e_vy0 or iy > e_vy1 or pad_keep[iy, ix]:
                 vs = 2
             else:
                 for vl in range(n_layers):
@@ -2229,7 +2471,15 @@ def _astar_kernel(
             sv = state[nli]
             if not sv & 8:
                 sv |= 8
-                if _disk_hits_foreign(
+                if (
+                    (
+                        ix < e_tx0[other]
+                        or ix > e_tx1[other]
+                        or iy < e_ty0[other]
+                        or iy > e_ty1[other]
+                    )
+                    and owner[other, iy, ix] != net_id
+                ) or _disk_hits_foreign(
                     owner, other, iy, ix, r_track, half_track, net_id
                 ):
                     sv |= 16
@@ -2612,6 +2862,14 @@ def _path_legal_kernel(
     pad_keep: np.ndarray,
     start_exempt: bool,
     goal_exempt: bool,
+    e_tx0: np.ndarray,
+    e_tx1: np.ndarray,
+    e_ty0: np.ndarray,
+    e_ty1: np.ndarray,
+    e_vx0: int,
+    e_vx1: int,
+    e_vy0: int,
+    e_vy1: int,
 ) -> bool:
     """:meth:`OccupancyGrid.path_is_legal`."""
     n_l = owner.shape[0]
@@ -2622,12 +2880,28 @@ def _path_legal_kernel(
                 owner, tl[i], tiy[i], tix[i], r_track, half_track, net_id
             ):
                 return False
-        elif _disk_hits_foreign(
-            owner, tl[i], tiy[i], tix[i], r_track, half_track, net_id
-        ):
+            continue
+        # The edge band the search honoured (:class:`EdgeKeepout`): a
+        # non-exempt track cell outside its layer's inset rect must be
+        # this net's own copper — the pad's escape cells.
+        li = tl[i]
+        if (
+            tix[i] < e_tx0[li]
+            or tix[i] > e_tx1[li]
+            or tiy[i] < e_ty0[li]
+            or tiy[i] > e_ty1[li]
+        ) and owner[li, tiy[i], tix[i]] != net_id:
+            return False
+        if _disk_hits_foreign(owner, li, tiy[i], tix[i], r_track, half_track, net_id):
             return False
     for i in range(viy.shape[0]):
-        if pad_keep[viy[i], vix[i]]:
+        if (
+            vix[i] < e_vx0
+            or vix[i] > e_vx1
+            or viy[i] < e_vy0
+            or viy[i] > e_vy1
+            or pad_keep[viy[i], vix[i]]
+        ):
             return False
         for layer in range(n_l):
             if _disk_hits_foreign(
@@ -2670,6 +2944,7 @@ __all__ = [
     "MAX_EXPANSIONS",
     "VIA_COST_MM",
     "VIA_UNDER_BODY_COST_MM",
+    "EdgeKeepout",
     "GridSpec",
     "OccupancyGrid",
     "RoutePath",

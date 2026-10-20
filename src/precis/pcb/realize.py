@@ -1430,6 +1430,18 @@ def _resolve_route_end(
     return None, None, candidates
 
 
+def _outline_bbox(ir: PcbIR) -> tuple[float, float, float, float] | None:
+    """The outline's bounding box, or ``None`` when the design authored
+    no outline — the one place both ``_outline_clip`` and the routing
+    grid's edge keep-out (:class:`precis.pcb.maze.EdgeKeepout`) read the
+    boundary from."""
+    if not ir.outline or len(ir.outline) < 3:
+        return None
+    xs = [float(p[0]) for p in ir.outline]
+    ys = [float(p[1]) for p in ir.outline]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
 def _outline_clip(
     ir: PcbIR, clearance_mm: float
 ) -> tuple[float, float, float, float] | None:
@@ -1446,12 +1458,11 @@ def _outline_clip(
     is at least consistent; a true point-in-polygon clip belongs with
     whatever first needs a non-rectangular board.
     """
-    if not ir.outline or len(ir.outline) < 3:
+    bbox = _outline_bbox(ir)
+    if bbox is None:
         return None
-    xs = [float(p[0]) for p in ir.outline]
-    ys = [float(p[1]) for p in ir.outline]
-    x0, y0 = min(xs) + clearance_mm, min(ys) + clearance_mm
-    x1, y1 = max(xs) - clearance_mm, max(ys) - clearance_mm
+    x0, y0 = min(bbox[0], bbox[2]) + clearance_mm, min(bbox[1], bbox[3]) + clearance_mm
+    x1, y1 = max(bbox[0], bbox[2]) - clearance_mm, max(bbox[1], bbox[3]) - clearance_mm
     if x1 <= x0 or y1 <= y0:
         return None  # an outline smaller than its own clearance — no clip
     return (x0, y0, x1, y1)
@@ -1884,11 +1895,24 @@ def _route_context(
     # escape has to squeeze past. Measured on a 140-part 200 mm board
     # (clearance 0.15 mm): 0.5 mm cells routed 8/89 nets, 0.15 mm 20/89,
     # 0.1 mm 66/89. See `maze.grid_for`.
+    edge_bbox = _outline_bbox(ir)
     spec = maze.grid_for(
         [p for p, _, _, _ in pads],
         n_layers=len(ir.stackup) or 1,
         bounds=_outline_clip(ir, edge_inset),
         max_pitch_mm=clearance * _PITCH_PER_CLEARANCE,
+        # `bounds` stays the clip it always was — but `grid_for` grows the
+        # grid back over a pad sitting outside it, and the band that opens
+        # between the clip and the grid edge used to be routable by every
+        # net at every width (gr497865: a 2.765 mm power trace's copper
+        # measured ON the outline). `edge` hands the searches the outline
+        # and the fab figure so each net keeps its own inset and an edge
+        # pad escapes through its own cells only.
+        edge=(
+            maze.EdgeKeepout(bbox=edge_bbox, min_mm=edge_min)
+            if edge_bbox is not None
+            else None
+        ),
     )
     # Appended AFTER `grid_for`, deliberately. The grid's pitch is cut
     # from the point set it is given, so feeding it these lands would
@@ -5888,6 +5912,10 @@ def _stitch_one_net(
             grid.disk_is_free(range(lo, hi + 1), x, y, core_r, net_id)
             and grid.via_clears_pads(x, y, via_r)
             and _via_clears_vias(x, y, via_r, placed_via_sites, grid.clearance_mm)
+            # Snapped to grid cell centres, which — since gr497865 — may
+            # sit in the edge band a pad stretched the grid across; the
+            # keep-out the routed search honours applies here too.
+            and grid.edge_clear(net_id, x, y, via_r)
         )
 
     def claim_via(via: RealizedVia) -> None:
@@ -6895,7 +6923,8 @@ def _straighten(
         return path
     radius = width_mm / 2.0 + grid.spec.pitch
     step = grid.spec.pitch / 2.0
-    pts = _collapse_straight(pts, grid, net_id, radius, step)
+    edge_half = width_mm / 2.0
+    pts = _collapse_straight(pts, grid, net_id, radius, step, edge_half_mm=edge_half)
     if shove_vias and via_group_extent_mm is not None and len(pts) >= 4:
         pts, moved = _shove_vias(
             pts,
@@ -6906,9 +6935,12 @@ def _straighten(
             radius,
             step,
             ink_field=ink_field,
+            track_half_mm=edge_half,
         )
         if moved:
-            pts = _collapse_straight(pts, grid, net_id, radius, step)
+            pts = _collapse_straight(
+                pts, grid, net_id, radius, step, edge_half_mm=edge_half
+            )
     length = sum(
         dist((a[0], a[1]), (b[0], b[1]))
         for a, b in itertools.pairwise(pts)
@@ -6969,6 +7001,7 @@ def _octilinear_connect(
     net_id: int,
     radius: float,
     step: float,
+    edge_half_mm: float | None = None,
 ) -> list[tuple[float, float, int]] | None:
     """The interior vertices of a FREE octilinear connection ``a``→``c``
     (same layer): ``[]`` when the straight chord is itself octilinear and
@@ -6980,11 +7013,19 @@ def _octilinear_connect(
     segments :func:`_snap_to_pads` creates, so every accepted connection
     is provably re-derivable by the next pass over the same grid."""
     if _is_octilinear(a, c):
-        return [] if _chord_is_free(grid, a, c, net_id, radius, step) else None
+        return (
+            []
+            if _chord_is_free(
+                grid, a, c, net_id, radius, step, edge_half_mm=edge_half_mm
+            )
+            else None
+        )
     for mx, my in _octilinear_corners(a, c):
         m = (mx, my, a[2])
-        if _chord_is_free(grid, a, m, net_id, radius, step) and _chord_is_free(
-            grid, m, c, net_id, radius, step
+        if _chord_is_free(
+            grid, a, m, net_id, radius, step, edge_half_mm=edge_half_mm
+        ) and _chord_is_free(
+            grid, m, c, net_id, radius, step, edge_half_mm=edge_half_mm
         ):
             return [m]
     return None
@@ -7004,6 +7045,7 @@ def _collapse_straight(
     net_id: int,
     radius: float,
     step: float,
+    edge_half_mm: float | None = None,
 ) -> list[tuple[float, float, int]]:
     """Taut-pull passes until fixpoint — OCTILINEAR-preserving since
     2026-08-31. The old pass replaced a staircase with the direct chord at
@@ -7023,7 +7065,9 @@ def _collapse_straight(
     (vertices, length) and the fixpoint loop is finite."""
     changed = True
     while changed:
-        pts, changed = _taut_pass(pts, grid, net_id, radius, step)
+        pts, changed = _taut_pass(
+            pts, grid, net_id, radius, step, edge_half_mm=edge_half_mm
+        )
     return pts
 
 
@@ -7033,6 +7077,7 @@ def _taut_pass(
     net_id: int,
     radius: float,
     step: float,
+    edge_half_mm: float | None = None,
 ) -> tuple[list[tuple[float, float, int]], bool]:
     """One forward greedy pass of the octilinear taut pull: from each kept
     vertex, splice in the farthest same-layer span that
@@ -7051,7 +7096,9 @@ def _taut_pass(
         best_mids: list[tuple[float, float, int]] = []
         j = i + 2
         while j < len(pts) and pts[j - 1][2] == layer and pts[j][2] == layer:
-            mids = _octilinear_connect(grid, pts[i], pts[j], net_id, radius, step)
+            mids = _octilinear_connect(
+                grid, pts[i], pts[j], net_id, radius, step, edge_half_mm
+            )
             if mids is not None:
                 replaced = pts[i : j + 1]
                 candidate = [pts[i], *mids, pts[j]]
@@ -7069,7 +7116,9 @@ def _taut_pass(
             continue
         nxt = pts[i + 1]
         if nxt[2] == layer and not _is_octilinear(pts[i], nxt):
-            mids = _octilinear_connect(grid, pts[i], nxt, net_id, radius, step)
+            mids = _octilinear_connect(
+                grid, pts[i], nxt, net_id, radius, step, edge_half_mm
+            )
             if mids is None:
                 # Tight-corridor fallback. The off-angle segment being
                 # repaired was DRAWN — its corridor exists — but `radius`
@@ -7090,7 +7139,9 @@ def _taut_pass(
                 nub = min(min(adx, ady), abs(adx - ady))
                 if nub <= 2.0 * step:
                     tight = max(radius - 2.0 * step, step)
-                    mids = _octilinear_connect(grid, pts[i], nxt, net_id, tight, step)
+                    mids = _octilinear_connect(
+                        grid, pts[i], nxt, net_id, tight, step, edge_half_mm
+                    )
             if mids:
                 out.extend(mids)
                 changed = True
@@ -7205,6 +7256,7 @@ def _shove_candidate_legal(
     via_group_extent_mm: float,
     chord_radius_mm: float,
     step: float,
+    track_half_mm: float | None = None,
 ) -> bool:
     """May the via transition move to ``candidate`` — both flanks clear
     (plain chord test: both are single straight octilinear segments by
@@ -7221,6 +7273,7 @@ def _shove_candidate_legal(
         net_id,
         chord_radius_mm,
         step,
+        edge_half_mm=track_half_mm,
     )
     far_ok = near_ok and _chord_is_free(
         grid,
@@ -7229,9 +7282,17 @@ def _shove_candidate_legal(
         net_id,
         chord_radius_mm,
         step,
+        edge_half_mm=track_half_mm,
     )
     return (
         far_ok
+        # The board edge too: since gr497865 a pad may stretch the grid
+        # past the outline clip, so "in-bounds" no longer implies inside
+        # the copper-legal rect — ask the grid's own edge keep-out at the
+        # via's (conservative group-extent) radius.
+        and grid.edge_clear(
+            net_id, candidate[0], candidate[1], via_group_extent_mm / 2.0
+        )
         and grid.disk_is_free(
             range(0, grid.spec.n_layers),
             candidate[0],
@@ -7263,6 +7324,7 @@ def _shove_vias(
     chord_radius_mm: float,
     step: float,
     ink_field: _InkField | None = None,
+    track_half_mm: float | None = None,
 ) -> tuple[list[tuple[float, float, int]], bool]:
     """One pass over every via TRANSITION in ``pts`` — a same-coordinate,
     different-layer consecutive pair with a fixed neighbour on each side
@@ -7369,6 +7431,7 @@ def _shove_vias(
                 via_group_extent_mm,
                 chord_radius_mm,
                 step,
+                track_half_mm=track_half_mm,
             ):
                 accepted = candidate
                 break
@@ -7387,11 +7450,23 @@ def _chord_is_free(
     net_id: int,
     radius: float,
     step: float,
+    edge_half_mm: float | None = None,
 ) -> bool:
     span = dist((a[0], a[1]), (b[0], b[1]))
     n = max(1, int(span / step))
-    # `disk_is_free` at each of the n + 1 samples, compiled.
-    return grid.chord_is_free(a[2], (a[0], a[1]), (b[0], b[1]), n, radius, net_id)
+    # `disk_is_free` at each of the n + 1 samples, compiled. `edge_half_mm`
+    # is the drawn track's own half-width — the straighten pass can pull a
+    # chord off the pad-escape cells a searched path hugged, so the same
+    # edge keep-out the search honours is asked again here (gr497865).
+    return grid.chord_is_free(
+        a[2],
+        (a[0], a[1]),
+        (b[0], b[1]),
+        n,
+        radius,
+        net_id,
+        edge_half_mm=edge_half_mm,
+    )
 
 
 def _snap_to_pads(
