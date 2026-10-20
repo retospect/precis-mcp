@@ -1158,6 +1158,160 @@ affiliation beyond the work e-mail, and the exact licence term text.
   8). The σ term enters as `ShiftProvider` shifts and is optional per the
   coordinator.**
 
+**Ready-check 2026-10-20 (ready agent, against catpath 0.31.1 = precis
+`uv.lock` pin; verdict needs-work, 10 blockers, 11 advisories).** Anchors
+verified present: `kinetics.py` `solve`/`build_transitions`/`p_of`/
+`_linear_steady`/`_step_pair`/`_gas_pair`/`K_CAP`/`excluded_step_bracket`/
+`monte_carlo`/`rate_matrix`, `ConditionsConfig.pressures`,
+`KineticsConfig.sticking`, `thermo.ADSORBATES`, `corrections.VERSION`,
+`bep.band_eV`, `sweep.py`, `uncertainty.Estimate`, `ledger.GAS_MOLECULES`;
+precis `runner._prep`/`run_kinetics_subprocess`/`content_key`/
+`seed_content_key`, `_dispatch_common._kinetics_scalars`, `aggregate_job`
+kinetics tail, `toon_views.kinetics_text`, handler view `kinetics`,
+`compute._network_basis`, `JobTypeSpec`. Engine lives at
+`/Users/reto/work/projects/code/catpath/src/autocatpath/`, not `~/catpath` /
+`autocatpath/`.
+
+- **blocker (slice 1, 4)** No defined way to price states at an environment
+  other than the one the run was aggregated at. `kinetics.solve` takes
+  `nodes` already baked at the pipeline's T and `conditions.pressures`
+  (`pipeline.py` aggregate: `th.corrected_refs` carries kT ln p;
+  `_gas_pair` docstring "pressure term is already inside dg"). Changing only
+  `p_of` re-scales Hertz-Knudsen but not dg, so `k_des = k_hk * exp(-dg/kT)`
+  then scales with p (wrong; true k_des is p-independent). Slice 1 acceptance
+  2-4 (`far` vs 1 bar, equilibrium flux, `p_total` scaling) and slice 4's
+  `(T, p_total)` grid all need repricing, but the provider seam only arrives
+  in slice 2 and no slice says how a baked node becomes `G(T, p)`
+  (`results.thermo` keeps `pressures` and `state_corrections` at run T; `vib`
+  mode corrections cannot be re-T'd at all). State the repricing rule
+  (ledger gas part via `ledger_energy` with new refs; adsorbate part via
+  `Table(T)`; refuse `vib` off the run T) and put it in slice 1.
+- **blocker (slice 1)** Default behaviour of an unconfigured quest is
+  undefined and its blast radius unstated. `unlisted: refuse` default plus
+  "uncited sticking trips `kinetics_trusted=False`" (D1) plus Q5 "no default
+  product pressure" collide with the aggregate's in-process solve
+  (`aggregate_job` runs it after every aggregate; today `conditions.pressures`
+  is `{}` for most configs). Either every existing and new aggregate becomes
+  `kinetics_error` / untrusted (log_tof dropped for the whole frontier) or a
+  legacy fallback exists that the text does not name. Say which environment
+  the aggregate-embedded solve uses when the quest gave none, and whether a
+  legacy config (no `environment` block) is `reference` (today) or `refuse`.
+- **blocker (slice 1)** "basis hash" / "stamped with different bases" names
+  no field. The existing basis is `compute._network_basis`
+  `{digest, template, version}` compared by `frontier.same_network_basis`
+  (`current_network_basis` ties); the correction-policy tuple lives in the
+  unbuilt draft `pathway-correction-basis.md` and has no environment term.
+  Target + blast radius omits `precis/quest/frontier.py` and gives no
+  `blocked-by` for that draft. Define the key (e.g. `network_basis.env_sha`),
+  the compare rule, and the backfill for "every existing TOF-bearing measure
+  re-stamps" (only `backfill_network_basis` exists, for network basis).
+- **blocker (slice 2)** `adsorbate_mode: hindered` has no specified inputs.
+  Sprowl-Campbell needs frustrated-translation barrier/frequencies, rotational
+  constants and masses per adsorbate; `thermo.ADSORBATES` holds ZPE only and
+  `modes_meV` exist for 6 `computed` species only (not NH3, NO, N, H, CO).
+  The acceptance oracle (Campbell-Sellers S_ads = 0.70 S_gas - 3.3R, 0.1 eV)
+  suggests the correlation, not the partition function. Pick one and name its
+  parameter source, else the builder invents it.
+- **blocker (slice 2)** "bumps `corrections.VERSION`" is not implementable as
+  a per-mode stamp: `VERSION = "2026-10-16"` is a code constant. A one-line
+  constant edit satisfies the acceptance while `ts0` and `hindered` results
+  still carry the same stamp; the correction-policy tuple's `table_version`
+  is normalised to null with switches off and has no `adsorbate_mode`. Define
+  the stamp (e.g. `VERSION + "+" + mode + "+" + reference_state`) and test
+  that two configs differing only in mode produce different stamps.
+- **blocker (slice 2)** Record migration unowned. `KineticsResult` requires
+  `tof_mf`, `orders`, `optimum`, `tpd`, `acceleration` that exist only from
+  slices 4/5/6/9, and `selectivity` changes from `float|None` to
+  `dict[str, float]`; v1 consumers read `kin["tof"]`, `tof_bracket`,
+  `sensitivity.tof`, `drc.X_RC`. No slice owns the `_kinetics_scalars`,
+  `kinetics_text`/`view='kinetics'` and harvest-key changes of D8. Say
+  whether slice 2 writes v2 alongside v1 (dual-write) or replaces it, which
+  record fields are optional until later slices, and which slice lifts which
+  scalar.
+- **blocker (slice 3)** Two code mismatches. (a) `band_eV` is 2*class RMSE
+  floored at 0.15 (fits) or the literature MAE (priors) per `bep.py`, not a
+  Gaussian sigma; `residual_eV` is the RMSE and is None for priors. D4's
+  "sigma_c = band_eV" doubles the spread. (b) Acceptance "rho = 0 reproduces
+  today's independent band" cannot hold: `monte_carlo` moves only the TS at
+  fixed dG, while v1 adds `delta_G_state = sigma_model*z_model` (moves dG)
+  and `sigma_model` is undefined (which `Estimate.std`, pooled how). Define
+  sigma_model and state that `z_model` is off for the rho = 0 check.
+- **blocker (slice 5)** Case C TOF acceptance is not buildable.
+  `tests/validation/cases/co_oxidation_pd111.yaml` (catpath) states it
+  asserts no TOF and that quantitative targets "await transcription of the
+  paper's tables"; its conditions use O2/CO2 while the ledger supplies O from
+  H2O (the file's own "known modeling gap"); the paper's kMC has lateral
+  interactions and diffusion, both out of v1 (Q8, D5), so "within 0.5 log10
+  of the published TOF" is neither reachable nor checkable. Replace with a
+  mechanism-level assertion or name the transcribed numbers and an O2 network.
+- **blocker (slice 7)** Open loop: gated "after the first paper (Q8)" with no
+  paper named; cluster-expansion parameters and the "published coverage" of
+  the O/Pt(111) p(2x2) fixture have no source. Keep out of an unattended wave
+  until a paper and parameter source are named. (Slice 8 does not depend on 7
+  and can run ahead of it.)
+- **blocker (all engine+glue slices 1-4, 10)** Each slice is "engine + glue"
+  across two repos (catpath, then precis pinned to a catpath commit via
+  `uv lock -P autocatpath`, per `catpath-wheel-version-reuse.md`), but one
+  build is one tree. Precis tests cannot see new engine symbols until the pin
+  moves. Specify the handoff (catpath commit lands first; precis tree bumps
+  the pin; glue gated on the engine version) or split each slice into an
+  engine build and a glue build.
+- **advisory (slice 1, 2, 3, 10)** `pw455722` is a prod pathway, not a repo
+  fixture (no hit in catpath or precis tests). Commit one trimmed
+  `results.json` (nodes, edges incl. `bep`, `thermo`) as the shared NO->NH3
+  fixture in slice 1, else the pw455722 acceptances are post-deploy only.
+- **advisory (slice 1)** Equilibrium-composition procedure underdetermined:
+  with inputs NO, H2 fixed, `n_gas - rank(nu)` affinities vanish but rank(nu)
+  = 3 pressures stay free, so one more pressure must be fixed; also Q/K and
+  `z_i` are in scope but have no acceptance and "the overall reaction" is
+  undefined for a multi-product network. Add: Q/K = 1 and z_i = 1 at the
+  equilibrium composition, and name the reaction (target formation).
+- **advisory (slice 2)** Slice text "`adsorbate_mode` knob (default
+  unchanged)" contradicts D3, Q4 (proposed) and Target ("until slice 2's
+  mode is switched"), which switch the default to `hindered` in slice 2.
+  Align the slice text with whichever ruling Reto confirms.
+- **advisory (slice 2)** "The four core checks" includes the lattice
+  Kolmogorov loop (KMC only, slice 5) and D3 scopes equilibrium-flux and the
+  three optional checks to MF/KMC; at slice 2 only the chain exists. State
+  that slice 2 builds ratio + barrier identity + equilibrium flux on the chain
+  (the barrier identity must test energies G_TS-G_IS vs G_TS-G_FS, not the
+  rates, or it duplicates the ratio check) and defers the rest.
+- **advisory (slice 3)** "Rescaling only for pairs the QE detector names"
+  changes `_capped` (K_CAP overflow guard, applies to every pair today) before
+  any QE detector exists (D3/D6 detectors come in slices 4/6). Keep `_capped`
+  unconditional until then. Also the promotion gate
+  (`pathway-kinetics-promotion-gate.md`) leaves non-decisive edges
+  "thermodynamic only" at neb tier, so "verify run -> `bep_flux_share = 0`"
+  may fail on real runs; fixture-only claim.
+- **advisory (slice 4, Q6)** The ladder wiring (aggregate/quest minting
+  `autocatpath_kinetics` after a verify aggregate; quest requesting the KMC
+  rung) is in D9 but in no slice's scope or acceptance; slice 4 only runs the
+  job on a fixture.
+- **advisory (sibling)** `electrochem-kinetics-beyond-che.md` slice 1 adds
+  beta*U and U/pH arguments to `kinetics.solve` and slice 3 decides whether a
+  nonlinear MF solve is needed; v2 D1 `electrochemical` block, slice 4 (MF)
+  and slice 8 overlap both and do not acknowledge them. Reconcile who owns the
+  U argument before either is built.
+- **advisory (slice 10)** Manifest v1 carries KMC seeds, `tpd_reference_set_
+  sha256` and TPD/KMC tolerances, none of which exist at slice 10 (before 5,
+  9); say they are nullable. `weights_sha256` (calculators cache key has no
+  weights hash) and `autocatpath_sha` (a wheel carries no git sha) need an
+  engine-side source named. The macOS arm64 acceptance is a manual
+  post-deploy check, not a gate.
+- **advisory (slice 6, 9)** Slice 6's "Novotny Ising s = 2 matrices
+  (pa498724)" and slice 9's pa49870x reference values are abstract-only
+  (known gap); slice 9's "peak within 15 K after correction" is tautological
+  when the offset is least-squares fitted to the same reference. Add an
+  uncorrected-vs-corrected improvement check or a held-out beta.
+- **advisory (D1 blast radius)** The adapter that "replaces
+  `ConditionsConfig.pressures`" touches more than `config.py`/`kinetics.py`:
+  `thermo.py` (`build_table` pressures, `Table.gas_correction`), `coverage.py`,
+  `provenance.py`, `report.py`, `viz.py` all read it. List them, and note the
+  pipeline-time and kinetics-time pressure tables must stay one object.
+- **advisory (D5)** `numba` is a precis dependency (`pyproject.toml`,
+  `uv.lock` 0.67.0) but not in catpath's `pyproject.toml`; add it (or a lazy
+  import with the numpy fallback) to catpath in slice 5.
+
 ## Data flow
 
 Prod diagram: `mermaid:kinetics-v2-dataflow` (mm498611), same source as
