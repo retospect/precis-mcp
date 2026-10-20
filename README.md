@@ -114,7 +114,22 @@ uv tool install --python 3.13 'precis-mcp[all]'
 ```
 
 This puts the `precis` command in its own isolated environment; upgrade
-with `uv tool upgrade precis-mcp`. Plain pip also works on Python 3.12–3.13:
+with `uv tool upgrade precis-mcp`.
+
+**Disk space.** Measured 2026-10-20 on macOS arm64, Python 3.13:
+
+| Install | Environment size |
+|---|---|
+| `precis-mcp` (core only) | ~650 MB |
+| `precis-mcp[all]` | ~1.6 GB (CPU torch is ~530 MB of that) |
+
+Linux installs that pull CUDA builds of torch are several GB larger. Models
+download on first use, on top of the environment: the bge-m3 embedder
+(`embed`, ~2.3 GB) and Marker's PDF layout/OCR models (`paper`, roughly
+1–2 GB). Plan for about 5 GB free for a full single-machine install, plus
+your Postgres data.
+
+Plain pip also works on Python 3.12–3.13:
 
 ```bash
 pip install 'precis-mcp[all]'
