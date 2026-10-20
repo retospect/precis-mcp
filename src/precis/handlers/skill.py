@@ -891,19 +891,21 @@ class SkillHandler(Handler):
         banner = self._concern_banner(slug)
         if banner:
             text = banner + "\n\n" + text
-        # Append a live-registry footer so cross-cutting skills
-        # (precis-overview, precis-files-help) that mention kinds in
-        # tables can't drift against the active build. Each skill
-        # gets a one-line summary of the registered kinds so the
-        # reader can cross-check their plan against reality.
-        # MCP critic MAJOR-C 2026-05-02.
-        text = text.rstrip() + "\n\n" + self._live_registry_footer()
-        # Four-line graph footer: linked skills, tags, kinds, tree
-        # siblings (docs/backlog/skill-graph.md slice 1 surfacing).
+        # gr499041: the "Active kinds on this build" registry footer is
+        # gone — ~450 B of the same list on every serve, and the verb
+        # table it pointed at lives on get(kind='skill', id='precis-help')
+        # already. The graph footer below keeps per-skill navigation.
         graph_footer = self._graph_footer(slug)
         if graph_footer:
             text = text.rstrip() + "\n\n" + graph_footer
-        text = text.rstrip() + "\n\n" + _MISLED_LINE.format(slug=slug)
+        # The misled promo asks once per session per skill — a repeat
+        # serve carries the same line for no new information (gr499041;
+        # sessionless callers always see it).
+        from precis.utils.hint_ledger import was_shown
+
+        misled = _MISLED_LINE.format(slug=slug)
+        if not was_shown(misled):
+            text = text.rstrip() + "\n\n" + misled
         text += f"\n\nskill rev {rev}"
         return Response(body=text, pagination_alt_hint=_pagination_alt_hint(slug))
 
@@ -989,30 +991,6 @@ class SkillHandler(Handler):
             )
 
         return render_next_section(rows)
-
-    def _live_registry_footer(self) -> str:
-        """Markdown footer listing active kinds on this build.
-
-        Rendered from ``self.hub.kinds`` at serve time so it can't
-        drift against the registry. Appended to every non-synth
-        skill response; the synth ``precis-help`` already renders
-        its own kind table so it doesn't get a redundant footer
-        (synth skills don't flow through this code path).
-        """
-        if self.hub is None:
-            return ""
-        try:
-            kinds = sorted(self.hub.kinds)
-        except (AttributeError, TypeError):
-            return ""
-        if not kinds:
-            return ""
-        return (
-            "---\n"
-            f"**Active kinds on this build:** {', '.join(kinds)}. "
-            "See `get(kind='skill', id='precis-help')` for a verb "
-            "table generated from the live registry."
-        )
 
     # ── search ─────────────────────────────────────────────────────
 

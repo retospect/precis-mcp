@@ -38,8 +38,11 @@ All are idempotent — fix and re-run. Red gate: read the failure above the
 full-gate green), `origin/prod` (what runs), `release/r<N>` (the open
 release) — script-moved, never committed to.
 
-Many sibling sessions run at once: scan the injected `scripts/inflight` table
-for overlap; once your task is clear, write one line to `.claude/purpose`.
+Many sibling sessions run at once: the SessionStart hook prints only a
+counts line (trees, dirty, live sessions — gr499042, ~3.6k tokens saved per
+session), so before starting work and before touching shared files run
+`scripts/inflight` (or `--json`) to see sibling trees, purpose lines and
+overlap; once your task is clear, write one line to `.claude/purpose`.
 When a coordinator has a round open (`scripts/round status`), mark it from
 your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging.
 In a fleet session leave deploys (and `/go`) to the coordinator. Fleet: `/fleet`; in a fleet session a

@@ -83,12 +83,14 @@ def test_comment_put_without_text_or_edges_still_refuses(hub: Hub) -> None:
 # ── get view aliases ─────────────────────────────────────────────────
 
 
-def test_view_full_reads_as_comments(hub: Hub) -> None:
+def test_view_full_is_the_complete_read(hub: Hub) -> None:
+    # gr499040: 'full' is a first-class view — body + every comment,
+    # uncapped (the old view='comments' render).
     h, a, _ = _two(hub)
     h.put(id=a, text="a comment")
-    resp = h.get(id=a, view="full")
-    assert _first(resp) == "interpreted: view='full' read as view='comments'"
-    assert _rest(resp) == h.get(id=a, view="comments").body
+    body = h.get(id=a, view="full").body
+    assert "## comment 1" in body and "a comment" in body
+    assert h.get(id=a, view="full").body != h.get(id=a, view="comments").body
 
 
 def test_view_default_reads_as_the_default_view(hub: Hub) -> None:

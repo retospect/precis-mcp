@@ -921,14 +921,70 @@ def _register_tools_from_registry() -> None:
         # so the CLI adapter and the command profile's ``precis()`` (which
         # both call it directly, synchronously) are unaffected.
         mcp.tool(description=_verb_description(func), **_TOOL_KW)(_offload_sync(func))
-        if tool_name in slim:
-            registered = mcp._tool_manager.get_tool(tool_name)
-            if registered is not None:
-                allow_extra_arguments(registered)
+        registered = mcp._tool_manager.get_tool(tool_name)
+        if tool_name in slim and registered is not None:
+            allow_extra_arguments(registered)
 
         # Apply special schema constraints for edit tool
         if tool_name == "edit":
             _install_edit_schema_constraints(mcp)
+        if registered is not None:
+            _compress_tool_schema(registered.parameters)
+
+
+#: Schema keywords whose value is a name→schema map, not a schema node:
+#: recursing into the map itself would rewrite a *property* named like a
+#: schema keyword (gr499041: put's ``title`` param vanished when the map's
+#: own ``title`` entry was popped).
+_SCHEMA_MAP_KEYS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs"}
+)
+
+
+def _compress_tool_schema(node: Any) -> None:
+    """Slim a FastMCP ``inputSchema`` dict in place (gr499041).
+
+    Pydantic's generated schema pays for metadata the agent never reads:
+    an auto ``title`` per property, ``"default": null`` on every optional
+    parameter (the ``required`` array already encodes optionality), and
+    ``anyOf: [<T>, {"type": "null"}]`` on every nullable one — ~45 B a
+    param where ``type: [<T>, "null"]`` costs ~25. The advertised schema
+    is documentation for the client (validation runs against the arg
+    model), so the rewrite keeps the wire shape JSON-Schema-equivalent
+    and touches nothing else: a ``$ref`` branch or a non-``{"type":...}``
+    real side is left alone.
+    """
+    if isinstance(node, dict):
+        node.pop("title", None)
+        if node.get("default") is None:
+            node.pop("default", None)
+        any_of = node.get("anyOf")
+        if isinstance(any_of, list) and len(any_of) == 2:
+            real = next(
+                (b for b in any_of if b != {"type": "null"}),
+                None,
+            )
+            null = next((b for b in any_of if b == {"type": "null"}), None)
+            if (
+                null is not None
+                and isinstance(real, dict)
+                and isinstance(real.get("type"), str)
+                and "$ref" not in real
+            ):
+                merged = {k: v for k, v in node.items() if k != "anyOf"}
+                merged.update(real)
+                merged["type"] = [real["type"], "null"]
+                node.clear()
+                node.update(merged)
+        for key, value in node.items():
+            if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+                for subschema in value.values():
+                    _compress_tool_schema(subschema)
+            else:
+                _compress_tool_schema(value)
+    elif isinstance(node, list):
+        for item in node:
+            _compress_tool_schema(item)
 
 
 def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:

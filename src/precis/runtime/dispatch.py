@@ -2775,6 +2775,12 @@ class DispatchMixin(RuntimeShape):
             return response
         if line is None:
             return response
+        # gr499041: the identical stamp+sha footer on a re-read carries no
+        # new information; suppress it for a session that saw it recently.
+        from precis.utils.hint_ledger import was_shown
+
+        if was_shown(line):
+            return response
         return replace(response, body=f"{response.body.rstrip()}\n\n{line}")
 
     def _stamp_recalled(self, kind: str, ident: Any) -> None:

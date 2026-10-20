@@ -73,8 +73,16 @@ def render_next_section(calls: list[tuple[str, str]]) -> str:
 
     Returns an empty string when ``calls`` is empty (no header, no
     blank line) so callers can unconditionally append the result.
+
+    The same rendered block served twice to one MCP session within the
+    hint-ledger TTL is suppressed (``""``) — a verbatim repeat carries
+    no information, and the carry cost of each one is why gr499041 was
+    filed. Sessionless callers always see the block.
     """
     lines = format_next_block(calls)
     if not lines:
         return ""
-    return "\nNext:\n" + "\n".join(lines)
+    from precis.utils.hint_ledger import was_shown
+
+    section = "\nNext:\n" + "\n".join(lines)
+    return "" if was_shown(section) else section

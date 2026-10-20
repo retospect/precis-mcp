@@ -44,30 +44,26 @@ def test_append_ack_and_display_policy(
     for i in range(1, 6):
         ack = h.put(id=rid, text=f"note-{i}").body
     assert f"appended comment 5 to {which} {rid}." in ack
-    # The ack names the kind's own display policy (gripe's bare get is on
-    # the render diet — newest comment only; todo keeps newest-3).
-    full_count = {"gripe": 1, "todo": 3}[which]
-    shown = "the newest comment" if full_count == 1 else f"the newest {full_count}"
-    assert f"shows {shown}" in ack and "args={'comment': 5}" in ack
-    out = h.get(id=rid).body
-    heads = [ln for ln in out.splitlines() if ln.startswith("## comment ")]
-    assert [ln.split()[2] for ln in heads] == [
-        str(i) for i in range(5, 5 - full_count, -1)
-    ]
-    assert "Z" in heads[0] and "·" in heads[0]
-    oneliners = [ln for ln in out.splitlines() if ln.startswith("comment ")]
-    assert [ln.split()[1] for ln in oneliners] == [
-        str(i) for i in range(5 - full_count, 0, -1)
-    ]
-    assert oneliners[0].endswith(f"· note-{5 - full_count}")
-    assert out.index("note-5") < out.index("note-4") < out.index("note-3")
-    footer = (
-        "comments: newest (long ones cut mid-text), older as one-liners"
-        if full_count == 1
-        else f"comments: newest {full_count} in full, older as one-liners"
-    )
-    assert footer in out
-    assert f"get(kind='{which}', id={rid}, view='comments')" in out
+    # The ack names the kind's own display policy (gr499040: gripe's bare
+    # get is the title card — comments live behind view='comments'; todo
+    # keeps the newest-3 policy).
+    if which == "gripe":
+        assert "shows the title and comment count only" in ack
+        out = h.get(id=rid).body
+        assert "## comment " not in out
+        assert "comments: 5" in out
+    else:
+        assert "shows the newest 3" in ack and "args={'comment': 5}" in ack
+        out = h.get(id=rid).body
+        heads = [ln for ln in out.splitlines() if ln.startswith("## comment ")]
+        assert [ln.split()[2] for ln in heads] == ["5", "4", "3"]
+        assert "Z" in heads[0] and "·" in heads[0]
+        oneliners = [ln for ln in out.splitlines() if ln.startswith("comment ")]
+        assert [ln.split()[1] for ln in oneliners] == ["2", "1"]
+        assert oneliners[0].endswith("· note-2")
+        assert out.index("note-5") < out.index("note-4") < out.index("note-3")
+        assert "comments: newest 3 in full, older as one-liners" in out
+        assert f"get(kind='{which}', id={rid}, view='comments')" in out
     full = h.get(id=rid, view="comments").body
     assert full.index("note-1") < full.index("note-2") < full.index("note-5")
     assert full.count("## comment ") == 5
@@ -102,14 +98,15 @@ def test_hide_and_restore(which: str, gripe: GripeHandler, todo: TodoHandler) ->
     assert "hid comment 4" in h.delete(id=rid, args={"comment": 4}).body
     out = h.get(id=rid).body  # the ref itself is still live
     assert "note-4" not in out
-    assert "1 hidden comment — view='comments' shows them" in out
+    if which == "todo":
+        assert "1 hidden comment — view='comments' shows them" in out
     full = h.get(id=rid, view="comments").body
     assert "## comment 4" in full and "[hidden]" in full and "note-4" in full
     assert h.store.fetch_refs_by_ids({rid})[rid].meta["hidden_comments"] == [4]
     assert "already hidden" in h.delete(id=rid, args={"comment": 4}).body
     restore = {"comment": 4, "restore": True}
     assert "restored comment 4" in h.delete(id=rid, args=restore).body
-    assert "note-4" in h.get(id=rid).body
+    assert "note-4" in h.get(id=rid, view="comments").body
     assert "was not hidden" in h.delete(id=rid, args=restore).body
 
 
@@ -133,7 +130,9 @@ def test_hide_refusals(which: str, gripe: GripeHandler, todo: TodoHandler) -> No
         h.delete(id=rid, args={"comment": "abc"})
     with pytest.raises(BadInput):
         h.delete(id=rid, args={"restore": True})
-    assert "only" in h.get(id=rid).body  # no refusal retired the ref
+    # no refusal retired the ref (gripe's bare get is the title card —
+    # the comment text lives in the comments view)
+    assert "only" in h.get(id=rid, view="comments").body
 
 
 def test_delete_without_args_still_soft_deletes(gripe: GripeHandler) -> None:

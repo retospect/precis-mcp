@@ -137,15 +137,17 @@ search(kind="gripe", tags=["STATUS:wontfix"])
 
 ```python
 get(kind="gripe", id=42)
-# → header + body + comment timeline (human + worker) + STATUS
-#   tags + linked jobs
+# → title card: header + tags + title + comment count
+get(kind="gripe", id=42, view="body")       # the body
+get(kind="gripe", id=42, view="comments")   # every comment, oldest first
+get(kind="gripe", id=42, view="full")       # body + every comment, uncapped
 ```
 
-`get` composes the body, then the newest comment, then older ones as
-one-line gists, so the current state is never pushed off the page. A long
-body or newest comment keeps its head and tail (the ask sits at the end)
-around a `[… N chars cut — get(…view='comments') …]` marker. Read the full body and every
-comment, oldest first, with `get(kind='gripe', id=42, view='comments')`.
+A bare `get` is the title card only — the body and timeline stay behind
+explicit views (gr499040). The comments view is selectable:
+`args={'comments': K}` is the newest K, `args={'comment': K}` is one
+comment uncapped (a long comment in the window view is cut mid-text and
+names that call). `view='full'` is the complete read.
 `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
@@ -180,8 +182,9 @@ Tag edits on an append run the same `tag()` validation —
 replacement is refused. `prio=` still belongs on `tag()`.
 With no `text=`, `put(kind='gripe', id=42, link='gripe:7')` (or `tags=`)
 runs as the `link()`/`tag()` call alone, and the reply's first line says
-so (`interpreted: … read as link(…)`). `view='full'` is read as
-`view='comments'`, and `PRIO:medium` as `PRIO:normal`, also announced.
+so (`interpreted: … read as link(…)`). `view='full'` is the complete
+read (body + every comment), and `PRIO:medium` is read as `PRIO:normal`,
+also announced.
 A numeric `PRIO:3` is refused (no single scale); use `prio=3` on `tag()`.
 
 ## Correct or refine an earlier comment

@@ -24,7 +24,7 @@ def test_comment_and_link_in_one_put(hub: Hub) -> None:
         id=dup, text="dup of canonical", link=f"gripe:{canon}", rel="superseded-by"
     )
     assert "appended comment 1" in resp.body and "linked" in resp.body
-    assert "dup of canonical" in h.get(id=dup).body
+    assert "dup of canonical" in h.get(id=dup, view="comments").body
     assert any(lk.dst_ref_id == canon for lk in h.store.links_for(dup, direction="out"))
 
 
@@ -55,7 +55,7 @@ def test_comment_and_close_in_one_put(hub: Hub) -> None:
     h, dup, canon = _two(hub)
     resp = h.put(id=dup, text="resolved: wontfix — closing", tags=["STATUS:wontfix"])
     assert "appended comment" in resp.body and "tagged" in resp.body
-    assert "resolved: wontfix — closing" in h.get(id=dup).body
+    assert "resolved: wontfix — closing" in h.get(id=dup, view="comments").body
     tags = _tags(h, dup)
     assert "STATUS:wontfix" in tags and "STATUS:open" not in tags
 

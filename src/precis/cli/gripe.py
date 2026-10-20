@@ -2,8 +2,8 @@
 
 Was the v0 human-triage path when ``gripe`` was a write-only kind
 on the MCP surface. As of migration 0005 gripe is a full
-first-class kind — ``get(kind='gripe', id=N)`` reads the body +
-comment timeline, ``search(kind='gripe', q=...)`` finds matches
+first-class kind — ``get(kind='gripe', id=N)`` reads the title card
+(``view='body'`` / ``view='comments'`` go deeper), ``search(kind='gripe', q=...)`` finds matches
 by text or tag, ``tag``/``link``/``delete`` work normally. This
 CLI duplicates that surface from the terminal and will be
 removed in a follow-up release.

@@ -77,11 +77,14 @@ class TestGripe:
         gripe_id = refs[0].id
         gripe.put(id=gripe_id, text="reproduces on HNSW ties")
         gripe.put(id=gripe_id, text="ranking comparator needs a tiebreaker")
-        body = gripe.get(id=gripe_id).body
+        # gr499040: the bare get is the title card; view='full' is the
+        # complete read (body + every comment, oldest first).
+        card = gripe.get(id=gripe_id).body
+        assert "title: search drops duplicate hits" in card
+        assert "comments: 2" in card
+        body = gripe.get(id=gripe_id, view="full").body
         assert "search drops duplicate hits" in body
-        # Render-diet policy: the newest comment renders in full, older
-        # ones as one-line gists (``comment 1 · <stamp> · <gist>``).
-        assert "## comment 1" not in body
+        assert "## comment 1" in body
         assert "reproduces on HNSW ties" in body
         assert "## comment 2" in body
         assert "tiebreaker" in body

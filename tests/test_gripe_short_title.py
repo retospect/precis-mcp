@@ -87,7 +87,7 @@ def test_long_put_stores_a_short_title_and_the_full_body(gripe: GripeHandler) ->
     assert _title(gripe, gid) == want
     assert f'title shortened to "{want}"' in body
     assert f"edit(kind='gripe', id={gid}, title='<new title>')" in body
-    full = gripe.get(id=gid, view="comments").body
+    full = gripe.get(id=gid, view="full").body
     assert LONG in full
 
 
@@ -122,7 +122,7 @@ def test_edit_rewrites_the_title_only(gripe: GripeHandler) -> None:
     assert _title(gripe, gid) == short_title(LONG)
     gripe.edit(id=gid, title="  pcb:   pours vanish ")
     assert _title(gripe, gid) == "pcb: pours vanish"
-    assert LONG in gripe.get(id=gid, view="comments").body
+    assert LONG in gripe.get(id=gid, view="full").body
 
 
 def test_edit_refuses_anything_but_a_title(gripe: GripeHandler) -> None:

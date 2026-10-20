@@ -14,12 +14,14 @@ Surface (see ``precis-gripe-help``):
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
   ``tags=``/``untags=`` ride along in the same transaction, so
   comment-then-close is one call.
-- ``get(kind='gripe', id=N)`` composes a body (``_BODY_HEAD_CHARS``;
-  past it, head + tail around a ``[… N chars cut …]`` marker) + the newest
-  comment (same middle cut)
-  (older ones as one-liners; per-kind policy in
-  :mod:`_comment_timeline`) alongside header / tags.
-  ``view='comments'`` (alias ``'full'``) returns the full body + the full timeline;
+- ``get(kind='gripe', id=N)`` is the title card (gr499040, Reto ruling
+  2026-10-19): header + tags + ``title:`` + a comment-count line pointing
+  at the deep reads — ``view='body'`` for the body,
+  ``view='comments'`` for the timeline. The comments view is selectable:
+  ``args={'comments': K}`` is the newest K, ``args={'comment': K}`` is one
+  comment uncapped (a long one in the window view is cut mid-text at
+  :data:`_comment_timeline.COMMENT_VIEW_CHARS` and names that read).
+  ``view='full'`` is the complete read (body + every comment, uncapped);
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -73,18 +75,16 @@ _RESOLVED_PREFIX = "resolved:"
 _TERMINAL_STATUS_TAGS = frozenset({"STATUS:done", "STATUS:wontfix"})
 _COMMENT_KIND = "gripe_comment"
 
-#: Bare-get body head budget (render diet 2026-10-14: the default read
-#: measured p95 6.7 KB, half of it the body). A body past the budget plus
-#: slack keeps its head and tail with a ``[… N chars cut — …]`` marker
-#: pointing at ``view='comments'``, the complete read
-#: (:func:`_comment_timeline.clip_middle`).
-_BODY_HEAD_CHARS = 1500
-
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
-#: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is
-#: the full timeline, which is ``view='comments'``; ``None`` is the default
-#: read. Applied to a single-id get without q= only; the reply names it.
-_VIEW_ALIASES: dict[str, str | None] = {"full": "comments", "default": None}
+#: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is a
+#: first-class view since gr499040 (the complete read — body + every
+#: comment); ``None`` is the default title-card read. Applied to a
+#: single-id get without q= only; the reply names it.
+_VIEW_ALIASES: dict[str, str | None] = {"default": None}
+
+#: ``title:`` line cap on the bare get (gr499040's title card) so a
+#: gripe filed with a long first line can't re-inflate the small read.
+_TITLE_CARD_CHARS = 240
 
 #: Open-view age cut: a gripe filed before this is "older than 3d" in the
 #: list summary (2026-10-18 audit: the newest-20 page hid the 44 oldest).
@@ -804,6 +804,11 @@ class GripeHandler(NumericRefHandler):
         view: str | None = None,
         q: str | None = None,
         page: int | None = None,
+        # ``args={'comment': K}`` / ``{'comments': K}`` — the
+        # ``view='comments'`` selectors (gr499040; flattened to kwargs by
+        # the dispatcher's extras handling).
+        comment: int | str | None = None,
+        comments: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
@@ -817,8 +822,6 @@ class GripeHandler(NumericRefHandler):
             # Batch form: the base class renders it (summary-shaped) or
             # refuses the view= combination.
             return super().get(id=id, view=view, q=q, **_kw)
-        # 'full' is the name agents reach for (surface-review 2026-10-16:
-        # 6 errors / 3 sessions); it is the complete read, so alias it.
         readings: list[str] = []
         single = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if view in _VIEW_ALIASES and single and q is None:
@@ -826,25 +829,42 @@ class GripeHandler(NumericRefHandler):
             shown = f"view={canon!r}" if canon is not None else "the default view"
             readings.append(f"view={view!r} read as {shown}")
             view = canon
-        if view in ("comments", "full"):
+        if comment is not None or comments is not None:
+            # The selectors only mean something inside the timeline view —
+            # read ``comment``/``comments`` anywhere else would be a
+            # silent drop (mcp-authoring rule 6).
+            if view != "comments":
+                raise BadInput(
+                    "args={'comment': K} / args={'comments': K} select inside "
+                    "view='comments'",
+                    next=(
+                        f"get(kind='gripe', id={id}, view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                )
+        if view in ("comments", "body", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
                 Response(
-                    body=self._render_timeline(
-                        ref, self.store.tags_for(ref.id), full=True
+                    body=self._render_ref_view(
+                        ref,
+                        self.store.tags_for(ref.id),
+                        view=view,
+                        comment=comment,
+                        comments=comments,
                     )
                 ),
                 readings,
             )
         if view is not None and view not in _BASE_VIEWS:
-            views = [*_BASE_VIEWS, "comments"]
+            views = [*_BASE_VIEWS, "body", "comments", "full"]
             raise Unsupported(
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
                 next=(
-                    "get(kind='gripe', id=<id>, view='comments') — full body + every "
-                    "comment; the plain get already shows tags, body head and the "
-                    "newest comment"
+                    "get(kind='gripe', id=<id>, view='comments') — every comment "
+                    "(args={'comments': K} newest K, {'comment': K} one); "
+                    "view='body' the body; the plain get is title + tags + count"
                 ),
             )
         try:
@@ -857,30 +877,141 @@ class GripeHandler(NumericRefHandler):
         return interpreted(resp, readings)
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
-        return self._render_timeline(ref, tags, full=False)
+        """The bare get's title card (gr499040): header + tags + title +
+        comment count — the body and timeline stay behind ``view='body'``
+        / ``view='comments'``."""
+        comments = [
+            b
+            for b in self.store.chunks.list_chunks_for_ref(ref.id)
+            if b.chunk_kind == _COMMENT_KIND
+        ]
+        # ``refs.title`` is the whole body text when the first line already
+        # fits (:mod:`._gripe_title` only derives a short title for a long
+        # one) — the card shows the first line, never the stored blob.
+        from precis.handlers._gripe_title import first_line
 
-    def _render_timeline(self, ref: Ref, tags: list[Tag], *, full: bool) -> str:
-        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        title = first_line(ref.title or "")
+        if len(title) > _TITLE_CARD_CHARS:
+            title = title[: _TITLE_CARD_CHARS - 1].rstrip() + "…"
+        lines = [
+            *self._header_lines(ref, tags),
+            f"title: {title}",
+            f"comments: {len(comments)} · body: view='body' · "
+            "timeline: view='comments'",
+        ]
+        # One-line gist of the newest visible comment (~80 B): a closer
+        # verifying a close (or a skimmer checking state) shouldn't have
+        # to open the timeline for the latest word.
+        newest = next(
+            (
+                c
+                for c in sorted(comments, key=lambda c: c.ord, reverse=True)
+                if c.ord not in tl.hidden_comments(ref)
+            ),
+            None,
+        )
+        if newest is not None:
+            gist = " ".join(newest.text.split())[:60]
+            lines.append(f"newest: comment {newest.ord} · {tl._stamp(newest)} · {gist}")
+        return "\n".join(lines)
+
+    def _header_lines(self, ref: Ref, tags: list[Tag]) -> list[str]:
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:
             lines.append(f"filed by: {ref.set_by}")
         if tags:
             lines.append("tags: " + " ".join(str(t) for t in tags))
-        body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
-        lines.extend(["", body if full else self._body_head(body, ref.id)])
-        comments = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
-        section = tl.render_comments(ref, comments, kind=self.kind, full=full)
-        return "\n".join(lines) + (f"\n\n{section}" if section else "")
+        return lines
 
-    @staticmethod
-    def _body_head(body: str, ref_id: int) -> str:
-        """Bare-get body: head and tail of an over-budget body (the tail
-        carries the fix shape), cut marker naming the view that has the
-        rest. The pointer is inline (not in a footer) because a
-        comment-free gripe renders no comments footer to point at it."""
-        return tl.clip_middle(
-            body, _BODY_HEAD_CHARS, f"get(kind='gripe', id={ref_id}, view='comments')"
+    def _render_ref_view(
+        self,
+        ref: Ref,
+        tags: list[Tag],
+        *,
+        view: str,
+        comment: int | str | None,
+        comments: int | str | None,
+    ) -> str:
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
+        cblocks = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
+        head = "\n".join(self._header_lines(ref, tags))
+        if view == "body":
+            return f"{head}\n\n{body}"
+        if view == "full":
+            section = tl.render_comments(ref, cblocks, kind=self.kind, full=True)
+            return f"{head}\n\n{body}" + (f"\n\n{section}" if section else "")
+        # view == "comments"
+        only, last = self._comment_window(ref, cblocks, comment, comments)
+        section = tl.render_comment_view(
+            ref, cblocks, kind=self.kind, last=last, only=only
         )
+        if not section:
+            section = (
+                f"no comments — put(kind='gripe', id={ref.id}, text='...') adds one"
+            )
+        return f"{head}\n\n{section}"
+
+    def _comment_window(
+        self,
+        ref: Ref,
+        cblocks: list[Any],
+        comment: int | str | None,
+        comments: int | str | None,
+    ) -> tuple[int | None, int | None]:
+        """Validate the ``comment``/``comments`` selectors into (only, last)."""
+        if comment is not None and comments is not None:
+            raise BadInput(
+                "pass args={'comment': K} or args={'comments': K}, not both",
+                next=(
+                    f"get(kind='gripe', id={ref.id}, view='comments', "
+                    "args={'comments': 5})"
+                ),
+            )
+        ords = sorted(c.ord for c in cblocks)
+        if comment is not None:
+            try:
+                number = int(comment)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['comment'] must be a comment number, got {comment!r}",
+                    next=(
+                        f"comments on {self._sense()} {ref.id}: {ords}"
+                        if ords
+                        else f"{self._sense()} {ref.id} has no comments"
+                    ),
+                ) from None
+            if number not in ords:
+                raise BadInput(
+                    f"{self._sense()} {ref.id} has no comment {number}",
+                    next=(
+                        f"comments on {self._sense()} {ref.id}: {ords}"
+                        if ords
+                        else f"{self._sense()} {ref.id} has no comments"
+                    ),
+                )
+            return number, None
+        if comments is not None:
+            try:
+                count = int(comments)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['comments'] must be a count, got {comments!r}",
+                    next=(
+                        f"get(kind='gripe', id={ref.id}, view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                ) from None
+            if count < 1:
+                raise BadInput(
+                    f"args['comments'] must be >= 1, got {count}",
+                    next=(
+                        f"get(kind='gripe', id={ref.id}, view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                )
+            return None, count
+        return None, None
 
     def _render_create_ack(
         self,

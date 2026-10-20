@@ -60,7 +60,11 @@ if [ -f "$memory_md" ] && ! grep -qF '<!-- memory-index: graph -->' "$memory_md"
     exit 0
 fi
 
-total_tok=8000
+# gr499042: the hook's output is injected once and carried every later
+# turn — the ~20-line live-threads list cost ~185M tok/day of carry. The
+# index budget now lands ~7 newest thread lines plus the "+N older"
+# search pointer (which stays a full-recall door).
+total_tok=2600
 claude_bytes=0
 if [ -f "$project/CLAUDE.md" ]; then
     claude_bytes="$(wc -c <"$project/CLAUDE.md" | tr -d ' ')"

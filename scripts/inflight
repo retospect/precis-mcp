@@ -27,7 +27,7 @@
 #
 # Usage:
 #   scripts/inflight            # the table
-#   scripts/inflight --for-hook # compact: only live/dirty/unmerged/current rows; always exits 0
+#   scripts/inflight --for-hook # one counts line + pointer (gr499042); always exits 0
 #                               # (wired as a SessionStart hook in .claude/settings.json)
 #   scripts/inflight --json     # structured form for /workspace-cleanup: each
 #                               # worktree gets a `bucket` verdict —
@@ -316,19 +316,18 @@ gripe_line() {
 }
 
 if [ "$FOR_HOOK" = 1 ]; then
-  # Compact: only trees that matter for overlap, short PURPOSE, LAST = age only.
-  echo "🌳 In-flight trees (scan for overlap; once your task is clear, write one line to .claude/purpose):"
-  HIDDEN=0
-  for i in "${!ROWS[@]}"; do [ "${SHOW[$i]}" = 1 ] || HIDDEN=$((HIDDEN+1)); done
-  {
-    printf '%s\n' "WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST"
-    for i in "${!ROWS[@]}"; do
-      [ "${SHOW[$i]}" = 1 ] || continue
-      IFS='|' read -r c1 c2 c3 c4 c5 c6 <<<"${ROWS[$i]}"
-      printf '%s|%s|%s|%s|%s|%s\n' "$c1" "$c2" "$c3" "$c4" "$(trunc "$c5" 50)" "${c6%% — *}"
-    done
-  } | column -t -s '|'
-  [ "$HIDDEN" -gt 0 ] && echo "+ ${HIDDEN} merged/clean/sessionless trees hidden (scripts/inflight for all)"
+  # One line, not the table (gr499042): the hook's output is injected once
+  # and then carried every later turn of the session, so the overlap scan
+  # is on-demand now — a session that needs it runs scripts/inflight.
+  LIVE=0; DIRTYF=0; AHEAD=0
+  for i in "${!ROWS[@]}"; do
+    [ "${SHOW[$i]}" = 1 ] || continue
+    IFS='|' read -r _c1 _sess _dirtyf _verd _p _l <<<"${ROWS[$i]}"
+    [[ "$_sess" == live#* ]] && LIVE=$((LIVE+1))
+    [ "$_dirtyf" != 'clean' ] && DIRTYF=$((DIRTYF+1))
+    [[ "$_verd" == ↑* ]] && AHEAD=$((AHEAD+1))
+  done
+  echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live sessions, $DIRTYF dirty, $AHEAD ahead of $BASE) — scripts/inflight for the overlap table; once your task is clear, write .claude/purpose"
   [ "${#REMOVABLE[@]}" -gt 0 ] && echo "${#REMOVABLE[@]} removable — reap-worktrees handles them"
   gripe_line
   exit 0

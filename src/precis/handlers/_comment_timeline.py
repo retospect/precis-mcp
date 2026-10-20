@@ -2,17 +2,17 @@
 
 Why a policy and not "render everything": gr470905 grew 12 comment chunks
 (~30 KB), overflowed the response frame, and the *newest* comment — usually
-the one carrying the current state — landed on page 2. A bare ``get`` now
-renders the newest few visible comments in full (newest first), older
-visible ones as one-liners (so their existence and gist are not lost),
-and a footer naming the ways to see more. ``view='comments'`` is the
-complete, oldest-first read.
+the one carrying the current state — landed on page 2. A bare ``get`` on a
+kind that renders comments renders the newest few visible comments in full
+(newest first), older visible ones as one-liners (so their existence and
+gist are not lost), and a footer naming the ways to see more.
 
-How many comments render in full (and how far each runs before a head
-cut) is a per-kind choice — ``_KIND_POLICY`` below. Gripe's bare get went
-on the render diet (2026-10-14: measured p95 6.7 KB, dominated by the
-body plus three full comments plus the one-liner list): newest comment
-only, head-capped, eight one-liners. Todo keeps the original newest-3.
+gr499040 (Reto ruling 2026-10-19) took gripe's bare get further: title +
+tags + comment count only — the body and timeline come only through
+``view='body'`` / ``view='comments'``. The comments view is selectable
+(``args={'comments': K}`` newest K, ``args={'comment': K}`` one) and caps
+each comment at :data:`COMMENT_VIEW_CHARS`; ``view='full'`` stays the
+uncapped complete read. Todo keeps the original bare-get newest-3 policy.
 
 Comments are chunks (``gripe_comment`` / ``todo_comment``); chunks are
 append-only, so "hiding a stale comment" is not a chunk write. The hidden
@@ -41,6 +41,12 @@ ONE_LINER_CAP = 20
 #: Characters of comment text in a one-liner.
 ONE_LINER_CHARS = 100
 
+#: Per-comment cap inside gripe's ``view='comments'`` (gr499040): the
+#: timeline view shows every comment but cuts a long one mid-text with a
+#: pointer at ``args={'comment': K}`` — the single-comment read is the
+#: uncapped escape. ``view='full'`` never caps.
+COMMENT_VIEW_CHARS = 3000
+
 HIDDEN_META_KEY = "hidden_comments"
 
 
@@ -60,12 +66,10 @@ class _Policy(NamedTuple):
 
 _DEFAULT_POLICY = _Policy(FULL_COMMENTS, None, ONE_LINER_CAP)
 #: Kinds whose bare get renders a leaner comment timeline than the
-#: default. gripe measured p95 6.7 KB / max 9.5 KB over a 24h mining
-#: window (2026-10-14): the newest comment carries the current state, the
-#: rest is reachable at ``view='comments'``.
-_KIND_POLICY: dict[str, _Policy] = {
-    "gripe": _Policy(full_count=1, full_chars=800, one_liner_cap=8),
-}
+#: default. Gripe left the table entirely on 2026-10-19 (gr499040: its
+#: bare get is title + tags + count — the timeline lives behind
+#: ``view='comments'``).
+_KIND_POLICY: dict[str, _Policy] = {}
 
 
 def _policy(kind: str) -> _Policy:
@@ -199,6 +203,66 @@ def render_comments(
     return "\n\n".join(parts)
 
 
+def _selector_footer(ref: Ref, kind: str, note: str) -> str:
+    """The ``view='comments'`` trailer: window note + selector spellings."""
+    get = f"get(kind={kind!r}, id={ref.id}"
+    return (
+        f"{note} · one: {get}, view='comments', args={{'comment': <K>}}) · "
+        f"newest K: {get}, view='comments', args={{'comments': <K>}}) · "
+        f"+body: {get}, view='full')"
+    )
+
+
+def render_comment_view(
+    ref: Ref,
+    comments: list[ChunkRow],
+    *,
+    kind: str,
+    last: int | None = None,
+    only: int | None = None,
+) -> str:
+    """The selectable ``view='comments'`` render (gr499040).
+
+    ``only=K`` is one comment, uncapped — the escape for a body that the
+    :data:`COMMENT_VIEW_CHARS` window cap cut. ``last=K`` is the newest K,
+    rendered oldest first like the complete view. No selector is all
+    comments, oldest first, each capped. Hidden comments render marked
+    ``[hidden]`` everywhere (the chunk is never the thing hidden).
+    """
+    if not comments:
+        return ""
+    ordered = sorted(comments, key=lambda c: c.ord)
+    hidden = hidden_comments(ref)
+    if only is not None:
+        c = next((c for c in ordered if c.ord == only), None)
+        if c is None:
+            return ""
+        mark = " [hidden]" if c.ord in hidden else ""
+        return (
+            f"## comment {c.ord} · {_stamp(c)}{mark}\n{c.text}\n\n"
+            + _selector_footer(
+                ref, kind, f"comment {c.ord} of {len(ordered)} — uncapped"
+            )
+        )
+    window = ordered if last is None else ordered[-last:]
+    pointer = (
+        f"get(kind={kind!r}, id={ref.id}, view='comments', args={{'comment': %d}})"
+    )
+    parts = [
+        f"## comment {c.ord} · {_stamp(c)}"
+        f"{' [hidden]' if c.ord in hidden else ''}\n"
+        + clip_middle(c.text, COMMENT_VIEW_CHARS, pointer % c.ord)
+        for c in window
+    ]
+    note = (
+        f"comments: newest {last} of {len(ordered)} (long ones cut mid-text)"
+        if last is not None and len(ordered) > last
+        else f"comments: all {len(ordered)} (long ones cut mid-text)"
+    )
+    parts.append(_selector_footer(ref, kind, note))
+    return "\n\n".join(parts)
+
+
 def _insert_next(store: Any, ref_id: int, comment_kind: str, text: str) -> int:
     existing = store.chunks.list_chunks_for_ref(ref_id)
     number = max((c.ord for c in existing), default=0) + 1
@@ -239,17 +303,22 @@ def append_comment(
                 "todo_comment: 0195) against this DB",
             ],
         ) from e
-    policy = _policy(kind)
+    # The ack names what a bare get now shows of the timeline — per kind
+    # (gr499040: gripe's bare get is the title card only).
     shown = (
-        "the newest comment"
-        if policy.full_count == 1
-        else f"the newest {policy.full_count}"
+        "the title and comment count only (body: view='body')"
+        if kind == "gripe"
+        else (
+            "the newest comment plus older one-liners"
+            if _policy(kind).full_count == 1
+            else f"the newest {_policy(kind).full_count} plus older one-liners"
+        )
     )
     return Response(
         body=(
             f"appended comment {number} to {kind} {ref.id}. A bare get shows "
-            f"{shown} plus older one-liners; view='comments' shows all; hide "
-            f"a stale one with delete(kind={kind!r}, id={ref.id}, "
+            f"{shown}; view='comments' shows all; hide a stale one with "
+            f"delete(kind={kind!r}, id={ref.id}, "
             f"args={{'comment': {number}}})."
         )
     )
