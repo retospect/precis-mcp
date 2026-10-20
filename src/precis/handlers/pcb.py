@@ -1624,6 +1624,14 @@ class PcbHandler(Handler):
                 "boards route power like signals, a different problem)",
             )
         if op == "route":
+            # Reto 2026-10-20: a board must have a closed outline,
+            # otherwise nothing goes.
+            defect = pcb_session.outline_defect(self._outline_from_features(ref.id))
+            if defect is not None:
+                raise BadInput(
+                    f"pcb: refusing to route {ref.slug!r} — {defect}",
+                    next=pcb_session.OUTLINE_FIX_HINT.replace("<slug>", ref.slug),
+                )
             # gr480010: a stale expansion used to ride along with only the
             # warning below — job 479998 routed ewod-dogfood-6 over ARR1
             # copper stored at v3 while the code emitted v4, and committed

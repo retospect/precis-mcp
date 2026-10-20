@@ -18,6 +18,7 @@ from precis.handlers.pcb import PcbHandler
 from precis.pcb import catalog
 from precis.pcb import drc as pcb_drc
 from precis.pcb import session as pcb_session
+from tests._pcb_outline import closed_outline
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
 _DESIGN: dict[str, Any] = {
@@ -351,6 +352,9 @@ _CROSSED = {
     ],
 }
 
+#: ``_CROSSED`` on a board with a closed outline — what a route needs.
+_CROSSED_OUTLINED = {**_CROSSED, "features": [closed_outline()]}
+
 
 def test_crossings_view(pcb):
     pcb.put(id="x", args=_CROSSED)
@@ -525,6 +529,7 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
             {"net": "N1", "refdes": "R1", "pin": "1"},
         ],
     }
+    clean_design["features"] = [closed_outline()]
     pcb.put(id="drc-clean", args=clean_design)
     ref = pcb.store.get_ref(kind="pcb", id="drc-clean")
     board_id = pcb.store.pcb_ensure_board(ref.id)
@@ -1067,7 +1072,7 @@ def test_op_route_dedup_key_carries_the_route_code_version(pcb, store, monkeypat
     produced by older code)."""
     from precis.workers.job_types import pcb_route as pcb_route_job
 
-    pcb.put(id="idem-route", args=_CROSSED)
+    pcb.put(id="idem-route", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="idem-route")
     assert ref is not None
 
@@ -1137,7 +1142,7 @@ def test_op_route_warm_start_flag(store, monkeypatch):
     from precis.workers.job_types import pcb_route
 
     hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="route-warm-start", args=_CROSSED)
+    PcbHandler(hub=hub).put(id="route-warm-start", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="route-warm-start")
     assert ref is not None
     job = Mock()
@@ -1167,7 +1172,7 @@ def test_op_route_corridor_and_escape_flags(store, monkeypatch):
     from unittest.mock import Mock
 
     hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="route-opt-ins", args=_CROSSED)
+    PcbHandler(hub=hub).put(id="route-opt-ins", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="route-opt-ins")
     assert ref is not None
     job = Mock()
@@ -1193,7 +1198,7 @@ def test_op_route_accepts_corridor_and_escape_opts(pcb, store):
     schema took them but dispatch refused the ``put()`` args outright,
     a bug the ``_enqueue_op`` tests could not see because they enter
     below the dispatch validation."""
-    pcb.put(id="route-opts", args=_CROSSED)
+    pcb.put(id="route-opts", args=_CROSSED_OUTLINED)
     resp = pcb.put(
         id="route-opts", args={"op": "route", "corridor": 5, "escape": "plaza"}
     )
@@ -1212,7 +1217,7 @@ def test_op_route_accepts_corridor_and_escape_opts(pcb, store):
 
 
 def test_op_route_enqueues_a_pcb_route_job(pcb, store):
-    pcb.put(id="route-enqueue", args=_CROSSED)
+    pcb.put(id="route-enqueue", args=_CROSSED_OUTLINED)
     resp = pcb.put(id="route-enqueue", args={"op": "route"})
     assert "enqueued" in resp.body
     ref = store.get_ref(kind="pcb", id="route-enqueue")
@@ -1256,6 +1261,7 @@ def test_op_route_refuses_a_stale_generator_expansion(pcb, store, monkeypatch):
         id="stale-gen-route",
         args={
             "generators": [{"name": "G1", "generator": "fake_stale_gen", "params": {}}],
+            "features": [closed_outline()],
         },
     )
     ref = store.get_ref(kind="pcb", id="stale-gen-route")
@@ -1308,7 +1314,7 @@ def test_op_place_rejects_non_4_layer_stackup(pcb, store):
 
 @pytest.mark.parametrize("negotiate", [0, 10, 100])
 def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negotiate):
-    pcb.put(id="op-negotiate-valid", args=_CROSSED)
+    pcb.put(id="op-negotiate-valid", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-negotiate-valid")
     assert ref is not None
     args = {"op": "route", "seed": 0, "iters": 3000, "negotiate": negotiate}
@@ -1341,14 +1347,14 @@ def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negoti
 
 @pytest.mark.parametrize("negotiate", [-1, 101])
 def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negotiate):
-    pcb.put(id="op-negotiate", args=_CROSSED)
+    pcb.put(id="op-negotiate", args=_CROSSED_OUTLINED)
     with pytest.raises(BadInput, match="negotiate"):
         pcb.put(id="op-negotiate", args={"op": "route", "negotiate": negotiate})
 
 
 @pytest.mark.parametrize("loop", [-1, 4])
 def test_op_route_loop_out_of_range_is_bad_input_not_a_long_job(pcb, loop):
-    pcb.put(id="op-loop", args=_CROSSED)
+    pcb.put(id="op-loop", args=_CROSSED_OUTLINED)
     with pytest.raises(BadInput, match="loop"):
         pcb.put(id="op-loop", args={"op": "route", "loop": loop})
 
@@ -1369,7 +1375,7 @@ def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeyp
     hub = Hub(store=store)
     PcbHandler(hub=hub).put(
         id="op-loop-caps",
-        args={**_CROSSED, "meta": {"expansion_caps": caps}},
+        args={**_CROSSED_OUTLINED, "meta": {"expansion_caps": caps}},
     )
     ref = store.get_ref(kind="pcb", id="op-loop-caps")
     assert ref is not None
@@ -1395,7 +1401,7 @@ def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monke
     from unittest.mock import Mock
 
     hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="op-cleanup", args=_CROSSED)
+    PcbHandler(hub=hub).put(id="op-cleanup", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-cleanup")
     assert ref is not None
     with pytest.raises(BadInput, match="cleanup"):
@@ -1411,13 +1417,13 @@ def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monke
 
 
 def test_op_route_force_must_be_boolean(pcb):
-    pcb.put(id="op-force-bad", args=_CROSSED)
+    pcb.put(id="op-force-bad", args=_CROSSED_OUTLINED)
     with pytest.raises(BadInput, match="force"):
         pcb.put(id="op-force-bad", args={"op": "route", "force": "yes"})
 
 
 def test_op_route_force_true_lands_in_job_params(pcb, store):
-    pcb.put(id="op-force-ok", args=_CROSSED)
+    pcb.put(id="op-force-ok", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-force-ok")
     assert ref is not None
     pcb.put(id="op-force-ok", args={"op": "route", "seed": 0, "force": True})

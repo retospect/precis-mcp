@@ -12,8 +12,10 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
+from tests._pcb_outline import closed_outline
 
 _DESIGN: dict[str, Any] = {
+    "features": [closed_outline()],
     "components": [
         {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
         {"refdes": "B", "label": "ic", "x": 2.0, "y": 2.0, "pins": [{"name": "1"}]},

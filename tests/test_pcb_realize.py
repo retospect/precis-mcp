@@ -46,6 +46,7 @@ from precis.pcb.rules import (
     via_capacity_a,
     via_count_for_current,
 )
+from tests._pcb_outline import closed_outline
 
 #: This module tests the TANGENT drawer's contract, so it says so rather
 #: than riding the default. Those contracts — one straight-or-hugging
@@ -2083,7 +2084,10 @@ def test_stitched_via_group_stays_connected_to_its_own_trace():
     # pass over the same model is the property that would fail if the bar
     # spilled outside what was cleared.
     findings = pcb_drc.run_geometric_drc(
-        model, capability=capability_for("4layer"), unrouted=[]
+        model,
+        capability=capability_for("4layer"),
+        unrouted=[],
+        outline=closed_outline()["geom"]["path"],
     )
     errors = [f for f in findings if f.severity == "error"]
     assert not errors, [f.detail for f in errors]
@@ -2264,7 +2268,10 @@ def test_shove_vias_never_increases_segment_count_or_breaks_connectivity():
     islands = net_islands(model)
     assert not islands, [(isl.net, isl.components, isl.witnesses) for isl in islands]
     findings = pcb_drc.run_geometric_drc(
-        model, capability=capability_for("4layer"), unrouted=[]
+        model,
+        capability=capability_for("4layer"),
+        unrouted=[],
+        outline=closed_outline()["geom"]["path"],
     )
     errors = [f for f in findings if f.severity == "error"]
     assert not errors, [f.detail for f in errors]

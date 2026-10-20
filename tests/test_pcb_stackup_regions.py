@@ -175,28 +175,6 @@ def test_a_legacy_stackup_keeps_its_plane_net_a_declaration() -> None:
     assert notes == []
 
 
-def test_an_outline_less_board_routes_a_declared_fill_as_traces() -> None:
-    """gr495395: with no outline a pour has no extent, so the default
-    stackup's GND fill is not promoted (it would fail every pin
-    ``unpourable_plane``); an authored row still is."""
-    from precis.pcb.session import apply_plane_assignments
-
-    ir = _two_pin_ir()
-    ir.outline = []
-    applied = apply_plane_assignments(ir, [])
-    assert applied.assignments == []
-    assert int(ir.net_plane_layers[0]) == 0
-    assert any("no outline" in n for n in applied.notes)
-    ir = _two_pin_ir()
-    ir.outline = []
-    row = {"layer": "In1.Cu", "net": "GND", "source": "authored"}
-    applied = apply_plane_assignments(ir, [row])
-    assert [(a.layer, a.net) for a in applied.assignments] == [("In1.Cu", "GND")]
-    with_outline = _two_pin_ir()
-    applied = apply_plane_assignments(with_outline, [])
-    assert {a.source for a in applied.assignments} == {"fill"}
-
-
 # ── slice 4: region pours ─────────────────────────────────────────────────
 
 

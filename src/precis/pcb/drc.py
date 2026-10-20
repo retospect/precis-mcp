@@ -2890,6 +2890,29 @@ def check_board_edge_clearance(
     return findings
 
 
+def check_outline_missing(outline: list[list[float]] | None) -> list[DrcFinding]:
+    """A board must have a closed outline, otherwise nothing goes (Reto
+    2026-10-20). Fires one ``error`` when there is no outline, fewer than 3
+    distinct points, or a ring that is not a simple polygon (shared
+    predicate :func:`precis.pcb.session.outline_defect`). Every other
+    outline rule goes silent without a usable ring, so this is the one
+    finding that says why. ``margin_mm`` is ``None``: the defect is
+    categorical, not a distance."""
+    from precis.pcb.session import OUTLINE_FIX_HINT, outline_defect
+
+    defect = outline_defect(outline)
+    if defect is None:
+        return []
+    return [
+        DrcFinding(
+            rule="outline_missing",
+            severity="error",
+            where="board outline",
+            detail=f"{defect}. Fix: add a closed outline — {OUTLINE_FIX_HINT}",
+        )
+    ]
+
+
 def check_outline_containment(
     model: dict[str, Any],
     *,
@@ -4022,6 +4045,7 @@ def run_geometric_drc(
     )
     findings += check_silk_edge_clearance(model, capability, outline=outline)
     findings += check_octilinear(model)
+    findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
@@ -4985,6 +5009,7 @@ __all__ = [
     "check_npth_clearance",
     "check_octilinear",
     "check_outline_containment",
+    "check_outline_missing",
     "check_over_current",
     "check_over_voltage",
     "check_pin_conflicts",

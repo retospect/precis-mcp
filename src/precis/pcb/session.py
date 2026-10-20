@@ -111,6 +111,35 @@ def outline_from_features(features: list[dict[str, Any]]) -> list[list[float]] |
     return None
 
 
+OUTLINE_FIX_HINT = (
+    "put(kind='pcb', id='<slug>', args={'features':[{'ftype':'outline',"
+    "'geom':{'path':[[0,0],[40,0],[40,30],[0,30]]}}]}) — a closed polygon of "
+    "at least 3 points that does not cross itself"
+)
+
+
+def outline_defect(outline: list[list[float]] | None) -> str | None:
+    """Why ``outline`` is not a usable board outline, or ``None`` when it
+    is a closed simple polygon. The one predicate DRC (``outline_missing``),
+    the ``op='route'`` refusal and the route job share: no outline, fewer
+    than 3 distinct points, or a ring that crosses itself / has ~zero area
+    (Reto 2026-10-20: a board must have a closed outline, otherwise
+    nothing goes)."""
+    from shapely.geometry import Polygon
+
+    if not outline:
+        return "the board has no outline"
+    pts = {(round(float(p[0]), 6), round(float(p[1]), 6)) for p in outline}
+    if len(pts) < 3:
+        return f"the outline has only {len(pts)} distinct point(s); it needs at least 3"
+    poly = Polygon([(float(p[0]), float(p[1])) for p in outline])
+    if not poly.is_valid:
+        return "the outline ring crosses itself (not a simple polygon)"
+    if poly.area < 1e-6:
+        return "the outline ring encloses ~zero area"
+    return None
+
+
 def mounting_holes_from_features(
     features: list[dict[str, Any]],
 ) -> tuple[pcb_ir.MountingHole, ...]:
@@ -701,18 +730,6 @@ def apply_plane_assignments(
 
     names = [str(ir.net_name[n]) for n in range(ir.n_nets)]
     assignments, notes = pcb_planes.resolve_assignments(ir.stackup, rows, names)
-    if not ir.outline or len(ir.outline) < 3:
-        # A pour has no extent without an outline: a stackup declaration
-        # promoted here fails every pin ``unpourable_plane``, where the
-        # legacy stackup's unread ``plane_net`` left the net routed as
-        # traces (gr495395). Authored and derived rows stay as they were.
-        undeclared = [a for a in assignments if a.source in ("stackup", "fill")]
-        assignments = [a for a in assignments if a.source not in ("stackup", "fill")]
-        notes = notes + [
-            f"{a.layer}={a.net} ({a.source}): the board has no outline to pour "
-            "into — the router routes the net as traces"
-            for a in undeclared
-        ]
     net_id = {name: n for n, name in enumerate(names)}
     layer_idx = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
     locked: set[int] = set()
@@ -2002,6 +2019,7 @@ def label_spots(design: dict[str, Any]) -> dict[str, str]:
 
 
 __all__ = [
+    "OUTLINE_FIX_HINT",
     "apply_real_pin_offsets",
     "apply_route_overrides",
     "board_capability",
@@ -2015,6 +2033,7 @@ __all__ = [
     "land_rects_by_instance",
     "local_footprint_names_by_refdes",
     "mounting_holes_from_features",
+    "outline_defect",
     "outline_from_features",
     "polarized_refdes",
     "positions",

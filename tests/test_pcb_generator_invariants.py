@@ -19,6 +19,7 @@ from precis.pcb import generators
 from precis.pcb.optimize import resolve_measures
 from precis.store import Store
 from precis.workers.job_types import pcb_route
+from tests._pcb_outline import closed_outline
 
 _6X6 = {"grid": [6, 6]}
 
@@ -32,13 +33,14 @@ def _seed(pcb: PcbHandler, store: Store, slug: str = "inv") -> tuple[Any, int]:
     pcb.put(
         id=slug,
         args={
+            "features": [closed_outline(-100, -100, 500, 500)],
             "generators": [
                 {
                     "name": "ARR1",
                     "generator": "ewod_pad_array",
                     "params": dict(_6X6),
                 }
-            ]
+            ],
         },
     )
     ref = store.get_ref(kind="pcb", id=slug)

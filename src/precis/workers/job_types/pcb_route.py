@@ -859,6 +859,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # here. One rule, two call sites, drifted: the same shape as every
     # other defect this build has produced.
     features = snap.features
+    defect = pcb_session.outline_defect(pcb_session.outline_from_features(features))
+    if defect is not None:
+        ctx.record_failure(
+            f"pcb_route: refusing to route design (ref_id={pcb_ref_id}) — {defect}. "
+            f"Fix: {pcb_session.OUTLINE_FIX_HINT}",
+            failure_class="input",
+        )
+        return
 
     def _build(g: dict[str, Any]) -> PcbIR:
         return pcb_session.build_ir(

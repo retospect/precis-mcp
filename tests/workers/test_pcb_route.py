@@ -22,6 +22,8 @@ from precis.store import Store
 from precis.store._pcb_ops import _SNAPSHOT_KEEP
 from precis.workers.auto_check_evaluators import route_complete
 from precis.workers.job_types import pcb_route
+from tests._pcb_outline import closed_outline
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 pytestmark = pytest.mark.db
 
@@ -119,6 +121,11 @@ _DESIGN_HIGH_CURRENT = {
 
 def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     handler = PcbHandler(hub=Hub(store=store))
+    # A board needs a closed outline (Reto 2026-10-20): give it one unless
+    # the design authored its own.
+    feats = list(args.get("features") or [])
+    if not any(f.get("ftype") == "outline" for f in feats):
+        args = {**args, "features": [closed_outline(), *feats]}
     handler.put(id=slug, args=args)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
@@ -319,6 +326,10 @@ def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
     never the old flat 0.25mm default that used to fire here regardless
     of current."""
     ref_id = _seed(store, "route-current", _DESIGN_HIGH_CURRENT)
+    # The v1 stackup: on the default one a board with an outline serves VBUS
+    # from a pour through pad-width dog-bone stubs, so no sized trace
+    # exists to measure.
+    store.pcb_set_stackup(store.pcb_ensure_board(ref_id), LEGACY_V1_STACKUP)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
     _route(ctx)
     assert not ctx.failures
@@ -334,13 +345,13 @@ def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
         # `geom` has no `width_mm` key -- this test is about TRACK width,
         # so it must not silently pick up an unrelated via row.
         rows = conn.execute(
-            "SELECT geom->>'width_mm' FROM pcb_copper "
+            "SELECT geom->>'width_mm', geom->>'is_dogbone', layer FROM pcb_copper "
             "WHERE board_id = %s AND ctype = 'track'",
             (board_id,),
         ).fetchall()
     assert rows
     widths = [float(r[0]) for r in rows]
-    assert all(w > 1.0 for w in widths)  # nowhere near the 0.25mm fuse
+    assert all(w > 1.0 for w in widths), rows  # nowhere near the 0.25mm fuse
     assert all(w != pytest.approx(0.25) for w in widths)
 
 
@@ -506,42 +517,25 @@ def test_pcb_route_applies_authored_plane_assignment(store: Store) -> None:
     )
 
 
-def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
-    store: Store,
-) -> None:
-    """A pour has no extent without a board outline, so a net promoted to a
-    plane on an outline-less design cannot be connected. The engine must
-    SAY so: its segments come back unrouted and the net's route row is not
-    ``'realized'``.
-
-    The failure this pins is not "no pour" — it is a board that reports
-    itself finished while a whole net's pins reach a via that opens onto an
-    empty layer. Every geometric rule passes such a board comfortably,
-    because they all ask about proximity and it has no copper to be close
-    to anything.
-    """
-    ref_id = _seed(store, "route-plane-noboard", _DESIGN)
+def test_route_job_refuses_a_board_without_a_closed_outline(store: Store) -> None:
+    """Reto 2026-10-20: "Board must have closed outline, otherwise nothing
+    goes." A job enqueued some other way than ``op='route'`` still fails
+    up front, naming the fix, and writes no route state."""
+    ref_id = _seed(store, "route-noboard", _DESIGN)
+    handler = PcbHandler(hub=Hub(store=store))
+    # _seed gave it an outline; take it away by overwriting with a 2-point one.
+    handler.put(
+        id="route-noboard",
+        args={"features": [{"ftype": "outline", "geom": {"path": [[0, 0], [5, 0]]}}]},
+    )
     assert store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
     _route(ctx)
 
-    # An unrealized net fails the JOB too (Reto, 2026-10-01), naming it.
-    assert [c for _, c in ctx.failures] == ["non-convergence"]
-    assert "N1" in ctx.failures[0][0]
-    rows = {r["name"]: r for r in store.pcb_route_status(ref_id)}
-    assert rows.get("N1", {}).get("status") != "realized", (
-        "a net whose plane was never poured is not routed, and saying it is "
-        "is the exact silence this rule exists to break"
-    )
-    # docs/backlog/pcb-engine-plan.md "BOARD TWO" finding 2's sibling note:
-    # this used to be reported as generic ``unrouted`` with no distinguishing
-    # cause. ``pcb_routes.note`` (this table's own per-net summary) and
-    # ``pcb_routes.fail.problems[].reason`` (the per-segment detail) must
-    # both name it as an unpourable plane specifically, not just "unrouted".
-    assert "unpourable_plane" in (rows["N1"].get("note") or ""), rows["N1"]
-    routes = store.pcb_routes_get(ref_id)
-    problems = routes["N1"]["fail"]["problems"]
-    assert any(p.get("reason") == "unpourable_plane" for p in problems), problems
+    assert [c for _, c in ctx.failures] == ["input"]
+    reason = ctx.failures[0][0]
+    assert "outline" in reason and "'ftype':'outline'" in reason, reason
+    assert store.pcb_netlist_snapshot_latest(ref_id) is None
 
 
 def test_pcb_route_persists_optimizer_derived_plane_promotion(
@@ -580,9 +574,7 @@ def test_pcb_route_persists_optimizer_derived_plane_promotion(
     ref_id = _seed(store, "route-derived-plane", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx)
-    # No outline, so the forced plane cannot pour and N1 fails the job; the
-    # plane write-back under test happens before that.
-    assert [c for _, c in ctx.failures] == ["non-convergence"]
+    assert not ctx.failures
 
     rows = store.pcb_planes_list(ref_id)
     assert rows == [
@@ -625,8 +617,7 @@ def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> N
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
     _route(ctx)
-    # No outline to pour the authored plane into: N1 fails the job.
-    assert [c for _, c in ctx.failures] == ["non-convergence"]
+    assert not ctx.failures
 
     after = store.pcb_planes_list(ref_id)
     assert after == before  # untouched: same layer, same net, still 'authored'
@@ -715,12 +706,10 @@ def test_pcb_route_replaces_derived_plane_rows_across_reruns(
     ref_id = _seed(store, "route-derived-rerun", _DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx1)
-    # The forced plane has no outline to pour into, so N1 fails each run;
-    # only that failure is acceptable here.
-    assert [c for _, c in ctx1.failures] == ["non-convergence"]
+    assert not ctx1.failures
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
     _route(ctx2)
-    assert [c for _, c in ctx2.failures] == ["non-convergence"]
+    assert not ctx2.failures
 
     rows = store.pcb_planes_list(ref_id)
     assert len(rows) == 1  # upsert-by-replace, not a second accumulated row
@@ -1516,9 +1505,11 @@ def test_pcb_route_second_run_starts_where_the_first_ended(
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx2)
     assert not ctx2.failures
-    assert abs(res2[-1].cost_before - res1[-1].cost_after) < 1e-6, (
+    # ``res1[0]`` is run 1's result: the second ``_capture_optimize`` wraps
+    # the first wrapper, so run 2's result is appended to ``res1`` as well.
+    assert abs(res2[-1].cost_before - res1[0].cost_after) < 1e-6, (
         res2[-1].cost_before,
-        res1[-1].cost_after,
+        res1[0].cost_after,
     )
 
 

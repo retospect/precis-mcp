@@ -36,6 +36,7 @@ from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
 from precis.store import Store
 from precis.workers.job_types import pcb_route
+from tests._pcb_outline import closed_outline
 from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 pytestmark = pytest.mark.db
@@ -594,6 +595,11 @@ class _FakeCtx:
 
 def _seed(store: Store, slug: str, design: dict[str, Any]) -> int:
     handler = PcbHandler(hub=Hub(store=store))
+    if not any(f.get("ftype") == "outline" for f in design.get("features") or []):
+        design = {
+            **design,
+            "features": [*(design.get("features") or []), closed_outline()],
+        }
     handler.put(id=slug, args=design)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
