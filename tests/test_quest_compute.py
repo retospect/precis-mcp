@@ -2464,18 +2464,51 @@ def _cand(store: Any, sid: int) -> Candidate:
     return _candidate_from_structure(store, ref)
 
 
+#: The kinetics v2 environment basis every legacy test config (no
+#: ``conditions``) projects to: the reference block at 298.15 K with no
+#: stated pressures, via the engine-free mirror
+#: (``precis.quest.environment_basis``) — always a non-null hash.
+_LEGACY_ENV_BASIS = compute_mod._environment_basis({})
+
+
 class TestNetworkBasis:
     """``compute._network_basis`` — which reaction network a pathway's
     competitor-set measures were taken on."""
 
     def test_explicit_template_wins(self) -> None:
+        config = {"network": "ammonia", "template": "parked"}
         b = compute_mod._network_basis(
-            {
-                "config": {"network": "ammonia", "template": "parked"},
-                "autocatpath_version": "0.22.0",
-            }
+            {"config": config, "autocatpath_version": "0.22.0"}
         )
-        assert b == {"digest": None, "template": "parked", "version": "0.22.0"}
+        assert b == {
+            "digest": None,
+            "template": "parked",
+            "version": "0.22.0",
+            "environment_basis": compute_mod._environment_basis(config),
+        }
+
+    def test_pre_field_stamp_is_compatible_with_a_keyed_stamp(self) -> None:
+        """Review of kin-s1 (option b): a stamp stored before
+        ``environment_basis`` existed (no key) compares equal to an
+        otherwise-equal keyed one, both directions — a partial re-harvest
+        after deploy must not demote the un-restamped margins. A present
+        null, or two present and different values, still fail."""
+        from precis.quest.frontier import same_network_basis
+
+        pre = {"digest": "d1", "template": "coadsorbed", "version": "0.32.0"}
+        keyed = {**pre, "environment_basis": _LEGACY_ENV_BASIS}
+        assert _LEGACY_ENV_BASIS is not None
+        assert same_network_basis(pre, keyed)
+        assert same_network_basis(keyed, pre)
+        assert same_network_basis(pre, dict(pre))
+        null = {**pre, "environment_basis": None}
+        assert not same_network_basis(null, keyed)
+        assert not same_network_basis(keyed, null)
+        assert not same_network_basis(null, dict(null))
+        other = {**pre, "environment_basis": "b" * 64}
+        assert not same_network_basis(keyed, other)
+        # the version gate still comes first
+        assert not same_network_basis(pre, {**keyed, "version": "0.31.1"})
 
     def test_unset_template_on_ammonia_resolves_to_coadsorbed(self) -> None:
         b = compute_mod._network_basis({"config": {"network": "ammonia"}})
@@ -5177,7 +5210,12 @@ class TestTierLadderHarvest:
         )
         compute_mod.harvest_measures(store, qid)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        basis = {"digest": "abc123", "template": "coadsorbed", "version": "0.22.0"}
+        basis = {
+            "digest": "abc123",
+            "template": "coadsorbed",
+            "version": "0.22.0",
+            "environment_basis": _LEGACY_ENV_BASIS,
+        }
         assert meta["network_basis"] == basis
         # stamped per network-dependent measure actually present
         assert meta["network_basis_by_key"] == {"barrier": basis}
@@ -5229,8 +5267,9 @@ class TestTierLadderHarvest:
         )
         compute_mod.harvest_measures(store, qid)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        old = {"digest": None, "template": "parked", "version": "0.21.0"}
-        new = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
+        env = {"environment_basis": _LEGACY_ENV_BASIS}
+        old = {"digest": None, "template": "parked", "version": "0.21.0", **env}
+        new = {"digest": None, "template": "coadsorbed", "version": "0.22.0", **env}
         assert meta["network_basis"] == new  # latest harvest
         by_key = meta["network_basis_by_key"]
         assert by_key["barrier"] == new
@@ -5332,8 +5371,14 @@ class TestTierLadderHarvest:
                 "digest": None,
                 "template": "parked",
                 "version": "0.21.0",
+                "environment_basis": _LEGACY_ENV_BASIS,
             },
-            "barrier": {"digest": None, "template": "coadsorbed", "version": "0.22.0"},
+            "barrier": {
+                "digest": None,
+                "template": "coadsorbed",
+                "version": "0.22.0",
+                "environment_basis": _LEGACY_ENV_BASIS,
+            },
         }
         again = compute_mod.backfill_network_basis(store, qid)
         assert again["keys_unstamped"] == 3
@@ -7433,8 +7478,20 @@ class TestTierPromotion:
 
     # A catpath bump changes the coadsorbed network neb/verify build; the
     # screening tier builds parked by decision and is never re-dispatched.
-    _OLD = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
-    _NEW = {"digest": None, "template": "coadsorbed", "version": "0.23.0"}
+    # stamps as a harvest on engine >= 0.32 writes them (environment basis
+    # projected from the pathway config — a legacy one here)
+    _OLD = {
+        "digest": None,
+        "template": "coadsorbed",
+        "version": "0.22.0",
+        "environment_basis": _LEGACY_ENV_BASIS,
+    }
+    _NEW = {
+        "digest": None,
+        "template": "coadsorbed",
+        "version": "0.23.0",
+        "environment_basis": _LEGACY_ENV_BASIS,
+    }
     _PARKED = {"digest": None, "template": "parked", "version": "0.23.0"}
 
     def _stub_minting_dispatch(

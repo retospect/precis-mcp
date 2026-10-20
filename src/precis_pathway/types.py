@@ -80,6 +80,32 @@ class PathwayArtifact(TypedDict):
     warnings: list[str]
 
 
+class PathwayGases(TypedDict, total=False):
+    """``environment.gases`` (kinetics v2 D1): partial pressures in bar
+    (mole fractions when ``p_total`` is set). ``outputs`` may be the preset
+    string ``"far"``; ``unlisted`` is ``"refuse"`` (default) or
+    ``"reference"``."""
+
+    inputs: dict[str, float]
+    outputs: dict[str, float] | str
+    inerts: dict[str, float]
+    unlisted: str
+
+
+class PathwayEnvironment(TypedDict, total=False):
+    """The ``environment:`` block a pathway config may carry (kinetics v2
+    D1), passed verbatim to ``autocatpath.config.Config.from_dict`` — the
+    engine owns validation (``autocatpath.environment.Environment``).
+    ``sticking`` maps a gas to ``{s0, source}`` or a bare s0;
+    ``electrochemical`` is reserved for the electrochem spec."""
+
+    T: float
+    p_total: float | None
+    gases: PathwayGases
+    sticking: dict[str, Any]
+    electrochemical: dict[str, Any] | None
+
+
 class SeedStructureEntry(TypedDict):
     """One state's lowest-energy relaxed geometry harvested by a
     ``model_index == 0`` seed unit (:func:`runner.run_seed_partial`)."""
@@ -154,6 +180,8 @@ __all__ = [
     "DetachedHandle",
     "NetworkTopology",
     "PathwayArtifact",
+    "PathwayEnvironment",
+    "PathwayGases",
     "PollResult",
     "SeedPartialResult",
     "SeedStructureEntry",

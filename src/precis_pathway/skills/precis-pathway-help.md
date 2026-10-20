@@ -93,6 +93,40 @@ get(kind="pathway", id="no-nh3-pd", view="analysis")
   high TS. Lower SPAN = better path.
 - the barriers ranked, and selectivity vs competing branches.
 
+## State the gas environment / product pressures / sticking (kinetics)
+
+The steady-state kinetics solve that rides on every aggregate prices gases at
+an `environment:` block (engine ≥ 0.32). Put it in the YAML body, or pass it
+as `args={'environment': {...}, 'objective': {...}}` on `put`:
+
+```yaml
+environment:
+  T: 298.15                       # must equal the run temperature
+  p_total: null                   # null = sum of the table; a number = the table is a composition
+  gases:
+    inputs:  {NO: 0.10, H2: 1.00} # feed partial pressures, bar
+    outputs: {NH3: 1.0e-3, H2O: 1.0e-3, N2: 1.0e-4, N2O: 1.0e-5, NH2OH: 1.0e-6}
+    inerts:  {}                   # priced nowhere, counted in p_total
+    unlisted: refuse              # refuse (default) | reference (1 bar + warning)
+  sticking: {NO: {s0: 0.5, source: pa498804}, H2: 0.1}   # bare number = uncited
+objective:                        # stored now; the (T, p_total) sweep acts on it later
+  maximise: selectivity.NH3
+  competing: [CO, H]
+```
+
+- **Refuse rule.** With a block, every gas the network consumes or releases
+  must have a pressure; a missing one refuses the solve naming the gas and the
+  key (`environment.gases.inputs` / `.outputs`), landing as `kinetics_error`.
+  A config that wants no product pressures is meant for the sweep (not yet
+  built); until then use `outputs: far` (1e-6 bar per product, recorded as a
+  preset). A product at 0 bar is refused.
+- An adsorbing gas whose `sticking` has no `source` makes the solve
+  untrusted (`kinetics_trusted=False`, note `sticking uncited: <gas>`).
+- Configs without a block price exactly as before (1 bar fallback with a
+  warning). Every solve reports `q_over_k`, the `environment_basis` hash
+  (folded into the network basis: measures compare only on an equal
+  environment) and per-step reversibility in `view='kinetics'`.
+
 ## The potential lever (CHE electrochemistry)
 
 NOx reduction is *electro*catalysis: applied potential `U` (V vs **RHE**) is a

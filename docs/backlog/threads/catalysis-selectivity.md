@@ -295,7 +295,9 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    validation manifest with re-validate. Ranked with Horizon 5 because
    it owns the environment block and the ΔG/TS provider seam that
    Horizon 5 and the electrochemical-interface spec plug into; slices
-   1–4 and 10 need no KMC and no U.
+   1–4 and 10 need no KMC and no U. Slice 1 (environment block, refuse,
+   Q/K, reversibility, basis fold) shipped on catpath v0.32.0; slice 2
+   is next.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing

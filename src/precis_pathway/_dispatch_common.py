@@ -170,7 +170,10 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     a non-positive value is a solver anomaly, not a dead catalyst) AND
     (there is no ``tof_bracket``, or its ``agree`` isn't literally ``False``
     — the guard against excluded-step barriers that turn out load-bearing at
-    their optimistic bound). An untrusted solve still surfaces its raw
+    their optimistic bound) AND no ``sticking uncited: <gas>`` warning (the
+    kinetics v2 environment-block rule; the note names the gases). Every
+    solve also surfaces ``q_over_k`` and ``environment_basis`` when the
+    engine (>= 0.32) reports them. An untrusted solve still surfaces its raw
     ``tof`` (never ``log_tof``/``log_tof_p5``/``log_tof_p95`` — those stay
     gated on trust) plus a ``kinetics_note`` reason string, so the harvest
     lane (:mod:`precis.quest.compute`) can decide what to keep off the
@@ -193,9 +196,24 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     tof = _finite_num(kin.get("tof"))
     if tof is not None:
         out["tof"] = tof
+    q_over_k = _finite_num(kin.get("q_over_k"))
+    if q_over_k is not None:
+        out["q_over_k"] = q_over_k
+    basis = kin.get("environment_basis")
+    if isinstance(basis, str) and basis:
+        out["environment_basis"] = basis
     bracket = kin.get("tof_bracket")
     bracket_ok = not (isinstance(bracket, dict) and bracket.get("agree") is False)
-    trusted = tof is not None and tof > 0.0 and bracket_ok
+    # kinetics v2 D1: an uncited sticking coefficient (engine warning
+    # ``sticking uncited: <gas>``, emitted only under an environment block)
+    # keeps the solve off the ranked measures
+    warns = kin.get("warnings")
+    uncited = [
+        w
+        for w in (warns if isinstance(warns, list) else [])
+        if isinstance(w, str) and w.startswith("sticking uncited: ")
+    ]
+    trusted = tof is not None and tof > 0.0 and bracket_ok and not uncited
     out["kinetics_trusted"] = trusted
     if tof is None:
         out["kinetics_note"] = "tof not finite"
@@ -203,6 +221,8 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         out["kinetics_note"] = "tof non-positive (solver anomaly)"
     elif not bracket_ok:
         out["kinetics_note"] = "guard bracket: excluded steps load-bearing"
+    elif uncited:
+        out["kinetics_note"] = "; ".join(uncited)
     else:
         out["log_tof"] = math.log10(max(tof, 1e-30))
         sensitivity = kin.get("sensitivity")

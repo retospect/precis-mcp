@@ -1762,8 +1762,19 @@ def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
     review-queue ``catalysis-selectivity-24``): catpath's digest hashes the
     network's topology only, so a release that keeps the steps but changes
     the energies (the item-19 gas and H* corrections) would otherwise rank
-    old-engine margins against new-engine ones."""
+    old-engine margins against new-engine ones.
+
+    Kinetics v2 (D1): ``environment_basis`` folds the gas environment in. A
+    stamp WITHOUT the key predates the field and is compatible with any
+    other (ruling, review of kin-s1: otherwise a partial re-harvest after
+    deploy would demote every un-restamped margin). A key that is present
+    must be non-null on both sides that carry it and equal when both do —
+    a ``None`` basis (config not projectable) never compares, not even with
+    ``None``."""
     if a.get("version") != b.get("version"):
+        return False
+    keyed = [s["environment_basis"] for s in (a, b) if "environment_basis" in s]
+    if any(e is None for e in keyed) or len(set(keyed)) > 1:
         return False
     da, db = a.get("digest"), b.get("digest")
     if da and db:

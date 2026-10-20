@@ -143,6 +143,9 @@ _REACTION_CONFIG_KEYS: frozenset[str] = frozenset(
         "coverage",
         "kinetics",
         "spectators",
+        # kinetics v2 D1 (engine >= 0.32)
+        "environment",
+        "objective",
     }
 )
 

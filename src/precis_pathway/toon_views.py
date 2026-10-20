@@ -523,7 +523,10 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
 
     Honest v1 only: no steady-state coverages, no degree-of-rate-control — both
     need a full microkinetic solve (site balance, reverse rates) this view does
-    not attempt; faking them would be worse than not having them.
+    not attempt; faking them would be worse than not having them. When the
+    aggregate's chain solve is present (``results.kinetics``, engine >= 0.32)
+    its environment, Q/K and per-transition reversibility follow the Eyring
+    table, read verbatim from that record (:func:`_solve_lines`).
     """
     graph = meta.get("graph") or {}
     root, target = _roots(meta)
@@ -567,7 +570,74 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         "A = k_B·T/h ≈ 6.2e12 /s at 300 K; residence times ignore reverse "
         "reactions and surface-coverage effects."
     )
+    kin = (meta.get("results") or {}).get("kinetics")
+    if isinstance(kin, dict):
+        lines += ["", *_solve_lines(kin)]
     return "\n".join(lines)
+
+
+def _num_str(x: Any) -> str:
+    """``x`` as ``1.23e-04``, or an em dash when it is not a finite number."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+        return "—"
+    return f"{x:.2e}"
+
+
+def _pressures_str(table: Any) -> str:
+    if not isinstance(table, dict) or not table:
+        return "—"
+    return ", ".join(f"{g}={_num_str(p)}" for g, p in sorted(table.items()))
+
+
+def _environment_line(env: dict[str, Any], basis: Any) -> str:
+    """One line for the kinetics v2 environment the solve ran on (D1)."""
+    gases = env.get("gases") or {}
+    p_total = env.get("p_total")
+    total = (
+        f"{_num_str(p_total)} bar ({'stated' if env.get('p_total_stated') else 'derived'})"
+        if isinstance(p_total, (int, float))
+        else "—"
+    )
+    parts = [
+        f"T = {env.get('T')} K",
+        f"p_total = {total}",
+        f"inputs {_pressures_str(gases.get('inputs'))}",
+        f"outputs {_pressures_str(gases.get('outputs'))}",
+    ]
+    if gases.get("preset"):
+        parts.append(f"preset {gases['preset']}")
+    if env.get("legacy"):
+        parts.append("legacy conditions (unlisted gases at the 1 bar reference)")
+    else:
+        parts.append(f"unlisted {gases.get('unlisted')}")
+    if isinstance(basis, str) and basis:
+        parts.append(f"basis {basis[:12]}")
+    return "Environment: " + "; ".join(parts)
+
+
+def _solve_lines(kin: dict[str, Any]) -> list[str]:
+    """The steady-state solve's environment, Q/K and per-step reversibility
+    (``results_json['kinetics']``, engine >= 0.32); empty on an older solve
+    that carries none of them."""
+    out: list[str] = []
+    env = kin.get("environment")
+    if isinstance(env, dict):
+        out.append(_environment_line(env, kin.get("environment_basis")))
+    qk = kin.get("q_over_k")
+    if isinstance(qk, (int, float)):
+        out.append(
+            f"Q/K (overall {kin.get('product')} formation) = {_num_str(qk)}"
+            " — 1 is equilibrium, ≪ 1 is driven forward"
+        )
+    z = kin.get("reversibility")
+    if isinstance(z, dict) and z:
+        rows = [{"transition": name, "z_rev/fwd": _num_str(v)} for name, v in z.items()]
+        out += [
+            "",
+            "Reversibility z = r⁻/r⁺ per transition (steady-state chain solve):",
+            toon.dump(rows, schema=["transition", "z_rev/fwd"]),
+        ]
+    return out
 
 
 # ── cross-candidate compare (interleaved profile) ───────────────────────

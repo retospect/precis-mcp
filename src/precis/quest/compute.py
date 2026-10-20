@@ -36,6 +36,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.atomcost import atom_cost, dearest
+from precis.quest.environment_basis import environment_basis
 from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
@@ -2764,10 +2765,11 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
     ranks a margin from one network against another's.
 
     ``{"digest": results.network_digest | None, "template": <resolved>,
-    "version": meta.autocatpath_version | None}`` (``template`` per
-    :func:`_resolved_template`). ``None`` when ``pw_meta`` isn't a dict or
-    carries no ``config`` (nothing to resolve a network from — leave the
-    candidate unstamped rather than guess).
+    "version": meta.autocatpath_version | None, "environment_basis": <sha256
+    | None>}`` (``template`` per :func:`_resolved_template`, the environment
+    basis per :func:`_environment_basis`). ``None`` when ``pw_meta`` isn't a
+    dict or carries no ``config`` (nothing to resolve a network from — leave
+    the candidate unstamped rather than guess).
     """
     if not isinstance(pw_meta, dict):
         return None
@@ -2781,7 +2783,22 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
         "digest": results.get("network_digest") or None,
         "template": _resolved_template(config),
         "version": str(version) if version else None,
+        "environment_basis": _environment_basis(config),
     }
+
+
+def _environment_basis(config: Mapping[str, Any]) -> str | None:
+    """The kinetics v2 environment basis (D1) of a stored pathway config: a
+    projection, never a stored stamp — the ``environment:`` block, or the
+    legacy ``conditions.pressures`` / ``kinetics.sticking`` keys in
+    ``reference`` mode, so every existing measure gets a basis with no
+    backfill and two legacy measures with equal conditions still compare.
+    The engine-free mirror of the engine's adapter
+    (:mod:`precis.quest.environment_basis`, parity-tested), so the basis
+    does not depend on which host harvests. ``None`` when the config cannot
+    be projected; a ``None`` basis never compares
+    (:func:`precis.quest.frontier.same_network_basis`)."""
+    return environment_basis(config)
 
 
 def _candidate_rung(meta: dict[str, Any] | None) -> str | None:

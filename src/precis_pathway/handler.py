@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -116,11 +117,59 @@ def _lookup(store: Any, ident: str) -> Any:
     return ref
 
 
+#: The kinetics v2 blocks ``put`` accepts as ``args=`` (D1), overlaid onto
+#: the YAML body's own keys of the same name.
+_ENV_ARGS = ("environment", "objective")
+
+_ENV_KEY_RE = re.compile(r"\b((?:environment|objective)(?:\.\w+)*(?:\[[^\]]+\])?)")
+
+_ENV_EXAMPLE = (
+    "environment: {T: 298.15, gases: {inputs: {NO: 0.1, H2: 1.0}, "
+    "outputs: far}, sticking: {NO: {s0: 0.5, source: pa498804}}}"
+)
+
+
+def _env_overlay(raw: Any, args: dict[str, Any] | None) -> Any:
+    """The YAML config with ``args['environment'|'objective']`` laid over
+    it. Stating a block in both places with different content is refused:
+    one config, one environment."""
+    if not args:
+        return raw
+    out = dict(raw) if isinstance(raw, dict) else {}
+    for key in _ENV_ARGS:
+        if key not in args:
+            continue
+        if key in out and out[key] != args[key]:
+            raise BadInput(
+                f"pathway {key} given in both the YAML body and args with "
+                "different content",
+                next=f"drop `{key}:` from the YAML body or from args=",
+            )
+        out[key] = args[key]
+    return out
+
+
+def _env_key(message: str) -> str | None:
+    """The config key an engine refusal names (``environment.gases.outputs``
+    …), or ``None`` when the error is not about the D1 blocks."""
+    m = _ENV_KEY_RE.search(message)
+    return m.group(1) if m else None
+
+
+def _env_next(key: str) -> str:
+    return (
+        f"fix `{key}` in the config YAML (or args={{'environment': {{...}}}}); "
+        f"shape: {_ENV_EXAMPLE} — see get(kind='skill', id='precis-pathway-help')"
+    )
+
+
 class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec({"U", "pH", "point"}),
+        # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay)
+        "put": ArgsSpec({"environment", "objective"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -198,6 +247,7 @@ class PathwayHandler(Handler):
         text: str | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         from . import runner
@@ -233,7 +283,7 @@ class PathwayHandler(Handler):
         try:
             from autocatpath.config import _load_yaml
 
-            raw = _load_yaml(text)
+            raw = _env_overlay(_load_yaml(text), args)
             effective = runner.effective_config(raw, force_backend=force)
             key = runner.content_key(effective)
             slug = slugify(
@@ -242,6 +292,12 @@ class PathwayHandler(Handler):
         except BadInput:
             raise
         except Exception as e:
+            env_key = _env_key(str(e))
+            if env_key is not None:
+                raise BadInput(
+                    f"pathway environment/objective refused: {e}",
+                    next=_env_next(env_key),
+                ) from e
             raise BadInput(f"could not parse pathway config: {e}") from e
 
         store = self.hub.live_store
@@ -268,8 +324,12 @@ class PathwayHandler(Handler):
             )
 
         # In-process on EMT (slice 0). Synchronous — keep demo configs small.
-        artifact: PathwayArtifact = runner.run_pathway_from_yaml(
-            text, force_backend="emt"
+        # an args= environment/objective overlay lives only in `raw`, not `text`
+        overlaid = any(k in (args or {}) for k in _ENV_ARGS)
+        artifact: PathwayArtifact = (
+            runner.run_pathway(raw, force_backend="emt")
+            if overlaid
+            else runner.run_pathway_from_yaml(text, force_backend="emt")
         )
         if existing is None:
             with store.tx() as conn:

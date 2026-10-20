@@ -678,6 +678,55 @@ def test_kinetics_scalars_neither_key_present_yields_nothing() -> None:
     assert _kinetics_scalars({"nodes": {}, "edges": []}) == {}
 
 
+def test_kinetics_scalars_lift_q_over_k_and_environment_basis() -> None:
+    """Kinetics v2 slice 1: every solve's Q/K and environment basis ride
+    along as scalars; a solve without them (older engine) gets neither."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars(
+        {"kinetics": {"tof": 2.0, "q_over_k": 1e-31, "environment_basis": "ab" * 32}}
+    )
+    assert out["q_over_k"] == 1e-31
+    assert out["environment_basis"] == "ab" * 32
+    assert out["kinetics_trusted"] is True
+    bare = _kinetics_scalars({"kinetics": {"tof": 2.0}})
+    assert "q_over_k" not in bare and "environment_basis" not in bare
+
+
+def test_kinetics_scalars_uncited_sticking_is_untrusted_with_the_gas_named() -> None:
+    """D1: an environment-block solve whose sticking coefficient has no
+    source keeps its raw tof but drops trust (no log_tof), the note naming
+    every uncited gas."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars(
+        {
+            "kinetics": {
+                "tof": 5.0,
+                "warnings": [
+                    "kinetics: no barrier carries a spread",
+                    "sticking uncited: H2",
+                    "sticking uncited: NO",
+                ],
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "sticking uncited: H2; sticking uncited: NO"
+    assert out["tof"] == 5.0 and "log_tof" not in out
+    # the bracket guard still reads first (unchanged ordering)
+    both = _kinetics_scalars(
+        {
+            "kinetics": {
+                "tof": 5.0,
+                "tof_bracket": {"agree": False},
+                "warnings": ["sticking uncited: H2"],
+            }
+        }
+    )
+    assert both["kinetics_note"] == "guard bracket: excluded steps load-bearing"
+
+
 def test_summarize_folds_in_kinetics_scalars() -> None:
     """End-to-end: `summarize()` (the seam `finish()` unpacks onto the JOB's
     own meta) picks up the kinetics scalars alongside barrier/span/CHE/
@@ -715,6 +764,28 @@ def test_content_key_discriminates_config() -> None:
         {"name": "x", "mlip": {"backend": "mace"}}
     )
     assert runner.content_key(base) == runner.content_key(dict(base))
+
+
+def test_content_key_discriminates_environment() -> None:
+    """The effective config carries the environment block (engine >= 0.32
+    writes it into to_dict), so two environments address two runs and a
+    legacy config's key is untouched by the block's existence."""
+    base = {"name": "x", "mlip": {"backend": "emt"}}
+    env = {"T": 298.15, "gases": {"inputs": {"NO": 0.1, "H2": 1.0}, "outputs": "far"}}
+    far = runner.effective_config({**base, "environment": env})
+    other = runner.effective_config(
+        {
+            **base,
+            "environment": {
+                **env,
+                "gases": {"inputs": {"NO": 0.1, "H2": 1.0}, "outputs": {"NH3": 1e-3}},
+            },
+        }
+    )
+    legacy = runner.effective_config(base)
+    assert "environment" in far and "environment" not in legacy
+    keys = {runner.content_key(c) for c in (far, other, legacy)}
+    assert len(keys) == 3
 
 
 def test_chem_safe_yaml_keeps_NO_a_string() -> None:

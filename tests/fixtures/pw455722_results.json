@@ -1,0 +1,898 @@
+{
+ "_refs_note": "gas/bare references reconstructed by least squares from the stored kinetics closure dGs and landing-state pricing; only those combinations are determined",
+ "_source": "pw455722 (NO -> NH3 on Pd(111), autocatpath ); read-only prod export 2026-10-20, trimmed for the kinetics v2 slice-1 replay",
+ "config": {
+  "auto": {
+   "desorb": true,
+   "leavers": null,
+   "max_extra": 4,
+   "max_states": 600,
+   "prune_energy": null
+  },
+  "conditions": {
+   "pH": null,
+   "potential_U": 0.0,
+   "pressures": {},
+   "temperature": 298.15
+  },
+  "coverage": {
+   "adsorbates": [],
+   "coverages": [
+    0.25,
+    0.5,
+    0.75,
+    1.0
+   ],
+   "facets": [],
+   "mu_window": [
+    -1.0,
+    0.5
+   ],
+   "site": null
+  },
+  "dft": {
+   "command": null,
+   "dipole": true,
+   "ecutrho": null,
+   "ecutwfc": null,
+   "engine": "qe",
+   "functional": "auto",
+   "input_data": {},
+   "kspacing": 0.25,
+   "pseudos": "sssp-efficiency",
+   "smearing": "mv",
+   "smearing_width": 0.2,
+   "spin": "auto"
+  },
+  "diagram": {
+   "gas_labels": true,
+   "max_paths": 12,
+   "side_margin": 0.2,
+   "side_products": "competitive"
+  },
+  "electrochemistry": {
+   "T": 298.15,
+   "U_vs_RHE": 0.0,
+   "U_window": null,
+   "pH": null
+  },
+  "kinetics": {
+   "mc_seed": 0,
+   "n_samples": 500,
+   "product": null,
+   "sticking": {},
+   "t_end": 1000000.0
+  },
+  "mlip": {
+   "backend": "mace",
+   "cueq": "auto",
+   "device": "cuda",
+   "dtype": "mixed",
+   "model": "medium",
+   "models": [],
+   "task": null
+  },
+  "name": "no_to_nh3_pd",
+  "network": "ammonia",
+  "outdir": "runs",
+  "outputs": {
+   "energy_map": false,
+   "gallery": false,
+   "states": false,
+   "structures": true,
+   "transition_states": true
+  },
+  "poisons": [
+   "CO"
+  ],
+  "reagents": null,
+  "refine": {
+   "fmax": 0.05,
+   "gas_references": true,
+   "include_ts": true,
+   "max_steps": 60,
+   "mode": "relax",
+   "states": "best_route"
+  },
+  "render": {
+   "backend": "matplotlib",
+   "bonds": true,
+   "report": true,
+   "width": 320
+  },
+  "search": {
+   "bind_ads_barrier_max": 0.75,
+   "bind_preflight": true,
+   "bind_reseat_attempts": 3,
+   "bind_tether_k": 7.5,
+   "bind_tether_ramp": [
+    1.0,
+    0.5,
+    0.25,
+    0.1,
+    0.0
+   ],
+   "bind_tether_rt": 2.0,
+   "energy_thresh": 0.05,
+   "fmax": 0.1,
+   "max_steps": 120,
+   "neb_align_endpoints": true,
+   "neb_auto_retry": true,
+   "neb_batched": true,
+   "neb_fmax": 0.15,
+   "neb_images": 5,
+   "neb_margin": 0.2,
+   "neb_max_steps": 160,
+   "neb_multistart": 1,
+   "neb_multistart_jitter": 0.05,
+   "neb_optimizer": "bfgs",
+   "neb_pool_size": "auto",
+   "neb_retries": 2,
+   "neb_schedule": "all",
+   "neb_split_intermediates": true,
+   "neb_split_tol": 0.15,
+   "rmsd_thresh": 0.7,
+   "screening": true,
+   "seeds": [
+    0,
+    1
+   ]
+  },
+  "slab": {
+   "a": null,
+   "element": "Pd",
+   "fix_layers": 2,
+   "miller": null,
+   "relax_lattice": true,
+   "size": [
+    3,
+    3,
+    4
+   ],
+   "vacuum": 10.0
+  },
+  "substrate": "NO",
+  "substrates": [
+   "NO"
+  ],
+  "target": "NH3",
+  "template": "parked",
+  "thermo": {
+   "freq_floor": 12.0,
+   "mode": "vib",
+   "species": {}
+  }
+ },
+ "edges": [
+  {
+   "delta_e": {
+    "mean": -0.7921895522656974,
+    "std": 0.014599848906946707
+   },
+   "name": "N+H->NH",
+   "product": "NH",
+   "reactant": "N+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.1670096051077382,
+    "std": 0.2800592755238369
+   },
+   "name": "O+H->OH",
+   "product": "OH",
+   "reactant": "O+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.012358134853565794,
+    "std": 0.06244602374301229
+   },
+   "name": "NH+H->NH2",
+   "product": "NH2",
+   "reactant": "NH+H"
+  },
+  {
+   "delta_e": {
+    "mean": 0.20347943485148126,
+    "std": 0.6657713005923419
+   },
+   "name": "NO+H->HNO",
+   "product": "HNO",
+   "reactant": "NO+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.09159368088383801,
+    "std": 0.5809565017038537
+   },
+   "name": "NO+H->NOH",
+   "product": "NOH",
+   "reactant": "NO+H"
+  },
+  {
+   "delta_e": {
+    "mean": 0.22726408606868598,
+    "std": 0.0016074344304456297
+   },
+   "name": "NO@N->N+O",
+   "product": "N+O",
+   "reactant": "NO@N"
+  },
+  {
+   "delta_e": {
+    "mean": -0.5455328617659592,
+    "std": 0.2593684061490421
+   },
+   "name": "OH+H->H2O",
+   "product": "H2O",
+   "reactant": "OH+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.35853300989944537,
+    "std": 0.044411524527050286
+   },
+   "name": "NH2+H->NH3",
+   "product": "NH3",
+   "reactant": "NH2+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.446793977658122,
+    "std": 0.6279925745102813
+   },
+   "name": "NO@N->NO@O",
+   "product": "NO@O",
+   "reactant": "NO@N"
+  },
+  {
+   "delta_e": {
+    "mean": 0.386298420287647,
+    "std": 0.03806180354626453
+   },
+   "name": "HNO+H->H2NO",
+   "product": "H2NO",
+   "reactant": "HNO+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.4780959510073851,
+    "std": 0.033203394385520786
+   },
+   "name": "HNO+H->HNOH",
+   "product": "HNOH",
+   "reactant": "HNO+H"
+  },
+  {
+   "delta_e": {
+    "mean": 0.4214215398568183,
+    "std": 0.0
+   },
+   "name": "NOH+H->HNOH",
+   "product": "HNOH",
+   "reactant": "NOH+H"
+  },
+  {
+   "delta_e": {
+    "mean": -0.9586181182774963,
+    "std": 0.0008221829267020772
+   },
+   "name": "NO@N->NO@par",
+   "product": "NO@par",
+   "reactant": "NO@N"
+  },
+  {
+   "delta_e": {
+    "mean": 0.5714145671026305,
+    "std": 0.035481580037719666
+   },
+   "name": "H2NO+H->NH2OH",
+   "product": "NH2OH",
+   "reactant": "H2NO+H"
+  },
+  {
+   "delta_e": {
+    "mean": 1.1823775515175985,
+    "std": 0.0
+   },
+   "name": "HNOH+H->NH2OH",
+   "product": "NH2OH",
+   "reactant": "HNOH+H"
+  }
+ ],
+ "gas_ledger": {
+  "*~nh2oh": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {
+    "NH2OH": 1
+   },
+   "supplied": {
+    "H": 3
+   }
+  },
+  "H2NO": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "H2NO+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 3
+   }
+  },
+  "H2O": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "N": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "HNO": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "HNO+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "HNOH": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "HNOH+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 3
+   }
+  },
+  "N+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "N+O": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {}
+  },
+  "NH": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "NH+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "NH2": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "NH2+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 3
+   }
+  },
+  "NH2OH": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 3
+   }
+  },
+  "NH3": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "O": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 3
+   }
+  },
+  "NO+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "NO@N": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {}
+  },
+  "NO@O": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {}
+  },
+  "NO@par": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {}
+  },
+  "NOH": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "NOH+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {},
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  },
+  "O+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "N": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "OH": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "N": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 1
+   }
+  },
+  "OH+H": {
+   "consumed": {
+    "NO": 1
+   },
+   "parked": {
+    "N": 1
+   },
+   "released": {},
+   "supplied": {
+    "H": 2
+   }
+  }
+ },
+ "links": [
+  [
+   "*",
+   "NO@N",
+   "supply"
+  ],
+  [
+   "NH",
+   "NH+H",
+   "supply"
+  ],
+  [
+   "OH",
+   "OH+H",
+   "supply"
+  ],
+  [
+   "HNO",
+   "HNO+H",
+   "supply"
+  ],
+  [
+   "N+H",
+   "NH",
+   "reaction"
+  ],
+  [
+   "N+O",
+   "N+H",
+   "supply"
+  ],
+  [
+   "N+O",
+   "O+H",
+   "supply"
+  ],
+  [
+   "NH2",
+   "NH2+H",
+   "supply"
+  ],
+  [
+   "NOH",
+   "NOH+H",
+   "supply"
+  ],
+  [
+   "O+H",
+   "OH",
+   "reaction"
+  ],
+  [
+   "H2NO",
+   "H2NO+H",
+   "supply"
+  ],
+  [
+   "HNOH",
+   "HNOH+H",
+   "supply"
+  ],
+  [
+   "NH+H",
+   "NH2",
+   "reaction"
+  ],
+  [
+   "NO+H",
+   "HNO",
+   "reaction"
+  ],
+  [
+   "NO+H",
+   "NOH",
+   "reaction"
+  ],
+  [
+   "NO@N",
+   "N+O",
+   "reaction"
+  ],
+  [
+   "NO@N",
+   "NO@O",
+   "reaction"
+  ],
+  [
+   "NO@N",
+   "NO@par",
+   "reaction"
+  ],
+  [
+   "NO@N",
+   "NO+H",
+   "supply"
+  ],
+  [
+   "OH+H",
+   "H2O",
+   "reaction"
+  ],
+  [
+   "HNO+H",
+   "H2NO",
+   "reaction"
+  ],
+  [
+   "HNO+H",
+   "HNOH",
+   "reaction"
+  ],
+  [
+   "NH2+H",
+   "NH3",
+   "reaction"
+  ],
+  [
+   "NH2OH",
+   "*~nh2oh",
+   "supply"
+  ],
+  [
+   "NOH+H",
+   "HNOH",
+   "reaction"
+  ],
+  [
+   "H2NO+H",
+   "NH2OH",
+   "reaction"
+  ],
+  [
+   "HNOH+H",
+   "NH2OH",
+   "reaction"
+  ]
+ ],
+ "nodes": {
+  "*": {
+   "low_confidence": false,
+   "mean": 0.0,
+   "n": 2,
+   "std": 0.0
+  },
+  "*~nh2oh": {
+   "low_confidence": false,
+   "mean": -2.141206281508495,
+   "n": 2,
+   "std": 3.1984187674083544e-08
+  },
+  "H2NO": {
+   "low_confidence": false,
+   "mean": -0.4695397368591152,
+   "n": 2,
+   "std": 0.008228417074330453
+  },
+  "H2NO+H": {
+   "low_confidence": false,
+   "mean": -1.8563595513355793,
+   "n": 2,
+   "std": 0.0032492466280728324
+  },
+  "H2O": {
+   "low_confidence": false,
+   "mean": -1.5218170862523568,
+   "n": 2,
+   "std": 0.015619252313323645
+  },
+  "HNO": {
+   "low_confidence": true,
+   "mean": -0.6509169736137697,
+   "n": 2,
+   "std": 0.08332919901963261
+  },
+  "HNO+H": {
+   "low_confidence": false,
+   "mean": -0.8558397974856415,
+   "n": 2,
+   "std": 0.04628975349157226
+  },
+  "HNOH": {
+   "low_confidence": false,
+   "mean": -1.3381003453999156,
+   "n": 2,
+   "std": 0.007196729678507804
+  },
+  "HNOH+H": {
+   "low_confidence": true,
+   "mean": -2.2092835680712337,
+   "n": 2,
+   "std": 0.2904249023459514
+  },
+  "N+H": {
+   "low_confidence": false,
+   "mean": -0.12292752091676817,
+   "n": 2,
+   "std": 0.012571642949142363
+  },
+  "N+O": {
+   "low_confidence": false,
+   "mean": 0.3826231579610182,
+   "n": 2,
+   "std": 7.535656299702566e-05
+  },
+  "NH": {
+   "low_confidence": false,
+   "mean": -0.9151170731824649,
+   "n": 2,
+   "std": 0.0020282059578036384
+  },
+  "NH+H": {
+   "low_confidence": false,
+   "mean": -1.4798138657357143,
+   "n": 2,
+   "std": 0.002467629168312797
+  },
+  "NH2": {
+   "low_confidence": true,
+   "mean": -1.4921720005892807,
+   "n": 2,
+   "std": 0.05997839457469941
+  },
+  "NH2+H": {
+   "low_confidence": true,
+   "mean": -2.081168881420501,
+   "n": 2,
+   "std": 0.05057852893276247
+  },
+  "NH2OH": {
+   "low_confidence": false,
+   "mean": -1.2870211774790743,
+   "n": 2,
+   "std": 0.0357946460190132
+  },
+  "NH3": {
+   "low_confidence": false,
+   "mean": -2.439701891319947,
+   "n": 2,
+   "std": 0.006167004405709202
+  },
+  "NO+H": {
+   "low_confidence": true,
+   "mean": -0.8548315762845995,
+   "n": 2,
+   "std": 0.5818266813406772
+  },
+  "NO@N": {
+   "low_confidence": false,
+   "mean": 0.15535907189233278,
+   "n": 2,
+   "std": 0.0015320778674484076
+  },
+  "NO@O": {
+   "low_confidence": true,
+   "mean": -0.29093869679227335,
+   "n": 2,
+   "std": 0.6293120571063624
+  },
+  "NO@par": {
+   "low_confidence": false,
+   "mean": -0.803052653150842,
+   "n": 2,
+   "std": 0.002642924991129264
+  },
+  "NOH": {
+   "low_confidence": false,
+   "mean": -0.9464252186070556,
+   "n": 2,
+   "std": 0.0008701251027951328
+  },
+  "NOH+H": {
+   "low_confidence": false,
+   "mean": -1.765982212088275,
+   "n": 2,
+   "std": 0.016333011501034743
+  },
+  "O+H": {
+   "low_confidence": false,
+   "mean": -0.21846818175101923,
+   "n": 2,
+   "std": 0.00014963692800910362
+  },
+  "OH": {
+   "low_confidence": true,
+   "mean": -0.38547778685875667,
+   "n": 2,
+   "std": 0.27990963859582757
+  },
+  "OH+H": {
+   "low_confidence": true,
+   "mean": -0.9762842244863981,
+   "n": 2,
+   "std": 0.24374915383571774
+  }
+ },
+ "refs": {
+  "bare": {
+   "N": -0.208696279,
+   "O": -0.014701866
+  },
+  "gas": {
+   "H2": 0.785461261,
+   "H2O": -0.208696279,
+   "NH2OH": -0.369808122,
+   "NH3": -0.014701866,
+   "NO": 0.593206267
+  },
+  "mu": {
+   "H": 0.3927306305
+  },
+  "slab": 0.0
+ },
+ "score": {
+  "activity": {
+   "span_eV": 0.3826
+  }
+ },
+ "site_area_A2": 6.5524,
+ "stored_kinetics": {
+  "production": {
+   "H2": -4.0984624623453914e-08,
+   "H2O": -5.6431029011976e-17,
+   "NH2OH": -1.94979959730753e-11,
+   "NH3": 1.4016452408788433e-10,
+   "NO": -1.4144765328803863e-10
+  },
+  "selectivity": 1.0,
+  "tof": 1.4016452408788433e-10
+ }
+}

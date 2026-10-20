@@ -1070,6 +1070,16 @@ where the paper gives them and records `theta0` otherwise.
    from one equilibrium composition (every independent affinity zero, D3)
    every `|r⁺ − r⁻| < 1e−6·k_scale`; `p_total: 10` with a composition
    reproduces the explicit-table result.
+   shipped: catpath 6424d11 (v0.32.0), precis: the commit adding this line
+   (pin move + glue). Found: pw455722's chain has 13 absorbing components
+   (no NEB barriers), so its TOF/selectivity are noise-dominated; the
+   selectivity acceptance is also checked on a well-posed chain
+   (`tests/test_pathway_environment.py`). A target with no co-product
+   (NO + 3/2 H2 → NH3) cannot be held fixed with every input fixed;
+   `equilibrium_composition(p_target=None)` solves it too. The harvest's
+   basis projection is an engine-free mirror
+   (`precis.quest.environment_basis`, parity-tested against the engine)
+   because `quest.compute` runs on hosts without the `catalyst` extra.
 2. **Ledger + provider seam + core checks + records.** `VacuumProvider`,
    the rate builder as the only rate path, the three core checks that
    exist without a lattice (elementary ratio; barrier identity tested on
