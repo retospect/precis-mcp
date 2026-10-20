@@ -6,8 +6,6 @@ model: opus
 pillar: 3d-design
 ---
 
-> **Superseded in method (Reto 2026-10-20):** [pcb-place-route-datamodel](pcb-place-route-datamodel.md) is the agreed place-and-route design; where this file disagrees, that one wins. The grid maze router is removed from the tree.
-
 # pcb vector router
 
 Source: Reto, 2026-10-16, on gr489923 ("why not just vectors and spacing…
@@ -737,14 +735,32 @@ Owning files: `vroute.py`, `realize.py`, `maze.py`, `src/precis/pcb/routecost.py
 **Probe shipped** (measurement only, nothing routes through it):
 `topo.build_region_graph` triangulates one layer's free space with every
 obstacle boundary constrained, and `topo.portal_capacity` prices each
-portal at `⌊(L − s)/(w + s)⌋`. Obstacles are `drc._copper_item_polygon`
-shapes drawn outward by `topo.outward` (≤ δ = 5 µm), because slice 2's
-kernel has not landed yet. `s` is the class clearance until slice 1's
-`required()` lands. There are no via edges, and own-net copper other than
-the two terminals blocks. `view='congestion'` prints a per-layer portal
-map under the tile map: triangles, portals, portals that take no track,
-and the median capacity. `tests/test_pcb_topo.py` holds the unit tests and
-the two slow comparisons below.
+portal at `⌊(L − s)/(w + s)⌋`. `view='congestion'` prints a per-layer
+portal map under the tile map: triangles, portals, portals that take no
+track, and the median capacity. `tests/test_pcb_topo.py` holds the unit
+tests and the two slow comparisons below.
+
+**Second landing** (the funnel domain, 2026-10-20): `board_obstacles`
+moved onto the slice-2 kernel — each item's `Body` drawn outward by
+`clearance.outward_polygon` (≤ δ), so arcs stop being chorded here too —
+and `Portal`/`RegionGraph` learned the pairwise world:
+`portal_capacity` takes per-end clearances (`⌊(L − s_a − s_b + s)/(w +
+s)⌋`), `RegionGraph.capacity_for` prices each portal end by
+`rules.required` (an own-net end owes 0). The **net domain**
+(`net_region_graph`, one per (net, layer)) inflates every foreign
+obstacle by `w/2 + required(net, o, L).warn + δ` and drops own-net
+copper — the centreline C-space the unified spec's taut bands run in
+(§Taut bands; composition row "5 CDT portals"). On it: `locate`
+(barycentric point-in-triangle), `dual_path`/`sleeve_between` (Dijkstra
+over centroids), `band_in_sleeve` (Mononen's funnel — the taut
+polyline), `funnel_path` (insertion-search alternative), and
+`side_swap_candidates` (one alternative sleeve per banned portal — the
+SIDE_SWAP generator). Library only: nothing routes through it yet;
+`d-vecdefault` owns the switch. Unit tests pin triangulation validity
+(no triangle crosses an inflated obstacle, portals stay in free space),
+pairwise portal capacity, the funnel's known-optimum on synthetic
+corridors, and domain/funnel wall time on the ewod replay and nano
+(slow tests print the table).
 
 The comparison is per connection, single layer (its goal layer), against
 `build_tile_graph(capacity="flow", strict=True)` with `exit_cap` for the

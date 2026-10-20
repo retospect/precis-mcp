@@ -239,6 +239,30 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/tiling.py::neck_down_at_pads": (
         "same Slice 5 tiling engine, not yet wired"
     ),
+    "src/precis/pcb/topo.py::outward": (
+        "simplify+buffer outward helper; board_obstacles moved to "
+        "clearance.outward_polygon (kernel bodies), so its remaining "
+        "callers are the topo tests' hand-made obstacles"
+    ),
+    "src/precis/pcb/topo.py::net_region_graph": (
+        "vector-router slice 5 second landing: the per-(net, layer) "
+        "inflated CDT domain for the unified spec's taut bands "
+        "(pcb-unified-place-route composition row '5 CDT portals'); "
+        "library only until the insertion-search / SIDE_SWAP consumers land"
+    ),
+    "src/precis/pcb/topo.py::funnel_path": "same slice 5 funnel domain, not yet wired",
+    "src/precis/pcb/topo.py::side_swap_candidates": (
+        "same slice: SIDE_SWAP candidate generator for the unified "
+        "annealer, which lands after this library"
+    ),
+    "src/precis/pcb/topo.py::RegionGraph.capacity_for": (
+        "same slice: required()-priced portal capacity; the V-overflow / "
+        "congestion consumers land after this library"
+    ),
+    "src/precis/pcb/topo.py::RegionGraph.sleeve_polygon": (
+        "same slice: channel union for band legality checks; callers "
+        "land with the band/insertion consumers"
+    ),
     # ---- class methods/properties (widened 2026-08-29) --------------
     # ---- capabilities.FIELDS entries (widened 2026-08-29) -------------
     "src/precis/pcb/capabilities.py::FIELDS.soldermask_dam_mm": (

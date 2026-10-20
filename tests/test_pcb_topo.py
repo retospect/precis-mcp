@@ -8,19 +8,33 @@ terminal, does the CDT still find one?"""
 from __future__ import annotations
 
 import collections
+import math
 import time
 from collections import deque
 from typing import Any
 
 import pytest
-from shapely.geometry import Point, box
+from shapely.geometry import LineString, Point, Polygon, box
+from shapely.ops import unary_union
 
-from precis.pcb import globalplan, topo
+from precis.pcb import globalplan, rules, topo
+from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import pin_point
 
 W = 0.1  # track
 S = 0.1  # clearance
 OUTLINE = [[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [0.0, 6.0]]
+
+
+def _ctx(net_rules: dict[str, rules.NetRules] | None = None) -> rules.RuleContext:
+    """A minimal rule context: the 2-layer fab row, the given per-net
+    resolved rules, both copper layers outer (the IPC column split)."""
+    return rules.RuleContext(
+        fab_caps=capability_for("2layer"),
+        net_rules=net_rules or {},
+        outer_layers=frozenset({"F.Cu", "B.Cu"}),
+        coated=True,
+    )
 
 
 def _ob(net: str, geom) -> topo.Obstacle:
@@ -455,3 +469,364 @@ EWOD_COUNTS = {
     "cdt_only": 21,
     "tile_only": 0,
 }
+
+
+# ── net domain, required()-priced capacity and the funnel (slice B) ──────
+
+
+def _net_rules(**overrides: Any) -> dict[str, rules.NetRules]:
+    cap = capability_for("2layer")
+    return {
+        name: rules.resolve_net_rules(
+            cls, layer_is_outer=True, fab_caps=cap, overrides=rules_ov or None
+        )
+        for name, (cls, rules_ov) in {
+            "A": ("", {}),
+            "B": ("", {}),
+            "C": ("", {}),
+            "D": ("", {}),
+            **{k: (k, v) for k, v in overrides.items()},
+        }.items()
+    }
+
+
+def test_net_domain_drops_own_copper_and_inflates_foreign_by_required():
+    a = _ob("A", box(1.0, 2.0, 2.0, 3.0))
+    b = _ob("B", box(4.0, 2.0, 5.0, 3.0))
+    ctx = _ctx()
+    dom = topo.net_region_graph([a, b], OUTLINE, "F.Cu", net="A", track_mm=W, ctx=ctx)
+    assert [o.net for o in dom.obstacles] == ["B"]
+    warn = rules.required(rules.Owner("A"), rules.Owner("B", "pad"), "F.Cu", ctx)
+    grow = W / 2 + float(warn.warn_mm or warn.error_mm)
+    # The inflation shrinks the A↔B gap by [grow − δ, grow + 2δ] (the
+    # outward polys sit ≤ δ outside their bodies on both sides).
+    d = b.poly.distance(a.poly) - dom.obstacles[0].poly.distance(a.poly)
+    assert grow - 2 * topo.DELTA_MM - 1e-9 <= d <= grow + 3 * topo.DELTA_MM + 1e-9
+
+
+def test_net_domain_triangulation_is_valid():
+    """No free triangle crosses an inflated obstacle; every portal lies
+    in free space (clearance respected by construction)."""
+    obs = [
+        _ob("A", box(1.0, 2.5, 2.0, 3.5)),
+        _ob("B", box(4.0, 1.0, 5.0, 2.4)),
+        _ob("C", Point(7.0, 4.0).buffer(0.8)),
+        _ob("D", box(3.0, 4.2, 4.5, 5.4)),
+    ]
+    ctx = _ctx()
+    dom = topo.net_region_graph(obs, OUTLINE, "F.Cu", net="A", track_mm=W, ctx=ctx)
+    board = Polygon(OUTLINE)
+    union = unary_union([o.poly for o in dom.obstacles])
+    inner = union.buffer(-1e-6)  # strict interior (boundary contact is legal)
+    for t in dom.triangles:
+        tri = Polygon(t)
+        assert board.covers(tri) or tri.difference(board).area < 1e-9
+        assert tri.intersection(inner).area < 1e-9
+    for p in dom.portals:
+        seg = LineString(p.uv)
+        assert seg.intersection(inner).length < 1e-6
+
+
+def test_capacity_for_prices_each_end_with_required():
+    cap = capability_for("2layer")
+    net_rules = {
+        "A": rules.resolve_net_rules("", layer_is_outer=True, fab_caps=cap),
+        "HV": rules.resolve_net_rules(
+            "hv", layer_is_outer=True, fab_caps=cap, overrides={"clearance_mm": 0.4}
+        ),
+    }
+    ctx = _ctx(net_rules)
+    own = _ob("A", box(2.0, 2.0, 3.0, 3.0))
+    hv = _ob("HV", box(3.7, 2.0, 4.7, 3.0))
+    g = _graph([own, hv])
+    portal = min(
+        (p for p in g.portals if set(p.ends) == {0, 1}),
+        key=lambda p: p.length_mm,
+    )
+    req = rules.required(rules.Owner("A"), rules.Owner("HV", "pad"), "F.Cu", ctx)
+    between = net_rules["A"].tiers_on("F.Cu", outer=True, coated=True).clearance_mm
+    # The own-net end owes nothing (same-net merge); the HV end owes its
+    # 0.4 mm tier; tracks among themselves owe A's own tier.
+    assert (
+        g.capacity_for(portal, "A", ctx)
+        == topo.portal_capacity(
+            portal.length_mm,
+            W,
+            S,
+            end_a_mm=0.0,
+            end_b_mm=float(req.warn_mm or 0.0),
+            between_mm=between,
+        )
+        == topo.portal_capacity(
+            portal.length_mm, W, S, end_a_mm=0.0, end_b_mm=0.4, between_mm=between
+        )
+    )
+    # Pricing the portal for HV's own track (0.4 on both ends, HV's tier
+    # between) leaves less room than for A's.
+    assert g.capacity_for(portal, "HV", ctx) <= g.capacity_for(portal, "A", ctx)
+
+
+def test_funnel_shortest_path_is_the_known_detour():
+    """box(4,2,6,3.5) between (1,3)→(9,3): the top detour is the shorter
+    (8.083 vs the bottom's 8.325)."""
+    g = _graph([_ob("B", box(4.0, 2.0, 6.0, 3.5))])
+    band = topo.funnel_path(g, (1.0, 3.0), (9.0, 3.0))
+    assert band is not None
+    opt = 2 * math.hypot(3.0, 0.5) + 2.0
+    # Corners are the outward polygon's, ≤ δ past the box's own.
+    assert opt <= band.length_mm <= opt + 4 * topo.DELTA_MM + 0.02
+    assert band.length_mm < 2 * math.hypot(3.0, 1.0) + 2.0
+    top = [p for p in band.points if p[1] > 3.4]
+    assert len(top) == 2 and all(3.9 < p[0] < 6.1 for p in top)
+    line = LineString(band.points)
+    assert g.sleeve_polygon(band.sleeve).buffer(1e-9).covers(line)
+
+
+def test_funnel_band_stays_inside_its_sleeve_over_a_bend():
+    obs = [
+        _ob("B", box(2.0, 0.0, 4.0, 2.4)),
+        _ob("C", box(6.0, 3.6, 8.0, 6.0)),
+        _ob("D", box(2.0, 4.0, 4.0, 5.5)),
+    ]
+    g = _graph(obs)
+    band = topo.funnel_path(g, (1.0, 3.0), (9.0, 3.0))
+    assert band is not None
+    line = LineString(band.points)
+    assert g.sleeve_polygon(band.sleeve).buffer(1e-9).covers(line)
+    blocked = unary_union([o.poly for o in g.obstacles]).buffer(-1e-9)
+    assert line.intersection(blocked).length < 1e-6
+
+
+def test_side_swap_candidates_thread_the_other_side():
+    g = _graph([_ob("B", box(4.0, 2.0, 6.0, 3.5))])
+    base = topo.sleeve_between(g, (1.0, 3.0), (9.0, 3.0))
+    assert base is not None
+    base_band = topo.band_in_sleeve(g, base, (1.0, 3.0), (9.0, 3.0))
+    assert max(p[1] for p in base_band.points) > 3.4  # the top sleeve
+    cands = topo.side_swap_candidates(g, base)
+    assert cands
+    assert all(tuple(s[1]) != tuple(base[1]) for s in cands)
+    bottoms = [
+        topo.band_in_sleeve(g, s, (1.0, 3.0), (9.0, 3.0))
+        for s in cands
+        if any(
+            p[1] < 2.0 for p in topo.band_in_sleeve(g, s, (1.0, 3.0), (9.0, 3.0)).points
+        )
+    ]
+    assert bottoms and min(b.length_mm for b in bottoms) < 8.4
+
+
+def test_funnel_reports_a_buried_terminal():
+    obs = [_ob("B", box(0.5, 2.0, 2.5, 4.0))]
+    dom = topo.net_region_graph(obs, OUTLINE, "F.Cu", net="A", track_mm=W, ctx=_ctx())
+    assert dom.locate(1.0, 3.0) is None
+    assert topo.funnel_path(dom, (1.0, 3.0), (9.0, 3.0)) is None
+
+
+def test_funnel_on_the_net_domain_respects_pairwise_clearance():
+    """On net A's domain the band keeps `required()` from foreign copper:
+    the HV pad's 0.4 tier pushes it off B's corridor where 0.152 fits."""
+    cap = capability_for("2layer")
+    net_rules = {
+        "A": rules.resolve_net_rules("", layer_is_outer=True, fab_caps=cap),
+        "HV": rules.resolve_net_rules(
+            "hv", layer_is_outer=True, fab_caps=cap, overrides={"clearance_mm": 0.4}
+        ),
+    }
+    ctx = _ctx(net_rules)
+    # Slit between two HV pads: 0.5 mm. A's band (w=0.1) needs
+    # 0.05 + 0.4 + 0.4 + 0.05 = 0.9 mm — the domain has no corridor;
+    # at s=0.15 it would need only 0.4 mm.
+    obs = [
+        _ob("HV", box(4.0, 0.0, 6.0, 3.0)),
+        _ob("HV", box(4.0, 3.5, 6.0, 6.0)),
+    ]
+    dom = topo.net_region_graph(obs, OUTLINE, "F.Cu", net="A", track_mm=W, ctx=ctx)
+    assert topo.funnel_path(dom, (1.0, 3.25), (9.0, 3.25)) is None
+    # With ordinary clearance the same slit admits the band.
+    ctx2 = _ctx(_net_rules())
+    dom3 = topo.net_region_graph(obs, OUTLINE, "F.Cu", net="A", track_mm=W, ctx=ctx2)
+    band = topo.funnel_path(dom3, (1.0, 3.25), (9.0, 3.25))
+    assert band is not None
+    line = LineString(band.points)
+    assert (
+        unary_union([o.poly for o in obs]).buffer(-1e-9).intersection(line).length
+        < 1e-6
+    )
+
+
+# ── performance on real boards (slow) ────────────────────────────────────
+
+
+def _perf_board(
+    model: dict[str, Any],
+    outline: list[list[float]],
+    graphs: dict[str, list[topo.Obstacle]],
+    conns: list[tuple[str, str, tuple[float, ...], tuple[float, ...], float]],
+    ctx: rules.RuleContext,
+    label: str,
+) -> dict[str, Any]:
+    """Time net-domain builds and funnel paths over ``conns``
+    ``(net, layer, a, b, track_mm)``; prints the table line."""
+    t0 = time.monotonic()
+    built: dict[tuple[str, str], topo.RegionGraph] = {}
+    for net, lay, _a, _b, w in conns:
+        key = (net, lay)
+        if key not in built:
+            built[key] = topo.net_region_graph(
+                graphs[lay], outline, lay, net=net, track_mm=w, ctx=ctx
+            )
+    domain_s = time.monotonic() - t0
+    t0 = time.monotonic()
+    bands = misses = 0
+    for net, lay, a, b, w in conns:
+        if topo.funnel_path(built[(net, lay)], (a[0], a[1]), (b[0], b[1])) is not None:
+            bands += 1
+        else:
+            misses += 1
+    funnel_s = time.monotonic() - t0
+    sizes = {key: len(g.triangles) for key, g in built.items()}
+    print(
+        f"\n{label}: {len(conns)} conns, {len(built)} net domains in "
+        f"{domain_s:.2f}s, funnel {bands} ok {misses} miss in {funnel_s:.2f}s; "
+        f"median tris/domain {sorted(sizes.values())[len(sizes) // 2]}"
+    )
+    return {"domains": len(built), "bands": bands, "misses": misses}
+
+
+@pytest.mark.slow
+def test_ewod_replay_net_domain_funnel_perf(store, monkeypatch):
+    from precis.pcb import gerber, session
+    from precis.workers.job_types.pcb_route import (
+        _apply_pin_swap_warm_start,
+        _graph_net_rules,
+        _graph_net_voltages,
+        _resolve_pin_swap_groups,
+    )
+    from tests.test_pcb_escape_replay import _hydrate
+    from tests.test_pcb_globalplan_ewod import (
+        PLAN_LAYERS,
+        _capture_pass_args,
+        _escape_reqs,
+        _open_in2,
+    )
+
+    ir, graph, features, footprints, fixed, config = _hydrate(store)
+    _open_in2(ir, config)
+    groups = _resolve_pin_swap_groups(ir, graph, [])
+    _apply_pin_swap_warm_start(ir, groups, footprints, fixed, "distance")
+    captured = _capture_pass_args(monkeypatch, ir, config, footprints, fixed)
+    reqs = _escape_reqs(ir, captured, config)
+    names = {i: str(layer["name"]) for i, layer in enumerate(ir.stackup)}
+    model = session._copper_model(
+        ir,
+        [{**row, "net": row.get("net") or ""} for row in fixed],
+        footprints=footprints,
+    )
+    outline = session.outline_from_features(features)
+    assert outline is not None
+    ctx = rules.RuleContext(
+        fab_caps=config.fab_caps,
+        net_rules=_graph_net_rules(graph, config.fab_caps),
+        outer_layers=frozenset({names[0], names[len(names) - 1]}),
+        net_voltages=_graph_net_voltages(graph),
+        coated=gerber.declares_parylene_coat(model),
+    )
+    obstacles = {
+        names[li]: topo.board_obstacles(model, names[li])
+        for li in {int(r.goal_layer) for r in reqs.values()}
+        if names[li] in PLAN_LAYERS
+    }
+    sink_instance = groups[0].instance
+    conns = []
+    for seg, req in reqs.items():
+        a, b = int(ir.seg_pin_a[seg]), int(ir.seg_pin_b[seg])
+        sink_pin = a if int(ir.pin_instance[a]) == sink_instance else b
+        far_pin = b if sink_pin == a else a
+        term_a, term_b = captured["island_terminals"].get(seg, ((), ()))
+        terms_far = term_a if far_pin == a else term_b
+        vias = sorted({t.point for t, _l in terms_far if t.kind == "via"})
+        pad = pin_point(ir, sink_pin)
+        lay = names[int(req.goal_layer)]
+        if lay not in obstacles or not vias or pad is None:
+            continue
+        conns.append(
+            (
+                str(ir.net_name[req.net_id]),
+                lay,
+                tuple(map(float, vias[0])),
+                tuple(map(float, pad)),
+                float(req.rules.track_width_mm),
+            )
+        )
+    result = _perf_board(model, outline, obstacles, conns, ctx, "ewod-replay")
+    # Every escape connection's far via is free copper of its own net, so
+    # the band domain should hold a sleeve for essentially all of them.
+    assert result["bands"] >= len(conns) - 2
+
+
+@pytest.mark.slow
+def test_nano_net_domain_funnel_perf(store):
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+    from precis.pcb import resolved, session
+    from precis.pcb.drc import process_for_stackup
+    from precis.workers.job_types.pcb_route import (
+        _graph_net_rules,
+        _graph_net_voltages,
+    )
+    from tests.fixtures.pcb import nano_usb_pd_testboard as fx
+    from tests.test_pcb_nano_usb_pd_testboard import _drain_one_job
+
+    for lcsc, fp in fx.CATALOG_FOOTPRINTS.items():
+        store.part_footprint_put(lcsc, fp)
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="nano-topo", args=dict(fx.DESIGN)).body
+    ref = store.get_ref(kind="pcb", id="nano-topo")
+    assert "enqueued" in pcb.put(id="nano-topo", args={"op": "place", "seed": 1}).body
+    _drain_one_job(store, ref.id, unrouted_ok=False)
+    graph = store.pcb_graph(ref.id)
+    features = store.pcb_features_list(ref.id)
+    local = store.pcb_local_footprints_for(ref.id)
+    cached = store.pcb_footprints_for(ref.id)
+    fixed = store.pcb_fixed_copper_list(graph["board"]["board_id"])
+    ir = session.build_ir(
+        resolved.apply(graph, store.pcb_netlist_snapshot_latest(ref.id)),
+        outline=session.outline_from_features(features),
+        mounting_holes=session.mounting_holes_from_features(features),
+        footprints_by_lcsc=cached,
+        local_footprints_by_name=local,
+        fixed_copper=fixed,
+    )
+    footprints = session.footprints_by_refdes(
+        ir,
+        cached,
+        local_footprints_by_name=local,
+        local_names_by_refdes=session.local_footprint_names_by_refdes(graph),
+    )
+    model = session._copper_model(ir, list(fixed), footprints=footprints)
+    outline = session.outline_from_features(features)
+    assert outline is not None
+    names = {i: str(layer["name"]) for i, layer in enumerate(ir.stackup)}
+    cap = capability_for(process_for_stackup(ir.stackup))
+    ctx = rules.RuleContext(
+        fab_caps=cap,
+        net_rules=_graph_net_rules(graph, cap),
+        outer_layers=frozenset({names[0], names[len(names) - 1]}),
+        net_voltages=_graph_net_voltages(graph),
+    )
+    net_rules = ctx.net_rules
+    conns = []
+    for seg in range(len(ir.seg_net)):
+        pa, pb = (
+            pin_point(ir, int(ir.seg_pin_a[seg])),
+            pin_point(ir, int(ir.seg_pin_b[seg])),
+        )
+        if pa is None or pb is None:
+            continue
+        net = str(ir.net_name[int(ir.seg_net[seg])])
+        w = float(net_rules[net].track_width_mm) if net in net_rules else 0.2
+        conns.append((net, names[0], tuple(map(float, pa)), tuple(map(float, pb)), w))
+    obstacles = {names[0]: topo.board_obstacles(model, names[0])}
+    result = _perf_board(model, outline, obstacles, conns, ctx, "nano F.Cu")
+    assert result["domains"] > 0

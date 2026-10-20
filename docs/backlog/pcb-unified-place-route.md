@@ -6,8 +6,6 @@ model: opus
 pillar: 3d-design
 ---
 
-> **Superseded in method (Reto 2026-10-20):** [pcb-place-route-datamodel](pcb-place-route-datamodel.md) is the agreed place-and-route design; where this file disagrees, that one wins. The grid maze router is removed from the tree.
-
 # pcb unified place-and-route
 
 Source: Reto, 2026-10-18 (quoted below), on top of the vector-router

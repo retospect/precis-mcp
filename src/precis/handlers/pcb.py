@@ -5429,7 +5429,7 @@ class PcbHandler(Handler):
         except Exception as exc:
             return f"\n\n# portal map — unavailable ({exc})"
         lines = [
-            "\n\n# portal map — CDT of free space (probe: drc pad/copper shapes "
+            "\n\n# portal map — CDT of free space (probe: kernel bodies "
             f"drawn outward {pcb_topo.DELTA_MM * 1000:.0f} µm, modal-class lanes)"
         ]
         for lay, s in summary["layers"].items():
