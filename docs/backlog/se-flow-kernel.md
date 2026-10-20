@@ -106,7 +106,30 @@ card tells whether that size is still inside the model.
    map, `patch:` ports), `view='flow'` (field, streamlines, card),
    measures through `COMPUTERS`. Test: the cfdtest hex chamber rebuilt
    as a cad envelope reproduces cfdtest's breakthrough fraction within
-   its own seed scatter.
+   its own seed scatter. `view='flow'` also serves the player payload
+   of slice 2b: chamber mesh (outline + floor depth map), the recorded
+   frames (`trace(record_frames=K)`, float32 `(K, n, 3)` reduced
+   positions, `z*` 0 = floor, 1 = ceiling) as one binary blob, the
+   scale triple and the regime card. Over ~20 MB the server subsamples
+   particles, then frames, and the payload says by how much.
+
+2b. **Web particle player** (Reto 2026-10-20). A Flow tab beside the
+   se/cad 3-D viewer in `precis_web`, on the vendored three.js
+   (`static/three-r184`):
+   - particles as one `InstancedMesh` of spheres (2 k–20 k), positions
+     interpolated between stored frames for smooth playback;
+   - play/pause, time scrubber, speed, loop; the clock reads `t*` and,
+     through the scale triple, seconds for the chosen chamber size;
+   - one directional light with a shadow map: particles cast, the
+     chamber floor (holes, pockets) receives; walls and lid translucent;
+   - colour by speed, height in gap or residence time; optional short
+     fading trails (last few frames as line segments);
+   - overlays: ports, the tracking plane as a translucent sheet marking
+     crossings, the regime card verdicts beside the player.
+   Test: a page test that the tab loads the payload of the slice-2 hex
+   chamber and the instance count equals the payload's particle count;
+   frame-advance unit test in JS if the web suite has a harness,
+   otherwise a Python test on the payload contract only.
 3. **Nano propagator**: test-particle Monte Carlo with diffuse wall
    reflection on a hexfold lumen (`generated.sites` + vdW-offset wall),
    same `trace` outputs; the card routes `Kn ≫ 1` here.
@@ -125,13 +148,29 @@ card tells whether that size is still inside the model.
 Sequencing: slice 1 is self-contained and builds now. Slice 2 waits for
 pocket-from-molecule slice 2 to land, because that slice fixes the
 provisional `Computer` signature in `precis_se.properties.COMPUTERS`.
+Slice 2b follows slice 2.
+
+## Open question (Reto, before slice 2)
+
+- Q4 Vertical speed profile. cfdtest's tracker (`tracker.py::track`)
+  moves every particle horizontally at the gap-averaged speed whatever
+  its height; the Hele-Shaw profile is parabolic (1.5× at mid-gap, 0 at
+  floor and lid), which is what spreads a tracer pulse (Taylor
+  dispersion). The player makes the uniform speed visible. Using the
+  profile `U(z*) = 6 z*(1 − z*) · Ū` is a few lines but changes
+  cfdtest's breakthrough numbers, so slice 2's reproduction test would
+  compare against the profiled tracker, not cfdtest. Recommendation:
+  adopt the profile in slice 2, behind a `profile='parabolic'|'plug'`
+  argument defaulting to parabolic, with `plug` reproducing cfdtest.
 
 ## Explicitly NOT in scope
 
 3-D Navier–Stokes; two-phase or free-surface flow (EWOD droplets are a
-different model); heat; chemistry in the fluid; the GIF renderer.
+different model); heat; chemistry in the fluid; the GIF renderer (the
+web player of slice 2b replaces it).
 
 ## Target + blast radius
 
 New `src/precis_flow/`; `precis_se` gains the adapter module and the
-`COMPUTERS` entries; `cad` kind untouched beyond reading envelopes.
+`COMPUTERS` entries; `cad` kind untouched beyond reading envelopes;
+`precis_web` gains the Flow tab and its static JS (slice 2b).
