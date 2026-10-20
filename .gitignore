@@ -187,3 +187,6 @@ docs/backlog/threads/PRIORITIES.md
 
 # Per-checkout scratch (session caches, one-off merge probes): never source.
 .scratch/
+
+# local CFD scratch repo (own git), never tracked here
+cfdtest/
