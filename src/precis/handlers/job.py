@@ -19,7 +19,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 from precis.errors import BadInput
 from precis.handlers._numeric_ref import NumericRefHandler, _parse_window_bound
@@ -266,6 +266,14 @@ _JOB_PARENT_KINDS_WITH_COORDINATOR: frozenset[str] = JOB_PARENT_KINDS | frozense
 )
 
 
+_LOGS_ARG_KEYS = ("handler", "host", "process", "level", "since", "limit", "job")
+
+
+def _is_logs_path(id: str) -> bool:
+    path = id.lstrip("/")
+    return path == "logs" or path.startswith("logs?")
+
+
 class JobHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="job",
@@ -337,6 +345,19 @@ class JobHandler(NumericRefHandler):
         sha: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``/logs`` takes its filters from the id's query string; a
+        # top-level ``q=`` (and plain ``handler=``/``host=``/... args)
+        # fold into it, the id's own value winning (gr500645).
+        if isinstance(id, str) and _is_logs_path(id):
+            extra = {k: str(_kw[k]) for k in _LOGS_ARG_KEYS if _kw.get(k) is not None}
+            if q is not None:
+                extra["q"] = str(q)
+            if extra:
+                path, _, qs = id.partition("?")
+                merged = {**extra, **dict(parse_qsl(qs, keep_blank_values=True))}
+                id = f"{path}?{urlencode(merged)}"
+            q = None
+            _kw = {k: v for k, v in _kw.items() if k not in _LOGS_ARG_KEYS}
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is

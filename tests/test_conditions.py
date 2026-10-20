@@ -160,6 +160,53 @@ def test_pass_dead_quiet_when_handler_recent(
     assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
 
 
+def test_pass_dead_slow_tier_fires_after_outage_past_7d_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr500868: a low-traffic pass (under the 150-rows/7d floor) silent for
+    9 days has an EMPTY 7d history; the 30d slow tier still sees it."""
+    handler = _uniq("slowdead")
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=60, last_age_s=9 * 86400.0)
+    found = [f for f in _probe_pass_dead(store) if handler in f.key]
+    assert len(found) == 1
+    assert found[0].heal == HealRequest("restart-worker", _HOST, _PROC)
+
+
+def test_pass_dead_slow_tier_quiet_within_slow_budget(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silence under the 12h slow budget is an ordinary quiet stretch."""
+    handler = _uniq("slowquiet")
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=60, last_age_s=6 * 3600.0)
+    assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
+
+
+def test_pass_dead_slow_tier_stops_after_max_silence(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A handler removed from code stops alerting after the max-silence cap,
+    not for the whole 30d lookback."""
+    handler = _uniq("slowgone")
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=60, last_age_s=20 * 86400.0)
+    assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
+
+
+def test_pass_dead_slow_tier_ignores_rare_handlers(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handler = _uniq("rare")
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=5, last_age_s=9 * 86400.0)
+    assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
+
+
 def test_pass_dead_quiet_when_host_dark(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -25,6 +25,7 @@ Live state of the agent fleet. Not embedded, not searchable.
 ```
 get(kind='fleet')                    # EXCEPTIONS / READY / SHIPPING / WAITING / AGENTS / QUOTA
 get(kind='fleet', args={'project': 'precis-mcp', 'host': 'melchior'})
+get(kind='fleet', args={'state': 'all'})   # AGENTS incl. dead / quiet >24h rows (default hides them, with a count)
 get(kind='fleet', id='claude:melchior:precis-mcp:main')   # one row by key
 get(kind='fleet', id='fl123')                  # one row by handle
 ```
@@ -43,7 +44,8 @@ branch head and ship squash-merges it to a new sha, so READY lists the
 row only once the collector sees its work on origin/main (patch-id of
 the branch diff, subject match as fallback). Before that it sits under
 SHIPPING (mid-CI) or WAITING (a migration/safe_fetch commit held for
-/go). Rows from a collector too old to check read SHIPPING, never READY.
+/go). SHIPPING also drops dead rows and rows quiet over 24h (parked or
+landed long ago). Rows from a collector too old to check read SHIPPING, never READY.
 
 ## Rows
 

@@ -45,7 +45,10 @@ row per condition with a severity and an optional whitelisted heal. Its
 `pass-dead-on-host` row fires when a handler that logged steadily on a
 `(host, process)` over the last 7 days (≥ ~150 rows, so one-off passes
 can't false-alarm) has been silent past budget — 4 h default,
-`PRECIS_COND_PASS_DEAD_BUDGET_S` — while the host still heartbeats. The
+`PRECIS_COND_PASS_DEAD_BUDGET_S` — while the host still heartbeats. A slow
+tier looks back 30 days for handlers with ≥ 40 rows (a low-traffic host's
+fetch_oa logs ~15/day, and an outage > 7 days empties the 7d window) and
+fires after 12 h of silence (`PRECIS_COND_PASS_DEAD_SLOW_BUDGET_S`). The
 runner logs every registered pass every cycle, idle or not, so silence
 means the handler is dead, wedged or removed, not merely quiet.
 Deliberate offs are excluded: services disabled via `service_config`,

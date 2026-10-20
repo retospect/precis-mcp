@@ -694,3 +694,33 @@ def test_validate_params_integer_names_the_retry() -> None:
         _validate_params({"hold_hours": "3"}, schema, job_type="demo")
     assert exc.value.next is not None
     assert "params={'hold_hours': 1}" in str(exc.value.next)
+
+
+# ── top-level q= folds into /logs (gr500645) ─────────────────────────
+
+
+def test_logs_top_level_q_filters(jobs: JobHandler, store: Store) -> None:
+    _insert_log(store, message="connection timeout on x")
+    _insert_log(store, message="unrelated noise")
+
+    resp = jobs.get(id="/logs", q="timeout")
+
+    assert "connection timeout on x" in resp.body
+    assert "unrelated noise" not in resp.body
+
+
+def test_logs_top_level_q_merges_and_id_query_wins(
+    jobs: JobHandler, store: Store
+) -> None:
+    _insert_log(store, pass_="dispatch", message="alpha dispatch")
+    _insert_log(store, pass_="embed", message="alpha embed")
+    _insert_log(store, pass_="dispatch", message="beta dispatch")
+
+    merged = jobs.get(id="/logs?handler=dispatch", q="alpha")
+    assert "alpha dispatch" in merged.body
+    assert "alpha embed" not in merged.body
+    assert "beta dispatch" not in merged.body
+
+    wins = jobs.get(id="/logs?q=beta", q="alpha")
+    assert "beta dispatch" in wins.body
+    assert "alpha dispatch" not in wins.body

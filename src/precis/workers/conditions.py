@@ -133,6 +133,22 @@ class Condition:
 
 # ── probes ───────────────────────────────────────────────────────────────
 
+#: Slow-lane pass-dead (gr500868). A rotation pass on a busy host logs a
+#: claim line every cycle, but on an agent-profile host (melchior's
+#: fetch_oa / bib_parse: ~15 lines/day) it logs rarely enough to sit under
+#: the 150-rows/7d floor, and an outage longer than the 7d window empties
+#: its history entirely -- it went 8 days unalerted. So a second tier looks
+#: back ``_PASS_DEAD_SLOW_LOOKBACK_DAYS`` and accepts a lower row floor, with
+#: a looser silence budget (``_PASS_DEAD_SLOW_BUDGET_S``, > 7x the observed
+#: ~1.6h inter-line gap, so ordinary quiet stretches don't fire). The tier
+#: stops firing once a pass has been silent ``_PASS_DEAD_SLOW_MAX_SILENT_DAYS``
+#: so a handler removed or renamed in code doesn't alert for the whole
+#: lookback; two weeks of alerting is ample to have been seen.
+_PASS_DEAD_SLOW_LOOKBACK_DAYS = 30
+_PASS_DEAD_SLOW_BUDGET_S = 12 * 3600.0
+_PASS_DEAD_SLOW_MIN_ROWS = 40
+_PASS_DEAD_SLOW_MAX_SILENT_DAYS = 14
+
 _PASS_DEAD_SQL = """
 WITH live AS (
     SELECT host FROM host_heartbeat
@@ -140,17 +156,21 @@ WITH live AS (
 ), hist AS (
     SELECT host, process, payload->>'handler' AS handler,
            max(ts) AS last_seen,
-           count(*) AS n7d
+           count(*) FILTER (WHERE ts > now() - interval '7 days') AS n7d,
+           count(*) AS nlong
       FROM worker_logs
-     WHERE ts > now() - interval '7 days'
+     WHERE ts > now() - make_interval(days => %(lookback_d)s)
        AND payload ? 'handler'
      GROUP BY 1, 2, 3
 )
 SELECT h.host, h.process, h.handler,
        EXTRACT(EPOCH FROM (now() - h.last_seen)) / 3600.0 AS silent_h
   FROM hist h JOIN live l ON l.host = h.host
- WHERE h.last_seen < now() - make_interval(secs => %(budget_s)s)
-   AND h.n7d >= %(min_rows)s
+ WHERE (h.last_seen < now() - make_interval(secs => %(budget_s)s)
+        AND h.n7d >= %(min_rows)s)
+    OR (h.last_seen < now() - make_interval(secs => %(slow_budget_s)s)
+        AND h.last_seen > now() - make_interval(days => %(slow_max_silent_d)s)
+        AND h.nlong >= %(slow_min_rows)s)
  ORDER BY 1, 2, 3
 """
 
@@ -256,7 +276,21 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             _PASS_DEAD_SQL,
-            {"fresh_min": _HOST_FRESH_MIN, "budget_s": budget_s, "min_rows": min_rows},
+            {
+                "fresh_min": _HOST_FRESH_MIN,
+                "budget_s": budget_s,
+                "min_rows": min_rows,
+                "lookback_d": _PASS_DEAD_SLOW_LOOKBACK_DAYS,
+                "slow_budget_s": _env_f(
+                    "PRECIS_COND_PASS_DEAD_SLOW_BUDGET_S", _PASS_DEAD_SLOW_BUDGET_S
+                ),
+                "slow_min_rows": int(
+                    _env_f(
+                        "PRECIS_COND_PASS_DEAD_SLOW_MIN_ROWS", _PASS_DEAD_SLOW_MIN_ROWS
+                    )
+                ),
+                "slow_max_silent_d": _PASS_DEAD_SLOW_MAX_SILENT_DAYS,
+            },
         ).fetchall()
     disabled = _disabled_services(store)
     parked = _parked_workers(store)
@@ -283,7 +317,8 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
                         f"lane retired: {process} is not installed on {host} "
                         f"(fresh unit listing), so handler '{handler}' has been "
                         f"silent {float(silent_h):.1f}h by design, not a dead "
-                        "handler. Clears when its 7d history ages out"
+                        "handler. Clears when its log history ages out "
+                        f"(7d, or {_PASS_DEAD_SLOW_MAX_SILENT_DAYS}d of silence)"
                     ),
                 )
             )
@@ -293,7 +328,7 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
                 key=f"pass-dead:{host}/{process}/{handler}",
                 detail=(
                     f"handler '{handler}' on {host}/{process} silent "
-                    f"{float(silent_h):.1f}h (logged every cycle for 7d before; "
+                    f"{float(silent_h):.1f}h (logged steadily before; "
                     "host still heartbeats) — dead handler inside a live "
                     "worker (the gr204385 class)"
                 ),

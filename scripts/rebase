@@ -50,7 +50,8 @@ done
 # passes straight through to the inner run — rebase never prompts.
 if [[ "$VERBOSE" != 1 && -z "${PRECIS_REBASE_QUIET:-}" && -f scripts/lib/quiet-log.sh ]]; then
     source scripts/lib/quiet-log.sh
-    REBASE_LOG="${TMPDIR:-/tmp}/rebase-$(git branch --show-current 2>/dev/null || basename "$PWD")-$$.log"
+    _rb_name="$(git branch --show-current 2>/dev/null || basename "$PWD")"
+    REBASE_LOG="${TMPDIR:-/tmp}/rebase-${_rb_name//\//-}-$$.log"  # '/' in a branch is a path sep (gr499974)
     printf 'log: %s\n' "$REBASE_LOG"
     rc=0
     inner=0

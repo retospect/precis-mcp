@@ -300,7 +300,8 @@ fi
 # nothing there either.
 if [[ "$VERBOSE" != 1 && -z "${PRECIS_SHIP_QUIET:-}" && -f "${WORKTREE}/scripts/lib/quiet-log.sh" ]]; then
     source "${WORKTREE}/scripts/lib/quiet-log.sh"
-    SHIP_LOG="${TMPDIR:-/tmp}/ship-${BRANCH:-detached}-$$.log"
+    _ship_name="${BRANCH:-detached}"
+    SHIP_LOG="${TMPDIR:-/tmp}/ship-${_ship_name//\//-}-$$.log"  # '/' is a path sep (gr499974)
     printf 'log: %s\n' "$SHIP_LOG"
     rc=0
     inner=0

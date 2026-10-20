@@ -90,8 +90,9 @@ _SYSTEM = (
     "structure is, its dimensionality and bonding character, and the "
     "function or application context it plausibly serves. Ground every "
     "claim in the card; mark plausible-but-unmeasured interpretation as "
-    "such rather than inventing measured values. Output only the "
-    "description — no preamble, no markdown."
+    "such rather than inventing measured values. No markdown. Respond "
+    "with EXACTLY ONE JSON object, nothing else: "
+    '{"description": "<the narrative>"}'
 )
 
 
@@ -138,6 +139,27 @@ def claim_refs_without_description(
     return [(int(r[0]), str(r[1]), str(r[2] or ""), str(r[3])) for r in rows]
 
 
+def _extract_description(res: Any) -> str:
+    """Pull the narrative out of the reply. ``CLAUDE_P`` demands a JSON
+    block (``res.data``); the local/OpenAI wires return the same JSON as
+    text, which is parsed here. A reply with no JSON at all is taken as
+    plain prose (a model that ignored the JSON instruction); one that looks
+    like JSON but yields no ``description`` (truncated, malformed, another
+    shape) raises so the card is retried rather than storing junk."""
+    from precis.utils.claude_p import _parse_last_json_block
+
+    text = (res.text or "").strip()
+    data = getattr(res, "data", None)
+    if not isinstance(data, dict):
+        data = _parse_last_json_block(text)
+    desc = data.get("description") if isinstance(data, dict) else None
+    if isinstance(desc, str):
+        return desc.strip()
+    if data is not None or "{" in text:
+        raise ValueError("card_describe reply carried no usable 'description' field")
+    return text
+
+
 def describe_card(
     client: Any, *, kind: str, title: str, card_text: str
 ) -> tuple[str, str]:
@@ -158,7 +180,7 @@ def describe_card(
         },
     ]
     res = client.complete(messages)
-    text = (res.text or "").strip()
+    text = _extract_description(res)
     if len(text) < _MIN_DESC_CHARS:
         raise RuntimeError(
             f"card_describe: generation too short ({len(text)} chars) for {title!r}"

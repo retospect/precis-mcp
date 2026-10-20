@@ -65,6 +65,18 @@ def _who(meta: dict[str, Any]) -> str:
     )
 
 
+#: AGENTS / SHIPPING hide rows quiet longer than this (hours) by default.
+_RECENT_H = 24
+
+
+def _is_live(m: dict[str, Any], now: datetime) -> bool:
+    """Not dead and active within ``_RECENT_H`` (unknown activity counts live)."""
+    if m.get("state") == "dead":
+        return False
+    quiet = _age_min(m.get("last_active"), now)
+    return quiet is None or quiet < _RECENT_H * 60
+
+
 class FleetHandler(NumericRefHandler):
     #: machine-collected host reports, not agent prose: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
@@ -225,6 +237,7 @@ class FleetHandler(NumericRefHandler):
         q: str | None = None,
         project: str | None = None,
         host: str | None = None,
+        state: str | None = None,
         **_kw: Any,
     ) -> Response:
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
@@ -232,7 +245,9 @@ class FleetHandler(NumericRefHandler):
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         if id is None and view is None:
-            return Response(body=self._render_fisheye(project=project, host=host))
+            return Response(
+                body=self._render_fisheye(project=project, host=host, state=state)
+            )
         if isinstance(id, str) and not id.startswith("/"):
             return super().get(id=self._ref_for(id).id, view=view, q=q, **_kw)
         return super().get(id=id, view=view, q=q, **_kw)
@@ -259,6 +274,7 @@ class FleetHandler(NumericRefHandler):
         *,
         project: str | None = None,
         host: str | None = None,
+        state: str | None = None,
         now: datetime | None = None,
     ) -> str:
         now = now or datetime.now(UTC)
@@ -325,14 +341,30 @@ class FleetHandler(NumericRefHandler):
         # done_state comes from the collector's git check; absent (old
         # reporter, unverifiable sha) reads as SHIPPING, never READY.
         done_block("READY", [m for m in dones if m.get("done_state") == "landed"])
+        # SHIPPING is work still headed for origin/main: a dead or long-quiet
+        # row is parked (or landed days ago under an old reporter), not mid-CI.
         done_block(
             "SHIPPING",
-            [m for m in dones if m.get("done_state") not in ("landed", "waiting")],
+            [
+                m
+                for m in dones
+                if m.get("done_state") not in ("landed", "waiting") and _is_live(m, now)
+            ],
         )
         done_block("WAITING", [m for m in dones if m.get("done_state") == "waiting"])
 
+        # AGENTS defaults to live + recent rows; state='all' shows every
+        # row, any other value filters to that state (gr500641).
+        shown = agents
+        if state != "all":
+            shown = (
+                [m for m in agents if m.get("state") == state]
+                if state
+                else [m for m in agents if _is_live(m, now)]
+            )
+        hidden = len(agents) - len(shown)
         lines.append("AGENTS")
-        for m in agents:
+        for m in shown:
             quiet = _age_min(m.get("last_active"), now)
             q = f"{quiet:.0f}m" if quiet is not None else "-"
             ctx = f"{m['ctx_pct']:.0f}%" if m.get("ctx_pct") is not None else "-"
@@ -344,8 +376,13 @@ class FleetHandler(NumericRefHandler):
             lines.append(
                 f"  {_who(m)}{tgt} · {m.get('state')}{stale} · {q} · {purpose} · {ctx}{done}"
             )
-        if not agents:
+        if not shown:
             lines.append("  none")
+        if hidden:
+            lines.append(
+                f"  ({hidden} hidden: dead or quiet >{_RECENT_H}h; "
+                "args={'state':'all'} shows all)"
+            )
 
         quota: dict[tuple[str, str], Any] = {}
         for hm in sorted(hosts.values(), key=lambda h: str(h.get("reported_at"))):

@@ -372,6 +372,60 @@ def test_done_purpose_held_for_go_is_waiting(h: FleetHandler) -> None:
     ]
 
 
+def test_shipping_hides_dead_and_long_quiet_rows(h: FleetHandler) -> None:
+    """gr500640: parked / long-landed rows are not mid-CI; live ones stay."""
+    send(
+        h,
+        rep(
+            [
+                row(purpose="main at 1111111: live", done_state="shipping"),
+                row(
+                    tree="old",
+                    purpose="old at 2222222: days ago",
+                    last_active=iso(60 * 48),
+                ),
+                row(tree="gone", purpose="gone at 3333333: parked"),
+            ]
+        ),
+    )
+    send(
+        h,
+        rep(
+            [
+                row(purpose="main at 1111111: live", done_state="shipping"),
+                row(
+                    tree="old",
+                    purpose="old at 2222222: days ago",
+                    last_active=iso(60 * 48),
+                ),
+            ]
+        ),
+    )  # gone -> dead
+    lines = h.get().body.splitlines()
+    ship = _section(lines, "SHIPPING", "WAITING")
+    assert len(ship) == 1 and "proj/main" in ship[0]
+
+
+def test_agents_hide_dead_and_stale_with_count_and_state_filter(
+    h: FleetHandler,
+) -> None:
+    """gr500641: default AGENTS = live + recent; state='all' shows all."""
+    send(
+        h,
+        rep([row(), row(tree="old", last_active=iso(60 * 48)), row(tree="gone")]),
+    )
+    send(h, rep([row(), row(tree="old", last_active=iso(60 * 48))]))
+    lines = h.get().body.splitlines()
+    agents = lines[lines.index("AGENTS") + 1 : lines.index("AGENTS") + 3]
+    assert "proj/main" in agents[0]
+    assert "proj/old" not in "\n".join(lines).split("AGENTS")[1]
+    assert agents[1].startswith("  (2 hidden:") and "'state':'all'" in agents[1]
+    full = h.get(state="all").body
+    assert "proj/old" in full and "proj/gone" in full and "hidden" not in full
+    dead = h.get(state="dead").body
+    assert "proj/gone" in dead and "proj/main" not in dead.split("AGENTS")[1]
+
+
 def test_stale_host_marks_agents_and_lists_exception(h: FleetHandler) -> None:
     send(h, rep([row()]))
     hm = agent(h, f"host:{HOST}")

@@ -7,6 +7,7 @@ worker never touches an embedder.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -282,3 +283,46 @@ def test_pcb_description_lifecycle_and_search(store: Any) -> None:
     r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
     assert r["claimed"] == 1
     assert len(_desc_chunks(store, ref_id)) == 1
+
+
+def test_claude_p_json_reply_is_parsed(store: Any, hub: Any) -> None:
+    """gr500371: CLAUDE_P only accepts a JSON block, surfaced as res.data;
+    the description is its `description` field, not the raw envelope."""
+    ref_id = _put_structure(hub)
+    desc = "A PdO slab, plausibly a catalyst surface model for CO oxidation."
+
+    class _JsonClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            return SimpleNamespace(
+                text=json.dumps({"description": desc}),
+                data={"description": desc},
+                model="claude-sonnet-5",
+            )
+
+    client = _JsonClient()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert _desc_chunks(store, ref_id)[0][1] == desc
+    assert "JSON" in client.calls[0][0]["content"]
+
+
+def test_truncated_json_reply_fails_not_stored(store: Any, hub: Any) -> None:
+    """A JSON-looking reply with no usable `description` (truncated, wrong
+    shape) is a per-item failure to retry, never stored as the card text."""
+    ref_id = _put_structure(hub)
+
+    class _TruncClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            return SimpleNamespace(
+                text='{"description": "A PdO slab, plausibly a cat',
+                data=None,
+                model="local",
+            )
+
+    r = run_card_describe_pass(store, client=_TruncClient(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert _desc_chunks(store, ref_id) == []

@@ -501,6 +501,9 @@ get(kind='job', id='/logs?process=precis-worker-agentlane')
 # (e.g. melchior's precis-worker, precis-worker-agentlane,
 # precis-worker-drain-1, precis-worker-drain-2) needs this, host= alone
 # can't tell them apart
+
+# top-level q= works too (id's query string wins on conflict)
+get(kind='job', id='/logs', q='timeout')
 ```
 
 Read-only view over the centralised `worker_logs` table (migration
