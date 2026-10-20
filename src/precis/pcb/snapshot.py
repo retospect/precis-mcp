@@ -138,6 +138,8 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
 
     This binds the replay engine at capture time, not the unknown historical
     engine which produced the stored copper. The copy is read before rerouting.
+    Only a first capture reaches this: a replay's params carry the recorded
+    config and normalize echoes it, so post-capture config fields are inert.
     """
     from precis.pcb.capabilities import capability_for
     from precis.pcb.drc import process_for_stackup
@@ -298,7 +300,14 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
     result["design"].pop("ref_id")
     params = result["route_params"]
     params.pop("pcb_ref_id", None)
-    result["route_config"] = route_config(tables, params)
+    # Params returned by load_snapshot carry the capture's recorded config;
+    # echo it verbatim so a field added to RealizeConfig/OptimizeConfig (or
+    # any nested dataclass) after the capture cannot move a stored export
+    # (gr497768's default-on exhaustion_retry_* broke exactly this).
+    captured = params.pop("_route_config", None)
+    result["route_config"] = (
+        _json_config(captured) if captured is not None else route_config(tables, params)
+    )
     result["format"] = "precis-pcb-replay"
     result["version"] = 1
     return result
@@ -428,6 +437,9 @@ def load_snapshot(
                     maps.setdefault(key, {})[int(old_id)] = int(inserted[0])
         params = copy.deepcopy(fixture["route_params"])
         params["pcb_ref_id"] = ref_id
+        if fixture.get("route_config") is not None:
+            # Bind the re-export to the recorded config, not current defaults.
+            params["_route_config"] = copy.deepcopy(fixture["route_config"])
         return ref_id, params
 
 
