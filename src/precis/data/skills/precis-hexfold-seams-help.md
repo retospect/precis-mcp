@@ -2,11 +2,12 @@
 id: precis-hexfold-seams-help
 family: se
 title: precis — hexfold seams: every typed hexfold_scene entry (Y, sp3 seam lines, seam/rail tubes, channel, reservoir tunnel, fin)
-summary: the exclusive typed feature entries of generator='hexfold_scene', one section each — the straight Y (k3-sp2-120-z) and its sp3 seam-line siblings (k4-sp3-90-a, k3-sp3-z, k3-sp3-a), the seam tube (fin-k3-120-z), the rail tube (rail-k3-120-z), the channel junction (chan-k3-sp3-z), the reservoir tunnel (tunnel-reservoirs) and the sp3 graft fin (fin-sp3-z)
+summary: the exclusive typed feature entries of generator='hexfold_scene', one section each — the straight Y (k3-sp2-120-z) and its sp3 seam-line siblings (k4-sp3-90-a, k3-sp3-z, k3-sp3-a), the seam tube (fin-k3-120-z), the rail tube (rail-k3-120-z), the prism tube (prism-k3-120-z), the channel junction (chan-k3-sp3-z), the reservoir tunnel (tunnel-reservoirs) and the sp3 graft fin (fin-sp3-z)
 answers:
   - how do I build a straight 120-degree Y junction of three sheets?
   - how do I run a seam or a strip along a tube axis?
   - how do I close a tube of N arcs on N seams with inward ribs, pores and a site list?
+  - how do I close a polygonal tube of flat wall strips on signed seams with outward fins and inward ribs?
   - how do I close a tube between two reservoir sheets (sheet | tube | sheet)?
   - what feature types does hexfold_scene take, and what are each one's params?
 applies-to: put/edit (kind='se', op='generate')
@@ -113,6 +114,37 @@ third sheet an inward rib — no far-side fuse. Same `tube` (even rows),
 `out`. Optional `pores:[{"arc":k,"at":[u,v]}]` carves one hexagon each,
 refused at a rim or another pore. Findings add `pore.rings` and `sites`
 (open-valence rib/seam carbons, lumen normals, 2.5–3.0 Å pendant pairs).
+
+## Prism tube: flat wall strips on signed equal-120 seams
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"p",
+ "params":{"k_tether":1.0,
+ "features":[{"name":"p","type":"prism-k3-120-z",
+ "rows":6,"periods":8,"strip_rows":4,"seams":"++++++"}]}}
+```
+
+The rail tube's sibling with **flat** wall strips instead of arcs: the
+cross-section is a polygon whose every vertex is a k3 equal-120 seam, and
+each seam's third sheet is an outward fin (`+`) or an inward rib (`-`).
+The feature carries the whole geometry — `rows` (even, [4,40] row pairs
+per wall), `periods` [2,60], `strip_rows` [2,12], `seams` and optional
+`pores` (`[wall, u, v]`); there is no `tube` key and it must be the only
+feature. `seams` is one `+`/`−`/`-` per seam, read counter-clockwise;
+the polygon closes iff the net turn is 360° (so `#plus − #minus = 6`),
+the side vectors sum to zero and it does not self-intersect — refused
+`prism.closure` naming the reason. A rib must keep 2 Å off every
+non-incident wall and every other rib (`prism.rib.clearance`). Examples:
+`++++++` (hexagonal prism, six fins), `+++-+++-+++-` (12-seam prism with
+three inward ribs at the re-entrant notches, a 3-fold lumen). Same
+tethered stick pass: seams and neighbours pinned, fins/ribs tethered to
+their half-planes, walls free. Findings: `seam.rings`, `seam.geometry`
+(with the sign list), `prism.cross_section` (per-wall off-plane
+residuals), `pore.rings`, `sites` (seam entries carry `sign`);
+`surface_deviation` unavailable. `topology.junctions`/`seam_atoms`/
+`sigma_A` persist at mint (`seam:<i>:<sign>`), so `hexfold_relax`
+re-scores `junction.strain` and `seam.strain` per seam. Analytic preview
+only.
 
 ## Channel junction: N arcs on paired k3-sp3-z seams, strips in or out
 

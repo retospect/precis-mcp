@@ -31,7 +31,11 @@ columns close its endpoints; no cyclic Port or unequal solver is invented.
 ``railtube.rail_tube`` (nanoreactor T2 slice 1) closes a tube of N arcs
 meeting at N equal-120 seams along the axis, each seam's third sheet an
 inward strip, seams minted in place by ``join._seam_k3`` because every arc
-enters two seams.
+enters two seams.  ``prism.prism_tube`` (T2's straight-strip variant) closes
+a polygonal tube of flat wall strips on signed seams, each seam's third
+sheet an outward fin (``+``) or an inward rib (``-``); closure is the
+polygon's, not a rail count: net turn 360 (``n_plus - n_minus = 6``), a
+zero side-vector sum and a simple cross-section, else named refusals.
 ``sp3_seam`` extends that pattern to the sp³ seam rows:
 ``straight_k4`` joins four armchair-rimmed sheets at 90° through one
 degree-four seam carbon per period, ``straight_k3z`` joins three

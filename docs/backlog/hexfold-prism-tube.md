@@ -42,21 +42,27 @@ edge carbons along z inside the lumen — the station sites.
   angle: the walls meet at an interior angle of 120° and the cross-section
   turns by +60°. A seam is `−` (rib) when the third sheet bisects the
   interior angle: the walls meet at a reflex 240° and the turn is −60°.
-- **Closure rule.** Flat strips carry no turning, so a cross-section with
-  `n_plus` fins and `n_minus` ribs closes iff `n_plus − n_minus = 6`.
-  Anything else is refused by name (`prism.closure`, naming the net turn
-  in degrees). Consequences: `++++++` is a hexagonal prism with six fins;
+- **Closure rule.** Flat strips carry no turning, so `n_plus − n_minus = 6`
+  is necessary, not sufficient: the cross-section closes iff the equal
+  side vectors sum to zero AND the polygon is simple. Refusals by name:
+  `prism.closure` — `net turn <deg>°` when `n_plus − n_minus ≠ 6`;
+  `open polygon (gap <Å>)` when the vector sum is non-zero;
+  `self-intersecting` otherwise. `len(seams)` is bounded to 3…24.
+  Consequences: `++++++` is a hexagonal prism with six fins;
   `+++-+++-+++-` is a 12-seam prism with nine fins and three inward ribs
   at re-entrant notches (3-fold lumen); `++-++-++-` does not close (net
   180°) and is refused.
-- **Seed.** Walk the polygon as a turtle: side length = the strip's chord
-  width `y_max` (as `rail_tube` computes it from `rows`), headings change
-  by ±60° per seam; the seam line sits at the vertex, each wall's dangling
-  atoms land `σ` from the seam atom at ±60° off the seam's third-sheet
-  direction (the `rail_tube` seed with `theta0` replaced by the fixed
-  polygon vertex), the third sheet along the bisector (outward for `+`,
-  inward for `−`). No arcs, no `r_wall`; the polygon's circumradius is
-  reported as `radius_A` for the viewer only.
+- **Seed.** Walk the polygon as a turtle: headings change by ±60° per
+  seam; vertex-to-vertex side length is `y_max + 2σ`, where `y_max` is
+  the strip chord width `rail_tube` computes from `rows`. The seam line
+  sits at the vertex; the three sheets at a seam are 120° apart around
+  the seam line, so each wall's dangling atoms land `σ` from the seam
+  atom at ±120° off the seam's third-sheet direction — equivalently σ
+  along their own sheet direction — and the third sheet runs along the
+  bisector (outward for `+`, inward for `−`). An inward rib keeps
+  `INWARD_TIP_CLEARANCE_A` off every wall and every other rib
+  (`prism.rib.clearance`). No arcs, no `r_wall`; the polygon's mean
+  vertex radius is reported as `radius_A` for the viewer only.
 - **Pores** as in the rail tube, authored per strip at a lattice cell,
   refused at a seam rim, a guard column or another pore.
 - **Ends** are polygonal zigzag outlines; `opening(port=)` and the `cap`
@@ -84,7 +90,8 @@ so `tunnel_strain` re-scores without the stick seed, as for the rail tube.
 2. `src/precis_se/atomic/generators/prism120.py` mirroring `rail120.py`
    (feature type, params vetting, site list, relax adapter with seams
    pinned and strips tethered to their half-planes, walls free).
-3. `hexfold/examples/prism_hex6.hx` and `prism_tri12.hx`; the
+3. No `.hx` examples — the shipped-example tests pin the exact set; the
+   two fixtures live as scene params in `tests/test_se_prism120.py`. The
    `hexfold_scene` docstring's feature table gains the row.
 4. Tests, `tests/test_hexfold_prism.py` + `tests/test_se_prism120.py`:
    - `++++++` (rows 6, periods 8, strip_rows 4) builds; `check` reports
@@ -121,17 +128,6 @@ two examples, two test files; one-row edits to the `hexfold_scene`
 feature table and `src/hexfold/__init__.py` exports. `railtube.py` and
 `rail120.py` untouched (shared helpers imported, not moved).
 
-## Open questions
-
-Ready-check 2026-10-20 (verdict: needs-work, 6 blockers, 4 advisories):
-
-- blocker: closure rule "n+ − n− = 6" fixes only the net heading turn, not position closure; equal-length sides need the six-direction unit vectors to sum to zero (e.g. `+++++++-` has n+−n−=6 yet its sides sum to 1+ω ≠ 0, the turtle does not return), and a closing sequence can self-intersect — name a second refusal (`prism.closure` position residual / self-overlap) and the bound on `len(seams)`.
-- blocker: `prism_hex6.hx` / `prism_tri12.hx` cannot exist — `.hx` is the public hexfold grammar and the rail tube has "no public grammar" (railtube.py docstring); `tests/hexfold/test_nearest_not_bonded.py::test_shipped_examples_pass` globs every `hexfold/examples/*.hx` and `tests/hexfold/test_seam.py::test_all_pre_seam_examples_covered_by_snapshot` asserts the exact example-name set, so any added `.hx` reddens both. Say what the examples are (scene JSON elsewhere? drop them?) and where they live.
-- blocker: registration is unspecified — a new type needs a line in `typed_features._BUILDERS` plus a `FEATURE_TYPE` constant, and `tests/test_hexfold_typed_features.py::test_every_registered_type_has_a_seams_help_section` requires a section in `src/precis/data/skills/precis-hexfold-seams-help.md`; the spec's blast radius lists neither (only the `hexfold_scene` docstring table) so the gate goes red or the type is undispatchable.
-- blocker: scene contract contradicts "mirroring rail120": rail120 takes `tube: [rows, periods]` plus a feature with `rails`/`rows`(=strip rows)/`pores` as `{arc, at:[u,v]}` and refuses extra keys; the spec puts `rows`, `periods`, `strip_rows`, `seams`, `pores:[[strip,u,v]]` all in the feature and never says whether `tube`/`k_tether`/`terminate`/`name` stay. Also "strip" names both walls and fins/ribs in `pores [strip,u,v]` and "rows" means wall rows vs strip rows — fix one grammar.
-- blocker: spec misstates the code — `rail120` persists no `topology.junctions`/`seam_atoms`/`sigma_A` (only `tunnel.py` does; `relax_block.strain_bookkeeping` raises without `junctions`) and emits `seam.geometry`, not `junction.strain`/`seam.strain` (those are tunnel-reservoirs findings); "existing adapter" for relax does not exist for this type. Either scope writing that bookkeeping (junction zone definition, `tunnel_strain` input shape) or drop the `junction.strain` and `tunnel_strain` claims; the last test bullet is otherwise unbuildable.
-- blocker: seed geometry text is wrong/ambiguous — the third sheet makes 120° with each wall, so a wall's dangling atoms sit ±120° (not ±60°) off the third-sheet direction (rail_tube's "60° off radial" is relative to the opposite direction); and polygon side vertex-to-vertex is `y_max + 2σ` with seam atoms at the vertex, not `y_max`. Two builders will get different polygons; state the formulas (plus the rib tip clearance / refusal analogous to `INWARD_TIP_CLEARANCE_A`, absent for the 3-fold lumen ribs).
-- advisory: acceptance has no check for the `seams` string parsing (`−` U+2212 vs `-`), `strip_rows`/`periods` bounds, or `to_stored` round-trip frame definition (rail120 uses theta_zero = strip0 half-plane; prism needs its own).
-- advisory: `model: sonnet` but the work is novel geometry (turtle polygon, signed seams) and a new generator — Opus-tier per AGENTS sizing.
-- advisory: "pores as in the rail tube" reuses private `_pore_cells(pores, periods, rows, rails)`, which validates arc < rails; name whether to generalise it or copy (spec says railtube.py is untouched).
-- advisory: umbrella `hexfold-nanoreactor-tube.md` exists (no dangling link); no split needed, though the position-closure/geometry kernel and the se adapter/relax-bookkeeping are separable if relax scoring is kept.
+shipped: 1691230ef + 15cce3b28 + c708978e0 (squash-landed by the coordinator
+2026-10-20; the ready-check findings were resolved by the brief's
+corrections, now in §Geometry).

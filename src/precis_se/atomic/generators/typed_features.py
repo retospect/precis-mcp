@@ -32,6 +32,7 @@ _BUILDERS: tuple[tuple[str, str], ...] = (
     ("precis_se.atomic.generators.fin", "build_fin"),
     ("precis_se.atomic.generators.fin120", "build_fin120"),
     ("precis_se.atomic.generators.rail120", "build_rail120"),
+    ("precis_se.atomic.generators.prism120", "build_prism120"),
     ("precis_se.atomic.generators.channel", "build_channel"),
     ("precis_se.atomic.generators.tunnel", "build_tunnel_reservoirs"),
     ("precis_se.atomic.generators.sp3_seam", "build_sp3_seam"),

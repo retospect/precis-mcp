@@ -48,6 +48,16 @@ the axis, each seam's third sheet an inward strip (``rows``), with optional
 ``sites`` list of the attachment carbons; ``tube: [rows, periods]`` as for
 the seam tube but with even row pairs per arc.
 
+**Prism-tube feature contract.** A feature with ``"type": "prism-k3-120-z"``
+routes the whole call to
+:func:`~precis_se.atomic.generators.prism120.build_prism120`: a closed tube
+of flat wall strips meeting at signed equal-120 seams, each seam's third
+sheet an outward fin (``+``) or an inward rib (``-``). The feature carries
+the whole geometry — ``rows``, ``periods``, ``strip_rows``, ``seams`` (one
+``+``/``-``/``−`` per seam; closure needs net turn 360, a zero side-vector
+sum and a simple polygon) and optional ``pores`` (``[wall, u, v]`` hexagon
+vacancies); there is no ``tube`` key. It must be the only feature.
+
 **Reservoir-tunnel feature contract.** A feature with ``"type":
 "tunnel-reservoirs"`` routes the whole call to
 :func:`~precis_se.atomic.generators.tunnel.build_tunnel_reservoirs`: sheet |

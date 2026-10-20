@@ -416,7 +416,10 @@ missed bar mints with WARN `scene.bar` naming the feature; ERROR
 
 The seam-family scene entries — the straight Y, the seam tube, the
 closed rail tube and the sp3 graft fin — moved to
-[[precis-hexfold-seams-help]].
+[[precis-hexfold-seams-help]]. The prism tube (`prism-k3-120-z`) is the
+rail tube's flat-wall sibling: the feature carries `rows`, `periods`,
+`strip_rows` and a signed `seams` string (`+` fin, `−`/`-` rib; closure
+needs `#plus − #minus = 6` plus a simple polygon), no `tube` key.
 
 ## Open edges are H-terminated by default
 
