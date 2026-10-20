@@ -1,0 +1,10 @@
+› run sleep 25 then say done
+
+• I'll run sleep 25, then report when it finishes.
+
+• Working (8s • esc to interrupt) · 1 background terminal running · /ps to view
+
+› Ask Codex to do anything
+
+  d-panes · ~/repo/worktrees/d-panes · worktree-d-panes · No changes
+  ← for agents · ? for shortcuts                      ⚠ 2 warnings · f2 to view

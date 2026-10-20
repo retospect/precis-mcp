@@ -1,0 +1,18 @@
+ │ 22 -      out = Path(os.environ["PRECIS_OLD_BENCH_OUT"])
+ │ 22 +      out = Path(os.environ["PRECIS_BENCH_OUT"])
+ │ 23        rows = {}
+ └ Exited with code 0
+
+ Rerunning the bench with the forwarded var.
+
+ ⏺ Running command
+ │ $ PRECIS_BENCH_OUT=.scratch/bench.json scripts/test -s tests/test_bench.py
+ │ waiting for a gate slot (2 concurrent gate containers max)
+ │ gate slot: waiting at position 8 of 8
+
+ ⏺ Reading shell 7dfc7b
+
+⢠⡀ Running tools · 184m 46s (esc twice to interrupt)
+──────────────────────────────────────────────── (bypass permissions on) ─
+SWE-2 High                                     Context: 200k / 262k tokens (76%)
+1 shell · ↓ select

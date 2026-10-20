@@ -25,6 +25,9 @@
 #       stamped heading, then tell window <slug> (--when-clear semantics)
 #   scripts/fleet peek <win> [-n N]  last N (default 25) non-empty pane lines
 #   scripts/fleet dialogs            windows with a dialog: window · type · command
+#   scripts/fleet panes …            status|read|prompt|say|answer across all
+#       agents (delegates to scripts/fleet-panes; replaces the /tmp
+#       stuck-check.sh scan via `panes status --flagged`)
 #   scripts/fleet refs               origin main/gated/prod shas + ages, newest green main
 #   scripts/fleet compact <win…> [--at-idle]   /next, a grace, then /compact once idle
 #       (PRECIS_FLEET_COMPACT_GRACE 90 s, PRECIS_FLEET_COMPACT_WAIT 1800 s per window).
@@ -896,6 +899,11 @@ case "${1:-}" in
   verdict) shift; cmd_verdict "$@" ;;
   peek) shift; cmd_peek "$@" ;;
   dialogs) cmd_dialogs ;;
+  panes) shift
+         # The hash state lives beside the rest of the fleet state so a reaped
+         # worktree cannot take it with it.
+         FLEET_PANES_STATE="${FLEET_PANES_STATE:-$state/fleet-panes}" \
+           exec "$(dirname "$0")/fleet-panes" "$@" ;;
   refs) cmd_refs ;;
   compact) shift; cmd_compact "$@" ;;
   mcp-check) shift; cmd_mcp_check "$@" ;;

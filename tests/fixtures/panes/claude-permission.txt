@@ -1,0 +1,13 @@
+● Bash(scripts/prod-psql --ro "\! id")
+ Bash command
+ Run shell command
+╌╌╌╌╌╌╌╌
+ │ scripts/prod-psql --ro "\! id"
+╌╌╌╌╌╌╌╌
+ │ Hook PreToolUse:Bash requires confirmation for this command:
+ │ `scripts/prod-psql` destructive or unclassifiable statement
+ settings.json to update hooks
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend

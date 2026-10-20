@@ -1,0 +1,11 @@
+ ⏺ Reading shell 7dfc7b
+
+⢠⡀ Running tools · 184m 46s (esc twice to interrupt)
+── 2 queued ───────────────────────────────────────────── ↑ edit · ↵ send now ──
+○ /compact
+○ /compact
+──────────────────────────────────────────────── (bypass permissions on) ─
+❭ Press Enter to send queued messages now
+────────────────────────────────────────────────────────────────────────────────
+SWE-2 High                                     Context: 200k / 262k tokens (76%)
+1 shell · ↓ select

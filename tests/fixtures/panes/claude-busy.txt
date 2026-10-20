@@ -1,0 +1,9 @@
+⏺ Read(scripts/fleet_panes.py)
+  ⎿  Read 240 lines
+
+✻ Churning… (47s · esc to interrupt · 88.2k tokens)
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5  43% ctx
+  -- INSERT -- ⏵⏵ auto mode on · 2 shells · ← for agents

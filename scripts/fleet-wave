@@ -76,17 +76,20 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-#: Dialog markers (same set as scripts/fleet's dialog_re).
-DIALOG_RE = re.compile(r"Enter to select|Do you want to|Do you trust the files")
-CTX_RE = re.compile(r"(\d+)% ctx|Context[^%\n]*?(\d+)%")
-BOX_RE = re.compile(r"^[\s│┃║╭╮╰╯─━═┌┐└┘├┤┬┴┼]*$")
-SIDE_RE = re.compile(r"^[\s│┃║]+|[\s│┃║]+$")
-ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-#: A dim SGR span (Claude Code's placeholder hint in an empty input box).
-DIM_SPAN_RE = re.compile(r"\x1b\[(?:[0-9;]*;)?2m.*?(?=\x1b\[(?:0|22)?m|$)")
-#: Busy marker: the spinner line "… (12s · esc to interrupt)".
-BUSY_RE = re.compile(r"… \(\d+")
-PROMPT_CHAR = "❯"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The pane parsers live in scripts/fleet_panes.py (shared with
+# scripts/fleet-panes); the names stay re-exported here for the tests and
+# for the small fleet-wave-only helpers built on them.
+from fleet_panes import (
+    ANSI_RE,
+    LAUNCH_PERMISSION_MODE,
+    ctx_percent,
+    dialog_command,
+    dialog_type,
+    nonempty_tail,
+    unsent_input,
+)
+
 #: Above this length, or with a newline, text goes in as one bracketed
 #: paste (typed text loses its head in a Claude pane; see scripts/fleet).
 PASTE_MIN = 200
@@ -96,7 +99,7 @@ sys.path.insert(0, str(SCRIPTS))
 try:
     from branch_audit import Auditor
 except ImportError:  # a staged copy without scripts/lib — close falls back
-    Auditor = None
+    Auditor = None  # type: ignore[assignment, misc]
 #: Authority v2 tiers; readonly/qland are the pre-v2 names, kept as aliases.
 TIER_ALIASES = {"readonly": "R", "qland": "W"}
 LEGACY_FOOTER = {"R": "readonly", "W": "qland"}
@@ -315,96 +318,6 @@ def cmd_approved(f: Fleet, a: argparse.Namespace) -> int:
     return rc
 
 
-# --- pane parsing (pure) ----------------------------------------------------
-
-
-def nonempty_tail(pane: str, n: int) -> list[str]:
-    return [ln for ln in pane.splitlines() if ln.strip()][-n:]
-
-
-def ctx_percent(pane: str) -> int | None:
-    hits = CTX_RE.findall(pane)
-    if not hits:
-        return None
-    a, b = hits[-1]
-    return int(a or b)
-
-
-#: A dialog's first option line: ``❯ 1. Yes`` / ``  1. Yes`` (box sides allowed).
-OPTION_RE = re.compile(r"^[\s│┃║]*(❯\s*)?1\.\s")
-
-
-def dialog_type(pane: str) -> str | None:
-    """permission / trust / question for a pane showing a dialog, else None.
-
-    A dialog sits at the bottom of the pane, so only the last 25 non-empty
-    lines count, and a marker needs an option line (``1. …``) after it: a
-    marker string merely printed in scrollback (a diff, a file) is not one."""
-    tail = nonempty_tail(pane, 25)
-    # The input box is hidden while a dialog is open: keep only what follows
-    # the last input-box line (``❯`` not followed by an option number).
-    for k in range(len(tail) - 1, -1, -1):
-        bare = SIDE_RE.sub("", tail[k])
-        if bare.startswith(PROMPT_CHAR) and not OPTION_RE.match(tail[k]):
-            tail = tail[k + 1 :]
-            break
-    for i, ln in enumerate(tail):
-        after = tail[i + 1 :]
-        if not any(OPTION_RE.match(a) for a in after):
-            continue
-        if "Do you trust the files" in ln:
-            return "trust"
-        if "Do you want to" in ln:
-            return "permission"
-    # AskUserQuestion: options first, then an "Enter to select" footer line.
-    if any("Enter to select" in ln for ln in tail[-3:]) and any(
-        OPTION_RE.match(ln) for ln in tail
-    ):
-        return "question"
-    return None
-
-
-def dialog_command(pane: str) -> str:
-    """The command a dialog asks about: the nearest non-box line above the
-    first marker within the 30 lines before it."""
-    lines = pane.splitlines()
-    idx = [i for i, ln in enumerate(lines) if DIALOG_RE.search(ln)]
-    if not idx:
-        return ""
-    last = idx[-1]
-    window = lines[max(0, last - 30) : last + 1]
-    first = next(i for i, ln in enumerate(window) if DIALOG_RE.search(ln))
-    # A tool dialog shows the command in `│`-prefixed lines under its header
-    # ("Bash command"); the hook's own reason lines are not the command.
-    boxed = [
-        SIDE_RE.sub("", ln)
-        for ln in window[:first]
-        if ln.lstrip().startswith("│") and "requires confirmation" not in ln
-    ]
-    if boxed and boxed[0]:
-        return boxed[0][:100]
-    above = [
-        SIDE_RE.sub("", ln)
-        for ln in window[:first]
-        if ln.strip() and not BOX_RE.match(ln)
-    ]
-    above = [a for a in above if a and not re.match(r"^(❯\s*)?\d+\.", a)]
-    return above[-1][:100] if above else ""
-
-
-def unsent_input(pane_with_escapes: str) -> str:
-    """Text typed into the input box but not sent: what follows the last
-    ``❯`` line's prompt char, with dim placeholder hints and ANSI removed."""
-    for raw in reversed(pane_with_escapes.splitlines()):
-        plain = ANSI_RE.sub("", raw)
-        stripped = SIDE_RE.sub("", plain)
-        if stripped.startswith(PROMPT_CHAR):
-            tail = raw[raw.index(PROMPT_CHAR) + 1 :]
-            tail = ANSI_RE.sub("", DIM_SPAN_RE.sub("", tail))
-            return SIDE_RE.sub("", tail.replace("\xa0", " ")).strip()
-    return ""
-
-
 # --- subcommands --------------------------------------------------------------
 
 
@@ -582,6 +495,9 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
             name,
             "--prompt-file",
             str(prompt_file),
+            # Reto ruling me499092: wave Devins always launch in bypass.
+            "--permission-mode",
+            LAUNCH_PERMISSION_MODE["devin"],
         ]
         if f.session:
             argv += ["--session", f.session]
@@ -601,7 +517,7 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         "--model",
         f.model,
         "--permission-mode",
-        "auto",
+        LAUNCH_PERMISSION_MODE["claude"],
         text,
     ]
     if a.dry_run:

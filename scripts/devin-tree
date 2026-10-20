@@ -17,12 +17,12 @@
 # it Devin stops at the directory-trust prompt. DEVIN_TRUSTED_WORKSPACES
 # points the write at a different file (tests).
 # --model takes an id from `devin models list` (default: Devin's own, SWE-2
-# High; all SWE-2 tiers are free). --permission-mode defaults to `auto`
-# (read-only tools auto-approved); `dangerous` is Devin's autonomous mode
-# (Reto authorised it for builder waves, 2026-10-12). Under `auto` the
-# first call to each MCP tool still asks — allow get/search/more for
-# read-only work, never "all tools" unless the task writes to precis (the
-# session MCP is PROD).
+# High; all SWE-2 tiers are free). --permission-mode defaults to `dangerous`
+# (Devin's autonomous mode — Reto's "always bypass" ruling for builder
+# waves, me499092 2026-10-12/19); pass `--permission-mode auto` for the old
+# read-only-auto-approved behaviour. Under `auto` the first call to each MCP
+# tool still asks — allow get/search/more for read-only work, never
+# "all tools" unless the task writes to precis (the session MCP is PROD).
 #
 # Internal: `--exec TREE [DEVIN ARGS]` re-locks TREE to its own pid, then
 # execs Devin under that same pid (the tmux window runs this).
@@ -46,7 +46,7 @@ usage() { sed -n '4,5p' "$0" | sed 's/^# *//' >&2; exit 2; }
 name=$1
 shift
 [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "devin-tree: bad name: $name" >&2; exit 2; }
-purpose="" prompt_file="" model="" session="" dry_run=0 perm=auto
+purpose="" prompt_file="" model="" session="" dry_run=0 perm=dangerous
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--purpose) purpose=$2; shift 2 ;;

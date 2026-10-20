@@ -1,0 +1,10 @@
+⏺ The gripe is filed, and I'm holding for branch-desk's sha. After that:
+  rebase, scripts/test --selected, then the --checked cycle.
+                                                                                
+✻ Churned for 10s · done 6:38 PM
+                                        new task? /clear to save 196.5k tokens
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5.5  20% ctx
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

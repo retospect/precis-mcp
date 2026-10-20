@@ -1,0 +1,317 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/fleet-panes — one tool for the fleet's tmux panes, behind
+``scripts/fleet panes``.
+
+    fleet-panes status [--flagged]   one line per window:
+        name · agent · working|idle|prompt|error|done|frozen · perm ·
+        ctx% · minutes since the pane tail changed · last meaningful line
+        (--flagged prints only prompt/error/frozen plus a summary, the
+        /tmp/gripe-fleet/stuck-check.sh replacement)
+    fleet-panes read NAME [-n N]     last N non-empty lines, chrome stripped
+    fleet-panes prompt NAME          open dialog: type, pending command, options
+    fleet-panes say NAME TEXT        type TEXT + Enter; verifies the box cleared
+    fleet-panes answer NAME once     Enter on a permission dialog — only when
+                                     the pending command is clearly read-only
+                                     (fleet_panes.read_only_reason), else it
+                                     refuses and says why
+
+NAME resolves as ``sess:name``, ``sess:idx``, a unique window name, or a wave
+name (``claude-``/``devin-``/``codex-`` prefix tried). Parsing lives in
+scripts/fleet_panes.py (pure text); the pane-tail hash state that powers
+``frozen`` sits in FLEET_PANES_STATE (default
+~/.claude/projects/<esc checkout>/fleet-panes, so a reaped tree cannot take
+it). FLEET_TMUX_SOCKET points at a private tmux server (tests);
+FLEET_PANES_FROZEN_MIN sets the frozen threshold (default 25).
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fleet_panes
+
+PASTE_MIN = 200
+FROZEN_MIN = int(os.environ.get("FLEET_PANES_FROZEN_MIN", "25"))
+TAIL_HASH_LINES = 12
+
+
+def tmux(*argv: str, check: bool = True) -> str:
+    sock = os.environ.get("FLEET_TMUX_SOCKET", "")
+    cmd = ["tmux", *(["-L", sock] if sock else []), *argv]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", check=False
+    )
+    if check and proc.returncode:
+        raise SystemExit(f"fleet-panes: {' '.join(cmd[:4])}…: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def rows() -> list[dict]:
+    fmt = "\t".join(
+        f"#{{{k}}}"
+        for k in (
+            "session_name",
+            "window_index",
+            "window_name",
+            "pane_id",
+            "pane_current_command",
+            "pane_dead",
+        )
+    )
+    out = []
+    for ln in tmux("list-panes", "-a", "-F", fmt).splitlines():
+        f = ln.split("\t")
+        if len(f) != 6:
+            continue
+        out.append(
+            {
+                "label": f"{f[0]}:{f[1]}",
+                "win": f"{f[0]}:{f[2]}",
+                "name": f[2],
+                "pane": f[3],
+                "cmd": f[4],
+                "dead": f[5] == "1",
+            }
+        )
+    return out
+
+
+def resolve(name: str, rs: list[dict]) -> dict | None:
+    for r in rs:
+        if name in (r["label"], r["win"]):
+            return r
+    exact = [r for r in rs if r["name"] == name]
+    if len(exact) == 1:
+        return exact[0]
+    for p in ("claude-", "devin-", "codex-"):
+        hit = [r for r in rs if r["name"] == p + name]
+        if hit:
+            return hit[0]
+    return None
+
+
+def capture(row: dict, *, escapes: bool = False, scrollback: int = 60) -> str | None:
+    argv = ["capture-pane", "-p", "-J", "-S", f"-{scrollback}", "-t", row["pane"]]
+    if escapes:
+        argv.insert(1, "-e")
+    return tmux(*argv, check=False) or None
+
+
+def state_dir() -> Path:
+    d = os.environ.get("FLEET_PANES_STATE", "")
+    if d:
+        return Path(d)
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    ).stdout.strip()
+    root = Path(common).parent if common else Path.home()
+    esc = "".join(c if c.isalnum() else "-" for c in str(root))
+    return Path.home() / ".claude" / "projects" / esc / "fleet-panes"
+
+
+def tail_age(row: dict, pane: str, st: Path, now: int) -> int:
+    """Minutes since this pane's last-12-lines tail last changed (the
+    stuck-check.sh hash state, kept under FLEET_PANES_STATE)."""
+    tail = [ln for ln in pane.splitlines() if ln.strip()][-TAIL_HASH_LINES:]
+    digest = hashlib.sha256("\n".join(tail).encode("utf-8")).hexdigest()[:12]
+    f = st / f"{row['label'].replace(':', '-')}-{row['name']}"
+    prev = ""
+    since = now
+    try:
+        prev, stamp = f.read_text(encoding="utf-8").split()
+        since = int(stamp)
+    except (OSError, ValueError):
+        pass
+    if digest != prev:
+        st.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"{digest} {now}\n", encoding="utf-8")
+        return 0
+    return max(0, (now - since) // 60)
+
+
+def cmd_status(a: argparse.Namespace) -> int:
+    st = state_dir()
+    now = int(time.time())
+    total = flagged = 0
+    for r in rows():
+        pane = capture(r)
+        if pane is None:
+            continue
+        total += 1
+        agent = fleet_panes.detect_agent(r["cmd"], r["name"])
+        age = tail_age(r, pane, st, now)
+        rep = fleet_panes.pane_report(
+            agent,
+            pane,
+            command_running=not r["dead"]
+            and (
+                agent == "other"
+                or agent in r["cmd"].lower()
+                or (agent == "claude" and r["cmd"].lower() == "node")
+            ),
+            frozen=age >= FROZEN_MIN,
+        )
+        if a.flagged and rep.state not in ("prompt", "error", "frozen"):
+            continue
+        flagged += 1
+        ctx = f"{rep.ctx}%" if rep.ctx is not None else "-"
+        print(
+            f"{r['win']:<28} {agent:<6} {rep.state:<8} {rep.permission:<6}"
+            f" {ctx:>4} {age:>3}m  {rep.last}"
+        )
+    if a.flagged:
+        print(
+            f"panes {time.strftime('%H:%MZ', time.gmtime())}: "
+            f"{total} windows, {flagged} flagged"
+        )
+    return 0
+
+
+def _row_or_fail(name: str) -> dict:
+    row = resolve(name, rows())
+    if row is None:
+        print(f"fleet-panes: no window: {name}", file=sys.stderr)
+        raise SystemExit(2)
+    return row
+
+
+def cmd_read(a: argparse.Namespace) -> int:
+    pane = capture(_row_or_fail(a.name))
+    if pane is None:
+        print(f"fleet-panes: cannot read {a.name}", file=sys.stderr)
+        return 2
+    for ln in fleet_panes.strip_chrome(pane)[-a.n :]:
+        print(ln)
+    return 0
+
+
+def cmd_prompt(a: argparse.Namespace) -> int:
+    pane = capture(_row_or_fail(a.name))
+    if pane is None:
+        print(f"fleet-panes: cannot read {a.name}", file=sys.stderr)
+        return 2
+    kind = fleet_panes.dialog_type(pane)
+    if not kind:
+        print(f"{a.name}: no dialog open")
+        return 1
+    print(f"{a.name}\t{kind}\t{fleet_panes.dialog_command(pane)}")
+    for opt in fleet_panes.dialog_options(pane):
+        print(f"  {opt}")
+    return 0
+
+
+def cmd_say(a: argparse.Namespace) -> int:
+    row = _row_or_fail(a.name)
+    pane = capture(row, escapes=True)
+    if pane is None:
+        print(f"fleet-panes: cannot read {a.name}", file=sys.stderr)
+        return 2
+    plain = fleet_panes.ANSI_RE.sub("", pane)
+    if kind := fleet_panes.dialog_type(plain):
+        print(f"REFUSED {row['win']}: a dialog is open ({kind})")
+        return 3
+    if pending := fleet_panes.unsent_input(pane):
+        print(f"REFUSED {row['win']}: input box holds unsent text: {pending[:60]}")
+        return 3
+    text = a.text
+    target = row["pane"]
+    if len(text) > PASTE_MIN or "\n" in text:
+        buf = f"fleet-panes-{os.getpid()}"
+        tmux("set-buffer", "-b", buf, "--", text)
+        tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", target)
+    else:
+        tmux("send-keys", "-t", target, "-l", "--", text)
+    # An Enter arriving with the text is swallowed by the paste: pause first.
+    time.sleep(a.pause)
+    tmux("send-keys", "-t", target, "Enter")
+    time.sleep(a.pause)
+    after = capture(row, escapes=True) or ""
+    if fleet_panes.unsent_input(after):
+        print(f"undelivered {row['win']}: the input box still holds the text")
+        return 1
+    print(f"sent: {row['win']}")
+    return 0
+
+
+def cmd_answer(a: argparse.Namespace) -> int:
+    if a.once != "once":
+        print("usage: fleet-panes answer NAME once", file=sys.stderr)
+        return 2
+    row = _row_or_fail(a.name)
+    pane = capture(row)
+    if pane is None:
+        print(f"fleet-panes: cannot read {a.name}", file=sys.stderr)
+        return 2
+    if fleet_panes.dialog_type(pane) != "permission":
+        print(f"REFUSED {row['win']}: no permission dialog open")
+        return 3
+    cmd = fleet_panes.dialog_command(pane)
+    if why := fleet_panes.read_only_reason(cmd):
+        print(f"REFUSED {row['win']}: {cmd!r} is not clearly read-only: {why}")
+        return 3
+    if why := fleet_panes.answerable_once(pane):
+        print(f"REFUSED {row['win']}: {why}")
+        return 3
+    tmux("send-keys", "-t", row["pane"], "Enter")
+    time.sleep(a.pause)
+    after = capture(row) or ""
+    if fleet_panes.dialog_type(after) == "permission":
+        print(f"undelivered {row['win']}: the dialog is still open")
+        return 1
+    print(f"answered once: {row['win']} — {cmd[:80]}")
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="fleet-panes",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("status", help="one line per window")
+    s.add_argument("--flagged", action="store_true")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("read", help="chrome-stripped tail of one pane")
+    s.add_argument("name")
+    s.add_argument("-n", type=int, default=25)
+    s.set_defaults(fn=cmd_read)
+
+    s = sub.add_parser("prompt", help="open dialog: type, command, options")
+    s.add_argument("name")
+    s.set_defaults(fn=cmd_prompt)
+
+    s = sub.add_parser("say", help="type TEXT and press Enter, verified")
+    s.add_argument("name")
+    s.add_argument("text")
+    s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_say)
+
+    s = sub.add_parser("answer", help="approve once, read-only commands only")
+    s.add_argument("name")
+    s.add_argument("once", nargs="?", default="once")
+    s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_answer)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = parser().parse_args(argv)
+    return int(a.fn(a))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

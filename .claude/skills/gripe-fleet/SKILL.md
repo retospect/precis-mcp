@@ -37,8 +37,10 @@ approval quote for the tier, with its UTC time).
    the old `footers/<readonly|qland>.txt` launch for one release.
 4. **Launch.** `scripts/fleet-wave launch NAME --brief FILE --tier W`
    (window `claude-NAME`, `claude -w NAME --permission-mode auto`), or
-   `--devin` for `scripts/devin-tree`. `--dry-run` prints the argv.
-   Launch fails if a footer placeholder is unfilled.
+   `--devin` for `scripts/devin-tree` (Devins always launch
+   `--permission-mode dangerous` — Reto's always-bypass ruling; both modes
+   live in `fleet_panes.LAUNCH_PERMISSION_MODE`). `--dry-run` prints the
+   argv. Launch fails if a footer placeholder is unfilled.
 5. **Watch.** Run `scripts/fleet-wave watch-done NAME...` and
    `scripts/fleet-wave stuck-watch` under the Monitor tool: one line per
    finish (`<tree> at <sha>` in `.claude/purpose`), per permission
@@ -68,6 +70,28 @@ approval quote for the tier, with its UTC time).
    `--force`, so a dirty tree is kept and reported), deletes the branch
    (`-d`; `-D` only for a proved squash-land) only if the removal
    succeeded, and logs each drop to `$FLEET_STATE/dropped-branches.log`.
+
+## Pane reads — `scripts/fleet panes`
+
+One parser per agent TUI (claude/devin/codex) lives in
+`scripts/fleet_panes.py`; `scripts/fleet panes` (delegating to
+`scripts/fleet-panes`) is the read/say/answer surface over it:
+
+- `panes status [--flagged]` — one line per window: name, agent, state
+  (working|idle|prompt|error|done|frozen), permission mode, ctx %, minutes
+  since the pane tail changed, last meaningful line. `--flagged` prints
+  only prompt/error/frozen rows plus a summary — the retired
+  `/tmp/gripe-fleet/stuck-check.sh` scan (its tail-hash state now lives in
+  `$FLEET_STATE/fleet-panes`; `FLEET_PANES_FROZEN_MIN` defaults 25).
+- `panes read NAME [-n N]` — the chrome-stripped tail.
+- `panes prompt NAME` — the open dialog's type, pending command, options.
+- `panes say NAME TEXT` — type + Enter; verifies the input box cleared,
+  refuses a dialog or unsent text.
+- `panes answer NAME once` — approves a permission dialog only when the
+  pending command is clearly read-only (cat/head/tail/grep/rg/find/ls/wc,
+  `git log|show|diff|status`, `sed -n`; every pipeline stage, no
+  redirection or substitution) and option 1 is a single-shot Yes —
+  anything else refuses with the reason.
 
 ## Standing safety rules
 

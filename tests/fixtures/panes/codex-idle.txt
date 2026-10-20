@@ -1,0 +1,7 @@
+  >_ OpenAI Codex (v0.162.1)
+     ~/repo
+
+› Ask Codex to do anything
+
+  d-panes · ~/repo/worktrees/d-panes · worktree-d-panes · No changes
+  ← for agents · ? for shortcuts                      ⚠ 2 warnings · f2 to view
