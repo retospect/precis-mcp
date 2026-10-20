@@ -478,6 +478,24 @@ class RealizeConfig:
     #: expansions (each connection takes at most 6000 of it). Work, not
     #: seconds, so a board routes the same on every machine.
     vector_escape_max_expansions: int = 60000
+    #: Bounded budget retry for a search that ran out of work
+    #: (gr489909/gr497768): a connection whose REAL search ended on
+    #: ``max_expansions`` (:meth:`precis.pcb.maze.OccupancyGrid.route`
+    #: sets ``last_route_exhausted``) was never proved unroutable — the
+    #: budget ran out first — so after the reorder passes each
+    #: still-unrouted segment that exhausted is searched again at
+    #: ``max_expansions * exhaustion_retry_factor``, failures first, for
+    #: up to ``exhaustion_retry_passes`` more passes. Only the exhausted
+    #: segments pay the raised budget: a corridor race is not a budget
+    #: failure (400k expansions route no further than 120k there — see
+    #: ``route_passes``), so giving it one only burns time. Passes, not
+    #: a clock, bound the cost, so a board routes the same on every
+    #: machine; a board with no exhausted segment never sees the pass.
+    #: ``1.0`` (or less) disables. Measured on nano seed 1 (2026-10-20):
+    #: 29 unrouted nets -> 19 at 4x the budget.
+    exhaustion_retry_factor: float = 4.0
+    #: See :attr:`exhaustion_retry_factor`.
+    exhaustion_retry_passes: int = 2
 
     def __post_init__(self) -> None:
         for name, mult in self.layer_route_cost:
@@ -1163,11 +1181,17 @@ class UnroutedReason:
       layers to nothing. Never silently widened back to the full signal-
       layer set; the segment never reaches ``grid.route`` at all
       (:func:`_net_class_layers`, checked in :func:`_route_pass`).
-    - ``'search_budget'`` — the probe that would have decided between the
-      route-search kinds above ran out of ``max_expansions`` first, so
-      "walled in" and "too far to search" cannot be told apart. Was
-      reported as ``'no_path'`` until 2026-10-01; on a fine grid over a
-      large board that conflation is the common case, not a corner.
+    - ``'search_budget'`` — a search ran out of ``max_expansions`` before
+      finding a path or proving there is none. Two origins: the segment's
+      REAL search on the busy grid exhausted (:func:`_route_pass` records
+      it — reported directly, never re-probed, since a pads-only probe
+      that finds a corridor would mislabel the budget failure
+      ``'congestion'``; gr489909, 2026-10-20), or the diagnosis's own
+      probe exhausted, leaving "walled in" and "too far to search"
+      untold apart. The probe case was reported as ``'no_path'`` until
+      2026-10-01; the real-search case as ``'congestion'`` until
+      2026-10-20 — on a fine grid over a large board each conflation is
+      the common case, not a corner.
     """
 
     seg_id: int
@@ -2139,12 +2163,28 @@ def _realize_maze(
     best: Outcome | None = None
     best_score = (0, 0)
     best_stamped: dict[int, maze.RoutePath] = {}
+    #: Segments whose search in the BEST attempt ended on the expansion
+    #: cap — the set :func:`_route_pass` fills from
+    #: :attr:`maze.OccupancyGrid.last_route_exhausted` — kept beside
+    #: ``best`` so the budget retry below knows which failures were
+    #: budget, not geometry, and the diagnosis can say so.
+    best_exhausted: set[int] = set()
     accepted_counts: list[int] = []
 
-    def attempts(order: list[int], preferred: dict[int, _Proposal] | None) -> None:
-        """Up to ``config.route_passes`` passes, failures to the front."""
-        nonlocal best, best_score, best_stamped
-        for _attempt in range(max(1, config.route_passes)):
+    def attempts(
+        order: list[int],
+        preferred: dict[int, _Proposal] | None,
+        passes: int | None = None,
+        seg_expansions: dict[int, int] | None = None,
+    ) -> None:
+        """Up to ``config.route_passes`` passes, failures to the front.
+
+        ``passes`` overrides the pass count (the budget retry below wants
+        fewer). ``seg_expansions`` maps a segment to the ``max_expansions``
+        ITS search gets this pass — every other segment keeps
+        ``config.max_expansions``."""
+        nonlocal best, best_score, best_stamped, best_exhausted
+        for _attempt in range(max(1, passes or config.route_passes)):
             attempt_grid = maze.OccupancyGrid(
                 spec,
                 clearance_mm=clearance,
@@ -2154,6 +2194,7 @@ def _realize_maze(
             attempt_grid.set_body_mask(body_mask)
             accepted: list[int] | None = [] if preferred is not None else None
             stamped: dict[int, maze.RoutePath] = {}
+            exhausted: set[int] = set()
             outcome = _route_pass(
                 ir,
                 order,
@@ -2174,6 +2215,8 @@ def _realize_maze(
                 accepted=accepted,
                 plane_served_pins=plane_served_pins,
                 stamped=stamped,
+                seg_expansions=seg_expansions,
+                exhausted=exhausted,
             )
             if accepted is not None:
                 accepted_counts.append(len(accepted))
@@ -2183,6 +2226,7 @@ def _realize_maze(
             score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
             if best is None or score < best_score:
                 best, best_score, best_stamped = outcome, score, stamped
+                best_exhausted = exhausted
             if not outcome[2]:
                 return
             # Failures go to the front for the next attempt, keeping their
@@ -2213,6 +2257,26 @@ def _realize_maze(
             attempts(guided.order, guided.preferred)
     if best is None or best_score[0]:
         attempts(order, None)
+    if (
+        best_score[0]
+        and best_exhausted
+        and config.exhaustion_retry_factor > 1.0
+        and config.exhaustion_retry_passes > 0
+    ):
+        # Budget retry (gr489909/gr497768): the passes above left nets
+        # unrouted whose search ended on the expansion cap, so they were
+        # never proved unroutable. Run the failures first again with ONLY
+        # those segments given max_expansions * exhaustion_retry_factor —
+        # appended after the normal passes, never instead of them, so it
+        # can cost time but never nets.
+        retry_budget = int(config.max_expansions * config.exhaustion_retry_factor)
+        attempts(
+            [s for s in order if s in best_exhausted]
+            + [s for s in order if s not in best_exhausted],
+            None,
+            passes=config.exhaustion_retry_passes,
+            seg_expansions={s: retry_budget for s in best_exhausted},
+        )
     negotiation: NegotiationReport | None = None
     congestion: tuple[CongestionCell, ...] = ()
     if best_score[0] and config.negotiate_iterations > 0:
@@ -2410,6 +2474,7 @@ def _realize_maze(
         net_layer_lock_fail=net_layer_lock_fail,
         routed_copper=(tracks, vias),
         plane_failed_pins=plane_failed_pins,
+        exhausted=best_exhausted,
     )
     return (
         tracks,
@@ -2444,6 +2509,7 @@ def _diagnose_all(
     net_layer_lock_fail: dict[int, str] | None = None,
     routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
     plane_failed_pins: list[int] | None = None,
+    exhausted: set[int] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
@@ -2464,7 +2530,15 @@ def _diagnose_all(
     (`_route_pass`'s own early-continue), so re-running the point-to-point
     probes below would ask the wrong question, the same reasoning the
     plane-drop branch already documents for ITS own never-searched
-    segments."""
+    segments.
+
+    ``exhausted`` (:func:`_route_pass`'s record of which segments' REAL
+    search ended on the expansion cap, from
+    :attr:`maze.OccupancyGrid.last_route_exhausted`) is checked before the
+    probes for the same reason: the busy-grid search already answered why
+    this segment failed — the budget ran out — so a pads-only probe that
+    then finds a corridor would misreport the failure as a lost race
+    (gr489909: 19 of nano's 29 unrouted nets were exactly this)."""
     reasons: list[UnroutedReason] = []
     pins_by_net: dict[int, list[int]] = {}
     for pid in plane_failed_pins or ():
@@ -2496,6 +2570,21 @@ def _diagnose_all(
                     "legal drop-via site within its search radius (blocked by "
                     "other copper) -- not a point-to-point route failure",
                     pins=tuple(pins_by_net.get(net_id, ())),
+                )
+            )
+            continue
+        if exhausted and seg_id in exhausted:
+            reasons.append(
+                UnroutedReason(
+                    seg_id,
+                    net_id,
+                    "search_budget",
+                    "this connection's route search ran out of expansions "
+                    "(max_expansions) on the busy grid before finding a "
+                    "path or proving none — a budget failure, not a lost "
+                    "corridor race; the diagnosis's pads-only probe is not "
+                    "re-run, since its verdict could only mislabel this "
+                    "congestion",
                 )
             )
             continue
@@ -3791,6 +3880,8 @@ def _route_pass(
     plane_served_pins: frozenset[int] = frozenset(),
     kept: dict[int, maze.RoutePath] | None = None,
     stamped: dict[int, maze.RoutePath] | None = None,
+    seg_expansions: dict[int, int] | None = None,
+    exhausted: set[int] | None = None,
     banned_via_sites: tuple[Point, ...] = (),
 ) -> tuple[
     list[RealizedTrack],
@@ -3846,7 +3937,15 @@ def _route_pass(
     maps a segment to the exact path an earlier pass stamped; it is
     stamped again unchecked — no search, snap or straighten, no island
     note — so its copper comes out identical. ``stamped`` collects every
-    segment's final stamped path, in commit order."""
+    segment's final stamped path, in commit order.
+
+    ``seg_expansions`` (the budget retry, :func:`_realize_maze`) maps a
+    segment to the ``max_expansions`` ITS search gets this pass; every
+    other segment keeps ``config.max_expansions``. ``exhausted`` collects
+    the segments whose search ended on that cap
+    (:attr:`maze.OccupancyGrid.last_route_exhausted`) — the retry's input
+    and the diagnosis's evidence that the failure was budget, not
+    geometry."""
     tracks, vias, unrouted, failed_pins = _claim_static(
         ir,
         plane_ids,
@@ -3878,6 +3977,8 @@ def _route_pass(
         if req.failed:
             unrouted.append(seg_id)
             continue
+        if seg_expansions and seg_id in seg_expansions:
+            req.route_kwargs["max_expansions"] = seg_expansions[seg_id]
         net_id, rules, n_vias = req.net_id, req.rules, req.n_vias
         group_extent, terms = req.group_extent, req.terms
         start, end = req.start, req.end
@@ -3895,6 +3996,8 @@ def _route_pass(
                 accepted.append(seg_id)
         else:
             path = grid.route(net_id, req.eff_start, req.eff_goal, **req.route_kwargs)
+            if path is None and grid.last_route_exhausted and exhausted is not None:
+                exhausted.add(seg_id)
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue

@@ -12,6 +12,7 @@ and rip-up leaving other nets' geometry byte-identical.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 import random
@@ -2594,6 +2595,75 @@ def test_diagnose_unrouted_reason_congestion_when_a_corridor_exists_in_isolation
         max_expansions=80_000,
     )
     assert reason.kind == "congestion", reason.message
+
+
+def test_diagnose_all_reports_search_budget_when_the_real_search_exhausted():
+    """gr489909: a segment whose REAL search ended on the expansion cap
+    on the busy grid is a budget failure, not a lost race — reported as
+    ``'search_budget'`` on ``_route_pass``'s ``exhausted`` evidence alone,
+    without the pads-only probe whose corridor verdict (the scenario the
+    congestion test above proves it would give here) would mislabel it."""
+    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
+        _boxed_scenario(gap_mm=3.0)
+    )
+    reasons = pcb_realize._diagnose_all(
+        ir,
+        [seg_id],
+        [],
+        set(),
+        spec,
+        pads,
+        clearance,
+        signal_layers,
+        {0: NetRules(track_width_mm=0.2, clearance_mm=clearance)},
+        80_000,
+        pcb_realize.RealizeConfig(),
+        exhausted={seg_id},
+    )
+    assert [r.kind for r in reasons] == ["search_budget"], [r.message for r in reasons]
+
+
+def test_exhaustion_retry_pass_routes_the_net_the_budget_capped():
+    """gr489909/gr497768: a connection whose first-pass search ran out of
+    ``max_expansions`` gets one bounded retry at
+    ``max_expansions * exhaustion_retry_factor`` — appended after the
+    ordinary passes, only for the segments that actually exhausted — and
+    routes. With the retry off the same board stays unrouted and is
+    reported ``'search_budget'``."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 30.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    capped = RealizeConfig(
+        router="maze",
+        fab_caps=capability_for("4layer"),
+        max_expansions=50,
+        route_passes=1,
+        vector_escape=False,
+        exhaustion_retry_factor=1.0,
+    )
+    capped_result = realize(ir, config=capped)
+    assert capped_result.unrouted
+    assert {r.kind for r in capped_result.unrouted_reasons} == {"search_budget"}
+
+    retried = dataclasses.replace(
+        capped, exhaustion_retry_factor=4000.0, exhaustion_retry_passes=1
+    )
+    result = realize(ir, config=retried)
+    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
+    assert result.tracks
 
 
 def test_class_layer_drops_names_the_partial_narrowing():
