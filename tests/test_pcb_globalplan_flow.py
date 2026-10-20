@@ -241,8 +241,20 @@ def test_ewod_flow_bracket(store, monkeypatch):
         }
     # The opt-in route path itself (slice 1c): corridor_guided passes
     # then the plain fallback — the number the route job would report
-    # with ``corridor=5`` set. Asserted against the plain 51/55 floor:
-    # the opt-in may cost time, never nets.
+    # with ``corridor=5`` set. Asserted against the plain router on the
+    # same board and config, measured here rather than copied in as a
+    # literal: the opt-in may cost time, never nets.
+    t_start = time.monotonic()
+    pres = realize.realize(
+        ir,
+        config=replace(config, corridor_penalty=0.0),
+        footprints=footprints,
+        fixed_copper=fixed,
+    )
+    report["realize_plain"] = {
+        "routed": 55 - len(pres.unrouted),
+        "seconds": round(time.monotonic() - t_start, 1),
+    }
     t_start = time.monotonic()
     rres = realize.realize(
         ir,
@@ -272,8 +284,9 @@ def test_ewod_flow_bracket(store, monkeypatch):
     assert len(plans["flowopen"].paths) >= 51
     assert len(plans["flow"].paths) <= len(plans["flowopen"].paths)
     assert len(plans["flow"].paths) >= len(plans["strict"].paths)
-    assert report["realize_corridor5"]["routed"] >= 51, (
-        "corridor_penalty>0 lost ground the plain router holds (51/55) — "
+    plain = report["realize_plain"]["routed"]
+    assert report["realize_corridor5"]["routed"] >= plain, (
+        f"corridor_penalty>0 lost ground the plain router holds ({plain}/55) — "
         "the plain fallback in _realize_maze must always run after the "
         "guided passes"
     )
