@@ -37,7 +37,9 @@ as ``chase``/``segment_toc``.
 Event vocabulary (shared across sources): ``fetch_ok`` (url+bytes+license
 payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
 ``rate_limited``, ``api_error``, ``invalid_identifier``,
-``identifier_missing``. ``precis stubs`` reads the latest event per stub
+``identifier_missing``, ``circuit_open`` (leg skipped — its provider's
+per-pass breaker is open; see :class:`_ProviderBreaker`).
+``precis stubs`` reads the latest event per stub
 for the backlog.
 
 **Stub states as the readouts see them** (``precis stats --stubs``,
@@ -76,8 +78,10 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -89,6 +93,8 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
+    stop_after_delay,
+    stop_any,
     wait_exponential,
 )
 
@@ -220,6 +226,130 @@ _STAGING_GC_MAX_AGE_HOURS = 6.0
 # needs a chance to surface, so a slice of every claim ignores prio
 # entirely.
 _FETCH_EXPLORE_FRACTION_DEFAULT = 0.1
+
+# ── Throughput knobs (the pass was draining 1–4 of 32 claimed stubs in
+# its 300 s wall budget: every leg ran serially per stub and a dead
+# provider burned its full timeout×retry product — ~45–360 s — on every
+# stub of every pass; prod ref_events 2026-10-20: crossref 363 s,
+# europepmc_jats 157 s, core 33 s). Four bounds stack so one dead
+# endpoint can no longer hold the pass:
+#
+# * ``PRECIS_OA_FETCH_WORKERS`` — stubs processed concurrently inside
+#   the pass. Per-provider pacing is already cluster-coordinated
+#   (``external_rate_limits`` rows, taken atomically per attempt by
+#   ``call_with_backoff``/``require_rate_limit``), so N stubs in flight
+#   cannot exceed any published rate; publisher downloads pace on their
+#   own ``host:<netloc>`` rows.
+# * Per-stub wall ``PRECIS_OA_FETCH_STUB_WALL_S`` — no new leg starts
+#   once a stub is older than this (a leg in flight is never
+#   interrupted; its own timeouts bound it).
+# * Per-leg download tail ``PRECIS_OA_FETCH_LEG_WALL_S`` — the retry
+#   budget for one leg's download/candidate loop (``deadline=`` on
+#   ``call_with_backoff`` stops the retry chain; the in-flight request
+#   still gets its full ``_DOWNLOAD_TIMEOUT_S``).
+# * Metadata leg ``PRECIS_OA_FETCH_META_WALL_S`` — same deadline shape
+#   on the small JSON round-trips that used to retry 5×30 s.
+#
+# On top of the budgets a per-pass provider breaker
+# (:class:`_ProviderBreaker`) skips a provider for the rest of the pass
+# after :data:`_BREAKER_THRESHOLD` consecutive *slow* failures — a fast
+# ``fetch_failed``/``api_error`` is a normal miss and doesn't count; a
+# ≥``_SLOW_FAIL_MS`` one is a dead endpoint taxing every later stub.
+_PASS_WORKERS_DEFAULT = 6
+_STUB_WALL_S_DEFAULT = 120.0
+_LEG_WALL_S_DEFAULT = 150.0
+_META_WALL_S_DEFAULT = 45.0
+_SLOW_FAIL_MS = 20_000
+_BREAKER_THRESHOLD = 2
+
+#: Outcome events that count as a provider failure for the pass breaker —
+#: only when the leg also took at least ``_SLOW_FAIL_MS`` (a dead-endpoint
+#: signature). ``fetch_ok``/``no_oa_version``/identifier misses are healthy.
+_BREAKER_FAIL_EVENTS = frozenset({"api_error", "fetch_failed", "rate_limited"})
+
+#: ref_events ``source`` → the external provider a failure should be
+#: charged to. Markup legs share their PDF sibling's provider (the JATS
+#: leg queries the same Europe PMC API; the arXiv legs hit the same
+#: host). ``fetcher:publisher`` has no key: its hosts vary per DOI, so a
+#: dead Springer tells us nothing about PLOS.
+_BREAKER_KEYS: dict[str, str | None] = {
+    _SOURCE_PUBLISHER: None,
+    _SOURCE_ELSEVIER: "elsevier",
+    _SOURCE_ELSEVIER_XML: "elsevier",
+    _SOURCE_WILEY: "wiley",
+    _SOURCE_UNPAYWALL: "unpaywall",
+    _SOURCE_CROSSREF: "crossref",
+    _SOURCE_OPENALEX: "openalex",
+    _SOURCE_OPENALEX_CONTENT: "openalex-content",
+    _SOURCE_EUROPEPMC: "europepmc",
+    _SOURCE_EUROPEPMC_JATS: "europepmc",
+    _SOURCE_CORE: "core",
+    _SOURCE_ARXIV: "arxiv",
+    _SOURCE_ARXIV_HTML: "arxiv",
+    _SOURCE_ARXIV_SOURCE: "arxiv",
+    _SOURCE_S2: "s2",
+}
+
+
+class _ProviderBreaker:
+    """Per-pass circuit breaker on external providers.
+
+    Counts **consecutive slow failures** per provider key
+    (:data:`_BREAKER_KEYS`): an outcome in :data:`_BREAKER_FAIL_EVENTS`
+    that took at least :data:`_SLOW_FAIL_MS`. A fast failure is a normal
+    miss (paywalled copy, 403'd TDM link) and resets the count — it costs
+    the pass almost nothing, so the provider keeps being asked. At
+    :data:`_BREAKER_THRESHOLD` the provider is *open* for the rest of the
+    pass and its legs are skipped with a ``circuit_open`` event instead
+    of re-paying 30–360 s per stub. State dies with the pass: the next
+    pass probes the provider again (a genuinely dead one is re-broken
+    after two stubs, a recovered one serves immediately).
+
+    Thread-safe — stub workers record outcomes concurrently.
+    """
+
+    def __init__(
+        self,
+        *,
+        threshold: int = _BREAKER_THRESHOLD,
+        slow_ms: int = _SLOW_FAIL_MS,
+    ) -> None:
+        self._threshold = threshold
+        self._slow_ms = slow_ms
+        self._fails: dict[str, int] = {}
+        self._open: set[str] = set()
+        self._lock = threading.Lock()
+
+    def is_open(self, key: str | None) -> bool:
+        if key is None:
+            return False
+        with self._lock:
+            return key in self._open
+
+    def healthy(self, key: str | None) -> None:
+        if key is None:
+            return
+        with self._lock:
+            self._fails[key] = 0
+
+    def slow_fail(self, key: str | None) -> None:
+        if key is None:
+            return
+        with self._lock:
+            n = self._fails.get(key, 0) + 1
+            self._fails[key] = n
+            if n >= self._threshold:
+                self._open.add(key)
+
+    def note_outcome(
+        self, key: str | None, event: str, duration_ms: int | None
+    ) -> None:
+        """Classify a leg outcome: slow failure counts, anything else resets."""
+        if event in _BREAKER_FAIL_EVENTS and (duration_ms or 0) >= self._slow_ms:
+            self.slow_fail(key)
+        else:
+            self.healthy(key)
+
 
 # DOI shape validation. Loose but rejects obviously-broken inputs
 # before paying for an HTTP roundtrip.
@@ -595,7 +725,13 @@ def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
     return result
 
 
-def _apply_retraction_gate(store: Store, stub: StubRef, *, mailto: str) -> bool:
+def _apply_retraction_gate(
+    store: Store,
+    stub: StubRef,
+    *,
+    mailto: str,
+    breaker: _ProviderBreaker | None = None,
+) -> bool:
     """Stamp the stub's provenance status; skip the cascade only if retracted.
 
     Returns ``True`` only when the stub is **retracted** — the caller
@@ -629,8 +765,28 @@ def _apply_retraction_gate(store: Store, stub: StubRef, *, mailto: str) -> bool:
     is a *retraction* action — a mere correction/EoC must not taint a
     finding that walked through the paper. The soft-flag downstream
     (search downrank / citation flag) lands separately.
+
+    ``breaker`` is the pass provider breaker: the check is a Crossref
+    call, so a dead Crossref endpoint skips it outright (the docstring
+    contract is already "a provenance-check outage must never block
+    acquiring a PDF" — skipping produces the same proceed decision,
+    without the ~45 s timeout per stub), and a slow ``None`` result —
+    the timeout signature — counts toward opening it.
     """
+    if breaker is not None and breaker.is_open("crossref"):
+        return False
+    gate_t0 = time.perf_counter()
     result = _check_stub_retraction(stub, mailto=mailto)
+    if breaker is not None:
+        gate_ms = _ms(gate_t0)
+        # A fast ``None`` is ambiguous (no DOI, unknown DOI, or a fast
+        # swallowed error) — it carries no health signal, so it neither
+        # counts toward nor resets the breaker. A slow ``None`` is the
+        # dead-endpoint signature; a real result is a healthy answer.
+        if result is None and gate_ms >= _SLOW_FAIL_MS:
+            breaker.slow_fail("crossref")
+        elif result is not None:
+            breaker.healthy("crossref")
     if result is None:
         return False
 
@@ -1002,6 +1158,7 @@ def _try_publisher(
     stub: StubRef,
     *,
     inbox_dir: Path,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try a deterministic publisher PDF URL for one stub.
 
@@ -1024,9 +1181,12 @@ def _try_publisher(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
-    for url in urls:
+    for i, url in enumerate(urls):
+        if i and deadline is not None and time.perf_counter() >= deadline:
+            errors.append("remaining candidates skipped: leg deadline reached")
+            break
         try:
-            size_bytes = _download_pdf(url, target)
+            size_bytes = _download_pdf(url, target, deadline=deadline)
         except Exception as exc:
             errors.append(f"{url}: {str(exc)[:120]}")
             continue
@@ -1064,6 +1224,7 @@ def _try_elsevier(
     *,
     inbox_dir: Path,
     api_key: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try the Elsevier Article Retrieval API for one stub.
 
@@ -1094,12 +1255,14 @@ def _try_elsevier(
             url,
             preflight,
             extra_headers={"X-ELS-APIKey": api_key, "Accept": "text/xml"},
+            deadline=deadline,
         )
         _validate_elsevier_body(preflight)
         size_bytes = _download_pdf(
             url,
             target,
             extra_headers={"X-ELS-APIKey": api_key, "Accept": "application/pdf"},
+            deadline=deadline,
         )
     except Exception as exc:
         from precis.ingest.markup import MarkupParseError
@@ -1138,6 +1301,7 @@ def _try_elsevier_markup(
     *,
     inbox_dir: Path,
     api_key: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try the Elsevier Article Retrieval API for structured full-text XML.
 
@@ -1183,6 +1347,7 @@ def _try_elsevier_markup(
             url,
             target,
             extra_headers={"X-ELS-APIKey": api_key, "Accept": "text/xml"},
+            deadline=deadline,
         )
         _validate_elsevier_body(target)
     except Exception as exc:
@@ -1222,6 +1387,7 @@ def _try_wiley(
     *,
     inbox_dir: Path,
     token: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try the Wiley TDM API for one stub.
 
@@ -1243,7 +1409,10 @@ def _try_wiley(
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
         size_bytes = _download_pdf(
-            url, target, extra_headers={"Wiley-TDM-Client-Token": token}
+            url,
+            target,
+            extra_headers={"Wiley-TDM-Client-Token": token},
+            deadline=deadline,
         )
     except Exception as exc:
         return FetchOutcome(
@@ -1269,6 +1438,7 @@ def _try_unpaywall(
     *,
     inbox_dir: Path,
     email: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try Unpaywall for one stub.
 
@@ -1331,7 +1501,7 @@ def _try_unpaywall(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
-        size_bytes = _download_pdf(url, target)
+        size_bytes = _download_pdf(url, target, deadline=deadline)
     except Exception as exc:
         return FetchOutcome(
             event="fetch_failed",
@@ -1418,6 +1588,7 @@ def _try_arxiv(
     stub: StubRef,
     *,
     inbox_dir: Path,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try direct arXiv PDF fetch for one stub.
 
@@ -1451,7 +1622,7 @@ def _try_arxiv(
     try:
         # Service "arxiv": every attempt (not just the first) takes a token
         # from the shared arxiv limiter and follows its backoff policy.
-        size_bytes = _download_pdf(url, target, service="arxiv")
+        size_bytes = _download_pdf(url, target, service="arxiv", deadline=deadline)
     except RateLimited:
         return FetchOutcome(
             event="rate_limited",
@@ -1482,6 +1653,7 @@ def _try_s2(
     stub: StubRef,
     *,
     inbox_dir: Path,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try Semantic Scholar's ``openAccessPdf`` for one stub.
 
@@ -1526,7 +1698,7 @@ def _try_s2(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
-        size_bytes = _download_pdf(oa_url, target)
+        size_bytes = _download_pdf(oa_url, target, deadline=deadline)
     except Exception as exc:
         return FetchOutcome(
             event="fetch_failed",
@@ -1557,6 +1729,7 @@ def _try_openalex_content(
     api_key: str,
     store: Store | None = None,
     email: str = "",
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Fetch full text from OpenAlex's content cache for one stub.
 
@@ -1622,7 +1795,10 @@ def _try_openalex_content(
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
         size_bytes = _download_pdf(
-            _with_api_key(pdf_url, api_key), target, service="openalex-content"
+            _with_api_key(pdf_url, api_key),
+            target,
+            service="openalex-content",
+            deadline=deadline,
         )
     except RateLimited:
         return _local_rate_limited(stub, t0, provider="openalex-content")
@@ -1690,6 +1866,7 @@ def _try_crossref(
     *,
     inbox_dir: Path,
     email: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try Crossref's TDM full-text links for one stub.
 
@@ -1721,7 +1898,12 @@ def _try_crossref(
             duration_ms=_ms(t0),
         )
     return _download_first(
-        stub, pdf_urls, inbox_dir=inbox_dir, host_type="crossref_tdm", t0=t0
+        stub,
+        pdf_urls,
+        inbox_dir=inbox_dir,
+        host_type="crossref_tdm",
+        t0=t0,
+        deadline=deadline,
     )
 
 
@@ -1730,6 +1912,7 @@ def _try_openalex(
     *,
     inbox_dir: Path,
     email: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try OpenAlex's PDF locations for one stub.
 
@@ -1758,7 +1941,12 @@ def _try_openalex(
             duration_ms=_ms(t0),
         )
     return _download_first(
-        stub, pdf_urls, inbox_dir=inbox_dir, host_type="openalex", t0=t0
+        stub,
+        pdf_urls,
+        inbox_dir=inbox_dir,
+        host_type="openalex",
+        t0=t0,
+        deadline=deadline,
     )
 
 
@@ -1766,6 +1954,7 @@ def _try_europepmc(
     stub: StubRef,
     *,
     inbox_dir: Path,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try Europe PMC's OA full-text PDF for one stub.
 
@@ -1794,7 +1983,12 @@ def _try_europepmc(
         )
     url = f"https://europepmc.org/articles/{pmcid}?pdf=render"
     return _download_first(
-        stub, [url], inbox_dir=inbox_dir, host_type="europepmc", t0=t0
+        stub,
+        [url],
+        inbox_dir=inbox_dir,
+        host_type="europepmc",
+        t0=t0,
+        deadline=deadline,
     )
 
 
@@ -1803,6 +1997,7 @@ def _try_core(
     *,
     inbox_dir: Path,
     api_key: str,
+    deadline: float | None = None,
 ) -> FetchOutcome | None:
     """Try CORE's green-OA repository copies for one stub.
 
@@ -1836,6 +2031,7 @@ def _try_core(
         host_type="core",
         t0=t0,
         extra_headers={"User-Agent": _user_agent_header()},
+        deadline=deadline,
     )
 
 
@@ -1847,6 +2043,7 @@ def _download_first(
     host_type: str,
     t0: float,
     extra_headers: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> FetchOutcome:
     """Download the first URL whose bytes pass the ``%PDF-`` guard.
 
@@ -1855,14 +2052,22 @@ def _download_first(
     on the first good PDF, else ``fetch_failed`` with the per-URL
     errors so the cascade falls through. ``extra_headers`` (e.g. a
     custom UA for repository hosts) is forwarded to every candidate.
+    ``deadline`` (``perf_counter``) caps the whole tail: the first
+    candidate always runs, later candidates are skipped once it passes,
+    and each download's retry chain stops there too.
     """
     filename = _stub_filename(stub) + ".pdf"
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
-    for url in urls:
+    for i, url in enumerate(urls):
+        if i and deadline is not None and time.perf_counter() >= deadline:
+            errors.append("remaining candidates skipped: leg deadline reached")
+            break
         try:
-            size_bytes = _download_pdf(url, target, extra_headers=extra_headers)
+            size_bytes = _download_pdf(
+                url, target, extra_headers=extra_headers, deadline=deadline
+            )
         except Exception as exc:
             errors.append(f"{url}: {str(exc)[:120]}")
             continue
@@ -1925,6 +2130,70 @@ def _pass_wall_s() -> float:
         return 300.0
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """Seconds-valued env knob; a non-numeric value falls back to ``default``.
+
+    ``0`` or less disables the bound it feeds — same convention as
+    :func:`_pass_wall_s`.
+    """
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _pass_workers() -> int:
+    """``PRECIS_OA_FETCH_WORKERS`` — default :data:`_PASS_WORKERS_DEFAULT` (6).
+
+    Stubs processed concurrently inside one pass; ``1`` restores the
+    original strictly-serial loop. Pacing is unaffected: every leg takes
+    its tokens from the shared ``external_rate_limits`` rows regardless
+    of which worker thread asks.
+    """
+    try:
+        return max(
+            1,
+            int(os.environ.get("PRECIS_OA_FETCH_WORKERS", "")) or _PASS_WORKERS_DEFAULT,
+        )
+    except ValueError:
+        return _PASS_WORKERS_DEFAULT
+
+
+def _stub_wall_s() -> float:
+    """``PRECIS_OA_FETCH_STUB_WALL_S`` — default :data:`_STUB_WALL_S_DEFAULT`.
+
+    Per-stub wall budget: no new cascade leg starts past it. ``0``
+    disables. See the throughput-knobs comment near
+    :data:`_PASS_WORKERS_DEFAULT`.
+    """
+    return _env_seconds("PRECIS_OA_FETCH_STUB_WALL_S", _STUB_WALL_S_DEFAULT)
+
+
+def _leg_wall_s() -> float:
+    """``PRECIS_OA_FETCH_LEG_WALL_S`` — default :data:`_LEG_WALL_S_DEFAULT`.
+
+    Retry budget for one leg's download tail. ``0`` disables (each
+    download keeps its full ``_DOWNLOAD_POLICY`` retry shape).
+    """
+    return _env_seconds("PRECIS_OA_FETCH_LEG_WALL_S", _LEG_WALL_S_DEFAULT)
+
+
+def _meta_wall_s() -> float:
+    """``PRECIS_OA_FETCH_META_WALL_S`` — default :data:`_META_WALL_S_DEFAULT`.
+
+    Retry budget for one metadata round-trip (Crossref/Europe PMC/
+    Unpaywall queries — the JSON calls that retried 4–5× a 30 s timeout).
+    ``0`` disables.
+    """
+    return _env_seconds("PRECIS_OA_FETCH_META_WALL_S", _META_WALL_S_DEFAULT)
+
+
+def _meta_deadline() -> float | None:
+    """``perf_counter`` deadline for one metadata call, ``None`` when disabled."""
+    wall = _meta_wall_s()
+    return time.perf_counter() + wall if wall > 0 else None
+
+
 def run_oa_fetch_pass(
     store: Store,
     *,
@@ -1964,6 +2233,13 @@ def run_oa_fetch_pass(
     ``email`` defaults to ``PRECIS_UNPAYWALL_EMAIL``. Without one,
     Unpaywall is skipped (with an ``identifier_missing``-style
     event) — arXiv and S2 still run.
+
+    Stubs are processed by ``PRECIS_OA_FETCH_WORKERS`` (default 6)
+    concurrent worker threads pulling from the claimed list until the
+    pass wall budget is spent; the leg cascade inside a stub stays
+    serial and provider-ordered. All pacing rides the shared
+    ``external_rate_limits`` rows, so concurrency can't exceed any
+    provider's published rate. ``1`` restores the serial loop.
 
     ``inbox_dir`` is taken from ``PRECIS_WATCH_INBOX`` when not passed
     explicitly. It **must** be the directory the ``precis ingest --watch``
@@ -2062,82 +2338,166 @@ def run_oa_fetch_pass(
     if openalex_content_key:
         check_openalex_balance(store, api_key=openalex_content_key)
 
-    ok = 0
-    failed = 0
     total = len(stubs)
     wall_s = _pass_wall_s()
     started = _clock()
-    attempted = 0
-    for i, stub in enumerate(stubs, start=1):
-        if wall_s > 0 and attempted and _clock() - started >= wall_s:
-            log.info(
-                "fetch_oa: pass wall budget %.0fs spent after %d/%d stubs; "
-                "the rest stay claimable for the next pass",
-                wall_s,
-                attempted,
-                total,
-            )
-            break
-        attempted += 1
-        # gr191337-style monopolization is exactly what this pass is prone
-        # to (up to ~11 network legs per stub, each capped at
-        # ``_DOWNLOAD_TIMEOUT_S``) — a per-stub progress stamp is the whole
-        # point of ``precis.workers.activity`` (see its module docstring).
-        activity.note(f"stub {i}/{total} ref_id={stub.ref_id} doi={stub.doi or '-'}")
-        try:
-            # Retraction gate — cheapest possible check, ahead of every
-            # other leg (including the markup-first pass): a retracted
-            # paper has nothing worth chasing an OA copy for, so decide
-            # this before paying for any download attempt.
-            if _apply_retraction_gate(store, stub, mailto=email):
-                ok += 1
-                continue
+    breaker = _ProviderBreaker()
+    stub_iter = iter(enumerate(stubs, start=1))
+    counts = {"attempted": 0, "ok": 0, "failed": 0}
+    pull_lock = threading.Lock()
+    budget_logged = threading.Event()
 
-            # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
-            # structured full-text source before the PDF cascade. Best-
-            # effort — its failure must never block the PDF fetch, which
-            # runs unconditionally afterwards to acquire the printable.
-            staged_markup: _StagedMarkup | None = None
-            try:
-                staged_markup = _run_markup_cascade(store, stub, inbox_path, api_key)
-            except Exception as exc:  # pragma: no cover — defensive
-                log.warning(
-                    "fetch_oa: markup pass errored for ref_id=%s: %s",
-                    stub.ref_id,
-                    exc,
-                )
-            # gr161905: when markup already landed, the companion PDF this
-            # cascade drops must never be OCR'd as a body candidate — no
-            # matter which host's watcher reaches it first, it's the
-            # printable only. See _run_cascade's `printable_only` and
-            # FetchSidecar.printable_only.
-            pdf_path = _run_cascade(
+    def _worker() -> None:
+        """Pull stubs until the list or the pass wall budget runs out.
+
+        The wall check happens under ``pull_lock`` together with the
+        ``next()`` so the "first stub always runs" and the attempted
+        count stay exact under N workers. A stub in flight is never
+        interrupted — same contract as the serial loop — but its own
+        per-stub/leg deadlines keep the tail bounded.
+        """
+        while True:
+            with pull_lock:
+                if wall_s > 0 and counts["attempted"] and _clock() - started >= wall_s:
+                    if not budget_logged.is_set():
+                        budget_logged.set()
+                        log.info(
+                            "fetch_oa: pass wall budget %.0fs spent after "
+                            "%d/%d stubs; the rest stay claimable for the "
+                            "next pass",
+                            wall_s,
+                            counts["attempted"],
+                            total,
+                        )
+                    return
+                item = next(stub_iter, None)
+                if item is None:
+                    return
+                counts["attempted"] += 1
+            i, stub = item
+            outcome = _process_stub(
                 store,
                 stub,
+                i,
+                total,
                 inbox_path,
                 email,
                 api_key,
                 wiley_token,
                 core_key,
                 openalex_content_key,
-                printable_only=staged_markup is not None,
+                breaker,
             )
-            if staged_markup is not None:
-                # gr170349: only now — after the companion PDF's fate is
-                # known, however long that took — does the markup trigger
-                # (and its sidecar) become watcher-visible, atomically.
-                companion_name = pdf_path.name if pdf_path is not None else None
-                _publish_markup_trigger(staged_markup, companion_name)
-            ok += 1
+            with pull_lock:
+                counts[outcome] += 1
+
+    workers = min(_pass_workers(), total)
+    if workers <= 1:
+        _worker()
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="oa-fetch"
+        ) as pool:
+            for _ in range(workers):
+                pool.submit(_worker)
+    return {
+        "claimed": counts["attempted"],
+        "ok": counts["ok"],
+        "failed": counts["failed"],
+    }
+
+
+def _process_stub(
+    store: Store,
+    stub: StubRef,
+    i: int,
+    total: int,
+    inbox_path: Path,
+    email: str,
+    api_key: str,
+    wiley_token: str,
+    core_key: str,
+    openalex_content_key: str,
+    breaker: _ProviderBreaker,
+) -> str:
+    """Run one claimed stub through the gate + markup + PDF cascades.
+
+    Returns ``"ok"`` when the stub was processed (regardless of whether a
+    PDF landed) and ``"failed"`` when an unhandled exception escaped all
+    per-leg guards — same accounting the serial loop kept.
+
+    The stub wall (``_stub_wall_s``) bounds the whole stub: no *new* leg
+    starts past it; a leg in flight finishes on its own timeouts.
+    ``breaker`` is the shared per-pass provider breaker.
+    """
+    # gr191337-style monopolization is exactly what this pass is prone
+    # to (up to ~11 network legs per stub, each capped at
+    # ``_DOWNLOAD_TIMEOUT_S``) — a per-stub progress stamp is the whole
+    # point of ``precis.workers.activity`` (see its module docstring).
+    activity.note(f"stub {i}/{total} ref_id={stub.ref_id} doi={stub.doi or '-'}")
+    stub_wall = _stub_wall_s()
+    stop_at = time.perf_counter() + stub_wall if stub_wall > 0 else None
+    try:
+        # Retraction gate — cheapest possible check, ahead of every
+        # other leg (including the markup-first pass): a retracted
+        # paper has nothing worth chasing an OA copy for, so decide
+        # this before paying for any download attempt.
+        if _apply_retraction_gate(store, stub, mailto=email, breaker=breaker):
+            return "ok"
+
+        # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
+        # structured full-text source before the PDF cascade. Best-
+        # effort — its failure must never block the PDF fetch, which
+        # runs unconditionally afterwards to acquire the printable.
+        staged_markup: _StagedMarkup | None = None
+        try:
+            staged_markup = _run_markup_cascade(
+                store,
+                stub,
+                inbox_path,
+                api_key,
+                breaker=breaker,
+                stop_at=stop_at,
+            )
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
-                "fetch_oa: ref_id=%s unhandled error: %s",
+                "fetch_oa: markup pass errored for ref_id=%s: %s",
                 stub.ref_id,
                 exc,
-                exc_info=True,
             )
-            failed += 1
-    return {"claimed": attempted, "ok": ok, "failed": failed}
+        # gr161905: when markup already landed, the companion PDF this
+        # cascade drops must never be OCR'd as a body candidate — no
+        # matter which host's watcher reaches it first, it's the
+        # printable only. See _run_cascade's `printable_only` and
+        # FetchSidecar.printable_only.
+        pdf_path = _run_cascade(
+            store,
+            stub,
+            inbox_path,
+            email,
+            api_key,
+            wiley_token,
+            core_key,
+            openalex_content_key,
+            printable_only=staged_markup is not None,
+            breaker=breaker,
+            stop_at=stop_at,
+        )
+        if staged_markup is not None:
+            # gr170349: only now — after the companion PDF's fate is
+            # known, however long that took — does the markup trigger
+            # (and its sidecar) become watcher-visible, atomically.
+            companion_name = pdf_path.name if pdf_path is not None else None
+            _publish_markup_trigger(staged_markup, companion_name)
+        return "ok"
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning(
+            "fetch_oa: ref_id=%s unhandled error: %s",
+            stub.ref_id,
+            exc,
+            exc_info=True,
+        )
+        return "failed"
 
 
 def _markup_fetch_enabled() -> bool:
@@ -2160,7 +2520,11 @@ _MARKUP_ACCEPT = (
 
 
 def _download_markup(
-    url: str, target: Path, *, extra_headers: dict[str, str] | None = None
+    url: str,
+    target: Path,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> int:
     """Stream a markup document (XML/HTML/tarball) to ``target``.
 
@@ -2182,6 +2546,8 @@ def _download_markup(
         policy=_DOWNLOAD_POLICY,
         url=url,
         retry_if=_is_transient_download_error,
+        deadline=deadline,
+        now=time.perf_counter,
     )
 
 
@@ -2381,7 +2747,13 @@ class _StagedMarkup:
 
 
 def _run_markup_cascade(
-    store: Store, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
+    store: Store,
+    stub: StubRef,
+    inbox_dir: Path,
+    elsevier_api_key: str = "",
+    *,
+    breaker: _ProviderBreaker | None = None,
+    stop_at: float | None = None,
 ) -> _StagedMarkup | None:
     """Try each markup leg; on first hit drop the trigger + sidecar into
     ``inbox_dir / ".staging"`` — not yet watcher-visible.
@@ -2404,9 +2776,20 @@ def _run_markup_cascade(
     it's key-gated like the PDF leg (not identifier-driven like the other
     three), so it doesn't fit the plain ``url_for(stub)`` shape those
     share. See :func:`_try_elsevier_markup` for why this leg exists.
+
+    ``breaker``/``stop_at`` are the same per-pass breaker and stub wall
+    :func:`_run_cascade` honours: an open provider is skipped with a
+    ``circuit_open`` event, and no new leg starts past ``stop_at``.
     """
     if not _markup_fetch_enabled():
         return None
+
+    def _leg_deadline() -> float | None:
+        leg_wall = _leg_wall_s()
+        d = time.perf_counter() + leg_wall if leg_wall > 0 else None
+        if stop_at is not None and (d is None or stop_at < d):
+            return stop_at
+        return d
 
     # Both legs below stage their content download *and* sidecar under
     # ``.staging`` — unwatched — so nothing watcher-visible appears until
@@ -2415,17 +2798,44 @@ def _run_markup_cascade(
     staging_dir = inbox_dir / ".staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        elsevier_outcome = _try_elsevier_markup(
-            stub, inbox_dir=staging_dir, api_key=elsevier_api_key
-        )
-    except Exception as exc:  # pragma: no cover — defensive
-        elsevier_outcome = None
-        log.warning(
-            "fetch_oa markup: elsevier_xml leg errored for ref_id=%s: %s",
+    def _expired() -> bool:
+        return stop_at is not None and time.perf_counter() >= stop_at
+
+    if breaker is None:
+        breaker = _ProviderBreaker()
+
+    elsevier_outcome: FetchOutcome | None = None
+    elsevier_key = _BREAKER_KEYS.get(_SOURCE_ELSEVIER_XML)
+    if breaker.is_open(elsevier_key):
+        store.append_event(
             stub.ref_id,
-            exc,
+            source=_SOURCE_ELSEVIER_XML,
+            event="circuit_open",
+            payload={"provider": elsevier_key, "breaker": "pass"},
         )
+    elif not _expired():
+        elsevier_t0 = time.perf_counter()
+        try:
+            elsevier_outcome = _try_elsevier_markup(
+                stub,
+                inbox_dir=staging_dir,
+                api_key=elsevier_api_key,
+                deadline=_leg_deadline(),
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            elsevier_outcome = None
+            breaker.note_outcome(elsevier_key, "api_error", _ms(elsevier_t0))
+            log.warning(
+                "fetch_oa markup: elsevier_xml leg errored for ref_id=%s: %s",
+                stub.ref_id,
+                exc,
+            )
+        if elsevier_outcome is not None:
+            breaker.note_outcome(
+                elsevier_key,
+                elsevier_outcome.event,
+                elsevier_outcome.duration_ms,
+            )
     if elsevier_outcome is not None:
         store.append_event(
             stub.ref_id,
@@ -2471,16 +2881,29 @@ def _run_markup_cascade(
     # would only sit out another bounded wait to be refused again.
     refused: set[str] = set()
     for leg in _MARKUP_LEGS:
+        if _expired():
+            break
+        key = _BREAKER_KEYS.get(leg.source)
+        if breaker.is_open(key):
+            store.append_event(
+                stub.ref_id,
+                source=leg.source,
+                event="circuit_open",
+                payload={"provider": key, "breaker": "pass"},
+            )
+            continue
         t0 = time.perf_counter()
         try:
             url = leg.url_for(stub)
         except Exception as exc:
+            leg_ms = _ms(t0)
+            breaker.note_outcome(key, "api_error", leg_ms)
             store.append_event(
                 stub.ref_id,
                 source=leg.source,
                 event="api_error",
                 payload={"error": str(exc)[:200]},
-                duration_ms=_ms(t0),
+                duration_ms=leg_ms,
             )
             continue
         if url is None:
@@ -2492,18 +2915,20 @@ def _run_markup_cascade(
                 require_rate_limit(leg.limiter)
             except RateLimited:
                 refused.add(leg.limiter)
+                leg_ms = _ms(t0)
+                breaker.note_outcome(key, "rate_limited", leg_ms)
                 store.append_event(
                     stub.ref_id,
                     source=leg.source,
                     event="rate_limited",
                     payload={"url": url, "provider": leg.limiter, "limiter": "shared"},
-                    duration_ms=_ms(t0),
+                    duration_ms=leg_ms,
                 )
                 continue
         final_path = inbox_dir / (_stub_filename(stub) + leg.suffix)
         staged_path = staging_dir / final_path.name
         try:
-            size = _download_markup(url, staged_path)
+            size = _download_markup(url, staged_path, deadline=_leg_deadline())
         except Exception as exc:
             log.warning(
                 "fetch_oa markup: %s leg failed for ref_id=%s (%s): %s",
@@ -2512,18 +2937,21 @@ def _run_markup_cascade(
                 url,
                 exc,
             )
+            leg_ms = _ms(t0)
+            breaker.note_outcome(key, "fetch_failed", leg_ms)
             store.append_event(
                 stub.ref_id,
                 source=leg.source,
                 event="fetch_failed",
                 payload={"url": url, "error": str(exc)[:200]},
-                duration_ms=_ms(t0),
+                duration_ms=leg_ms,
             )
             continue
         if leg.source == _SOURCE_ARXIV_SOURCE:
             skip_reason, tex_bytes = _classify_eprint(staged_path)
             if skip_reason is not None:
                 staged_path.unlink(missing_ok=True)
+                breaker.healthy(key)
                 store.append_event(
                     stub.ref_id,
                     source=leg.source,
@@ -2557,6 +2985,7 @@ def _run_markup_cascade(
             source=leg.source,
             source_format=leg.fmt,
         )
+        breaker.healthy(key)
         store.append_event(
             stub.ref_id,
             source=leg.source,
@@ -2585,6 +3014,8 @@ def _run_cascade(
     core_key: str,
     openalex_content_key: str = "",
     printable_only: bool = False,
+    breaker: _ProviderBreaker | None = None,
+    stop_at: float | None = None,
 ) -> Path | None:
     """Walk providers in order; stop at first fetch_ok. Returns the PDF path
     on a landed fetch, else ``None``.
@@ -2619,62 +3050,105 @@ def _run_cascade(
         ``PRECIS_OPENALEX_CONTENT_KEY`` alone (the key is the spend opt-in), and
         last so it only spends after every free leg fails. A low-balance alert
         (:func:`check_openalex_balance`) warns before the runway runs out.
+
+    ``breaker`` is the pass provider breaker: a provider with an open
+    circuit is skipped for every later stub (one ``circuit_open`` event
+    per skipped leg instead of another 30–360 s timeout). ``stop_at`` is
+    a ``perf_counter`` instant (the stub wall): no new leg starts past it
+    and it caps each leg's download-retry tail.
     """
+    if breaker is None:
+        breaker = _ProviderBreaker()
     # A DOI-only stub may still have a free arXiv copy: resolve the id from
     # metadata so the arxiv leg runs instead of the stub falling to
     # ``no_oa_version`` (gr453862).
-    if not stub.arxiv:
+    if not stub.arxiv and not breaker.is_open("openalex"):
+        arxiv_t0 = time.perf_counter()
         resolved_arxiv = _resolve_arxiv_id(stub, email=email)
+        arxiv_ms = _ms(arxiv_t0)
         if resolved_arxiv:
             stub = dataclasses.replace(stub, arxiv=resolved_arxiv)
+            breaker.healthy("openalex")
+        elif arxiv_ms >= _SLOW_FAIL_MS:
+            breaker.slow_fail("openalex")
+        # A fast ``None`` is ambiguous (no arXiv location, or a fast
+        # swallowed error) — no health signal, like the gate above.
     providers: list[tuple[str, Any]] = [
-        (_SOURCE_PUBLISHER, lambda: _try_publisher(stub, inbox_dir=inbox_dir)),
+        (
+            _SOURCE_PUBLISHER,
+            lambda dl: _try_publisher(stub, inbox_dir=inbox_dir, deadline=dl),
+        ),
     ]
     if api_key:
         providers.append(
             (
                 _SOURCE_ELSEVIER,
-                lambda: _try_elsevier(stub, inbox_dir=inbox_dir, api_key=api_key),
+                lambda dl: _try_elsevier(
+                    stub, inbox_dir=inbox_dir, api_key=api_key, deadline=dl
+                ),
             )
         )
     if wiley_token:
         providers.append(
             (
                 _SOURCE_WILEY,
-                lambda: _try_wiley(stub, inbox_dir=inbox_dir, token=wiley_token),
+                lambda dl: _try_wiley(
+                    stub, inbox_dir=inbox_dir, token=wiley_token, deadline=dl
+                ),
             )
         )
     if email:
         providers.append(
             (
                 _SOURCE_UNPAYWALL,
-                lambda: _try_unpaywall(stub, inbox_dir=inbox_dir, email=email),
+                lambda dl: _try_unpaywall(
+                    stub, inbox_dir=inbox_dir, email=email, deadline=dl
+                ),
             )
         )
         providers.append(
             (
                 _SOURCE_CROSSREF,
-                lambda: _try_crossref(stub, inbox_dir=inbox_dir, email=email),
+                lambda dl: _try_crossref(
+                    stub, inbox_dir=inbox_dir, email=email, deadline=dl
+                ),
             )
         )
     providers.append(
         (
             _SOURCE_OPENALEX,
-            lambda: _try_openalex(stub, inbox_dir=inbox_dir, email=email),
+            lambda dl: _try_openalex(
+                stub, inbox_dir=inbox_dir, email=email, deadline=dl
+            ),
         )
     )
     providers.append(
-        (_SOURCE_EUROPEPMC, lambda: _try_europepmc(stub, inbox_dir=inbox_dir))
+        (
+            _SOURCE_EUROPEPMC,
+            lambda dl: _try_europepmc(stub, inbox_dir=inbox_dir, deadline=dl),
+        )
     )
     if core_key:
         providers.append(
             (
                 _SOURCE_CORE,
-                lambda: _try_core(stub, inbox_dir=inbox_dir, api_key=core_key),
+                lambda dl: _try_core(
+                    stub, inbox_dir=inbox_dir, api_key=core_key, deadline=dl
+                ),
             )
         )
-    providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
-    providers.append((_SOURCE_S2, lambda: _try_s2(stub, inbox_dir=inbox_dir)))
+    providers.append(
+        (
+            _SOURCE_ARXIV,
+            lambda dl: _try_arxiv(stub, inbox_dir=inbox_dir, deadline=dl),
+        )
+    )
+    providers.append(
+        (
+            _SOURCE_S2,
+            lambda dl: _try_s2(stub, inbox_dir=inbox_dir, deadline=dl),
+        )
+    )
     # Paid, publisher-agnostic full text — LAST, so we only spend after every
     # free leg has failed. The credential itself is the opt-in (configuring the
     # key on the fetch host is the budget decision); the low-balance alert warns
@@ -2683,30 +3157,53 @@ def _run_cascade(
         providers.append(
             (
                 _SOURCE_OPENALEX_CONTENT,
-                lambda: _try_openalex_content(
+                lambda dl: _try_openalex_content(
                     stub,
                     inbox_dir=inbox_dir,
                     api_key=openalex_content_key,
                     store=store,
                     email=email,
+                    deadline=dl,
                 ),
             )
         )
 
     for source, runner in providers:
+        if stop_at is not None and time.perf_counter() >= stop_at:
+            break
+        key = _BREAKER_KEYS.get(source)
+        if breaker.is_open(key):
+            store.append_event(
+                stub.ref_id,
+                source=source,
+                event="circuit_open",
+                payload={"provider": key, "breaker": "pass"},
+            )
+            continue
+        leg_t0 = time.perf_counter()
+        # The leg's retry tail ends at the earlier of its own wall and the
+        # stub's — the in-flight request still gets its full timeout.
+        leg_wall = _leg_wall_s()
+        deadline = leg_t0 + leg_wall if leg_wall > 0 else None
+        if stop_at is not None and (deadline is None or stop_at < deadline):
+            deadline = stop_at
         try:
-            outcome = runner()
+            outcome = runner(deadline)
         except Exception as exc:
+            leg_ms = _ms(leg_t0)
+            breaker.note_outcome(key, "api_error", leg_ms)
             store.append_event(
                 stub.ref_id,
                 source=source,
                 event="api_error",
                 payload={"error": str(exc)[:200]},
+                duration_ms=leg_ms,
             )
             continue
         if outcome is None:
             # No identifier for this source — silent skip; no event.
             continue
+        breaker.note_outcome(key, outcome.event, outcome.duration_ms)
         store.append_event(
             stub.ref_id,
             source=source,
@@ -2840,9 +3337,17 @@ def _sweep_stale_staging(
 # ── Internals ──────────────────────────────────────────────────────
 
 
+#: Unpaywall's tenacity decorator is built at import, so its delay bound
+#: is read once here; a disabled metadata wall (≤0) must not zero it.
+_UNPAYWALL_META_DELAY_S = _meta_wall_s() if _meta_wall_s() > 0 else float("inf")
+
+
 @retry(
     wait=wait_exponential(min=1, max=30),
-    stop=stop_after_attempt(_RETRY_MAX_ATTEMPTS),
+    stop=stop_any(
+        stop_after_attempt(_RETRY_MAX_ATTEMPTS),
+        stop_after_delay(_UNPAYWALL_META_DELAY_S),
+    ),
     retry=retry_if_exception_type(
         (httpx.TransportError, httpx.ReadTimeout, httpx.WriteTimeout)
     ),
@@ -2856,6 +3361,9 @@ def _query_unpaywall(doi: str, *, email: str) -> dict[str, Any]:
     return shape is documented at https://unpaywall.org/data-format.
     Raises :class:`RateLimited` without calling out when the shared
     ``unpaywall`` limiter refuses (100k/day quota spent); not retried.
+    The retry chain also stops at ``_meta_wall_s`` (read once at
+    import, like every env knob consumed by a decorator) — 4 attempts
+    of a 30 s timeout used to cost a stub ~2 min on a dead endpoint.
     """
     require_rate_limit("unpaywall")
     url = f"{_UNPAYWALL_BASE}/{doi}"
@@ -2886,8 +3394,12 @@ def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
             return resp.json()
 
     # Politeness core, service "crossref": a shared token per attempt,
-    # 429/5xx and transport errors retried with Retry-After.
-    data = call_with_backoff(_fetch, service="crossref")
+    # 429/5xx and transport errors retried with Retry-After — but no
+    # retry starts past the metadata deadline: a dead Crossref API
+    # used to cost a stub 5×30 s before this leg even saw a URL.
+    data = call_with_backoff(
+        _fetch, service="crossref", deadline=_meta_deadline(), now=time.perf_counter
+    )
     links = (data.get("message") or {}).get("link") or []
     out: list[str] = []
     for link in links:
@@ -2944,7 +3456,11 @@ def _query_europepmc_oa_pmcid(doi: str) -> str | None:
 
     # Politeness core, service "europepmc": a shared token per attempt,
     # 429/5xx and transport errors retried with Retry-After; a 4xx raises.
-    data = call_with_backoff(_search, service="europepmc")
+    # The deadline caps the retry chain — the JATS leg's 150 s api_errors
+    # on a dead endpoint were this call exhausting all 5 default attempts.
+    data = call_with_backoff(
+        _search, service="europepmc", deadline=_meta_deadline(), now=time.perf_counter
+    )
     results = (data.get("resultList") or {}).get("result") or []
     for rec in results:
         if rec.get("isOpenAccess") == "Y" and rec.get("pmcid"):
@@ -3100,6 +3616,7 @@ def _download_pdf(
     *,
     extra_headers: dict[str, str] | None = None,
     service: str | None = None,
+    deadline: float | None = None,
 ) -> int:
     """Stream a PDF to ``target`` and return the byte count.
 
@@ -3140,6 +3657,11 @@ def _download_pdf(
     service's limiter row and follows its backoff/breaker, instead of the
     per-host default. :class:`RateLimited` propagates for the caller to map
     to a ``rate_limited`` outcome.
+
+    ``deadline`` is a ``perf_counter`` instant (the leg's wall budget):
+    no retry starts past it. The attempt already running is never cut —
+    it keeps its full ``_DOWNLOAD_TIMEOUT_S``, so a genuinely slow but
+    working host can still land on its one try.
     """
     if service is not None:
         return call_with_backoff(
@@ -3147,6 +3669,8 @@ def _download_pdf(
             service=service,
             url=url,
             retry_if=_is_transient_download_error,
+            deadline=deadline,
+            now=time.perf_counter,
         )
     netloc = urlparse(url).netloc.lower()
     return call_with_backoff(
@@ -3155,6 +3679,8 @@ def _download_pdf(
         policy=_DOWNLOAD_POLICY,
         url=url,
         retry_if=_is_transient_download_error,
+        deadline=deadline,
+        now=time.perf_counter,
     )
 
 

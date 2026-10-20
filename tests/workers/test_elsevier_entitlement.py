@@ -74,7 +74,7 @@ def test_preview_falls_through_to_later_pdf_leg(store, tmp_path, monkeypatch):
     for name in ("_try_publisher", "_try_unpaywall", "_try_crossref", "_try_openalex"):
         monkeypatch.setattr(fetch_oa, name, lambda *a, **kw: None)
 
-    def later(stub, *, inbox_dir):
+    def later(stub, *, inbox_dir, deadline=None):
         target = inbox_dir / "later.pdf"
         target.write_bytes(b"%PDF-synthetic")
         return fetch_oa.FetchOutcome("fetch_ok", {"filename": target.name}, 0)

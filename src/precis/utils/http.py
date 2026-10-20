@@ -833,6 +833,7 @@ def call_with_backoff[T](
     retry_if: Callable[[BaseException], bool] = is_retryable_external_error,
     delay: Callable[[int], float] | None = None,
     on_error: Callable[[BaseException, int], None] | None = None,
+    deadline: float | None = None,
 ) -> T:
     """:func:`with_backoff` for calls that *raise* on failure (client
     libraries such as ``semanticscholar`` or habanero, ``raise_for_status``
@@ -847,6 +848,12 @@ def call_with_backoff[T](
     parks the limiter row. ``delay(attempt)`` replaces the jittered backoff;
     ``on_error(exc, attempt)`` sees every exception (logging, capture).
     ``idempotent=False`` retries only connect-phase errors and 429.
+
+    ``deadline`` is an optional instant on the ``now`` clock past which no
+    further attempt is started — the current failure is re-raised instead
+    of sleeping and retrying. The attempt already in flight is never
+    interrupted, so the bound is "deadline + one request timeout". Used by
+    the OA fetcher to cap a leg's retry tail inside a per-stub wall budget.
     """
     policy = policy or policy_for(service)
     do_sleep = sleep if sleep is not None else _default_sleep
@@ -885,6 +892,7 @@ def call_with_backoff[T](
                 attempt + 1 >= policy.attempts
                 or circuit.opened_at is not None
                 or _draining()
+                or (deadline is not None and now() >= deadline)
             ):
                 raise
             if hinted is not None:

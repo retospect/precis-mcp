@@ -719,7 +719,7 @@ class TestTryUnpaywall:
             },
         )
 
-        def _refuse(url: str, target: Path) -> int:
+        def _refuse(url: str, target: Path, **_kw: Any) -> int:
             raise SsrfBlocked(f"refusing host: {url}")
 
         monkeypatch.setattr(fetch_oa, "_download_pdf", _refuse)
@@ -1111,7 +1111,7 @@ class TestTryPublisher:
     ) -> None:
         # Magic-byte guard rejects an HTML interstitial → fetch_failed,
         # which lets the cascade fall through to the aggregators.
-        def _reject(url: str, target: Path) -> int:
+        def _reject(url: str, target: Path, **_kw: Any) -> int:
             raise ValueError("response is not a PDF (got 5000 bytes, head=b'<!DOCTY')")
 
         monkeypatch.setattr(fetch_oa, "_download_pdf", _reject)
@@ -1163,7 +1163,9 @@ class TestTryElsevier:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             seen["url"] = url
             seen["headers"] = extra_headers
             return _write_synthetic_pdf(target, size=4096)
@@ -1187,7 +1189,9 @@ class TestTryElsevier:
     ) -> None:
         # Non-entitled article → API returns an XML error body, guard
         # rejects it → fetch_failed, cascade continues.
-        def _reject(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _reject(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             raise ValueError("response is not a PDF (got 900 bytes, head=b'<?xml')")
 
         monkeypatch.setattr(fetch_oa, "_download_pdf", _reject)
@@ -1234,7 +1238,9 @@ class TestTryElsevierMarkup:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             seen["url"] = url
             seen["headers"] = extra_headers
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1263,7 +1269,9 @@ class TestTryElsevierMarkup:
     def test_fetch_failed_on_download_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _reject(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _reject(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             raise ValueError("empty markup response")
 
         monkeypatch.setattr(fetch_oa, "_download_markup", _reject)
@@ -1340,7 +1348,9 @@ class TestRunMarkupCascade:
             store, doi="10.1016/j.amf.2025.200253", cite_key="widgets2025"
         )
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(
                 b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
@@ -1415,7 +1425,9 @@ class TestRunMarkupCascade:
             store, doi="10.1016/j.amf.2025.200253", cite_key="widgets2025"
         )
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(
                 b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
@@ -1463,7 +1475,9 @@ class TestRunMarkupCascade:
         ref_id = _seed_paper_stub(store, cite_key="eprint2022")
         monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
 
-        def _fake(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _fake(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             if "/e-print/" not in url:
                 raise ValueError("html leg unavailable")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1712,7 +1726,9 @@ class TestTryWiley:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             seen["url"] = url
             seen["headers"] = extra_headers
             return _write_synthetic_pdf(target, size=2048)
@@ -1757,7 +1773,9 @@ class TestTryCore:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             seen["headers"] = extra_headers
             return _write_synthetic_pdf(target, size=256)
 
@@ -2320,6 +2338,9 @@ class TestRunCascade:
         # fetcher only runs on one cluster host. Enable it for the
         # cascade tests; the off-by-default behaviour has its own test.
         monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+        # Serial stub loop for deterministic ordering/claim assertions;
+        # the worker-pool tests below set their own worker count.
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "1")
         # No key-gated leg fires by default (the dev host's env may
         # carry real credentials); leg-specific tests pass them
         # explicitly.
@@ -2617,7 +2638,9 @@ class TestRunCascade:
         monkeypatch.setattr(fetch_oa, "_download_markup", _write_fulltext_xml)
         seen: dict[str, Any] = {}
 
-        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+        def _capture(
+            url: str, target: Path, *, extra_headers: Any = None, **_kw: Any
+        ) -> int:
             seen["url"] = url
             seen["headers"] = extra_headers
             return _write_synthetic_pdf(target, size=4096)
@@ -3337,3 +3360,245 @@ class TestDownloadByteCap:
 
         assert not target.exists()
         assert not target.with_suffix(target.suffix + ".part").exists()
+
+
+# ---------------------------------------------------------------------------
+# Throughput bounds — worker pool, per-pass provider breaker, deadlines
+# ---------------------------------------------------------------------------
+
+
+class TestThroughputBounds:
+    """d-fetchrate: the pass used to drain 1–4 of 32 claimed stubs in its
+    300 s wall budget — serial legs × a dead provider's timeout×retry
+    product. These tests pin the three bounds that fix it: concurrent
+    stub workers, the per-pass provider breaker, and the leg deadline."""
+
+    @pytest.fixture(autouse=True)
+    def _enable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "1")
+        for key in (
+            "PRECIS_ELSEVIER_API_KEY",
+            "PRECIS_WILEY_TDM_TOKEN",
+            "PRECIS_CORE_API_KEY",
+            "PRECIS_OPENALEX_CONTENT_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        # Hermetic metadata legs — the tests exercise orchestration,
+        # never the network.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {"best_oa_location": None},
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_crossref_pdf_links", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_pdf_urls", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
+        # The retraction gate's Crossref probe is neutral here — breaker
+        # health comes from the legs under test, not a live API.
+        monkeypatch.setattr(
+            fetch_oa, "_check_stub_retraction", lambda stub, *, mailto: None
+        )
+        # Same for the DOI→arXiv id resolver (a live OpenAlex call).
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+
+    def test_workers_process_stubs_concurrently(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """workers>1 overlap stubs: the first stub's cascade blocks until a
+        second stub has started — impossible under the serial loop."""
+        import threading
+
+        for n in range(6):
+            _seed_paper_stub(store, doi=f"10.1234/par-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "4")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "0")
+        second_started = threading.Event()
+        ran: list[int] = []
+        ran_lock = threading.Lock()
+
+        def _blocking_cascade(_store, stub, *args, **kwargs):
+            with ran_lock:
+                ran.append(stub.ref_id)
+            second_started.set()
+            # Without a second worker this wait would never clear.
+            assert second_started.wait(timeout=10)
+            return None
+
+        monkeypatch.setattr(fetch_oa, "_run_cascade", _blocking_cascade)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 6, "ok": 6, "failed": 0}
+        assert len(ran) == 6
+
+    def test_workers_one_keeps_serial_order(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for n in range(4):
+            _seed_paper_stub(store, doi=f"10.1234/ser-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "0")
+        ran: list[int] = []
+
+        def _cascade(_store, stub, *a, **k):
+            ran.append(stub.ref_id)
+            return None
+
+        monkeypatch.setattr(fetch_oa, "_run_cascade", _cascade)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result["claimed"] == 4
+        assert len(set(ran)) == 4  # every stub ran exactly once
+
+    def test_breaker_skips_provider_after_two_slow_fails(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider that fails slowly (dead-endpoint signature) is asked
+        for the first two stubs only; later stubs get a circuit_open event."""
+        ref_ids = [_seed_paper_stub(store, doi=f"10.1234/brk-{n}") for n in range(4)]
+        calls: list[int] = []
+
+        def dead_crossref(stub, *, inbox_dir, email, deadline=None):
+            calls.append(stub.ref_id)
+            return fetch_oa.FetchOutcome("api_error", {"error": "timed out"}, 30_000)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", dead_crossref)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 4, "ok": 4, "failed": 0}
+        # Two stubs pay the dead endpoint, the other two get circuit_open
+        # (claim order is prio+explore — which two is not deterministic).
+        assert len(calls) == 2
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ref_id FROM ref_events "
+                "WHERE source='fetcher:crossref' AND event='circuit_open'"
+            ).fetchall()
+        assert sorted(r[0] for r in rows) == sorted(set(ref_ids) - set(calls))
+
+    def test_breaker_ignores_fast_failures(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fast fetch_failed is a normal miss (403'd TDM link), not a
+        dead endpoint — it never opens the breaker."""
+        ref_ids = [_seed_paper_stub(store, doi=f"10.1234/fast-{n}") for n in range(4)]
+        calls: list[int] = []
+
+        def fast_fail(stub, *, inbox_dir, email, deadline=None):
+            calls.append(stub.ref_id)
+            return fetch_oa.FetchOutcome("fetch_failed", {"error": "403"}, 3_000)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", fast_fail)
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert sorted(calls) == sorted(ref_ids)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE event='circuit_open'"
+            ).fetchone()
+        assert row is not None and row[0] == 0
+
+    def test_breaker_reopens_next_pass(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Breaker state dies with the pass — the next pass probes the
+        provider again (a recovered one serves immediately)."""
+        _seed_paper_stub(store, doi="10.1234/recover-a")
+        _seed_paper_stub(store, doi="10.1234/recover-b")
+        calls = [0]
+
+        def flaky(stub, *, inbox_dir, email, deadline=None):
+            calls[0] += 1
+            if calls[0] <= 2:
+                return fetch_oa.FetchOutcome("api_error", {}, 30_000)
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 100)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", flaky)
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        # The breaker opened within pass 1 (two slow fails)…
+        assert calls[0] == 2
+        _seed_paper_stub(store, doi="10.1234/recover-c")
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        # …but pass 2 (fresh breaker) asked again — and got the healthy answer.
+        assert calls[0] == 3
+
+    def test_stub_wall_stops_new_legs(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stub that outlives its wall starts no further legs; the
+        in-flight leg still completes."""
+        _seed_paper_stub(store, doi="10.1234/wall")
+        monkeypatch.setenv("PRECIS_OA_FETCH_STUB_WALL_S", "0.05")
+        import time as _time
+
+        def slow_unpaywall(stub, *, inbox_dir, email, deadline=None):
+            _time.sleep(0.2)
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 200)
+
+        crossref_calls: list[int] = []
+        monkeypatch.setattr(fetch_oa, "_try_unpaywall", slow_unpaywall)
+
+        def _crossref(stub, **kw):
+            crossref_calls.append(stub.ref_id)
+            return fetch_oa.FetchOutcome("no_oa_version", {}, 0)
+
+        monkeypatch.setattr(fetch_oa, "_try_crossref", _crossref)
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert crossref_calls == []
+
+    def test_download_first_deadline_skips_later_urls(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The candidate-URL loop stops once the leg deadline passes;
+        the first URL always runs."""
+        import time as _time
+
+        attempted: list[str] = []
+
+        def fail(url, target, **kw):
+            attempted.append(url)
+            raise httpx.ConnectTimeout("dead host")
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", fail)
+        out = fetch_oa._download_first(
+            _stub(),
+            ["https://a/1.pdf", "https://b/2.pdf", "https://c/3.pdf"],
+            inbox_dir=tmp_path,
+            host_type="t",
+            t0=_time.perf_counter(),
+            deadline=_time.perf_counter() - 1,  # already past
+        )
+        assert out is not None and out.event == "fetch_failed"
+        assert attempted == ["https://a/1.pdf"]
+        assert "deadline" in out.payload["error"]
+
+    def test_download_pdf_deadline_stops_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """call_with_backoff's deadline= caps the retry chain — a hanging
+        host costs one timeout, not timeout×attempts."""
+        import time as _time
+
+        sleeps: list[float] = []
+        calls = [0]
+
+        def always_timeout(url, target, extra_headers=None):
+            calls[0] += 1
+            raise httpx.ConnectTimeout("still dead")
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf_once", always_timeout)
+        monkeypatch.setattr(
+            "precis.utils.http._default_sleep", lambda s: sleeps.append(s)
+        )
+        with pytest.raises(httpx.ConnectTimeout):
+            fetch_oa._download_pdf(
+                "https://dead.example/x.pdf",
+                tmp_path / "x.pdf",
+                deadline=_time.perf_counter() - 1,
+            )
+        # Past deadline at the first failure → the retry never fired.
+        assert calls[0] == 1
+        assert sleeps == []
