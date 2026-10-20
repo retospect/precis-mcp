@@ -52,6 +52,10 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
    `hexfold/examples/tunnel_reservoirs.hx`); next ranked H2 (several
    radii along the tube + optional outer Y-junction) then H3 (MLIP
    relax with per-seam strain).
+   - **backlog/hexfold-prism-tube.md** — straight-strip prism variant
+     (flat zigzag strips, k3 equal-120 seams, fins out or ribs in,
+     closure rule n+ − n− = 6); Reto 2026-10-20, Devin prototype straight
+     to prod.
 2. **backlog/nanoreactor-no-nh3.md §T3** — track designer; spec once
    T1's station record exists.
 3. **backlog/nanoreactor-no-nh3.md §T4** — ring/pendant designer; spec
