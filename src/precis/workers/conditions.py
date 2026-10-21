@@ -17,7 +17,10 @@ was invisible for 4 days):
   ``(host, process)`` over the last 7 days has gone silent past budget
   while that host still heartbeats. Exact because ``runner.py`` logs
   every registered pass EVERY cycle, idle or not — silence means the
-  handler is dead/wedged/removed, not merely quiet. Handlers switched
+  handler is dead/wedged, not merely quiet. Names nothing still
+  registers (a renamed/removed pass's leftover history — gr501991's
+  ``_orcid_enrich_pass`` ghost) are excluded via
+  :func:`_liveness_handler_names`. Handlers switched
   off live via ``service_config`` (prio 0) are excluded, as are worker
   units freshly observed inactive AND disabled by the host heartbeat.
   Missing/stale unit observations and failed/enabled units still alert.
@@ -197,6 +200,26 @@ def _handler_service(handler: str) -> str:
     return handler
 
 
+def _liveness_handler_names(store: Store) -> set[str]:
+    """The ``worker_logs`` ``payload.handler`` values a live pass can still
+    emit: every :class:`ServiceSpec` ``name`` and ``log_handler``, plus the
+    dynamic services registered in ``service_config`` (``axis:*`` /
+    ``topic:*`` — wired per-boot, never in the static registry).
+
+    Silence on a name outside this set is leftover history from a renamed
+    or removed pass — not a dead handler. gr501991: ``_orcid_enrich_pass``
+    was minted only by the stuck-pass warning's ``__name__`` keying while
+    the pass logged ``orcid_enrich``; when the pass stopped hanging the
+    ghost name went silent and pass-dead fired on a name nothing writes."""
+    from precis.workers.registry import SERVICES
+
+    names = {s.name for s in SERVICES} | {s.log_handler for s in SERVICES}
+    with store.pool.connection() as conn:
+        rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()
+    names.update(str(r[0]) for r in rows)
+    return names
+
+
 def _parked_workers(store: Store) -> set[tuple[str, str]]:
     """Fresh systemd observations of deliberate parking, not crashes.
 
@@ -295,8 +318,11 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     disabled = _disabled_services(store)
     parked = _parked_workers(store)
     installed = _fresh_unit_lists(store)
+    live_names = _liveness_handler_names(store)
     out: list[ConditionFinding] = []
     for host, process, handler, silent_h in rows:
+        if str(handler) not in live_names:
+            continue  # renamed/removed pass — stale history, not a death
         if (str(host), str(process)) in parked:
             continue
         service = _handler_service(str(handler))

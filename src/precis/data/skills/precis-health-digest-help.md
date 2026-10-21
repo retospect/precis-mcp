@@ -50,8 +50,12 @@ tier looks back 30 days for handlers with ≥ 40 rows (a low-traffic host's
 fetch_oa logs ~15/day, and an outage > 7 days empties the 7d window) and
 fires after 12 h of silence (`PRECIS_COND_PASS_DEAD_SLOW_BUDGET_S`). The
 runner logs every registered pass every cycle, idle or not, so silence
-means the handler is dead, wedged or removed, not merely quiet.
-Deliberate offs are excluded: services disabled via `service_config`,
+means the handler is dead or wedged, not merely quiet. Only names that
+still resolve to a live pass (a registry `ServiceSpec` or a
+`service_config` service) are watched — a renamed/removed pass's
+leftover log history (gr501991's `_orcid_enrich_pass`) is a ghost, not a
+death. Deliberate offs are excluded: services disabled via
+`service_config`,
 and worker units the host heartbeat reports both inactive and disabled.
 A finding keys as `pass-dead:<host>/<process>/<handler>` at `warn`, and
 on the `precis-worker` process it may request a bounded **restart-once**

@@ -151,6 +151,38 @@ def test_every_ref_pass_spec_is_wired() -> None:
     )
 
 
+def _handler_literals_in_worker() -> set[str]:
+    """Every ``handler="X"`` literal in the worker wiring — the names a
+    pass's liveness rows land under in ``worker_logs.payload.handler``
+    (the ``BatchResult.handler`` each closure returns)."""
+    tree = _worker_ast()
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.keyword)
+            and node.arg == "handler"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            out.add(node.value.value)
+    return out
+
+
+def test_every_logged_handler_name_resolves_to_a_spec() -> None:
+    """gr501991: pass-dead and the layer-2 coherence check key on
+    ``worker_logs.payload.handler``. Every handler literal the wiring
+    emits must resolve to a ServiceSpec (``name`` or ``log_name``) —
+    an unregistered name is a ghost the liveness net watches in vain.
+    Dynamic per-axis names (``handler=f"axis:{id}"``) are non-literal
+    and live in ``service_config``, so they don't appear here."""
+    valid = {s.name for s in SERVICES} | {s.log_handler for s in SERVICES}
+    bad = sorted(_handler_literals_in_worker() - valid)
+    assert not bad, (
+        "handler names emitted by wired passes with no ServiceSpec — "
+        f"pass-dead cannot resolve them to a live pass: {bad}"
+    )
+
+
 def test_quest_loop_reconcile_gate_env_matches_registration() -> None:
     """Post-§L, quest_loop_reconcile *registers* structurally (agent profile,
     no env read), but its plist still ships ``PRECIS_QUEST_LOOP_ENABLED`` for

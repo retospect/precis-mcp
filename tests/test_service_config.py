@@ -264,10 +264,13 @@ def test_run_loop_stamps_activity_around_each_ref_pass(monkeypatch) -> None:
         ref_passes=[_alpha_pass],
     )
 
-    assert seen_mid_pass.get("pass") == "_alpha_pass"
+    # The stamp is the service-derived liveness name (``alpha``), not the
+    # closure ``__name__`` — the two names on one pass minted the
+    # gr501991 ``_orcid_enrich_pass`` pass-dead ghost.
+    assert seen_mid_pass.get("pass") == "alpha"
     # cleared after the pass returns.
     assert activity.snapshot().get("idle") is True
-    assert activity.snapshot().get("last_pass") == "_alpha_pass"
+    assert activity.snapshot().get("last_pass") == "alpha"
 
 
 def test_run_loop_clears_activity_even_when_a_pass_raises(monkeypatch) -> None:
@@ -288,7 +291,7 @@ def test_run_loop_clears_activity_even_when_a_pass_raises(monkeypatch) -> None:
     )
 
     assert activity.snapshot().get("idle") is True
-    assert activity.snapshot().get("last_pass") == "_boom_pass"
+    assert activity.snapshot().get("last_pass") == "boom"
 
 
 def test_dark_switch_states_dark_lit_off(store) -> None:

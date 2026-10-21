@@ -450,7 +450,12 @@ def run_loop(
                 pending.pop(handler_name)
                 pending_logged.discard(handler_name)
                 log.info("worker: %s detached ref-pass run finished", handler_name)
-        activity.set_pass(ref_pass.__name__)
+        # Stamp the canonical liveness name (service/result-handler), not
+        # the closure ``__name__``: the stuck warning logs this as
+        # ``payload.handler``, so keying on ``__name__`` minted a ghost
+        # handler (``_orcid_enrich_pass``) the pass-dead probe later read
+        # as a dead pass when the name went silent (gr501991).
+        activity.set_pass(handler_name)
         t0 = time.monotonic()
         try:
             if deadline_s:

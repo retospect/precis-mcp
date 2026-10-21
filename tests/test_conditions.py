@@ -27,6 +27,8 @@ from precis.workers.conditions import (
     Condition,
     ConditionFinding,
     HealRequest,
+    _handler_service,
+    _liveness_handler_names,
     _probe_dead_generation_claims,
     _probe_llm_degraded,
     _probe_pass_dead,
@@ -58,16 +60,54 @@ def _seed_heartbeat(store: Store, *, meta: dict | None = None) -> None:
         conn.commit()
 
 
+#: service_config rows _seed_pass_logs registered for its handler —
+#: dropped by the teardown below so the shared DB keeps no residue.
+_registered_services: set[tuple[str, str]] = set()
+
+
+@pytest.fixture(autouse=True)
+def _drop_seeded_services(store: Store):
+    yield
+    if _registered_services:
+        with store.pool.connection() as conn:
+            for host, service in _registered_services:
+                conn.execute(
+                    "DELETE FROM service_config WHERE host = %s AND service = %s",
+                    (host, service),
+                )
+            conn.commit()
+        _registered_services.clear()
+
+
 def _seed_pass_logs(
-    store: Store, handler: str, *, n: int, last_age_s: float, process: str = _PROC
+    store: Store,
+    handler: str,
+    *,
+    n: int,
+    last_age_s: float,
+    process: str = _PROC,
+    registered: bool = True,
 ) -> None:
     """n rows over the past 7 days for (host, proc, handler), the newest
-    ``last_age_s`` old — the every-cycle BatchResult log shape."""
+    ``last_age_s`` old — the every-cycle BatchResult log shape.
+
+    ``registered`` (default) plants a ``service_config`` row so the
+    handler resolves as a live pass — ``_probe_pass_dead`` ignores names
+    nothing registers (gr501991). Pass ``registered=False`` to seed a
+    ghost name."""
     with store.pool.connection() as conn:
         conn.execute(
             "DELETE FROM worker_logs WHERE host = %s AND payload->>'handler' = %s",
             (_HOST, handler),
         )
+        if registered:
+            conn.execute(
+                "INSERT INTO service_config (host, service, prio) "
+                "VALUES ('*', %s, 1) ON CONFLICT (host, service) "
+                "DO UPDATE SET prio = 1",
+                (handler,),
+            )
+            _registered_services.add(("*", handler))
         conn.execute(
             "INSERT INTO worker_logs (ts, host, process, level, logger, message, payload) "
             "SELECT now() - make_interval(secs => %(last)s) "
@@ -205,6 +245,45 @@ def test_pass_dead_slow_tier_ignores_rare_handlers(
     _seed_heartbeat(store)
     _seed_pass_logs(store, handler, n=5, last_age_s=9 * 86400.0)
     assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
+
+
+def test_pass_dead_ignores_a_ghost_handler_name(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr501991: ``_orcid_enrich_pass`` rows were minted only by the
+    stuck-pass warning's ``__name__`` keying while the pass logged
+    ``orcid_enrich``; when the pass stopped hanging, the ghost name went
+    silent and pass-dead fired on a name nothing writes. An unregistered
+    handler name never fires — on either tier."""
+    ghost = _uniq("_ghost_pass")
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, ghost, n=60, last_age_s=5 * 86400.0, registered=False)
+    assert [f for f in _probe_pass_dead(store) if ghost in f.key] == []
+
+
+def _service_config_services(store: Store) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def test_every_liveness_watched_name_resolves_to_a_real_pass(
+    store: Store,
+) -> None:
+    """Every ``payload.handler`` the pass-dead probe can still watch
+    resolves to a real pass — a registry ``ServiceSpec`` (``name`` or
+    ``log_handler``) or a live ``service_config`` service (dynamic
+    ``axis:*``/``topic:*``). A ghost name resolves to neither."""
+    from precis.workers.registry import SERVICES, SERVICES_BY_NAME
+
+    names = _liveness_handler_names(store)
+    cfg = _service_config_services(store)
+    for spec in SERVICES:
+        assert spec.name in names and spec.log_handler in names
+    for name in names:
+        assert _handler_service(name) in SERVICES_BY_NAME or name in cfg, name
+    assert "orcid_enrich" in names and "_orcid_enrich_pass" not in names
 
 
 def test_pass_dead_quiet_when_host_dark(

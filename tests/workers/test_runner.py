@@ -758,3 +758,36 @@ class TestRunLoopRefPassDeadline:
 
         assert store.get_setting("test.detached") == "committed-off-thread"
         assert store.get_setting("test.caller") is None
+
+
+# ---------------------------------------------------------------------------
+# run_loop — activity/liveness naming (gr501991): the pass's liveness rows
+# must all land under ONE name — the service/handler name — never the
+# closure ``__name__``, or pass-dead watches a ghost.
+# ---------------------------------------------------------------------------
+
+
+def test_ref_pass_registers_activity_under_its_service_name(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-process activity registry (and so the stuck-pass warning's
+    ``payload.handler`` and ``host_heartbeat.meta.activity``) names the
+    pass's service identity — ``orcid_enrich`` — not ``_orcid_enrich_pass``.
+    The two names on one pass minted the gr501991 pass-dead ghost."""
+    from precis.workers import activity
+
+    seen: list[str] = []
+    monkeypatch.setattr(activity, "set_pass", seen.append)
+
+    def _orcidish_pass(batch_size: int) -> BatchResult:
+        return BatchResult(handler="orcidish", claimed=0, ok=0, failed=0)
+
+    def _axis_pass(batch_size: int) -> BatchResult:
+        return BatchResult(handler="axis:test", claimed=0, ok=0, failed=0)
+
+    # Mirrors the per-axis wiring: the shared ``_axis_pass`` __name__
+    # derives "axis", so the real service rides on ``service_name``.
+    vars(_axis_pass)["service_name"] = "axis:test"
+
+    run_loop([], store, once=True, ref_passes=[_orcidish_pass, _axis_pass])
+    assert seen == ["orcidish", "axis:test"]
