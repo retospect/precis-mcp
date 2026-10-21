@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput, NotFound
 from precis.quest.atomcost import atom_cost, dearest
 from precis.quest.environment_basis import environment_basis
 from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
@@ -1302,7 +1303,9 @@ def _autocatpath_engine_token() -> str:
     )
 
 
-def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
+def _autocatpath_content_key(
+    config: dict[str, Any], slab_extxyz: str, *, rerun_nonce: str | None = None
+) -> str:
     """Stable idempotency key for an (engine, reaction, exported slab) triple.
 
     Its own hash (not autocatpath's ``content_key``) so this stays precis-native — a
@@ -1310,6 +1313,12 @@ def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     in-flight job, while a new engine build (a changed
     :func:`_autocatpath_engine_token`) deliberately misses the old job so the
     candidate is re-scored.
+
+    ``rerun_nonce`` (:func:`request_rerun`'s deliberate-replay salt) folds an
+    extra line into the payload, so a rerun of an UNCHANGED
+    (engine, reaction, slab) still mints a fresh pathway/job tree instead of
+    deduping onto the earlier result it is re-measuring. ``None`` keeps the
+    byte-identical payload every existing caller hashes today.
     """
     payload = (
         _autocatpath_engine_token()
@@ -1320,6 +1329,8 @@ def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
         + "\n"
         + slab_extxyz
     )
+    if rerun_nonce is not None:
+        payload += f"\nrerun={rerun_nonce}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -1341,7 +1352,12 @@ def _autocatpath_reaction_key(config: dict[str, Any]) -> str:
 
 
 def _autocatpath_seed_content_key(
-    config: dict[str, Any], slab_extxyz: str, seed: int, model_index: int
+    config: dict[str, Any],
+    slab_extxyz: str,
+    seed: int,
+    model_index: int,
+    *,
+    rerun_nonce: str | None = None,
 ) -> str:
     """Idem key for ONE ``(model, seed)`` fan-out unit (§B-1, gr180096): the
     same (engine, reaction, exported slab) triple :func:`_autocatpath_content_key`
@@ -1349,7 +1365,9 @@ def _autocatpath_seed_content_key(
     is the same standing fix as the base key — MUST stay in the payload so a
     redeployed autocatpath re-keys every seed instead of dedup-pinning a
     stale partial (the qu164903 trap this whole module's docstring warns
-    about, now scoped per-seed).
+    about, now scoped per-seed). ``rerun_nonce`` rides along for the same
+    reason it does on the base key — a rerun's seeds must not collapse onto
+    the earlier run's todos.
     """
     payload = (
         _autocatpath_engine_token()
@@ -1361,6 +1379,8 @@ def _autocatpath_seed_content_key(
         + slab_extxyz
         + f"\nseed={seed}\nmodel_index={model_index}"
     )
+    if rerun_nonce is not None:
+        payload += f"\nrerun={rerun_nonce}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -1659,6 +1679,8 @@ def dispatch_autocatpath(
     minted_by_node: dict[str, int] | None = None,
     route_nodes: Sequence[str] | None = None,
     load: dict[str, int] | None = None,
+    rerun_nonce: str | None = None,
+    rerun_of: int | None = None,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
@@ -1690,6 +1712,14 @@ def dispatch_autocatpath(
     :func:`_autocatpath_reaction_key`) — the read-side staleness check
     sees only the pathway's own ``status`` — while a ``"ready"`` prior for
     a different reaction stays a completed tier result, untouched.
+
+    ``rerun_nonce`` (:func:`request_rerun` — a deliberate same-config replay)
+    salts the content/seed keys so the mint lands a FRESH pathway + job tree
+    next to the earlier result instead of deduping onto it. On a rerun the
+    supersede stamp above is skipped — the earlier pathway stays ``"ready"``
+    (its evidence still ranks until the replay lands, which is the point of
+    the comparison) — and the new pathway carries ``meta.rerun_of`` naming
+    the prior pathway plus a ``derived-from`` link to it.
 
     §B-1 (gr180096): exports the candidate's relaxed geometry as extxyz,
     ensures a `pathway` ref for the write-back, then mints a **job tree**
@@ -1874,7 +1904,7 @@ def dispatch_autocatpath(
             search = dict(run_config.get("search") or {})
             search.setdefault("neb_pool_size", _GB10_MACE_NEB_POOL_SIZE)
             run_config = {**run_config, "search": search}
-    key = _autocatpath_content_key(run_config, slab_extxyz)
+    key = _autocatpath_content_key(run_config, slab_extxyz, rerun_nonce=rerun_nonce)
     reaction_key = _autocatpath_reaction_key(run_config)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 
@@ -1912,6 +1942,14 @@ def dispatch_autocatpath(
                         # "computing" (before catpath's own results.json is
                         # available to derive it from).
                         "tier": tier,
+                        # A deliberate replay keeps the earlier result linked
+                        # for comparison (:func:`request_rerun`) — both keys
+                        # are absent on an ordinary dispatch.
+                        **(
+                            {"rerun_of": rerun_of, "rerun_nonce": rerun_nonce}
+                            if rerun_nonce is not None
+                            else {}
+                        ),
                     },
                     conn=conn,
                 )
@@ -1938,7 +1976,11 @@ def dispatch_autocatpath(
                 # left strictly alone: it's a completed tier result that
                 # `_pathway_tier_sibling` and `handler._compare`'s
                 # status='ready' SQL still read.
-                if prior_pathway_id is not None and prior_pathway_id != pathway_ref_id:
+                if (
+                    rerun_nonce is None
+                    and prior_pathway_id is not None
+                    and prior_pathway_id != pathway_ref_id
+                ):
                     row = conn.execute(
                         "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'pathway'",
                         (prior_pathway_id,),
@@ -1956,6 +1998,19 @@ def dispatch_autocatpath(
                             },
                             conn=conn,
                         )
+                elif rerun_of is not None and rerun_of != pathway_ref_id:
+                    # A deliberate rerun does NOT supersede the earlier
+                    # result — the comparison is the point
+                    # (:func:`request_rerun`). Record it as a graph edge so
+                    # the two pathways read as one replay series, newest
+                    # derived-from its predecessor.
+                    store.add_link(
+                        src_ref_id=pathway_ref_id,
+                        dst_ref_id=rerun_of,
+                        relation="derived-from",
+                        set_by="system",
+                        conn=conn,
+                    )
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: pathway ref ({e})"
 
@@ -1989,6 +2044,7 @@ def dispatch_autocatpath(
                     "content_key": key,
                     "target_node": node,
                     "resources": {"wall_seconds": _autocatpath_wall_seconds(tier)},
+                    **({"rerun_of": rerun_of} if rerun_of is not None else {}),
                 },
             },
         )
@@ -2014,7 +2070,11 @@ def dispatch_autocatpath(
                     else None
                 )
                 skey = _autocatpath_seed_content_key(
-                    run_config, slab_extxyz, seed, model_index
+                    run_config,
+                    slab_extxyz,
+                    seed,
+                    model_index,
+                    rerun_nonce=rerun_nonce,
                 )
                 seed_todo_id = _find_child_todo_by_content_key(store, agg_todo_id, skey)
                 if seed_todo_id is not None and _seed_todo_handled(store, seed_todo_id):
@@ -4255,6 +4315,244 @@ def redispatch_candidates(
     )
 
 
+def _computing_pathways(store: Store, structure_ref_id: int) -> list[int]:
+    """Ref ids of this candidate's ``meta.status='computing'`` `pathway` refs
+    (any tier), oldest first — the in-flight set :func:`request_rerun`'s
+    no-duplicate bound walks."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'pathway' AND retired_at IS NULL "
+            "AND meta->>'candidate_ref' = %s AND meta->>'status' = 'computing' "
+            "ORDER BY ref_id",
+            (str(structure_ref_id),),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _rerun_count(store: Store, structure_ref_id: int, tier: str) -> int:
+    """How many deliberate reruns already minted for this (candidate, tier) —
+    the ordinal that makes the next rerun nonce unique per replay."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'pathway' AND retired_at IS NULL "
+            "AND meta->>'candidate_ref' = %s AND meta->>'tier' = %s "
+            "AND meta ? 'rerun_of'",
+            (str(structure_ref_id), tier),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _live_computing_pathway(store: Store, structure_ref_id: int) -> int | None:
+    """The ref id of a ``computing`` pathway whose job tree is still live
+    (``in_flight``/``partial`` — see :func:`precis.quest.loop._pathway_job_tree_state`),
+    or ``None`` when nothing is mid-evaluation. A computing stub whose tree is
+    terminal/dead (``failed``/``wrongful_kill``) or absent (``unknown``) does not
+    hold the lane — the loop's reconciler stamps those independently, so a rerun
+    requested over one is not stacking duplicate spend.
+
+    The loop import is lazy: ``quest.loop`` imports this module at top level,
+    so a module-level import would be circular.
+    """
+    from precis.quest.loop import _pathway_job_tree_state
+
+    for pid in _computing_pathways(store, structure_ref_id):
+        if _pathway_job_tree_state(store, pid).state in ("in_flight", "partial"):
+            return pid
+    return None
+
+
+def request_rerun(
+    store: Store,
+    structure_ref_id: int,
+    *,
+    hub: Any | None = None,
+    tier: str | None = None,
+    by: str = "agent",
+) -> str:
+    """Request a deliberate rerun of a candidate's autocatpath evaluation.
+
+    The agent/tick-facing door behind ``put(kind='structure', id=N,
+    mode='rerun')`` and the tick payload's ``reruns`` field (gr499904):
+    re-dispatch the candidate's barrier sim UNCHANGED — same reaction config,
+    same exported slab, current engine — so a credited pass can be
+    re-measured on demand instead of waiting for an opportunistic automatic
+    re-score (qu164903's trust flips were only ever caught by those).
+
+    Unlike a content-key re-dispatch, the mint is salted with an explicit
+    ``rerun_nonce`` (``rerun:<sid>:<tier>:<n>`` — n = reruns already minted
+    for that pair), so it lands a FRESH pathway + seed/aggregate job tree
+    instead of deduping onto the earlier result. The new pathway carries
+    ``meta.rerun_of`` + a ``derived-from`` link naming the prior pathway at
+    that tier, and the prior is NOT stamped superseded — a rerun re-measures
+    for comparison; until it lands, the earlier result still ranks.
+
+    Bounded: refuses while the candidate has ANY live evaluation in flight
+    (``_live_computing_pathway``) — one queued rerun at a time, and no
+    stacking a replay on an automatic eval that is mid-flight; refuses when
+    the structure serves no quest, when the quest's compute lane is off
+    (``meta.compute_lane='off'``, the same switch ``_quest_compute_enabled``
+    gates the tick loop's dispatches on), and when the quest declares no
+    ``meta.reaction_config`` (no autocatpath lane exists to re-run).
+    ``tier`` overrides the rung — default the candidate's own highest
+    completed rung (:func:`_redispatch_tier`), i.e. the rung whose result a
+    rerun reproduces.
+
+    Raises (mcp-authoring contract — the handler surfaces these verbatim):
+    ``NotFound`` on an unknown/foreign-structure id; ``BadInput`` with
+    ``next=`` on every refusal. Returns the dispatch's own ack plus the
+    comparison target on success, and appends an ``observation`` logbook
+    entry so the next tick sees the request in context.
+    """
+    refs = store.fetch_refs_by_ids({structure_ref_id})
+    ref = refs.get(structure_ref_id)
+    if ref is None or ref.kind != "structure" or ref.slug is None:
+        raise NotFound(
+            f"structure {structure_ref_id} not found",
+            next="search(kind='structure', q='...') to find a candidate",
+        )
+    quest_id = _serving_quest_id(store, structure_ref_id)
+    if quest_id is None:
+        raise BadInput(
+            f"{ref.slug} is not a quest compute candidate (nothing serves-linked) "
+            "— only a quest candidate carries an autocatpath sim to rerun",
+            next=f"get(kind='structure', id='{ref.slug}') to inspect it",
+        )
+    qref = store.get_ref(kind="quest", id=quest_id)
+    if qref is not None and str((qref.meta or {}).get("compute_lane") or "") == "off":
+        raise BadInput(
+            f"quest qu{quest_id}'s compute lane is off (meta.compute_lane='off')",
+            next=f"edit(kind='quest', id={quest_id}, meta={{'compute_lane': 'on'}}) "
+            "re-arms it — the rerun stays refused while off",
+        )
+    reaction = _quest_reaction_config(store, quest_id)
+    if reaction is None:
+        raise BadInput(
+            f"quest qu{quest_id} declares no reaction_config — there is no "
+            "autocatpath lane to re-run",
+            next=f"get(kind='quest', id={quest_id}) to see the quest's lanes",
+        )
+    if tier is not None and tier not in _TIERS:
+        raise BadInput(
+            f"unknown tier {tier!r}",
+            options=list(_TIERS),
+            next="omit tier= to rerun at the candidate's highest completed rung",
+        )
+    rung = tier or _redispatch_tier(store, quest_id, ref)
+    live = _live_computing_pathway(store, structure_ref_id)
+    if live is not None:
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("pathway", live) or f"pw{live}"
+        raise BadInput(
+            f"{ref.slug} already has an evaluation in flight ({handle}, "
+            "still computing) — a rerun now would be a duplicate",
+            next=f"retry the same call once it lands; watch "
+            f"get(kind='pathway', id={live})",
+        )
+    prior = _find_tier_pathway(store, structure_ref_id, rung)
+    nonce = f"rerun:{structure_ref_id}:{rung}:{_rerun_count(store, structure_ref_id, rung) + 1}"
+    note = dispatch_autocatpath(
+        store,
+        structure_ref_id,
+        reaction,
+        hub=hub,
+        tier=rung,
+        rerun_nonce=nonce,
+        rerun_of=prior,
+    )
+    if not note.startswith("autocatpath["):
+        # dispatch's own refusal/skip vocabulary (suspended lane, no live
+        # route, every seed held, preflight dead-end, export failure) —
+        # surface it as a refusal, not a success-looking ack.
+        raise BadInput(
+            f"rerun not queued for {ref.slug}: {note}",
+            next="fix what the message names, then retry the same call",
+        )
+    prior_note = f"rerun-of pw{prior}" if prior is not None else "no prior result"
+    ack = f"{note}; {prior_note} [{nonce}]"
+    try:
+        append_entry(
+            store,
+            quest_id,
+            text=f"rerun requested: {ref.slug} at {rung} — {ack}"[:400],
+            entry_type="observation",
+            by=by,
+        )
+    except Exception:
+        log.warning(
+            "request_rerun: logbook note failed for %s", ref.slug, exc_info=True
+        )
+    return ack
+
+
+def apply_reruns(
+    store: Store,
+    quest_id: int,
+    entries: Any,
+    *,
+    hub: Any | None = None,
+    cap: int = 2,
+    by: str = "agent",
+) -> int:
+    """Execute a tick payload's ``reruns`` entries — the model's channel for
+    deliberately re-running one named candidate's sim (gr499904; the same
+    door as ``put(kind='structure', id=N, mode='rerun')``).
+
+    Each entry is ``{"structure": "<st<id> or slug>", "why": ...}``; entries
+    past ``cap`` (the prompt's ``rerun_cap``), malformed entries, and
+    per-candidate refusals (unknown id, in-flight eval, lane off) each land
+    as an ``observation`` logbook note the next tick reads — a dropped or
+    refused rerun is never silent, and a bad entry never fails the tick.
+    Returns the number of reruns actually queued.
+    """
+    if not isinstance(entries, list):
+        return 0
+    from precis.errors import PrecisError
+    from precis.utils.slug_ref import resolve_live_slug_ref
+
+    queued = 0
+    refused: list[str] = []
+    for e in entries[:cap]:
+        if not isinstance(e, dict):
+            refused.append("malformed entry (not an object)")
+            continue
+        ident = str(e.get("structure") or "").strip()
+        if not ident:
+            refused.append("entry has no usable `structure`")
+            continue
+        try:
+            ref = resolve_live_slug_ref(store, kind="structure", id=ident)
+            request_rerun(store, int(ref.id), hub=hub, by=by)
+            queued += 1
+        except PrecisError as exc:
+            # exc.headline carries the message + next=/options= hint.
+            refused.append(f"{ident}: {exc}")
+        except Exception:
+            log.exception(
+                "apply_reruns: rerun raised for quest %s entry %r", quest_id, ident
+            )
+            refused.append(f"{ident}: internal error (see worker log)")
+    extra = len(entries) - cap
+    if extra > 0:
+        refused.append(f"{extra} entr(ies) over the per-tick cap of {cap}")
+    for note in refused:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=f"rerun refused: {note}"[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning(
+                "apply_reruns: logbook note failed for quest %s",
+                quest_id,
+                exc_info=True,
+            )
+    return queued
+
+
 def _promotion_sort_key(store: Store, quest_id: int, c: Any) -> float:
     """Best-first sort key for a promotion candidate: the quest's declared
     composite objective when configured, else its primary rubric objective —
@@ -4826,6 +5124,7 @@ __all__ = [
     "harvest_measures",
     "promote_tiers",
     "redispatch_candidates",
+    "request_rerun",
     "reset_compute",
     "run_compute_step",
 ]

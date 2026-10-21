@@ -21,7 +21,9 @@ from uuid import uuid4
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.quest import QuestHandler
+from precis.handlers.structure import StructureHandler
 from precis.quest import atomcost as atomcost_mod
 from precis.quest import compute as compute_mod
 from precis.quest.frontier import (
@@ -41,6 +43,7 @@ from precis.quest.frontier import (
     viridis_color,
 )
 from precis.quest.tick import run_quest_tick
+from precis.store import Tag
 from precis.structure import preflight as preflight_mod
 
 
@@ -7225,6 +7228,153 @@ class TestDispatchAutocatpath:
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
         assert len(self._seed_jobs(store, sid)) == 3
+
+
+class TestRequestRerun(TestDispatchAutocatpath):
+    """``request_rerun`` — the deliberate same-config replay door
+    (gr499904): a fresh nonce-salted job tree next to the earlier result,
+    linked ``derived-from`` it, never deduped onto it, bounded to one
+    in-flight evaluation per candidate."""
+
+    def _quest_with_rx(self, store: Any) -> int:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        return qid
+
+    def _settle(self, store: Any, sid: int) -> int:
+        """Land the candidate's first eval: mint it, succeed its seeds,
+        mint+succeed the aggregate, stamp the pathway ready. Returns the
+        prior pathway ref id."""
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        agg_job = self._promote_aggregate(store, sid)
+        store.add_tag(
+            agg_job,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert pid is not None
+        store.stamp_ref_meta(pid, {"status": "ready"})
+        return pid
+
+    def test_mint_fresh_tree_linked_to_prior(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        prior = self._settle(store, sid)
+        note = compute_mod.request_rerun(store, sid)
+        assert note.startswith("autocatpath[")
+        # A rerun mints a SECOND tree: 3 more seeds, a second T_agg, a new
+        # pathway — nothing deduped onto the earlier result.
+        assert len(self._seed_jobs(store, sid)) == 6
+        assert len(self._agg_todo_ids(store, sid)) == 2
+        new_pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert new_pid is not None and new_pid != prior
+        pw = store.fetch_refs_by_ids({new_pid})[new_pid]
+        assert pw.meta["status"] == "computing"
+        assert pw.meta["rerun_of"] == prior
+        assert pw.meta["rerun_nonce"].startswith(f"rerun:{sid}:neb:")
+        links = store.links_for(new_pid, direction="out", relation="derived-from")
+        assert [int(l.dst_ref_id) for l in links] == [prior]
+        # The earlier result is NOT superseded — it still ranks while the
+        # replay runs; comparing the two is the point.
+        old = store.fetch_refs_by_ids({prior})[prior]
+        assert old.meta["status"] == "ready"
+
+    def test_refuses_while_a_run_is_in_flight(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        with pytest.raises(BadInput, match="in flight"):
+            compute_mod.request_rerun(store, sid)
+        assert len(self._seed_jobs(store, sid)) == 3  # nothing extra minted
+        # Same bound once the in-flight run is the rerun itself.
+        self._settle(store, sid)
+        compute_mod.request_rerun(store, sid)
+        with pytest.raises(BadInput, match="in flight"):
+            compute_mod.request_rerun(store, sid)
+        assert len(self._seed_jobs(store, sid)) == 6
+
+    def test_second_rerun_after_landing(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        compute_mod.request_rerun(store, sid)
+        # Land the rerun too (succeed every queued seed + its aggregate).
+        for job_id, _m in self._seed_jobs(store, sid):
+            store.add_tag(
+                job_id,
+                Tag.closed("STATUS", "succeeded"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        from precis.workers.auto_check import run_auto_check_pass
+        from precis.workers.dispatch import run_dispatch_pass
+
+        run_auto_check_pass(store)
+        run_dispatch_pass(store)
+        for _jid, jm in compute_mod._fresh_autocatpath_jobs(store, sid, 0):
+            store.add_tag(
+                _jid,
+                Tag.closed("STATUS", "succeeded"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        for pid in compute_mod._computing_pathways(store, sid):
+            store.stamp_ref_meta(pid, {"status": "ready"})
+        compute_mod.request_rerun(store, sid)  # a second replay is allowed
+        assert len(self._seed_jobs(store, sid)) == 9
+
+    def test_refuses_unknown_and_non_candidate(self, store: Any) -> None:
+        from precis.errors import NotFound
+
+        with pytest.raises(NotFound):
+            compute_mod.request_rerun(store, 99999999)
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        other = _mk_quest(store, "A second striving")
+        # A structure that serves no quest has no sim lane to rerun.
+        lone = self._candidate(store, other)
+        store.stamp_ref_meta(other, {"reaction_config": self._RX})
+        compute_mod.request_rerun(store, lone)  # fine: it IS a candidate
+        sidless = store.insert_ref(
+            kind="structure", slug=f"free-{uuid4().hex[:6]}", title="free", meta={}
+        )
+        with pytest.raises(BadInput, match="not a quest compute candidate"):
+            compute_mod.request_rerun(store, int(sidless.id))
+        # Compute lane off refuses too.
+        store.stamp_ref_meta(qid, {"compute_lane": "off"})
+        with pytest.raises(BadInput, match="compute lane is off"):
+            compute_mod.request_rerun(store, sid)
+
+    def test_handler_mode_wires_to_request_rerun(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        resp = StructureHandler(hub=Hub(store=store)).put(id=ref.slug, mode="rerun")
+        assert "autocatpath[" in resp.body
+        assert len(self._seed_jobs(store, sid)) == 6
+        with pytest.raises(BadInput):
+            StructureHandler(hub=Hub(store=store)).put(mode="rerun")
+
+    def test_tick_reruns_apply(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        queued = compute_mod.apply_reruns(
+            store, qid, [{"structure": ref.slug, "why": "check"}, {"structure": "nope"}]
+        )
+        assert queued == 1
+        assert len(self._seed_jobs(store, sid)) == 6
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("rerun requested" in t for t in logs)
+        assert any("rerun refused" in t and "nope" in t for t in logs)
 
 
 class TestReactionCoDispatch:

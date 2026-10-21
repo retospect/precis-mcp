@@ -59,6 +59,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("gripe", "put"): ("create", "comment"),
     # -- put: pathway frames the reaction network without ML compute ----
     ("pathway", "put"): ("preview",),
+    # -- put: structure's sole recognised mode is the deliberate-rerun
+    #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
+    #    compute lane — every other value is rejected (gr499904) --------
+    ("structure", "put"): ("rerun",),
     # -- put: job's sole recognised mode is the retry surface
     #    (put(id=N, mode='retry')); every other value is rejected — a
     #    real one-element vocabulary, not the reject-all `()` shape

@@ -744,7 +744,18 @@ class StructureHandler(Handler):
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "put": ArgsSpec(
-            {"cell", "ops", "description", "cif", "cif_url", "source", "config_id"}
+            {
+                "cell",
+                "ops",
+                "description",
+                "cif",
+                "cif_url",
+                "source",
+                "config_id",
+                # mode='rerun' only: ladder-rung override (default: the
+                # candidate's highest completed rung).
+                "tier",
+            }
         ),
         "edit": ArgsSpec({"ops"}),
         "get": ArgsSpec(
@@ -831,6 +842,11 @@ class StructureHandler(Handler):
         id_required=False,
         placement="artifact",
         views=_VIEWS,
+        # put(id=<slug-or-handle>, mode='rerun') is the deliberate-replay
+        # door onto the quest compute lane (gr499904): re-dispatches the
+        # candidate's autocatpath sim unchanged under a fresh nonce, linked
+        # to the earlier result. See precis-quest-help / request_rerun.
+        modes=("rerun",),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -848,6 +864,7 @@ class StructureHandler(Handler):
         title: str | None = None,
         args: dict[str, Any] | None = None,
         normalize: bool = False,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         """``normalize=True`` rewrites the materialized scene into its
@@ -860,7 +877,13 @@ class StructureHandler(Handler):
 
         CIF import: ``args={'cif': <text>}`` or ``args={'cif_url': <url>}``
         (or a bare CIF body in ``text=``) builds the design from a CIF
-        instead of ops — see :meth:`_put_cif`."""
+        instead of ops — see :meth:`_put_cif`.
+
+        ``mode='rerun'`` does not touch the design at all — it asks the quest
+        compute lane for a deliberate replay of this candidate's autocatpath
+        evaluation (:func:`precis.quest.compute.request_rerun`)."""
+        if mode == "rerun":
+            return self._rerun(id=id, args=args)
         a = args or {}
         cif_text = a.get("cif")
         cif_url = a.get("cif_url")
@@ -972,6 +995,29 @@ class StructureHandler(Handler):
             ),
             _combine_echo(import_echo, preflight_caveats),
         )
+
+    def _rerun(self, *, id: str | int | None, args: dict[str, Any] | None) -> Response:
+        """``put(id=<slug-or-handle>, mode='rerun')``: ask the quest compute
+        lane to re-run this candidate's autocatpath evaluation unchanged
+        (:func:`precis.quest.compute.request_rerun` — mints a fresh,
+        nonce-salted job tree linked to the earlier result; refuses while a
+        run is in flight). ``args={'tier': 'screening'|'neb'|'verify'}``
+        overrides the rung; default is the candidate's highest completed
+        rung. The design itself is untouched — no cell/ops accepted here."""
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='rerun') requires id= (the "
+                "candidate slug or st<N> handle)",
+                next="put(kind='structure', id='st<N>', mode='rerun')",
+            )
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        tier = (args or {}).get("tier")
+        from precis.quest.compute import request_rerun
+
+        note = request_rerun(
+            self.store, int(ref.id), hub=self.hub, tier=str(tier) if tier else None
+        )
+        return Response(body=note)
 
     def _put_cif(
         self,

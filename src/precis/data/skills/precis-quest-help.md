@@ -398,6 +398,22 @@ candidates is an expensive call. It is meant for manual use after an engine
 deploy, not for a loop. It collapses onto existing jobs when the engine
 token is unchanged.
 
+To re-measure ONE named candidate on demand — a deliberate rerun to test a
+credited pass's reproducibility — call
+`put(kind='structure', id=<st<id> or slug>, mode='rerun')`
+(`args={'tier': 'screening'|'neb'|'verify'}` overrides the rung; default is
+the candidate's own highest completed rung). The rerun mints a fresh
+seed+aggregate tree under a `rerun:` nonce so it never dedups onto the
+earlier result; the new `pathway` carries `meta.rerun_of` plus a
+`derived-from` link to the prior one, which stays `ready` (not superseded)
+so both results can be compared. It is bounded: one in-flight evaluation
+per candidate — a second request while one's running is refused — and it
+respects the quest's compute lane (`meta.compute_lane='off'` refuses). The
+same door is on the tick's tool surface: a tick emits
+`"reruns": [{"structure": "<handle>", "why": "…"}]` (cap 2/tick) and the
+compute stage executes each through the same path, with per-entry refusals
+recorded as logbook observations.
+
 Where the new seeds run: by default they round-robin over the live gpu
 nodes. `--node <name>` pins every new seed to that node; `--spread` gives
 each to the least-loaded live node (queued plus running gpu jobs, ties by

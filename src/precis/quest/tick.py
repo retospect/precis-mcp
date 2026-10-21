@@ -247,6 +247,13 @@ def _persist_job_transcript(
 _LOGBOOK_TAIL_REVIEW = 20
 
 
+#: Per-tick cap on deliberate reruns (the ``reruns`` payload field,
+#: gr499904) — advertised in the prompt schema as ``{rerun_cap}``; extra
+#: entries are refused with a logbook note, and the per-candidate
+#: one-in-flight bound in ``compute.request_rerun`` still applies.
+MAX_RERUNS_PER_TICK = 2
+
+
 def max_proposals_per_tick() -> int:
     """Materialise/dispatch at most this many proposals per tick (WIP cap).
 
@@ -1395,6 +1402,7 @@ def build_tick_prompt(
         axis_notes=_axis_reading_notes(fr),
         reaction_context=_reaction_context(store, quest, fr=fr),
         proposal_cap=max_proposals_per_tick(),
+        rerun_cap=MAX_RERUNS_PER_TICK,
         dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
         dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS if has_blocks else "",
         **common,
@@ -1634,11 +1642,23 @@ refining an existing one>",
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
 does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
+  ],
+  "reruns": [
+    {{"structure": "<st<id> or slug of an EXISTING candidate>", \
+"why": "<what the repeat measurement is testing>"}}
   ]
 }}
 
 If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
+`reruns` (0–{rerun_cap}) re-dispatches a NAMED existing candidate's barrier \
+sim unchanged under the current engine — a fresh run linked to the earlier \
+result so the two can be compared; one in-flight evaluation per candidate \
+at a time (a request for one already running is refused). Use it to \
+deliberately re-test a credited pass's reproducibility instead of waiting \
+for whichever rerun the system schedules on its own. It re-measures, never \
+revises — a changed reaction or geometry is a `proposals` entry, not a \
+rerun. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -1864,6 +1884,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "searches",
         "directions",
         "needs",
+        "reruns",
     }
 )
 
@@ -1878,6 +1899,7 @@ _PAYLOAD_TYPES: dict[str, type] = {
     "proposals": list,
     "searches": list,
     "directions": list,
+    "reruns": list,
     "dossier_text": str,
     "dossier_markdown": str,
 }
@@ -3207,18 +3229,40 @@ class _TickRun:
                 quest_id,
             )
             step = None
+        # Deliberate reruns (the payload's `reruns` field, gr499904): named
+        # existing candidates re-dispatched unchanged via
+        # ``compute.request_rerun`` — the same door
+        # ``put(kind='structure', mode='rerun')`` exposes. Per-entry refusals
+        # land as logbook observations inside apply_reruns; own try/except so
+        # a rerun bug never discards the compute step's result.
+        reruns_queued = 0
+        try:
+            from precis.quest.compute import apply_reruns
+
+            reruns_queued = apply_reruns(
+                store,
+                quest_id,
+                self.payload().get("reruns"),
+                cap=MAX_RERUNS_PER_TICK,
+                by=by,
+            )
+        except Exception:
+            log.exception("run_quest_tick: reruns apply raised for quest %s", quest_id)
+        self.st["reruns_queued"] = reruns_queued
         if step is not None:
             self.st["created"] = step.candidates_created
-            self.st["dispatched"] = step.sims_dispatched + search_dispatched
+            self.st["dispatched"] = (
+                step.sims_dispatched + search_dispatched + reruns_queued
+            )
             self.st["harvested"] = step.results_harvested
             self.st["ruled"] = step.ruled_out
             self.st["graduated"] = step.graduated
-        elif search_dispatched:
+        elif search_dispatched or reruns_queued:
             # run_compute_step itself raised (degraded to `step = None`
-            # above) but the search slot still landed a real job — don't
-            # lose that signal, or the stall counter would advance despite
-            # a genuine dispatch this tick.
-            self.st["dispatched"] = search_dispatched
+            # above) but the search slot or a rerun still landed a real job —
+            # don't lose that signal, or the stall counter would advance
+            # despite a genuine dispatch this tick.
+            self.st["dispatched"] = search_dispatched + reruns_queued
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A
