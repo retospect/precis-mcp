@@ -202,3 +202,30 @@ that had landed at the end of this file.
   `apply_merge`/`undo_merge` repointing; no machine writer exists yet
   (mesher/scout unbuilt); skills `precis-relations`, `precis-link-help`,
   `precis-gardener-help`; refusals carry `next=`.
+
+Rulings 2026-10-21 (Reto, via chat; resolve the findings above):
+
+- Slices 3 and 2: the proposed resolutions are accepted as written
+  (relink distance constant, prune-redundant on card vectors with mutual
+  top-5 over machine `related-to`, standalone retrieval runner, gold set
+  `{question, quest, gold_chunks}`, recall@10 + tokens-to-first-gold,
+  keep threshold +0.05 recall or −10 % tokens without recall loss).
+- Reviewer: Opus, 20/day. A Fable re-review of a sample of the same
+  proposals runs beside it; `precis garden stats` reports, per detector,
+  castor-proposer–Opus agreement and Opus–Fable agreement side by side.
+  Both stay non-terminal reviews; neither gates anything.
+- Gold labels: model-drafted, then Reto reviews qu500066's three
+  questions; the review does not block the runner.
+- Slice 1: one door, the trust-state link admission (`Store.add_link`).
+  Stance/provenance rels allowed to machine writers with an evidence
+  chunk: `supports`, `disputes`, `qualifies`, `derived-from`,
+  `establishes`, `corroborates`, `refines`, `explains`. All are already
+  registered on prod (checked 2026-10-21; `explains` is migration 0203,
+  so no migration is needed). Caveat: `explains` is claim-hub → claim-hub
+  only and is not an evidence edge (0203; enforced at
+  `taproot.hub.link_claims`), so slice 1 must route it through that
+  door or refuse it outside claim hubs. Structural rels (`specialises`/
+  `generalises`, `part-of`/`contains`, `instance-of`) are allowed to
+  machine writers as gardener-ledger proposals only, never direct
+  writes; they need no evidence chunk and stay generated/unreviewed until
+  a recorded review.
