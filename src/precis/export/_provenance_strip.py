@@ -16,7 +16,11 @@ from collections.abc import Callable
 from typing import Any
 
 from precis.utils import handle_registry
-from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
+from precis.utils.mentions import (
+    COMPUTED_EVIDENCE_KINDS,
+    LINKIFY_KINDS,
+    REF_PATTERN,
+)
 
 #: Sentinel standing in for a dropped handle while the text is tidied.
 _MARK = "\x00"
@@ -26,6 +30,30 @@ _GONE = "\x01"
 #: ``[xx123]`` only: no pin, no ``~`` chunk suffix, no display/link form.
 _BRACKET_HANDLE = re.compile(r"(?<!\[)\[([a-z]{2}\d+)\](?!\()")
 _POSSESSIVE = re.compile(r"(?<!\[)\[([a-z]{2}\d+)\](?=['’]s\b)")
+#: ``[[…]]`` — the authoring-link form the exporters used to drop whole,
+#: leaving a double-space seam. The payload rejoins the grammar when it is
+#: a handle (``[[dc5]]`` → ``[dc5]`` → its cross-ref number, ``[[pa5]]`` →
+#: the cite) or a ``paper:`` ref; other known ``kind:`` payloads and
+#: anything unparseable drop with the same seam repair as ``[dr1]``.
+_AUTHORING = re.compile(r"(?<!\[)\[\[([^\[\]]+)\]\]")
+#: ``<handle>~<chunk selector>`` (``[dr173020~3]``, ``dr173020~3``): the
+#: selector can't resolve across a record boundary in an export, so the
+#: token degrades to the record handle — ``[h~n]`` → ``[h]`` (drop, cite or
+#: xref per kind, exactly like the un-suffixed form), a bare ``h~n`` →
+#: ``h`` (the title splice). Only registry codes qualify; the bare form
+#: keeps the ``_BARE_HANDLE`` 4-digit guard so ``co2~3``-style prose and
+#: ``kind:slug~n``/``§slug~n`` cites are untouched.
+_SEL = r"~(?:p\d+|\d+(?:\.\.\d+)?)"
+_BRACKET_SEL = re.compile(rf"([\[\(])([a-z]{{2}}\d+){_SEL}(?=[\]\)])")
+_BARE_SEL = re.compile(rf"(?<![\w/.:~\-])([a-z]{{2}}\d{{4,}}){_SEL}(?![\w~]|[-.]\d)")
+#: ``[h1, h2]`` / ``[h1 and h2]`` — a bracketed list of bare handles (the
+#: authored shorthand for citing several records at once). Exploded to
+#: adjacent brackets so each element gets its own dispatch — cites merge
+#: (``[n,m]``), provenance-only handles drop, and nothing prints raw.
+_LIST_SEP = re.compile(r"\s*[,;]\s*|\s+(?:and|or)\s+")
+_HANDLE_LIST = re.compile(
+    r"\[([a-z]{2}\d+(?:(?:" + _LIST_SEP.pattern + r")[a-z]{2}\d+)+)\](?!\()"
+)
 #: A handle group: marks joined only by ``/ , ; →`` and whitespace.
 _GROUP = re.compile(_MARK + r"(?:[\s/,;→]*" + _MARK + r")*")
 _PAREN = re.compile(r"\([^()]*\)")
@@ -144,7 +172,8 @@ def _tidy(seg: str) -> str:
     """Fix spacing/separators locally around each removal sentinel."""
     seg = _GROUP.sub(_MARK, seg)
     while True:
-        out = _STRANDED_WORD.sub("", seg)
+        out = re.sub(rf"\[{_T}*{_MARK}{_T}*\]", _MARK, seg)
+        out = _STRANDED_WORD.sub("", out)
         out = re.sub(rf"(\(){_T}*{_MARK}{_SEPS}*", r"\1", out)
         out = re.sub(rf"{_SEPS}*{_MARK}{_T}*\)", ")", out)
         out = re.sub(rf"([,;]){_T}*{_MARK}{_T}*[,;]", r"\1", out)
@@ -239,7 +268,64 @@ def short_title(title: str) -> str:
     return line
 
 
+def _authoring(m: re.Match[str]) -> str:
+    """``[[…]]`` → ``[h]`` for a handle payload (``[[dc5]]`` then renders the
+    cross-ref number, ``[[pa5]]`` the cite, ``[[dr5]]`` drops below), a bare
+    ``kind:ref`` when the kind renders (``paper:``), else the drop mark."""
+    inner = m.group(1).strip()
+    if handle_registry.parse(inner) is not None:
+        return f"[{inner}]"
+    rm = REF_PATTERN.fullmatch(inner)
+    if rm is not None:
+        if rm.group("kind") == "paper":
+            return inner
+        if rm.group("kind") in LINKIFY_KINDS or handle_registry.is_known_kind(
+            rm.group("kind")
+        ):
+            return _MARK
+    return _MARK
+
+
+def _explode(m: re.Match[str]) -> str:
+    """``[h1, h2]`` → ``[h1][h2]`` — only when every element is a real
+    handle, so a prose list (``[see fig. 2]``) stays authored text."""
+    parts = _LIST_SEP.split(m.group(1))
+    if all(handle_registry.parse(p) is not None for p in parts):
+        return "".join(f"[{p}]" for p in parts)
+    return m.group(0)
+
+
+def _sel_norm(m: re.Match[str]) -> str:
+    """``[h~n]`` / ``(h~n)`` → ``[h]`` / ``(h)`` for a registry handle."""
+    return (
+        f"{m.group(1)}{m.group(2)}" if handle_registry.parse(m.group(2)) else m.group(0)
+    )
+
+
+def _kind_ref(m: re.Match[str]) -> str:
+    """A bare ``kind:ref`` — ``paper:`` cites (kept), a known precis kind the
+    exporter drops anyway (``draft:``, ``todo:``, ``memory:``…) becomes a
+    drop mark so its seam is repaired, and anything else (``doi:10.…``,
+    ``nursery:orphan``) stays literal prose — the same keep-set
+    ``_render_reference`` applies."""
+    kind = m.group("kind")
+    if kind == "paper":
+        return m.group(0)
+    if kind in LINKIFY_KINDS or handle_registry.is_known_kind(kind):
+        return _MARK
+    return m.group(0)
+
+
 def _strip_prose(text: str, title_for: Callable[[str], str]) -> str:
+    text = _AUTHORING.sub(_authoring, text)
+    text = _HANDLE_LIST.sub(_explode, text)
+    text = _BRACKET_SEL.sub(_sel_norm, text)
+    text = _BARE_SEL.sub(
+        lambda m: m.group(1) if handle_registry.parse(m.group(1)) else m.group(0),
+        text,
+    )
+    text = REF_PATTERN.sub(_kind_ref, text)
+
     def poss(m: re.Match[str]) -> str:
         if not _dropped(m.group(1)):
             return m.group(0)
@@ -272,7 +358,9 @@ def strip_provenance_handles(text: str, *, title_for: Callable[[str], str]) -> s
     space before it. Spacing fixes are local to each removal site, and code
     spans and math are left untouched.
     """
-    if "[" not in text:
+    # Cheap gate: nothing here fires without a bracket, a ``~`` chunk
+    # selector or a ``kind:`` prefix.
+    if "[" not in text and "~" not in text and ":" not in text:
         return text
     parts = _OPAQUE.split(text)  # odd indices are the opaque spans
     return "".join(

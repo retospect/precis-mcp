@@ -1174,6 +1174,10 @@ def _render_target(
         ctx.cite_run.interrupt()
         if not is_provenance_only(kind, is_chunk):
             _render_xref(tgt, surface, ctx, paragraph)
+        elif surface:
+            # ``[text](<record>)``: the record is provenance but the authored
+            # display text is body prose — print it (the web links it).
+            _render_gap(surface, ctx, paragraph)
         return
     # Any non-citation content breaks a run of consecutive citations.
     ctx.cite_run.interrupt()
@@ -1196,6 +1200,12 @@ def _render_target(
         _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or tgt)
         return
+    if surface:
+        # ``[text](<anything unresolvable>)`` — the target is dead but the
+        # authored display text is body prose; print it rather than
+        # dropping the words.
+        _flush_cites(ctx, paragraph)
+        _render_gap(surface, ctx, paragraph)
 
 
 def _record_claim_cite(ctx: _Ctx, pk: int, slugs: list[str]) -> None:

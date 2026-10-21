@@ -2158,7 +2158,11 @@ async def export_start_route(request: Request, ident: str) -> Response:
 
     pairs = parse_qsl(request.url.query, keep_blank_values=True)
     fmt = next((v for k, v in pairs if k == "fmt"), "docx")
-    handler = {"docx": export_docx_route, "pdf": pdf}.get(fmt)
+    handler = {
+        "docx": export_docx_route,
+        "pdf": pdf,
+        "zip": papers_zip_route,
+    }.get(fmt)
     if handler is None:
         return JSONResponse(
             {"ok": False, "error": f"unknown fmt {fmt!r}"}, status_code=400
@@ -2171,7 +2175,9 @@ async def export_start_route(request: Request, ident: str) -> Response:
         handler,
         query,
         resolve=_draft_ref,
-        preflight=_export_preflight,
+        # The papers bundle isn't an export document — the docx/PDF gates
+        # (retraction, figure clearance) don't apply to it.
+        preflight=None if fmt == "zip" else _export_preflight,
     )
     return JSONResponse(
         {
@@ -2183,7 +2189,10 @@ async def export_start_route(request: Request, ident: str) -> Response:
 
 
 def _async_url(ident: str, fmt: str) -> str:
-    return f"/drafts/{ident}/" + ("export.docx" if fmt == "docx" else "pdf")
+    return (
+        f"/drafts/{ident}/"
+        + {"docx": "export.docx", "pdf": "pdf", "zip": "papers.zip"}[fmt]
+    )
 
 
 def _export_preflight(store: Store, ref: Any, request: Request) -> Any:
@@ -2220,10 +2229,17 @@ async def export_download_route(request: Request, ident: str, token: str) -> Res
     from precis_web import export_jobs
 
     job = export_jobs.get(token, ident)
-    if job is None or job.state != "done" or not isinstance(job.response, FileResponse):
+    if job is None or job.response is None:
         return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
     r = job.response
-    return FileResponse(r.path, filename=r.filename, media_type=r.media_type)
+    if isinstance(r, FileResponse):
+        return FileResponse(r.path, filename=r.filename, media_type=r.media_type)
+    # A gated/blocked export stored the gate page the job already rendered —
+    # serve it rather than sending the client through the synchronous route
+    # (which would re-run the whole preflight, gr493192).
+    if job.state == "blocked":
+        return r
+    return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
 
 
 _RENDER_LOCKS: dict[int, threading.Lock] = {}

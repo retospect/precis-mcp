@@ -1094,7 +1094,13 @@
                      window.location = '/drafts/{{ ident }}/export/download/' + j.token;
                      return;
                    }
-                   if (s.state === 'blocked') { window.location = direct; return; }
+                   // A blocked job already rendered its gate page — the
+                   // download route serves it, so the result shows without
+                   // re-running the (slow) preflight under a frozen bar.
+                   if (s.state === 'blocked') {
+                     window.location = '/drafts/{{ ident }}/export/download/' + j.token;
+                     return;
+                   }
                    if (s.state === 'error') return;
                  }
                } catch (e) {
@@ -1228,7 +1234,7 @@
             </template>
             <template x-if="exportJob && exportJob.state !== 'error'">
               <span class="flex items-center gap-2">
-                <span x-text="'building ' + (exportJob.fmt === 'pdf' ? 'PDF' : '.docx') + '… ' + (exportJob.stage || '')"></span>
+                <span x-text="'building ' + (({pdf: 'PDF', zip: 'papers .zip'})[exportJob.fmt] || '.docx') + '… ' + (exportJob.stage || '')"></span>
                 <span class="inline-block h-1.5 w-40 overflow-hidden rounded bg-surface-emphasis">
                   <span class="block h-full bg-solid-soft transition-all"
                         :class="exportJob.pct == null ? 'animate-pulse w-full' : ''"
@@ -1238,8 +1244,9 @@
               </span>
             </template>
           </div>
-          <a href="/drafts/{{ ident }}/papers.zip"
+          <a :href="'/drafts/{{ ident }}/papers.zip'"
              class="text-fg-subtle underline hover:text-fg"
+             @click.prevent="startExport('zip')"
              title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
           {# Papers this draft cites but the corpus still lacks — the fetch
              worklist, opened in Drive's stub-acquisition surface pre-scoped to

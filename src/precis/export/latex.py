@@ -1329,7 +1329,9 @@ def _render_target(
             # display text, or the literal handle) same as the legacy-handle
             # downgrade below, instead of silently dropping the citation.
             return _encode_unicode(_latex_escape(surface or tgt))
-        return ""  # other record/chunk handle — provenance only
+        # ``[text](<record>)``: the record is provenance but the authored
+        # display text is body prose — print it (the web links it).
+        return _encode_unicode(_latex_escape(surface)) if surface else ""
     if tgt.startswith("¶"):  # legacy base-58 chunk handle
         dc = walker.resolve_legacy(
             tgt[1:],
@@ -1347,14 +1349,15 @@ def _render_target(
             # Keep the ~n chunk suffix on the slug — _cite drops it for the
             # cite key but reMarkable mode uses it to quote the paper chunk.
             return _cite(cm.group("slug") + (cm.group("chunk") or ""), ctx)
-        return ""
+        return _encode_unicode(_latex_escape(surface)) if surface else ""
     if tgt.startswith(("http://", "https://")):
         if surface:
             return f"\\href{{{tgt}}}{{{_encode_unicode(_latex_escape(surface))}}}"
         return f"\\url{{{tgt}}}"
     # Universal handles single-bracket handles (dc/pc/pa) are handled above via
-    # handle_registry.parse(); anything else is provenance-only.
-    return ""  # other authoring targets — provenance only
+    # handle_registry.parse(); anything else is provenance-only — though an
+    # authored ``[text](…)`` surface is still body prose, so it prints.
+    return _encode_unicode(_latex_escape(surface)) if surface else ""
 
 
 def _inline_source_cite(tgt: str, kind: str, surface: str | None, ctx: _Ctx) -> str:

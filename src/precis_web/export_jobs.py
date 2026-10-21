@@ -176,7 +176,11 @@ def start(
         try:
             with progress.bind(on_progress):
                 if resolve is not None:
-                    progress.report("preflight: checking cited papers and figures")
+                    progress.report(
+                        "preflight: checking cited papers and figures"
+                        if preflight is not None
+                        else "resolving draft"
+                    )
                     store = get_store(sub)
                     ref = resolve(store, ident)
                     if ref is None:

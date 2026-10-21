@@ -213,9 +213,37 @@ def test_async_gated_export_reports_blocked(
     tok = client.post("/drafts/asyncd/export/start?fmt=pdf").json()["token"]
     snap = _wait(client, f"/drafts/asyncd/export/status/{tok}")
     assert snap["state"] == "blocked"
-    # Nothing to download; the page falls back to the plain GET.
+    # The download route serves the gate/error page the job already
+    # rendered — a second trip through the synchronous route would re-run
+    # the whole preflight under a frozen bar (gr493192).
     r = client.get(f"/drafts/asyncd/export/download/{tok}", follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 503
+    assert "latexmk" in r.text
+
+
+def test_async_zip_runs_without_preflight(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192: every export control shares the job mechanism — the
+    papers bundle builds behind the same progress bar. It is not an
+    export document, so the retraction/figure gates don't run."""
+    import precis_web.routes.drafts as drafts_mod
+
+    calls: list[str] = []
+
+    def no_preflight(*a: Any, **k: Any) -> Any:
+        calls.append("preflight")
+        return None
+
+    monkeypatch.setattr(drafts_mod, "draft_export_preflight", no_preflight)
+    start = client.post("/drafts/asyncd/export/start?fmt=zip")
+    assert start.status_code == 200 and start.json()["ok"]
+    tok = start.json()["token"]
+    snap = _wait(client, f"/drafts/asyncd/export/status/{tok}")
+    assert snap["state"] == "done"
+    got = client.get(f"/drafts/asyncd/export/download/{tok}")
+    assert got.status_code == 200 and got.content[:2] == b"PK"
+    assert calls == []
 
 
 def test_async_start_rejects_unknown_format_and_draft(client: TestClient) -> None:

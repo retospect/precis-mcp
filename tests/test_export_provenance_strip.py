@@ -63,7 +63,6 @@ def test_citations_and_pins_untouched() -> None:
         "x [dc41] y",
         "x [st12] y",
         "x [dr173020>pc1] y",
-        "x [dr173020~3] y",
         "x [shown](dr173020) y",
         "plain (text) here",
     ):
@@ -201,3 +200,71 @@ def test_glue_words_stay_without_a_dropped_handle() -> None:
         "see the appendix for details.",
     ):
         assert _strip(s) == s
+
+
+def test_handle_selector_forms_normalise() -> None:
+    """``[h~n]`` / ``(h~n)`` / bare ``h~n`` degrade to the record handle —
+    a chunk selector can't resolve across a record boundary in an export
+    (gr493181 — ``[dr173020~3]`` printed literally)."""
+    assert _strip("see [dr173020~3] here") == "see here"
+    assert _strip("bare dr173020~3 here") == "bare dr173020 here"
+    assert _strip("x [pa4423~1] y") == "x [pa4423] y"
+    assert _strip("[sel](dr173020~2) end") == "[sel](dr173020) end"
+    # paper chunk cites and kind:slug selectors are not handle forms
+    for keep in (
+        "cite [§smith20~3] stays",
+        "keep paper:lee22~3 cite",
+        "math $x~dr5$ code `dr1~2`",
+    ):
+        assert _strip(keep) == keep
+
+
+def test_handle_list_explodes() -> None:
+    """``[pa442, pc30728]`` — authored shorthand for a cite group — becomes
+    adjacent handles so each dispatches (cites merge; provenance drops)
+    instead of printing ``[pa442, paper]``-style mangled text (gr493181)."""
+    assert _strip("x [pa442, pc30728] y") == "x [pa442][pc30728] y"
+    assert _strip("x [pa1 and pa2] y") == "x [pa1][pa2] y"
+    assert _strip("x [dr5, ql9] y") == "x y"
+    assert _strip("x [pa442, dr5] y") == "x [pa442] y"
+    # not all elements handles → authored prose, untouched
+    assert _strip("x [see fig. 2, or dr5] y") == "x [see fig. 2, or dr5] y"
+
+
+def test_authoring_links_unwrap_or_drop() -> None:
+    """``[[…]]``: a handle payload rejoins the grammar (``[[dc5]]`` → its
+    cross-ref, ``[[pa5]]`` → the cite, ``[[dr5]]`` → provenance drop); a
+    known ``kind:`` payload drops; anything else is markup, not body text
+    — all with seam repair (gr493181)."""
+    assert _strip("x [[dr5]] y") == "x y"
+    assert _strip("x [[dc5]] y") == "x [dc5] y"
+    assert _strip("x [[pa5]] y") == "x [pa5] y"
+    assert _strip("x [[draft:2]] y") == "x y"
+    assert _strip("x [[paper:lee22]] y") == "x paper:lee22 y"
+    assert _strip("x [[weird words]] y") == "x y"
+
+
+def test_kind_ref_drops_with_seam_repair() -> None:
+    """A bare ``kind:ref`` for an unciteable known kind (``todo:5``,
+    ``memory:6184~2``, ``[todo:5]``) is dropped — the same set the backend
+    reference dispatch dropped before, now with the seam repaired. Citeable
+    and unknown kinds stay literal (``paper:``, ``doi:``, ``nursery:``)."""
+    assert _strip("see todo:5 here") == "see here"
+    assert _strip("see memory:6184~2 here") == "see here"
+    assert _strip("see [todo:5] here") == "see here"
+    for keep in (
+        "cite paper:lee22 here",
+        "doi doi:10.1/x here",
+        "cluster nursery:orphan here",
+        "code `todo:5` and math $job:1$",
+    ):
+        assert _strip(keep) == keep
+
+
+def test_display_link_surface_survives_a_dropped_target() -> None:
+    """``[text](<record>)``: the record handle is provenance but the authored
+    display text is body prose (gr493181 — it used to vanish with the link)."""
+    out = _docx_text("read [the dossier](dr173020) next")
+    assert out == "read the dossier next"
+    out = _docx_text("read [the intro](dc1) next")
+    assert out == "read the intro next"
