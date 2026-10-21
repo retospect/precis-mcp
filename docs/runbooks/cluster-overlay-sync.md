@@ -73,3 +73,13 @@ Outlook misbehave after such a window, look here first.
 **Root pattern:** config edited in place on a node diverges from the Mac source
 of truth and *nothing watches*. It surfaces only as a side effect of unrelated
 work. Edit the overlay on the Mac, push; never edit on the node.
+
+## The overlay needs an off-cluster backup
+
+The overlay's only remote is a cluster node (`deploy-helper`), and
+`.vault-pass` is hand-carried. Lose the controller and that node together and
+the inventory, vault and node coordinates are gone, which is also what a
+database rebuild needs first
+([`prod-db-rebuild-from-backup`](./prod-db-rebuild-from-backup.md)). Keep a
+copy of `deploy/inventory/` and `deploy/.vault-pass` outside the cluster (the
+vault file is encrypted; the pass file is not, so store it separately).

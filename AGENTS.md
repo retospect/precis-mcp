@@ -111,10 +111,17 @@ legacy discovery handles when relevant, without loading the entire graph.
 Files are explicit mirror/export artifacts after cutover. Native edits and
 operator CLI mirror commands are distinct: never import/export at task
 start, to answer a question, or automatically on an MCP outage. If MCP is
-down, consult MEMORY.md's preserved snapshot and manifest/as-of receipt;
-label it stale fallback evidence. Do not mutate that snapshot, claim sync,
-or queue automatic replay. Follow the verified recovery pointer through
-the current deployment owner; service recovery requires its own authority.
+down, read the node cache first: `~/.cache/precis/memory-nodes/` (one
+`<handle>.md` per node plus `_sections.tsv`), exported by the SessionStart
+hook (`scripts/hooks/session-start-memory.sh`), fresh as of the last
+successful session start; older sets are `memory-nodes.<UTC stamp>` beside
+it (newest 7). Read-only fallback evidence: label it stale-by-N-hours (from
+`_sections.tsv` mtime). Last resort: MEMORY.md's preserved pre-cutover
+snapshot and manifest/as-of receipt, labelled stale. Never re-import the
+pre-cutover snapshot: it would revive retired threads. Do not mutate either
+copy, claim sync, or queue automatic replay. Follow the verified recovery
+pointer through the current deployment owner; service recovery requires its
+own authority. Restoring deleted nodes: `docs/runbooks/memory-restore.md`.
 
 ## Definition of done
 

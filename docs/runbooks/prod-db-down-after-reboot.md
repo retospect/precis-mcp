@@ -29,6 +29,10 @@ embedder `serve-embeddings`). Postgres conservatively refuses to start when
 the lock's PID is alive, so KeepAlive restarts it into the same refusal
 forever.
 
+Cannot reach the nodes at all from where you are? Sort "unreachable because of
+how we asked" from "down" first:
+[`cluster-ssh-remote-access`](./cluster-ssh-remote-access.md).
+
 ## Immediate recovery
 
 `rm` the stale `postmaster.pid`. KeepAlive restarts Postgres within ~10s — no

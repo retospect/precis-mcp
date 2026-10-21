@@ -7,6 +7,15 @@ creates the containers, every later session no-ops. It is a hand-rolled
 dev-machine service (not an Ansible role): the thread is
 `docs/backlog/threads/session-mcp-shared-server.md`.
 
+## Who may run what
+
+Agents may run `precis-mcp-http-ensure.sh --status`, a plain run, and
+`--recreate` after a deploy (the image rebuild is the release owner's job,
+Reto 2026-10-16). `--migrate` and `scripts/mcp-http-install --apply` are
+Reto's or the deploy owner's, from a terminal. During an outage run the
+INSTALLED ensure script as-is; reconciling the installed copy with the repo
+copy is a separate step, not outage handling.
+
 ## Layout
 
 ```

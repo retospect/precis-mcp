@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,37 @@ def test_hook_exports_the_node_bodies_next_to_the_cache(
     assert {
         f.name: f.read_text(encoding="utf-8") for f in _nodes(tmp_path).glob("*.md")
     } == before
+
+
+def test_hook_rotates_node_sets_keeps_newest_seven_and_skips_failures(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    monkeypatch.setenv("PRECIS_MEMORY_ROTATE_SECS", "0")
+    cache = _nodes(tmp_path).parent
+    rotated = lambda: sorted(cache.glob("memory-nodes.2*"))
+    first = _run_hook(tmp_path, _active_dsn())
+    assert first.returncode == 0, first.stderr
+    assert rotated() == []  # nothing existed to rotate on the first export
+    for i in range(9):
+        proc = _run_hook(tmp_path, _active_dsn())
+        assert proc.returncode == 0, proc.stderr
+        if i == 0:
+            assert len(rotated()) == 1
+        time.sleep(1.05)  # stamps are per second
+    kept = rotated()
+    assert len(kept) == 7
+    assert (kept[0] / "_sections.tsv").is_file()
+    # a failed export never rotates or prunes
+    dead = _run_hook(tmp_path, "postgresql://nobody@localhost:1/none?connect_timeout=3")
+    assert dead.returncode == 0, dead.stderr
+    assert rotated() == kept
+    assert not list(cache.glob("memory-nodes.snap.*"))
+    # the default interval suppresses a second rotation inside the window
+    monkeypatch.delenv("PRECIS_MEMORY_ROTATE_SECS")
+    again = _run_hook(tmp_path, _active_dsn())
+    assert again.returncode == 0, again.stderr
+    assert rotated() == kept
 
 
 def test_hook_unwritable_node_dir_does_not_change_the_index_or_exit_code(
