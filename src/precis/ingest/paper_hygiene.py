@@ -80,6 +80,12 @@ from precis.corpus_layout import resolve_local_pdf
 from precis.identity import PLACEHOLDER_TITLE, is_placeholder_title
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
+from precis.ingest.pdf_sidecar import (
+    export_name_query,
+    is_garbage_title,
+    is_pii,
+    render_leaked_markup,
+)
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
 from precis.store.revision_context import trust_door
@@ -1713,6 +1719,446 @@ TITLE_FIX_SOURCE = "paper_hygiene:title_fix"
 #: A junk-titled paper younger than this is left to ingest/enrich first.
 _TITLE_FIX_GRACE_DAYS = 3
 
+#: ``meta.title_repair_v`` stamp written when the repair cascade below has
+#: definitively failed a paper — bump it when the cascade learns a new trick
+#: and the stamped backlog should get one more attempt. Without the stamp the
+#: daily pass would re-burn registry lookups on titles it already proved it
+#: cannot fix (transient failures — timeouts, rate limits — are left
+#: unstamped so the next pass retries them).
+_TITLE_REPAIR_VERSION = 1
+
+#: Miss reasons that mean "retry next pass", not "unfixable".
+_TRANSIENT_MISS_REASONS = frozenset(
+    {"crossref-timeout", "s2-timeout", "openalex-timeout", "error"}
+)
+
+
+@dataclass
+class TitleRepairOutcome:
+    """What the repair pass did (or concluded) for one junk-titled paper."""
+
+    ref_id: int
+    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'parked' | 'failed' | 'skipped'
+    detail: str = ""
+    new_title: str = ""
+
+    def line(self) -> str:
+        got = f" -> {self.new_title[:60]}" if self.new_title else ""
+        return f"[{self.action}] #{self.ref_id} {self.detail}{got}"
+
+
+def _usable_title(text: str) -> bool:
+    """True when *text* reads like a real title — the bar for auto-writing a
+    repaired title without a registry round-trip."""
+    t = text.strip()
+    if not (12 <= len(t) <= 400):
+        return False
+    if is_pii(t) or is_garbage_title(t):
+        return False
+    if re.search(r"</?[a-zA-Z]", t):  # tag remnant — the clean didn't take
+        return False
+    letters = sum(c.isalpha() for c in t)
+    return letters >= max(8, int(0.4 * len(t)))
+
+
+def _open_title_fix_todo_ids(store: Store, ref_id: int, *, conn: Any) -> list[int]:
+    """Title-fix todos for *ref_id* that aren't ``STATUS:done`` yet."""
+    rows = conn.execute(
+        "SELECT t.ref_id FROM refs t "
+        "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
+        "  AND t.meta->>'source' = %s AND t.meta->>'paper_ref_id' = %s "
+        "  AND NOT EXISTS ("
+        "        SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
+        "         WHERE rt.ref_id = t.ref_id AND tg.namespace = 'STATUS' "
+        "           AND tg.value = 'done')",
+        (TITLE_FIX_SOURCE, str(ref_id)),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _close_title_fix_todos(
+    store: Store, ref_id: int, *, conn: Any, how: str, new_title: str
+) -> int:
+    """Resolve this paper's open title-fix todos — the repair just did what
+    they asked. Returns how many were closed."""
+    closed = 0
+    for todo_id in _open_title_fix_todo_ids(store, ref_id, conn=conn):
+        store.add_tag(
+            todo_id,
+            Tag.closed("STATUS", "done"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.append_event(
+            todo_id,
+            source=TITLE_FIX_SOURCE,
+            event="auto_resolved",
+            payload={"how": how, "title": new_title[:200]},
+            conn=conn,
+        )
+        closed += 1
+    return closed
+
+
+def _apply_repaired_title(store: Store, ref: Any, new_title: str, *, how: str) -> None:
+    """Write a repaired title + rebuild cards + close the paper's open
+    title-fix todos, in one transaction."""
+    from precis.ingest.cards import rewrite_cards
+
+    meta = ref.meta or {}
+    meta_patch = {"title_raw": ref.title} if "title_raw" not in meta else {}
+    with store.tx() as conn:
+        store.update_paper_fields(
+            ref.id,
+            title=new_title,
+            meta_patch=meta_patch or None,
+            source=TITLE_FIX_SOURCE,
+            conn=conn,
+        )
+        rewrite_cards(
+            conn,
+            ref.id,
+            title=new_title,
+            author_names=author_names(ref.authors or []),
+            abstract=str(meta.get("abstract") or ""),
+            keywords=list(meta.get("keywords") or []),
+        )
+        _close_title_fix_todos(store, ref.id, conn=conn, how=how, new_title=new_title)
+        store.append_event(
+            ref.id,
+            source=TITLE_FIX_SOURCE,
+            event="title_repaired",
+            payload={"how": how, "title": new_title[:200]},
+            conn=conn,
+        )
+
+
+def _stamp_title_repair_failed(
+    store: Store, ref_id: int, *, reasons: list[str]
+) -> None:
+    """Mark *ref_id* as attempted-and-failed at the current repair version."""
+    with store.tx() as conn:
+        store.update_paper_fields(
+            ref_id,
+            meta_patch={"title_repair_v": _TITLE_REPAIR_VERSION},
+            source=TITLE_FIX_SOURCE,
+            conn=conn,
+        )
+        store.append_event(
+            ref_id,
+            source=TITLE_FIX_SOURCE,
+            event="title_repair_failed",
+            payload={"reasons": reasons},
+            conn=conn,
+        )
+
+
+def _repair_title_candidates(store: Store, ref: Any, stored_title: str) -> list[str]:
+    """Title-search queries for a junk-titled ref: the stripped export name
+    first, then the usual first-page body-chunk lines."""
+    from precis.ingest.metadata_resolve import _title_candidates
+
+    chunk_cands, _trusted = _title_candidates(store, ref)
+    query = export_name_query(stored_title)
+    cands = ([query] if query else []) + [
+        c for c in chunk_cands if c.casefold() != query.casefold()
+    ]
+    return cands[:4]
+
+
+def _resolve_openalex(
+    store: Store,
+    ref: Any,
+    doi: str,
+    *,
+    openalex_fn: Any,
+    email: str,
+    call_timeout: float,
+) -> Any:
+    """OpenAlex work-by-DOI as a fallback when Crossref missed/declined.
+
+    Fill-blanks-only for authors and year (``apply_resolution`` writes
+    whatever the Resolution carries — an existing byline/year must not be
+    clobbered by a lower-trust source). Title is markup-rendered and
+    junk-checked like any registry hit, then passes the same zero-overlap
+    guard as the Crossref leg.
+    """
+    from precis.ingest.metadata_resolve import (
+        _TIMED_OUT,
+        Resolution,
+        _bounded,
+        _guard_registry_mismatch,
+    )
+    from precis.ingest.openalex_meta import normalize
+
+    rid = ref.id
+    work = _bounded(openalex_fn, doi, email, timeout=call_timeout)
+    if work is _TIMED_OUT:
+        return Resolution(rid, "miss", "doi", "openalex-timeout")
+    if not isinstance(work, dict):
+        return Resolution(rid, "miss", "doi", "openalex-miss")
+
+    title = render_leaked_markup(
+        str(work.get("title") or work.get("display_name") or "")
+    )
+    if not title or is_garbage_title(title) or is_pii(title):
+        return Resolution(rid, "discard", "doi", "openalex-title-junk")
+    year = work.get("publication_year")
+    res = Resolution(
+        rid,
+        "auto",
+        "doi",
+        "openalex-resolved",
+        title=title,
+        author_dicts=[] if ref.authors else normalize(work).byline_authors,
+        year=int(year) if ref.year is None and isinstance(year, int) else None,
+        doi=doi,
+    )
+    return _guard_registry_mismatch(store, res)
+
+
+def repair_junk_title_papers(
+    store: Store,
+    *,
+    dry_run: bool = True,
+    limit: int | None = None,
+    grace_days: int = _TITLE_FIX_GRACE_DAYS,
+    mailto: str = "",
+    email: str = "",
+    s2_api_key: str = "",
+    call_timeout: float = 20.0,
+    crossref_fn: Any = None,
+    openalex_fn: Any = None,
+    s2_fn: Any = None,
+) -> list[TitleRepairOutcome]:
+    """Repair junk-titled papers in place before the owner queue sees them.
+
+    Companion to :func:`raise_junk_title_papers` (gr500372): that pass used
+    to file a ``waiting-for:`` todo for every junk title, but most of the
+    backlog was recoverable — markup-leaked titles only need rendering, and
+    export-name titles still have a DOI or a first page to resolve against.
+    The cascade per paper, cheapest first:
+
+    * **markup** — :func:`~precis.ingest.pdf_sidecar.render_leaked_markup`
+      turns ``<mml:math>``/``<sub>``/``<i>`` leakage back into text; if the
+      result is a usable title it's written directly (same title, fixed
+      encoding — no registry confirmation needed).
+    * **crossref** — stored DOI → Crossref (``_resolve_by_doi`` — edition +
+      zero-overlap guards included).
+    * **openalex** — same DOI at OpenAlex, on a Crossref miss.
+    * **title** — S2 title search (``_resolve_by_title``) over the stripped
+      export name plus first-page body-chunk candidates, under the usual
+      similarity/year/formula gates.
+
+    A successful leg also closes the paper's open ``paper-title-fix``
+    todos — the repair is exactly what they asked for. Terminal failures
+    stamp ``meta.title_repair_v`` so tomorrow's pass doesn't re-attempt;
+    transient misses (timeouts) stay unstamped. ``RateLimited`` defers the
+    rest of the batch unstamped, like ``paper_meta_enrich``.
+
+    Returns one :class:`TitleRepairOutcome` per candidate; ``dry_run``
+    (default) resolves but writes nothing.
+    """
+    from precis.ingest.crossref import lookup_crossref
+    from precis.ingest.openalex_meta import fetch_openalex_work
+    from precis.ingest.semantic_scholar import lookup_s2
+    from precis.utils.rate_limit import RateLimited
+
+    if crossref_fn is None:
+        crossref_fn = lambda doi, m: lookup_crossref(doi, mailto=m)  # noqa: E731
+    if openalex_fn is None:
+        openalex_fn = lambda doi, e: fetch_openalex_work(doi, email=e)  # noqa: E731
+    if s2_fn is None:
+        s2_fn = lambda title, key: lookup_s2(title, api_key=key)  # noqa: E731
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   (SELECT min(d.id_value) FROM ref_identifiers d
+                     WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi') AS doi,
+                   COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
+                              WHERE ck.ref_id = r.ref_id
+                                AND ck.id_kind = 'cite_key'), '') AS cite_key
+              FROM refs r
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.human_verified_at IS NULL
+               AND r.created_at < now() - make_interval(days => %s)
+               AND coalesce(CASE
+                     WHEN jsonb_typeof(r.meta->'title_repair_v') = 'number'
+                     THEN (r.meta->>'title_repair_v')::int END, 0)
+                   < %s
+             ORDER BY r.ref_id
+            """,
+            (grace_days, _TITLE_REPAIR_VERSION),
+        ).fetchall()
+
+    candidates = [(int(r[0]), (r[1] or "").strip(), r[2], r[3] or "") for r in rows]
+    ref_map = store.fetch_refs_by_ids([c[0] for c in candidates])
+
+    outcomes: list[TitleRepairOutcome] = []
+    seen = 0
+    for ref_id, stored_title, doi, cite_key in candidates:
+        placeholder = is_placeholder_title(stored_title)
+        junk = is_pii(stored_title) or is_garbage_title(stored_title)
+        if not (placeholder or junk) or (placeholder and doi):
+            continue  # enrich owns DOI'd placeholders; real titles skip
+        ref = ref_map.get(ref_id)
+        if ref is None:
+            continue
+        if limit and seen >= limit:
+            break
+        seen += 1
+        try:
+            outcomes.append(
+                _repair_one(
+                    store,
+                    ref,
+                    stored_title,
+                    doi,
+                    mailto=mailto,
+                    email=email,
+                    s2_api_key=s2_api_key,
+                    call_timeout=call_timeout,
+                    crossref_fn=crossref_fn,
+                    openalex_fn=openalex_fn,
+                    s2_fn=s2_fn,
+                    dry_run=dry_run,
+                )
+            )
+        except RateLimited:
+            log.info(
+                "repair_junk_title_papers: shared limiter refused at ref %d; "
+                "deferring the rest unstamped",
+                ref_id,
+            )
+            break
+        except Exception:
+            log.exception("repair_junk_title_papers: ref %d failed", ref_id)
+            outcomes.append(TitleRepairOutcome(ref_id, "failed", detail="error"))
+    return outcomes
+
+
+def _repair_one(
+    store: Store,
+    ref: Any,
+    stored_title: str,
+    doi: str | None,
+    *,
+    mailto: str,
+    email: str,
+    s2_api_key: str,
+    call_timeout: float,
+    crossref_fn: Any,
+    openalex_fn: Any,
+    s2_fn: Any,
+    dry_run: bool,
+) -> TitleRepairOutcome:
+    """Run the repair cascade for one junk-titled paper (see
+    :func:`repair_junk_title_papers` for the leg order and stamping rule)."""
+    from precis.ingest.metadata_resolve import (
+        _resolve_by_doi,
+        _resolve_by_title,
+        apply_resolution,
+        park_mismatch,
+    )
+
+    rid = ref.id
+
+    def _applied(how: str, title: str) -> TitleRepairOutcome:
+        return TitleRepairOutcome(rid, how, new_title=title)
+
+    def _apply_resolution(res: Any, how: str) -> TitleRepairOutcome:
+        if not dry_run:
+            apply_resolution(store, res, source=TITLE_FIX_SOURCE)
+            with store.tx() as conn:
+                _close_title_fix_todos(
+                    store, rid, conn=conn, how=how, new_title=res.title
+                )
+                store.append_event(
+                    rid,
+                    source=TITLE_FIX_SOURCE,
+                    event="title_repaired",
+                    payload={"how": how, "title": res.title[:200]},
+                    conn=conn,
+                )
+        return _applied(how, res.title)
+
+    # Leg 1 — markup render: the stored title is real text wearing tags.
+    cleaned = render_leaked_markup(stored_title)
+    if cleaned != stored_title and _usable_title(cleaned):
+        if not dry_run:
+            _apply_repaired_title(store, ref, cleaned, how="markup")
+        return _applied("markup", cleaned)
+
+    reasons: list[str] = []
+
+    def _verdict_outcome(res: Any, how: str) -> TitleRepairOutcome | None:
+        """Outcome for a terminal verdict, else ``None`` to keep cascading."""
+        reasons.append(res.reason)
+        if res.verdict == "auto":
+            return _apply_resolution(res, how)
+        if res.verdict == "parked":
+            if not dry_run:
+                park_mismatch(store, res, source=TITLE_FIX_SOURCE)
+            return TitleRepairOutcome(rid, "parked", detail=res.reason)
+        return None
+
+    # Leg 2 — stored DOI at Crossref, then OpenAlex on a miss.
+    if doi:
+        out = _verdict_outcome(
+            _resolve_by_doi(
+                store,
+                ref,
+                doi,
+                mailto=mailto,
+                crossref_fn=crossref_fn,
+                call_timeout=call_timeout,
+            ),
+            "crossref",
+        )
+        if out is not None:
+            return out
+        out = _verdict_outcome(
+            _resolve_openalex(
+                store,
+                ref,
+                doi,
+                openalex_fn=openalex_fn,
+                email=email,
+                call_timeout=call_timeout,
+            ),
+            "openalex",
+        )
+        if out is not None:
+            return out
+
+    # Leg 3 — title search over the stripped export name + first-page lines.
+    out = _verdict_outcome(
+        _resolve_by_title(
+            store,
+            ref,
+            candidates=_repair_title_candidates(store, ref, stored_title),
+            trusted_title=False,
+            s2_fn=s2_fn,
+            s2_api_key=s2_api_key,
+            call_timeout=call_timeout,
+        ),
+        "title",
+    )
+    if out is not None:
+        return out
+
+    if not any(r in _TRANSIENT_MISS_REASONS for r in reasons) and not dry_run:
+        _stamp_title_repair_failed(store, rid, reasons=reasons)
+    return TitleRepairOutcome(
+        rid,
+        "failed",
+        detail=";".join(r for r in reasons if r) or "no-resolution",
+    )
+
 
 def raise_junk_title_papers(
     store: Store,
@@ -1728,9 +2174,13 @@ def raise_junk_title_papers(
     paper silently stands in for a real one (gr477964). Automation that
     *can* fix it (a placeholder with a DOI is re-armed by
     :func:`requeue_placeholder_title_papers`; ``paper_meta_enrich`` fills
-    it) is left alone; the rest is raised to the paper's owner
+    it; the markup/registry repair cascade in
+    :func:`repair_junk_title_papers`, gr500372) is left alone; the rest is
+    raised to the paper's owner
     (``refs.owner_login``, else the deployment owner ``PRECIS_OWNER``)
-    as a todo tagged ``waiting-for:<login>`` + ``paper-title-fix``.
+    as a todo tagged ``waiting-for:<login>`` + ``paper-title-fix``. One
+    todo per paper: a multi-cite_key ref (pa344 × 3) must not fan out into
+    per-cite_key duplicates.
 
     Skipped: retired papers; placeholder-titled papers that carry a DOI
     (the enrich route owns them); papers younger than ``grace_days``.
@@ -1744,21 +2194,18 @@ def raise_junk_title_papers(
     filed for.
     """
     from precis.config import load_config
-    from precis.identity import is_placeholder_title
-    from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
-    from precis.store.types import Tag
     from precis.utils.handle_registry import format_handle
 
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title, r.owner_login,
-                   COALESCE(ck.id_value, ''),
+                   COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
+                              WHERE ck.ref_id = r.ref_id
+                                AND ck.id_kind = 'cite_key'), ''),
                    EXISTS (SELECT 1 FROM ref_identifiers d
                             WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi')
               FROM refs r
-              LEFT JOIN ref_identifiers ck
-                     ON ck.ref_id = r.ref_id AND ck.id_kind = 'cite_key'
              WHERE r.kind = 'paper'
                AND r.retired_at IS NULL
                AND r.created_at < now() - make_interval(days => %s)

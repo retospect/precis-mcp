@@ -1417,3 +1417,315 @@ class TestHealPartialBody:
         _fetch_event(store, rid, "fetch_ok", hours_ago=7)
         assert heal_partial_body_papers(store, dry_run=False) == []
         assert "body:partial" not in _tags(store, rid)
+
+
+# ── junk-title repair (gr500372) ──────────────────────────────────
+
+
+def test_render_leaked_markup_mml_math() -> None:
+    from precis.ingest.pdf_sidecar import render_leaked_markup
+
+    assert (
+        render_leaked_markup(
+            "Stone-Wales defects in graphene and other planar"
+            '<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML" '
+            'display="inline"><mml:mrow><mml:mi>s</mml:mi>'
+            "<mml:msup><mml:mi>p</mml:mi><mml:mn>2</mml:mn></mml:msup>"
+            "</mml:mrow></mml:math>-bonded materials"
+        )
+        == "Stone-Wales defects in graphene and other planar sp2-bonded materials"
+    )
+
+
+def test_render_leaked_markup_mml_multiscripts_prescripts() -> None:
+    from precis.ingest.pdf_sidecar import render_leaked_markup
+
+    assert "76Se" in render_leaked_markup(
+        "Erratum: Spectroscopy of "
+        '<mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML">'
+        "<mml:mmultiscripts><mml:mi>Se</mml:mi><mml:mprescripts/>"
+        "<mml:none/><mml:mn>76</mml:mn></mml:mmultiscripts></mml:math>"
+        ": Prolate-to-oblate shape transition"
+    )
+
+
+def test_render_leaked_markup_inline_tags_and_missing_spaces() -> None:
+    from precis.ingest.pdf_sidecar import render_leaked_markup
+
+    assert (
+        render_leaked_markup(
+            "<i>ATHENA</i>,<i>ARTEMIS</i>,<i>HEPHAESTUS</i>: data analysis "
+            "for X-ray absorption spectroscopy using<i>IFEFFIT</i>"
+        )
+        == "ATHENA, ARTEMIS, HEPHAESTUS: data analysis for X-ray "
+        "absorption spectroscopy using IFEFFIT"
+    )
+
+
+def test_render_leaked_markup_subsup_stays_tight() -> None:
+    from precis.ingest.pdf_sidecar import render_leaked_markup
+
+    assert (
+        render_leaked_markup(
+            "(Me<sub>3</sub>Si)<sub>2</sub>C=PN(R)PPh<sub>2</sub> and "
+            "Cr<sup>III</sup>(OH) with C<sub>2</sub>H<sub>2</sub>/CO<sub>2</sub>"
+        )
+        == "(Me3Si)2C=PN(R)PPh2 and CrIII(OH) with C2H2/CO2"
+    )
+    # Italic subscripts glue to their brace, not to a space.
+    assert "}x·H2Oy" in render_leaked_markup(
+        "{HO<sub>2</sub>C−C<sub>6</sub>H<sub>4</sub>−CO<sub>2</sub>H}"
+        "<i><sub>x</sub></i>·H<sub>2</sub>O<i><sub>y</sub></i>"
+    )
+
+
+def test_render_leaked_markup_leaves_real_titles_alone() -> None:
+    from precis.ingest.pdf_sidecar import render_leaked_markup
+
+    for real in (
+        "Attention Is All You Need",
+        "N,N-dimethylformamide as a solvent",
+        "1,2-dichloroethane cracking",
+        "A < B in principle",  # not a tag: '< B' has no closing '>'
+    ):
+        assert render_leaked_markup(real) == real
+
+
+def test_export_name_query() -> None:
+    from precis.ingest.pdf_sidecar import export_name_query
+
+    assert (
+        export_name_query("Microsoft Word - Acceso restringido.doc")
+        == "Acceso restringido"
+    )
+    assert export_name_query("Dispatches.qxp") == "Dispatches"
+    assert (
+        export_name_query("Microsoft Word - CREATIVITY-by-Mihaly.docx")
+        == "CREATIVITY-by-Mihaly"
+    )
+    # Filename + page-range strings carry no title signal at all.
+    assert export_name_query("S401_9d 152..155") == ""
+    assert export_name_query("j405_8c 681..685") == ""
+    # Not export-shaped → never a query (a PII, a section heading).
+    assert export_name_query("PII: S0021-9797(20)31234-5") == ""
+    assert export_name_query("In this issue") == ""
+    assert export_name_query("A Real Paper Title") == ""
+
+
+class TestRepairJunkTitlePapers:
+    """gr500372: the repair cascade runs before the owner queue."""
+
+    def _old(
+        self,
+        store: Store,
+        *,
+        slug: str,
+        title: str,
+        doi: str | None = None,
+        cite_keys: list[str] | None = None,
+    ) -> int:
+        rid = store.insert_ref(kind="paper", slug=slug, title=title).id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        if doi:
+            store.set_ref_identifier(rid, "doi", doi, source="manual")
+        if cite_keys:
+            store.insert_ref_identifiers(
+                rid, [("cite_key", ck, "manual") for ck in cite_keys]
+            )
+        return rid
+
+    def _todos(self, store: Store, paper_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT ref_id, title FROM refs WHERE kind='todo' "
+                "AND meta->>'paper_ref_id' = %s",
+                (str(paper_id),),
+            ).fetchall()
+
+    def _todo_status(self, store: Store, todo_id: int) -> str | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT tg.value FROM ref_tags rt JOIN tags tg USING (tag_id) "
+                "WHERE rt.ref_id = %s AND tg.namespace = 'STATUS'",
+                (todo_id,),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def _no_net(self) -> dict[str, Any]:
+        def refuse(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("network resolver should not be called")
+
+        return {"crossref_fn": refuse, "openalex_fn": refuse, "s2_fn": refuse}
+
+    def test_markup_title_repaired_in_place(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="ma09",
+            title="Stone-Wales defects in graphene and other planar"
+            "<mml:math><mml:mrow><mml:mi>s</mml:mi><mml:msup><mml:mi>p</mml:mi>"
+            "<mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:math>"
+            "-bonded materials",
+        )
+        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "markup")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert (
+            ref.title
+            == "Stone-Wales defects in graphene and other planar sp2-bonded materials"
+        )
+        assert ref.meta.get("title_raw", "").startswith("Stone-Wales defects")
+        # Repaired → no longer junk → the raise leg would file nothing.
+        assert raise_junk_title_papers(store, dry_run=True) == []
+
+    def test_markup_repair_closes_open_todo(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="ravel05",
+            title="<i>ATHENA</i>,<i>ARTEMIS</i>,<i>HEPHAESTUS</i>: "
+            "spectroscopy using<i>IFEFFIT</i>",
+        )
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
+        assert [o.action for o in out] == ["markup"]
+        assert self._todo_status(store, todo[0]) == "done"
+
+    def test_real_titles_untouched(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        self._old(store, slug="good99", title="A Perfectly Real Paper Title")
+        assert repair_junk_title_papers(store, dry_run=False) == []
+
+    def test_crossref_leg_repairs_export_name(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="worddoc",
+            title="Microsoft Word - whatever.doc",
+            doi="10.1234/real.1",
+        )
+        crossref = _fake_crossref(
+            {"title": "The Real Registry Title", "doi": "10.1234/real.1"}
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=crossref,
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=self._no_net()["s2_fn"],
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "crossref")]
+        assert store.fetch_refs_by_ids([rid])[rid].title == "The Real Registry Title"
+
+    def test_openalex_leg_when_crossref_misses(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="oamiss",
+            title="nnano.2006.77 feature.indd",
+            doi="10.1234/oa.1",
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_fake_crossref(None),
+            openalex_fn=lambda doi, e: {
+                "title": "OpenAlex Recovered Title",
+                "publication_year": 2006,
+            },
+            s2_fn=self._no_net()["s2_fn"],
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "openalex")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.title == "OpenAlex Recovered Title"
+        assert ref.year == 2006
+
+    def test_title_search_leg_recovers_doi_less(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="filep", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1999 WHERE ref_id = %s", (rid,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (rid, "Recovered Page One Title\n\nJ. Doe\n\nBody text."),
+            )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: {
+                "title": "Recovered Page One Title",
+                "doi": "10.1234/found",
+                "year": 1999,
+            },
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "title")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.title == "Recovered Page One Title"
+
+    def test_failed_repair_stamps_and_skips_next_pass(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="nope99", title="S999_1a 1..3")
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [o.action for o in out] == ["failed"]
+        assert _meta(store, rid).get("title_repair_v") == 1
+        # Second pass: stamped → not re-attempted.
+        assert repair_junk_title_papers(store, dry_run=False) == []
+
+    def test_repair_dry_run_writes_nothing(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="drymk",
+            title="Planar<mml:math><mml:mrow><mml:mi>x</mml:mi></mml:mrow>"
+            "</mml:math>-bonded carbon materials",
+        )
+        out = repair_junk_title_papers(store, dry_run=True, **self._no_net())
+        assert [o.action for o in out] == ["markup"]
+        assert "<mml:math>" in store.fetch_refs_by_ids([rid])[rid].title
+
+    def test_one_todo_per_paper_not_per_cite_key(self, store: Store) -> None:
+        rid = self._old(
+            store,
+            slug="tri24",
+            title="__",
+            cite_keys=["ma09", "ma2009stone", "jiema2009stone"],
+        )
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        assert len(self._todos(store, rid)) == 1
+
+
+def _no_calling() -> Any:
+    def refuse(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("resolver should not be called")
+
+    return refuse
+
+
+def _fake_crossref(result: dict[str, Any] | None) -> Any:
+    def fn(doi: str, mailto: str) -> dict[str, Any] | None:
+        return result
+
+    return fn

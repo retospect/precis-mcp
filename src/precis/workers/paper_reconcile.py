@@ -47,6 +47,7 @@ from typing import Any
 
 import psycopg
 
+from precis import settings
 from precis.store import Store
 from precis.workers import _throttle
 from precis.workers.runner import BatchResult
@@ -126,8 +127,10 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 metadata_hygiene_stats,
                 migrate_dangling_paper_links,
                 raise_junk_title_papers,
+                repair_junk_title_papers,
                 requeue_stranded_fetches,
             )
+            from precis.secrets import get_secret
 
             healed_cards = heal_drifted_cards(store, dry_run=False, limit=limit)
             collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
@@ -151,10 +154,36 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # a terminal ``body:partial`` flag; SQL-only, no model run.
             partial = heal_partial_body_papers(store, dry_run=False, limit=limit)
             bodiless_judged += [o for o in partial if o.outcome != "pending"]
-            # Junk titles automation can't fix go to the owner's queue
-            # (gr477964); idempotent, so the daily pass never re-files.
+            # Junk titles get a repair attempt first (gr500372): render
+            # leaked markup in place, else resolve the real title via the
+            # stored DOI (Crossref, then OpenAlex) or an S2 title search
+            # over the stripped export name + first-page body lines. What
+            # survives then goes to the owner's queue (gr477964);
+            # idempotent, so the daily pass never re-files.
             # Capped per pass so a backlog trickles into the queue
             # instead of flooding it on the first run after deploy.
+            repaired = repair_junk_title_papers(
+                store,
+                dry_run=False,
+                limit=min(limit or _TITLE_FIX_PER_PASS, _TITLE_FIX_PER_PASS),
+                mailto=(settings.get_str("contact.crossref_mailto") or "").strip(),
+                email=(settings.get_str("contact.polite_email") or "").strip(),
+                s2_api_key=get_secret("SEMANTIC_SCHOLAR_API_KEY", store=store) or "",
+            )
+            repaired_n = sum(
+                1
+                for o in repaired
+                if o.action in ("markup", "crossref", "openalex", "title")
+            )
+            if repaired:
+                log.info(
+                    "paper_reconcile: title repair — %d fixed, %d parked, "
+                    "%d failed of %d attempted",
+                    repaired_n,
+                    sum(1 for o in repaired if o.action == "parked"),
+                    sum(1 for o in repaired if o.action == "failed"),
+                    len(repaired),
+                )
             raised = raise_junk_title_papers(
                 store,
                 dry_run=False,

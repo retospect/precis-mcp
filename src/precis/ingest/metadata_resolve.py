@@ -79,9 +79,14 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.identity import is_placeholder_title
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.crossref import lookup_crossref
-from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
+from precis.ingest.pdf_sidecar import (
+    is_garbage_title,
+    is_pii,
+    render_leaked_markup,
+)
 from precis.ingest.semantic_scholar import lookup_s2
 from precis.ingest.verify_metadata import content_tokens, title_overlap
 from precis.liveness import drain_sleep
@@ -298,7 +303,7 @@ def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
     it, not that the hit is this paper.
     """
     t = (ref.title or "").strip()
-    if t and not is_garbage_title(t) and not is_pii(t):
+    if t and not is_placeholder_title(t) and not is_garbage_title(t) and not is_pii(t):
         return [t], True
     blocks = store.chunks.list_chunks_for_ref(
         ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
@@ -471,60 +476,70 @@ def _from_meta(ref_id: int, meta: dict[str, Any], *, track: str) -> Resolution:
     )
 
 
-def _resolve_one(
+def _resolve_by_doi(
+    store: Store,
+    ref: Any,
+    stored_doi: str,
+    *,
+    mailto: str,
+    crossref_fn: CrossrefFn,
+    call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+) -> Resolution:
+    """Track 1: Crossref lookup by the ref's stored DOI.
+
+    Extracted from :func:`_resolve_one` so the junk-title repair pass
+    (:func:`precis.ingest.paper_hygiene.repair_junk_title_papers`, gr500372)
+    can drive the same DOI track — guards included — for refs outside the
+    needs-triage cohort. A resolved title is run through
+    :func:`~precis.ingest.pdf_sidecar.render_leaked_markup` before judging:
+    Crossref ships MathML/sub/sup markup verbatim, and the raw tag soup is
+    what got these refs flagged junk in the first place.
+    """
+    rid = ref.id
+    if _BOOK_DOI_RE.search(stored_doi):
+        return Resolution(rid, "discard", "doi", "book-frontmatter-doi")
+    meta = _bounded(crossref_fn, stored_doi, mailto, timeout=call_timeout)
+    if meta is _TIMED_OUT:
+        return Resolution(rid, "miss", "doi", "crossref-timeout")
+    if meta is None:
+        return Resolution(rid, "miss", "doi", "crossref-miss")
+    res = _from_meta(rid, meta, track="doi")
+    res.doi = res.doi or stored_doi
+    res.title = render_leaked_markup(res.title)
+    if not res.title or is_garbage_title(res.title):
+        res.verdict, res.reason = "discard", "resolved-title-junk"
+        return res
+    conflict = _edition_conflict(store, res)
+    if conflict:
+        res.verdict, res.reason = "parked", conflict
+        return res
+    res.verdict, res.reason = "auto", "crossref-resolved"
+    return _guard_registry_mismatch(store, res)
+
+
+def _resolve_by_title(
     store: Store,
     ref: Any,
     *,
-    mailto: str,
-    s2_api_key: str,
-    crossref_fn: CrossrefFn,
+    candidates: list[str],
+    trusted_title: bool,
     s2_fn: S2Fn,
+    s2_api_key: str,
     call_timeout: float = _DEFAULT_CALL_TIMEOUT,
 ) -> Resolution:
+    """Track 2: an S2 title search recovers a DOI + canonical metadata.
+
+    Extracted from :func:`_resolve_one` so the junk-title repair pass
+    (gr500372) can feed its own candidate list — chunk-mined first-page
+    lines plus a stripped export-name query — through the same
+    similarity / year / formula / edition / zero-overlap gates.
+
+    Try each candidate title; keep the S2 hit whose returned title best
+    matches its query. Extra candidates only raise recall — the similarity
+    gate below still guards every write. Early-exit once a candidate
+    already clears the auto bar so we don't spend needless lookups.
+    """
     rid = ref.id
-    # gr353804: a human already vetted this ref's identity — never let an
-    # automated re-resolution (registry OR the zero-overlap park below)
-    # touch it, auto-apply or not.
-    if getattr(ref, "human_verified_at", None) is not None:
-        return Resolution(rid, "miss", "-", "human-verified-skip")
-    # Not-a-paper: a held-flag with no ingested body is a broken import.
-    if ref.pdf_sha256 is not None:
-        with store.pool.connection() as conn:
-            has_body = conn.execute(
-                "SELECT 1 FROM chunks WHERE ref_id=%s AND ord>=0 LIMIT 1", (rid,)
-            ).fetchone()
-        if has_body is None:
-            return Resolution(rid, "discard", "-", "held-flag-without-chunks")
-
-    stored_doi = _stored_doi(store, rid)
-
-    # ── Track 1: resolve the stored DOI ──────────────────────────────
-    if stored_doi:
-        if _BOOK_DOI_RE.search(stored_doi):
-            return Resolution(rid, "discard", "doi", "book-frontmatter-doi")
-        meta = _bounded(crossref_fn, stored_doi, mailto, timeout=call_timeout)
-        if meta is _TIMED_OUT:
-            return Resolution(rid, "miss", "doi", "crossref-timeout")
-        if meta is None:
-            return Resolution(rid, "miss", "doi", "crossref-miss")
-        res = _from_meta(rid, meta, track="doi")
-        res.doi = res.doi or stored_doi
-        if not res.title or is_garbage_title(res.title):
-            res.verdict, res.reason = "discard", "resolved-title-junk"
-            return res
-        conflict = _edition_conflict(store, res)
-        if conflict:
-            res.verdict, res.reason = "parked", conflict
-            return res
-        res.verdict, res.reason = "auto", "crossref-resolved"
-        return _guard_registry_mismatch(store, res)
-
-    # ── Track 2: title search recovers a DOI ─────────────────────────
-    # Try each candidate title from the first few chunks; keep the S2 hit whose
-    # returned title best matches its query. Extra candidates only raise recall
-    # — the similarity gate below still guards every write. Early-exit once a
-    # candidate already clears the auto bar so we don't spend needless lookups.
-    candidates, trusted_title = _title_candidates(store, ref)
     if not candidates:
         return Resolution(rid, "miss", "title", "no-query-title")
     best: Resolution | None = None
@@ -537,6 +552,7 @@ def _resolve_one(
         if cand is None or not (cand.get("doi") or cand.get("arxiv_id")):
             continue
         res = _from_meta(rid, cand, track="title")
+        res.title = render_leaked_markup(res.title)
         if not res.title or is_garbage_title(res.title):
             continue
         sim = _similarity(store, qtitle, res.title)
@@ -585,6 +601,57 @@ def _resolve_one(
         return res
     res.verdict, res.reason = "auto", "s2-title-resolved"
     return _guard_registry_mismatch(store, res)
+
+
+def _resolve_one(
+    store: Store,
+    ref: Any,
+    *,
+    mailto: str,
+    s2_api_key: str,
+    crossref_fn: CrossrefFn,
+    s2_fn: S2Fn,
+    call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+) -> Resolution:
+    rid = ref.id
+    # gr353804: a human already vetted this ref's identity — never let an
+    # automated re-resolution (registry OR the zero-overlap park below)
+    # touch it, auto-apply or not.
+    if getattr(ref, "human_verified_at", None) is not None:
+        return Resolution(rid, "miss", "-", "human-verified-skip")
+    # Not-a-paper: a held-flag with no ingested body is a broken import.
+    if ref.pdf_sha256 is not None:
+        with store.pool.connection() as conn:
+            has_body = conn.execute(
+                "SELECT 1 FROM chunks WHERE ref_id=%s AND ord>=0 LIMIT 1", (rid,)
+            ).fetchone()
+        if has_body is None:
+            return Resolution(rid, "discard", "-", "held-flag-without-chunks")
+
+    stored_doi = _stored_doi(store, rid)
+
+    # ── Track 1: resolve the stored DOI ──────────────────────────────
+    if stored_doi:
+        return _resolve_by_doi(
+            store,
+            ref,
+            stored_doi,
+            mailto=mailto,
+            crossref_fn=crossref_fn,
+            call_timeout=call_timeout,
+        )
+
+    # ── Track 2: title search recovers a DOI ─────────────────────────
+    candidates, trusted_title = _title_candidates(store, ref)
+    return _resolve_by_title(
+        store,
+        ref,
+        candidates=candidates,
+        trusted_title=trusted_title,
+        s2_fn=s2_fn,
+        s2_api_key=s2_api_key,
+        call_timeout=call_timeout,
+    )
 
 
 def _stored_doi(store: Store, ref_id: int) -> str | None:
