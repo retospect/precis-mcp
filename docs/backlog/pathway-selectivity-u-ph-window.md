@@ -3,7 +3,6 @@ status: draft
 title: Pathway objective is "the target route wins every fork", read over the potential and pH window
 pillar: 3d-design
 prio: high
-blocked-by: pathway-nh3-network-completeness
 ---
 
 # Pathway objective is "the target route wins every fork", read over the potential and pH window

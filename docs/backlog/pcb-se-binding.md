@@ -181,7 +181,7 @@ footprint:
   the CHECK in `precis_se/migrations/0008_se_drop_nm_tables.sql` allows
   only `cad|structure|component|part`, and NOT VALID still rejects new
   rows, so editing the tuple alone fails at persist). Next free se
-  number at land; `se-region-property-layer` slice A takes 0018.
+  number at land; `pocket-from-molecule.md` (region property layer, folded) slice A takes 0018.
 - **Every `bound_kind` reader gets a `'pcb'` decision**, not only the
   three below: `handler.py` status render, `printsolid.py`,
   `printgroup.py`, `ops_export.py` (already generic), `drc.py`
@@ -542,10 +542,10 @@ Verdict needs-work for the rough-box slice: the slice is defined only in `thread
 - **blocker** — "mounting holes as through-cylinders with fastener ports" contradicts In scope "Holes are markers only, never subtracted ... no v1 check consumes a hole" and v2 item 2; the port naming, direction, and axis, and what `fasten.py` does with them, are undefined. Also "Stacks are v2" is undefined here.
 - **blocker** — thread says item -8 rough-box decision is "awaiting his decision" (se-machine-design.md line ~155), while Do next 6 says "rough box yes is the standing default, Reto 2026-10-12". Reconcile and record the ruling in this file's decisions log.
 - **blocker** — thread requires "Before building, tell ewod-pcb and pcb-easyeda-round-trip" (a human/coordination step, no builder action defined); an unattended build cannot do it. Resolve by recording it as done or removing it.
-- **advisory** — stale migration claim: "`se-region-property-layer` slice A takes 0018" but se migrations already reach 0022; "next free number at land" is fine, drop the 0018 note. Core next-free is after 0228.
+- **advisory** — stale migration claim: "`pocket-from-molecule.md` (region property layer, folded) slice A takes 0018" but se migrations already reach 0022; "next free number at land" is fine, drop the 0018 note. Core next-free is after 0228.
 - **advisory** — acceptance criteria are for the full v1; the slice needs its own (box dimension test with a bottom/top part fixture, finding naming every non-own-height part, `set_binding(kind='pcb')` accepted and resolved at load).
 - **advisory** — `handlers/pcb.py` thickness plumbing: the caller at ~3480 is the JLC order path (`args.get("thickness_mm") or DEFAULT`); `mechanical_profile`'s caller must be re-located by name, not the "~1981" cited elsewhere.
-- **advisory** — spec is `status: draft`; the dangling-link check passed (`pcb-flexboard.md`, `cross-scale-single-assembly.md`, `se-region-property-layer.md` all exist). Split: pass A (thickness column, `mechanical_profile` keys, connector roles) is separable from the rough box and should be deferred explicitly, not left implied.
+- **advisory** — spec is `status: draft`; the dangling-link check passed (`pcb-flexboard.md`, `cross-scale-single-assembly.md`, `pocket-from-molecule.md` (region property layer, folded) all exist). Split: pass A (thickness column, `mechanical_profile` keys, connector roles) is separable from the rough box and should be deferred explicitly, not left implied.
 
 #### Rough-box addendum (readychecks, 2026-10-21, after coordinator message)
 

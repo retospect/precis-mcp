@@ -1741,8 +1741,8 @@ only in the clearance they offset by, which is a real difference (router
 escape room vs. fab ink clearance) rather than drift. The circle path
 (`instance_keepout_radius_mm`, `instance_pad_radius`) is deleted. What
 remains is that the anneal's GRADED cost term still steers by a flat
-2.0mm centre-distance; that one open question lives in
-`docs/backlog/pcb-courtyard-polygon.md` — go there, not here.
+2.0mm centre-distance; that was closed 2026-08-31 (the term now reads
+the shared courtyard polygons, `cost.courtyard_overlap_pair_term`).
 
 Two findings from this investigation are worth keeping because they are
 traps, not status:

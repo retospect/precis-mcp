@@ -34,7 +34,7 @@ Until that lands, most sessions are still on per-session stdio containers
 with no shared server to hang a selector on.
 
 Owner anchor: `src/precis/server.py` (session binding);
-`mcp-shared-server-multiprocess.md` (per-process state must leave memory
+`session-mcp-http-server.md` §Single uvicorn worker (per-process state must leave memory
 before a second server process is safe — a per-session selector inherits
 that constraint).
 
@@ -43,4 +43,4 @@ measurably different search bias or skill-serve behavior from the same
 server process, without either client passing extra parameters.
 
 Closest existing items: `context-memory-hierarchy.md`, `session-mcp-http-server.md`,
-`mcp-shared-server-multiprocess.md`.
+`session-mcp-http-server.md` §Single uvicorn worker.

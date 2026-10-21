@@ -12,7 +12,7 @@ Design session 2026-09-14 (Reto + agent, jolly-cooking-haven worktree).
 **2026-10-01 — demoted in-progress → draft:** §1 (the `viz3d` engine)
 shipped 2026-09-15; §2–4 are untouched.
 
-Companion: `se-nanobud-graph.md` (supplies the structures the first
+Companion: the closed se-nanobud-graph spec (supplies the structures the first
 figures render). First consumer: redraw dr173020's structural figures.
 
 ## Motivation / why
@@ -133,7 +133,7 @@ tuning; not the figure path.
   overwrites the blob.
 - Camera defaults frame an off-origin structure correctly (bbox target).
 - dr173020 dogfood: at least the dc3015720-replacement panel rendered
-  from a generated nanobud (needs `se-nanobud-graph.md` slice 2).
+  from a generated nanobud (needs the closed se-nanobud-graph spec slice 2).
 
 ## Target + blast radius
 

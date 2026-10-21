@@ -225,8 +225,8 @@ Acceptance criteria:
 Owning files: `src/precis/pcb/__init__.py` (`DEFAULT_STACKUP`),
 `src/precis/pcb/ir.py`, `src/precis/pcb/maze.py`,
 `src/precis/pcb/globalplan.py`, `src/precis/handlers/pcb.py`
-(`_op_stackup`). Absorbs what is left of
-[pcb-layer-preferred-direction](pcb-layer-preferred-direction.md).
+(`_op_stackup`). No per-layer preferred direction (unified
+place-route Decision 2, Reto 2026-10-18).
 
 ### Slice 4 — derived pour regions
 
@@ -425,8 +425,6 @@ place/route; both are measured before landing.
   stitching (Reto: stitch, not drop).
 - [pcb-board-profile-prototype](pcb-board-profile-prototype.md) — ready; sets
   the default for slice 10's thermal key.
-- [pcb-layer-preferred-direction](pcb-layer-preferred-direction.md) —
-  absorbed by slice 3.
 - [pcb-keepout-does-not-bind](pcb-keepout-does-not-bind.md) — closed by
   slice 5.
 - [pcb-missing-constraint-classes](pcb-missing-constraint-classes.md) §B

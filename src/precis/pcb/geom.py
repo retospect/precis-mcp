@@ -106,7 +106,7 @@ def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
     parts' courtyards be placed here) and :mod:`precis.pcb.drc` (do any two
     courtyards on the finished board overlap). A placer that thought a
     placement legal while DRC called it a violation is the drift
-    ``docs/backlog/pcb-courtyard-polygon.md`` exists to close, and two
+    the courtyard-polygon work existed to close, and two
     implementations of one predicate is how that drift starts.
 
     **Convex only, and the name says so.** SAT tests the edge normals of

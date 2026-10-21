@@ -1108,7 +1108,7 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   (`class-lattice-similarity-spaces-and-laws.md` §4), `derived` → `derived`,
   `imputed` → `derived` with the generator in the structured writer
   provenance (gap 2 above). Their `measurement_arg` (position, entity) is
-  the `subject_selector text` column that `se-region-property-layer.md`
+  the `subject_selector text` column that `pocket-from-molecule.md` (region property layer, folded)
   adds so a design's *region* can be a subject; decide the grammar when
   this item ships (open question there). Participant roles are a separate
   axis from `direction` and the condition `role`

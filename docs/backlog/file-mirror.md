@@ -145,8 +145,8 @@ item). Three additions this item now carries:
    memory dir; they mount as a third `ro` root (`repo`) so a walk from a
    gripe reaches the convention it violates. `docs/backlog/` mounts as a
    fourth `ro` root (`backlog`): it is the largest body of repo guidance
-   and today invisible to `search()` (`unify-backlog-gripes-discoverable.md`
-   names the hole); front-matter `pillar:` and `blocked-by:` become
+   and is searchable today only through the md kind (`search(kind='md')`,
+   DB-free); front-matter `pillar:` and `blocked-by:` become
    tags and `related-to` links in the same mirror-links pass.
 3. **A retirement condition per file class**, which `docs/roadmap.md`
    §Retirement points at: the harness memory index retires when session

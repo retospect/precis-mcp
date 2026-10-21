@@ -28,8 +28,8 @@ summariser) moved to `local-compute.md` on 2026-10-01; the shared session MCP
 server has its own thread (session-mcp-shared-server); this one owns the
 serve tier and the eval spine.
 **Last reviewed:** 2026-10-01 (local model serving moved to local-compute;
-pillar review 2026-09-30 added the seam, embedder-capacity-ownership as a
-wait, and five orphan gripes)
+pillar review 2026-09-30 added the seam, embedder capacity as a wait,
+and five orphan gripes)
 **Worktree:** `serving-programme`
 **Allocation decision:** active — Reto 2026-10-17 (Pillar 5 Operations); dormant 2026-10-01 to 2026-10-17.
 
@@ -72,9 +72,9 @@ correct it.
 
 ## Parked
 
-- **backlog/embedder-capacity-ownership.md** (local-compute thread) — a
-  wait, not this thread's work: local-compute owns the item, but this
-  thread's py-spy/topology answers (Do next 1) feed its capacity picture.
+- **Embedder capacity** (local-compute thread, decided 2026-10-02) — a
+  wait, not this thread's work: this thread's py-spy/topology answers
+  (Do next 1) feed its capacity picture.
 
 ## No action needed
 

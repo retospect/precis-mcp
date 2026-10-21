@@ -85,7 +85,7 @@ last blocks:
 
 ## Explicitly NOT in scope
 
-- Filing `disputes` at scale — `docs/backlog/claim-conflict-search.md`.
+- Filing `disputes` at scale — `workers/conflict_search.py`.
 - The cite-misuse relation for (draft-chunk, hub) prose misuse —
   `docs/backlog/contradicts-conflates-evidence-and-prose-misuse.md`.
 
@@ -108,3 +108,19 @@ last blocks:
 - Verdict wiring (item 2) stays a human follow-through checklist in
   slice 1; it does not run on mint. The gate change (item 1) lands alone
   first and is buildable now.
+
+### From taproot-adjudicate-reopened-claims (folded 2026-10-21)
+A demotion (`nanopub/demote.py`) still reopens reviewed hubs and tells the
+human to "adjudicate"; no verdict is recorded, so a wrong `contradicts`
+edge is unappealable and a right one goes nowhere. The verdict must be
+recorded and re-readable so one edge is never re-adjudicated from scratch
+(the `reground_seen` / `taproot_rejected` memo shape is the precedent).
+Start human-only: a demoter wired to a bad judge un-approves the corpus at
+machine speed. Open, with a recommendation:
+- A spurious verdict keeps the edge as a recorded-but-inert relation
+  (recommended; deleting invites a re-find next pass), and the publish
+  gate learns "adjudicated-spurious" so it stops blocking.
+- The claim re-earns `reviewed` rather than restoring the prior state
+  (recommended; matches how `nanopub_reopen` discards the frozen fields).
+- On a `published` claim, does "contradiction holds" mandate a
+  retraction, or is that always a separate human call?

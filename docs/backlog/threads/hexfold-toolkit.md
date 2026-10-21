@@ -824,7 +824,13 @@ removed as met — the transport move it waited on happened 09-29)
     relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;
     sits behind the tunnel slice it makes relaxable (S5 waits on the Mac
     probe).
-17. **td344088** — the se + hexfold paper. The thread's end state; it
+17. **Cases A–D sublattice test** (from se-nanobud-graph, folded
+    2026-10-21) — a test, not new code: hexfold's `annot.sublattice`
+    (`same`/`cross` per attachment bond) reproduces Wang & Li's published
+    Cases A–D magnetic/non-magnetic split (same-sublattice junction bonds
+    → ~6 μB, cross-sublattice → non-magnetic). Verify the primary source
+    first (`perplexity-research:339983`).
+18. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Owned quests, kept dormant
@@ -843,10 +849,9 @@ not tick, wake or re-scope them without his word. On prod they are tagged
 
 ## Parked
 
-- **backlog/se-op-handler-test-fixture.md** — was ranked for a refuted
-  gripe, so its motivating case is gone. The prepare/finish
-  seam is still untested; unparks the next time a phase bug is suspected,
-  with a real instance to write the first test on.
+- **se prepare/finish batch-rollback test** — none exists (the handler
+  path itself is exercised by `handler.edit(ops=…)` across the se tests).
+  Write it with the reproducer the next time a phase bug is suspected.
 
 ## No action needed
 

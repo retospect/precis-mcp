@@ -34,6 +34,10 @@ Open gaps from the token-review passes (2026-07 .. 2026-10-02). Shipped:
 - (f) **Wrong tier**: `c6fc74be` ran four `general-purpose` agents on the
   `fable` model whose whole job was wording gripe text (gripe-filer / haiku
   remit).
+- Codex fleet transcripts are outside the `scripts/token-review` corpus
+  (`docs/runbooks/token-review.md`); if the Codex fleet still runs, the
+  miner should separate provider counters and read them (from the closed
+  fleet-token-efficiency-audit, 2026-10-21).
 - Two further hooks stay deferred unless pain shows: bare-pytest nudge;
   Stop-with-dirty-worktree reminder.
 

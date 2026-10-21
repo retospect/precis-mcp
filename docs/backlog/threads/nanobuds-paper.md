@@ -89,7 +89,7 @@ held for hexfold; leave the hero and its unrelaxed-junction caption intact.
   - pillar delete + `pillar/regen.py` + re-export;
   - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session).
 - **Off-thread requests from this session, each with its owner:**
-  - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; `docs/backlog/greenfield-cluster-layout.md`;
+  - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; the greenfield layout (now `llm-capacity-plan.md`);
   - knowledge-mesh: rxn_values folded into measures; LLM specs as a consumer; range + conditions search with SI storage (in `measures-substrate.md`);
   - orchestrator: the fleet's default model is sonnet.
 **Deployed vs landed (2026-10-02):** everything this thread shipped is on
@@ -374,11 +374,9 @@ td173019.
    (`/tmp/nanobud-apply/export-r5`, before the glossary pass): 118 bib
    entries, 0 with volume, 25 pin warnings, 2 originator notes, 4
    placeholders.
-3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
-   2026-10-02: geo rung, embed, registration and assembler mode shipped;
-   generator, sublattice parity, chirality and nomenclature overtaken by
-   hexfold. Left: a rigidity screen and a Cases A–D test of hexfold's
-   `annot.sublattice`, both via the hexa session.
+3. **backlog/se-atomic-round2.md** §Later phases rigidity screen and
+   hexfold-toolkit Horizon 17 (Cases A–D sublattice test) — the residue
+   of se-nanobud-graph (folded 2026-10-21), both via the hexa session.
 4. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
    brings the 139 claim hubs behind the nanobud draft above board — direct
    input to this thread's own claim-hub-signing end state. 2026-10-02 pass
@@ -403,8 +401,8 @@ td173019.
    October todo. td459586's own text still names td450081 (venue) as a
    hold; that todo is done (Nanoscale, 2026-10-01).
 4. **backlog/nanobud-campaign.md**
-5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
-   se-nanobud-graph (Do-next 5).
+5. **backlog/nanobud-nomenclature-paper.md** — unblocked: hexfold's `.hx`
+   notation is the name.
 6. **backlog/nanobud-magnetomechanical-memory.md**
 7. **backlog/chern-domain-memory-in-the-sheet-generator.md**
 8. **backlog/berry-phase-and-topological-defects-in-precis-models.md**

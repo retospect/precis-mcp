@@ -20,7 +20,7 @@ specify, plus four things the repo lacks. The reconciliation table lives
 in `term-taxonomy.md` §"Design-notes handoff (2026-09-30)"; this item owns
 the four additions.
 
-The property layer for designs (`se-region-property-layer.md`) needs the
+The property layer for designs (`pocket-from-molecule.md` (region property layer, folded)) needs the
 first two on day one: a pocket spec is a constraint set, and pick-and-join
 is "near on size, far on charge". The paper graph needs all four for the
 20-paper hand-extraction test.
@@ -134,8 +134,8 @@ classes, `view='members'`; new store ops for `membership`, `participation`,
 `curve`/`fit`/`law`, `entity_space_vectors`; migrations forward-only,
 numbered against the prod ledger after `measures-substrate`; `precis-taxon`
 and `precis-measure` skills; `knowledge-mesh.md` §2 gains a `near`/`far`
-eye argument. Consumers: `se-region-property-layer.md` (emits classes),
-`se-intent-to-realize-loop.md` (queries membership + near/far),
+eye argument. Consumers: `pocket-from-molecule.md` (region property layer, folded) (emits classes),
+`pocket-from-molecule.md` slice 4 (intent-to-realize loop, folded) (queries membership + near/far),
 `norr-her-meta.md` (first paper-graph consumer), the catalysis quests
 (`knowledge-mesh.md` §6).
 

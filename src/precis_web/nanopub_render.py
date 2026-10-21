@@ -168,7 +168,7 @@ def hub_context(
     # Pre-approve (unminted/candidate) is also this hub's own eligibility
     # to be a merge WINNER (slice 3: a hub past 'candidate' has a frozen
     # identity — merging into it would retroactively re-identify a
-    # reviewed/signed artifact, taproot-merge-mcp-surface.md) — shared by
+    # reviewed/signed artifact, the closed taproot-merge-mcp-surface spec) — shared by
     # the mint-gates dry-run below and the nearest-claims panel.
     pre_approve = state in (None, "candidate")
     conflict_coverage = _conflict_coverage_panel(

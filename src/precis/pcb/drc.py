@@ -2520,7 +2520,7 @@ def check_synthesized_footprint(model: dict[str, Any]) -> list[DrcFinding]:
 #: a circle could not stand in for the real shape, over-reserving an edge
 #: connector eightfold while UNDER-reserving a SOIC-8, so a rule built on
 #: it enforced a boundary that was not the one the placer respected or the
-#: one the silkscreen showed. See ``docs/backlog/pcb-courtyard-polygon.md``.
+#: one the silkscreen showed (the courtyard-polygon work, 2026-08-30).
 Courtyard = tuple[str, list[tuple[float, float]]]
 #: ``(label, keep-out polygon, owner refdes or None)`` for
 #: :func:`check_courtyard_hole`.

@@ -9,7 +9,7 @@ title: conventions as findings — every docs/conventions rule becomes a finding
 `file-mirror.md` §"Pillar-review deltas" item 3 sets the retirement
 condition for a convention file: its rule is a `finding` with a `tests`
 edge to the hook or test that enforces it. Nothing mints those findings.
-`unify-backlog-gripes-discoverable.md` names the hole as a pointer;
+The md kind (`search(kind='md')`) made backlog and conventions searchable;
 `docs-and-skills-redesign.md` defers "reviewer-finding wiring into
 kind='finding'".
 

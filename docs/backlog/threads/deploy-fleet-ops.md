@@ -40,8 +40,6 @@ residue, then batched ops and flip steps.
    plist drift, model-serving); makes 1 and 2 detectable after the fact.
 4. **backlog/deploy-tree-lints-reachability-and-dest-collision.md** — lint
    unreachable role edits and colliding render targets before they ship.
-5. **backlog/deploy-drain-wait-is-a-silent-noop.md** — the drain is fixed;
-   the residual is re-reading historical job deaths around deploys.
 6. **Fleet authority v2** — `.claude/fleet/authority.md` v2 and its
    generator, which may land in parallel from the coordinator's tree; it
    names who may deploy, so once it lands this thread keeps the deploy

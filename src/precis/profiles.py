@@ -1,6 +1,6 @@
 """``kind='profile'`` storage — owner-scoped branding profiles.
 
-Slice 6 of ``docs/backlog/draft-poster-genre-and-themes.md`` (Reto rulings
+Slice 6 of the closed draft-poster-genre-and-themes spec (Reto rulings
 2026-10-15): a profile is a numeric ``refs`` row of ``kind='profile'``
 whose payload lives in ``refs.meta['profile']`` — a dict shaped exactly
 like :class:`precis.export.poster_profile.PosterProfile`'s field list

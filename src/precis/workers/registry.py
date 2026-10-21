@@ -1225,7 +1225,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
-        # The graph gardener (docs/backlog/graph-gardener.md): a daily
+        # The graph gardener (the closed graph-gardener spec): a daily
         # `graph_garden` scheduler cadence mints the job — gated inside
         # service.mint_job on the `graph_garden` service_config row, so
         # the pass is dark until an operator lights it. kind=JOB (drained

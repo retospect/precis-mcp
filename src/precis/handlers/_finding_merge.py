@@ -1,7 +1,7 @@
 """``get(kind='finding', id='fi<winner>', view='merge-plan', args={'loser': …})``
 — the agent-side, read-only dry run of a claim-hub merge.
 
-``docs/backlog/taproot-merge-mcp-surface.md``: applying a merge hard-DELETEs
+the closed taproot-merge-mcp-surface spec: applying a merge hard-DELETEs
 redundant ``links`` rows and soft-deletes a hub, so it is a **human door**
 (``POST /nanopub/fi{hub}/merge`` on the claim page). Agents get only the
 plan: this view always runs :func:`precis.taproot.hub.merge_hubs` with

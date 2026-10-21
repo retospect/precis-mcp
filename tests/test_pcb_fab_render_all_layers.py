@@ -210,7 +210,7 @@ _RENDER_SEED = int(os.environ.get("PRECIS_PCB_RENDER_SEED", str(SEEDS[0])))
 #:    - ``silk_missing`` counts ride the same congestion, and every
 #:      nonzero seed includes the known dot-suppression coupling — each
 #:      dropped courtyard also silences its pin-1 dot
-#:      (``docs/backlog/pcb-courtyard-polygon.md``'s open pin-1 item).
+#:      (the open pin-1 item, gr503436).
 #:
 #: 9. **2026-08-31 (later) — the guarantee hole is CLOSED and the ledger
 #:    re-pinned under the octilinear engine.** Root cause of item 8's

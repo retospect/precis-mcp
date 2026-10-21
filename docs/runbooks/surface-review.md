@@ -84,7 +84,7 @@ disagrees with the alert.
    drops. Plus the surface-family items in `docs/backlog/INDEX.md`
    (`mcp-surface-economy`, `capability-discovery-on-a-sprawling-surface`,
    `vocab-compaction`, `token-review-hook-gaps`, `llm-prompt-surface-audit`,
-   `mcp-verb-kwarg-parity`, `tick-tool-lists-and-discovery-reflex`). Every
+   `mcp-verb-schema-diet.md`, `tick-tool-lists-and-discovery-reflex`). Every
    candidate gets marked known/new against this set. The territory is already
    well-populated; the pass's job is to put *measurements* on those items,
    not to mint more of them.

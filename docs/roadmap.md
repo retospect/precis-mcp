@@ -100,7 +100,7 @@ statement agents read.
 
 **Where it stands.** The substrate half is threaded and moving under
 `knowledge-mesh.md`: `backlog/knowledge-mesh.md` (Reto's own statement of
-this pillar), `backlog/measures-substrate.md`, `backlog/graph-gardener.md`,
+this pillar), `backlog/measures-substrate.md`, `backlog/graph-gardener-value.md`,
 `backlog/corpus-quantitative-extraction.md`. The consumer half was entirely
 unthreaded at the review and is now `graph-memory-consumers.md`. The
 review's evidence that the mission had not sunk in: a paper session did its
@@ -155,8 +155,8 @@ microfluidic cartridges, motors, mechanics) are children of one design.
 
 **North-star specs.** `backlog/multiscale-design-system-spec.md` (Reto's
 system spec) with `backlog/multiscale-design-architecture.md` as the map;
-`backlog/se-kind.md`; `backlog/se-region-property-layer.md` (the
-non-geometric layer, decided 2026-09-30).
+`backlog/se-kind.md`; `backlog/pocket-from-molecule.md` (carries the
+non-geometric region layer, decided 2026-09-30).
 
 **Named test pieces**, in build order: the **box** and the **rotary
 ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
@@ -179,7 +179,7 @@ per-region property layer, the DNA wrap, and one assembly across scales
 parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
-knowledge-mesh, consumed here) and `backlog/se-intent-to-realize-loop.md`.
+knowledge-mesh, consumed here) and `backlog/pocket-from-molecule.md` slice 4.
 The intent → realize loop is active (Reto, 2026-10-17), driven by
 `backlog/pocket-from-molecule.md` through `nanoreactor.md` (owner) and
 `se-machine-design.md` (region-property layers B and C).
@@ -228,10 +228,10 @@ id='/placement')`: landed (`placement`) and routed (`placement_routed`,
 migration 0179, recorded from the round-1 deploy on). No monitor
 answers "is capacity idle", and `backlog/cluster-scheduling.md` tears
 servers down when the backlog drains — the inverse of this pillar, now
-superseded by `backlog/graph-maintenance-queue.md`. The embedder is the
-current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
+superseded by `backlog/graph-gardener-value.md` slice 5 (idle filler). The embedder is the
+current bottleneck (`src/precis/embedder_service.py` (capacity decided 2026-10-02)). Reto
 2026-10-01: bring local compute back — summariser first
-(`backlog/local-summarizer.md`), then the model that fits one spark
+(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), then the model that fits one spark
 (`backlog/vllm-per-node-serving.md` Slice 0).
 
 **Compute reserve: Meluxina** (Reto, 2026-10-02: "we should use compute
@@ -264,7 +264,7 @@ on 2026-10-17. Castor medium-tier routing is an open decision.
 
 **Surfaces.** One console row answers busy or idle per tier
 (`get(kind='llm', id='/placement')` for the share;
-`backlog/graph-maintenance-queue.md` for busy-or-idle).
+gr458727 for busy-or-idle).
 
 ## Pillar 4 — personal integration (A, HELD)
 

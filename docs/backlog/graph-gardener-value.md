@@ -12,8 +12,8 @@ Reto, 2026-10-21: "If a fisheye finds things already with a RAG call, will
 a specific link actually help? What is the value add of the graph
 gardener, have we done this right?" Then: run the gardener on castor
 (openai/gpt-oss-120b) for a few days, make the changes below, and find
-what else is worth doing. Builds on [graph-gardener](graph-gardener.md)
-(v1 shipped, lit on prod 2026-10-21: `service_config` melchior
+what else is worth doing. Builds on the graph gardener
+(v1 shipped 36d5407ac, lit on prod 2026-10-21: `service_config` melchior
 `graph_garden` prio 1, proposer routed to castor by the
 `llm.op.graph_garden:propose` local chain),
 [knowledge-mesh](knowledge-mesh.md) §4 (the per-quest mesher) and
@@ -126,6 +126,21 @@ duplicates the index and makes the fisheye (which renders links) noisier.
 5. **Question-driven gaps**: from each quest's rubric, list the questions
    slice 2's eval cannot answer from the graph; those become the scout's
    widen/read targets instead of the thinnest-axis heuristic.
+
+## From graph-gardener (folded 2026-10-21; v1 shipped 36d5407ac)
+
+- **Stamp `agentlog_id` into `links.meta` at write time** (its in-scope
+  6, open). The tool_calls ledger records names only and cannot supply it.
+  It gates the vocabulary promotion rule: a free `meta.axis` value or a
+  proposed relation is promoted at ≥N uses across ≥M distinct agentlog
+  runs (recurrence, not corpus size; relax while the corpus is small).
+  Promoting a relation emits a migration-proposal todo, never a row flip,
+  because the relation registry changes only by migration. Bulk remaps
+  keep the prior (`links.meta.prior_relation` / `prior_axis`) so a bad
+  merge is one query to undo.
+- **Open: split proposals** need an open polysemy finding on the node,
+  and nothing mints those yet; build splits after the annotation path is
+  real.
 
 ## Watch (running now)
 

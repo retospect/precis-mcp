@@ -32,7 +32,7 @@ its own local-first ``llm.op.llm_summarize`` chain since 2026-10-11):
   (:func:`_derived_concurrency`) — so the pool matches the server's
   ``--parallel`` rather than a guess (the advertised-6/``--parallel 4``
   mismatch that left two threads in guaranteed backoff, per
-  ``docs/backlog/local-summarizer.md``). A cloud-only chain — nothing
+  the closed local-summarizer spec). A cloud-only chain — nothing
   advertised — keeps ``_DEFAULT_CONCURRENCY``: a plain I/O fan-out against
   the cloud endpoint, gated by the provider's breaker/rate-limit behavior
   (``paused``-back on admission refusal), not a fixed local-serving

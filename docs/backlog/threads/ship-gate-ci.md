@@ -125,10 +125,6 @@ nightly — the diff-cover verdict is still open.
 
 ## Horizon
 
-1. **backlog/session-prefix-and-fleet-context-cost.md** — a 105-137k
-   turn-one prefix is half of all cache reads; fleet windows run at 250k.
-2. **backlog/test-db-seed-xdist-isolation.md** — shared test-DB seeds vanish
-   on gate clones; isolation fixes remove a flake class.
 3. **backlog/gate-concurrency.md** — serialised template clones add
    suite-setup tax; speed, not correctness.
 4. **backlog/idle-test-dbs-hold-vm-ram.md** — live worktree test DBs hold VM

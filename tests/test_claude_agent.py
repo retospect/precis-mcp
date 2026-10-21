@@ -507,7 +507,7 @@ def test_default_envelope_denies_nothing_and_no_role(stub_bin: Path) -> None:
 
 
 # ── PRECIS_MCP_PROFILE=command inert-deny guard (backlog stopgap) ──
-# docs/backlog/agent-deny-lists-are-profile-dependent.md — option 2.
+# The closed agent-deny-lists spec, option 2 (open gaps: gr503441).
 
 
 def test_command_profile_precis_verb_deny_refuses(
@@ -525,7 +525,7 @@ def test_command_profile_precis_verb_deny_refuses(
     msg = str(excinfo.value)
     assert "command" in msg
     assert "mcp__precis__delete" in msg
-    assert "docs/backlog/agent-deny-lists-are-profile-dependent.md" in msg
+    assert "_refuse_envelope_denied_verb" in msg
 
 
 def test_command_profile_envelope_deny_refuses(

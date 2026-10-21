@@ -223,7 +223,7 @@ def approve(
     if violations:
         raise MintGateError(violations)
 
-    # Conflict-search freshness (docs/backlog/claim-conflict-search.md
+    # Conflict-search freshness (the closed claim-conflict-search spec
     # item 4): advisory only, never a gate. A missing/stale coverage
     # ledger queues a re-sweep (dark unless the service is enabled) so the
     # "no known conflict" statement is re-checked against today's corpus;

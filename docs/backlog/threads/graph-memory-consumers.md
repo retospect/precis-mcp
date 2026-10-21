@@ -156,8 +156,6 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 6. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
-7. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
-   gripes as one searchable surface; consumes the mirror once it lands.
 
 ## Horizon
 
@@ -193,8 +191,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
    shipped; the open item is the executed (dev-DB) runner.
 6. **backlog/skill-bundled-scripts.md**
 7. **backlog/turn-routing-and-context-dsl.md**
-8. **backlog/context-quality-eval.md** +
-   **backlog/fisheye-context-eval-study.md** — the measurement tail.
+8. **backlog/fisheye-context-eval-study.md** — the measurement tail
+   (the context-audit catalog lives in `scripts/context-audit/`; render
+   residuals in gr503440).
 
 ## Parked
 
@@ -213,7 +212,7 @@ Search cluster (13 items) joined 2026-10-01; `classify-scope-and-400-watch`
 left for `platform`; `paper-search-unique-per-paper` shipped 2026-10-12.
 
 `knowledge-mesh` owns the substrate (knowledge-mesh, measures-substrate,
-graph-gardener), the memory half (file-mirror, context-memory-hierarchy,
+graph-gardener-value), the memory half (file-mirror, context-memory-hierarchy,
 session-history-into-precis) and the surfaces (draft-linearization — the eye ladder
 shipped 2026-10-12). This thread owns the agent-side affordances listed
 above. Do not duplicate ranking across the two files.

@@ -146,7 +146,7 @@ is a breaking change for any caller still passing it → CHANGELOG note.
 
 #### 2c. Design-doc narrative "Reto" — **LEAVE** (historical intent)
 
-`docs/backlog/todo-tree-plan.md`, `precis-web-build.md`, `storage-v2.md`
+the todo tree (`handlers/todo.py` docstring), `precis-web-build.md`, `storage-v2.md`
 use "Reto" as the human actor in prose ("what Reto asked for",
 `level:strategic | Reto`). These are point-in-time design records;
 rewriting them rewrites history. **Exception:** literal config values

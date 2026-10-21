@@ -1,4 +1,4 @@
-"""Deep reviewer — Slice 3 of ``docs/backlog/todo-tree-plan.md``.
+"""Deep reviewer — Slice 3 of the closed todo-tree-plan spec.
 
 Weekly Sunday-night tier. Where structural runs every 6h with a
 relatively narrow lens, deep_review does the full Allen-review:

@@ -1,4 +1,4 @@
-"""Schedule worker — Slice 4 of ``docs/backlog/todo-tree-plan.md``, extended
+"""Schedule worker — Slice 4 of the closed todo-tree-plan spec, extended
 to also fire **push delivery** (the retired ``kind='cron'`` mechanism,
 folded onto the recurring facet).
 

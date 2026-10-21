@@ -81,6 +81,21 @@ are not actually adjustable short of a manual `docker rm`.
 Single uvicorn worker — **never** `--workers >1`: the pagination-cursor registry (`_init_runtime`'s
 `long_lived = True`, gr267466) and the DB pool are all per-process.
 
+*From mcp-shared-server-multiprocess (folded 2026-10-21): what must leave
+process memory before a second worker.* One worker is not yet the
+bottleneck (12 concurrent searches 4.78 s wall against a 2.06 s single
+call). Per-process today, with what N workers would do to each:
+- **Pagination cursor registry** (`_pagination.py`) — breaks: a cursor
+  minted on worker A is unreadable on B, a user-visible `no such cursor`.
+- **Exit breadcrumb** (`install_watchdog.py`) — the file deletes on first
+  read, so N-1 workers report nothing.
+- **DB pool** — N × `max_size`; the pgbouncer arithmetic below assumes one.
+- **Tool-concurrency semaphore** (`server.py::_FairSemaphore`) — the cap
+  becomes N × the configured value.
+- **Session binding** — only a per-call `ContextVar`; skill dedup is
+  client-held (`have=`), so nothing to move.
+Each externalisation gets its own item when a second worker is wanted.
+
 **2. Snapshot the source instead of bind-mounting it.** The container
 gets `-v "${REPO}:/src:ro"` and its entrypoint copies `/src` to `/app`
 (excluding `.git`) before serving. With one long-lived process the live

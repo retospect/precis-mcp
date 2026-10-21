@@ -1,6 +1,6 @@
 """``conflict_search`` — every claim hub hunts its own opposition.
 
-``docs/backlog/claim-conflict-search.md``: the sweep (negated-paraphrase
+the closed claim-conflict-search spec: the sweep (negated-paraphrase
 ANN → ``paper_rank``-budgeted verify → ``disputes`` edge → coverage
 ledger), the approve-time advisory panel, and the counter-claim mint
 backstop. A standing, watermarked ref-pass — mirrors ``hub_tagline``'s
@@ -23,7 +23,7 @@ Per hub:
    claim. "X has no effect on Y" sits far from "X enhances Y" in
    embedding space, so searching only the claim's own phrasing is
    structurally blind to the disagreements most worth finding
-   (docs/backlog/claim-conflict-search.md's decisions log). A dispatch
+   (the closed claim-conflict-search spec's decisions log). A dispatch
    failure skips the hub *without* stamping the watermark — the lease is
    cleared instead, so a transient LLM outage is retried next pass
    rather than parked behind the TTL.
@@ -45,7 +45,7 @@ Per hub:
    venues still gets a verify slot.
 4. **Verify** — the sanctioned shared seam,
    ``workers._chase_llm._verify_support_with_caveats`` (never forked;
-   docs/backlog/claim-conflict-search.md's "Boundary with hub_refine").
+   the closed claim-conflict-search spec's "Boundary with hub_refine").
    A dispatch failure consumes the budget slot and counts toward
    ``llm_errors`` — never an edge.
 5. **File** — a confirmed ``contradicts`` verdict on a candidate never
@@ -75,7 +75,7 @@ Per hub:
 watermark cohort a few hubs per tick, in :data:`_DEFAULT_COHORT_ORDER`
 order — ``dense`` ranks a due hub by how many *other* live claim hubs
 share an evidence source with it, so the backfill sweeps thick topic
-neighbourhoods first (``docs/backlog/claim-conflict-search.md`` item 2:
+neighbourhoods first (the closed claim-conflict-search spec item 2:
 conflicts hide where coverage is thickest); ``ref_id`` is the original
 flat walk, kept as the escape hatch via
 ``PRECIS_CONFLICT_SEARCH_COHORT_ORDER``. :func:`sweep_one_hub` is the same
@@ -127,7 +127,7 @@ call that ignores its timeout.
 
 Re-derives its own discovery wiring rather than importing
 ``hub_refine``'s underscore-private helpers (a deliberate spec decision,
-docs/backlog/claim-conflict-search.md item 1's boundary note). Shared
+the closed claim-conflict-search spec item 1's boundary note). Shared
 imports: ``workers/_chase_llm.py``'s verifier, and — for the counter-
 claim backstop only — the directed-mint door
 (:mod:`precis.taproot.directed`) and the hub→hub link write door
@@ -252,7 +252,7 @@ _DEFAULT_TOPK = 8
 _DEFAULT_VERIFY_BUDGET = 6
 
 #: Fraction of a hub's verify budget reserved for below-median-``read_first``
-#: candidates (the small-voice floor, docs/backlog/claim-conflict-search.md
+#: candidates (the small-voice floor, the closed claim-conflict-search spec
 #: item 2) — tuning happens on the first dense-neighbourhood backfill, not
 #: here.
 _FLOOR_FRACTION = 0.2

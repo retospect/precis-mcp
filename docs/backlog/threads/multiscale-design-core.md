@@ -24,10 +24,10 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 kinds stand on exists — design-state-core, pattern groups, complementarity,
 make tree, attached models — per `backlog/multiscale-design-system-spec.md`,
 with `backlog/multiscale-design-architecture.md` as the map. design-state-core
-has shipped (r37); pattern-groups, make-tree-vs-design-tree and
-attached-models-layer remain, independent enough to start in any order
-except where noted, and are the ones every consumer kind
-(se-machine-design, pcb-platform) is implicitly waiting on.
+has shipped (r37), and the make tree (`make` kind, migration 0154) and
+attached models (`analyzed-by`, migration 0153) shipped v1; pattern-groups
+remains, the piece every consumer kind (se-machine-design, pcb-platform) is
+implicitly waiting on.
 **Last reviewed:** 2026-09-30
 **Worktree:** `multiscale-design-core`
 **Allocation decision (historical):** no — opens at the next session restart if Reto names it.
@@ -35,8 +35,10 @@ except where noted, and are the ones every consumer kind
 ## Do next
 
 1. **backlog/pattern-groups.md**
-2. **backlog/make-tree-vs-design-tree.md**
-3. **backlog/attached-models-layer.md**
+2. **backlog/reaction-kind-and-synthesis-cost.md** — the make tree's
+   chemistry residue (synthesis routes must terminate in stock; fragment
+   scores); ranked in chemistry (13), listed here because the make tree
+   it extends is this thread's.
 4. **backlog/multiscale-design-system-spec.md** §5.4 — carve the inspection
    toolkit v1 as its own item; Reto 2026-10-21 named it the first carved
    slice (step 2 of the decided build order).

@@ -75,7 +75,7 @@ in `git log` / the merge doc, not here.
 ## Cross-items (2026-09-14 design session)
 
 - Apply's auto-relax gains the `geo` rung (angle-aware, promoted from
-  `sugars._relax`) — `se-nanobud-graph.md` owns that promotion.
+  `sugars._relax`) — shipped as `precis/structure/georelax.py`.
 - Apply's proposal payload must become se-mediated (today: raw
   `structure` op scripts) — the blocker named in
   `structure-kind-demotion.md`; resolve as part of Apply's design,
@@ -108,6 +108,11 @@ in `git log` / the merge doc, not here.
   ladder (barrier profile about a declared axle), interlock verification
   via an SDF sweep, force/compliance chains from relaxed-geometry deltas
   under applied constraint displacement.
+- **Rigidity screen** (from se-nanobud-graph, folded 2026-10-21) — a
+  Maxwell/pebble-game floppy-mode count as a DRC-tier annotation on a
+  built nanobud; feeds mechanism analysis. No such count exists in
+  `precis_se/atomic`, `hexfold` or `precis/structure`. Touches hexfold's
+  build path, so coordinate with the hexa session.
 - **Dynamics** — no MD engine in-tree; rent one as a container job,
   consume trajectories as measure time-series over declared DOF.
 - **Synthesizability** — `route` retrosynthesis as an advisory cost term

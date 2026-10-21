@@ -19,8 +19,8 @@ of ten prose steps the agent replays by hand. Candidates = the most-repeated
 transcript procedures; the transcript mining `/whatneedsdoing` already does
 can rank them.
 
-Distinct from [composable-pipeline-kind](./composable-pipeline-kind.md):
-that composes existing point ops into pipelines; this is about the *skill
+Distinct from the closed composable-pipeline-kind idea (gr43939), which
+composed existing point ops into pipelines; this is about the *skill
 layer* shipping the deterministic core of a procedure at all. If a bundled
 script grows into a real op, it graduates into a handler and the pipeline
 item takes over.

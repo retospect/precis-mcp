@@ -1,7 +1,7 @@
 """MakeHandler — the make-tree kind (assembly / synthesis order).
 
 A ``make`` tree is process, not structure: the order things come together
-(`docs/backlog/make-tree-vs-design-tree.md` — the EBOM/MBOM split). It
+(the closed make-tree-vs-design-tree spec — the EBOM/MBOM split). It
 rides the **same** chunk-tree substrate as ``draft``/``plan``
 (:class:`~precis.store._draft_ops.DraftStore`, ``store.drafts``), so step
 nodes are first-class, ordered, hierarchical, and addressed by the stable

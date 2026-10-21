@@ -19,7 +19,7 @@ the separate build that follows it.
 Today concurrency is a fixed number in three places that drift apart: the
 `llm` card's `max_parallel`, the `resource_slots` `llm:*` capacity, and the
 server's own limit (`--parallel` / `--max-num-seqs`). The 6-vs-4 mismatch
-in `local-summarizer.md` is that drift. A fixed cap is also wrong in both
+in the shipped local summarise chain (`workers/job_types/derived_drain.py`) is that drift. A fixed cap is also wrong in both
 directions: long prompts exhaust KV cache below the cap, short ones leave
 the box idle above it. A controller that reads the server's own load
 signal and admits work against a setpoint keeps the box busy without
@@ -43,7 +43,7 @@ preemption thrash. Anything it cannot place locally goes to the cloud rung.
   chain's cloud rung immediately (the existing busy-slot path, logged as
   `fell_to_cloud` in the `/placement` view), never a queue wait for
   latency-bound callers.
-- **Deferrable work fills the gap.** `graph-maintenance-queue.md` is the
+- **Deferrable work fills the gap.** `graph-gardener-value.md` slice 5 (idle filler) is the
   feed: when interactive load leaves headroom, the controller pulls from
   that queue; deferrable work never overflows to cloud.
 - Measured by the `/placement` view: `kept_local` and `fell_to_cloud` per
@@ -68,7 +68,7 @@ preemption thrash. Anything it cannot place locally goes to the cloud rung.
 - Card `max_parallel`, the slot capacity and the server limit cannot
   disagree: one source, with a test that fails if a second writer appears.
 - With no interactive load, the deferrable queue keeps the box at the
-  setpoint (the "is the box hot" number in `graph-maintenance-queue.md`).
+  setpoint (the "is the box hot" number, gr458727).
 
 ## Target + blast radius
 

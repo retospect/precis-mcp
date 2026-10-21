@@ -183,15 +183,14 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
 
 ## Do next
 
-1. **backlog/pathway-nh3-network-completeness.md** — the screen measures
-   NH₃ selectivity against the wrong competitors until N–O cleavage after
-   hydrogenation, N₂ and N₂O are in the network; every ranking on
-   qu164903 inherits the error. Slice 1 done (parked is incomplete);
-   screening stays parked (R2), and the like-with-like network-basis
-   ranking has shipped. Catpath 0.24.0 (NO+NO coupling, NH₂OH scission,
+1. **NH₃ network completeness — neb-tier re-run** (spec closed 2026-10-21;
+   the engine work shipped). The screen measured NH₃ selectivity against
+   the wrong competitors until N–O cleavage after hydrogenation, N₂ and
+   N₂O were in the network; screening stays parked by decision (R2), and
+   the like-with-like network-basis ranking has shipped. Catpath 0.24.0 (NO+NO coupling, NH₂OH scission,
    template-level `network_digest`, gas + Pd H* corrections ON) is
-   locked (2026-10-07). Left: the
-   neb-tier re-run of pw455722's candidate (steps 5–6), held by item 25.
+   locked (2026-10-07). Left: the neb-tier re-run of pw455722's candidate
+   and the trap/poison re-check in qu164903's logbook, held by item 25.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
    Pd(111). Stages 0–2 done. The pilot pair is built
@@ -201,17 +200,17 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    known (Reto, item 23). The PBE check of the H flight from Ta agrees with
    MACE, so the emptied-site rule stands (§22f; Reto accepted, item 27). Precis-side fixes (struct_relax
    lattice write-back, preflight on H-loaded slabs) can start.
-3. **backlog/pathway-diagram-step-annotations.md** +
-   **backlog/catpath-desorption-link-kind.md** (its first slice, moved
-   here from chemistry Horizon 2) — independent of 1, parallel. The web
-   half (fold + label inference) has shipped. Reto's look at pw455722
+3. **backlog/catpath-desorption-link-kind.md** (moved here from chemistry
+   Horizon 2) — independent of 1, parallel. The step-annotations spec
+   closed 2026-10-21: the web half (fold + label inference) shipped, and
+   catpath `ledger.py::link_fields` now emits `added`/`removed`/`link_type`
+   (precis pins 0.32.0), so re-check this item against that before building. Reto's look at pw455722
    (`catalysis-selectivity-22`) asked for two changes; both are now done:
    - the grey dashed line was the tier-ladder ghost overlay, which a neb
      sibling triggered on a screening page; it is removed;
    - the +H⁺+e⁻ feed is now a short arrow angled in from the upper right,
      landing on the level it feeds, with one grey label per shared column.
 
-   Left: the catpath `added`/`removed`/`kind` link fields.
 4. **src/precis/workers/job_types/pourbaix_bulk.py** →
    **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
    network (2026-10-02); independent of 1–3. A candidate whose bulk
@@ -238,10 +237,8 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    thermo-only margins do not.
 6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
    spent; needs 5's `U_sel` to pick the decisive edges.
-7. **backlog/mixed-coverage-precis-wiring-residue.md** (gr489475) — the
-   NO+H mixed-coverage scan is wired and pinned; the post-deploy check
-   (`mixtures=NO+H` in the job_event, mixed points in coverage.json) has not
-   run. Cheap, and it gates closing gr489475.
+7. *(Mixed NO+H coverage wiring: verified on prod r42, jo492859; gr489475
+   closed 2026-10-16.)*
 8. **backlog/crowded-surface-experiment.md** (gr482313, gr489182) — Reto's
    crowded-surface ask; ranked after 7 and after the catpath 0.30.0 re-run
    (spectator mode, NH2/NOH template fix), because the dilute-vs-1 ML table

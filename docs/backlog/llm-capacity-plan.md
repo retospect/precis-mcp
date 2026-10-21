@@ -15,9 +15,9 @@ planning."
 
 Three local-compute decisions are each being made without a shared picture
 of the fleet: where the dedicated summariser slice goes
-(`local-summarizer.md`), which model the single big-model slot carries
+(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), which model the single big-model slot carries
 (`vllm-per-node-serving.md` Slice 0), and who owns embedder capacity
-(`embedder-capacity-ownership.md`, td461158). Each needs the same table:
+(`src/precis/embedder_service.py` (capacity decided 2026-10-02), td461158). Each needs the same table:
 per node, what is resident, what it costs in memory, how many slots it
 advertises, and how much demand would land on it.
 
@@ -38,7 +38,7 @@ Per node:
   the configured ctx × parallel, and headroom.
 - **Slots**: `resource_slots` `llm:*` capacity per host, checked against
   the server's real `--parallel` (the 6-vs-4 mismatch carried in
-  `local-summarizer.md` is the failure this catches).
+  the shipped local summarise chain (`workers/job_types/derived_drain.py`) is the failure this catches).
 - **Demand**: `llm_call_log` by tier and source, local vs cloud, from
   `get(kind='llm', id='/placement')`, as calls/day, tokens/day and $/day;
   the summarise backlog size as the bulk demand that would move.
@@ -205,3 +205,11 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
   identity (`glm-4.7-flash` → `z-ai/glm-4.7-flash` was same-weights; now
   rung 0 is gpt-oss-120b) — quality covered by the summarise op's own
   soundness gate rather than a quant check.
+- **From greenfield-cluster-layout (folded 2026-10-21).** Reto ruled
+  2026-10-03 "write it down, don't reorganize"; the plan is §Agreed layout
+  plan above. Gaps that greenfield pass found with no item yet: monitoring
+  that survives its host plus an external dead-man check; encrypted offsite
+  backup beside the NAS; a home for the integrations (reMarkable,
+  anki-sync, papers-sync, TTS, nanopub/OTS, alphafold, aizynth,
+  autocatpath, alchemi); the MCP process count behind Caddy
+  (`session-mcp-http-server.md` pins one worker).

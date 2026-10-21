@@ -127,7 +127,7 @@ BASELINE_SILK_ERRORS_BY_SEED: dict[int, int] = {1: 2}
 #: below (worst-case-over-seeds, not a median), so the baselines measure
 #: the ENGINE rather than one lottery draw of the anneal. A single pinned
 #: seed was the root cause of the constant-nudging pressure recorded in
-#: ``docs/backlog/pcb-courtyard-polygon.md`` ("the fixtures pin one
+#: the courtyard-polygon work ("the fixtures pin one
 #: lottery draw"): any placement-affecting change re-rolled the draw, a
 #: correctness fix could read as a regression, and the same clearance
 #: sweep ranked its four candidate values differently before and after an
@@ -309,7 +309,7 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     assert silk_errors <= silk_baseline, (
         f"{silk_errors} silk DRC errors, above seed {seed}'s {silk_baseline} "
         f"baseline: {dict(breakdown)} -- this ratchet only goes down; see "
-        f"docs/backlog/pcb-courtyard-polygon.md\n{detail}"
+        f"the silk ratchet note above\n{detail}"
     )
     # Reto 2026-10-20 cutover: routing counts are reported, not gated. The
     # zero-copper-DRC assertion above still holds over whatever IS routed.

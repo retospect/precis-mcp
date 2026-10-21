@@ -1,21 +1,12 @@
----
-status: draft
-pillar: local-compute
----
+# Context catalog
 
-# Context-quality eval — catalog + rubric
-
+Which contexts the audit samples and why each matters. Moved here from the
+closed backlog item `context-quality-eval` (2026-10-21); the rubric is
+`RUBRIC.md`, the procedure `PROCEDURE.md`, the sampler `capture.py`.
 Most server work is spent assembling a **context** for an LLM: a rendered
 `get`/`search` response for a cluster agent, or a system+user prompt pair a
-worker builds and dispatches itself. There is no standing check that any of
-these are *good* — that the right skill is reachable from inside the
-context, that a field the next action needs isn't silently empty because no
-classifier/pre-worker ever populated it, that the render still matches what
-the skill claims. This doc is the catalog + rubric; the runnable capture/score
-procedure is `scripts/context-audit/` (built separately — reference it here,
-don't duplicate its logic).
-
-## Section 1 — Context catalog
+worker builds and dispatches itself; this catalog is what keeps those
+checked.
 
 Two axes. **Axis A** — a context rendered synchronously inside a read-verb
 call, consumed by whatever agent issued the call. **Axis B** — a context the
@@ -23,16 +14,16 @@ server assembles into a prompt and dispatches to an LLM itself (a worker
 pass); the "consumer" is that dispatched call, not the caller who triggered
 the job.
 
-### Axis A — interactive (read-verb) contexts
+## Axis A — interactive (read-verb) contexts
 
-#### Cross-kind search render
+### Cross-kind search render
 
 | context | producer | how to poke | what it ought to do |
 |---|---|---|---|
 | Merged/ranked hit list (any `search`, single- or cross-kind) | `src/precis/utils/search_merge.py::merge_and_render` (shape helpers: `_render_hit` markdown default, `_render_toon_table`, `_render_keywords_table`) | `search(kind='paper', q='…')`, `search(kind='*', q='…')`, `search(view='keywords', q='…')` | Rank + dedupe hits, render the cheapest shape that answers the query; every hit carries a resolvable handle (`SearchHit.handle`/`uhandle`) so the agent can `get` it next. |
 | Search headline (`# N of K … for 'q'`) | `src/precis/utils/search_header.py::format_search_headline` (+`detect_score_cliff`) | any `search()` call — first line of the body | Tell the agent whether it saw everything (`N`) or is paginated (`N of K`), and flag a score cliff (`(N strong)`) so it doesn't waste turns paging low-confidence tail hits. |
 
-#### Special search views (`src/precis/runtime/dispatch.py::DispatchMixin._dispatch_inner`)
+### Special search views (`src/precis/runtime/dispatch.py::DispatchMixin._dispatch_inner`)
 
 | context | producer | how to poke | what it ought to do |
 |---|---|---|---|
@@ -44,7 +35,7 @@ the job.
 | Source search (`sort=`/`since=`/`until=`) | `src/precis/runtime/search.py::SearchMixin._dispatch_source_search` (gate: `_is_source_search_request`) | `search(kind='paper,memory', since='2026-07-01')` | One best-chunk-per-ref cross-kind primitive ordered by recency or relevance — the unified-item-view Slice 2 shape. |
 | `title=`/`author=` byline lookup | `src/precis/handlers/paper.py::PaperHandler.search` | `search(kind='paper', title='…')` / `search(kind='paper', author='Vaswani')` | Return paper *records* (handle + citation), not block hits — the targeted alternative when you know the title/author and don't want a semantic scan. |
 
-#### Per-kind `get(view=…)`
+### Per-kind `get(view=…)`
 
 | context | producer | how to poke | what it ought to do |
 |---|---|---|---|
@@ -75,7 +66,7 @@ the job.
 | Skill `view='toc'` (per-skill) | `skill.py::SkillHandler.get` (`effective_view == 'toc'` branch) | `get(kind='skill', id='precis-overview', view='toc')` | Section skeleton of one skill file. |
 | Skill corpus index | `skill.py::SkillHandler._render_toc` | `get(kind='skill', id='toc')` | Every skill, one line each — the entry point for "which skill do I need." |
 
-#### Composite blobs (server assembles the LLM prompt AND persists the rendered result)
+### Composite blobs (server assembles the LLM prompt AND persists the rendered result)
 
 These differ from the rows above: each makes its own LLM call (not a
 lexical/semantic render) and the "poke" is a two-step trigger-then-read, not
@@ -90,7 +81,7 @@ really Axis-B-shaped pipelines with an Axis-A-shaped output.
 | Evening meditation (nidra) | `src/precis/reading/meditation.py::compose_script` (long-form: `_compose_long`) | `precis cast run nidra` (CLI), then `get(kind='draft', id=<returned id>)` | Calm walk through recently-touched concepts in adjacency order, word-budgeted to the target runtime. |
 | Skill index toc | (see above — `skill.py::SkillHandler._render_toc`) | `get(kind='skill', id='toc')` | — |
 
-### Axis B — server-built (agentic) contexts
+## Axis B — server-built (agentic) contexts
 
 The server assembles a system+user prompt and dispatches it to an LLM
 itself; the caller who triggered the job never sees the prompt unless they
@@ -140,63 +131,3 @@ per-kind `get(view=)` rows, 4 composite blobs = **32 Axis A rows**. 17 Axis B
 job-type/reviewer producers (one, `struct_relax`, is a non-LLM container
 invocation, flagged rather than dropped so the catalog stays exhaustive over
 `job_types/`).
-
-## Section 2 — The inspection rubric
-
-Apply to any sampled context (an Axis A response captured live, or an Axis B
-prompt captured via `/env` + `scripts/context-audit`). Every finding files as
-a `gripe` at the severity the sampled instance warrants — this repo's
-existing taxonomy (`docs/mcp-critic-review-2026-05-02.md`) uses `MAJOR-C`
-(correctness) / `MAJOR-$` (cost) / `MINOR-C` / `NIT`; reuse those suffixes,
-don't invent a new scale. Gate vocabulary (static hard-fail vs. LLM-judged
-soft-fail-to-gripe) follows `docs/backlog/docs-and-skills-redesign.md`
-§"Quality gates".
-
-1. **Skills reachable?** Does the context name/link the skill the next
-   action needs, and does `get(kind='skill', id=…)` actually return it (not
-   a 404, not a stale toc entry)?
-2. **Info sufficient to make the call?** Every field the next action needs
-   is present in-band, or does the agent have to guess or round-trip for
-   it? (E.g. a `Next:` hint that names a handle the response never
-   surfaced.)
-3. **Breadcrumb / `Next:` correctness.** Does the trailer point at a real,
-   runnable next verb — not a stale view name, not a kind the build has
-   disabled?
-4. **Progressive disclosure.** Right altitude for the ask — not a wall of
-   text for a one-line question, not a truncated stub when the agent asked
-   for the whole thing. Pagination (`# N of K`) sane and consistent with
-   `format_search_headline`'s contract.
-5. **Surface↔behavior drift.** Does the render match what the corresponding
-   skill/`precis-overview` row claims it does? (The MAJOR-C `precis-overview`
-   drift-from-live-registry finding in the mcp-critic review is the
-   canonical example of this class.)
-6. **Classifier / pre-worker gap.** Is a needed field empty because *no*
-   upstream pass populated it yet (missing `chunks.keywords`, unclassified
-   `role3`, absent chunk summary, un-run health check)? This is the
-   load-bearing "do we need another classifier/pre-worker" signal — file it
-   as its own finding class, not folded into #2, so it's queryable
-   separately from "the field exists but the render forgot to show it."
-
-The runnable capture/score procedure lives in `scripts/context-audit/`
-(built separately) — this doc is the catalog + rubric it executes against.
-
-## Residuals (from OPEN-ITEMS)
-
-Round-2 agent-facing render bugs, precisely root-caused, unfixed:
-- Attention view drops a halted todo's reason —
-  `src/precis/todo/views.py::render_attention` builds h['reasons']
-  from halt:<reason> tags but only prints id+title (the sibling child-failed
-  loop shows its reason). test: a halt-tagged leaf shows the reason inline.
-- Cross-kind / view='keywords' TOON tables drop the universal handle for
-  numeric-ref kinds (bare integer) —
-  `src/precis/handlers/_numeric_ref.py::_body_search_hits` missing uhandle=;
-  `src/precis/utils/search_merge.py` table renderers fall back to
-  str(ref_id); handle_registry CHUNK_CODES missing "orcid". test: renders
-  m<id>/oi<id>, not bare ints.
-- Quest frontier shows the default "objective: energy (min)" for
-  non-materials quests — suppress/qualify when no candidates and
-  meta.rubric_objectives unset (`quest.py::_render_frontier`).
-- sort='recency' source-search omits the N-of-K total + per-kind breakdown —
-  `src/precis/runtime/search.py::_dispatch_source_search`.
-- view='strategic' has no scoping/pagination (deferred — possibly an
-  intentional dashboard). The quest-domain classifier gap is gr170252.

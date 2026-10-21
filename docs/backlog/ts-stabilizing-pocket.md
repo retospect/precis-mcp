@@ -3,7 +3,7 @@ status: idea
 title: Transition-state pocket — derive an se pocket spec from a reaction's transition state, realise it as a backboned scaffold
 pillar: 3d-design
 prio: normal
-blocked-by: se-region-property-layer
+blocked-by: pocket-from-molecule
 ---
 
 # Transition-state pocket
@@ -21,12 +21,12 @@ it complements the endpoints. That makes the design target a *differential*
 constraint, which is exactly what the se layer already expresses: a pocket is
 a named set of regions, each region carries measures with `min`/`max` and a
 `strength`, and a mismatch is a `validate()` finding
-(`se-region-property-layer.md` §3, §5). So this item is a *generator* of
+(`pocket-from-molecule.md` (region property layer, folded) §3, §5). So this item is a *generator* of
 pocket specs plus one new constraint form, not a new modelling layer.
 
-The pieces that exist: `se-region-property-layer.md` (pockets, per-region
+The pieces that exist: `pocket-from-molecule.md` (region property layer, folded) (pockets, per-region
 hydrophobic/charge/field measures, spec-versus-realised, the pocket spec as a
-`class` node), `se-intent-to-realize-loop.md` (the pick-and-join loop that
+`class` node), `pocket-from-molecule.md` slice 4 (intent-to-realize loop, folded) (the pick-and-join loop that
 turns a spec into chosen groups), hexfold's pocket extraction (spec §28.8),
 and NEB transition-state geometry in the chemistry thread
 (`neb-barriers-in-the-catpath-pipeline.md`). Nothing joins them.
@@ -48,7 +48,7 @@ and NEB transition-state geometry in the chemistry thread
    `margin`. Specified alongside the region measures; evaluated by the same
    registered-check path. Without it the generator designs a binder, not a
    catalyst.
-4. **Realise.** Hand the pocket spec to `se-intent-to-realize-loop`: each
+4. **Realise.** Hand the pocket spec to `pocket-from-molecule.md` slice 4 (intent-to-realize loop, folded): each
    region's measures are a membership query against candidate groups
    (hexfold catalogue entries, substituent tiers, library parts), and the
    chosen groups are joined by a backbone. Two backbone modes, cheapest
@@ -89,6 +89,6 @@ and NEB transition-state geometry in the chemistry thread
 `precis_se` (the generator and the differential measure, on top of the
 region layer), the realize loop, and a read of the `pathway` step geometry.
 Owner: **se-machine-design** thread (Horizon, after
-`se-region-property-layer` and `se-intent-to-realize-loop` — it is blocked
-on both). Consumer and evaluator: the **chemistry** thread, which owns the
+`pocket-from-molecule.md`, which carries the region layer and the
+realize loop — it is blocked on it). Consumer and evaluator: the **chemistry** thread, which owns the
 transition-state geometry and the barrier measurement.

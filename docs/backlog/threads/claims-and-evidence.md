@@ -81,15 +81,14 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    2026-09-30 the registry reads the axis taxon nodes, not a second list →
    `aida-uri-ignores-scope` (2 duplicate pairs, prod data) → the scope
    backfill inside `nanopub-corpus-remediation`.
-2. **Adjudication** — `disputes-adjudication-workflow`, which absorbs
-   `taproot-adjudicate-reopened-claims` (premise half-stale: the widening arm
-   now files non-blocking `disputes`, but a demotion still reopens reviewed
+2. **Adjudication** — `disputes-adjudication-workflow` (absorbed the
+   reopened-claims verdict 2026-10-21: a demotion still reopens reviewed
    hubs) · `contradicts-conflates-evidence-and-prose-misuse` (residue = the
-   `misused-by` relation only) · `claim-conflict-search` (sweep + review
-   panels, counter-claim mint door and dense backfill ordering shipped;
-   open = prod tuning + the published-provenance question; the service
+   `misused-by` relation only) · conflict search shipped; its prod tuning
+   and the published-provenance question now sit in
+   `claim-publication-nanopub-ots` §Negative-results pathway (the service
    stays dark until lit).
-3. **Doors** — `taproot-merge-mcp-surface` (web door + agent `view='merge-plan'` shipped; open = corpus-wide banded candidate scan, low priority) ·
+3. **Doors** — the corpus-wide banded duplicate scan is `hub-duplicate-reconcile` steps 3–4 (merge door + `view='merge-plan'` shipped) ·
    `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` (a1 shipped 0043fdb7e: anchored unpublished predecessors; open = signed and published predecessors, the latter needs Reto's ruling) ·
    `preprint-to-published-cite-upgrade`.
 4. **Evidence quality** — `evidence-edge-verification` (rubric labels +

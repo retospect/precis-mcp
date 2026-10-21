@@ -45,7 +45,7 @@ not bypass review of the concrete populated-table migration/defaults.
 - [knowledge-mesh](knowledge-mesh.md): use the existing eye ladder,
   lede-first node rows and stable handles; no new traversal verb.
   Measures keep their `tier`, conditions and scientific provenance.
-- [graph-gardener](graph-gardener.md): proposal/review/apply boundaries
+- [graph-gardener-value](graph-gardener-value.md): proposal/review/apply boundaries
   and human protection still apply; merge/split never auto-apply.
 - [local-mesh-upkeep §2](local-mesh-upkeep.md#2-review-ledger--one-reviewed-by-stamp-for-chunks-refs-and-links):
   reuse the **existing** `reviews` ledger and SHA-current review

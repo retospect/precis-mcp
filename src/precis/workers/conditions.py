@@ -769,7 +769,7 @@ SELECT COALESCE((SELECT id_value FROM ref_identifiers
 
 
 def _probe_analysis_stale(store: Store) -> list[ConditionFinding]:
-    """Attached-models staleness (attached-models-layer.md): an
+    """Attached-models staleness (the closed attached-models-layer spec): an
     ``analyzed-by`` link pins the content sha of the design version the
     analysis ran against; ``cad_save`` records the current sha in a
     ``ref_events`` row. A mismatch means the design changed under the

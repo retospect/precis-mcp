@@ -73,8 +73,7 @@ first, then 8 ranks (review note §5). Rank the items below by what that
 paper needs.
 
 1. **backlog/qu164903-campaign.md** residuals are ops/Reto
-   (st164913 un-rule-out, kinetics cutover prod write, presentation items);
-   `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
+   (st164913 un-rule-out, kinetics cutover prod write, presentation items).
 2. **qu202467 (NO from exhaust → fertilizer N) restart** — RULED
    2026-10-02 (chemistry-7, option 1): restart after round 2 deploys,
    capped at 3 ticks. No tick-cap mechanism exists, so chemistry enforces
@@ -200,8 +199,7 @@ it at five; engine-over-UI still holds.
    rungs 2-5 left.
 14. **backlog/estimate-kind-ms-chemistry-workup.md** — argue before
    simulating; sets up sims, waits on 13 for facts to argue from.
-15. **backlog/composable-pipeline-kind.md** +
-   **backlog/chem-tools-integration.md** +
+15. **backlog/chem-tools-integration.md** +
    **backlog/structure-import.md** — chaining and import surface for
    chem tools; presentation/packaging layer, after the engine.
 16. **backlog/sim-harness.md** — quest-driven automation, writeup draft and
@@ -235,10 +233,10 @@ it at five; engine-over-UI still holds.
   (its Do-next 6: where shared pathway presentation lives, plus the
   catpath version bump and wheel redeploy). Horizon 17 here must not start
   a second copy of that logic.
-- **precis-dispatch** (`backlog/precis-dispatch.md`, ranked in local-compute
-  Horizon) is the runner this thread's compute jobs (DFT relax) depend on;
-  this thread is its first consumer, and its seams extract when a second
-  workload lands.
+- **The compute runner** (`backlog/slullama-hpc-placement.md` §From
+  precis-dispatch, ranked in local-compute) is what this thread's compute
+  jobs (DFT relax) depend on; this thread is its first consumer, and its
+  seams extract when a second backend runs.
 - **roadmap-quest** owns the quest loop that consumes pathways (its
   ticks dispatch the jobs this thread makes healthy); the engine's output
   contract is this thread's, the dispatch and priority flow are theirs.

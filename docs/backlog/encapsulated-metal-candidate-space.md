@@ -35,7 +35,7 @@ only to shield the metal.
 **How it feeds qu164903.** The prompt's PROPOSED demo reaction is NO→NH₃
 (§5), which is this thread's own north star. Its "selectivity is the real
 objective" over NH₃ / N₂ / N₂O / NH₂OH is the same scorecard as
-`pathway-nh3-network-completeness.md` and
+the NH₃ network (catpath `network.py`) and
 `pathway-selectivity-u-ph-window.md`. So:
 - **F3/F4 candidates enter qu164903** (or a sibling quest) as ordinary
   candidates with the same reaction_config, on the same corrected
@@ -162,7 +162,7 @@ objective" over NH₃ / N₂ / N₂O / NH₂OH is the same scorecard as
     threads. Their items are left alone.
 - **Overlap to watch.**
   - F1 cages and F2 nanobuds overlap `nanobud-campaign.md`,
-    `se-nanobud-graph.md` and the hexfold seam/sp3 items
+    the closed se-nanobud-graph spec and the hexfold seam/sp3 items
     (`hexfold-sp3-seam.md`, `hexfold-sp3-isolation-band.md`; F4's sp3-H
     crease is a relative of those).
   - **Flag: the F2 nanobud flow cell touches the nanobuds paper's

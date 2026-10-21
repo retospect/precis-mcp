@@ -1,6 +1,6 @@
 """Failure bubble: tag the parent todo when a job fails.
 
-Slice-5 of ``docs/backlog/todo-tree-plan.md``: a child job hitting
+Slice-5 of the closed todo-tree-plan spec: a child job hitting
 ``STATUS:failed`` flips a flag on its parent todo so the parent shows up
 in the nursery digest's "stuck-doable"/"stale-claim" detectors. The
 parent's owner (asa or human) decides what to do — re-dispatch (clear the

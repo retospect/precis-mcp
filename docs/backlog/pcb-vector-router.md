@@ -714,6 +714,30 @@ slice):
   `UPDATE pcb_instances SET fixed='both'`; `pcb_route._dispatch iters=1`.
   Backup branch `rlf-full-backup` holds the stub experiment.
 
+From pcb-router-fails-at-real-board-size (closed; the grid router it
+targeted was deleted in d42369679):
+
+- **Why the grid lost (measured 2026-10-01, same board, seed 1).** The
+  imported 140-part board routed 8/89 whether placement was frozen or not,
+  at iters 200 or 2000; only a finer grid moved it (0.1 mm pitch: 62/89).
+  `maze.grid_for`'s 400 cells/axis gave 0.5 mm cells on a 200 mm board, so
+  fine-pitch pads plus clearance dilation walled every pin in. Placement and
+  anneal budget changed nothing; the remainder at fine pitch was congestion.
+  The 2026-10-02 offline baseline (pcb 460559, frozen, seed 1) was 55/89.
+- **Workflow hazard, still open.** `op='route'` runs the joint place+route
+  anneal, so "re-route my board" silently re-places every unlocked part
+  (103 of 140 on the import). Either the route op gets a mode that holds
+  placement, or the surface says plainly that routing moves parts.
+- **Open:** whether `iters` should scale with net count rather than being a
+  caller-supplied constant.
+- **Coupling:** `optimize._FIXED_VIA_CLEARANCE_MM` is pinned equal to the
+  realizer's clearance by
+  `test_pcb_optimize.py::test_a_land_may_not_sit_on_an_authored_via_but_the_body_may_cover_one`;
+  change both or neither.
+- **Harness:** the env-gated real-board tests read `PRECIS_EPRO_FIXTURE`,
+  the only one of our env vars on the `scripts/test` passthrough allowlist,
+  so route configs are test parameters, not env vars.
+
 Owning files: `src/precis/pcb/vroute.py`, `realize.py`, `tests/test_pcb_vroute.py`.
 
 ### Slice 4 — vector fallback for every maze failure

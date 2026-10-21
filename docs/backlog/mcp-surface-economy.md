@@ -243,7 +243,7 @@ transcripts. Blocked until the ledger lands; then calibration is a
 read-the-ledger-and-edit-front-matter loop, no code.
 
 Interacts with per-job tool lists (`tick-tool-lists-and-discovery-reflex.md`)
-and `unify-backlog-gripes-discoverable.md` (same architecture over dev
+and the md kind (`search(kind='md')`, the same architecture over dev
 knowledge).
 
 ## Demand confirmed 2026-09-29 — and §1 is unblocked

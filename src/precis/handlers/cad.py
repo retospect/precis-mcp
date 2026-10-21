@@ -807,7 +807,7 @@ class CadHandler(Handler):
             return ""
 
     def _printed_joint_check(self, ref: Any, spec: Any) -> str:
-        """Print-in-place honesty (cad-print-in-place.md): a mate across a
+        """Print-in-place honesty (the closed cad-print-in-place spec): a mate across a
         ``printed-``-typed port is a captive printed joint — its two hosts must
         come out of the SAME print. When both sides' designs are aligned to
         make steps and the steps differ, the joint cannot exist; say so."""

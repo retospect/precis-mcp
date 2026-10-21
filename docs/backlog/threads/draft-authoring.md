@@ -76,11 +76,8 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   deployed; the submission export can pass `doi_links`/`library_links` as job
   params) · `endnote-export-validation` (hits only if submission goes docx +
   EndNote) · `export-glyph-allowlist` (jo461157 compiled with no glyph
-  failures) · [draft-poster-genre-and-themes](../draft-poster-genre-and-themes.md)
-  (Reto 2026-10-05: one generic beamer poster template + per-user branding
-  profiles, institution/sponsor logos and export validation; docs amendment,
-  stripped generic scaffold supplied 2026-10-06; poster dispatch and private
-  profile implementation still open) ·
+  failures) · poster genre (shipped 2026-10-15, spec closed 2026-10-21;
+  left: Reto's manual eyeball of one exported poster after deploy) ·
   `draft-section-styles`.
 - **Prose framework** — [terse-prose-framework](../terse-prose-framework.md)
   (idea, Reto 2026-10-14: tag-driven prose lint + story graph + card; not
@@ -95,8 +92,8 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 - **dr42995-boxel-draft** — one-draft content chore, not tooling; unpark with
   Reto's word on that draft. (`dft-hbond-draft-27-paywalled-dois` shipped:
   all 27 sources fetched, the one genuine over-attribution cite fixed.)
-- **Patents** — `patent-drafting-merge` · `patent-authoring-loop` (status
-  draft) · `fto-defensive-publication`: dormant on Reto's word (2026-10-01);
+- **Patents** — `patent-authoring-loop` (status draft; absorbed
+  patent-drafting-merge's expansions) · `fto-defensive-publication`: dormant on Reto's word (2026-10-01);
   unparks when he names patent work.
 - **Source-backfill follow-ups** — a HyDE query lens, a Tier-1 relevance cull for
   candidate lists, and an `integrate` planner coroutine that walks accepted

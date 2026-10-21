@@ -1256,7 +1256,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
 
     What this still does not fix: twelve containers boot-warming the
     same tree against one embedder with no shared cache. That went up a
-    layer to `docs/backlog/embedder-capacity-ownership.md` — do not
+    layer to the closed embedder-capacity-ownership spec — do not
     re-plan it here.
 
     Failures still never block startup. The difference is that the

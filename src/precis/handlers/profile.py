@@ -1,6 +1,6 @@
 """ProfileHandler — the owner-scoped branding-profile kind.
 
-Slice 6 of ``docs/backlog/draft-poster-genre-and-themes.md`` (Reto rulings
+Slice 6 of the closed draft-poster-genre-and-themes spec (Reto rulings
 2026-10-15): ``kind='profile'`` stores per-user poster/deck branding as
 data — a role→hex palette, an allowed font, ordered logo figure refs and
 a sponsor line — validated by the same rules the poster exporter applies

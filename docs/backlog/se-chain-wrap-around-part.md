@@ -37,14 +37,14 @@ clears the part it's meant to wrap, and no update if the part moves.
   non-chain blocks the chain is meant to wrap (not just other chain bodies),
   using the same excluded-volume kernel already in place for helix-vs-helix.
 - **Anchor domains on the part's surface sites** — using the region
-  selectors `se-region-property-layer.md` specs (that item's slug is
+  selectors `pocket-from-molecule.md` (region property layer, folded) specs (that item's slug is
   referenced here as a dependency; this item does not define region
   selectors itself).
 
 ## Explicitly NOT in scope
 
 - Defining the region-selector grammar itself — owned by
-  `se-region-property-layer.md`.
+  `pocket-from-molecule.md` (region property layer, folded).
 - A physics-grade "does it actually hold" check — no physics rung exists
   for chains at all yet (oxDNA is not in the image;
   `nanostructure-check-tiers.md` §"Chains: the physics tier is oxDNA" tracks
@@ -73,7 +73,7 @@ clears the part it's meant to wrap, and no update if the part moves.
 `src/precis_se/chain/relax.py` (excluded-volume widening), a new op
 (`wrap_chain`, likely `src/precis_se/chain/` alongside `layout_chain`);
 depends on `hexfold-integration.md`'s atom-hull-as-surface work and
-`se-region-property-layer.md`'s selector grammar.
+`pocket-from-molecule.md` (region property layer, folded)'s selector grammar.
 
 ## Open questions / decisions log
 
@@ -82,7 +82,7 @@ depends on `hexfold-integration.md`'s atom-hull-as-surface work and
   with an atom-hull opt-in, mirroring the layout_chain/relax_chain split
   between cheap layout and expensive settle.
 
-Closest existing items: `se-region-property-layer.md` (the selector
+Closest existing items: `pocket-from-molecule.md` (region property layer, folded) (the selector
 grammar this item consumes), `hexfold-integration.md` (hard blocker),
 `nanostructure-check-tiers.md` (owns the missing physics rung this item
 explicitly does not attempt). Thread: `docs/backlog/threads/se-nucleic-chain.md`.

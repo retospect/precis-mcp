@@ -1,6 +1,6 @@
 """se region properties — measurands from the term taxonomy, and the
 registry of computers that turn a declared region measure into a realised
-value (docs/backlog/se-region-property-layer.md).
+value (the closed se-region-property-layer spec).
 
 **Slice A (this package today):** a measure may name a ``measurand`` — a
 ``taxon`` node under the ``measurand`` start node (seeded by core migration

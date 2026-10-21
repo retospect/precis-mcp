@@ -1,4 +1,4 @@
-"""Write-time guards for the todo tree (Slice 1 of todo-tree-plan.md).
+"""Write-time guards for the todo tree (Slice 1 of the closed todo-tree-plan spec).
 
 Three orthogonal checks fire on every ``put`` that wires a child under
 a parent (and on facet mutations via ``tag(meta=...)``):
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
 
 #: Hard depth cap on the ancestor chain. See knob #3 in
-#: ``docs/backlog/todo-tree-plan.md``: dreamer + worker + chatter all
+#: the closed todo-tree-plan spec: dreamer + worker + chatter all
 #: push depth, so 10 catches the procrastinating-by-planning failure
 #: mode without strangling a legitimate
 #: strategic→tactical→section→subsection→paragraph→sentence chain.

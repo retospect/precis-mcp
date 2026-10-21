@@ -99,7 +99,7 @@ threads.
   agreement on that set, and the human holdout shows no more errors than
   the frontier makes on it. Only for reversible actions whose prior is
   recorded: categorise and link add. Merge never auto-applies
-  (`graph-gardener.md`: "probably not ever for merge and split").
+  (`graph-gardener-value.md`: "probably not ever for merge and split").
 - **Reviewed by a bigger model.** Local plus review beats the frontier
   alone: (local cost + review cost) per accepted item < frontier
   generation cost per accepted item. Local marginal cost is about zero,
@@ -266,7 +266,7 @@ The log keeps every property and adds no node.
 
 ### 3. FEED — into the maintenance queue, out through the review lane
 
-- **Work in.** `graph-maintenance-queue.md` is the producer. Each queued
+- **Work in.** `graph-gardener-value.md` slice 5 (idle filler) is the producer. Each queued
   unit is one action on one target (categorise hub X, propose links for
   node Y). The eval decides which actions are local-eligible and at which
   bar; an action below both bars is never queued for local.
@@ -319,7 +319,7 @@ upkeep lane should move:
 - next-hop: **thinness, not signal** — only 25 `tool_calls` rows carry an
   `agentlog_id` in 90d (the env-scoped `PRECIS_CURRENT_AGENTLOG` cascade
   is dormant); the metric is live but the telemetry needs the
-  `links.meta.agentlog_id`-style stamp work from `graph-gardener.md`
+  `links.meta.agentlog_id`-style stamp work from `graph-gardener-value.md`
   in-scope item 6 before it reads as anything.
 - review currency: link 0.7% stale of 3,807, chunk 66.5% stale of 272
   (chunk reviews predate the sha registry — expected), ref 0%.
@@ -328,7 +328,7 @@ upkeep lane should move:
 
 - Choosing the serving model or server (local-compute Slice 0) or
   building the controller and queue (their items).
-- The gardener's pass logic (`graph-gardener.md`). This item supplies its
+- The gardener's pass logic (`graph-gardener-value.md`). This item supplies its
   eval, its stamp and its review path.
 - Per-run curation (`curation-gate.md`). That gate reviews one run's
   write set; this ledger is what its verdict should write per target.
@@ -415,7 +415,7 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
   - the two bars, with auto-apply only for categorise and link-add;
   - the 80-item human holdout.
 
-  The weekly sample replaces per-proposal todos, so `graph-gardener.md`'s
+  The weekly sample replaces per-proposal todos, so `graph-gardener-value.md`'s
   `waiting-for:reto`-per-proposal rule now applies only to passes no
   bigger model reviews.
 - **[decided 2026-10-03, Reto knowledge-mesh-10 add-on]** Version history

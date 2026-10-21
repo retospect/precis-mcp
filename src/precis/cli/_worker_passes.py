@@ -1480,7 +1480,7 @@ def build_ref_passes(
         ref_passes.append(_gp_fetch_pass)
 
     # Auto-check pass — drains the todo-tree's auto_check queue
-    # (Slice 1b of todo-tree-plan.md). Cheap and SQL-only by
+    # (Slice 1b of the closed todo-tree-plan spec). Cheap and SQL-only by
     # default — the registered evaluators are SQL queries, not
     # LLM calls — so it stays in the default cycle.
     if _register("auto_check"):
@@ -1492,7 +1492,7 @@ def build_ref_passes(
 
         ref_passes.append(_auto_check_pass)
 
-    # Schedule pass — Slice 4 of todo-tree-plan.md. Walks recurring
+    # Schedule pass — Slice 4 of the closed todo-tree-plan spec. Walks recurring
     # (meta.schedule set) refs, mints subtasks for due ticks under
     # the Watches umbrella. SQL-only and idempotent
     # (meta.spawned_for_tick stamp), so it shares the default
@@ -1523,7 +1523,7 @@ def build_ref_passes(
 
         ref_passes.append(_scheduler_pass)
 
-    # Nursery pass — Slice 3 of todo-tree-plan.md. SQL-only
+    # Nursery pass — Slice 3 of the closed todo-tree-plan spec. SQL-only
     # pattern matcher that surfaces local incoherence (orphans,
     # stale claims, long waits, stuck doable, stalled recurrings,
     # spin loops) as ``kind='alert'`` rows (one per condition,
@@ -1557,7 +1557,7 @@ def build_ref_passes(
         ref_passes.append(_heartbeat_pass)
         heartbeat_registered = True
 
-    # Structural review pass — Slice 3 of todo-tree-plan.md. Opus-class
+    # Structural review pass — Slice 3 of the closed todo-tree-plan spec. Opus-class
     # semantic review of the tree's shape (drift between outcomes and
     # child actions, sibling contradictions, depth/fanout warnings).
     # This registration is for a manual/ad-hoc `--only structural` run
@@ -1579,7 +1579,7 @@ def build_ref_passes(
 
         ref_passes.append(_structural_pass)
 
-    # Deep review pass — Slice 3 of todo-tree-plan.md. Weekly full
+    # Deep review pass — Slice 3 of the closed todo-tree-plan spec. Weekly full
     # Allen-review; same shape as structural with a longer prompt,
     # longer timeout, larger turn cap, and a 144h dedup window. This
     # registration is for a manual/ad-hoc `--only deep_review` run
@@ -1595,7 +1595,7 @@ def build_ref_passes(
 
         ref_passes.append(_deep_review_pass)
 
-    # Minter pass (legacy: dispatch) — Slice 5 of todo-tree-plan.md.
+    # Minter pass (legacy: dispatch) — Slice 5 of the closed todo-tree-plan spec.
     # Walks open todos with meta.executor set, mints kind='job' children
     # under them so the executor pool can run the work. SQL-only,
     # cheap, multi-host safe via FOR UPDATE SKIP LOCKED. Shares

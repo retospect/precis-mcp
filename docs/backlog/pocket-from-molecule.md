@@ -9,10 +9,9 @@ model: opus
 
 # Pocket from molecule
 
-Reto, 2026-10-17. First concrete driver of
-[se-intent-to-realize-loop](se-intent-to-realize-loop.md); it fills
-slices B and C of [se-region-property-layer](se-region-property-layer.md)
-(slices 1–2 below). Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
+Reto, 2026-10-17. First concrete driver of the intent-to-realize loop
+(slice 4) and the delivery of the region property layer's slices B and C
+(slices 1–2 below); both former specs are folded in here. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 
 **Status (2026-10-17):** slice 1 is built (its section below says
 what); its surface settings are provisional until open question 4 is
@@ -104,6 +103,17 @@ Two pocket cases:
   `class_hash` (se migration 0022).
   shipped: 6955949c5 (2a), this commit (2b).
 
+### From se-region-property-layer (folded 2026-10-21)
+
+Reto's 2026-09-30 rulings, still binding: region properties are three
+extensions of existing machinery (se measures, the taxonomy, the measures
+table), not a new property object; granularity is body, surface/edge and
+atom sites through one selector (`src/precis_se/datums.py` grammar); a
+pocket spec is a defined class in the term-taxonomy lattice, shared with
+the paper graph's scenario classes. That spec's in-scope 4/5 (realised
+values in `measures` via a `subject_selector` column) are superseded by
+question 9 (realised values stay on the se side).
+
 ## Slices
 
 ### 1. Molecule surface with properties — built 2026-10-17
@@ -182,7 +192,7 @@ error naming the region.
 ### 4. The realize loop
 
 **Owning code:** new `src/precis_se/pocket_realize.py`, the first
-implementation of `se-intent-to-realize-loop`'s pick → join → check
+implementation of the intent-to-realize pick → join → check
 loop; a cluster-cut helper beside
 `src/precis_se/atomic/clearance.py::gap_field`.
 
@@ -216,6 +226,15 @@ hand-built wall patches (bare graphene, N-doped, OH at a pore rim) and
 the NO pocket spec, the loop ranks all three, terminates within the cap,
 names the failing regions of the losers, and every result carries its
 provenance.
+
+**From se-intent-to-realize-loop (folded 2026-10-21).** v1 is a greedy
+loop (pick, join, check, re-pick on failure), not a global search that
+backtracks over the whole design; a failing check triggers a re-pick,
+never a silent placement. Open: whether the loop is an MCP op or a
+workbench chat-turn affordance (`design-workbench-realize.md`, which turns
+an already-picked candidate into a bound structure); slice 4 decides. When
+a second driver needs the loop, extract it from `pocket_realize.py` into a
+general intent → realize surface.
 
 ### 5. Refinement ladder ("it'll be wrong first")
 

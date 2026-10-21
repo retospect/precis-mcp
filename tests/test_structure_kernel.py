@@ -1058,7 +1058,7 @@ def test_relax_cell_mode_needs_an_energy_rung() -> None:
 def _distorted_sp2_scene() -> Scene:
     """A trigonal-planar carbon centre, bond lengths/angles deliberately off
     both the covalent-radii-sum target and the sp2 120° ideal — the ``geo``
-    rung's motivating case (docs/backlog/se-nanobud-graph.md §1): ``clean``
+    rung's motivating case (the closed se-nanobud-graph spec §1): ``clean``
     only fixes lengths, ``geo`` restores angles too, and 120° is a capability
     the shared relax core never had before this move (`sugars.py`'s original
     always restored toward sp3's 109.47°). Non-periodic (``pbc=False``): the

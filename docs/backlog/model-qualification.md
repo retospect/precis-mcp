@@ -23,7 +23,7 @@ candidates.
   this item's promote/reject writes into.
 - `llm-judge-reliability.md` — judges are instruments; qualification needs
   their error bars before a judge verdict can gate.
-- `context-quality-eval.md` — the catalog + rubric of context-assembly evals.
+- `scripts/context-audit/` — the catalog + rubric of context-assembly evals.
 - `curation-gate.md` — the reviewer loop that waits on the verdict column.
 
 ## Open
@@ -35,5 +35,5 @@ candidates.
 
 ## First customer
 
-`local-summarizer.md`: a local model replaces cloud `glm-4.7-flash` only
+the shipped local summarise chain (`workers/job_types/derived_drain.py`): a local model replaces cloud `glm-4.7-flash` only
 after passing this step.

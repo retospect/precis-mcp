@@ -589,7 +589,7 @@ def test_max_radius_for_deviation_is_unbounded_when_no_corner_is_filleted():
 # stroke hit a pad; optimize: may these two parts sit here; drc: do any two
 # courtyards on the finished board overlap). A placer that thought a
 # placement legal while DRC called it a violation is the drift
-# `docs/backlog/pcb-courtyard-polygon.md` exists to close, so the predicate
+# the courtyard-polygon work existed to close, so the predicate
 # is verified against an INDEPENDENT implementation, not against itself.
 
 

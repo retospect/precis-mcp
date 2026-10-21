@@ -18,7 +18,7 @@ deploys `precis serve-embeddings` on loopback to `gateway`, `scheduler` and
 that copy competes with the MCP server, the gates and dev work. Reto's
 ruling is not to wear melchior down. One GPU embedder on spark takes
 that load off the Macs and gives the fleet one capacity number. That number
-is the one `embedder-capacity-ownership.md` measures (provisional 12.7–13.6
+is the one `src/precis/embedder_service.py` (capacity decided 2026-10-02) measures (provisional 12.7–13.6
 texts/s, CPU/MPS floor).
 
 ## In scope
@@ -41,7 +41,7 @@ texts/s, CPU/MPS floor).
 
 - Changing the embedding model or dimension (that would be a re-embed of
   the corpus).
-- The N-client load test (`embedder-capacity-ownership.md`, which this item
+- The N-client load test (`src/precis/embedder_service.py` (capacity decided 2026-10-02), which this item
   feeds).
 
 ## Acceptance criteria

@@ -29,7 +29,7 @@ naming note.
 Vocabulary (:data:`VOCABULARY`), exactly: ``frame`` · ``port:<name>`` ·
 ``face:<instance>.<tag>`` · ``axis:<instance>`` · ``face:largest`` ·
 ``face:normal=<±x|±y|±z>`` · ``face:perp=assembly`` — plus the region
-selectors (docs/backlog/se-region-property-layer.md slice A):
+selectors (the closed se-region-property-layer spec slice A):
 
 - ``patch:<instance>.<tag>@<u>,<v>+<w>x<h>`` — a ``w``×``h`` rectangle on
   face ``tag``, centred ``(u, v)`` from the face centre (metres). ``u``

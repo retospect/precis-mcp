@@ -74,11 +74,9 @@ avoidance only if a board is measured that the anneal cannot rescue.
 
 ## Explicitly NOT in scope
 
-- The refuse-before-route gate
-  (`pcb-placement-must-be-valid-before-routing`, folded into
-  `pcb-always-valid-board-invariant.md`).
+- The refuse-before-route gate (`pcb-always-valid-board-invariant.md`).
 - The corridor-width term (`pcb-placer-starves-the-escape-corridor`).
-- Via SPAN correctness (`pcb-via-geometry-ignores-pad-side-and-pads`). The
+- Via SPAN correctness: every via is a through via (unified D17). The
   placer treats every authored via as a through hole on purpose.
 - `ftype='keepout'` features (`pcb-keepout-does-not-bind.md`) — same
   defect class, different geometry source; whoever does either reads both.

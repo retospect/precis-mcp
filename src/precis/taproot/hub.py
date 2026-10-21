@@ -362,7 +362,7 @@ _COMPOSITE_SOURCE_META_KEY = "composite_source"
 
 
 def _enqueue_conflict_sweep(store: Store, hub_ref_id: int, *, conn: Any) -> None:
-    """The mint trigger of docs/backlog/claim-conflict-search.md: queue
+    """The mint trigger of the closed claim-conflict-search spec: queue
     the new hub's ``conflict_sweep`` job inside the mint savepoint, so a
     claim is swept for opposition promptly after it exists rather than
     when the backfill walk reaches it. Best-effort and never a reason a

@@ -20,7 +20,7 @@ of which switch families the evidence favours.
 
 ## The key realisation: bistability dissolves the rigid-body problem
 
-`boxel-exercise-tooling-gaps.md` records that block envelopes are **rigid** —
+the closed boxel-exercise spec records that block envelopes are **rigid** —
 cad transforms are translate+rotate, no scale — and that this is a real limit
 for molecules, which stretch and bend. Light-driven *deformation* sounds like
 it needs exactly the deformable envelope we do not have.

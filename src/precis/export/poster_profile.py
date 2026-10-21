@@ -3,7 +3,7 @@
 A poster draft (``meta.workspace.doc_type='poster'``) is branded by a
 *profile*: a role→hex palette, an allowed font, ordered logo references
 and a sponsor line. Profiles are data — slice 6 of
-``docs/backlog/draft-poster-genre-and-themes.md`` stores them as
+the closed draft-poster-genre-and-themes spec stores them as
 owner-scoped ``kind='profile'`` refs and exposes ``put``/``edit``; this
 module is the pure schema + resolution + validation the export path
 consumes. No storage, no MCP surface.

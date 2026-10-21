@@ -126,6 +126,19 @@ source that's since been retracted.
 than positives — the computation is already paid for, and almost nobody
 in the ecosystem publishes this.
 
+### From claim-conflict-search (folded 2026-10-21)
+
+Conflict search shipped (`workers/conflict_search.py`, `conflict_sweep`,
+`mint_counter_claim`). Open design call, same artifact shape as above: does
+the searched-at negative statement ("no known conflict as of <date>, method
+v<n>") ride into the published provenance graph, or stay a local honesty
+record? Ops note: its starting knobs (verify budget 6 per hub, floor
+fraction 0.2, freshness window 90 days, topk 8) want tuning against the
+ledger's `skipped_covered` counts on prod. Still ruled: no conflict-search
+verdict ever hard-blocks a mint; trust ranks but never rejects
+(`paper_rank` consumed as-is); a counter-hub grounds in a held passage,
+corpus-only until an external hunt is its own follow-on.
+
 ## Query-time section filter
 
 The primary-source hearsay gate's mint-side check (`nanopub/gates.py`,

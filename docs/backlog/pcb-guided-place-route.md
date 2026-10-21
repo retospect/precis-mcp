@@ -37,3 +37,23 @@ The multi-iteration place-route loop and batch shove
 take the layer count as given: when they find the stackup is the limit,
 they report it the way this item refuses a pick below the floor, and never
 add a layer themselves.
+
+## From pcb-0042-implementation (ADR 0042 slices 8–9, deploy binaries)
+
+- **Web (slice 8):** the board page has a schematic view and browse tab,
+  but no ratsnest SVG (airwires, crossings, measuring tapes) and no BOM
+  table with probe/DRC results; `src/precis_web/routes/pcb.py` has
+  neither. Done when a board renders its ratsnest and BOM in the web UI.
+- **Design-session phase machine (slice 9):** a pcb design as an `LLM:*`
+  project whose phases (intent, architecture, netlist, part selection,
+  placement, route, export) are gated by `auto_check` evaluators
+  (`netlist_drc_clean`, `all_parts_selected`, `placement_legal`,
+  `route_complete`), with back-edges route→placement and any→netlist.
+  Some evaluators exist in `workers/auto_check_evaluators/`; the phase
+  machine does not.
+- **Deploy binaries:** `deploy/roles/precis_eda` is in-repo and
+  unapplied. The pinned Freerouting 1.9.0 is coupled to
+  `src/precis/pcb/route.py::_cmd`'s 1.x batch CLI (2.x reworked it; don't
+  bump without rewriting `_cmd`); the jar's sha256 pin is blank; the DSN
+  emits a via referencing an undefined padstack, so check that on the first
+  real-jar run.

@@ -106,9 +106,9 @@ Seams:
 - `backlog/pathway-presentation-shared-module.md` — plugin-split owns it
   (its Do-next 6); chemistry's UI items (Horizon 9) consume it and start
   no second copy.
-- `backlog/precis-dispatch.md` — ranked in local-compute (Horizon); chemistry's
-  DFT relax is its first consumer, and its seams extract when a second
-  workload lands.
+- `backlog/slullama-hpc-placement.md` §From precis-dispatch — ranked in
+  local-compute; chemistry's DFT relax is the runner's first consumer, and
+  its seams extract when the second backend runs.
 - roadmap-quest owns the quest loop that dispatches and consumes
   pathways; chemistry owns the engine's health and output contract and, since
   2026-10-01, the catalysis quests' content (qu164903 ticking, the qu202467
@@ -149,7 +149,7 @@ Seams:
   summariser) and what the served capacity does (summarise, insert, mesh,
   link, categorise). The eval-run-spine's items 4 and 9 wait on the spark
   prerequisites ranked in local-compute's Do-next 3.
-  `backlog/embedder-capacity-ownership.md` (local-compute's) is fed by
+  Embedder capacity (local-compute's, decided 2026-10-02) is fed by
   serving-programme's py-spy/topology answers.
 
 Waits:
@@ -189,7 +189,7 @@ Seams:
   page. One query, one inverse rule, one cap — the MCP memory walk and
   the web surfaces must not disagree (seam recorded 2026-10-07).
 - substrate + memory half vs agent affordances — knowledge-mesh ranks the
-  substrate (knowledge-mesh, measures-substrate, graph-gardener), the
+  substrate (knowledge-mesh, measures-substrate, graph-gardener-value), the
   memory half and the surfaces; `graph-memory-consumers.md`
   ranks draft-authoring affordances, the focus verb, capability discovery,
   skill quality and source-code ingest. Do not duplicate ranking across
@@ -269,8 +269,8 @@ Seams:
 - `local-compute.md` Parked holds the **embed-drain** half of what used to be
   one cluster. Throughput there, fidelity here; different
   code, neither sequences the other.
-- `backlog/graph-maintenance-queue.md` (local-compute) spends local capacity on
-  this pipeline's output — a corrupt extraction makes that spend worse than
+- `backlog/graph-gardener-value.md` slice 5 (the gardener idle filler) spends
+  local capacity on this pipeline's output — a corrupt extraction makes that spend worse than
   idle, so this thread's Do-next 2 is upstream of that item's value.
 
 Waits:
@@ -293,9 +293,9 @@ decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute
   one state Reto's local-compute goal is about. Not ranked in
   `monitors-that-go-quiet`: that thread owns signals that lie, and this is a
   signal that does not exist. It has a consumer as of 2026-09-30 —
-  `backlog/graph-maintenance-queue.md` needs the same utilisation/queue-depth
-  number as an in-scope item and an acceptance criterion — but a consumer is
-  not an owner. **Ruled 2026-10-01: the measurement is authorised and belongs to
-  whoever owns `graph-maintenance-queue.md`** — measurement only, no alerting,
+  the local idle-capacity queue (now `backlog/graph-gardener-value.md` slice 5)
+  needs the same utilisation/queue-depth number — but a consumer is not an
+  owner. **Ruled 2026-10-01: the measurement is authorised and belongs to
+  local-compute** — measurement only, no alerting,
   because an idle GPU is often the correct state and a detector on it would be
   noise. It leaves this list once that item ranks it.

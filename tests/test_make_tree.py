@@ -1,4 +1,4 @@
-"""Make-tree kind + `made-by` alignment (make-tree-vs-design-tree.md v1).
+"""Make-tree kind + `made-by` alignment (the closed make-tree-vs-design-tree spec v1).
 
 Two trees over shared leaves: the design tree says what a thing IS
 (`contains`), the make tree says the ORDER it comes together — steps are
@@ -159,7 +159,7 @@ joint h.leaf to hp revolute limits:0deg..170deg
 
 def test_printed_joint_across_different_print_steps_is_flagged(make, cad):
     # a printed- typed interface is a captive printed joint: both hosts must
-    # come out of the SAME print step (cad-print-in-place.md).
+    # come out of the SAME print step (the closed cad-print-in-place spec).
     cad.put(id="printed_leaf", text=_PRINTED_LEAF)
     cad.put(id="printed_tray", text=_PRINTED_TRAY)
     make.put(id="print-plan", title="print jobs")

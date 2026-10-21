@@ -59,13 +59,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    feeds the paper (its own §CONSIDER FOR THE PAPER cross-ref).
 5. **backlog/pcb-meta-blocks.md** — `draft/high`; the reuse layer (schematic
    blocks + routed bundles) sits on top of 2–4, not before them.
-6. **backlog/pcb-courtyard-polygon.md** — `draft/medium`; mostly shipped
-   (items 1–6 landed 2026-08-30), one open cost-curve question survives.
-   gr496366 verified 2026-10-21 (g-courtyard): courtyard-to-
-   courtyard >= 0 is a hard legality constraint (`legalize_start` moves
-   a stored overlap apart), `courtyard_overlap` names both refdes in the
-   placement gate, silk draws the shared coincident wall (a569db907);
-   the dogfood-b C2/J2 hulls sit 0.9µm apart, never overlapped.
+6. **gr503436** — courtyard/silk residuals (pin-1 dot decision, silk
+   broad phase, two JLCPCB capability figures); the courtyard item closed
+   2026-10-21.
 7. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
    2026-10-21), independent of 2's split.
@@ -74,10 +70,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    waits on ewod-pcb's routing work, not on anything in this file.
 9. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
    sequenced after 8 by the item's own stated order.
-10. **backlog/pcb-0042-implementation.md** — residual ADR slices; its
-    routing story is superseded by `pcb-guided-place-route.md`
-    (ewod-pcb's), so what survives here is the `datasheet` kind slice and
-    similar leftovers.
+10. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
+    ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
+    (merged 2026-10-21; the rest of that file is ewod-pcb's).
 11. **backlog/pcb-board-profile-prototype.md** — `ready/normal`, promoted
     2026-10-18 (gr495399); key, data, accessor and summary line
     shipped; next is the capability overlay + DRC strictness slice, then
@@ -145,12 +140,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## No action needed — ranked in ewod-pcb
 
-- **backlog/pcb-always-valid-board-invariant.md** — ewod-pcb Do-next 2,
-  and folds in `pcb-placement-must-be-valid-before-routing.md` (same
-  defect, narrower — implement one, not both).
-- **backlog/pcb-placement-must-be-valid-before-routing.md** — folded into
-  the above.
-- **backlog/pcb-layer-preferred-direction.md** — ewod-pcb Horizon 3.
+- **backlog/pcb-always-valid-board-invariant.md** — ewod-pcb Do-next 2.
 - **backlog/pcb-footprint-pad-layer-unvalidated.md** — ewod-pcb Horizon 4.
 
 ## No action needed — ranked in pcb-easyeda-round-trip

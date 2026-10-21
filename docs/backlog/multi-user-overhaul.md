@@ -58,7 +58,7 @@ Verified against the tree on 2026-10-21. One row per assumption; the
 | 13 | `src/precis/handlers/_numeric_ref.py` (edit/delete) | no ownership check on memory, todo, quest, gripe, draft, finding, conv | any caller edits or deletes anyone's rows | S6 |
 | 14 | `delete` leaves inbound `qualifies` edges (gr503031) | a deleted node's edges stay traversable | a private node's existence leaks through dangling links | S6 (precondition) |
 | 15 | `src/precis/todo/guards.py` (`$PRECIS_SOURCE` verdict) | owner-vs-worker from a process-wide, self-declared env var; unknown → owner | any process claims owner | S6 |
-| 16 | `src/precis/workers/envelope.py::disallowed_tools` | tool-level deny lists are profile-dependent (`agent-deny-lists-are-profile-dependent.md`) | an envelope that reads as read-only is not | S1 (DB role is the backstop) |
+| 16 | `src/precis/workers/envelope.py::disallowed_tools` | tool-level deny lists are profile-dependent (gr503441) | an envelope that reads as read-only is not | S1 (DB role is the backstop) |
 | 17 | `deploy/roles/postgres/tasks/main.yml` ("APPLICATION roles only") | `agent_rw` = MCP + workers + web; `agent_ro` exists but is rarely bound | no tier between a worker and a human's browser session | S1 |
 | 18 | `src/precis/store/pool.py::_apply_db_role` | session-level `SET ROLE`, incorrect under pgbouncer transaction pooling | the read-only guarantee is unenforceable on prod DSNs | S1 (per-transaction `SET LOCAL ROLE`) |
 | 19 | `review-container-readonly-role.md` | review containers still connect as `agent_rw` | a "read-only" agent can write | S1 |

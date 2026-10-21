@@ -2,8 +2,8 @@
 
 Rules for TeX meant to be read at a distance (posters, decks, display
 print). Each was a bug on a shipped A0 board first — provenance and the
-rest of the poster spec:
-`docs/backlog/draft-poster-genre-and-themes.md` §3. They bind the generic
+rest of the poster spec: the closed draft-poster-genre-and-themes spec §3
+(in git history). They bind the generic
 template (`src/precis/data/templates/draft/poster.tex`) and any hand-tuned
 `.tex` alike.
 

@@ -24,7 +24,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 declarative intent can be realized by pick-and-join, so an LLM reasons over
 space, motion, assembly, charge, field and light — a PCB, a cartridge and a
 motor as children of one design. North-star: `backlog/se-kind.md` +
-`backlog/se-region-property-layer.md`. As the se owner it ranks the design-model items the other se threads
+`backlog/pocket-from-molecule.md` (region property layer and realize loop). As the se owner it ranks the design-model items the other se threads
 (se-3d-viewer, se-nucleic-chain, hexfold-toolkit) consume. Today the region-property layer is
 unbuilt and blocks three of the six reasoning axes; everything below reads
 off that gap until it closes.
@@ -106,14 +106,12 @@ off that gap until it closes.
 
 ## Do next
 
-1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
-   axes (charge, field, optical); the peer session (unicycle) is already
-   the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
-   (measurands, selectors, pockets) live on prod and dogfooded (Resume
-   state); B waits on
-   measures-substrate, C on the class lattice (both knowledge-mesh).
-   Reactivated 2026-10-17 by a driver (Reto: "we should bring that
-   back"): backlog/pocket-from-molecule.md slices 1–2 fill B and C.
+1. **backlog/pocket-from-molecule.md** — the region property layer
+   (slice A, measurands/selectors/pockets, live on prod; B and C are its
+   slices 1–2) and the intent-to-realize loop (its slice 4); both former
+   specs folded in 2026-10-21. Blocks three of six reasoning axes (charge,
+   field, optical). Ranked in the nanoreactor thread; when a second driver
+   needs the realize loop, extract it from `pocket_realize.py` here.
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 listed
    O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15. Left:
@@ -147,7 +145,6 @@ off that gap until it closes.
    ewod-pcb's adapter only) are recorded in the file.
 4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
-5. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 4.
 6. **backlog/pcb-se-binding.md** — the mm→m crossing; a producer exists,
    a consumer was never built. Peer session EWOD found this the same day.
    Vet round 3 folded 2026-10-02; two passes (pcb side first), both
@@ -241,8 +238,6 @@ off that gap until it closes.
    2026-10-01); first consumer of the T-slot library.
 8. **backlog/diamondoid-pattern-language.md**
 9. **backlog/cad-machine-spec.md**
-10. **backlog/cad-dims-and-constraints.md**
-11. **backlog/cad-print-in-place.md**
 12. **backlog/cad-assembly-checklist-seed-items.md**
 13. **backlog/cad-diagnose-apply-loop.md**
 14. **backlog/printable-atomic-models.md**
@@ -251,9 +246,6 @@ off that gap until it closes.
 17. **backlog/nm-stick-placement.md**
 18. **backlog/nm-face-codes-and-scale.md**
 19. **backlog/se-process-skills-as-rewrites.md**
-20. **backlog/boxel-exercise-tooling-gaps.md** — what the boxel exercise
-    taught about the cad/structure surface; read it before starting
-    the cad items (9–11, 13).
 21. **backlog/situation-rule-tables.md** — unblocked (design-state-core
     shipped in r37). Three-verdict pair
     checks over swept volumes in se drc; arguably multiscale-design-core's

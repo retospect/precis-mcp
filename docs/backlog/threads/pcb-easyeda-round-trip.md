@@ -11,7 +11,7 @@ design-review: yes
 - **Next:** Reto opened the regenerated taz15 `.epro2` in EasyEDA Pro on 2026-10-14: clean import, banner lifted. Pours from an already-poured source now open filled via `POURED` passthrough; precis-authored pours stay unfilled until rebuild copper. Catalog identity, local-first footprints and pin semantics landed (a7863eda3); pcb-datasheet-review slice 1 shipped. Still open inside 2f: rule AREAS, mask openings, teardrops (no record shapes). Router work stays with ewod-pcb. Full 2026-10-14 log: [Thread context](#thread-context).
 - **Blocked by:** Nothing for 2d/2e. Reopened 2026-10-07 by the coordinator (Reto's order: route/place first, then EasyEDA). Reto's 2026-10-14 open verified the file (banner lifted); the pour-fill gap it surfaced is now carried via `POURED` passthrough. Shared router/realizer files belong to [ewod-pcb](ewod-pcb.md#resume); sequence, do not merge.
 - **Unblocks:** A corrected board that routes and round-trips.
-- **Acceptance:** Use [pcb-router-fails-at-real-board-size](../pcb-router-fails-at-real-board-size.md) and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
+- **Acceptance:** Use [pcb-vector-router](../pcb-vector-router.md) slice 3b and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
 - **Worktree:** `pcb-easyeda-round-trip`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -29,7 +29,7 @@ semantic pin names, the netlist, the outline and the mounting holes, and
 derives the stackup from the board's own LAYER records.
 **Re-routing is partly fixed.** The router realized 8 of 89 nets with no
 reported failure (2026-09-30); main now reaches 65/89 in ~100 s
-(2026-10-01 — `pcb-router-fails-at-real-board-size.md`). Re-routing
+(2026-10-01). Re-routing
 to a corrected spec is the reason for importing, so the remaining 29 nets
 are the thread's central gap.
 Slice 1c is complete as of 2026-10-01: the copper measurement report and
@@ -114,9 +114,9 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
 
 ## Do next
 
-1. **backlog/pcb-router-fails-at-real-board-size.md** — this thread OWNS
-   the fix (agreed with ewod-pcb 2026-10-01; avoid-list in the item).
-   Measured
+1. **backlog/pcb-vector-router.md** slice 3b — owns the taz15-blank
+   number now (the grid-router item closed 2026-10-21; d42369679 deleted
+   the grid router). History of the grid fix, for context. Measured
    2026-09-30 at Reto's request: the router realizes **8 of 89 nets** on
    his real board and the job reports zero failures. Re-routing to a
    corrected spec is the whole reason for importing, so this blocks the
@@ -136,13 +136,13 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    2026-10-02 on the prod-row dump (Reto approved): **55 → 56/89 at
    2.5× the time**, so it stays off. The current baseline is 55, not 65:
    the board now carries its real holes, and the post-route DRC gate
-   strips 13 realized nets (method + tags in the item, step 13).
+   strips 13 realized nets.
    Classified 2026-10-02: all 13 were router faults. 12 sat inside the
    0.45 mm NPTH clearance of the Ø6 holes, and same-net vias overlapped
    drills. Two router fixes (NPTH claim radius, net-blind via-to-via
    keep-out), accepted in review round 5, leave **zero nets stripped by
    the gate**. Routed count: 67/89 at seeds 1, 2 and 3 (frozen board,
-   `scratch/pcb_route_offline.py` method, item step 14). With every part
+   `scratch/pcb_route_offline.py` method). With every part
    frozen the seed has nothing to vary, so the three runs agree by
    construction; they show determinism, not robustness. The remaining 22
    are all `unrouted`, i.e. congestion. Own-path via pairs inside one

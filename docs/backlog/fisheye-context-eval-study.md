@@ -25,5 +25,5 @@ revisions-to-acceptance. Deliverable: a paper.
 
 Ties to ADR 0051 (turn-taking + fisheye) and the per-tick job.meta
 snapshots (a ready-made corpus of what-context-worked). Distinct from
-`context-quality-eval.md` (that's the audit catalog/rubric over server-built
+`scripts/context-audit/` (that's the audit catalog/rubric over server-built
 contexts; this is a controlled A/B study of the fisheye flow itself).

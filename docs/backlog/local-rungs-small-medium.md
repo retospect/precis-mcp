@@ -17,7 +17,7 @@ prio: normal
   gpt-oss 0.812 vs haiku 0.875, gap entirely in the `partial` stratum).
 - After the small write lands, read `/placement` after 24 h into this file.
   What stays open here: the maintenance-lane `placement='local'` pin (needs
-  `graph-maintenance-queue.md`) and the sensitivity precondition (needs
+  `graph-gardener-value.md` slice 5 (idle filler)) and the sensitivity precondition (needs
   `content-sensitivity-placement.md`).
 
 Mining pass, 2026-09-30. The compiled tier ladder has **zero local rungs**
@@ -27,7 +27,7 @@ at lines 57-59). The 2026-08-15 cutover applied
 `SMALL = z-ai/glm-4.7-flash`, cloud-only. The DGX-pair
 `llama-server` has been stopped and disabled since 2026-08-23
 (`vllm-per-node-serving.md:17`). No lane is local today (last local LLM call 2026-09-10, the melchior
-summariser model; `local-summarizer.md` is the dedicated slice that brings it
+summariser model; the shipped local summarise chain (`workers/job_types/derived_drain.py`) is the dedicated slice that brings it
 back) — everything in the compiled ladder either runs cloud or pauses.
 
 ## Motivation / why
@@ -47,7 +47,7 @@ eval's output as a standalone capability with no consumer.
   MEDIUM for: chunk summarise, classify, and pre-search/condense (the
   pre-filter tier `router-cost-coverage.md` already names as wanted, ahead
   of paid escalation).
-- Pin `placement='local'` for the `graph-maintenance-queue.md` lanes
+- Pin `placement='local'` for the `graph-gardener-value.md` slice 5 (idle filler) lanes
   specifically — that item's whole premise is local-capacity consumption,
   so its calls should never silently fall back to cloud
   (the `fell_to_cloud` column of `get(kind='llm', id='/placement')` is
@@ -56,6 +56,10 @@ eval's output as a standalone capability with no consumer.
   anything proprietary through these new local rungs — sensitivity gating
   must exist before proprietary content is eligible for a local-only path
   that could otherwise be mistaken for "safe because local."
+
+- Embedder N-client load test once these LLM rungs share the box with the
+  embedder (from the closed embedder-capacity-ownership; its provisional
+  floor was 12.7–13.6 texts/s mixed with query p50 ~2 s / p95 ~5 s).
 
 ## Explicitly NOT in scope
 
@@ -71,7 +75,7 @@ eval's output as a standalone capability with no consumer.
 
 - SMALL has a live local rung serving real traffic (`llm.chain.small`
   rung 0). MEDIUM gets one only after a per-op trial passes.
-- `graph-maintenance-queue.md`'s lanes show `placement='local'` pinned, not
+- `graph-gardener-value.md` slice 5 (idle filler)'s lanes show `placement='local'` pinned, not
   inferred, in `llm_call_log`.
 - A proprietary-content job routed through a new local rung passes
   `content-sensitivity-placement.md`'s gate before landing there — no
@@ -84,7 +88,7 @@ eval's output as a standalone capability with no consumer.
 (placement pinning for the maintenance-queue lanes); no change to
 BIG/FRONTIER.
 
-Closest existing items: `local-summarizer.md` (the dedicated summariser
+Closest existing items: the shipped local summarise chain (`workers/job_types/derived_drain.py`) (the dedicated summariser
 slice; this item is the general SMALL/MEDIUM rung), `router-cost-coverage.md` (the pre-filter-tier ask
 this item is one instance of), `vllm-per-node-serving.md` (Slice 0, the
 hard blocker), `content-sensitivity-placement.md` (precondition for

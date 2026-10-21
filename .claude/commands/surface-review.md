@@ -30,8 +30,8 @@ The territory is already well-populated — this pass's job is to put
 - `docs/backlog/INDEX.md`, the surface family: `mcp-surface-economy`,
   `capability-discovery-on-a-sprawling-surface`, `vocab-compaction`,
   `token-review-hook-gaps`, `llm-prompt-surface-audit`,
-  `mcp-verb-kwarg-parity`, `tick-tool-lists-and-discovery-reflex`,
-  `skill-eval-executed-runner`, `context-quality-eval`.
+  `tick-tool-lists-and-discovery-reflex`, `skill-eval-executed-runner`;
+  context-audit render residuals are gr503440.
 
 Hold this as the known set. Every candidate later gets marked known/new
 against it.

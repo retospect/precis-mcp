@@ -1,4 +1,4 @@
-"""Dispatch worker — Slice 5 of ``docs/backlog/todo-tree-plan.md``.
+"""Dispatch worker — Slice 5 of the closed todo-tree-plan spec.
 
 The bridge between the todo tree (intent) and the job substrate
 (execution). Walks open todos with ``meta.executor`` set, picks

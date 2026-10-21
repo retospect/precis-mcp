@@ -254,9 +254,6 @@ the chemistry thread's):
     checklist.
 11. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
-12. **backlog/todo-tree-plan.md** — remaining fold candidates of the
-    todo-tree plan; the todo tree is the quest loop's work substrate, so it
-    sequences after the loop ticks. Platform pass 2026-10-02.
 13. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
     has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.
     So a refuted hub, such as fi460566 or fi460856 (marked 2026-10-02 by

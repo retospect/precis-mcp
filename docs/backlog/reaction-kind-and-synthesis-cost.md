@@ -35,8 +35,8 @@ building a monolithic "synthesis" kind would duplicate all three:
 
 So: **add a `reaction` kind, and build cost as a graded vector over the routes
 and make-trees that already exist.** Do not grow a second chem surface —
-`chem-name-lookup-verb.md` and `composable-pipeline-kind.md` both already flag
-that risk, and this item is the reconciliation point.
+`chem-name-lookup-verb.md` already flags that risk (as did the closed
+composable-pipeline-kind idea), and this item is the reconciliation point.
 
 The gap is worth stating precisely. `make` holds step conditions as free-form
 meta *per tree*: not reusable across trees, not searchable, not sourced. `route`
@@ -114,7 +114,7 @@ Same two tiers here:
 
 **Hard — DRC.** *The route does not terminate in stock.* A branch ending in a
 non-purchasable precursor is not a worse route, it is not a route. This is
-already the open item in `make-tree-vs-design-tree.md` ("routes must terminate
+already the open item in the closed make-tree spec (shipped as the `make` kind) ("routes must terminate
 in stock … the lint should say so"), and `RouteStep.in_stock` /
 `RouteGraph.solved` already carry the signal — nothing consumes it. Emits an
 error; a candidate carrying one is removed from consideration, not ranked last.
@@ -173,7 +173,7 @@ more than the ranking:
   inaccessible.
 - **RB-SAScore** — splits SAscore's fragment term into a building-block score
   and a reaction-driven score. This is the fragment-level move
-  `make-tree-vs-design-tree.md` already asked for ("a score on
+  the closed make-tree spec (shipped as the `make` kind) already asked for ("a score on
   blocks/fragments, not just the whole").
 
 **The finding that should govern our use of all of them:** SYBA's reported
@@ -186,7 +186,7 @@ deprioritises; it never removes. Only stock-termination is hard.
 
 Scores attach as **attached-model results** (`analyzed-by`, mig 0153) carrying
 engine + version + validity scope, so they go stale loudly when the structure
-changes. The hard rule from `attached-models-layer.md` applies unchanged: do
+changes. The hard rule from the closed attached-models spec (shipped as `analyzed-by`) applies unchanged: do
 not ship attachment storage before the staleness design.
 
 ## Seeding from an existing library
@@ -827,7 +827,7 @@ is perfectly acceptable. In probe-based assembly you hold one molecule at a
 time, so **stability in isolation becomes binding**. A route that is fine in
 flask chemistry can be impossible mechanosynthetically, and the reverse.
 
-That maps exactly onto `make-tree-vs-design-tree.md`'s two make-orders (placed
+That maps exactly onto the closed make-tree spec (shipped as the `make` kind)'s two make-orders (placed
 assembly vs bulk synthesis) and yields a concrete rule: **the step DRC is
 mode-dependent.** The same step gets different checks depending on which
 make-order it sits in — solution mode asks about chemoselectivity and steric
@@ -952,7 +952,7 @@ A `make` step and a `route` step both gain an optional `reaction=rx<id>` in
 step meta. The reaction store then becomes the shared substrate under both the
 engine-planned route and the human-authored make-tree, instead of each
 re-typing conditions into its own free-form meta. That is the "two trees over
-shared leaves" rule from `make-tree-vs-design-tree.md`, applied one level down:
+shared leaves" rule from the closed make-tree spec (shipped as the `make` kind), applied one level down:
 two *process* representations over shared reaction facts.
 
 This is also what makes the whole thing serve Reto's stated purpose. A
@@ -1166,7 +1166,7 @@ this doc's own thesis is that a monolithic "synthesis" kind would duplicate
 
 ## Raising issues to the designing LLM early
 
-The channel already has a design-of-record — `attached-models-layer.md`'s "a
+The channel already has a design-of-record — the closed attached-models spec (shipped as `analyzed-by`)'s "a
 way for code to flag issues to the ai" — and three tiers, two of which exist.
 Applied here:
 

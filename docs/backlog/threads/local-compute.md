@@ -195,95 +195,20 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
      leg 2.
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,
-     fetch), not tunnel-and-serve. It is the "second backend" trigger in
-     `backlog/precis-dispatch.md`, which is now real: extract the runner seam
-     from the pollux relax, shaped by both cases.
+     fetch), not tunnel-and-serve. It is the fired "second backend" trigger
+     (`backlog/slullama-hpc-placement.md` §From precis-dispatch): extract the
+     runner seam from the pollux relax, shaped by both cases.
      - Precondition, chemistry's: one GPAW relax must complete in prod on
        pollux first. None has, and the MPI image is still on branch
        `chemistry-dft-mpi-env`.
    - (c) ML-potential relaxes (MACE-MP; GFN-xTB rides the same jobs) for
      hexfold-toolkit's nanobud geometry vetting: many short jobs, so they
      batch per sbatch. Same runner as (b).
-3. **backlog/local-summarizer.md** — the first workload to go local again
-   (~1.8M-chunk backlog, bulk and content-light); gated on
-   `backlog/model-qualification.md`, measured by 1. The gate's instrument
-   landed (d2abcbc7): `llm_eval` scorer `summary` replays the production
-   summariser messages and grades with the worker's own parse/reject plus an
-   invented-number check; `scripts/llm_eval/build_summarize_gold.py` samples
-   already-summarised paper chunks read-only into gitignored
-   `gold_set/local/` (Reto 2026-10-02: the set never enters the public
-   repo). `llm eval --compare` prints mean/n beside the ordinal.
-   **First candidate exists already:** cluster read 2026-10-02 13:17Z —
-   melchior llama-swap (port 11445) serves `glm-4.7-flash` (Q5_K_M),
-   `qwen3.6-27b-q8_0` and `qwen3-next-80b-a3b-q4_k_m`, all idle; prod
-   `resource_slots` holds `melchior|llm:glm-4.7-flash` cap 4. The `small`
-   chain buys `z-ai/glm-4.7-flash` from OpenRouter, so the first
-   qualification is the local quantisation against its own cloud original.
-   castor/pollux serve nothing. Gold set BUILT 2026-10-02 on melchior's
-   prod checkout (40 tasks, 10 non-prose; gitignored
-   `scripts/llm_eval/gold_set/local/summarize_v1.json`; rebuilt 2026-10-03
-   with the same 40 prompts plus the 220-token cap per task). It lives in
-   reto's prod clone on melchior (`~/precis-mcp-prod`, reto-owned; `ssh
-   melchior` lands as `deploy`, which cannot write there). Run builds and
-   compares as reto, with the env from the web service plist.
-   **First compare, 2026-10-03, deployed 63301c5c.**
-
-   | arm | mean | without number rule | number-rule-only zeros | hit cap |
-   |---|---|---|---|---|
-   | local `glm-4.7-flash` (melchior) | 0.750 | 0.800 | 2/40 | 0/40 |
-   | cloud `z-ai/glm-4.7-flash` | 0.825 | 0.850 | 1/40 | 0/40 |
-
-   - The CLI could not run it then. It runs since round 3: it never bound its store,
-     and the operator chain's pinned rung model overrides the candidate id.
-     The local arm was driven through `run_eval(dispatch_fn=...)`, using the
-     LOCAL transport at the served endpoint: **hook-driven, bypasses the
-     breaker and slot accounting** (concurrency 1 on an idle slot). This is
-     the measurement of record until the CLI fix lands (orchestrator §9a).
-     Past damage (§9c, read-only 2026-10-03): **zero `record=True` eval
-     runs affected.** Prod has no `record_eval` entry at all. The one
-     `measured-eval` review (2026-08-10, deepseek-v4-flash) is a manual
-     note with no axis or ordinal. CLI runs never saw the DB chains, so
-     they kept the candidate id; only a settings-bound process would have
-     hit the override. The number-rule zeros differ by
-     1, so the delta is usable.
-   - The gap is non-prose tagging, not summary quality. 8 of the local
-     arm's 10 zeros and 6 of the cloud arm's 7 are chunks the incumbent
-     labelled non-prose (references, credits, metadata) where the model
-     wrote a prose brief instead of a tag. On the 30 prose chunks the arms
-     have 2 and 1 zeros.
-   - Re-sampling the local zeros flipped 2 of 10, so the 3-task gap is
-     inside run-to-run noise at n=40.
-   - The proposed promote rule (≥ cloud − 0.05) says no.
-   - **Reto 2026-10-03 (local-compute-14, option 1): measure properly.**
-     200 tasks, prose and non-prose reported separately, each arm run
-     twice. Promote if prose is level and non-prose is within the measured
-     noise. The set (150 prose, 50 non-prose, seed 2) is
-     `summarize_v2_200.json` next to v1.
-   - **200-task compare, 2026-10-03: PASSES the rule.** Run through the
-     fixed `pinned_dispatch` path (this tree's code, slot-accounted, breaker
-     on), so it also exercises the eval fix: no void arm, one cloud 504.
-
-     | arm | run | prose (n=150) | non-prose (n=50) | wall |
-     |---|---|---|---|---|
-     | local `glm-4.7-flash` | 1 / 2 | 0.913 / 0.913 | 0.120 / 0.160 | 266 / 281 s |
-     | cloud `z-ai/glm-4.7-flash` | 1 / 2 | 0.827 / 0.906 | 0.040 / 0.140 | 830 / 911 s |
-
-     - Prose: local is level with cloud's better run and above its worse one.
-       Non-prose: local is at or above cloud in both runs.
-     - Noise, measured: tasks whose pass/fail flipped between the two runs
-       were 12 of 150 prose and 2 of 50 non-prose on the local arm, and 26
-       and 9 on the cloud arm. The local quantisation is the steadier arm.
-     - Both arms score about 0.1 on non-prose. Neither model writes the tag
-       the incumbent chose, so this is the label question (§9), not a
-       local regression.
-     - Local runs 3× faster at concurrency 1.
-   - **Next: the summarise-only local rung.** `llm.chain.small` carries
-     all 354k small calls a week, not just summarise. An `llm.op.<source>`
-     override only picks a tier, and a chain rung pins its model. So
-     promoting summarise alone needs a summarise chain: local
-     `glm-4.7-flash` at the melchior slot (capacity 4, matching
-     `--parallel 4`), with cloud as overflow. Build it under
-     `local-summarizer.md` "In scope", with the slot-capacity note there.
+3. **Local summarise — shipped** (local-first `llm.op.llm_summarize` chain
+   live since 2026-10-11, now rung 0 on the serving node, ~0% fall-through;
+   item closed 2026-10-21). It deliberately reverses the 2026-08-15 "do not
+   re-apply the local-only SMALL cutover" warning: do not revert it on the
+   strength of that note. The unexplained drain stall is gr503442.
 **Order for putting the big local model to work** (Reto 2026-10-03,
 endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
@@ -386,28 +311,27 @@ task set.
    per serving box, held by a feedback loop on the server's
    running/waiting/KV metrics; card `max_parallel`, slot capacity and the
    server limit set from one number; overflow to the cloud rung;
-   `graph-maintenance-queue.md` (Horizon 1) as the deferrable feed. After
+   the gardener idle filler (`graph-gardener-value.md` slice 5) as the
+   deferrable feed. After
    Slice 0 (4b) and Slice 1 serving. This and the queue are the path that
    puts castor to work (Reto 2026-10-03).
-7. **backlog/embedder-capacity-ownership.md** — decided (Reto 20:47Z
-   2026-10-02, td461158, §Decided in the item): this thread holds aggregate
-   embedder capacity; owner is the embedder service; provisional capacity
-   12.7–13.6 texts/s mixed, query p50 ~2 s / p95 ~5 s (a
-   floor); host-level admission and a shared vector cache declined. Left:
-   the N-client load test once local LLM rungs share the box with the
-   embedder, so after 5; then delete the item. The capacity plan (2) carries
-   the embedder rows meanwhile.
+7. **Embedder capacity — decided** (Reto 2026-10-02, td461158; item closed
+   2026-10-21): this thread holds aggregate embedder capacity, owned by the
+   embedder service (`src/precis/embedder_service.py`); host-level admission
+   and a shared vector cache declined. The N-client load test rides with 5
+   (`local-rungs-small-medium.md`); the capacity plan (2) carries the rows.
 
 ## Horizon
 
-1. **backlog/graph-maintenance-queue.md** — the workload itself; supersedes
-   `backlog/cluster-scheduling.md`'s tear-down clause. Waits on local
-   capacity existing (1-4).
+1. **backlog/graph-gardener-value.md** slice 5 — the idle-filler workload
+   (absorbed graph-maintenance-queue 2026-10-21); supersedes
+   `backlog/cluster-scheduling.md`'s tear-down clause. Ranked in
+   knowledge-mesh; waits on local capacity existing (1-4).
 2. **backlog/content-sensitivity-placement.md** — precondition for anything
    proprietary going local at all.
-3. **backlog/precis-dispatch.md** — the compute-runner layer; first consumer
-   is the chemistry thread (DFT relax); seams extract when a second workload
-   lands.
+3. **backlog/slullama-hpc-placement.md** §From precis-dispatch — the
+   compute-runner seam extraction (fired trigger) and its open GPAW risks;
+   first consumer is the chemistry thread (DFT relax).
 4. **backlog/router-cost-coverage.md**
 5. **backlog/llm-judge-reliability.md** — needed before a local judge is
    trusted.
@@ -434,8 +358,9 @@ task set.
 10. **backlog/dreaming.md**
 11. **backlog/llm-cost-accounting.md**
 12. **gr458727** — the capacity-idle monitor ("is the fleet working or
-    idle"): roadmap pillar 3 says it is missing; measurement only, owned with
-    `backlog/graph-maintenance-queue.md` (Ruled 2026-10-01, `INDEX.md`).
+    idle"): roadmap pillar 3 says it is missing; measurement only, owned
+    here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
+    `llm-dispatch-feedback-controller.md` consume it.
     Half shipped: `get(kind='job', id='/throughput')` reports claims and
     outcomes per host/process plus queue depth by executor. Still open: GPU
     busy fraction and queue depth per tier in `host_heartbeat_log`, and the

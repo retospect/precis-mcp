@@ -1,4 +1,4 @@
-"""Graph gardener — acceptance criteria 1-6 of docs/backlog/graph-gardener.md.
+"""Graph gardener — acceptance criteria 1-6 of the closed graph-gardener spec.
 
 DB-backed (``store`` fixture): seeded pairs exercise the deterministic
 detectors, the proposals-only ledger write, the explicit apply/undo door,

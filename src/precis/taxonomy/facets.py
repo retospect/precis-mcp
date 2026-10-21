@@ -1,6 +1,6 @@
 """Facet counts over the instances under a taxon node.
 
-Slice 3 of docs/backlog/taxon-facet-navigation.md —
+Slice 3 of the closed taxon-facet-navigation spec —
 ``get(kind='taxon', id=…, view='facets')``. Two facet sources, kept apart in
 the output:
 

@@ -10,7 +10,8 @@ pillar: local-compute
   no caller. slullama leg 1 (static card) SHIPPED (dark); leg 2 (chain rung)
   OPEN, blocked on external cluster access.
 - **Owner:** thread `local-compute` Do next 2b. This file is the one spec for
-  external HPC; `precis-dispatch.md`'s "second backend" trigger points here.
+  external HPC; the former precis-dispatch item's "second backend" trigger
+  is folded in below (§From precis-dispatch).
 - **Refs**: memory `slullama_cluster_llm`; ADR 0066 (git-only ADR,
   capability tiers + placement chains); `precis.utils.llm` package
   docstring §4 ("Chain"); `precis.llm_catalog.seed_slullama_card`.
@@ -391,6 +392,21 @@ before the first live run but blocks nothing else.
 - `cleanup` keeps a stage another uncollected intent still names.
 - `hpc_batch` with a fake runner drives a precis job through each row of the
   state map against the test DB.
+
+### From precis-dispatch (folded 2026-10-21)
+
+Phase 1 (the `ssh_node` executor, live) is that item's shipped half. Its
+fired trigger: once this batch runner and the pollux GPAW relax both run in
+prod, extract the shared `WorkloadSpec` / `Runner` / `Stager` seam from the
+two real cases — not before (no stub runners or contract tests). Decided
+2026-06-21: the abstraction lives in precis-mcp; images go through a local
+registry on caspar backed by NFS (plain HTTP on the tailnet; revisit
+auth/TLS before an image leaves it); jobs run as one shared
+`precis-compute` cluster user. Risks still open: GPAW GPU on Blackwell +
+CUDA 13 + aarch64 (CuPy likely needs a source build; the same image runs on
+CPU as fallback); pin one PAW dataset version under the NFS potentials dir.
+Handle durability is covered by `meta.compute_handle` re-adoption in
+`workers/executors/ssh_node.py`.
 
 ## Apptainer image (SIF-1..5, spec 2026-10-21)
 

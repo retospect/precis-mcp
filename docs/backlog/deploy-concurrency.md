@@ -181,7 +181,7 @@ Both are deploy-path checks that produce a confident, specific, wrong
 conclusion — the drain by conflating "could not ask" with "nothing to wait
 for", this one by conflating "install failed" with "someone else installed
 something newer". A check that cannot distinguish its failure modes hands you
-a diagnosis instead of a fact. See `deploy-drain-wait-is-a-silent-noop.md` and
+a diagnosis instead of a fact. See the drain fix (2026-08-22) and
 memory `psqlrc_pollutes_scripted_psql`.
 
 ### Verification

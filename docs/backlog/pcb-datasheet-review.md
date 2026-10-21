@@ -211,7 +211,7 @@ recency); a stored sibling order is YAGNI until a reader needs it.
 - Whole-board architecture synthesis (which blocks a product needs): the
   designer starts from named functions with requirements.
 - Supplier parametric import beyond lifecycle and stock
-  (`digikey-component-import.md` owns supplier ingest).
+  (`precis.supply` owns supplier reads; identity-only links).
 
 ## Acceptance criteria
 
@@ -373,7 +373,7 @@ questions:
   power) is the fallback. Both carry a revision verdicts consume.
 - **[decided]** EasyEDA symbol pin types are enough for ERC; datasheet
   facts refine and override them.
-- **[decided]** Lifecycle source: Digi-Key (`digikey-component-import.md`)
+- **[decided]** Lifecycle source: Digi-Key (`precis.supply.digikey`)
   or Octopart/Nexar, by MPN, cached on the part with `as_of`, re-checked
   before each order.
 - **[decided]** Extraction budget: one BIG-tier read per IC datasheet;
@@ -420,7 +420,7 @@ the coordinator), on slice 7's follow-ups:
 
 Ready-gate findings, 2026-10-13:
 
-- **blocker** — Bundles ~4 independently shippable deliverables (13 scope items, 11 slices, 2 deps still draft); split: A = slices 1-3 (import, op='pins', passive_rating; no deps), B = slice 4 (verdict inputs/origin/forget; checklist substrate), C = slices 5-7,10-11 (needs datasheet-facts-mesh, blocked-by it), D = slices 8-9 (selection/design; needs C + digikey-component-import for lifecycle). A whole-item `blocked-by` would wrongly gate A.
+- **blocker** — Bundles ~4 independently shippable deliverables (13 scope items, 11 slices, 2 deps still draft); split: A = slices 1-3 (import, op='pins', passive_rating; no deps), B = slice 4 (verdict inputs/origin/forget; checklist substrate), C = slices 5-7,10-11 (needs datasheet-facts-mesh, blocked-by it), D = slices 8-9 (selection/design; needs C + `precis.supply.digikey` for lifecycle). A whole-item `blocked-by` would wrongly gate A.
 - **blocker** — Where derived facts and verdict inputs persist is unnamed under "no new store" (`_VERDICT_COLS` in `store/_checklist_ops.py` has one `fingerprint` and `checked_by`, no `origin`, no list of consumed fact ids/revisions); name the columns/link kind or defer to the facts-mesh schema.
 - **advisory** — AC6 says the `contains` edge runs "from part to boards"; in `_pcb_ops.py` the edge is board(src) -> part(dst); reverse query only.
 - **advisory** — Slices 4-5 acceptance rows (op='forget', provenance reverse query slice 10) have no AC beyond 5/9; add ones for 12 and for lifecycle ingestion (AC7 only covers a manual NRND mark).

@@ -1,6 +1,6 @@
 """Attached-models v1 — `analyzed-by` links with version-pinned staleness.
 
-The mechanism under test (attached-models-layer.md): `cad_save` records a
+The mechanism under test (the closed attached-models-layer spec): `cad_save` records a
 content sha in `ref_events` on every save; attaching an analysis pins the
 current sha into `links.meta`; a later *content-changing* save makes the
 pin mismatch — the links view flags it and the `analysis-stale` condition

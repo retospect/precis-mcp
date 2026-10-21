@@ -259,7 +259,7 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
 
 def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
     """Mint ONE queued ``graph_garden`` job per UTC day — the proposals-
-    only graph-upkeep pass (docs/backlog/graph-gardener.md). Same shape as
+    only graph-upkeep pass (the closed graph-gardener spec). Same shape as
     ``_run_doctor_tick_mint``: host-agnostic cadence (the lease is the
     fleet-singleton throttle), ``meta.idem_key='garden:<date>'`` is the
     per-day dedup, and the minted job drains under the ``job_inproc``
@@ -905,7 +905,7 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=7 * 24 * 3600 + 53 * 60,
         run=_run_cfp_watch,
     ),
-    # docs/backlog/graph-gardener.md: the graph gardener's daily mint.
+    # the closed graph-gardener spec: the graph gardener's daily mint.
     # Host-agnostic like doctor_tick — the lease is the fleet-singleton
     # throttle and the idem_key the per-day dedup. Off the exact day
     # boundary (+59m) so it doesn't pile onto the nanopub/catalog fires.

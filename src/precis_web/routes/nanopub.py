@@ -41,7 +41,7 @@ functions with ``interactive=True`` (a person clicked).
   w3id name resolves nowhere public; this is the local mirror).
 * ``POST /nanopub/fi<id>/merge`` — the guarded merge door (slice 3,
   the read-for-question loop (skill precis-read-for-question); guard rationale:
-  docs/backlog/taproot-merge-mcp-surface.md). The claim page's "Nearest
+  the closed taproot-merge-mcp-surface spec). The claim page's "Nearest
   claims" panel (``hub_context``'s ``nearest``) is the only source of the
   ``loser=`` value a person clicks. Dry-run by default
   (:func:`~precis.taproot.hub.merge_hubs`) — the plan (edges repointed /

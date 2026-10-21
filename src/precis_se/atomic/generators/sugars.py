@@ -74,7 +74,7 @@ entry, main loop 2026-08-31):
    relax pass now lives in** :mod:`precis.structure.georelax`
    (:func:`~precis.structure.georelax.relax_graph`, imported here as
    ``_relax``) — promoted to the core relax ladder's ``geo`` rung
-   (docs/backlog/se-nanobud-graph.md §1) and generalized from a hard-coded
+   (the closed se-nanobud-graph spec §1) and generalized from a hard-coded
    sp³ angle target to a per-atom hybridization-aware one; this module's
    own call site (always sp³) is byte-identical to before the move.
    **Either path stamps which one ran into the returned block's

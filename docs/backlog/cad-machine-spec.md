@@ -302,7 +302,7 @@ pin bore). Decisions, 2026-09-05:
 
 The molecular mirror (a bond-forming interface consuming atoms/valences of
 both blocks) is the eventual second consumer of the same splice semantics —
-see `make-tree-vs-design-tree.md`.
+see the closed make-tree spec (shipped as the `make` kind).
 
 ## Parallel track (independent of 1–4)
 
@@ -417,6 +417,6 @@ you state intent and the kernel keeps it true.
    — all four now shipped (migs 0095/0153/0154/0156; the
    design-graph-relations backlog item is retired, git log has the
    decisions). Sibling designs from the same session:
-   `attached-models-layer.md`, `make-tree-vs-design-tree.md`,
+   the closed attached-models spec (shipped as `analyzed-by`), the closed make-tree spec (shipped as the `make` kind),
    `margin-budget-tree.md` (slice 5, straddling modules, shipped from the
    same session — decisions above).

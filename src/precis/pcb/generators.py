@@ -2772,7 +2772,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # placement no pass was allowed to fix, whose 14
                 # `via_pad_keepout` errors were all knowable before the
                 # router started (docs/backlog/
-                # pcb-placement-must-be-valid-before-routing.md).
+                # pcb-always-valid-board-invariant.md).
                 #
                 # A caller who genuinely needs the lock (a sink whose
                 # position is a mechanical constraint, not a routing

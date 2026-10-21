@@ -1,5 +1,5 @@
 """se pockets — a named set of regions on a block, plus the shape that
-bounds them (docs/backlog/se-region-property-layer.md slice A, in-scope 3).
+bounds them (the closed se-region-property-layer spec slice A, in-scope 3).
 
 A pocket is a **block feature**, not a new property object: it names a
 set of region selectors (:mod:`precis_se.datums` grammar — ``patch:``,

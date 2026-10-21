@@ -265,7 +265,7 @@ def check_grounding_fresh(
 #
 # The second freshness question, asked at the OTHER end of the lifecycle:
 # before the string freezes, how current is the hub's "no known conflict"
-# statement (``meta.conflict_search``, docs/backlog/claim-conflict-search.md
+# statement (``meta.conflict_search``, the closed claim-conflict-search spec
 # item 4)? Advisory only — this never becomes a gate: an unreviewed LLM
 # suspicion raises a question (``disputes``), it does not veto.
 

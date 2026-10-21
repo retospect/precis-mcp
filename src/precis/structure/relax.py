@@ -8,7 +8,7 @@ atoms apart toward their equilibrium bond length ("fix the stupid bonds", the
 hybridization-aware relax (bond springs + non-bond repulsion + a VSEPR
 angle-restoring term keyed on each atom's own hybridization,
 :mod:`precis.structure.georelax`, promoted out of the cyclodextrin generator's
-original cleanup pass, docs/backlog/se-nanobud-graph.md §1) — the capability
+original cleanup pass, the closed se-nanobud-graph spec §1) — the capability
 ``clean``'s pairwise-only repair never had: it restores bond ANGLES too (an
 sp2 vertex toward 120°, not just sp3's 109.47°), not only lengths. ``emt``
 (rung 1) is also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
@@ -354,7 +354,7 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
 
 def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     """Rung ``geo``, beside ``clean``: the graph-first hybridization-aware
-    relax (:mod:`precis.structure.georelax`, docs/backlog/se-nanobud-graph.md
+    relax (:mod:`precis.structure.georelax`, the closed se-nanobud-graph spec
     §1) — bond springs + non-bond repulsion + a VSEPR angle-restoring term
     keyed on each atom's own declared/default hybridization. Like ``clean``,
     it has no potential energy of its own (``energy``/``max_force`` stay
@@ -380,7 +380,7 @@ def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     reads its wrapped, not true, separation. This rung's intended input is
     the graph-surgery/generator molecular scene (like
     :func:`~precis.structure.georelax.register`, "molecular scenes only" —
-    docs/backlog/se-nanobud-graph.md §1 item 4), which is non-periodic or
+    the closed se-nanobud-graph spec §1 item 4), which is non-periodic or
     sits in a large vacuum box with every atom already unwrapped; a genuine
     periodic-slab use of this rung is future work, not this slice.
     """

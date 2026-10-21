@@ -1691,7 +1691,7 @@ def test_pathway_detail_kinetics_error_shows_reason(client, runtime) -> None:
     assert "kinetics-data" not in resp.text
 
 
-# ── step folding + annotations (pathway-diagram-step-annotations.md) ────
+# ── step folding + annotations (pathway diagram step annotations) ──────
 
 _TEMPLATE = (
     Path(__file__).resolve().parents[2]

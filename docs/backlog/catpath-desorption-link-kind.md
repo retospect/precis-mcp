@@ -12,5 +12,5 @@ distinguish "supply, bookkeeping only" from "desorption, a real cost" instead
 of silently treating both as zero.
 
 Ranked by the catalysis-selectivity thread (Do-next 2) since 2026-10-02:
-the first slice of `pathway-diagram-step-annotations.md`, which adds the
-typed `kind` and `added`/`removed` link fields together.
+the first slice of the (closed, shipped) pathway step-annotations work,
+which adds the typed `kind` and `added`/`removed` link fields together.

@@ -1,6 +1,6 @@
 """Graph-first geometry — the shared relax core behind the `geo` rung
 (`relax.py`) and generators that build a structure from its bond graph
-first, coordinates second (docs/backlog/se-nanobud-graph.md §1).
+first, coordinates second (the closed se-nanobud-graph spec §1).
 
 Promoted out of `precis_se.atomic.generators.sugars` (that generator's
 `_relax`/`_angle_triples`/`_angle_theta_gradients`, the cyclodextrin
@@ -117,7 +117,7 @@ def angle_triples(
     every neighbour pair at that vertex, target =
     :func:`precis.structure.vsepr.ideal_angle` at that vertex's own
     hybridization (`sugars.py`'s original always passed ``"sp3"``; this is
-    the generalization docs/backlog/se-nanobud-graph.md §1 asks for — an
+    the generalization the closed se-nanobud-graph spec §1 asks for — an
     sp2 vertex now restores toward 120°, not 109.47°)."""
     n = len(elements)
     hybs = _per_atom_hybridizations(n, hybridizations)
@@ -290,7 +290,7 @@ def embed_from_graph(
     bond_length: float = 1.45,
 ) -> np.ndarray:
     """Seed 3D coordinates from a bond graph ALONE — no starting geometry
-    needed at all (docs/backlog/se-nanobud-graph.md §1's "embed-from-graph"
+    needed at all (the closed se-nanobud-graph spec §1's "embed-from-graph"
     item; the graph-surgery generators' escape from needing coordinates for
     a freshly-stitched region).
 
@@ -380,7 +380,7 @@ def register(
     anchor_neighbors: Sequence[int] | None = None,
     plane_ref: str | np.ndarray = "inward",
 ) -> np.ndarray:
-    """Canonical rigid registration (docs/backlog/se-nanobud-graph.md §1,
+    """Canonical rigid registration (the closed se-nanobud-graph spec §1,
     item 4) — a post-relax, presentation-layer re-framing, NEVER used to
     pin anything during relax, and molecular scenes only (a periodic scene
     keeps its own cell conventions instead). Guarantees camera params stay

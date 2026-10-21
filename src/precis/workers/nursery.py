@@ -1,4 +1,4 @@
-"""Nursery worker — ``docs/backlog/todo-tree-plan.md`` Slice 3: SQL-only
+"""Nursery worker — the closed todo-tree-plan spec Slice 3: SQL-only
 detectors over the todo tree + worker fleet, one ``kind='alert'`` per
 condition (:mod:`precis.alerts`) — no LLM call, despite the plan's stale
 "Nursery model = sonnet" decision; the rules are deterministic.

@@ -197,9 +197,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    a hard gate on both stages and incompleteness is the only permitted
    failure mode. The file also records the answer to his follow-up — a
    netlist is still buildable before placement, because the IR's levels are
-   progressive and an unplaced design has no geometry to violate. Folds in
-   backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
-   narrower): implement one, not both.
+   progressive and an unplaced design has no geometry to violate.
 2. **Datasheet autopull — first prod pull's chunk quality.** Shipped
    (2b3c62811, in R16): the `datasheet_pull` job (job_inproc), the
    put/EasyEDA-import trigger, `get(kind='part')` reasons. Unchecked: put a
@@ -207,14 +205,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    ingested chunks. JLC's component API is erroring (gr464537), so expect
    `jlc_api_error:500` until a datasheet_url exists in `parts`. The mesh
    half is knowledge-mesh's (review item ewod-pcb-2).
-3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
-   **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
-   MONEY term is a free tie-breaker against every non-maximal constraint (a
-   $0.046 term overruled courtyard_overlap). With legality moved out of the
-   objective entirely this no longer gates anything manufacturability-facing;
-   what survives is tuning clarity for the next person adding a term — and
-   backlog/pcb-tightest-connected-part.md is the next item that will trip
-   over it.
 4. **dogfood-6's 25 failed escapes are not corridor starvation.**
    New replay evidence (2026-10-07, td472840, mx456/mx457): the route warm
    start's connected-via distance assignment yields 51/55 on In2.Cu+B.Cu
@@ -253,7 +243,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
      negotiation reaches far past 22 on B.Cu alone.
    - *Opening In2.Cu is the lever:* same placement, escape class layers
      `[In2.Cu, B.Cu]`: hard 40/55 (21 vias), negotiate=10 43/55 (26
-     vias). The class/layer policy itself is item 6's question.
+     vias).
    **Dogfooded on prod 2026-10-07** (Reto: two-layer escape acceptable,
    EWOD has vias on every layer):
    - *The first class_rules route (job 472103) gained nothing.* In2.Cu
@@ -279,17 +269,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    only registered generator is `ewod_pad_array`). Sits beside 4: both are
    the escape corridor, this one is where the primitive lives. Reto
    2026-09-26/27: board = data, engine = general.
-6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
-   — **demoted 2026-09-30, its key evidence was contaminated.** The
-   fresh-fixture failure it was ranked on came from the then-unlanded
-   routing_area term. That term landed 2026-10-01 (Reto's call) and on that
-   main the dogfood file passes with it, so the F.Cu escape no longer
-   reproduces. What is left is the stale class on pb345846 (fixed by
-   re-putting its generators entry; responses now name a stale board, and
-   tests/test_pcb_generator_version_tripwire.py pins each generator's output
-   to its version), plus the item's negative-control acceptance. Reads
-   realize/maze, which pcb-easyeda-round-trip's router item also touches;
-   this thread sequences behind theirs.
 
 ## Horizon
 
@@ -313,12 +292,11 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 2. **backlog/pcb-guided-place-route.md** — layer count as a user call
    (the one open item); waits on 1 because each slice's acceptance is an "is the board still
    valid" claim.
-3. **backlog/pcb-layer-preferred-direction.md** +
-   **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
-   levers that are not defects. The direction half moves into
-   pcb-stackup-regions slice 3 (a stackup `direction` key). The sink's pads have been real since
-   2026-10-01; re-measure escape yield before tuning either, because every
-   number they were ranked on was taken against synthesized bounds.
+3. **backlog/pcb-congestion-driven-spread.md** — the escape-yield lever
+   that is not a defect (per-layer preferred direction is ruled out,
+   unified place-route Decision 2). The sink's pads have been real since
+   2026-10-01; re-measure escape yield before tuning it, because every
+   number it was ranked on was taken against synthesized bounds.
 4. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
@@ -402,13 +380,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead, and not before the escape-layer question
-  (backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md)
-  is settled, or it is done twice. The regenerate itself is now a plain
-  re-put of its generators entry.
-- **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
-  Do-next 1, where via-vs-pad becomes an enforced rule rather than a
-  reported one.
+  per-write go-ahead. The regenerate itself is a plain re-put of its
+  generators entry (that also clears its stale escape class).
 
 - **round-7 residue (2026-09-03 review, item deleted)** — a large authored
   rigid group (~12x18 mm, TQFP-32 + crystal circuit) seeds straddling the

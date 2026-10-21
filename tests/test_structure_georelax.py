@@ -1,6 +1,6 @@
 """:mod:`precis.structure.georelax` — the graph-first geometry core lifted
 out of `precis_se.atomic.generators.sugars` and generalized for
-hybridization-aware angle targets (docs/backlog/se-nanobud-graph.md §1,
+hybridization-aware angle targets (the closed se-nanobud-graph spec §1,
 slice 1: pure geometry, no store, no se wiring).
 
 Three pieces, tested independently of any ``Scene``/store machinery:
@@ -36,7 +36,7 @@ def _c60_graph() -> tuple[list[str], list[tuple[int, int]], np.ndarray]:
 
 
 def test_embed_from_graph_reconstructs_c60_from_bonds_alone() -> None:
-    """Acceptance criterion (se-nanobud-graph.md): embed-from-graph +
+    """Acceptance criterion (the closed se-nanobud-graph spec): embed-from-graph +
     ``geo`` relax reproduces C60 from its adjacency alone, RMSD to the
     closed-form generator's own coordinates below tolerance — allowing the
     mirror image too (a bare graph carries no chirality information here;

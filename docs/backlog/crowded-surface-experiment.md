@@ -90,7 +90,7 @@ NOH* has no thermo data.
 ## Explicitly NOT in scope
 
 - *H crowding and subsurface H (SPSO covers it); mixed NO*+H* resting phases
-  (`docs/backlog/mixed-coverage-precis-wiring-residue.md`).
+  (wired and verified, gr489475).
 - Cluster-expansion / kMC, potential-dependent grand-canonical DFT, a
   microkinetic coverage loop (deferred in the research primer, gr489182
   comment 1).

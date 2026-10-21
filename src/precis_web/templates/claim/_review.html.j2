@@ -350,7 +350,7 @@
       {# ── nearest claims + guarded merge (the read-for-question loop
          slice 3) — hidden once the hub is past 'candidate' (a frozen
          identity can't be re-identified by a merge,
-         taproot-merge-mcp-surface.md), EXCEPT a merge attempt against
+         the closed taproot-merge-mcp-surface spec), EXCEPT a merge attempt against
          one is still reported (block_reason/merge_error) so a stray
          direct POST never disappears its own refusal. #}
       {% if np.state in ('unminted', 'candidate') or np.merge_plan or np.merge_error %}

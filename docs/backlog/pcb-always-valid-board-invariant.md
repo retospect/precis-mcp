@@ -13,12 +13,16 @@ pillar: 3d-design
 > state machine was wrong". What survives is the invariant itself and the
 > delta-vs-state clause.
 
-## Relationship to `pcb-placement-must-be-valid-before-routing.md`
+## Folded in: pcb-placement-must-be-valid-before-routing
 
-Same defect, narrower scope — Reto's 2026-09-29 read of `pb345846`: plaza
-vias inside `ARR1_SINK_0`'s lands, routing ran anyway. This item is its
-generalization. If this is adopted, that one folds in and is deleted; if
-not, that one still stands. Do not implement both.
+Same defect, narrower scope, now folded here. Regression fixture: Reto's
+2026-09-29 read of `pb345846` (job 456172) — the generator's authored plaza
+vias landed inside `ARR1_SINK_0`'s lands and routing ran anyway; all 14
+`via_pad_keepout` errors were knowable before routing. The pre-route gate
+shipped (`pcb_route` runs `placement_drc_findings` and refuses on errors,
+`force=True` overrides, `outline_missing` joined it in gr500431). Open: a gate
+without a placer cost term for pad/via keep-out refuses boards the placer
+could have placed legally.
 
 ## Motivation / why
 
@@ -268,8 +272,7 @@ arguing about:
 
 1. **Legality is a HARD GATE on both stages, never a graded cost.** An
    illegal placement and illegal copper are both unstorable. This is the
-   answer to `pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md`'s
-   open question — `risk()` being a criticality-weighted MAX means a graded
+   answer to the (closed) risk-is-a-max question — `risk()` being a criticality-weighted MAX means a graded
    legality term can be zeroed out by any `Family.MONEY` tie-breaker, so
    legality cannot live in the objective at all. Grade *preferences*; gate
    *legality*.
@@ -314,8 +317,7 @@ real and not derivable from net membership alone — "this pin's decoupling
 cap", "the next device along this bus" are asymmetric, ordered, per-pin
 relationships.
 
-Filed as its own item rather than folded in here:
-`backlog/pcb-tightest-connected-part.md`. It interacts with
+Now unified place-route T6/slice 7 (`pcb-unified-place-route.md`). It interacts with
 `pcb-component-model.md`'s "inter-instance equivalence" (two 100 nF caps on
 one rail are interchangeable *with each other*) — that item computes
 equivalence from the netlist with no LLM; this one needs an authored or

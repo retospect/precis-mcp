@@ -57,7 +57,7 @@ machinery that exists:
 1. **Boundary conditions are measures on `patch:` regions.** An inlet
    concentration, a wall rate constant, a ζ-potential, a slip length or
    a wall temperature is a declared measure (`origin=user`) with a
-   measurand slug on the patch (`se-region-property-layer.md` slice A,
+   measurand slug on the patch (`pocket-from-molecule.md` (region property layer, folded) slice A,
    live). The `flow:` pocket token names the roles only (`in=`, `out=`,
    and the new `fluid=`).
 2. **Material properties come from measures.** The fluid is a `material`

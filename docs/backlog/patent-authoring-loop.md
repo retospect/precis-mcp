@@ -5,9 +5,9 @@ pillar: quests
 
 # Patent authoring — the freedom-to-operate writing loop
 
-> The **dynamic authoring loop** on top of the static patent genre in
-> [`patent-drafting-merge.md`](patent-drafting-merge.md) (what a patent
-> draft *is*). This loop: sweep prior art → ingest → sync description →
+> The **dynamic authoring loop** on top of the static patent genre
+> (`meta.style` + the `patent` scaffold + the `patent-*` prose skills,
+> shipped; its design record is the closed patent-drafting-merge spec). This loop: sweep prior art → ingest → sync description →
 > draft claims against a freedom-to-operate view → log scoping
 > decisions.
 
@@ -54,6 +54,16 @@ document order.
   the panel screw holder device; find/add the supplemental filing
   documents so EU/US/CN filing gets pushbutton at reasonable cost.
 
+- **Genre expansions, from patent-drafting-merge (folded 2026-10-21)** —
+  build each only when the pain is real (ADR 0037 §0): a numbering engine
+  with per-series config and metadata-only pin/lock (§5); patent render
+  code for claim formatting, "FIG. n" and numeral substitution at export;
+  a patent review pass (antecedent basis, numeral/part-name consistency,
+  dangling references → anchored change requests; reuses the review
+  framework and is not gated on the render work — today only an
+  antecedent mention in `patent/claims.py`); per-target export
+  conventions (claim set, drawings description, references/IDS).
+
 ## Open questions
 
 1. **`patent_ingested` wait-gate** — build it, or accept the
@@ -63,7 +73,9 @@ document order.
    independents-only with a count marker? Must never imply
    completeness it doesn't have.
 3. **US vs EP claim register** — one `doc_type` with a jurisdiction
-   sub-flag, or two? (Citation strings are already per-authority in
+   sub-flag, or two? Equivalently, from the genre design: do US and EP
+   differ only in render (one `meta.style`, two contexts) or warrant a
+   separate `render_type` field? (Citation strings are already per-authority in
    `export/_patent_cite.py`.)
 4. **Ledger → issues** — should a blocked-scope decision optionally
    open an ADR-0037 §3b issue to the inventor ("we scoped around

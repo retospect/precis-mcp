@@ -106,12 +106,12 @@ graph-health-metrics, five parked gripes, and the seam with
    or sampled with an error bar) and the trust-state tie-in to item 0 before
    any build. Feeds a survey paper, December at the earliest.
 
-1. **backlog/taxon-facet-navigation.md slice 0 AC 0** — the
-   `precis-classify-help` guide and `includes`/`excludes` validation/rendering
-   landed in source 2026-10-05 (04c13fd28, Opus-reviewed), deployed in R16 (prod 8.35.15).
-   Exact-deploy skill readback and the cold-agent check (10 seeded AFM items)
-   remain pending. Later slices are separate; local tests do not establish
-   their implementation or live acceptance. Slice 4 waits on term-taxonomy v1.5 (Horizon 2).
+1. **backlog/term-taxonomy.md v1.5 in-scope 2 (ops acceptance)** — the
+   `precis-classify-help` guide and `includes`/`excludes` shipped
+   2026-10-05 (04c13fd28), deployed in R16. Exact-deploy skill readback
+   and the cold-agent check (10 seeded AFM items) remain pending; the axis
+   contract fields wait on v1.5 (Horizon 2). Folded from
+   taxon-facet-navigation 2026-10-21.
 2. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
    big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
    not run; local-compute pings on serving). Then: two
@@ -124,8 +124,8 @@ graph-health-metrics, five parked gripes, and the seam with
    (categorise, link, finding extraction, merge), measured per action
    against an auto-apply bar and a reviewed-by-a-bigger-model bar; one
    `reviews` ledger (actor, model, version, content sha) that an edit
-   makes stale; fed through graph-maintenance-queue and the dispatch
-   controller. Its slice 0 categorise set is 2's test, run once for both
+   makes stale; fed through the gardener idle filler
+   (graph-gardener-value slice 5) and the dispatch controller. Its slice 0 categorise set is 2's test, run once for both
    threads. Reto accepted the design (knowledge-mesh-10), adding version
    history. That is a `revisions` log off a stable head, written by a
    trigger: chosen over snapshot refs (§2b), and confirmed on
@@ -179,7 +179,7 @@ graph-health-metrics, five parked gripes, and the seam with
    text ladder. Edge editing from the page is
    **backlog/eye-link-editor.md** (draft, blocked-by web-graph-navigation)
    — a human fixing a wrong edge where they see it is the complement of
-   the gardener's proposals (graph-gardener.md, below).
+   the gardener's proposals (graph-gardener-value.md, below).
 7. **backlog/measures-substrate.md: the qu202467 pilot gaps** (Reto
    2026-10-03, knowledge-mesh-12, option 1). Builds A–D are live and the
    pilot data is written and reviewed (see Resume). Open: 0188 (A2) on its
@@ -217,13 +217,9 @@ graph-health-metrics, five parked gripes, and the seam with
    identity), machine edges on the trust contract, a per-quest retrieval
    eval, gardener v1 corrections, the castor scout. Gardener v1 lit on
    prod 2026-10-21 with castor gpt-oss-120b; a 6-hourly watch files
-   gripes.
-5. **backlog/graph-gardener.md** — v1 built 2026-10-14 on the
-   `gardener` worktree (proposals-only, dark until lit, pending land);
-   what remains is a populated mesh from Horizon 1 to garden, plus the
-   item's open `agentlog_id` stamping. Its sibling-disjointness pass
-   (added 2026-10-05) reads confusion from the taxonomy-bootstrap probe
-   runs, so it can start before Horizon 1.
+   gripes. Also carries the v1 spec's open `agentlog_id` stamping (folded
+   2026-10-21); the sibling-disjointness pass reads confusion from the
+   taxonomy-bootstrap probe runs, so it can start before Horizon 1.
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it

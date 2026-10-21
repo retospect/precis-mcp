@@ -408,6 +408,11 @@ ships with its finite-difference check.
 | 8 | Verify: pour once (tree in cost while routing, free re-merge after), grow-to-fill per net with IPC-2152 neck and via counts, T17 neck force, T15 return-path check and force, T16 bundling, island = failure | synthetic board: no islands, no neck below minimum, no fast signal over a slot; existing e-pour-connectivity DRC passes; fewer Verify loops than the old pour re-check |
 | 9 | Exit run against §Measures; remove any remaining superseded path components the table names | the thread's exit criteria |
 
+From pcb-tightest-connected-part (folded into T6, slice 7 and D13): slice 7
+also wants an authored per-pin affinity ("these two pins within N mm, with a
+strength", e.g. as `measures` on the pins) for non-decoupling pairs, priced
+like T6 support pairs rather than derived from decoupling alone.
+
 ## Risks
 
 | Risk | Mitigation |

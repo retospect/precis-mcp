@@ -111,8 +111,8 @@ class InertDenyListError(RuntimeError):
     :func:`precis.workers.envelope.disallowed_tools`) matches nothing: the
     agent can still call the denied verb through
     ``precis("delete(kind='paper', id=…)")`` with no gate. This is the
-    stopgap from ``docs/backlog/agent-deny-lists-are-profile-dependent.md``
-    (option 2) — refuse the call outright rather than run with a deny list
+    stopgap from the closed agent-deny-lists spec (option 2; the durable
+    fix is ``runtime/dispatch.py::_refuse_envelope_denied_verb``) — refuse the call outright rather than run with a deny list
     that looks load-bearing but silently isn't. Denies of built-in tools
     (``WebFetch``/``WebSearch``/etc.) are unaffected — those are registered
     identically under both profiles — so this only fires when the *combination*
@@ -835,8 +835,9 @@ def _check_deny_list_profile_safety(effective_deny: list[str]) -> None:
         "inert if this call proceeded — refusing rather than running with a "
         "deny list that looks load-bearing but isn't. Denies of built-in "
         "tools only (WebFetch/Write/etc.) are unaffected by this refusal. "
-        "See docs/backlog/agent-deny-lists-are-profile-dependent.md for the "
-        "tracked durable fix (verb-level deny in runtime/dispatch.py)."
+        "The durable fix is the verb-level deny in runtime/dispatch.py "
+        "(_refuse_envelope_denied_verb, via envelope.denied_verbs); open "
+        "gaps: gr503441."
     )
 
 

@@ -169,7 +169,7 @@ Pillar-2 human-surface acceptance — "click any block → pose, envelope,
 ports, properties, findings, load path in one panel" — spans 1
 (se-pick-hierarchy) → 2 (selection inspector) → 3
 (se-interface-reaction-forces); the properties row depends on
-se-machine-design's `backlog/se-region-property-layer.md`.
+the region property layer in `backlog/pocket-from-molecule.md`.
 
 1. **backlog/se-pick-hierarchy.md** — click anything, get every level it
    belongs to. Keystone: three parked and two Do-next items have nowhere to

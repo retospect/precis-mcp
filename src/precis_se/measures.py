@@ -22,7 +22,7 @@ coexist when a point has been chosen inside a declared band. ``origin``
 (``user | proposed``) records who owns the number: a propose job revises
 its own freely and treats the user's as contract.
 
-**Measurands** (docs/backlog/se-region-property-layer.md slice A): a
+**Measurands** (the closed se-region-property-layer spec slice A): a
 measure may name a ``measurand`` taxon node instead of a closed-registry
 unit; the write snapshots its slug, ref id and se unit onto the row
 (:mod:`precis_se.properties.measurand`), so ``unit`` may then hold any

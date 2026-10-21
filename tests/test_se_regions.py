@@ -1,4 +1,4 @@
-"""se region property layer, slice A (docs/backlog/se-region-property-layer.md):
+"""se region property layer, slice A (the closed se-region-property-layer spec):
 taxonomy measurands on measures, the region selectors (``patch:``/``ring:``/
 ``sites:``/``atoms:``), pockets, the ``measurand_unchecked`` advisory, and the
 ops-export round trip.

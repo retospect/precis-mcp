@@ -88,7 +88,7 @@ it carries any `chunk_review` row by a human. Protection is surfaced as a
 `protected` field in the universal row (`knowledge-mesh.md` §5) so the
 curator sees it before acting, and enforced in the handler: a machine
 overwrite of a protected body is refused, never silently applied. Rebuild
-passes (`graph-gardener.md`) skip protected refs.
+passes (`graph-gardener-value.md`) skip protected refs.
 
 **Diff-aware review state (absorbed from `draft-review-state-diff-aware.md`,
 2026-09-29).** The same primitive — compare a stored assertion's
@@ -122,7 +122,7 @@ notes from attempt N still meaningful at attempt N+1.
 ## Explicitly NOT in scope
 
 - The scheduled whole-graph passes — merge/split/relink/prune/tag-sweep
-  are `graph-gardener.md`. This gate is per-run, triggered by a run
+  are `graph-gardener-value.md`. This gate is per-run, triggered by a run
   finishing; the gardener is per-schedule, triggered by time.
 - The ops flip of the review container to `agent_ro` and the
   gripe-under-`write:none` tool-layer call —
@@ -173,7 +173,7 @@ actor stamps `system`, never fails.
 ## Open questions / decisions log
 
 - **[decided 2026-09-29, Reto]** Own item, not a section of
-  `graph-gardener.md` — different trigger (run-finished vs schedule) and
+  `graph-gardener-value.md` — different trigger (run-finished vs schedule) and
   different scope (one run's writes vs the whole graph).
 - **[decided 2026-09-29]** Verdict lives on the run (`eval-run-spine`'s
   column), not in a new `review` table. Notes are `finding` children, as

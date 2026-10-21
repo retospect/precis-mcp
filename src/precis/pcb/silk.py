@@ -206,8 +206,8 @@ that isn't there.
 That reasoning is about the TICK, and it now also suppresses the dot,
 which may be too strong: a dot sits outside the courtyard beside pin 1's
 own land, so it still points at something real when the outline is gone.
-Left as-is rather than widened on a hunch — see
-``docs/backlog/pcb-courtyard-polygon.md``.
+Left as-is rather than widened on a hunch — the decision is open in
+gr503436.
 
 **Provenance, for a future ingested-silk merge.** Every draw this module
 emits carries ``"source": "synthesized"`` (an extra key both

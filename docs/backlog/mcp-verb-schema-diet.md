@@ -53,5 +53,4 @@ per paper, todo with priority and parent, todos sorted by priority).
   regressions; add one asserting the args reference lists every handler key.
 - A skill-example check: no example passes a non-core option at top level.
 
-Related: `mcp-surface-economy`, `mcp-verb-kwarg-parity`,
-`session-prefix-and-fleet-context-cost` (a).
+Related: `mcp-surface-economy`, `token-review-hook-gaps.md`.

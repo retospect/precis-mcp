@@ -987,7 +987,7 @@ def _row(**overrides: float | None) -> CapabilityRow:
 
 def test_silk_clearance_moves_with_each_capability_field_independently():
     """Both new capability fields must be provably CONSUMED, not merely
-    declared (``docs/backlog/pcb-courtyard-polygon.md``'s acceptance
+    declared (the courtyard-polygon work's acceptance
     criteria). Each is moved on its own, so a chain that read only one of
     them -- or that had quietly reverted to a constant -- fails here
     rather than passing on the other's contribution."""
@@ -1023,7 +1023,7 @@ def test_a_null_capability_field_falls_back_to_this_modules_own_constant():
 
 
 def test_silk_must_clear_the_mask_opening_not_merely_the_bare_copper():
-    """Item 6 of ``docs/backlog/pcb-courtyard-polygon.md``: every
+    """Item 6 of the courtyard-polygon work: every
     clearance check in this module used to run against pad COPPER, which
     is one expansion optimistic -- ink laid inside the mask opening but
     outside the copper still prints on solderable metal.

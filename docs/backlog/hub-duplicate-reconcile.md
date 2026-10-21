@@ -91,3 +91,9 @@ path (item 5), `finding` refs and their `links`.
   unmerged twin, naming both, rather than merge silently.
 - The branch must be recovered from the bundle on Reto's Mac before
   building.
+- **Cautions for the all-pairs scan (steps 3–4), from
+  taproot-merge-mcp-surface (folded 2026-10-21).** Apply the strict hub
+  predicate (`claim_hub_predicate_sql`) or chase-tree findings surface as
+  merge candidates. Band the output rather than ranking it flat: precision
+  is worst in the numeric-near-miss and narrower-vs-broader bands (two of
+  nine pairs in the first real cohort were do-not-merge).

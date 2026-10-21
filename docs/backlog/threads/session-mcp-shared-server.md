@@ -21,9 +21,12 @@ effort: high
 supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair
 share. Agent containers and the sandbox sidecar stay stdio and are NOT part
-of that end state — backlog/mcp-shared-transport-concurrency.md rules them
-out, and that item's role bullet is why: they depend on process-level role
-separation this server cannot give them. Today it is one long-lived
+of that end state (Reto 2026-10-02, session-mcp-shared-server-5, option 3:
+coding jobs never leave containers; the shared server stays
+interactive-only at `agent_rw`): they depend on process-level role
+separation this server cannot give them. Reopen trigger: build per-role
+pools keyed on the bearer token once a judge/extract job class declares
+`write:none` *and* per-container serve boot shows up as a measured cost. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
 (the drain latches a high-water ticket instead of waiting for an
@@ -228,14 +231,6 @@ check their state first.
    hand. 8765 was refused for 24 s, so every connected session on melchior
    gave up at 15:04:29Z and needed `/mcp`. `wait_mcp` now takes
    `PRECIS_MCP_ENSURE`, and its test never reaches the real script.
-1. **backlog/embedder-capacity-ownership.md — decided, handed to
-   local-compute.** Reto ruled 2026-10-02 (item -4, td461158 closed):
-   - the embedder service owns aggregate capacity, held by local-compute;
-   - a provisional capacity number is recorded;
-   - no host-level admission token, no shared vector cache.
-   The N-client load test waits for the local LLM rungs. Root cause and
-   the admission fix are in the item.
-
 2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which the watched-checkout fix made unpassable,
    and the 11:10Z banner
@@ -244,17 +239,6 @@ check their state first.
    passes since the supervisor (live 14:20Z 2026-10-01). Left: AC3,
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
-3. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
-   process opens: one DB role for every session (measured: no
-   PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
-   first-come semaphore, no supervision for a single point of failure whose
-   image rebuild bounces every session. The role bullet is closed (Reto,
-   item -5, td461159): coding jobs never leave containers and the shared
-   server stays interactive-only at `agent_rw`. Its reopen trigger is in
-   Parked. Fairness is built: permits go round-robin by session
-   (`server._FairSemaphore`). It loads at the next drained respawn after
-   a deploy. The pool-storm test is built (`tests/test_mcp_pool_storm.py`).
-   Left: the supervision acceptance bullet, then delete the item.
 4. **backlog/kind-scoped-vector-search.md** — root cause of gr495190: a
    per-kind semantic search walks the global HNSW (memory 33 s on prod)
    and times out sessions' calls. Built; waits on the release owner's
@@ -291,10 +275,10 @@ check their state first.
    dev-machine service by decision (Reto, 2026-09-29); whether the fleet
    mcps role adopts this shape decides if the ensure script stays a wrapper
    or becomes an Ansible role. Until then the two must not entangle.
-2. **backlog/mcp-shared-server-multiprocess.md** — `--workers 1` is correct
-   and is the ceiling; the inventory of what must leave process memory
-   first. Arc, not work: 12 concurrent searches finish in 4.78 s against a
-   2.06 s single call.
+2. **backlog/session-mcp-http-server.md** §From
+   mcp-shared-server-multiprocess — `--workers 1` is correct and is the
+   ceiling; the inventory of what must leave process memory first. Arc,
+   not work.
 3. **K-parallel exercise-mcp on dev** (unfiled) — the acceptance gate for
    fairness and the pool sizing; before fairness deploys it measures an
    idle server.
@@ -306,9 +290,6 @@ check their state first.
    graph-memory-consumers, not this thread; pointer only. Precondition
    td458385 (sessions moving to this server) is this thread's own
    Do-next 1.
-6. **backlog/mcp-verb-kwarg-parity.md** — 71 handler kwargs are silently
-   dropped by put/edit; the verb signature is the MCP schema, so a dropped
-   kwarg is a silent no-op for every session. Platform pass 2026-10-02.
 7. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
     reads at the newest20 comments; `view='comments'` exposes full history.
     R14 source is prepared; deployed replay remains pending.
@@ -325,8 +306,7 @@ check their state first.
   closed as "coding jobs never leave containers; the shared server stays
   interactive-only at agent_rw". Unparks when a judge/extract job class
   declares `write:none` AND per-container serve boot shows up as a
-  measured cost; then build per-role pools keyed on the bearer token
-  (backlog/mcp-shared-transport-concurrency.md).
+  measured cost; then build per-role pools keyed on the bearer token.
 
 - **pgbouncer admin-console read access** (td458386) — **granted by Reto
   2026-09-30**; unparks when the coordinates are in the overlay and a
@@ -334,9 +314,9 @@ check their state first.
   evidence of pool starvation, so until it lands the 17/100-connections
   reading and every other pool-headroom statement stay inference from
   backend counts and should be re-derived, not inherited.
-- **K-parallel exercise-mcp load harness** — specced inside
-  backlog/mcp-shared-transport-concurrency.md; the role gap is decided and
-  fairness is built; unparks once the round-2 deploy loads fairness.
+- **K-parallel exercise-mcp load harness** — `backlog/mcp-concurrency-load-test.md`;
+  the role gap is decided and fairness is built; unparks once the round-2
+  deploy loads fairness.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.

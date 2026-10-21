@@ -82,7 +82,7 @@ first, so the script reads the top:
   prefix (tool schemas: Figma plugin, Claude Docs, `precis` put/edit) × ~2400
   turns; the rest is eight Fable fleet windows at 210-275k average context,
   ~10% of it coordinator/wakeup chatter. Old rules (sed -n, TaskOutput
-  re-polls) were not material. Filed `session-prefix-and-fleet-context-cost`.
+  re-polls) were not material. Filed `token-review-hook-gaps.md`.
   Codex fleet (melchior) not in the local corpus. Surface side filed as
   gr472987 (todo append), gr472988 (gripe render), gr472989 (gripe put+link),
   gr472990 (count/group + raw prod-psql detour).

@@ -14,7 +14,7 @@ an import filter" — no direct agent access, like pcb's internals vs its
 work surface. Staged, not a switch:
 
 1. New capabilities land se-side only (`se-view-figures.md`,
-   `se-nanobud-graph.md` already comply).
+   the closed se-nanobud-graph spec already comply).
 2. Bare molecules get a trivial single-block se wrapper — se becomes
    the *uniform* authoring surface.
 3. De-teach: drop `structure` from skill/toc surface, mark internal.

@@ -157,7 +157,7 @@ lint signal. Filed separately: `taproot-claim-modality-axis.md`.
 
 - `grounding-verification-rubric.md` — the rubric this would calibrate;
   its "method caveat" section is this item's justification.
-- `context-quality-eval.md` — evaluates the *input* contexts; this item
+- `scripts/context-audit/` — evaluates the *input* contexts; this item
   evaluates the *judges*. Complementary, don't merge.
 - `plan-tick-remeasure.md` — same disease elsewhere ("the performance
   claim rests on one baseline").

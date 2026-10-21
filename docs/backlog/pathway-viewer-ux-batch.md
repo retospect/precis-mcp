@@ -34,9 +34,8 @@ exist and should stay in parity where the feature applies:
    allowed-to-leave semantics correct in the underlying network, (b)
    render the departure point on the highlighted pathway (e.g. a
    marker/annotation on the edge where the species desorbs).
-   **Moved 2026-10-02** to `pathway-diagram-step-annotations.md`
-   (catalysis-selectivity thread), which labels every desorption
-   `−H₂O ↑`; skip it here.
+   **Shipped** in the pathway step annotations (0f41f3f04), which label
+   every desorption `−H₂O ↑`; skip it here.
 4. **Keyboard navigation.** With a pathway chip selected and the graph
    focused: ←/→ steps through states along the reaction coordinate
    (x-order); ↑/↓ switches between pathways (moves the selection

@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 
 #: Lanes whose gold is a frontier verdict and whose action is reversible —
 #: eligible for the auto-apply bar at all. Merge never auto-applies
-#: (``graph-gardener.md``: "probably not ever for merge and split").
+#: (the closed graph-gardener spec: "probably not ever for merge and split").
 AUTO_APPLY_LANES: frozenset[str] = frozenset({"categorise", "link-add"})
 
 

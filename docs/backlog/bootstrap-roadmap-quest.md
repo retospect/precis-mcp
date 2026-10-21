@@ -144,7 +144,7 @@ selects on `meta ? 'llm_tier'` (`workers/dispatch.py` — `AND NOT (… .meta ?
 without it is already not a candidate. `STATUS:open` therefore keeps rungs
 visible in ordinary todo views (intended — they need human eyes) while the
 missing `llm_tier` keeps them un-worked, and `waiting-for:reto` says why.
-Same shape as `graph-gardener.md`'s proposals, so the two agree.
+Same shape as `graph-gardener-value.md`'s proposals, so the two agree.
 
 Consequence for AC3: assert `llm_tier` **absent** and the `waiting-for:reto`
 tag present — do not assert a `proposed` status.
@@ -347,7 +347,7 @@ it had never made.
   specced after `term-taxonomy` → `measures-substrate` land; it is not
   tested here. The staleness cost is accepted for v1: a retracted finding
   needs `meta.supply` edited as well as its hub, and catching that drift is
-  `graph-gardener.md`'s problem, not this body's.
+  `graph-gardener-value.md`'s problem, not this body's.
 - **Dossier shape (Reto, 2026-09-27):** the roadmap body does NOT rewrite
   a narrative. It writes a capped *framing* chunk (a few sentences,
   handles only, no bare numbers, length cap enforced in code) plus the

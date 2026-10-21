@@ -28,6 +28,20 @@ path-form ids. Truth for all of that lives in `handlers/taxon.py`,
    is the "hierarchical link tags" half of the 2026-09-29 mesh handoff.
    Waits on graph-gardener-promoted axes.
 
+2. **Axis contract fields** (from taxon-facet-navigation slice 4, folded
+   2026-10-21). On the axis taxon nodes from item 1: an `exclusive` flag,
+   the axis question text, and an `other` child; reuse the shipped
+   `includes` / `excludes` boundary keys (`taxonomy/nodes.py::BOUNDARY_KEYS`).
+   An `exclusive` axis rejects a second `instance-of` from one item onto two
+   of its siblings; a multi-label axis accepts it. The check goes in
+   `src/precis/utils/link_tag_ops.py::check_relation_constraints`; the only
+   new refusal is at the `instance-of` link door. Open: refuse or warn on
+   legacy links that already violate it. Ops acceptance still owed from
+   that item's shipped slice 0 (`precis-classify-help`): read the served
+   skill back on the exact deployed sha, and run the ten-item cold-agent
+   trial (10 seeded AFM items into axis nodes, no ancestor double-links,
+   no combined-node mint).
+
 ## v1 follow-ups (unscheduled, each small)
 
 - **Dedup cutoff.** `DEDUP_MAX_DISTANCE = 0.25` was picked with no real
@@ -78,7 +92,7 @@ A design handoff for an "LLM-curated research mesh" arrived 2026-09-29
 constraints, a closure table, a writer→reviewer loop). Reto's framing of
 the ask: existing refs get **wrapped** as mesh nodes, and link tags become
 **hierarchical**. Read against this item, `knowledge-mesh.md`,
-`graph-gardener.md` and `measures-substrate.md`, the handoff is not a new
+`graph-gardener-value.md` and `measures-substrate.md`, the handoff is not a new
 store — it is this item plus three rulings. Each handoff point, what
 already exists, and the ruling:
 
@@ -88,7 +102,7 @@ already exists, and the ruling:
 | tags are nodes; a bare tag is a node with no body | `tags` is flat `(namespace, value)` + `tag_embeddings`; the `tag` kind is read-only discovery (`handlers/tag.py`); `concept` and `taxon` are ref nodes with a card | **the "wrapped node"** is a `taxon` ref. The flat `tags` table stays as the cheap membership index for closed axes; anything that needs a body, a definition or a position is a taxon. |
 | `tagged` membership role | no ref → taxon edge; this item had deferred `instance-of` to `measures-substrate` | **`instance-of` / `has-instance` moves into v1** (shipped in v1, migration 0173). Any existing ref of any kind joins the mesh by `link(rel='instance-of', target='taxon:…')` — no re-kinding, no new table. Reto confirmed this reading 2026-09-29. |
 | edge = one role + free tags; traversal "from an angle" filters on an edge tag | `links.relation` + free `links.meta`; here `meta.axis` is an unvalidated string | **hierarchical link tags, staged**: v1 unchanged; v1.5 = v1.5 in-scope 1 (`axis` start node, `meta.axis` resolves to a taxon under it, `under=` widening on link filters). Other `meta` keys stay free. |
-| roles carry `proposed`/`core`; a recurring edge tag on one role is promoted to a role | nothing | no `proposed` relations as rows. Promotion is `graph-gardener.md`'s vocabulary-consolidation job and lands as a migration-proposal `todo` (`waiting-for:reto`), because the registry changes only by migration. |
+| roles carry `proposed`/`core`; a recurring edge tag on one role is promoted to a role | nothing | no `proposed` relations as rows. Promotion is `graph-gardener-value.md`'s vocabulary-consolidation job and lands as a migration-proposal `todo` (`waiting-for:reto`), because the registry changes only by migration. |
 | `specialises` is acyclic; cycle rejected at insert; endpoints any → same kind | shipped in v1 (pre-insert ancestor check) | same, plus the endpoint rule: `TaxonHandler` refuses `specialises` unless both ends are `taxon`. Other kinds' use of the relation is untouched. |
 | materialised `closure` table | rejected in v1 (`store/_taxon_ops.py`) (recursive CTE, `_refs_ops.py` precedent) | stays rejected. Revisit trigger: > 10⁴ taxon nodes, or `view='path'` p95 > 50 ms on prod. |
 | `primary_parent` + stored `canonical_path` | rejected in v1 (`store/_taxon_ops.py`) (reparent cascade unsolved) | stays rejected. Handoff Q2: no stored primary; the display path is the shortest chain to a start node, ties by axis name, computed on read. |
@@ -126,7 +140,7 @@ retired; this table and that item are the record.
 | `relation(subj, predicate, obj, source, confidence, qualifiers)` for paper-extracted classification claims, separate from the curated backbone | `links` + `finding` rows + `instance-of` (shipped in v1, migration 0173) | no separate table; an extracted classification is an `instance-of` link whose evidence is a finding hub, same as any claim. |
 | `predicate` registry with symmetric/transitive/inverse_of/domain/range | `relations` registry (`store/types.py`), inverse pairs seeded | same; domain/range = the taxon-endpoint rule (AC 3). |
 | `scenario` + `participation` roles; electrolyte composition-first | `experiment` kind + input measures (`measures-substrate.md` §3); no participant roles | roles are new — `class-lattice-…` §3. |
-| `measurement` five-axis tuple (dimension, measurand, subject, qualifiers, method), `origin` reported/refit/derived/imputed, `measurement_arg` | `measures` (`measures-substrate.md`), `tier`, `conditions` | same record; `origin` maps onto `tier` (decisions log there); `measurement_arg` = the `subject_selector` column `se-region-property-layer.md` adds. |
+| `measurement` five-axis tuple (dimension, measurand, subject, qualifiers, method), `origin` reported/refit/derived/imputed, `measurement_arg` | `measures` (`measures-substrate.md`), `tier`, `conditions` | same record; `origin` maps onto `tier` (decisions log there); `measurement_arg` = the `subject_selector` column `pocket-from-molecule.md` (region property layer, folded) adds. |
 | `curve` / `fit` / `law`, refit over copy, rankings in comparability buckets | nothing | new — `class-lattice-…` §4. |
 | per-axis similarity, one vector per (entity, named space), overlap count always returned | one embedding per chunk | new — `class-lattice-…` §2. |
 | materials/molecules: prototype + occupancy, scaffold + substituents, MMP transforms, substitution tiers, reaction rules, routes | `structure`, `rxn`, `route` kinds; retrosynthesis shipped dark (`chem-tools-integration.md`) | `materials-molecular-substitution-db.md` (idea); its join to the paper graph is parked there. |
@@ -184,7 +198,7 @@ retired; this table and that item are the record.
   names the finding `scope=` keys use, so findings and taxa share one
   vocabulary. Any other axis string is accepted in v1 as a free string and
   becomes a taxon only when the graph-gardener's promotion rule earns it
-  (N uses across M distinct agentlog runs, `graph-gardener.md` "Vocabulary
+  (N uses across M distinct agentlog runs, `graph-gardener-value.md` "Vocabulary
   consolidation rules"). `composition`/`periodic` stay computed from the
   formula parser, not seeded as axes.
 - **[decided 2026-09-30, Reto]** Element symbols: **one node, the taxon
@@ -193,3 +207,9 @@ retired; this table and that item are the record.
   `cu`, …) are dropped from the campaign config and the tag reader resolves
   `catalyst:pd` to the element taxon. No `same-as` pairs, no second node.
   Lands in `taxonomy-bootstrap.md` before its first promotion run.
+- **[decided 2026-10-10, Reto]** Taxon mint/edit refusal order: exact
+  name/alias match ("use the existing node"), then near sibling ("sharpen
+  the definition", `handlers/taxon.py::SIBLING_MAX_DISTANCE`), then
+  embedding dedup for non-siblings. Calibrating the sibling cutoff goes
+  with the `DEDUP_MAX_DISTANCE` follow-up; the sibling bar stays at or
+  above the dedup bar (`TaxonHandler._mint_checks` order).

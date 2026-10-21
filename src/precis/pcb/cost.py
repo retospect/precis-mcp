@@ -1200,8 +1200,7 @@ def courtyard_overlap_pair_term(
     boolean. A flat 2.0mm centre-distance circle stood here until then —
     a constant predating every real courtyard in this subsystem, so the
     annealer descended a slope defined by one geometry while legality
-    enforced another (``docs/backlog/pcb-courtyard-polygon.md``'s "the
-    disagreement").
+    enforced another (the courtyard-polygon work's "disagreement").
 
     **Why separation shortfall and not overlap depth.** Legality already
     FORBIDS polygon overlap for every generated move, so a term graded on

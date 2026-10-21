@@ -218,8 +218,7 @@ def geometry(
     (``OptimizeEngine._keepout_poly``/``seed_placement``), what
     ``courtyard_overlap`` and ``outline_containment`` check, and what
     :mod:`precis.pcb.silk` draws. Three consumers, one definition,
-    which is the whole point of ``docs/backlog/
-    pcb-courtyard-polygon.md``.
+    which is the whole point of the courtyard-polygon work.
 
     **The three differ only in the CLEARANCE they offset by, and that
     is a real difference, not drift.** The placer and this view use

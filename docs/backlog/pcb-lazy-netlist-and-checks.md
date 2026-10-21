@@ -16,7 +16,7 @@ follow from it. Gripes **gr449483, gr339236, gr346004** close against this
 file and **gr347037** stays parked on it — each slice below carries its
 measurement and repro, so this spec is the only record after closure.
 (Each of those gripes carries a 2026-09-24 comment "folded into
-`pcb-0042-implementation.md`"; that file does not mention any of them —
+`pcb-0042-implementation.md`" (since deleted); it never mentioned them —
 the comment is wrong, this file owns them.)
 
 Hard dependency: the shipped finding ids (`precis.pcb.drc.finding_key`) (delta reporting in §1g).

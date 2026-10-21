@@ -46,7 +46,7 @@ broke.
 **The ratchet.** Turning this guard on the first time found 71 pre-existing
 instances across 25 kinds — real product debt the diagnoses didn't scope
 this fix to fix. Rather than block on all 71 (a separate, judgment-heavy
-job — see docs/backlog/mcp-verb-kwarg-parity.md for the triage) or silently
+job — see docs/backlog/mcp-verb-schema-diet.md for the triage) or silently
 allowlist them into meaninglessness, ``_ARGS_ONLY`` freezes exactly that
 set. The test fails if the live gap set drifts either direction: grows (a
 NEW gap — someone must fix it or make a deliberate ``_EXEMPT`` call) or
@@ -82,7 +82,7 @@ _GUARDED_VERBS = ("put", "edit")
 #: class that's actually CLI-only or otherwise deliberately unreachable —
 #: even the ``args=`` extras-tunnel candidates (``pcb.put``,
 #: ``structure.put``/``.edit``) turned out to be real gaps, not a
-#: different-but-legitimate door (see docs/backlog/mcp-verb-kwarg-parity.md
+#: different-but-legitimate door (see docs/backlog/mcp-verb-schema-diet.md
 #: §"args= is not actually exempt"). Kept as a real (if empty) set so a
 #: future deliberate exemption has a home that isn't _ARGS_ONLY.
 _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
@@ -102,7 +102,7 @@ _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
 #: gripe pair asked to be fixed (``finding.put``'s ``wants``/``provenance``,
 #: ``paper.edit``'s ``doi``/``arxiv`` — already wired and NOT in this set).
 #: Triage (real gap / high-impact / unclear) lives in
-#: docs/backlog/mcp-verb-kwarg-parity.md — this set is just the ledger.
+#: docs/backlog/mcp-verb-schema-diet.md — this set is just the ledger.
 #:
 #: Entries may only be REMOVED, by wiring the kwarg through tools/core.py's
 #: signature + dispatch payload dict (mirroring the surrounding kwarg
@@ -343,6 +343,6 @@ def test_put_and_edit_handler_kwarg_gap_set_matches_the_ratchet(
         problems.append(
             "STALE _ARGS_ONLY entries — already fixed but not removed "
             "from the ledger (remove the line, and update "
-            "docs/backlog/mcp-verb-kwarg-parity.md): " + fmt
+            "docs/backlog/mcp-verb-schema-diet.md): " + fmt
         )
     assert not problems, "\n".join(problems)

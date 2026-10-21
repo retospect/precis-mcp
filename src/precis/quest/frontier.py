@@ -1738,7 +1738,7 @@ NETWORK_DEPENDENT_KEYS: tuple[str, ...] = (
 #: The template the neb and verify tiers build
 #: (:func:`precis.quest.compute._apply_tier_config`) — the reference network
 #: whenever any candidate carries it. Screening stays on ``parked`` by
-#: decision (R2, ``docs/backlog/pathway-nh3-network-completeness.md``), so a
+#: decision (R2, the closed pathway-nh3-network-completeness spec), so a
 #: catpath bump must not make parked margins the reference until the neb
 #: re-runs land.
 _CURRENT_DISPATCH_TEMPLATE = "coadsorbed"

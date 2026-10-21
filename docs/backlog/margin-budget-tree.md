@@ -22,7 +22,7 @@ weights** down the tree — uneven allocation is just non-uniform weights
 (mature subsystems get thin margin, risky ones get fat). A lint checks
 that children's claimed values compose within the parent's budget;
 violation files a gripe (the same code-flags-issues channel as
-`attached-models-layer.md`).
+the closed attached-models spec (shipped as `analyzed-by`)).
 
 **Two quantities, not one** (the report's #1 named failure mode is
 conflating them):

@@ -70,7 +70,7 @@ independent finding**. Measured on the `ewod-dogfood-1` fixture:
   0.093 to three decimals.
 
 So the corridor is 0.093 mm wide because `ARR1_SINK_0` is placed on top of
-the electrode array, which `pcb-placement-must-be-valid-before-routing`
+the electrode array, which `pcb-always-valid-board-invariant`
 already calls invalid and
 `pcb-placer-obstacle-set-is-mounting-holes-only` explains: the sink is
 born 25.46 mm inside the separation `_placement_is_legal` requires, so the
