@@ -8,7 +8,7 @@ effort: medium
 ## Resume
 
 - **Next:** Pocket-from-molecule (`pocket-from-molecule`, Reto 2026-10-17), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
-- **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
+- **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14; H2 steps and H3 relax since); the H2 cone's relaxed washer-zone gate remains open.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
 - **Worktree:** `nanoreactor`
@@ -49,11 +49,14 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
 
 1. **backlog/hexfold-nanoreactor-tube.md** — T2; reservoir sheets +
    armchair opening solver landed 2026-10-14 (`tunnel-reservoirs`,
-   `hexfold/examples/tunnel_reservoirs.hx`); next ranked H2 (several
-   radii along the tube + optional outer Y-junction) then H3 (MLIP
-   relax with per-seam strain).
+   `hexfold/examples/tunnel_reservoirs.hx`); H2 stepped rail tubes
+   build with `step: washer|cone` (cone landed 2026-10-21), left: the
+   cone's relaxed gate (§"H2 cone gate follow-up": 18→8 fixture,
+   uncapped per-zone counts, judged after a real-rung `hexfold_relax`
+   job; prod relax jobs allowed any time, Reto 2026-10-21); H3 relax
+   landed 2026-10-19.
    - **backlog/hexfold-prism-tube.md** — straight-strip prism variant
-     built 2026-10-20 in tree prism (`prism-k3-120-z`; flat zigzag walls,
+     landed 2026-10-20 (92ea3ef4f) (`prism-k3-120-z`; flat zigzag walls,
      signed k3 equal-120 seams, fins out or ribs in, polygon closure); a
      coordinator `/land` or `/qgo` away from prod.
 2. **backlog/nanoreactor-no-nh3.md §T3** — track designer; spec once

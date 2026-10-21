@@ -133,6 +133,19 @@ appears). Ends: both armchair `(n,n)` with n % 6 == 0, or both zigzag
 e.g. `(12,12)→(6,6)` (12 + 12), `(18,18)→(6,6)`. Anything else is
 `reducer.ends` ERROR.
 
+**Rail-tube radius step.** A stepped rail tube in the `tunnel-reservoirs`
+scene (`tube: {rail: [[16,4],[8,4]], rails: 3, rows: 2, pores: [],
+step: cone}`) joins its segments through a solver-stitched `step: washer`
+(flat annulus, default) or `step: cone` (truncated cone with p = rails
+pentagons, one per seam azimuth). `rails >= 6` with `cone` is refused
+`step.cone.symmetry`; an unknown step kind is refused by name.
+`junction.strain` reads per step as `reducer:seg<w>->seg<n>:outer|inner`
+(`step.overstrained` WARN over 3.0 Å seam bond or 45° face angle), and
+`geom.clash` / `geom.nearest_not_bonded` carry `zone:
+reducer:seg<w>->seg<n>` or `none`. The cone does not yet clear the
+washer-zone clashes after relax: read the zone-tagged findings before
+trusting a cone step.
+
 ## Check codes (hexfold spec §13, terse)
 
 `euler.chi` INFO · `euler.residual` INFO/WARN (curvature budget; both

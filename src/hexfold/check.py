@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import numpy as np
@@ -288,23 +289,59 @@ class Relaxed(NamedTuple):
     relax: str
 
 
+#: a named zone's reach: one hexagon pitch (2.46 A x 1.05) past its
+#: seed atoms -- the H2 washer zone of a radius step
+#: (docs/backlog/hexfold-nanoreactor-tube.md)
+ZONE_REACH_A = 2.46 * 1.05
+
+
+def _zone_tags(
+    coords: np.ndarray, zones: Sequence[tuple[str, Sequence[int]]]
+) -> dict[int, str]:
+    """Atom -> zone name: every atom within :data:`ZONE_REACH_A` of a
+    zone's seed atoms (the first zone listed wins an overlap)."""
+    xyz = np.asarray(coords, dtype=float)
+    tag: dict[int, str] = {}
+    for name, seeds in zones:
+        idx = np.asarray(sorted(set(seeds)), dtype=np.int64)
+        if not len(idx):
+            continue
+        near = np.zeros(len(xyz), dtype=bool)
+        for k in range(0, len(idx), 64):
+            d = np.linalg.norm(xyz[None, :, :] - xyz[idx[k : k + 64], None, :], axis=2)
+            near |= (d <= ZONE_REACH_A).any(axis=0)
+        for a in np.nonzero(near)[0]:
+            tag.setdefault(int(a), name)
+    return tag
+
+
 def _geometry_findings(
     net: Net,
     profile: Profile,
     relaxed: Relaxed | None = None,
+    zones: Sequence[tuple[str, Sequence[int]]] | None = None,
 ) -> list[Finding]:
     """Stick-model geometry check: bond lengths vs sigma, ring-corner
     angles vs the ring-ideal interior angle.  ``geom.summary`` always
     carries the statistics; individual findings are capped at the ten
     worst offenders so reports stay small and deterministic.  ``relaxed``
     is a caller's own relax (e.g. a tethered one); ``None`` relaxes the
-    net here, untethered."""
+    net here, untethered.  ``zones`` (name, seed atoms) tags each
+    ``geom.clash`` / ``geom.nearest_not_bonded`` with ``zone``: the name
+    of the zone either atom of the pair falls in, else ``none``."""
     from .stick import stick_info
 
     if relaxed is not None:
         coords, max_force = relaxed.coords, relaxed.max_force
     else:
         coords, max_force = stick_info(net)
+    zone_of = _zone_tags(coords, zones) if zones is not None else None
+
+    def zone_data(i: int, j: int) -> tuple[tuple[str, str], ...]:
+        if zone_of is None:
+            return ()
+        return (("zone", zone_of.get(i) or zone_of.get(j) or "none"),)
+
     out: list[Finding] = []
     sig = net.lattice.sigma_A
     sig_ch = net.lattice.sigma_CH_A
@@ -404,6 +441,7 @@ def _geometry_findings(
                     ("elements", [elem[i], elem[j]]),
                     ("distance", round(d, 3)),
                     ("bar", bar),
+                    *zone_data(i, j),
                 ),
             )
         )
@@ -440,6 +478,7 @@ def _geometry_findings(
                     ("bonded", h.bonded),
                     ("nearest_bond", round(h.nearest_bond, 3)),
                     ("longest_bond", round(h.longest_bond, 3)),
+                    *zone_data(h.atom, h.other),
                 ),
             )
         )
@@ -699,6 +738,7 @@ def geometry_findings(
     profile: Profile = Profile.DEFAULT,
     *,
     relaxed: Relaxed | None = None,
+    zones: Sequence[tuple[str, Sequence[int]]] | None = None,
 ) -> list[Finding]:
     """The geometry tier (``geom.*``) over an already-built net — what
     ``check(spec, geometry=True)`` adds on top of the topological report.
@@ -710,8 +750,10 @@ def geometry_findings(
     re-relaxing: a tethered relax (docs/backlog/
     hexfold-ideal-surface-then-tile.md, S4) would otherwise be judged on a
     different, untethered geometry.  ``geom.seed_overlap`` still reads
-    ``net.seed3``."""
-    return _geometry_findings(net, profile, relaxed)
+    ``net.seed3``.  ``zones`` (name, seed atoms) tags ``geom.clash`` /
+    ``geom.nearest_not_bonded`` data with the ``zone`` the pair falls in
+    (within :data:`ZONE_REACH_A` of a zone's seeds) or ``none``."""
+    return _geometry_findings(net, profile, relaxed, zones)
 
 
 def check(

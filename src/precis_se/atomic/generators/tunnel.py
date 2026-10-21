@@ -58,6 +58,10 @@ FEATURE_TYPE = "tunnel-reservoirs"
 _STEP_STRAIN_BOND_A = 3.0
 _STEP_STRAIN_ANGLE_DEG = 45.0
 
+#: ``tube.step`` kinds of a stepped rail tube: the flat solver-minted
+#: washer (default) or the p = rails pentagon cone (H2 cone transition)
+_STEP_KINDS = ("washer", "cone")
+
 
 def _is_int(v: object) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
@@ -105,13 +109,24 @@ def _normalize(
             # stepped tube: a list of [rows, periods] rail segments --
             # H2 radius steps, solver-minted washers between segments
             for key in tube:
-                if key not in ("rail", "rails", "rows", "pores"):
+                if key not in ("rail", "rails", "rows", "pores", "step"):
                     raise GeneratorError(
                         f"tunnel-reservoirs stepped rail takes only "
-                        f"rail/rails/rows/pores; {key!r} is unsupported "
-                        "(an outer cone/Y step transition is not yet "
-                        "buildable — watch for the step.overstrained WARN)"
+                        f"rail/rails/rows/pores/step; {key!r} is unsupported"
                     )
+            step = tube.get("step", "washer")
+            if step not in _STEP_KINDS:
+                raise GeneratorError(
+                    f"tunnel-reservoirs tube.step {step!r} is not a step kind; "
+                    f"use one of {list(_STEP_KINDS)} (washer: flat annulus, "
+                    "cone: p = rails pentagon cone)"
+                )
+            if step == "cone" and isinstance(rails, int) and rails >= 6:
+                raise GeneratorError(
+                    f"step.cone.symmetry: tube.step 'cone' carries p = rails = "
+                    f"{rails} pentagons, one per seam azimuth; p >= 6 is flat "
+                    "(no cone exists) — use step 'washer' or rails <= 5"
+                )
             steps = tuple(_int_pair(s, "tube.rail[]") for s in rail)
             if len(steps) < 2:
                 raise GeneratorError(
@@ -353,12 +368,27 @@ def _tunnel_sites(net: Net, tun: Tunnel, pos: np.ndarray) -> dict[str, Any]:
     return {"sites": sites, "pairs": pairs}
 
 
+def washer_zones(tun: Tunnel) -> list[tuple[str, tuple[int, ...]]]:
+    """The washer-zone seeds of each radius step: the ``outer`` and
+    ``inner`` reducer junction atoms of ``reducer:seg<w>->seg<n>``, one
+    zone per step (``geometry_findings`` widens each by one hexagon
+    pitch and tags ``geom.clash`` / ``geom.nearest_not_bonded``)."""
+    by_step: dict[str, set[int]] = {}
+    for j in tun.reducers:
+        by_step.setdefault(j.name.rpartition(":")[0], set()).update(j.atoms)
+    return [(name, tuple(sorted(a))) for name, a in by_step.items()]
+
+
 def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     tspec, sheet, name, k, kind = _normalize(params)
+    # validated by _normalize; only a stepped rail tube carries it
+    step = str(params["tube"].get("step", "washer")) if kind == "rail_steps" else ""
     termination = terminate_mode(params)
     try:
         if kind == "rail_steps":
-            net, tun = tunnel_steps(tspec, sheet, kinds=("rail",) * len(tspec))
+            net, tun = tunnel_steps(
+                tspec, sheet, kinds=("rail",) * len(tspec), step=step
+            )
         else:
             net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
     except ValueError as exc:
@@ -395,7 +425,13 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
             "tunnel-reservoirs tethered relaxation returned nonfinite coordinates/force"
         )
     findings = list(net.report.findings)
-    findings.extend(geometry_findings(net, relaxed=Relaxed(pos, force, "tethered")))
+    findings.extend(
+        geometry_findings(
+            net,
+            relaxed=Relaxed(pos, force, "tethered"),
+            zones=washer_zones(tun) if kind == "rail_steps" else None,
+        )
+    )
     site_data = _tunnel_sites(net, tun, pos)
     findings.append(
         Finding(
@@ -416,6 +452,7 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
             "rails": tspec[0][3],
             "rows": tspec[0][2],
             "pores": [[i, *p] for i, s in enumerate(tspec) for p in (s[4] or ())],
+            "step": step,
         }
     elif kind == "armchair":
         tube_echo = list(tspec)
@@ -825,11 +862,10 @@ def _junction_checks(
             )
         out.extend(strain_by_tag.get(tag, ()))
         # over-strained step seam: the flat washer concentrates the radius
-        # change in one ring; a cone frustum (the outer Y alternative)
+        # change in one ring; the cone frustum (``tube.step: cone``)
         # spreads it.  Bars measured on the relaxed preview of a 16 -> 8
         # rail step (worst stitched bond ~4.6 A at rib-tip notches,
-        # face-angle deviations ~45 deg).  The cone build is not wired yet
-        # -- this WARN names when it would be wanted.
+        # face-angle deviations ~45 deg).
         if tag.startswith("reducer:"):
             sj = strain_by_tag.get(tag, [])
             data = dict(sj[0].data) if sj else {}
@@ -844,9 +880,9 @@ def _junction_checks(
                         f"(seam bond max {data.get('seam_bonds_max_A')} A > "
                         f"{_STEP_STRAIN_BOND_A:g} or face-angle dev "
                         f"{data.get('angle_dev_max_deg')} deg > "
-                        f"{_STEP_STRAIN_ANGLE_DEG:g}); an outer cone/Y "
-                        "transition would spread the radius change "
-                        "(not yet buildable)",
+                        f"{_STEP_STRAIN_ANGLE_DEG:g}); on a washer step, "
+                        "tube.step 'cone' spreads the radius change over a "
+                        "frustum",
                         where=tag,
                         data=(
                             ("bond_bar_A", _STEP_STRAIN_BOND_A),

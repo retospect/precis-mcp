@@ -28,6 +28,7 @@ tethered to their planes.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, replace
 
@@ -48,6 +49,7 @@ from .opening import (
 )
 from .railtube import rail_tube
 from .report import Finding, Report, Severity
+from .stick import stick_info
 from .text import Spec
 from .y_junction import _sheet
 
@@ -398,11 +400,161 @@ def _rim_radii(coords: np.ndarray, rim: RimLoop) -> tuple[float, float]:
     return float(r.min()), float(r.max())
 
 
+def _cone_block(p: int, r_need: float, lattice: Lattice) -> Block:
+    """Mint + fold the p-pentagon graphene cone reaching ``r_need`` in xy.
+
+    The grammar's ``cone(p, rad=)`` mints the net with
+    ``build._cone_defects`` (p wedge excisions equally spaced in azimuth);
+    the ``_cone_seed`` bump only breaks planarity, so one untethered stick
+    pass folds the net onto its true cone surface -- all bonds back to
+    sigma -- which is the surface the rims stitch onto.  ``rad`` is sized
+    so the folded cone's xy reach clears ``r_need`` plus margin for the
+    scale scan."""
+    a = lattice.a
+    rad = max(10, math.ceil((1.8 * r_need + _MARGIN) / (0.9 * a)) + 2)
+    net = build(f"hexfold 0.2\ncx: cone({p}, rad={rad})\n")
+    if not net.report.ok:
+        raise ValueError(f"cone({p}, rad={rad}): {net.report.findings[0].message}")
+    coords, _force = stick_info(net)
+    return block_from_net(net, np.asarray(coords, dtype=float))
+
+
+def _cone_step(
+    p: int,
+    blks: list[Block],
+    w_i: int,
+    n_i: int,
+    w_rim: RimLoop,
+    n_rim: RimLoop,
+    w_pos: np.ndarray,
+    n_pos: np.ndarray,
+    seams_w: tuple[tuple[int, ...], ...],
+    step_i: int,
+    lattice: Lattice,
+) -> tuple[Block, Opening, Opening, float]:
+    """One ``step: cone`` transition: a truncated cone between the wide
+    and narrow rims, stitched like the washer (docs/backlog/
+    hexfold-nanoreactor-tube.md, H2).
+
+    The cone carries ``p = rails`` pentagons (the star outlines are
+    N-fold, so the disclinations sit one per seam azimuth of the wide
+    segment).  Its block replaces the washer sheet in the same
+    two-opening flow: the narrow rim stitches into a hole cut toward the
+    apex, the wide rim onto the cone's outer edge; both cuts land at the
+    slant distances whose circumferences the scale scan matches to the
+    rail-star outlines.  The rim planes seat one sigma off the mean cone
+    surface under their rim atoms -- the seed seam bonds run long at the
+    star notches (the rim is flat, the surface sloped) and the tethered
+    relax closes them."""
+    sigma = lattice.sigma_A
+    w_star = np.linalg.norm(w_pos[list(w_rim.atoms), :2], axis=1)
+    n_star = np.linalg.norm(n_pos[list(n_rim.atoms), :2], axis=1)
+    cone = _cone_block(p, float(w_star.max()) * 1.45, lattice)
+    cpos = np.asarray(cone.coords, dtype=float)
+
+    # apex points toward the narrow segment (later in the +z stack);
+    # each rim's dangling plane seats one sigma off the surface on the
+    # seam side
+    w_z = float(w_pos[list(w_rim.atoms), 2].mean())
+    n_z_now = float(n_pos[list(n_rim.atoms), 2].mean())
+    dirn = 1.0 if n_i > w_i else -1.0
+    if dirn < 0:
+        # a half-turn about x, not a mirror: the lattice keeps its hand
+        cpos[:, 1] = -cpos[:, 1]
+        cpos[:, 2] = -cpos[:, 2]
+
+    # rotate so the pentagons sit on the wide segment's seam azimuths
+    cnet_rings = [r for r in cone.rings if len(r) == 5]
+    pen_cen = np.array([cpos[list(r)].mean(axis=0) for r in cnet_rings])
+    pen_az = np.sort(np.degrees(np.arctan2(pen_cen[:, 1], pen_cen[:, 0])) % 360.0)
+    seam_az = np.sort(
+        np.degrees(
+            np.arctan2(
+                [w_pos[list(s)][:, 1].mean() for s in seams_w],
+                [w_pos[list(s)][:, 0].mean() for s in seams_w],
+            )
+        )
+        % 360.0
+    )
+    if len(pen_az) == len(seam_az) and len(pen_az):
+        rot_deg = float(np.median(seam_az - pen_az))
+        rot = math.radians(rot_deg)
+        rm = np.array([[math.cos(rot), -math.sin(rot)], [math.sin(rot), math.cos(rot)]])
+        cpos[:, :2] = cpos[:, :2] @ rm.T
+
+    # vertical seat: the cone surface under each rim's atoms lies one
+    # sigma off that rim's plane (the washer's seat)
+    r_c = np.linalg.norm(cpos[:, :2], axis=1)
+    z_col = cpos[:, 2].copy()
+
+    def surf_z(r: float) -> float:
+        sel = np.abs(r_c - r) < 0.8
+        return float(np.median(z_col[sel])) if sel.any() else np.nan
+
+    surf_w = [surf_z(float(r)) for r in w_star]
+    if any(math.isnan(z) for z in surf_w):
+        raise ValueError(
+            f"step {step_i}: the p={p} cone does not reach the wide rim's "
+            f"{float(w_star.max()):.2f} A outline"
+        )
+    z_shift = w_z + sigma * dirn - float(np.mean(surf_w))
+    surf_n = [surf_z(float(r)) for r in n_star]
+    z_n = float(np.mean(surf_n)) + z_shift + sigma * dirn
+    cpos[:, 2] += z_shift
+    cone = replace(cone, coords=cpos)
+    n_pos = n_pos.copy()
+    n_pos[:, 2] += z_n - n_z_now
+
+    g_in = scan_opening(cone, n_rim, n_pos)
+    if g_in is None:
+        raise ValueError(
+            f"step {step_i}: no cone cut leaves a boundary of "
+            f"{len(n_rim.atoms)} bondable atoms for the narrow rim"
+        )
+    cut1, op_in = apply_opening(cone, blks[n_i], n_rim, n_pos, g_in[2])
+    g_out = scan_opening(cut1, w_rim, w_pos, outside=True)
+    if g_out is None:
+        raise ValueError(
+            f"step {step_i}: no cone cut leaves an outer boundary of "
+            f"{len(w_rim.atoms)} bondable atoms for the wide rim"
+        )
+    cut2, op_out = apply_opening(cut1, blks[w_i], w_rim, w_pos, g_out[2], outside=True)
+    # the outer cut may not touch the inner stitch's cone-side atoms
+    keep_map = np.full(len(cut1.elements), -1, dtype=np.int64)
+    survivors = sorted(set(range(len(cut1.elements))) - set(op_out.removed))
+    keep_map[np.asarray(survivors)] = np.arange(len(survivors))
+    stitched = {h for h, _r in op_in.fused} | {
+        a for f in op_in.faces for side, a in f if side == "s"
+    }
+    lost = stitched & set(op_out.removed)
+    if lost:
+        raise ValueError(
+            f"step {step_i}: the wide rim's cut removed {len(lost)} "
+            "atom(s) of the narrow stitch — the cone frustum pinched to "
+            "nothing between the rims (widen the step)"
+        )
+    op_in2 = replace(
+        op_in,
+        hole_walk=tuple(int(keep_map[a]) for a in op_in.hole_walk),
+        hole_bondable=tuple(int(keep_map[a]) for a in op_in.hole_bondable),
+        fused=tuple((int(keep_map[h]), r) for h, r in op_in.fused),
+        faces=tuple(
+            tuple(
+                (side, int(keep_map[a])) if side == "s" else (side, a) for side, a in f
+            )
+            for f in op_in.faces
+        ),
+        unbonded_sheet=tuple(int(keep_map[a]) for a in op_in.unbonded_sheet),
+    )
+    return cut2, op_in2, op_out, z_n
+
+
 def tunnel_steps(
     segments: tuple[tuple, ...],
     sheet: tuple[int, int],
     *,
     kinds: tuple[str, ...] | None = None,
+    step: str = "washer",
 ) -> tuple[Net, Tunnel]:
     """Assemble ``sheet | seg | washer | seg | ... | sheet``.
 
@@ -430,12 +582,20 @@ def tunnel_steps(
     kinds = kinds or ("rail",) * len(segments)
     if len(kinds) != len(segments):
         raise ValueError("tunnel steps kinds must match the segment count")
+    if step not in ("washer", "cone"):
+        raise ValueError(f"tunnel steps step must be 'washer' or 'cone', got {step!r}")
     rails_of = [
         spec[3] for kind, spec in zip(kinds, segments, strict=True) if kind == "rail"
     ]
     if len(set(rails_of)) > 1:
         raise ValueError(
             f"stepped rail segments must share one rail count; got {rails_of}"
+        )
+    if step == "cone" and rails_of and rails_of[0] >= 6:
+        raise ValueError(
+            "step.cone.symmetry: a cone transition carries p = rails "
+            f"pentagons, one per seam azimuth; p = {rails_of[0]} is flat, "
+            "no cone exists"
         )
     sx, sy = sheet
     lattice = Lattice()
@@ -483,6 +643,40 @@ def tunnel_steps(
             w_rim, n_rim = lo_next, hi
             w_pos, n_pos = nxt, c
             w_min, w_max, n_min, n_max = n_min, n_max, w_min, w_max
+        if step == "cone":
+            nxt = nxt.copy()
+            nxt[:, 2] -= float(nxt[list(lo_next.atoms), 2].mean())
+            n_pos = nxt if n_i == i + 1 else c
+            w_pos = nxt if w_i == i + 1 else c
+            cut2, op_in2, op_out, z_n = _cone_step(
+                rails_of[0],
+                blks,
+                w_i,
+                n_i,
+                w_rim,
+                n_rim,
+                w_pos,
+                n_pos,
+                seams0[w_i],
+                i,
+                lattice,
+            )
+            if n_i == i + 1:
+                # downward: the wide rim (this segment) is already placed,
+                # the narrow segment's low rim lands at the seated z_n
+                z_lo = z_n
+            else:
+                # upward: the cone was seated on the wide (next) segment
+                # with its low rim at 0 and the narrow rim at z_n; slide
+                # that frame so the narrow rim lands on this segment's
+                # placed high rim
+                delta = float(c[list(hi.atoms), 2].mean()) - z_n
+                cc2 = np.asarray(cut2.coords, dtype=float).copy()
+                cc2[:, 2] += delta
+                cut2 = replace(cut2, coords=cc2)
+                z_lo = delta
+            washers.append((w_i, n_i, z_lo, cut2, op_in2, op_out))
+            continue
         if n_max + _STEP_THROAT_A > w_min:
             raise ValueError(
                 f"step {i}: the narrower segment's rim reaches "

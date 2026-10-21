@@ -570,6 +570,20 @@ Only `tube(n,n)` (armchair) ports: a zigzag `tube(n,0)` or chiral end is
 a sheet, a port that is not a tube end, or an unknown port is an ERROR
 too. Seed geometry only, relax via stick.
 
+A stepped rail tube (`hexfold.tunnel.tunnel_steps`, the
+`tunnel-reservoirs` scene's `tube.rail: [[rows, periods], …]`) bridges
+each radius step with the same two-opening stitch: narrow rim into a hole,
+wide rim onto the outer edge. `step: washer` (default) stitches into a
+solver-minted flat annulus; `step: cone` into a truncated `cone(p)` with
+p = rails pentagons (`_cone_defects`, half-angle `sin α = 1 − p/6`),
+rotated so one pentagon sits on each seam azimuth of the wide segment,
+cut at the two slant distances whose outlines match the rims. `rails ≥ 6`
+with a cone is refused `step.cone.symmetry` (p = 6 is flat). Both kinds
+record `reducer:seg<w>->seg<n>:outer|inner` junctions; `geom.clash` /
+`geom.nearest_not_bonded` carry `zone: reducer:seg<w>->seg<n>` when
+either atom lies within 2.46 Å × 1.05 of a step's junction atoms, else
+`zone: none`. Reversed (heptagon) cones and p ≠ rails are not built.
+
 Thin hosts are a hard error, not a residual: if a hole's rim walk
 revisits a vertex under the tube identification the opening spans the
 circumference, and if the new rim shares a vertex with a pre-existing
@@ -867,6 +881,11 @@ generated line inherits.
 | `DB-neck(len)` | C60 `- hexagon` → `tube(6,0,len)` → host `- hexagon`, both fuses `k=0` | [S15] | TEM-consistent |
 | `collar{r×k @fit}` | k defects of ring size r in a `C_k` orbit | — | — |
 | `fuse{reducer}` | tube-to-tube 5/7 reducer, written `wide.out --fuse{reducer}--> narrow.in`: a generated `cap(6k,0) - hex(r)` washer (the §28.3 radius-changing step) between two coaxial ends, wide rim onto `in`, narrow rim into `hole`; zigzag `(n,0)` ends at fuse `k=0`, armchair `(n,n)` ends (n % 6 = 0) at `k=1`, the registry whose seam faces are all 5/6/7 rings; `reducer.rings` checks P5 = P7 (Euler: a tube-to-tube annulus has χ = 0 over two rims) | — | — |
+
+The rail-tube radius step is not a menu: its washer or cone (§11.4,
+`tube.step: washer | cone` on the `tunnel-reservoirs` scene) is minted by
+the opening solver, because a rail end is a star outline that no `cap`
+registry fuses.
 
 A sheet↔tube seam needs no collar: `hex(0)` ↔ a `(6,0)` end already fuses
 to `{7:6}`, and adding `collar{7×6}` doubles the heptagons
