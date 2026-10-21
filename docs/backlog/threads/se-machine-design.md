@@ -218,8 +218,8 @@ off that gap until it closes.
    halves as the negative (Reto 2026-10-21); draft, Q1–Q4 open.
 0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
-   backend; se carries BCs as patch measures (Reto 2026-10-21); draft,
-   follows flow-kernel slice 2.
+   backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1
+   ready after the Fable physics review (2026-10-21), later slices draft.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
