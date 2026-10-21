@@ -23,16 +23,14 @@ just icons). The only spec-sanctioned session-start channel is
 bytes when nothing is pinned). The banner is the mechanism, not a redundancy
 — it stays.
 
-**Remaining — user-only edits** (auto-mode classifier blocks agent writes to
-settings):
-- `.claude/settings.json`: `"disableArtifact": true` (~4k; no repo dependents);
-  `"disableWorkflows": true` (~5k) — the `/coder-chain` caveat is now moot:
-  `coder-chain` re-platformed onto the Agent tool (86808d8b,
-  `.claude/skills/coder-chain/SKILL.md`; old `.claude/workflows/coder-chain.js`
-  deleted), so disabling the Workflow tool no longer costs it. Still a
-  user-only edit — apply it whenever convenient.
+`.claude/settings.json` carries `"disableWorkflows": true` (~5k; the
+`/coder-chain` caveat is moot — it re-platformed onto the Agent tool,
+86808d8b) and `skillOverrides: name-only` for land/go/rebase/next (~0.2k).
+
+**Remaining — user-only edits:**
+- `.claude/settings.json`: `"disableArtifact": true` (~4k; no repo
+  dependents) — not applied yet.
 - `~/.claude/settings.json`: `"disableClaudeAiConnectors": true` (stops gmail
-  connector auto-fetch).
-- Optional `skillOverrides`: `"name-only"` for land/go/rebase/next (~0.2k).
+  connector auto-fetch) — global config, not tracked here.
 
 **Test:** fresh-session `/context` fixed total ≤ ~32k; memory-lint green.

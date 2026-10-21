@@ -1,5 +1,11 @@
 {
   "disableWorkflows": true,
+  "skillOverrides": {
+    "land": "name-only",
+    "go": "name-only",
+    "rebase": "name-only",
+    "next": "name-only"
+  },
   "env": {
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
