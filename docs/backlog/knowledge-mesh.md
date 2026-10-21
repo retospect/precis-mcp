@@ -263,7 +263,9 @@ The 0-rows `material_values` registry is superseded by `measures` with
    it depended on no measures work, and this item's walk reuses that
    ladder.)
 4. Numeric-conflict rule in `conflict_search`.
-5. `quest_mesh` service with the four actions, per-quest budget.
+5. `quest_mesh` service with the four actions, per-quest budget —
+   built as the per-quest scout, [graph-gardener-value](graph-gardener-value.md)
+   slice 4 (ready-check 2026-10-21, S4-2; pending Reto's R3).
 6. Integration seam for the extraction worker pass: `materialized
    result → hub + measure + edge` via the existing findings approve
    path (the extraction item ships the reader; this item ships the

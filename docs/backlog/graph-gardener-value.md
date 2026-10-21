@@ -240,3 +240,153 @@ Rulings 2026-10-21 (Reto, via chat; resolve the findings above):
   machine writers as gardener-ledger proposals only, never direct
   writes; they need no evidence chunk and stay generated/unreviewed until
   a recorded review.
+
+Ready-check slice 4 (per-quest scout), 2026-10-21 (gv-scout-extract,
+Opus). Verdict: **needs-work**, no migration needed. Nine findings, each
+with a proposed resolution; R1–R3 are Reto's (asked through the
+coordinator), the rest are build decisions taken as defaults.
+
+- **S4-1 Order against slice 5 (blocker).** Slice 5 says "trial first,
+  before any scheduler code", and the scout's `read` and `finding`
+  actions consume `survey_extract` output whose quality the trial has
+  not shown. No extracted row exists on prod yet (job 496639 wrote 0;
+  see corpus-quantitative-extraction §Reconciliation). Proposed: build
+  slice 4 after the slice 5 trial clears its bar; until then the scout
+  ships with `widen`, `stance` (measures-backed only, S4-5) and
+  `bridge`, and `read` is a no-op that logs "extraction not accepted".
+- **S4-2 "Active quest" (blocker).** Prod has 2 quests tagged
+  `STATUS:active` (qu164903, qu500066) and 34 `dormant`; qu202467, the
+  extraction pilot quest Reto resumed on 2026-10-12, is `dormant`.
+  Proposed: a quest is scouted when it is `STATUS:active` AND carries
+  `meta.mesh = {cadence_h, budget_usd}` (knowledge-mesh §4's opt-in;
+  absent ⇒ skipped). The scout and `quest_mesh` are one pass: this
+  slice is knowledge-mesh §4's mesher, and knowledge-mesh In-scope 5
+  moves here.
+- **S4-3 "Rubric axis" is undefined in data (blocker).** Two shapes on
+  prod: qu164903 has structured `meta.rubric_objectives`
+  (`[{key: U_L_abs, sense: min}, {key: barrier, …}, …]`, read by
+  `quest/frontier.py::_objectives_for`); qu500066 has only a prose
+  "Rubric: a · b · c" line in its body. Neither stores coverage.
+  Proposed: axes = `rubric_objectives` keys when present, else the
+  body's `Rubric:` line split on `·`, else the quest is skipped with a
+  logged reason. Thinness, deterministic: for a keyed axis, live
+  `measures` rows whose measurand taxon matches the key (slug or alias)
+  on subjects serving the quest (`best_measure`'s `serves` walk); for a
+  prose axis, quest-serving findings and held-paper chunks within
+  `eye_render.RECALL_MAX_DISTANCE` (0.6) of the axis text's embedding.
+  Thinnest = lowest count, ties in rubric order. A keyed axis whose key
+  matches no taxon is reported as `unmapped_axis` and skipped (it is a
+  taxonomy gap, not a thin axis). Other-pass 5 (eval-unanswerable
+  questions) replaces the heuristic later; slice 2's gold exists only
+  for qu500066.
+- **S4-4 Tick budget (blocker: none stated).** Proposed constants in the
+  new module: one action per tick; cadence from `meta.mesh.cadence_h`
+  (default 6 h); per tick ≤ 1 `fisheye+2hop` render, ≤ 20 castor calls,
+  ≤ 5 proposals, ≤ 10 paper stubs; cloud spend 0 (no deep campaign:
+  `widen` is a plain `search(kind='paper')` store call, not the
+  agent fan-out knowledge-mesh §4 named, so `budget_usd` is a cap that
+  stays at 0 until an action needs it). Castor calls go through a new op
+  `llm.op.graph_garden:scout` routed like `graph_garden:propose`
+  (`proposer.py` passes no placement; the op chain picks castor), and
+  the scout respects the slice 5 idle gate once it exists. The fisheye
+  render is `utils/eye_render.py::render_eye(store, handle,
+  'fisheye+2hop')`, store-only, callable from a worker; it reports no
+  token count, so the tick logs `len(text)//4` beside each action.
+- **S4-5 Stance overlaps slice 5 (b) and other-pass 1.** "Chunk pairs
+  near in the index that state different numbers" is the numeric
+  conflict rule without the measures that make it decidable; a castor
+  read of two raw chunks cannot tell a different measurand or condition
+  from a conflict. Proposed: `stance` runs only over pairs of accepted
+  `measures` rows on the axis (same measurand, reference,
+  normalization; compatible conditions) and is the slice 5 (b) rule
+  invoked per axis; castor writes only `why`. Raw chunk-pair stance is
+  dropped from slice 4.
+- **S4-6 Bridge conflicts with the `explains` ruling.** `explains` is
+  claim-hub → claim-hub only (0203, `taproot.hub.link_claims`; the gate
+  refuses chunk-level `explains` with `machine-edge-claim-hub`). Slice 4
+  as written searches *chunks* for a mechanism. Proposed: `bridge`
+  searches other quests' claim hubs (findings) below the retrieval
+  cutoff from the held finding — distance > `RECALL_MAX_DISTANCE` to
+  the finding's card, so the pair is one RAG does not co-retrieve — and
+  proposes `explains` hub → hub. A mechanism found only in a chunk
+  becomes a `finding` proposal first (S4-7); the `explains` follows once
+  that hub exists.
+- **S4-7 Finding minting has no proposal shape.** No store function
+  mints a finding from a chunk; the hub door is
+  `taproot/authoring.py::seed_claim_hub` → `taproot.hub.mint_hub`
+  (supporters carry `pc<chunk>` handles), and `establishes` is paper →
+  hub (`store/types.py` Relation). The garden ledger is the `reviews`
+  table (0185: `target_kind` chunk/ref/link, `verdict` proposed/…), and
+  a not-yet-minted finding has no target. Proposed: target the source
+  chunk (`target_kind='chunk'`), actor `graph-scout`, version
+  `scout.v1`, note JSON `{action: 'finding', claim, measure_ids,
+  quest, axis, model, prompt_version, run_id, why}`. Apply (S4-8) calls
+  `seed_claim_hub` with the chunk as supporter; the paper → hub
+  `establishes` edge comes from that door, not a separate write.
+- **S4-8 The reviewer bar (blocker; the brief's question).** Slice 4
+  says findings and stance edges "stay proposals until the reviewer bar
+  is met", but no bar exists: slice 3's Opus/Fable reviews are ruled
+  non-terminal and gate nothing, `apply.py` applies merges only, and
+  "auto-applying anything but merge" is out of scope. Proposed bar, per
+  proposal class (action × quest), reusing
+  `precis.extract.accept.acceptance`: the class is **open** when Opus
+  reviewed ≥ 52 of its proposals over a trailing 30 days and the
+  one-sided Wilson upper bound on the reject rate is ≤ 0.10 for stance
+  and bridge edges and ≤ 0.05 for findings (a finding becomes a citable
+  hub; an edge is reversible). While a class is closed nothing in it
+  applies. While it is open a proposal applies only with its own Opus
+  `approved` row plus a human `precis garden apply` (the default taken,
+  consistent with "no auto-apply but merge"); R1 asks whether an open
+  class may apply Opus-approved proposals without the human step.
+  Reviewer capacity: the Opus sampler is 20/day global
+  (`reviewer.DEFAULT_PER_DAY`), oldest first, over actor `graph-garden`
+  only. Proposed: the scout gets its own quota (10/day Opus, 3/day
+  Fable) over actor `graph-scout`, so gardener v1's sample is not
+  diluted, and `precis garden stats` reports scout classes beside the
+  v1 detectors. Note for the builder: reviewer rows store
+  `approved`/`rejected` in `verdict` and rely on the note's shape to stay
+  non-terminal (`reviewer.py::_record_verdict`); apply must read the
+  scout actor's own resolution, not any `approved` row.
+- **S4-9 Writes must pass slice 1.** Every applied edge needs
+  `meta.evidence` (pc… pins), `meta.{model, prompt_version, run_id,
+  why}` and a generated/computed trust context with a model, else
+  `_machine_edge_admission` refuses. Proposed: the proposal note carries
+  exactly those keys and apply passes them through unchanged; `explains`
+  goes through `link_claims(meta=…)`.
+
+**Tests (proposed, dev DB, fake model callable):**
+`tests/test_scout.py` — (1) a quest without `meta.mesh` or not
+`STATUS:active` is skipped; (2) axis extraction from
+`rubric_objectives`, from a prose `Rubric:` line, and an `unmapped_axis`
+key; (3) thinnest axis picks the lowest count, ties in rubric order;
+(4) one tick performs exactly one action and stays within the call and
+proposal caps; (5) `stance` proposes `disputes` for two accepted rows
+with non-overlapping intervals under matching conditions and nothing for
+overlapping intervals or a differing context condition; (6) `bridge`
+proposes hub → hub `explains` only past `RECALL_MAX_DISTANCE`, never
+chunk-level; (7) a `finding` proposal is a `reviews` row on the chunk
+with the full note, and no ref is written; (8) a closed class applies
+nothing; an open class with an Opus `approved` row applies through
+`seed_claim_hub` / `link_claims` and the edge passes slice 1;
+(9) `read` is a logged no-op while extraction is not accepted.
+`tests/test_machine_edge.py` and `tests/test_garden.py` unchanged.
+
+**Target:** new `src/precis/graph/garden/scout.py` (axes, thinness, the
+five actions), `garden/service.py` (scheduler hook, per-quest cadence),
+`garden/reviewer.py` (actor/quota parameters), `garden/apply.py`
+(finding and edge apply), `utils/llm/operations.py`
+(`graph_garden:scout`), skill `precis-gardener-help`. No migration.
+
+**Questions for Reto (via the coordinator):**
+
+- R1 May a scout class that has cleared the Wilson bar apply
+  Opus-approved proposals without a human `precis garden apply`?
+  Recommended: no for findings (they become citable hubs), yes for
+  stance edges after 30 days open. Default taken: human apply for both.
+- R2 Should qu202467 (the extraction pilot quest, `dormant` on prod)
+  be set `active` with `meta.mesh` so the scout has a quest with both
+  rubric keys and extraction rows? Recommended: yes. Default: scout
+  only what is active.
+- R3 Is the scout the knowledge-mesh §4 mesher (one pass, this item
+  owns it)? Recommended: yes. Default taken: yes; knowledge-mesh
+  In-scope 5 points here.
