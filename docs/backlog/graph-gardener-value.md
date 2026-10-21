@@ -140,7 +140,65 @@ a new scout pass beside the gardener service. Skills:
   separate machine-writer check? Recommended: same admission path, so
   there is one door.
 - Q2 Reviewer tier for the burn-down: Opus sample of 20/day, or Fable?
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">grep -n "## \|^[0-9]\." docs/backlog/threads/knowledge-mesh.md | head -30
+
+Ready-check 2026-10-21 (coordinator; all three slices needs-work; no
+migration in any slice; slices 2 and 3 share no code, slice 3 owns
+`precis-gardener-help.md`). Also removed four stray tool-call lines
+that had landed at the end of this file.
+
+- Slice 3 blocker: "taxa whose nearest start node the index already ranks
+  first" is undefined. `garden/candidates.py::orphan_taxon_candidates`
+  already takes a plain cosine min over card vectors, so the literal
+  reading drops every orphan with a vector, and "reaches nothing" is
+  vacuous (every candidate has `reaches_no_start=True`). Proposed: keep a
+  candidate when `candidate_parent_distance` > a named constant (sibling
+  of `DUP_MAX_DISTANCE`) or no card vector exists; tests on both sides.
+- Slice 3 blocker: prune-redundant has no k, distance bound, similarity
+  source or SQL for "machine related-to". Proposed: card vectors as the
+  other detectors, k = 5, a named distance constant; machine =
+  `relation='related-to' AND links.trust_origin IN ('generated','computed')`;
+  honour `scan_cap`/`limit` (56,305 related-to rows on prod). Wire into
+  `_DETECTOR_BY_PASS`/`PASS_CHOICES` as `prune`, candidate
+  `action='prune'`, `payload={'link_id': …}`; proposal row only
+  (`apply.py` applies merges only).
+- Slice 3 blocker: the reviewer burn-down has no module, entry point,
+  sampling rule, actor, agreement query or surface, and a reviewer
+  `approved` via `resolve_proposal` would read as applied for a merge.
+  Proposed: `graph/garden/reviewer.py`, actor `garden-reviewer`, payload
+  `reviewed_by_model`/`sampled: true` (not terminal), age > 3 d, 20/day
+  global, agreement = reviewer-approve share per detector, surfaced in
+  `precis garden stats`; reports only, no gate (local-mesh-upkeep has no
+  number yet). Needs Q2.
+- Slice 3 blocker: no acceptance tests. Proposed: narrowing both sides;
+  prune fixture (mutual pair proposed, non-mutual not, human-authored
+  not, key deduped); reviewer with a fake model callable (age, cap,
+  non-terminal verdict); `tests/test_garden.py` unchanged.
+- Slice 2 blocker: `precis.llm_eval` scores a model per capability axis
+  (`harness.py::run_axis`, `GoldTask.axis` ∈ `CAPABILITY_AXES`); retrieval
+  has no model call. Proposed: a standalone runner after the
+  `src/precis/mesh_eval/` pattern (JSONL sets, Wilson CI), no
+  `record_eval`.
+- Slice 2 blocker: gold set unspecified. Proposed: fixture
+  `{question, quest, gold_chunks:[pc ids]}`, builder
+  `scripts/llm_eval/build_retrieval_gold.py` over `_prod_ro.py`, labels
+  drafted by a model and reviewed by Reto, gitignored under
+  `scripts/llm_eval/gold_set/local/`; tests on a synthetic fixture,
+  skipped pilot when the file is absent; never the session MCP.
+- Slice 2 blocker: metrics undefined. Proposed: recall@10 and
+  tokens-to-first-gold (cumulative rendered output, chars/4, cap =
+  not reached); the fisheye arm anchors at the quest handle; before/after
+  as dated reports on a snapshot; a pass stays on if recall@10 rises
+  ≥ 0.05 or tokens fall ≥ 10 % with no recall loss. The scout arm cannot
+  run (no scout in code); keep the gardener arm only.
+- Slice 1: buildable on landed trust slice 1 + 2a (`store/_links_ops.py::
+  add_link` choke point, `trust_door`); does not need 2b. Blockers:
+  Q1; "machine writer" needs a test (`trust_origin` in
+  generated/computed from the write context); grounding pins live in
+  `links.meta.evidence` until 2b (plus `meta.model`, `prompt_version`,
+  `run_id`, `why`; not `meta.origin`); the `+recall` cutoff is
+  `utils/eye_render.py::_recall`'s chunk-level `_RECALL_K` + distance
+  floor, name it; enumerate the stance/provenance rels and check each is
+  registered (`explains` is not in the prod inventory); exempt
+  `apply_merge`/`undo_merge` repointing; no machine writer exists yet
+  (mesher/scout unbuilt); skills `precis-relations`, `precis-link-help`,
+  `precis-gardener-help`; refusals carry `next=`.
