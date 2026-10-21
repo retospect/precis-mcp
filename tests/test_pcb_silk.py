@@ -3242,6 +3242,48 @@ def test_dogfood_outlines_bend_around_the_routed_via_instead_of_breaking():
         assert min(p.distance(centre) for p in ends) < 2.2, (refdes, ends)
 
 
+def test_dogfood_outline_stays_one_line_through_two_vias():
+    """gr495393: J2's ring meets two routed vias — the shared-wall one at
+    (13.52, 13.54) and a second under its own top-left body at
+    (11.42, 18.21). The under-body via's natural move is a dent, but the
+    dented stretch lands inside the pad-clearance floor, where the floor
+    pass opens it: a second forced gap and the outline comes out in two
+    fragments. The bend now takes the move that adds no floor-open — J2
+    bulges out round the under-body via — so the one gap the shared wall
+    forces leaves ONE line."""
+    from shapely.geometry import LineString as SLine
+    from shapely.geometry import Point as SPoint
+
+    ir, pads, via = _dogfood_cluster()
+    under_body: dict[str, Any] = {
+        "x": 11.42,
+        "y": 18.21,
+        "dia_mm": 0.75,
+        "drill_mm": 0.25,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    result = build_silk(ir, pads=pads, vias=[via, under_body])
+    legal = _W / 2.0 + silk.DEFAULT_SILK_TO_MASK_CLEARANCE_MM
+    for refdes in ("U1", "U2", "J2"):
+        (line,) = _outline_lines(result, refdes)
+        if refdes == "U2":
+            assert line[0] == pytest.approx(line[-1])
+    ring = SLine(_outline_lines(result, "J2")[0])
+    for v in (via, under_body):
+        centre = SPoint(v["x"], v["y"])
+        assert ring.distance(centre) >= v["dia_mm"] / 2.0 + legal - 1e-6
+    # The one gap is the shared wall's, on the U1-facing side — not at
+    # the under-body via.
+    line = _outline_lines(result, "J2")[0]
+    ends = [SPoint(*p) for p in (line[0], line[-1])]
+    wall = SPoint(via["x"], via["y"])
+    assert min(p.distance(wall) for p in ends) < 2.2, ends
+    assert not _draws_hit_any_pad(
+        result.draws["top"], [_via_as_pad(via), _via_as_pad(under_body)]
+    )
+    assert not _draws_hit_any_pad(result.draws["top"], pads)
+
+
 def test_a_via_no_bend_clears_still_cuts_the_outline():
     """gr495393: a via on J1's outline right under a pad, with the board's
     silk edge margin just past the ring. A dent would cross the pad, a

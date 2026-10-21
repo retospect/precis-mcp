@@ -1525,6 +1525,7 @@ def _bend_around_vias(
     obstacles_by_side: dict[str, list[dict[str, Any]]],
     *,
     inside: Any,
+    floor_zones: dict[str, Any],
     spacing_mm: float,
     stroke_width_mm: float,
     via_to_silk_mm: float,
@@ -1562,6 +1563,15 @@ def _bend_around_vias(
     - keeps its new stretch out of every other same-side outline and at
       least ``spacing_mm`` off its ring.
 
+    A kept move is then checked once more against ``floor_zones``
+    (:func:`part_outlines`' pad-clearance floor union): a legal dent can
+    leave its new stretch inside the floor, where the floor pass opens it
+    — the via then buys a SECOND gap and the outline comes out in
+    fragments (gr495393: J2 on dogfood-b dented round its under-body via
+    into the floor and split in two). A move that adds floor-open falls
+    back to whatever the OTHER mode's legal radii leave least inside the
+    floor — there a bulge keeps the ring one line.
+
     ``bulge_veto`` names the ``(refdes, via label)`` bulges not to try;
     ``None`` tries no bulge at all. :func:`build_silk` sets it to give a
     label back the room a bulge took (gr495393 option c).
@@ -1591,6 +1601,7 @@ def _bend_around_vias(
             spacing_mm=spacing_mm,
             stroke_width_mm=stroke_width_mm,
             inside=inside,
+            below=floor_zones.get(side),
         )
         if not ctx.rings or not ctx.vias:
             continue
@@ -1607,14 +1618,75 @@ def _bend_around_vias(
                     under = bool(ring.poly.covers(ctx.centre(k)))
                     if natural and under != (mode == "dent"):
                         continue
-                    if mode == "bulge" and (
-                        bulge_veto is None
-                        or (ring.refdes, _obstacle_label(ctx.vias[k])) in bulge_veto
+                    if mode == "bulge" and _bulge_vetoed(
+                        bulge_veto, ring.refdes, ctx.vias[k]
                     ):
                         continue
-                    for extra in radii:
-                        if _try_bend(ctx, ring, k, mode=mode, extra_mm=extra):
-                            break
+                    _settle_bend(
+                        ctx, ring, k, mode=mode, radii=radii, bulge_veto=bulge_veto
+                    )
+
+
+def _bulge_vetoed(
+    bulge_veto: frozenset[tuple[str, str]] | None, refdes: str, via: dict[str, Any]
+) -> bool:
+    """Whether ``bulge_veto`` rules a bulge out for this (refdes, via):
+    ``None`` rules every bulge out, a set the ones it names."""
+    return bulge_veto is None or (refdes, _obstacle_label(via)) in bulge_veto
+
+
+#: How much floor-open a bend candidate must save to displace the move
+#: already taken, mm of centreline (:func:`_settle_bend`).
+_BEND_OPEN_EPS_MM = 1e-6
+
+
+def _settle_bend(
+    ctx: _BendSide,
+    ring: _BendRing,
+    k: int,
+    *,
+    mode: str,
+    radii: tuple[float, ...],
+    bulge_veto: frozenset[tuple[str, str]] | None,
+) -> bool:
+    """Commit ``ring``'s redraw around via ``k``; return whether it cleared.
+
+    The first legal ``mode`` radius is taken, as before — unless it lands
+    the ring inside ``ctx.below`` (the pad-clearance floor), a stretch the
+    floor pass opens anyway: the via then buys a second gap where another
+    move would have added none (gr495393). In that case every legal move
+    of the OTHER mode is tried and the one leaving the least ring inside
+    the floor wins — the outline stays continuous, trimmed only where a
+    pad, the board edge or the floor itself forces it."""
+    moved = None
+    for extra in radii:
+        moved = _bend_move(ctx, ring, k, mode=mode, extra_mm=extra)
+        if moved is not None:
+            break
+    if moved is None:
+        return False
+    best_mode, best = mode, moved
+    if ctx.below is not None:
+        old_open = ctx.below.intersection(ring.poly.exterior).length
+        open_mm = ctx.below.intersection(moved.exterior).length
+        if open_mm > old_open + _BEND_OPEN_EPS_MM:
+            alt = "bulge" if mode == "dent" else "dent"
+            if alt != "bulge" or not _bulge_vetoed(
+                bulge_veto, ring.refdes, ctx.vias[k]
+            ):
+                for extra in radii:
+                    cand = _bend_move(ctx, ring, k, mode=alt, extra_mm=extra)
+                    if cand is None:
+                        continue
+                    cand_open = ctx.below.intersection(cand.exterior).length
+                    if cand_open < open_mm - _BEND_OPEN_EPS_MM:
+                        open_mm, best_mode, best = cand_open, alt, cand
+    ring.poly = best
+    label = _obstacle_label(ctx.vias[k])
+    ring.bent.append(label)
+    if best_mode == "bulge":
+        ring.bulged.append((label, float(ctx.centre(k).x), float(ctx.centre(k).y)))
+    return True
 
 
 @dataclass(slots=True)
@@ -1630,6 +1702,10 @@ class _BendSide:
     spacing_mm: float
     stroke_width_mm: float
     inside: Any
+    #: This side's pad-clearance floor union (:func:`part_outlines`'
+    #: ``subfloor``): where a redrawn stretch lands in it, the floor pass
+    #: opens it — the measure :func:`_settle_bend` minimises.
+    below: Any
 
     def centre(self, k: int) -> Any:
         return _ShapelyPoint(float(self.vias[k]["x"]), float(self.vias[k]["y"]))
@@ -1642,35 +1718,36 @@ class _BendSide:
         return bool(poly.exterior.distance(self.centre(k)) < reach)
 
 
-def _try_bend(
+def _bend_move(
     ctx: _BendSide, ring: _BendRing, k: int, *, mode: str, extra_mm: float
-) -> bool:
-    """Redraw ``ring`` around via ``k`` as one dent or bulge of radius
-    via radius + ``extra_mm``; keep it only if every check in
-    :func:`_bend_around_vias` passes."""
+) -> Any:
+    """``ring`` redrawn around via ``k`` as one dent or bulge of radius
+    via radius + ``extra_mm`` — the polygon, or ``None`` unless every
+    check in :func:`_bend_around_vias` passes. Does not commit:
+    :func:`_settle_bend` picks between the modes' answers."""
     centre, r = ctx.centre(k), ctx.radius(k)
     old = ring.poly
     old_line = old.exterior
     disk = centre.buffer(r + extra_mm, quad_segs=8)
     moved = old.difference(disk) if mode == "dent" else old.union(disk)
     if moved.is_empty or moved.geom_type != "Polygon":
-        return False
+        return None
     moved = _shapely_orient(_ShapelyPolygon(moved.exterior), 1.0)
     line = moved.exterior
     if line.distance(centre) < r + ctx.legal_mm - 1e-6:
-        return False
+        return None
     changed = line.difference(old_line.buffer(1e-4))
     if changed.is_empty:
-        return False
+        return None
     if ctx.inside is not None and not ctx.inside.buffer(1e-6).covers(changed):
-        return False
+        return None
     own = [
         p
         for p in ctx.hard
         if "obstacle" not in p and str(p.get("refdes")) == ring.refdes
     ]
     if not all(moved.covers(_ShapelyPoint(float(p["x"]), float(p["y"]))) for p in own):
-        return False
+        return None
     pts = [(float(x), float(y)) for x, y in line.coords]
     old_pts = [(float(x), float(y)) for x, y in old_line.coords]
     width = ctx.stroke_width_mm
@@ -1679,27 +1756,22 @@ def _try_bend(
             _stroke_hits(pts, [o], width) is not None
             and _stroke_hits(old_pts, [o], width) is None
         ):
-            return False
+            return None
     for j in range(len(ctx.vias)):
         if j != k and ctx.touching(moved, j) and not ctx.touching(old, j):
-            return False
+            return None
     far = changed.difference(old_line.buffer(ctx.spacing_mm))
     for other in ctx.rings:
         if other is ring:
             continue
         if other.poly.buffer(-1e-6).intersects(changed):
-            return False
+            return None
         if (
             not far.is_empty
             and far.distance(other.poly.exterior) < ctx.spacing_mm - 1e-6
         ):
-            return False
-    ring.poly = moved
-    label = _obstacle_label(ctx.vias[k])
-    ring.bent.append(label)
-    if mode == "bulge":
-        ring.bulged.append((label, float(centre.x), float(centre.y)))
-    return True
+            return None
+    return moved
 
 
 def part_outlines(
@@ -1931,6 +2003,20 @@ def part_outlines(
         if shared:
             shared_with[inst] = tuple(sorted(shared, key=_refdes_sort_key))
 
+    # One union per side: anywhere within ``floor`` of a same-side pad
+    # hull. A shared-wall stretch landing in it cannot print — the line
+    # would sit inside someone's pad clearance — so it is left open on
+    # both rings at once. The via bend needs it too: a redraw landing in
+    # it buys a second gap where the other mode adds none (gr495393).
+    subfloor: dict[str, Any] = {}
+    for side_name in ("top", "bottom"):
+        zones = [
+            hull.buffer(floor - _WALL_FLOOR_EPS_MM)
+            for _inst, s, hull in hulls
+            if s == side_name
+        ]
+        if zones:
+            subfloor[side_name] = _shapely_unary_union(zones)
     bent: dict[int, tuple[str, ...]] = {}
     bulged: dict[int, tuple[tuple[str, float, float], ...]] = {}
     if obstacles_by_side:
@@ -1952,6 +2038,7 @@ def part_outlines(
             work,
             obstacles_by_side,
             inside=inside,
+            floor_zones=subfloor,
             spacing_mm=spacing,
             stroke_width_mm=stroke_width_mm,
             via_to_silk_mm=_via_to_silk_mm(capability),
@@ -1973,19 +2060,6 @@ def part_outlines(
     # midline wall is not cut: both rings run exactly along the same
     # split, so each stays one closed line and the wall prints as one.
     min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
-    # One union per side: anywhere within ``floor`` of a same-side pad
-    # hull. A shared-wall stretch landing in it cannot print — the line
-    # would sit inside someone's pad clearance — so it is left open on
-    # both rings at once.
-    subfloor: dict[str, Any] = {}
-    for side_name in ("top", "bottom"):
-        zones = [
-            hull.buffer(floor - _WALL_FLOOR_EPS_MM)
-            for _inst, s, hull in hulls
-            if s == side_name
-        ]
-        if zones:
-            subfloor[side_name] = _shapely_unary_union(zones)
     order = sorted(rings, key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])))
     drawn: list[tuple[int, str, Any]] = []
     out: dict[int, PartOutline] = {}
