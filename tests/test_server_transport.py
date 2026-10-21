@@ -11,6 +11,7 @@ narrowly (not through the full MCP tool-dispatch surface).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -277,6 +278,19 @@ def _join_warmup_threads() -> None:
     for t in threading.enumerate():
         if t.name == "precis-md-index-warmup":
             t.join(timeout=5)
+            assert not t.is_alive(), "md warmup thread outlived its test"
+
+
+@pytest.fixture(autouse=True)
+def _no_warmup_thread_leaks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A warm pass still running after its test writes the process-global
+    ``vectors._WARMUP_STATE`` into whichever test runs next on the worker
+    (gr503085: the cold-status test saw a stray ``md_vector_warmup`` row).
+    Joining at teardown pins the leak on the test that started it;
+    requesting ``monkeypatch`` orders the join before its undo, so a pass
+    never runs on restored module constants (e.g. a 2s retry backoff)."""
+    yield
+    _join_warmup_threads()
 
 
 def test_warm_md_index_background_noop_on_bare_object() -> None:

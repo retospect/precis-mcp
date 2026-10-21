@@ -49,6 +49,10 @@ _alert_lock = threading.Lock()
 #: trip from a stale one. Must stay well under ``QUIET_RESOLVE_BUDGET_S``.
 _ALERT_REFRESH_S = 600
 _last_refresh = 0.0
+#: Refresh clock; a module attribute so tests can drive it. Monotonic time
+#: counts from host boot, so a test cannot fake "refresh due" by zeroing
+#: ``_last_refresh`` (on a CI runner up <10 min, 0.0 is still "recent").
+_clock = time.monotonic
 #: Last tripped window we alerted on (``'hourly'`` / ``'daily'`` / ``None``),
 #: so we only touch the alert store on a state *transition*.
 _last_window: str | None = None
@@ -232,7 +236,7 @@ def _sync_alert(
         return
     global _last_window, _last_refresh
     with _alert_lock:
-        now = time.monotonic()
+        now = _clock()
         if window == _last_window:
             if window is None or now - _last_refresh < _ALERT_REFRESH_S:
                 return

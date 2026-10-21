@@ -1235,6 +1235,16 @@ def _latest_alert_id(store: Store, fingerprint: str) -> int:
     return int(row[0])
 
 
+def _fake_breaker_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Pin the breaker's refresh clock at a just-booted host's uptime (monotonic
+    time counts from boot); advance it by bumping ``clock[0]``."""
+    from precis.budget import breaker as breaker_mod
+
+    clock = [120.0]
+    monkeypatch.setattr(breaker_mod, "_clock", lambda: clock[0])
+    return clock
+
+
 def test_budget_cap_alert_survives_quiet_window_while_tripped(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1244,6 +1254,7 @@ def test_budget_cap_alert_survives_quiet_window_while_tripped(
     from precis.budget import breaker as breaker_mod
     from precis.budget.meter import BudgetStatus
 
+    clock = _fake_breaker_clock(monkeypatch)
     breaker_mod._reset_alert_state()
     try:
         tripped = BudgetStatus(
@@ -1255,7 +1266,7 @@ def test_budget_cap_alert_survives_quiet_window_while_tripped(
 
         # Age the row past the quiet window, then run the refresh tick.
         _age(store, aid, alerts_mod.QUIET_RESOLVE_BUDGET_S + 600)
-        monkeypatch.setattr(breaker_mod, "_last_refresh", 0.0)
+        clock[0] += breaker_mod._ALERT_REFRESH_S + 1
         breaker_mod._sync_alert(store, "hourly", tripped)
         assert alerts_mod.resolve_quiet_alerts(store) == 0
         assert _resolved(store, aid)[0] is None
@@ -1297,6 +1308,7 @@ def test_budget_cap_alert_reraises_after_quiet_resolve(
     from precis.budget import breaker as breaker_mod
     from precis.budget.meter import BudgetStatus
 
+    clock = _fake_breaker_clock(monkeypatch)
     breaker_mod._reset_alert_state()
     try:
         tripped = BudgetStatus(
@@ -1309,7 +1321,7 @@ def test_budget_cap_alert_reraises_after_quiet_resolve(
         # the gate), then the still-tripped breaker's refresh re-raises.
         _age(store, aid, alerts_mod.QUIET_RESOLVE_BUDGET_S + 600)
         assert alerts_mod.resolve_quiet_alerts(store) == 1
-        monkeypatch.setattr(breaker_mod, "_last_refresh", 0.0)
+        clock[0] += breaker_mod._ALERT_REFRESH_S + 1
         breaker_mod._sync_alert(store, "hourly", tripped)
 
         aid2 = _latest_alert_id(store, "cap-hourly")
