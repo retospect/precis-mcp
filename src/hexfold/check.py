@@ -542,6 +542,19 @@ def _geometry_findings(
             )
         )
 
+    # per-zone residuals, uncapped: the ten-finding cap above can hide a
+    # zone's pairs behind another zone's (H2 cone gate,
+    # docs/backlog/hexfold-nanoreactor-tube.md)
+    zone_counts: dict[str, dict[str, int]] = {}
+    if zone_of is not None:
+        for name, _seeds in zones or ():
+            zone_counts.setdefault(name, {"clash": 0, "nnb": 0})
+        zone_counts.setdefault("none", {"clash": 0, "nnb": 0})
+        for _d, i, j in clashes:
+            zone_counts[zone_data(i, j)[0][1]]["clash"] += 1
+        for h in nnb:
+            zone_counts[zone_data(h.atom, h.other)[0][1]]["nnb"] += 1
+
     b_arr = np.array([x[0] for x in bond_dev]) if bond_dev else np.zeros(1)
     a_arr = np.array([x[0] for x in ang_dev]) if ang_dev else np.zeros(1)
     out.append(
@@ -589,6 +602,8 @@ def _geometry_findings(
                     + max(0, len(short_bonds) - 10),
                 ),
                 ("max_force_final", round(max_force, 4)),
+                # zone -> {"clash": pairs, "nnb": atoms}, every offender
+                *((("zones", zone_counts),) if zone_of is not None else ()),
                 # a caller's relax names itself, so a stored summary never
                 # shows a tethered geometry as the default stick's
                 *((("relax", relaxed.relax),) if relaxed is not None else ()),

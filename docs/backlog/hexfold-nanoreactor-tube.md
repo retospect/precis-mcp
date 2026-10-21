@@ -111,14 +111,14 @@ pairs + 8 `geom.nearest_not_bonded` atoms (uncapped). 18→8 washer: outer
 2.12 Å / 47.1°, inner 1.69 Å / 39.5°, zone 19 + 10. EMT is not a
 credible judge here (200 steps degrade the seams to 4.6 Å).
 
-**Changes to the gate.**
-- Fixture: 18→8, `rails: 3`, for both `step: washer` and `step: cone`
-  (16→8 is refused `step.throat` under washer, so it cannot carry the
-  comparison).
-- Count uncapped per-zone pairs: `geom.summary` (or a dedicated
-  `geom.zones` finding) reports per zone the clash-pair and
-  nearest-not-bonded counts, so the ten-finding cap cannot hide zone
-  residuals.
+**Landed 2026-10-21.** The gate fixture is 18→8 `rails: 3` for both step
+kinds; `geom.summary` carries `zones` (per zone, uncapped clash pairs and
+nearest-not-bonded atoms) and the xfail gate reads it. Re-measured after
+the gr502249 tie-grid fix (EMT 30 steps, xtb stubbed): cone outer
+2.00 Å / 46.8°, inner 1.66 Å / 35.1°, zone 22 + 12; washer outer
+1.98 Å / 42.6°, inner 1.49 Å / 103.7°, zone 28 + 8.
+
+**Left.**
 - Judge after a real-rung relax: a `hexfold_relax` job (xtb fragments +
   `ml`/MACE polish) on the compute group. Reto 2026-10-21: prod hexfold
   relax jobs may run any time. Pass = per step `seam_bonds_max_A ≤ 3.0`,

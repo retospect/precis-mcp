@@ -51,6 +51,16 @@ def test_stepped_rail_tunnel_builds() -> None:
     assert all(
         dict(f["data"]).get("zone") in ("reducer:seg0->seg1", "none") for f in geom
     )
+    # geom.summary counts every pair per zone, past the ten-finding cap
+    (summary,) = [f for f in findings if f["code"] == "geom.summary"]
+    zones = dict(summary["data"])["zones"]
+    assert set(zones) == {"reducer:seg0->seg1", "none"}
+    for name, counts in zones.items():
+        listed = [f for f in geom if dict(f["data"])["zone"] == name]
+        assert counts["clash"] >= sum(f["code"] == "geom.clash" for f in listed)
+        assert counts["nnb"] >= sum(
+            f["code"] == "geom.nearest_not_bonded" for f in listed
+        )
     where = {f["where"] for f in findings if f["code"] == "junction.strain"}
     assert {
         "low",
@@ -137,9 +147,10 @@ def test_stepped_bad_pore_refused() -> None:
 
 
 #: the H2 cone gate fixture (spec docs/backlog/hexfold-nanoreactor-tube.md):
-#: a 16 -> 8 rail step, rails 3 so the cone carries p = 3 pentagons
+#: an 18 -> 8 rail step, rails 3 so the cone carries p = 3 pentagons; the
+#: same tube builds under step: washer, so the two read side by side
 GATE_TUBE: dict[str, Any] = {
-    "rail": [[16, 4], [8, 4]],
+    "rail": [[18, 4], [8, 4]],
     "rails": 3,
     "rows": 2,
     "pores": [],
@@ -147,17 +158,15 @@ GATE_TUBE: dict[str, Any] = {
 ZONE = "reducer:seg0->seg1"
 
 
-def _relaxed_step(
-    step: str, monkeypatch: pytest.MonkeyPatch, rail: list[list[int]] | None = None
-) -> tuple[Any, Any]:
+def _relaxed_step(step: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
     """Build the gate fixture, relax it through ``relax_block`` (EMT
     polish + stubbed-xtb fragments, the relax test's settings) and judge
     the relaxed atoms with the washer-zone-tagged geometry tier.  The
     terminator's trimmed rim atoms do not exist in the relaxed block, so
     they are parked far away instead of judged."""
     _stub_xtb_with_emt(monkeypatch)
-    rail = rail or GATE_TUBE["rail"]
-    tube = {**GATE_TUBE, "rail": rail, "step": step}
+    rail = GATE_TUBE["rail"]
+    tube = {**GATE_TUBE, "step": step}
     block = build_hexfold_scene(params(tube=tube))
     scene = _scene_of(block)
     report = relax_block(
@@ -187,21 +196,14 @@ def _relaxed_step(
     return report, geom
 
 
-@pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "H2 cone stop condition (2026-10-20, measured in the test "
-        "container): after relax_block (EMT polish, 30 steps) the 16->8 "
-        "p=3 cone reads outer seam max 2.09 A / angle dev 20.4 deg, inner "
-        "1.63 A / 59.8 deg (> 45: step.overstrained); the washer zone keeps "
-        "4 geom.clash WARN + 2 geom.nearest_not_bonded ERROR of the "
-        "ten-capped findings (uncapped: 19 clash pairs, 8 nnb atoms); "
-        "margins and bars are not widened to close it"
-    ),
-)
-def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
-    report, geom = _relaxed_step("cone", monkeypatch)
+def _gate_read(
+    step: str, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, tuple[float, float]], dict[str, int]]:
+    """The gate's numbers for one step kind on the relaxed fixture: the
+    step's (seam bond max A, face-angle dev max deg) per seam, and the
+    washer zone's uncapped clash-pair / nearest-not-bonded counts from
+    ``geom.summary``."""
+    report, geom = _relaxed_step(step, monkeypatch)
     strain = {
         f["where"]: dict(f["data"])
         for f in report.after
@@ -214,19 +216,38 @@ def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         for tag in ("outer", "inner")
     }
-    in_zone = [
-        f.code
-        for f in geom
-        if f.code in ("geom.clash", "geom.nearest_not_bonded")
-        and dict(f.data).get("zone") == ZONE
-    ]
+    (summary,) = [f for f in geom if f.code == "geom.summary"]
+    return read, dict(summary.data)["zones"][ZONE]
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "H2 cone stop condition (2026-10-21, measured in the test "
+        "container): after relax_block (EMT polish, 30 steps) the 18->8 "
+        "p=3 cone reads outer seam max 2.00 A / angle dev 46.8 deg "
+        "(> 45: step.overstrained), inner 1.66 A / 35.1 deg; the washer "
+        "zone keeps 22 clash pairs + 12 nearest-not-bonded atoms "
+        "(uncapped, geom.summary zones). Washer beside it: outer "
+        "1.98 A / 42.6 deg, inner 1.49 A / 103.7 deg, zone 28 + 8. "
+        "Margins and bars are not widened to close it"
+    ),
+)
+def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pass (spec §"H2 cone gate follow-up"): both step seams under the
+    # step.overstrained bars and a clean washer zone under step: cone;
+    # the washer reading of the same tube is carried beside it
+    read, zone = _gate_read("cone", monkeypatch)
+    washer = _gate_read("washer", monkeypatch)
     over = {tag: v for tag, v in read.items() if v[0] > 3.0 or v[1] > 45.0}
-    assert not over and not in_zone, (read, sorted(in_zone))
+    assert not over and zone == {"clash": 0, "nnb": 0}, (read, zone, washer)
 
 
 def test_stepped_washer_16_to_8_refused_at_the_throat() -> None:
-    # the gate fixture under step: washer is refused today: the 8-wide
-    # rim sits 3.9 A inside the 16-wide star notches (4.5 A needed), so
-    # the washer residual is read on the 18 -> 8 fixture of params()
+    # 16 -> 8 under step: washer is refused: the 8-wide rim sits 3.9 A
+    # inside the 16-wide star notches (4.5 A needed), so the gate fixture
+    # is 18 -> 8, which builds under both step kinds
+    tube = {**GATE_TUBE, "rail": [[16, 4], [8, 4]], "step": "washer"}
     with pytest.raises(GeneratorError, match="pinch shut"):
-        build_hexfold_scene(params(tube={**GATE_TUBE, "step": "washer"}))
+        build_hexfold_scene(params(tube=tube))

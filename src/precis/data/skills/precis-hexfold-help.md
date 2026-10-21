@@ -142,7 +142,9 @@ pentagons, one per seam azimuth). `rails >= 6` with `cone` is refused
 `junction.strain` reads per step as `reducer:seg<w>->seg<n>:outer|inner`
 (`step.overstrained` WARN over 3.0 Å seam bond or 45° face angle), and
 `geom.clash` / `geom.nearest_not_bonded` carry `zone:
-reducer:seg<w>->seg<n>` or `none`. The cone does not yet clear the
+reducer:seg<w>->seg<n>` or `none`; `geom.summary` `zones` counts every
+pair per zone (`{"clash": pairs, "nnb": atoms}`), past the ten-finding
+cap. The cone does not yet clear the
 washer-zone clashes after relax: read the zone-tagged findings before
 trusting a cone step.
 
