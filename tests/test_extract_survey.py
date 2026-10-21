@@ -243,3 +243,27 @@ class TestWilson:
         assert one["c"] == [8]
         big = stratified_sample(strata, 99, seed="run")
         assert sum(len(v) for v in big.values()) == 8
+
+
+class TestValueFormNormalised:
+    @pytest.mark.parametrize(
+        ("given", "built"),
+        [
+            ("upper", "upper_bound"),
+            ("lower", "lower_bound"),
+            ("upper_bound", "upper_bound"),
+            ("sideways", None),
+        ],
+    )
+    def test_form_spelling(self, world: dict, given: str, built: str | None) -> None:
+        out = build_runs(
+            fe_reply(value_form=given),
+            chunk_id=world["c1"],
+            chunk_text=CHUNK1,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="test-run",
+            model="m",
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_form == built

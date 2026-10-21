@@ -1899,3 +1899,42 @@ class TestBuildBDisplayAndReads:
         (group,) = store.best_measure(world["energy"], serving=quest, sense="min")
         assert group["n"] == 1
         assert group["best"]["id"] == store.measures_for(world["paper"])[0]["id"]
+
+
+class TestValueFormSpelling:
+    @pytest.mark.parametrize(
+        ("given", "stored"),
+        [("upper", "upper_bound"), ("lower", "lower_bound")],
+    )
+    def test_upper_lower_land_as_the_bound_forms(
+        self, store: Store, world: dict[str, Any], given: str, stored: str
+    ) -> None:
+        run = store.insert_measure(
+            _potential(world, "0.5", value_form=given), actor="reader"
+        )
+        assert _row(store, run.output_id)["value_form"] == stored
+
+    def test_unknown_form_refuses_by_name(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        with pytest.raises(BadInput, match="value_form 'sideways'") as err:
+            store.insert_measure(
+                _potential(world, "0.5", value_form="sideways"), actor="reader"
+            )
+        assert "upper_bound" in str(err.value)
+        assert err.value.next
+
+    def test_check_violation_surfaces_as_bad_input(
+        self,
+        store: Store,
+        world: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import precis.store._measures_ops as ops
+
+        monkeypatch.setattr(ops, "normalize_value_form", lambda form: form)
+        with pytest.raises(BadInput, match="refused by the database") as err:
+            store.insert_measure(
+                _potential(world, "0.5", value_form="upper"), actor="reader"
+            )
+        assert err.value.next

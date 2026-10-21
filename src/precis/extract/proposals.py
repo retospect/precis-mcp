@@ -33,7 +33,12 @@ from typing import Any
 
 from precis.extract import anchors as _anchors
 from precis.extract import verify as _verify
-from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import (
+    MEASURE_VALUE_FORMS,
+    VALUE_FORM_ALIASES,
+    MeasureAnchor,
+    MeasureSpec,
+)
 from precis.utils.text import slugify
 
 _ATTRIBUTIONS = {"own_work", "cited_work", "not_established"}
@@ -295,15 +300,9 @@ def build_runs(
             else None
         )
         value_form = raw.get("value_form")
-        if value_form is not None and value_form not in {
-            "point",
-            "interval",
-            "upper",
-            "lower",
-            "boolean",
-            "categorical",
-            "not_established",
-        }:
+        if isinstance(value_form, str):
+            value_form = VALUE_FORM_ALIASES.get(value_form, value_form)
+        if value_form not in MEASURE_VALUE_FORMS:
             value_form = None
         inputs: list[MeasureSpec] = []
         raw_inputs = raw.get("inputs")

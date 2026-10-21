@@ -92,6 +92,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+import psycopg
 from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -436,6 +437,36 @@ def _condition_holds(f: ConditionFilter, conditions: Sequence[dict[str, Any]]) -
         if f.op in (">", ">=") and (hi > v or (f.op == ">=" and near[1])):
             return True
     return False
+
+
+MEASURE_VALUE_FORMS = frozenset(
+    {
+        "point",
+        "approximate_point",
+        "upper_bound",
+        "lower_bound",
+        "interval",
+        "categorical",
+        "boolean",
+        "not_established",
+    }
+)
+VALUE_FORM_ALIASES = {"upper": "upper_bound", "lower": "lower_bound"}
+
+
+def normalize_value_form(form: str) -> str:
+    """A caller's value_form in the ``measures_value_form_check`` spelling:
+    ``upper``/``lower`` become the bound forms; anything else outside the
+    allowed set is refused by name."""
+    form = VALUE_FORM_ALIASES.get(form, form)
+    if form not in MEASURE_VALUE_FORMS:
+        raise BadInput(
+            f"value_form {form!r} is not one of "
+            f"{', '.join(sorted(MEASURE_VALUE_FORMS))}",
+            next="value_form='upper_bound' for '<5', 'lower_bound' for '>5', "
+            "or omit it to infer from the literal",
+        )
+    return form
 
 
 def _check_enum(name: str, value: str | None, allowed: Sequence[str]) -> None:
@@ -906,7 +937,7 @@ class MeasuresMixin:
             text, flag = parsed.text, parsed.flag
         err = spec.value_err if spec.value_err is not None else parsed.err
         if spec.value_form is not None:
-            form = spec.value_form
+            form = normalize_value_form(spec.value_form)
         elif parsed.form != "categorical" or not caller_vals:
             form = parsed.form
         else:
@@ -1063,64 +1094,71 @@ class MeasuresMixin:
                     next="write the new number as its own run instead",
                 )
 
-        row = c.execute(
-            "INSERT INTO measures "
-            "(subject_ref_id, measurand_ref_id, literal, reported_unit, "
-            " value_num, value_low, value_high, value_text, value_bool, "
-            " value_err, value_form, reference, tier, extraction_status, "
-            " normalization, normalization_status, source_attribution, "
-            " measurand_status, direction, role, run_key, subject, "
-            " subject_group, derived_from, primary_link_id, anchor_scheme, span, "
-            " supersedes, source_ref_id, actor, model, meta, conditions, maturity, "
-            " method, source_chunk, source_url, as_of, notes) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "        coalesce(%s, '{}'::jsonb), coalesce(%s, 'lab'), %s, %s, %s, %s, %s) "
-            "RETURNING id",
-            (
-                spec.subject_ref_id,
-                spec.measurand_ref_id,
-                spec.literal,
-                reported_unit,
-                num,
-                low,
-                high,
-                text,
-                flag,
-                err,
-                form,
-                spec.reference,
-                spec.tier,
-                status,
-                normalization,
-                normalization_status,
-                spec.source_attribution,
-                spec.measurand_status,
-                direction,
-                spec.role or ("context" if direction == "input" else None),
-                run_key,
-                spec.subject,
-                spec.subject_group,
-                list(spec.derived_from) if spec.derived_from else None,
-                link_id,
-                anchor.scheme if anchor is not None else None,
-                Jsonb(anchor.span) if anchor is not None else None,
-                spec.supersedes,
-                spec.source_ref_id
-                if spec.source_ref_id is not None
-                else (anchor.paper_ref_id if anchor is not None else None),
-                actor,
-                model,
-                Jsonb(meta),
-                Jsonb(spec.conditions) if spec.conditions is not None else None,
-                spec.maturity,
-                spec.method,
-                spec.source_chunk,
-                spec.source_url,
-                spec.as_of,
-                spec.notes,
-            ),
-        ).fetchone()
+        try:
+            row = c.execute(
+                "INSERT INTO measures "
+                "(subject_ref_id, measurand_ref_id, literal, reported_unit, "
+                " value_num, value_low, value_high, value_text, value_bool, "
+                " value_err, value_form, reference, tier, extraction_status, "
+                " normalization, normalization_status, source_attribution, "
+                " measurand_status, direction, role, run_key, subject, "
+                " subject_group, derived_from, primary_link_id, anchor_scheme, span, "
+                " supersedes, source_ref_id, actor, model, meta, conditions, maturity, "
+                " method, source_chunk, source_url, as_of, notes) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "        coalesce(%s, '{}'::jsonb), coalesce(%s, 'lab'), %s, %s, %s, %s, %s) "
+                "RETURNING id",
+                (
+                    spec.subject_ref_id,
+                    spec.measurand_ref_id,
+                    spec.literal,
+                    reported_unit,
+                    num,
+                    low,
+                    high,
+                    text,
+                    flag,
+                    err,
+                    form,
+                    spec.reference,
+                    spec.tier,
+                    status,
+                    normalization,
+                    normalization_status,
+                    spec.source_attribution,
+                    spec.measurand_status,
+                    direction,
+                    spec.role or ("context" if direction == "input" else None),
+                    run_key,
+                    spec.subject,
+                    spec.subject_group,
+                    list(spec.derived_from) if spec.derived_from else None,
+                    link_id,
+                    anchor.scheme if anchor is not None else None,
+                    Jsonb(anchor.span) if anchor is not None else None,
+                    spec.supersedes,
+                    spec.source_ref_id
+                    if spec.source_ref_id is not None
+                    else (anchor.paper_ref_id if anchor is not None else None),
+                    actor,
+                    model,
+                    Jsonb(meta),
+                    Jsonb(spec.conditions) if spec.conditions is not None else None,
+                    spec.maturity,
+                    spec.method,
+                    spec.source_chunk,
+                    spec.source_url,
+                    spec.as_of,
+                    spec.notes,
+                ),
+            ).fetchone()
+        except psycopg.errors.CheckViolation as exc:
+            raise BadInput(
+                f"measure refused by the database: {exc.diag.message_primary}",
+                next="fix the field the check names; value_form is one of "
+                + ", ".join(sorted(MEASURE_VALUE_FORMS)),
+            ) from exc
         assert row is not None
         new_id = int(row[0])
         if spec.supersedes is not None:
