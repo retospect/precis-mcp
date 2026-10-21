@@ -32,11 +32,17 @@ moved, so a generic unmerge cannot reverse them anyway.
    it for unrelated papers) and pa42497->pa42939 (wrongly merged). Restore
    identifiers, chunks and links from the source PDFs and the dc1519359
    rows.
-2. Read-only sweep of the pa4249x range for the same pattern (merged pair
-   with disagreeing titles, years or first authors). List hits; no writes.
-3. Only if step 2 finds more than 2 further bad merges: record each merge
-   (absorbed ref's identifiers, moved chunk and link ids) going forward and
-   build `unmerge_duplicate` on that record.
+2. DONE (read-only sweep, 2026-10-21, gr501446): pa4249x range has 5 merged
+   pairs; 3 look wrong, 1 is the already-known pa42497->pa42939 pair above.
+   2 further bad merges found — pa42495->pa42940 and pa42498->pa44470 — at
+   or below the gate, so step 3 does not trigger. pa42498's merge came via
+   `reconcile-doi-case`, not the content-duplicate-stub path the title gate
+   (d3d8569ef) corroborates — flagged in gr501446 as a possible second gap,
+   not yet swept.
+3. Gate not tripped (2 further bad merges, not >2): no `unmerge_duplicate`
+   build from this sweep. pa42495 and pa42498 need the same by-hand repair
+   as step 1 (gr501446).
 
-Size: S (steps 1–2); M if step 3 triggers. Who: ops for 1–2, agent-code
-for 3.
+Size: S (steps 1–2, done except hand repair of the 2 new finds). Who: ops
+for 1–2 (including the 2 new finds), agent-code only if a future sweep of
+`reconcile-doi-case` merges turns up more than 2 further bad ones.
