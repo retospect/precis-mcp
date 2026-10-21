@@ -907,6 +907,39 @@ def boot(
 
     _gated(ProvenanceHandler)
 
+    # Git-worktree roots for the DB-free repo kinds (python and md):
+    # one parsed spec — PRECIS_PYTHON_WORKTREES / PRECIS_PYTHON_GITDIR_MAP
+    # describe the main checkout's worktree set, not a python-specific
+    # config — but one WorktreeRegistry per kind so each kind's lazy
+    # LRU/idle bookkeeping stays its own.
+    from precis.handlers._python_worktrees import (
+        WorktreeRegistry,
+        parse_gitdir_map,
+        parse_worktrees_spec,
+    )
+
+    wt_spec = parse_worktrees_spec(os.environ.get("PRECIS_PYTHON_WORKTREES"))
+    wt_gitdir_map = parse_gitdir_map(os.environ.get("PRECIS_PYTHON_GITDIR_MAP"))
+    try:
+        wt_max = int(os.environ.get("PRECIS_PYTHON_WORKTREE_MAX", "0"))
+    except ValueError:
+        wt_max = 0
+    try:
+        wt_idle_h = float(os.environ.get("PRECIS_PYTHON_WORKTREE_IDLE_HOURS", "24"))
+    except ValueError:
+        wt_idle_h = 24.0
+
+    def _worktree_registry() -> WorktreeRegistry | None:
+        if wt_spec is None:
+            return None
+        return WorktreeRegistry(
+            wt_spec[0],
+            wt_spec[1],
+            gitdir_map=wt_gitdir_map,
+            max_indexes=wt_max,
+            idle_ttl=wt_idle_h * 3600.0,
+        )
+
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
     # logs each rejection).
@@ -915,37 +948,7 @@ def boot(
 
         roots = parse_python_roots(python_roots)
         if roots:
-            from precis.handlers._python_worktrees import (
-                WorktreeRegistry,
-                parse_gitdir_map,
-                parse_worktrees_spec,
-            )
-
-            wt_spec = parse_worktrees_spec(os.environ.get("PRECIS_PYTHON_WORKTREES"))
-            try:
-                wt_max = int(os.environ.get("PRECIS_PYTHON_WORKTREE_MAX", "0"))
-            except ValueError:
-                wt_max = 0
-            try:
-                wt_idle_h = float(
-                    os.environ.get("PRECIS_PYTHON_WORKTREE_IDLE_HOURS", "24")
-                )
-            except ValueError:
-                wt_idle_h = 24.0
-            registry = (
-                WorktreeRegistry(
-                    wt_spec[0],
-                    wt_spec[1],
-                    gitdir_map=parse_gitdir_map(
-                        os.environ.get("PRECIS_PYTHON_GITDIR_MAP")
-                    ),
-                    max_indexes=wt_max,
-                    idle_ttl=wt_idle_h * 3600.0,
-                )
-                if wt_spec
-                else None
-            )
-            _gated(PythonHandler, roots=roots, worktrees=registry)
+            _gated(PythonHandler, roots=roots, worktrees=_worktree_registry())
         else:
             # Roots configured but every entry was malformed — same
             # deferred-kind treatment as markdown/plaintext/tex below.
@@ -975,7 +978,7 @@ def boot(
 
         roots = parse_md_roots(md_roots)
         if roots:
-            _gated(MdHandler, roots=roots)
+            _gated(MdHandler, roots=roots, worktrees=_worktree_registry())
         else:
             from precis.kind_gate import Loadability
 

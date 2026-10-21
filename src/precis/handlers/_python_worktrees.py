@@ -1,4 +1,7 @@
-"""Git-worktree discovery for the python kind (``PRECIS_PYTHON_WORKTREES``).
+"""Git-worktree discovery for the DB-free repo kinds
+(``PRECIS_PYTHON_WORKTREES`` — shared by ``python`` and ``md``, which
+each hold their own registry instance so LRU/idle bookkeeping stays
+per-kind).
 
 Source of truth is the main checkout's worktree registry:
 ``<main>/.git/worktrees/<id>/gitdir`` holds ``<host worktree path>/.git``

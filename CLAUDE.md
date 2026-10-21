@@ -126,8 +126,10 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   Repo prose the same way: the md kind (`get(kind='md',
   id='main/docs/backlog/<item>.md')` for the heading outline, `~<heading>`
   for one section, `search(kind='md', q=..., scope='main/docs/backlog')`)
-  before cat/grep on docs; roots are `main` (live main) and `repo` (the
-  image checkout), no worktree root. Skill `precis-md-help`.
+  before cat/grep on docs; roots are `main` (live main), `repo` (the
+  image checkout) and `wt-<tree name>` (the same read-only worktree
+  aliases as the python kind — Grep if the alias doesn't resolve).
+  Skill `precis-md-help`.
 - Product data (paper, quest, gripe, job, memory, finding) goes through the
   session MCP first (`get`/`search`, links, `extent='fisheye+1hop'`);
   `scripts/prod-psql` only when the MCP has no affordance for the question,

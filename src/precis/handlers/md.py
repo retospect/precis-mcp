@@ -36,6 +36,14 @@ not overridden: :class:`precis.protocol.Handler`'s defaults raise
 ``Unsupported`` for any verb a ``KindSpec`` doesn't declare, and this
 kind's ``KindSpec`` declares only ``get``/``search`` — repo docs are
 edited as files, not through this read-only index.
+
+Worktree roots: when the server wires a
+:class:`precis.handlers._python_worktrees.WorktreeRegistry` (the
+``PRECIS_PYTHON_WORKTREES`` spec is shared with the ``python`` kind),
+every git-registered worktree of the main checkout resolves as a
+``wt-<tree>`` alias — discovered live, indexed lazily, never part of
+the default search fan-out (name one via ``scope=``), and read-only
+like the rest of the kind.
 """
 
 from __future__ import annotations
@@ -51,6 +59,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.handlers._roots import parse_alias_roots
 from precis.md_index import (
     MdBlockEntry,
@@ -182,6 +191,7 @@ class MdHandler(Handler):
         roots: dict[str, Path],
         cache: MdRepoCache | None = None,
         vector_cache: MdVectorCache | None = None,
+        worktrees: WorktreeRegistry | None = None,
     ) -> None:
         if not isinstance(roots, dict):
             raise TypeError("roots must be a dict[str, Path]")
@@ -198,6 +208,7 @@ class MdHandler(Handler):
             resolved[alias] = p
         self.roots = resolved
         self.cache = cache or MdRepoCache()
+        self.worktrees = worktrees
 
         # Installed by ``server._warm_md_index_background`` when it owns
         # this handler's warm pass; stays ``None`` under the CLI and in
@@ -301,7 +312,7 @@ class MdHandler(Handler):
         find_preflight(kind="md", id=id, view=view, q=q)
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
-        idx = self.cache.get(root)
+        idx = self._index(parsed.alias, root)
         if parsed.file is None:
             raise BadInput(
                 "q= (find-in-ref) needs a file, not a whole md root",
@@ -354,7 +365,7 @@ class MdHandler(Handler):
 
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
-        idx = self.cache.get(root)
+        idx = self._index(parsed.alias, root)
 
         if view is not None and view not in _SUPPORTED_VIEWS:
             raise Unsupported(
@@ -437,7 +448,7 @@ class MdHandler(Handler):
         indexed_blocks = 0
 
         for alias, root in roots.items():
-            idx = self.cache.get(root)
+            idx = self._index(alias, root)
 
             lex_hits = _filter_scope(search_blocks(idx, q), scope_prefix)
             sem_hits: list[tuple[float, str, MdBlockEntry]] = []
@@ -486,23 +497,61 @@ class MdHandler(Handler):
 
     # ── helpers ────────────────────────────────────────────────────
 
-    def _resolve_alias(self, alias: str) -> Path:
-        if alias not in self.roots:
+    def _worktree_listing(self) -> dict[str, Path]:
+        if self.worktrees is None:
+            return {}
+        listing, gone = self.worktrees.listing()
+        for path in gone:
+            self.cache.drop(path)
+        return {a: w.path for a, w in listing.items()}
+
+    def _index(self, alias: str, root: Path) -> MdRepoIndex:
+        try:
+            idx = self.cache.get(root)
+        except OSError as exc:
             raise NotFound(
-                f"unknown md root alias {alias!r}",
-                options=list(self.roots),
-                next="get(kind='md') to list configured roots",
+                f"md root {alias!r} unavailable: {root}; index freshness "
+                f"unknown ({type(exc).__name__})",
+                next="get(kind='md') to inspect configured roots",
+            ) from exc
+        if self.worktrees is not None and alias not in self.roots:
+            for gone in self.worktrees.touch(alias, root):
+                self.cache.drop(gone)
+        return idx
+
+    def _resolve_alias(self, alias: str) -> Path:
+        if alias in self.roots:
+            return self.roots[alias]
+        wts = self._worktree_listing()
+        if alias in wts:
+            return wts[alias]
+        if self.worktrees is not None and self.worktrees.owns(alias):
+            raise NotFound(
+                f"worktree {alias!r} not configured: its directory does not "
+                f"exist (or is not a registered git worktree under the "
+                f"mapped prefix)",
+                options=[*self.roots, *wts],
+                next="Grep/Read in your own tree, or get(kind='md') to list roots",
             )
-        return self.roots[alias]
+        raise NotFound(
+            f"unknown md root alias {alias!r}",
+            options=list(self.roots),
+            next="get(kind='md') to list configured roots",
+        )
 
     def _roots_for_scope(self, scope: str | None) -> dict[str, Path]:
-        """Return the ``{alias: root}`` subset matching a search scope."""
+        """Return the ``{alias: root}`` subset matching a search scope.
+
+        No scope fans out over static roots only; worktree aliases are
+        searched only when named explicitly (they mostly duplicate main).
+        """
         if scope is None:
             return self.roots
         alias = scope.split("/", 1)[0] if "/" in scope else scope
-        if alias not in self.roots:
-            return {}
-        return {alias: self.roots[alias]}
+        if alias in self.roots:
+            return {alias: self.roots[alias]}
+        wts = self._worktree_listing()
+        return {alias: wts[alias]} if alias in wts else {}
 
     def _rearm_warmup_if_cold(self) -> None:
         """Nudge the background warm pass; never affect this response.

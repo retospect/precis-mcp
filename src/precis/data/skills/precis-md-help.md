@@ -38,6 +38,17 @@ heading plus everything nested under it, up to the next heading of
 equal or higher rank — match by exact slug or by title text
 (case-insensitive).
 
+Worktree aliases: when the server has `PRECIS_PYTHON_WORKTREES` (the
+worktree spec is shared with the python kind), every git worktree of
+the main checkout is a root `wt-<tree name>` (e.g.
+`wt-chat/docs/guide.md`), discovered live (about 5 s lag), no
+restart. Read-only like the rest of the kind, indexed lazily on first
+query, and dropped after 24 h idle
+(`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or when the tree is removed.
+They are NOT in the default cross-root search; name one with
+`scope='wt-x'` or `scope='wt-x/docs/backlog'`. If the alias does not
+resolve, fall back to Grep/Read.
+
 ## Search workspace prose by topic
 
 ```python
