@@ -4,7 +4,9 @@ extraction pass (docs/backlog/measures-substrate.md, "Next slice").
 ``survey_extract`` walks one paper's chunks in slices. Each live chunk
 is rendered with ``[n]`` anchors (:mod:`precis.extract.anchors`),
 prompted to the local model on the served-OSS lane (``placement=
-"local"``, ``Tier.BIG`` — the local reader on castor), and the reply is
+"local"``, ``Tier.BIG`` — the local reader on castor; the chain is the
+steerable ``llm.op.survey_extract`` op, and the dispatch refuses up
+front when no chain rung can satisfy the placement), and the reply is
 turned into checked runs by :func:`precis.extract.proposals.build_runs`.
 Good runs land through ``store.insert_measure`` with
 ``meta.extraction_run`` — the batch token the acceptance step samples
@@ -41,6 +43,7 @@ from precis.utils.env import env_int
 from precis.utils.llm.router import (
     LlmRequest,
     Tier,
+    placement_refusal,
     resolve_model,
     route,
     tier_from_str,
@@ -416,6 +419,24 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     min_chars = _min_chars(params)
     tier = tier_from_str(params.get("tier") or "big", default=Tier.BIG)
     model_pin = params.get("model") if isinstance(params.get("model"), str) else None
+    refusal = placement_refusal(
+        LlmRequest(
+            tier=tier,
+            source="survey_extract",
+            ref_id=paper,
+            model=model_pin,
+            placement=None if model_pin else "local",
+        )
+    )
+    if refusal is not None:
+        return Done(
+            summary=(
+                f"survey_extract: {refusal} — steer it with an "
+                "llm.op.survey_extract row (`precis llm op set "
+                "survey_extract --local <model>`) or pin params.model"
+            ),
+            success=False,
+        )
     title = _paper_title(ctx.store, paper)
     vocab = _vocab(ctx.store, _measurand_root(ctx.store, params.get("measurand_root")))
 

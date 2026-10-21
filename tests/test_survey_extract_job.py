@@ -17,6 +17,7 @@ import pytest
 
 from precis.store import Migrator, Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.utils.llm.router import Rung, Transport
 from precis.workers.executors._yield import Yield
 from precis.workers.job_types import survey_extract as job
 from tests.extract_helpers import (
@@ -50,6 +51,16 @@ def _extract_meta(world: dict, **extra: Any) -> dict[str, Any]:
 
 
 class TestSurveyExtractDispatch:
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Run every dispatch on a chain that satisfies the reader's
+        placement='local' ask — the dispatch preflights resolve_chain
+        (gr502793) and the default BIG chain is cloud-only."""
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
     def test_end_to_end_on_a_fixture_paper(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -122,6 +133,48 @@ class TestSurveyExtractDispatch:
         assert done.success
         assert not store.measures_for(world["paper"], include_superseded=True)
         assert "dropped=3" in done.summary
+
+    def test_no_local_rung_refuses_up_front(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr502793 (3): a chain with no rung satisfying the job's
+        placement='local' ask fails the dispatch before chunk 1 — jo496639
+        instead logged the same router error on all 99 chunks and still
+        finished 'succeeded'."""
+        store = world["store"]
+        calls: list[Any] = []
+
+        def _record(req: Any) -> Any:
+            calls.append(req)
+            return llm_result("{}")
+
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.CLAUDE_P, model="claude-x")],
+        )
+        monkeypatch.setattr(job, "route", _record)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert not done.success
+        assert "the big chain has no local rung" in done.summary
+        assert "llm.op.survey_extract" in done.summary
+        assert calls == []
+
+    def test_op_chain_local_rung_lets_the_job_run(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The llm.op.survey_extract chain override (e.g. castor's local
+        gpt-oss-120b) satisfies the placement='local' ask, so the dispatch
+        proceeds."""
+        store = world["store"]
+        monkeypatch.setattr(
+            "precis.utils.llm.operations.resolve_op_chain",
+            lambda *a, **k: [
+                Rung(Transport.LOCAL, model="openai/gpt-oss-120b", label="local")
+            ],
+        )
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
 
     def test_accept_child_is_spawned(
         self, world: dict, monkeypatch: pytest.MonkeyPatch

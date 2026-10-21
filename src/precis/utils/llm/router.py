@@ -2085,6 +2085,54 @@ def _served_local_rung(req: LlmRequest) -> list[Rung]:
     return [Rung(transport, label="local")]
 
 
+def placement_refusal(req: LlmRequest) -> str | None:
+    """The error :func:`route` would return at ``req``'s placement gate,
+    without dispatching — a caller's up-front fail-closed check
+    (``survey_extract`` refuses the whole paper here rather than logging
+    the same "no local rung" error once per chunk, gr502793).
+
+    Mirrors the resolution prefix of :func:`route`: backend → the op's
+    tier remap and ``chain`` override for a registered ``req.source`` →
+    the tier chain → :func:`_apply_placement` with the
+    :func:`_served_local_rung` escape — so the reason it returns is the
+    same sentence the per-call error result would carry. ``None`` when a
+    rung survives (or ``req.placement`` is unset/unrecognised). A
+    chain-resolution raise (a malformed ``PRECIS_LLM_CHAIN_*`` env var)
+    returns its message — also a refusal reason.
+    """
+    backend = resolve_backend()
+    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
+        backend = Backend.ANTHROPIC
+    from precis.utils.llm import operations as _operations
+
+    op = _operations.resolve_op(req.source) if req.source else None
+    if op is not None:
+        req = _replace(req, tier=op[0])
+    op_chain = (
+        _operations.resolve_op_chain(
+            req.source, tools_needed=req.tools_needed, backend=backend
+        )
+        if req.source
+        else None
+    )
+    try:
+        ladder = op_chain or resolve_chain(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+    except Exception as exc:
+        return str(exc)
+    chain_name = f"llm.op.{req.source} chain" if op_chain else f"{req.tier.value} chain"
+    placed = _apply_placement(ladder, req.placement) or (
+        _served_local_rung(req) if ladder else []
+    )
+    if ladder and not placed:
+        return (
+            f"placement={req.placement!r} requested but the {chain_name} "
+            f"has no {req.placement} rung"
+        )
+    return None
+
+
 #: ``SMALL`` (categorizer) model ids that only mean something on the local
 #: loopback (the ``summarizer`` alias and the ``rake-lemma`` name it resolves
 #: to) — POSTing either to a hosted OSS backend 400s, since the hosted side
