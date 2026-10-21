@@ -323,7 +323,13 @@ def test_export_job_reports_preflight_as_first_stage(
                 first = stage
                 break
             time.sleep(0.02)
-        assert first is not None and first.startswith("preflight")
+        # The preflight reports its own first sub-stage at once, so on a
+        # loaded runner the poll can land on that instead of the job's
+        # "preflight" label; both are the preflight stage.
+        assert first is not None and (
+            first.startswith("preflight")
+            or first == "checking cited papers for retractions"
+        )
     finally:
         release.set()
     assert _wait(client, f"/drafts/asyncd/export/status/{tok}")["state"] == "done"
