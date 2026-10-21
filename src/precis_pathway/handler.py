@@ -872,17 +872,25 @@ class PathwayHandler(Handler):
             # the structure the pathway ran on wins over another linked one
             if maps and (point_map is None or int(s.id) == cand):
                 point_map = (int(s.id), maps[0], smeta)
+            # gr491459: what the sweep left out (detached anchors, unpooled
+            # models) rides the resting line — the anchor count alone
+            # reads as a clean result.
+            dropped: list[str] = []
             for m in maps:
-                region = sq.resting_region(m, u)
-                if region is not None:
-                    resting = str(region.get("label") or "?")
-                    break
+                for note in m.get("dropped") or []:
+                    if note not in dropped:
+                        dropped.append(str(note))
+                if resting is None:
+                    region = sq.resting_region(m, u)
+                    if region is not None:
+                        resting = str(region.get("label") or "?")
             structures.append(
                 {
                     "handle": handle,
                     "resting": resting,
                     "assumed": sq.assumed_label(coads),
                     "mismatch": sq.mismatch(region, coads, u=u, label=resting),
+                    "dropped": dropped,
                 }
             )
         states = None

@@ -478,6 +478,45 @@ def test_pathway_staircase_names_the_resting_surface_and_mismatch(
     assert "coads mismatch" in body
 
 
+def test_pathway_staircase_names_the_sweeps_dropped_anchors(
+    store: Store, hub: Hub
+) -> None:
+    """gr491459: the sweep's dropped detached configurations ride the
+    resting-surface context — a reader of "starts from H*" sees that
+    NOH/NH2 left the comparison, not just a smaller anchor count."""
+    st = _structure(store, hub, "pd_drop")
+    pw = _pathway(store, _results(), "pw_drop")
+    store.add_link(
+        src_ref_id=st.id, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    sweep = sp.sweep(
+        {"m": _payload("m")}, u_window=(-0.5, 0.5), grid=21, sigma_e_ev=0.05
+    )
+    sweep["skipped_detached"] = [
+        {"model": "m", "adsorbate": "NOH", "n": 9},
+        {"model": "m", "adsorbate": "NH2", "n": 9},
+    ]
+    _scan_job(store, st.id, sweep)
+    h = _handler(hub)
+    body = h.get(id="pw_drop", view="staircase").body
+    assert "staircase starts from H* at 0.25 ML" in body
+    assert "2 detached configuration(s) dropped" in body
+    assert "NOH*(9) on m" in body and "NH2*(9) on m" in body
+    # a sweep that dropped nothing shows no dropped line
+    st2 = _structure(store, hub, "pd_keep")
+    pw2 = _pathway(store, _results(), "pw_keep")
+    store.add_link(
+        src_ref_id=st2.id, dst_ref_id=pw2.id, relation="related-to", set_by="system"
+    )
+    _scan_job(
+        store,
+        st2.id,
+        sp.sweep({"m": _payload("m")}, u_window=(-0.5, 0.5), grid=21, sigma_e_ev=0.05),
+    )
+    body = h.get(id="pw_keep", view="staircase").body
+    assert "dropped" not in body
+
+
 def test_structure_staircase_view_picks_the_best_linked_pathway(
     store: Store, hub: Hub
 ) -> None:

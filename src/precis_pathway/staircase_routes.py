@@ -365,10 +365,10 @@ def render_staircase(
     """The staircase at one potential, agent-readable text.
 
     ``structures`` — optional per-structure resting context (the §7.2
-    map → staircase link): each ``{handle, resting, assumed, mismatch}``
-    row is the map's resting termination at ``u_rhe`` plus the coads
-    verdict, computed by the caller (the plugin-side helper or
-    :mod:`precis.quest.staircase`).
+    map → staircase link): each ``{handle, resting, assumed, mismatch,
+    dropped}`` row is the map's resting termination at ``u_rhe``, the
+    coads verdict and what the sweep left out (gr491459), computed by
+    the caller (the plugin-side helper or :mod:`precis.quest.staircase`).
 
     ``states`` — the picked point's verdict
     (:func:`~precis_pathway.staircase_states.point_states`, gr489471):
@@ -409,6 +409,8 @@ def render_staircase(
             lines.append(f"{s['handle']}: no resting map — starting surface unknown")
         if s.get("mismatch"):
             lines.append(s["mismatch"])
+        for note in s.get("dropped") or []:
+            lines.append(f"{s.get('handle') or '?'}: {note}.")
 
     results = results or {}
     dag_ul = _num(results.get("U_L"))
