@@ -18,6 +18,267 @@ as they stand are not comparable or graphable; this item is the comparable
 layer. The survey paper that consumes it is December at the earliest and
 probably later (the manual-check volume in the sign-off question below).
 
+## Reconciliation with what shipped (2026-10-21)
+
+The port landed as `src/precis/extract/` (anchors, verify, proposals,
+prompt, accept) plus the `survey_extract` and `measure_accept`
+coordinator jobs (`workers/job_types/survey_extract.py`); build notes
+are in [measures-substrate](measures-substrate.md) §"Next slice". The
+shipped shape differs from the pilot in one way that settles several
+items below: there is no binding document. The local reader sees one
+chunk at a time and its reply is checked and written in the same call,
+and the stored evidence is raw `[chunk, start, end]` offsets on an
+append-only chunk, so a later splitter change cannot re-point a stored
+row.
+
+| item | state | where |
+|---|---|---|
+| 1 anchor scheme | shipped; the "no scheme declared" guard is moot (no documents) | `extract/anchors.py::ANCHOR_SCHEME` = 2, stamped on `meta.anchor_scheme` |
+| 2 condition role | shipped | input rows carry `role` context/preparation/model; the keyword guard became the registry's `required_conditions` |
+| 3 group condition sets | open | slice T2 below |
+| 4 escalation severity | replaced | see "Escalations" below |
+| 5 sub-sentence anchors | moot | evidence is the sentence span; `verify.literal_supported` proves `550–575` is a complete numeric region inside it; no `sub_sentence_span` check was ported |
+| 5 recipe overrides, units in a column | open | slice T1 below |
+| 5b categorical rows | shipped | `value_form='categorical'`, verbatim-only check |
+| 6 unattributed | shipped | `source_attribution='not_established'` + `tier='asserted'`; NULL tier = could not establish |
+| 6 intra-paper conflict | decided: no `contradicts` relation | the deterministic numeric rule (knowledge-mesh §3, gardener-value slice 5(b)) writes `disputes` with `meta.scope='intra-paper'`; adjudication stays on the nanopub path |
+| 6 author-declared non-reproducibility | open, small | `meta.source_caveat` exists on the row shape; the reader contract has no field for it |
+| 7 three small bugs | shipped | `eb5f64103`, `f4df6bcb8`, `377bc418d` |
+| 8 port with seams | shipped | library pure, worker owns DB + LLM, no MCP verb |
+
+**What has run on prod.** One `survey_extract` (job 496639, pa1866,
+2026-10-18): 99 of 99 chunk calls failed with "placement='local'
+requested but the big chain has no local rung", 0 rows written; its
+`measure_accept` child (496669) failed on an empty batch. The up-front
+placement refusal and the zero-write failure line have landed since.
+No extracted row exists on prod (`measures` with `meta.extraction_run`:
+0 of 239 live output rows, 2026-10-21).
+
+**New verified bug.** `proposals.build_runs` accepts
+`value_form` ∈ {point, interval, upper, lower, boolean, categorical,
+not_established}, but `measures_value_form_check` allows `upper_bound`/
+`lower_bound`, not `upper`/`lower`. A reply carrying `"upper"` reaches
+`insert_measure`, raises a check violation (not `BadInput`), and
+`_process_chunk` catches only `BadInput`, so the slice crashes. A
+reader-supplied `point` also overrides the store's own parse of `<1`.
+Fix: drop reader `value_form` except `categorical` (the prompt already
+offers only `categorical | null`) and let `parse_literal` decide; test
+with a `"upper"` reply.
+
+### Wilson batch acceptance, as built, and three findings
+
+As built: a batch is one `(paper, extraction_run)`; strata are
+measurands within that paper; 60 rows sampled
+(`accept.DEFAULT_SAMPLE`); the frontier tier judges each sampled row
+against its anchored sentence; `wrong` and `undecidable` both count as
+errors; the batch is accepted when the one-sided Wilson upper bound
+(z = 1.645) is at or under 0.05. The verdict lands on the accept job's
+`meta.acceptance`; sampled rows get a `reviews` row.
+
+1. **A per-paper batch almost never passes.** With zero errors the
+   upper bound is z²/(n+z²), which first reaches 0.05 at n = 52
+   (`test_zero_errors_at_n_52_passes_the_bar`). Prod holds 239 live
+   output rows over 53 subjects (about 4.5 per subject); the qu202467
+   pilot wrote 122 runs over 14 papers. A typical paper yields fewer
+   than 52 rows, so every batch fails however good the rows are.
+   **Recommendation:** the batch is the run token, not the paper.
+   `survey_extract` already takes `params.run_token`; give a trial or a
+   filler window one token across many papers, make `measure_accept`'s
+   `paper` optional when `extraction_run` is given, and stratify by
+   paper × measurand, which is what the 2026-10-14 ruling says.
+2. **Acceptance marks no row.** Nothing reads `meta.acceptance`, so an
+   accepted batch and a failed one look the same to `best_measure` and
+   to any mesh pass. Row `meta` cannot carry it: `measures` is
+   append-only and `precis_measures_frozen` (0187) freezes `meta`.
+   **Recommendation:** no row write. A store read
+   `accepted_runs(tokens)` maps an `extraction_run` token to the
+   latest finished `measure_accept` job's `meta.acceptance` for that
+   token; mesh stages (gardener-value slice 5 (b)–(d)) and promotion
+   (T3) read rows whose token is accepted, and `best_measure` gains an
+   `accepted_only` flag (default off, so the pilot's hand-written rows
+   still read). Rows the sampler judged `wrong` are superseded on
+   re-extraction.
+3. **The sampler sees one sentence.** A condition stated in the next
+   sentence or in Methods reads `undecidable`, which counts as an error,
+   so the bar measures span width as much as extraction quality.
+   **Recommendation:** send the whole chunk with the anchored span
+   marked, plus each input row's own span; the verdict gains `class` ∈
+   {wrong_number, wrong_measurand, missing_condition, wrong_unit,
+   bad_anchor, other}. These are the failure classes gardener-value
+   slice 5's trial reads.
+
+### Escalations
+
+Item 4's motivating noise (`inferred_condition_basis`, 62 % of the
+pilot's escalations) came from the binding format's per-result
+applicability basis, which the port does not have. What escalates now
+is drops (`unknown_measurand`, `unresolvable_anchor`,
+`literal_not_in_span`, `bad_shape`), flags
+(`unit_without_text_support`, the store's `implausible_value` and
+`glyph_suspected`), and LLM errors, capped at 200 per job in the job
+summary. A severity rank is not needed. What is needed is a count per
+drop reason in the job's `summary_meta`, so a trial can be read without
+paging through 200 lines. It is a small change, part of slice T1.
+
+### Castor trial results (gardener-value slice 5) — HOOK
+
+> **Pending.** The coordinator will paste the castor `survey_extract`
+> trial (about 100 jobs over held full-text papers of active quests)
+> here: rows written per paper, drops by reason, acceptance per batch,
+> and the Opus failure classes. Use it to decide (a) whether T1 or the
+> prose-path fixes (findings 1–3 above, the `value_form` bug) come
+> first, (b) whether tables are where castor's errors are (then T1
+> before T2), and (c) the `sample_n`/bar for filler batches. Until it
+> lands, the order below is a default, not a ruling.
+
+## Slice T — tables to structured measures and subject refs
+
+Prod holds 124,257 live `table` chunks on papers, 114,410 of them
+pipe-delimited (2026-10-21); median 4 lines, p90 11, p99 21. Today the
+reader emits one JSON result per cell under `max_tokens=2048`, so a
+table of 10 rows × 3 value columns costs about 30 results and truncates.
+The pilot's answer, a recipe the materializer expands, is ported here.
+Ingest stores tables as pipe text only, with no column metadata, and
+the splitter already makes each pipe row its own sentence
+(`anchors.SENTENCE_BREAK`'s `(?<=\|)\n(?=\|)`), so a row has an anchor.
+
+### T1 — table recipes, with units in a column
+
+For a chunk with `chunk_kind='table'` the reader prompt switches to a
+recipe contract (one reply per table chunk):
+
+```json
+{"table": {
+  "header_row": 0,
+  "subject_column": 0,
+  "group": "Table 2",
+  "conditions": [{"condition": "electrolyte", "measurand": "<slug>",
+                  "literal": "0.1 M KOH", "role": "context",
+                  "anchor": "<sentence in this chunk, or null>"}],
+  "columns": [
+    {"column": 2, "measurand": "<slug>", "unit": "mV", "role": "output"},
+    {"column": 3, "measurand": "<slug>", "unit_column": 4, "role": "output"},
+    {"column": 1, "measurand": "<slug>", "unit": "°C", "role": "input",
+     "condition": "temperature"}
+  ],
+  "skip_cells": ["3:2"],
+  "overrides": {"5:3": {"measurand_status": "ambiguous"}}
+}}
+```
+
+A new pure module `src/precis/extract/recipes.py` expands it:
+
+- parse the pipe table: rows are the chunk's sentence spans; drop the
+  separator row; every data row must have the header's cell count, or
+  the whole table drops with reason `ragged_table` (the pilot's
+  collapsed-OCR case stays a drop, never a guess);
+- one output run per non-empty data cell of each `role: "output"`
+  column; skipped cells are empty, `-`, `—`, `n/a`, and `skip_cells`;
+- `literal` = the exact cell text; `value_form` comes from the store's
+  `parse_literal` (`<1` → `upper_bound`, `9.6 ± 1.7` → point + err,
+  `550–575` → interval), never from the reader;
+- `subject` = the row's `subject_column` cell; `subject_group` =
+  `group`;
+- unit: the column's `unit`, or the same row's cell in `unit_column`;
+  the unit must be spelled in the header cell or the unit cell, else
+  flag `unit_without_text_support` (the column header is the support,
+  as in the pilot);
+- `role: "input"` columns become input rows of every output run in the
+  same row; `conditions` become input rows of every run in the table
+  (this is the group-level set for tables);
+- `overrides` patch one cell's fields; an override can change
+  `measurand`, `measurand_status`, `reference`, `normalization`,
+  `unit`, never `literal`;
+- evidence: the output's anchor is the row span; `meta.table = {chunk,
+  row, column, header}` records the cell for the sampler.
+
+Every expanded run goes through the same `literal_supported` check
+against its row span and lands through `insert_measure` unchanged. The
+reply costs O(columns), not O(cells).
+
+**Escalation counts.** The job's `summary_meta` gains
+`drops_by_reason` and `flags_by_kind`.
+
+### T2 — group condition sets for prose results
+
+The prose reply gains a top-level `"groups": {"G1": {"inputs": [...]}}`;
+a result naming `"group": "G1"` inherits those inputs, and its own
+`inputs` override by condition name. Storage does not change: each run
+still carries its own input rows (the comparison and `best_measure`
+read per run). The compression is in the reply, so its size is linear
+in conditions plus results, not their product. `meta.condition_set =
+"G1"` on the input rows keeps the provenance.
+
+### T3 — promote paper-local subjects to material refs
+
+`measures.subject` is a paper-local label ("PdCoP-2", "Cu(111) with
+O-vacancy"); `subject_ref_id` is the paper. Promotion gives a label a
+ref, so rows from several papers about one catalyst become one
+`material`'s rows.
+
+- **When:** after a batch is accepted (finding 2 above), per
+  `(paper, subject label)` with at least one `measured` or `computed`
+  row.
+- **Resolve, deterministic first:** exact match of the normalized label
+  against a live `material` ref's slug, title or `meta.aliases`
+  (`material_entity_upsert` dedups on slug; `_material_ops` has a
+  lexical name/alias matcher). One hit → that ref. No hit or several →
+  a gardener-ledger proposal (`action='promote'`, payload `{paper,
+  label, candidates, measure_ids}`), structural, never a direct write;
+  castor may draft the material title and aliases, Opus reviews per
+  the gardener rulings.
+- **Write:** the promoted row is a new `measures` row with
+  `subject_ref_id` = the material, the same literal, measurand, inputs
+  and primary evidence link, and `supersedes` = the paper row. Today
+  `insert_measure` refuses a supersede across subjects (the target must
+  share `subject_ref_id`); T3 allows exactly one crossing: paper →
+  material/structure, same measurand, literal and span. The paper stays
+  reachable through the evidence link's chunk, so nothing about
+  provenance is lost and `best_measure` never counts the value twice.
+- **Structures:** never minted from text. A `structure` ref needs a
+  scene (`structure_save`), which a paper does not give. A row is
+  promoted to a structure only when the label names an existing
+  structure ref (by handle or exact alias) — the catpath quest's
+  slabs. A `computed` row with no matching structure promotes to a
+  material like any other.
+- **Cross-paper identity** stays out of scope here (Explicitly NOT in
+  scope, below); two papers' labels meet only when both resolve to the
+  same existing material, or later through the gardener's merge path.
+
+### Acceptance criteria (slice T)
+
+1. A fixture table chunk with a header, 5 data rows, two output columns
+   (one with `12.3` and `<1`), a unit column and one input column
+   expands to 10 output runs; their `value_form`s differ for `12.3` and
+   `<1`; the unit-column rows have non-null `reported_unit`; each run
+   carries the row's input and the table-level condition.
+2. A ragged table (one row with a missing cell) drops whole with
+   `ragged_table`; a recipe naming an unknown measurand drops that
+   column only.
+3. A prose reply with one group of 3 inputs and 4 results writes 4 runs
+   with 3 inputs each; one result overriding one input by name changes
+   only that run; the reply fixture is linear in size.
+4. A reply with `"value_form": "upper"` is written (or dropped with a
+   recorded reason), never raises; `<1` lands `upper_bound`.
+5. `measure_accept` with `extraction_run` and no `paper` samples across
+   papers, stratified by paper × measurand, and a 60-row all-correct
+   batch spanning 6 papers is accepted.
+6. `accepted_runs` reports an accepted and a failed token correctly and
+   `best_measure(accepted_only=True)` skips the failed token's rows; a
+   promotion run on a fixture with
+   one label matching a material alias writes a superseding row on the
+   material, the paper row is superseded, and `best_measure` for the
+   quest returns the value once; an unmatched label yields one ledger
+   proposal and no write.
+7. `summary_meta.drops_by_reason` counts match the escalation list.
+
+Target: `src/precis/extract/{recipes,proposals,prompt,accept}.py`,
+`workers/job_types/survey_extract.py`, `store/_measures_ops.py`
+(`insert_measure` cross-subject supersede, `accepted_runs`,
+`best_measure(accepted_only=)`),
+`graph/garden/` (`promote` action), skill `precis-measure-help`. No
+migration.
+
 ## Source-bound quantitative extraction — bind anchors, materialize records
 
 _Grouped 2026-09-26; was `source-bound-quantitative-extraction`, status draft, prio normal._
@@ -74,106 +335,19 @@ feature gap.
 
 ### In scope
 
-**1. Version the anchor scheme (correctness — do this first).**
-Anchor ids are positional: `c.n` means "the n-th sentence span of chunk c". They
-are only meaningful under the splitter that produced them. Changing the splitter
-re-points existing anchors at *different source text* while the source
-fingerprint still matches, so nothing catches it. Measured on the three pilot
-documents, a one-line splitter improvement silently re-pointed **35 of 222
-anchors (16%)** to different text and hard-failed another 18. The pilot now
-carries `ANCHOR_SCHEME`, emits it on maps and binding documents, and refuses to
-materialize a document whose declared scheme differs — **or that declares none
-at all**, since an unstamped document has no provenance for its anchors and
-defaulting it to the current scheme would assume exactly what the guard checks.
-(The first cut of this guard got that wrong and failed open on a missing field;
-review caught it.) Port the guard, fail closed on absence, and treat the scheme
-constant as append-only.
+Items 1, 2, 5b, 7 and 8 shipped and item 4 was replaced; see the
+reconciliation table at the top. What is left of the original list:
 
-**2. Give conditions an explicit role (`operating` | `preparation` | `model`).**
-Today the distinction survives only inside a free-text condition *name*, and the
-"is a temperature visible?" guard is a keyword match over that name. Both
-consequences were observed: one reader named a condition "post-laser heat
-treatment", the guard saw no temperature and let it through; renaming it to
-contain the word "temperature" made it fire. A second reader worked out that
-attaching its 80 °C PET-hydrolysis pre-treatment would have *silently satisfied*
-the guard and suppressed the true "no operating temperature stated" signal — so
-it left a real condition unattached and filed a gap instead, losing information
-to stay honest. The guard is unsound as built; a role field makes it decidable.
-
-**3. Group-level condition sets with per-result exceptions.**
-A condition item is (condition, basis, applicability-evidence), so giving every
-result its own applicability basis is quadratic: 31 conditions became 224 items
-on one paper, 46 became 146 on another. Both readers independently proposed the
-same fix, and one noted the rule as written ("every result selects its own
-conditions with its own applicability basis") is *not reachable* through a table
-recipe at all. Inherit a condition set at group level, override per result, same
-mechanism as `defaults.results`.
-
-**4. Rank escalations; stop drowning the auditor.**
-503 escalations over four papers, of which 312 (62%) are `inferred_condition_basis`
-almost all saying "Methods states the electrolyte, the result does not restate
-it" — ordinary paper structure, indistinguishable in the output from a genuinely
-shaky inference. A further 25 are a single matcher bug (item 7) and 11 are the
-unavoidable interval spans of item 5, so well over two thirds of what an auditor
-would read is noise. Item 3 removes most of it structurally; the rest needs a
-severity so a strong-model audit has an order to work in. A related blind spot:
-where a condition is *defined and applied in the same clause* ("below 200 °C"),
-its applicability evidence necessarily repeats its definition, and the
-`applicability_not_shown_for_this_result` check cannot tell that apart from
-genuinely unsupported applicability.
-
-**5. Sub-sentence anchor granularity, and recipe per-row overrides.**
-Two faces of one gap: the anchor vocabulary cannot address a fragment, so an
-exact interval literal (`550–575`, `125~150`, `80~400`) can only be bound with
-raw `[chunk, start, end]` offsets — which the `sub_sentence_span` check then
-flags. All 11 offset spans and all 11 such flags in the round are this, and none
-is avoidable without cropping the value. **The check currently penalises the only
-correct encoding.** Add a fragment anchor (a numeric-region span that can cover a
-range expression, or an explicit sub-sentence id) so intervals are anchorable.
-Then, on recipes: a recipe fixes one field block per column, so cells that differ
-mechanically leak back to hand-writing — six `<1` upper-bound cells had to be
-lifted out purely to change `value_form`. Add per-row overrides, and let the
-materializer set `value_form: upper_bound` when a cell literal begins `<`. A
-`listed` recipe also cannot bind `9.6 ± 1.7`, because numeric anchors are single
-atoms, so recipes work on un-replicated data and fail on replicated data, which
-is backwards. Finally, a table recipe binds one unit per column, so a table that
-carries its units in a *third column* materializes its results with
-`reported_unit: null`.
-
-**5b. `reported_value` is numeric-only, which silently drops categorical rows.**
-A spec table whose rows are "Pd", "γ-Al2O3, Ce0.5Zr0.5O2", "Cordierite" cannot
-produce results at all; one reader could only preserve them as prose inside an
-assertion's limitations, which is not queryable. Either admit a categorical
-value form or define where non-numeric sourced facts live — right now they are
-lost by construction, quietly.
-
-**6. A `contradicts` relation, and a way to say "stated but unattributed".**
-Nine intra-paper conflicts were found across two papers (150 vs 200 mg;
-`7381.1 ± 59.5` vs `± 594.7` for the same quantity; three incompatible
-definitions of "activity"). All had to be flattened into prose `gaps` with no
-link to the results they qualify. One reader also could not record that the
-authors *themselves* declare their electrochemical results non-reproducible —
-that is a source-stated reliability claim, not an uncertainty and not a gap in
-our reading. A third case: two activation energies (95 and 77.6 kJ/mol) are
-stated with no citation and no method, and the only available encoding is
-`not_established` on all three of evidence_mode / value_generation /
-source_attribution — which *understates* what is known, namely that the number
-is asserted by this paper and unattributed. "Unattributed assertion" is a
-distinct epistemic state from "we could not establish it".
-
-**7. Small verified bugs.** `expansion_directory` is built from a hardcoded path
-that ignores the map label (`bindings.py`). The sentence splitter breaks after
-`ca.`, `Fig.`, `satd.`, inflating anchor counts and forcing runs — fix under a
-new anchor scheme, never in place. `pilot.unit_has_text_support` false-negatives
-a `%` unit when the source glues it to a word (`X% NO3`): its letter-lookaround
-is right for `mA`, wrong for `%`. That one matcher produced all 25
-`unit_without_text_support` escalations on one paper.
-
-**8. Port to `src/precis/` with the right seams.** Map builder, materializer and
-deterministic checks are pure functions over chunks — library code, no agent. The
-reader call belongs in a worker pass alongside the existing synthesis passes. The
-MCP surface is thin reads plus an approve path; the checks and materializer are
-NOT MCP verbs.
+- **3. Group-level condition sets** → slice T2 (prose) and T1's
+  table-level `conditions`.
+- **5. Recipe per-row overrides, `<` → `upper_bound`, replicated
+  `9.6 ± 1.7`, units in a third column** → slice T1 (`overrides`,
+  `parse_literal` owns the form, `unit_column`).
+- **6. Author-declared non-reproducibility** → a `source_caveat` field
+  in the reader contract, written to `meta.source_caveat`; small, rides
+  with T2.
+- **6. Intra-paper conflicts** → the numeric `disputes` rule with
+  `meta.scope='intra-paper'` (knowledge-mesh §3); not this item.
 
 ### Explicitly NOT in scope
 
@@ -200,56 +374,40 @@ NOT MCP verbs.
 
 ### Acceptance criteria
 
-1. A binding document written under anchor scheme N refuses to materialize under
-   scheme N+1, **and a document declaring no scheme is refused too**, with a
-   test that demonstrates the silent-repoint failure the guard prevents.
-2. A condition carries an explicit role; a `preparation` or `model` temperature
-   can be attached to a result without satisfying the operating-temperature
-   check, and a result with no operating temperature still escalates.
-3. A condition set declared at group level and inherited by N results produces
-   N materialized results each carrying it, with a per-result override changing
-   exactly one of them; item count is linear, not quadratic, in a test fixture.
-4. Escalations carry a severity; a fixture where the only issue is "Methods
-   states it, result does not restate it" ranks below one with a genuinely
-   unsupported condition.
-5. An interval literal (`550–575`) is bindable by anchor, materializes with the
-   literal intact, and does NOT raise `sub_sentence_span`.
-6. A table recipe expands a column containing both `12.3` and `<1` into results
-   whose `value_form` differs, with no hand-written result; a table carrying its
-   units in a separate column materializes with a non-null `reported_unit`.
-6. Two conflicting literals from one paper can be bound to each other as a
-   first-class relation and survive materialization.
-7. `scripts/test` green; the three verified small bugs each have a regression
-   test.
+Slice T's list (above) replaces the original seven; the shipped items'
+criteria are covered by `tests/test_extract_survey.py` and
+`tests/test_survey_extract_job.py`.
 
 ### Target + blast radius
 
-New library module under `src/precis/` (map/materialize/check), a new worker
-pass, a migration if extraction records become a kind. Touches the findings
-path at integration. Nothing in this item writes to prod, signs or publishes.
-The pilot code is the reference implementation, not the port: it lives in an
-untracked directory and its data must never enter a shipping commit.
+As slice T: `src/precis/extract/`, `workers/job_types/survey_extract.py`,
+`store/_measures_ops.py`, `graph/garden/`. No migration (measures rows
+are not a kind; decided below). Nothing in this item writes to prod,
+signs or publishes from the build; prod runs are jobs launched by the
+thread owner. The pilot stays the reference: its data never enters a
+shipping commit.
 
 ### Open questions / decisions log
 
-- ~~**Does the 4th pilot paper change item 5?**~~ **Resolved — yes, it widened
-  it.** That paper (thermal catalysis, 8 shaped tables, peaks at differing
-  operating points) landed on the third attempt after two infrastructure stalls.
-  It contributed all 11 character-offset spans in the round, all of them exact
-  interval literals, which turned item 5 from "recipe ergonomics" into a missing
-  anchor granularity plus the finding that `sub_sentence_span` penalises the only
-  correct encoding. It also produced 5b (categorical rows), the units-in-a-third-
-  column case, and the "stated but unattributed" gap in item 6. It confirmed
-  item 2 from the other direction: it kept three real preparation temperatures
-  (preheat, premix tank, heating belt) in a condition set referenced by **no**
-  result — a deliberate orphan the format cannot mark as intentional.
-- **Is a chunk-level extraction a new kind, or a finding subtype?** Reusing the
-  existing findings infrastructure is an invariant; whether the intermediate
-  record needs its own kind is undecided and gates the migration question.
-- **Where does the reader pass run?** In-process on melchior like the other
-  claude passes, or as a queued job. Affects cost and the escalation loop.
-- **Escalation loop shape.** Who adjudicates the sampled audit — a strong model
-  pass, a human queue row, or both in sequence.
+- **Kind or finding subtype?** Decided: neither. Rows live on
+  `measures`, owned by the paper, promoted to a hub only when the result
+  becomes a claim (knowledge-mesh decisions log); no migration.
+- **Where does the reader run?** Decided and built: a queued
+  `survey_extract` coordinator job on the local lane
+  (`llm.op.survey_extract`), never an in-process call.
+- **Escalation loop.** Decided 2026-10-14 (Reto): frontier-model sampled
+  acceptance per batch; only failed batches and escalations reach Reto.
+  Recommendation for the sampler tier: Opus, the same reviewer the
+  gardener rulings use, so failure classes are comparable across both.
+- **Batch unit (new, recommendation):** the run token across papers,
+  not the paper (Wilson finding 1). Default taken until Reto says
+  otherwise: trial and filler runs share one token per window.
+- **Promotion scope (new, recommendation):** within-paper labels resolve
+  to existing material/structure refs only; new materials go through a
+  ledger proposal; cross-paper identity stays with the gardener's merge
+  path.
+- The 4th pilot paper's effect on item 5 is resolved (it widened it);
+  the history is in git.
 
 ## Descriptor graph over a paper corpus, and review-grade synthesis on top
 
@@ -558,6 +716,11 @@ Reto's own, recorded unresolved — **he is deliberately sitting on this**
   is not always stated I guess." Is mechanism a first-class descriptor
   that is often null, an inference the agent makes and flags as inferred,
   or out of scope for v1?
+  **Recommendation (2026-10-21):** an inference, flagged. Mechanism is
+  a categorical measurand (`value_form='categorical'`, shipped) written
+  only when the paper states it, with `measurand_status='interpreted'`
+  when the reader infers it; never required, so a missing mechanism
+  never blocks a row.
 - **Sign-off is the hard part, and it does not shrink with accuracy.**
   "We can get pretty good (95+% accuracy, I think, but then someone still
   needs to … look at the thing itself. It's 'right there' but still,
@@ -575,13 +738,22 @@ Reto's own, recorded unresolved — **he is deliberately sitting on this**
   many rows per (paper, measurand) stratum, and which failures count
   as errors — is a build decision of the extraction slice in
   measures-substrate.md §"Next slice".
-- **How much of `material` to generalize vs. build beside.** Not decided.
-- **Is the qualifier-as-descriptor model right?** It is the DRY answer
-  and it is unproven here. The alternative — a typed conditions schema
-  per property — is more predictable and less general, and would not
-  give the "query decides which axis is the result" behaviour. Reto's
-  call; see the Qualifications section.
-- **Unknown vs. irrelevant qualifiers.** Must be distinguishable before
-  any dedupe runs; representation undecided.
-- Is the ~599 figure current? Re-measure against the corpus before
-  scoping.
+  As built, the stratum is the measurand within one paper and that makes
+  per-paper batches unpassable; see Wilson finding 1 at the top.
+- **How much of `material` to generalize vs. build beside.** Settled by
+  what shipped: `material_values` became `measures` (0187, folded with
+  `component_spec_values`, Reto 2026-09-30). Generalize, done.
+- **Is the qualifier-as-descriptor model right?** Shipped in effect:
+  a condition is an input `measures` row on the same run, keyed by a
+  measurand taxon with its own unit (0187 `direction`/`role`/`run_key`).
+  **Recommendation:** keep it; the typed-schema alternative would need a
+  second registry. Proof is due when the numeric mesh (gardener-value
+  slice 5 (b)) compares conditions as quantities on real rows.
+- **Unknown vs. irrelevant qualifiers.** **Recommendation:** relevance
+  is declared on the measurand, not per row. `required_conditions` on
+  the taxon names what matters; a row missing one is *unknown* (it
+  escalates and is never merged or compared); a condition the taxon
+  does not require is irrelevant by declaration. No per-row
+  "irrelevant" marker.
+- Is the ~599 figure current? Still open; a one-query check (papers
+  serving `norr-her-survey`) before scoping layer 1.
