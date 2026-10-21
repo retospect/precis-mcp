@@ -29,6 +29,13 @@ Discipline
   unbounded memory growth during a DB outage.
 * **Atexit flush.** Registered so a clean shutdown writes the
   tail of the buffer before the process dies.
+* **Scrubbed at write.** ``mask_secrets`` runs over the stored
+  message and payload JSON. The record-creation scrub
+  (:mod:`precis.utils.log_scrub`) covers ``msg``/``args`` and
+  tracebacks, but not ``extra={'payload': …}`` dicts — and a row
+  written by a caller that never installed the factory scrub is
+  still clean (gr502250: httpx INFO lines carried
+  ``api_key=<key>`` verbatim).
 
 Identity
 ========
@@ -67,6 +74,8 @@ from collections.abc import Iterable
 from typing import Any
 
 import psycopg
+
+from precis.utils.secret_scan import mask_secrets
 
 log = logging.getLogger(__name__)
 
@@ -256,11 +265,19 @@ class BufferedDBLogHandler(logging.Handler):
             message = self.format(record)
         except Exception:
             message = record.getMessage()
+        # Mask before truncating: a credential span straddling the cut
+        # would otherwise survive half-masked.
+        message = mask_secrets(message, warn=False)
         # Truncate the message to keep row size bounded. 4KB is
         # plenty for ops chatter; longer messages indicate a misuse
         # of log.info() to carry data that should go in payload.
         if len(message) > 4000:
             message = message[:4000] + "…"
+        payload_json = (
+            mask_secrets(json.dumps(payload, default=str), warn=False)
+            if payload
+            else None
+        )
         return (
             self._host,
             self._process,
@@ -268,7 +285,7 @@ class BufferedDBLogHandler(logging.Handler):
             record.levelname,
             record.name,
             message,
-            json.dumps(payload, default=str) if payload else None,
+            payload_json,
         )
 
     def _run_ticker(self) -> None:
@@ -355,6 +372,19 @@ class BufferedDBLogHandler(logging.Handler):
             pass
 
 
+#: Third-party loggers whose per-request lines are noise in
+#: ``worker_logs`` and can carry credential-bearing request URLs
+#: (gr502250). Raised to WARNING by :func:`attach` — their error lines
+#: still land; passes' own INFO summaries are unaffected.
+_QUIET_HTTP_LOGGERS = ("httpx", "httpcore", "httpcore2")
+
+
+def _quiet_http_client_loggers() -> None:
+    """Keep per-request client chatter out of ``worker_logs``."""
+    for name in _QUIET_HTTP_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def attach(
     dsn: str,
     *,
@@ -401,6 +431,12 @@ def attach(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
         root.addHandler(handler)
+        # httpx's INFO "HTTP Request: GET <full url>" line carries the
+        # query string — credentials included — verbatim into
+        # worker_logs (gr502250); httpcore echoes headers at DEBUG. The
+        # record scrub masks the values, but per-request lines are pure
+        # noise in the table, so these loggers stay at WARNING.
+        _quiet_http_client_loggers()
         if isinstance(level, str):
             try:
                 root.setLevel(getattr(logging, level.upper()))
@@ -416,4 +452,10 @@ def attach(
         )
 
 
-__all__ = ["BufferedDBLogHandler", "_pass_from_logger", "_resolve_host_name", "attach"]
+__all__ = [
+    "BufferedDBLogHandler",
+    "_pass_from_logger",
+    "_quiet_http_client_loggers",
+    "_resolve_host_name",
+    "attach",
+]

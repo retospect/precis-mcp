@@ -90,6 +90,58 @@ def test_installed_factory_masks_end_to_end(caplog: pytest.LogCaptureFixture) ->
     assert "ordinary line" in caplog.text
 
 
+def test_exc_info_traceback_is_masked_via_exc_text() -> None:
+    """gr502250 follow-on: an httpx-style exception folds the full request
+    URL — ``api_key=<key>`` — into the traceback's last line. The filter
+    pre-renders a masked ``exc_text`` so no handler (file, journald, DB)
+    can emit the key even though ``exc_info`` itself is untouched."""
+    key = "FAKE" + "KEY123"  # via a var so the traceback's source line is clean
+    try:
+        raise ValueError(f"fetch https://h.example/x?api_key={key}")
+    except ValueError:
+        import sys
+
+        rec = logging.LogRecord(
+            "t",
+            logging.ERROR,
+            __file__,
+            1,
+            "download failed",
+            None,
+            sys.exc_info(),
+        )
+    SecretScrubFilter().filter(rec)
+    assert rec.exc_text is not None
+    assert key not in rec.exc_text
+    assert "download failed" in rec.getMessage()
+
+
+def test_installed_factory_masks_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    log_scrub.install_log_scrub()
+    lg = logging.getLogger("precis.test_log_scrub_exc")
+    key = "FAKE" + "KEY456"
+    try:
+        raise ValueError(f"GET https://h.example/x?api_key={key}")
+    except ValueError:
+        with caplog.at_level(logging.ERROR, logger=lg.name):
+            lg.exception("fetch failed")
+    assert key not in caplog.text
+    assert "fetch failed" in caplog.text
+
+
+def test_clean_exc_info_leaves_exc_text_unset() -> None:
+    try:
+        raise ValueError("plain boom")
+    except ValueError:
+        import sys
+
+        rec = logging.LogRecord(
+            "t", logging.ERROR, __file__, 1, "x", None, sys.exc_info()
+        )
+    SecretScrubFilter().filter(rec)
+    assert rec.exc_text is None
+
+
 def test_install_is_idempotent() -> None:
     log_scrub.install_log_scrub()
     f1 = logging.getLogRecordFactory()

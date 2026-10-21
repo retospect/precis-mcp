@@ -15,13 +15,17 @@ handlers added later (the worker's DB handler) and ones libraries build
 Recursion: the scan never logs (``warn=False``), records from
 ``precis.utils.secret_scan`` itself are passed through untouched, and a
 re-entrancy guard covers anything else that logs while scrubbing.
-Tracebacks (``exc_info``) are not rewritten.
+Tracebacks: ``exc_info`` tuples can't be rewritten, so a credential-bearing
+traceback (httpx folds the full request URL — query credentials included —
+into exception text, gr502250) is pre-rendered masked into
+``record.exc_text``; every formatter then reuses the masked render.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import traceback
 from typing import Any
 
 from precis.utils.secret_scan import might_contain_secret
@@ -38,6 +42,15 @@ class SecretScrubFilter(logging.Filter):
             return True
         _guard.busy = True
         try:
+            if record.exc_info and record.exc_info[0] is not None:
+                # Render once; only a credential-shaped render pays the mask.
+                rendered = "".join(traceback.format_exception(*record.exc_info))
+                if might_contain_secret(rendered):
+                    from precis.utils.secret_scan import mask_secrets
+
+                    masked_exc = mask_secrets(rendered, warn=False)
+                    if masked_exc != rendered:
+                        record.exc_text = masked_exc
             msg = record.msg
             if record.args:
                 # Cheap pre-check on the template and string args first, so a

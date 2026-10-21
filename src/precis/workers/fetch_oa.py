@@ -2063,7 +2063,7 @@ def _try_openalex_content(
     except RateLimited:
         return _local_rate_limited(stub, t0, provider="openalex-content")
     except Exception as exc:
-        # httpx folds the *full* request URL — with ``?api_key=…`` — into its
+        # httpx folds the *full* request URL — with ``api_key=<key>`` — into its
         # error message, so scrub the key before it lands in ``ref_events`` /
         # the CLI. The recorded ``url`` is the clean keyless one.
         err = str(exc).replace(api_key, "***") if api_key else str(exc)
@@ -3655,7 +3655,7 @@ _UNPAYWALL_META_DELAY_S = _meta_wall_s() if _meta_wall_s() > 0 else float("inf")
     reraise=True,
 )
 def _query_unpaywall(doi: str, *, email: str) -> dict[str, Any]:
-    """Hit GET /v2/<doi>?email=… and return the parsed JSON.
+    """Hit GET /v2/<doi>email=<address> and return the parsed JSON.
 
     Retries on transport / timeout errors; HTTPStatusError (400/404/
     429/5xx) bubbles up to the caller for per-status handling. The

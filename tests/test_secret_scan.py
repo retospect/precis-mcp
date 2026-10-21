@@ -33,6 +33,12 @@ POSITIVES = {
     "high-entropy token": "token is " + _B + "Qz",
     "slack webhook": "https://hooks." + "slack.com/services/T0001/B0002/" + _B,
     "discord webhook": "https://discord." + "com/api/webhooks/1234567890/" + _B,
+    "url api_key param": "GET https://content.openalex.org/x.pdf?"
+    + "api_"
+    + "key="
+    + "FAKEKEY01"
+    + ' "HTTP/1.1 200"',
+    "bearer credential": "sending Bearer " + _B + " now",
 }
 NEGATIVES = {
     "git sha": "commit 50d2afe3d and 50d2afe3d1f5b3a6c7e8d9f0a1b2c3d4e5f60718",
@@ -52,6 +58,9 @@ NEGATIVES = {
     "dev default dsn": "postgresql://postgres:postgres@localhost:5432/x",
     "password type annotation": "def f(password: PasswordRecord, n: int)",
     "bare prefix": "keys look like sk-ant-… or ghp_ prefixed",
+    "url param name near-miss": "GET https://api.example.com/s?"
+    + "api_key_hint=x&keyword=y&per-page=25 200",
+    "bearer prose": "the bearer of this note may redeem it",
 }
 
 
@@ -68,9 +77,44 @@ def test_negative(name: str) -> None:
 
 
 def test_url_query_value_still_scanned() -> None:
-    # Only the scheme/host/path part of a URL is exempt from the generic rule.
+    # Only the scheme/host/path part of a URL is exempt: a credential-named
+    # query param is masked whatever the value looks like, and a high-entropy
+    # value under a non-credential name still hits the generic rule.
     hits = find_secrets("https://api.example.com/v1/x?token=" + _B + "Qz")
+    assert [h.kind for h in hits] == ["url token param"]
+    hits = find_secrets("https://api.example.com/v1/x?p=" + _B + "Qz")
     assert [h.kind for h in hits] == ["high-entropy token"]
+
+
+def test_url_query_secret_mask_keeps_name_and_other_params() -> None:
+    line = (
+        "GET https://h.example/p?filter=doi:10.1&" + "api_" + "key=FAKEKEY01&page=2 200"
+    )
+    out = mask_secrets(line, warn=False)
+    assert "FAKEKEY01" not in out
+    assert "<redacted:url api_key param>" in out
+    assert "filter=doi:10.1" in out and "&page=2" in out
+
+
+def test_url_query_secret_short_value_still_masked() -> None:
+    # The generic rule needs 32+ chars; the param-name rule does not — a
+    # short key in a credential-named param is still a credential.
+    for name in ("token", "key", "access_token", "sig", "code"):
+        line = f"https://h.example/x?a=1&{name}=s3cr"
+        assert find_secrets(line), name
+        assert "s3cr" not in mask_secrets(line, warn=False)
+
+
+def test_mailto_and_email_params_masked() -> None:
+    line = "https://api.crossref.org/works?rows=1&mail" + "to=ops@example.org"
+    out = mask_secrets(line, warn=False)
+    assert "ops@example.org" not in out and "rows=1" in out
+
+
+def test_bearer_without_authorization_prefix_masked() -> None:
+    tok = "Bearer " + _B
+    assert [h.kind for h in find_secrets("hdr " + tok)] == ["bearer credential"]
+    assert _B not in mask_secrets("hdr " + tok, warn=False)
 
 
 def test_filesystem_path_segment_not_masked() -> None:

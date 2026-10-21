@@ -80,6 +80,29 @@ _SPECIFIC: list[tuple[str, re.Pattern[str]]] = [
 
 # scheme://user:password@host  (a bare user@host has no ``:password`` part)
 _URL_PW = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:([^\s@/]+)@")
+# Credential-shaped query params: ``?api_key=<v>`` / ``&token=<v>``. httpx logs
+# the full request URL at INFO and several providers (OpenAlex Content,
+# presigned URLs, OAuth callbacks) carry the credential in the query — this
+# is how the content API key landed in worker_logs (gr502250). The masked
+# span covers ``name=value`` (not the ``?``/``&`` delimiter) so the marker
+# keeps the parameter name readable — ``?<redacted:url api_key param>`` —
+# and the finding excerpt (first 4 chars of the span) shows ``api_…``, never
+# secret characters. ``mailto``/``email`` are masked too: contact addresses
+# in query strings are identifying, not operational.
+_URL_QUERY_CRED = re.compile(
+    r"(?i)[?&]("
+    r"api_?key|private_key|access_key|key|"
+    r"access_token|refresh_token|id_token|client_secret|token|"
+    r"secret|signature|sig|authorization|auth|"
+    r"password|passwd|bearer|sessionid|session|"
+    r"x-amz-signature|x-amz-credential|credential|jwt|code|"
+    r"mailto|email"
+    r")=([^\s&#\"'`<>\]{}()]+)"
+)
+# Bare ``Bearer <token>`` — the ``bearer token`` specific pattern only fires
+# under an ``Authorization:`` prefix; a header value echoed without it (or a
+# scheme name alone in a stack line) still carries the credential.
+_BARE_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{20,}")
 # password = literal / PASSWORD: literal
 _PW_ASSIGN = re.compile(
     r"(?i)\b(?:password|passwd)[\"']?\s*[=:]\s*[\"']?([^\s\"'`,;)}\]]+)"
@@ -178,6 +201,13 @@ def _scan_line(line: str) -> list[tuple[str, int, int]]:
     for kind, pat in _SPECIFIC:
         for m in pat.finditer(line):
             add(kind, m)
+    for m in _URL_QUERY_CRED.finditer(line):
+        out.append((f"url {m.group(1).lower()} param", m.start(1), m.end(2)))
+    for m in _BARE_BEARER.finditer(line):
+        s, e = m.span()
+        if any(s < be and bs < e for _k, bs, be in out):
+            continue  # already inside a ``bearer token`` Authorization span
+        out.append(("bearer credential", s, e))
     for m in _URL_PW.finditer(line):
         if not _is_placeholder(m.group(1)) and not _same_as_user(m):
             add("url with inline password", m)
@@ -219,6 +249,9 @@ def find_secrets(text: str) -> list[SecretHit]:
 _TRIGGER = re.compile(
     r"(?i:sk-|gh[pousr]_|github_pat_|aws|xox[abprs]-|private key|bearer|passw)"
     r"|(?-i:AKIA|ASIA)|://[^\s:/@]+:|[A-Za-z0-9+/_\-]{32}"
+    r"|(?i:[?&][a-z0-9_.\-]*"
+    r"(?:key|token|secret|signature|sig|authorization|auth|password|passwd|"
+    r"bearer|sessionid|session|credential|jwt|code|mailto|email)=)"
 )
 
 

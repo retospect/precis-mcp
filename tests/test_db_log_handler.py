@@ -23,6 +23,7 @@ from precis.store import Store
 from precis.utils.db_log_handler import (
     BufferedDBLogHandler,
     _pass_from_logger,
+    _quiet_http_client_loggers,
     _resolve_host_name,
 )
 
@@ -243,6 +244,118 @@ def test_exception_record_includes_traceback_in_payload(
     finally:
         logger.removeHandler(h)
         h.close()
+
+
+# ── secret redaction (gr502250) ──────────────────────────────────
+#
+# The records below are built directly, not via a logger, so the
+# factory-installed ``log_scrub`` filter never touches them — the
+# masking asserted here is the handler's own, at write time.
+
+
+def _bare_record(
+    name: str, msg: str, *args: object, **fields: object
+) -> logging.LogRecord:
+    rec = logging.LogRecord(name, logging.INFO, __file__, 1, msg, args, None)
+    for k, v in fields.items():
+        setattr(rec, k, v)
+    return rec
+
+
+def test_row_masks_url_query_credentials_in_message(
+    fake_psycopg: MagicMock,
+) -> None:
+    """An httpx INFO line carries ``api_key=<key>`` verbatim; the stored row
+    masks credential params and keeps the rest of the URL legible."""
+    h = _make_handler(fake_psycopg)
+    try:
+        rec = _bare_record(
+            "httpx",
+            'HTTP Request: GET %s "%s"',
+            "https://content.openalex.org/x.pdf?"
+            + "api_"
+            + "key=FAKEKEY01&filter=doi&mail"
+            + "to=me%40x.org",
+            "HTTP/1.1 200 OK",
+        )
+        row = h._record_to_row(rec)
+        msg = row[5]
+        assert "FAKEKEY01" not in msg
+        assert "me%40x.org" not in msg
+        assert "content.openalex.org" in msg
+        assert "filter=doi" in msg
+        assert "HTTP/1.1 200 OK" in msg
+    finally:
+        h.close()
+
+
+def test_row_masks_credentials_in_extra_payload(
+    fake_psycopg: MagicMock,
+) -> None:
+    """``extra={'payload': …}`` bypasses the record-creation scrub — the
+    handler masks the serialised JSON before the row is written."""
+    h = _make_handler(fake_psycopg)
+    try:
+        rec = _bare_record(
+            "precis.workers.fetch_oa",
+            "download failed",
+            payload={
+                "url": "https://content.openalex.org/y?" + "api_" + "key=FAKEKEY02",
+                "doi": "10.1/x",
+            },
+        )
+        row = h._record_to_row(rec)
+        payload = row[6]
+        assert "FAKEKEY02" not in payload
+        assert "api_key" in payload and "10.1/x" in payload
+    finally:
+        h.close()
+
+
+def test_row_masks_credentials_in_exception_payload(
+    fake_psycopg: MagicMock,
+) -> None:
+    """``error_msg``/``traceback`` carry the exception's URL too."""
+    import sys
+
+    h = _make_handler(fake_psycopg)
+    # The fake key goes through a variable so the traceback's source line
+    # doesn't carry it literally.
+    key = "FAKE" + "KEY03"
+    try:
+        try:
+            raise ValueError(
+                f"GET https://content.openalex.org/z?api_key={key} timed out"
+            )
+        except ValueError:
+            rec = logging.LogRecord(
+                "precis.workers.fetch_oa",
+                logging.ERROR,
+                __file__,
+                1,
+                "download failed",
+                None,
+                sys.exc_info(),
+            )
+        row = h._record_to_row(rec)
+        assert "FAKEKEY03" not in row[5]
+        assert "FAKEKEY03" not in (row[6] or "")
+        assert "download failed" in row[5]
+    finally:
+        h.close()
+
+
+def test_attach_quiets_http_client_loggers() -> None:
+    saved = {n: logging.getLogger(n).level for n in ("httpx", "httpcore", "httpcore2")}
+    try:
+        for n in saved:
+            logging.getLogger(n).setLevel(logging.INFO)
+        _quiet_http_client_loggers()
+        for n in saved:
+            assert logging.getLogger(n).level == logging.WARNING
+    finally:
+        for n, level in saved.items():
+            logging.getLogger(n).setLevel(level)
 
 
 # ── DB integration (skips without DB) ────────────────────────────

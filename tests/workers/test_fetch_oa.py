@@ -2048,7 +2048,7 @@ class TestTryOpenalexContent:
     def test_failure_scrubs_key_from_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # httpx errors embed the full request URL incl. ?api_key=… — the leg
+        # httpx errors embed the full request URL incl. api_key=<key> — the leg
         # must scrub it before it lands in ref_events / the CLI.
         monkeypatch.setattr(
             fetch_oa,
