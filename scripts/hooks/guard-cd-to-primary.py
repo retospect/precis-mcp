@@ -7,8 +7,8 @@ The footgun this closes (observed live 2026-07-25, cost a near-derailed
 ``/go``): a worktree session prefixes shell commands with ``cd <main-repo> &&
 …``. The Bash tool already resets cwd to the worktree every call, so the ``cd``
 is never needed — but the primary-repo absolute path is the most *available*
-string in session context (CLAUDE.md header, the code-search SessionStart hint's
-``path="…"`` arg, memory), so it's the one that gets grabbed. The result: the
+string in session context (CLAUDE.md header, memory), so it's the one that
+gets grabbed. The result: the
 Edit/Read tools (correct worktree abs paths) mutate the *worktree* while the
 cd-prefixed shell reads/writes the *primary* checkout. The two diverge silently
 and it reads as "my edits don't persist" — hours of churn chasing a phantom

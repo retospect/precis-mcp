@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# SessionStart hook: print the live memory threads from the graph
-# (`precis memory index`): section:threads nodes edited in the last 14 days,
-# one `- me<id> <title> — <Left: line>` each, plus a count of older ones.
-# The full node list is no longer printed (Claude Code cut ~24 KB hook output
-# to a 2 KB preview); recall everything else with search(kind='memory').
+# SessionStart hook: print a one-line memory summary from the graph
+# (`precis memory index --for-hook`): "N live threads (+M older)" plus the
+# command that shows the list. The thread list itself moved behind that
+# on-demand command — hook output is injected once and then carried on every
+# later turn, so it pays for a pointer, not a roster (gr499042; the list
+# returned via `precis memory index`, recall via search(kind='memory')).
 # docs/backlog/memory-native-authoring.md.
 #
 # Wired as a SessionStart hook in .claude/settings.json. It prints only once
@@ -12,10 +13,6 @@
 # PRECIS_HARNESS_MEMORY_MD overrides the MEMORY.md path (tests); a missing
 # file counts as cut over.
 #
-# Budget: memory-lint's preamble budget (8000 tok, ~4 bytes/token, CLAUDE.md +
-# index together) minus CLAUDE.md's share, passed as --budget-tok (a cap: the
-# oldest thread lines drop first).
-#
 # DSN: with PRECIS_DATABASE_URL set the CLI uses it; otherwise the index comes
 # through scripts/prod-precis (a shell hook cannot reach the session MCP).
 # PRECIS_MEMORY_CLI overrides the CLI invocation (default `uv run precis`) —
@@ -23,8 +20,8 @@
 #
 # Last-good copy: every successful render is saved to $cache. When the graph
 # is unreachable the hook prints that copy plus one line naming the failure and
-# the copy's age, so a session started during a prod outage still gets an
-# index. PRECIS_MEMORY_CACHE overrides the path (tests).
+# the copy's age, so a session started during a prod outage still gets the
+# summary. PRECIS_MEMORY_CACHE overrides the path (tests).
 #
 # Node cache: the same CLI call passes `--export-dir "$nodes"`, which writes each
 # topic node's body to $nodes/<handle>.md (`# title`, blank line, body; swapped
@@ -44,7 +41,6 @@
 set -uo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-project="${CLAUDE_PROJECT_DIR:-$repo}"
 cache="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
 nodes="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
 
@@ -61,16 +57,8 @@ if [ -f "$memory_md" ] && ! grep -qF '<!-- memory-index: graph -->' "$memory_md"
 fi
 
 # gr499042: the hook's output is injected once and carried every later
-# turn — the ~20-line live-threads list cost ~185M tok/day of carry. The
-# index budget now lands ~7 newest thread lines plus the "+N older"
-# search pointer (which stays a full-recall door).
-total_tok=2600
-claude_bytes=0
-if [ -f "$project/CLAUDE.md" ]; then
-    claude_bytes="$(wc -c <"$project/CLAUDE.md" | tr -d ' ')"
-fi
-budget=$((total_tok - claude_bytes / 4))
-[ "$budget" -lt 0 ] && budget=0
+# turn — the live-threads list cost ~185M tok/day of carry at 20 lines,
+# ~7 after the first cut. --for-hook prints counts + the command instead.
 
 fail() {
     if [ -s "$cache" ]; then
@@ -92,7 +80,7 @@ errf="$(mktemp)" || fail "no temp file"
 trap 'rm -f "$errf"' EXIT
 
 cd "$repo" || fail "cannot enter repo root"
-out="$("${cli[@]}" memory index --budget-tok "$budget" --export-dir "$nodes" 2>"$errf")"
+out="$("${cli[@]}" memory index --for-hook --export-dir "$nodes" 2>"$errf")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
     # Last stderr line, connection URLs redacted, capped — one line only.

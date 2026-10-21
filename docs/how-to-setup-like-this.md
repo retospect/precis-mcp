@@ -111,11 +111,12 @@ Small, single-purpose, never-block-unless-guarding:
 - **`map-staleness-reminder`** (PostToolUse, Write) — on a Write to a
   handler/migration/other-usually-drifts path, print a one-line nudge to update
   the maps. Silent otherwise.
-- **`code-search-up`** (SessionStart) — print where code search reads from
-  (the MAIN checkout) versus where this session's shell operates (its
-  worktree), and the exact structural tools. Never fails start.
-- **In-flight worktree table** (SessionStart) — print a live per-worktree table
-  (session, dirty, ahead/behind, PURPOSE, last commit) so you scan for overlap.
+- **In-flight counts line** (SessionStart) — one line: N trees, live/dirty/
+  ahead counts, plus the `scripts/inflight` pointer for the on-demand
+  overlap table (session, dirty, ahead/behind, PURPOSE, last commit).
+  Hook output is injected once and carried every later turn, so
+  SessionStart hooks stay near-silent: counts and pointers, not rosters,
+  and a reaper that found nothing prints nothing (gr499042).
 - **`.claude/purpose`** (gitignored, self-cleaning) — once the task is clear,
   write one line; git derives the rest.
 

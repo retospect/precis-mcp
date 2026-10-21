@@ -327,9 +327,11 @@ if [ "$FOR_HOOK" = 1 ]; then
     [ "$_dirtyf" != 'clean' ] && DIRTYF=$((DIRTYF+1))
     [[ "$_verd" == ↑* ]] && AHEAD=$((AHEAD+1))
   done
-  echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live sessions, $DIRTYF dirty, $AHEAD ahead of $BASE) — scripts/inflight for the overlap table; once your task is clear, write .claude/purpose"
-  [ "${#REMOVABLE[@]}" -gt 0 ] && echo "${#REMOVABLE[@]} removable — reap-worktrees handles them"
-  gripe_line
+  # gr499042, second cut: one counts line only. The purpose nudge is already
+  # in CLAUDE.md; "N removable" pre-announces what reap-worktrees' own
+  # SessionStart run then reports as "reaped N"; the gripe digest prints from
+  # session-start-memory.sh anyway — fresh there, a session stale here.
+  echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live, $DIRTYF dirty, $AHEAD ahead of $BASE) — scripts/inflight for the overlap table"
   exit 0
 fi
 {

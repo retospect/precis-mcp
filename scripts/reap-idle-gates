@@ -52,7 +52,7 @@ fingerprint; non-precis images never have it), and no container, running or
 stopped, references it. Tags are re-checked just before ``docker rmi``
 (never ``-f``), which itself refuses an image a container still uses.
 
-Usage: ``scripts/reap-idle-gates [--dry-run]``. ``--dry-run`` removes nothing and
+Usage: ``scripts/reap-idle-gates [--dry-run] [--for-hook]``. ``--dry-run`` removes nothing and
 lists each pair it would reap and each it keeps, with the reason, and each
 dangling precis image it would remove.
 """
@@ -471,7 +471,11 @@ def _short(image_id: str) -> str:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="reap-idle-gates")
     ap.add_argument("--dry-run", action="store_true")
-    dry = ap.parse_args(argv).dry_run
+    # gr499042: SessionStart output is carried every turn — a reaper that
+    # found nothing prints nothing under --for-hook.
+    ap.add_argument("--for-hook", action="store_true")
+    args = ap.parse_args(argv)
+    dry = args.dry_run
     if os.environ.get("PRECIS_NO_AUTOREAP"):
         return 0
     tag = "reap-idle-gates" + (" --dry-run" if dry else "")
@@ -533,7 +537,8 @@ def main(argv: list[str]) -> int:
                 f"{_short(str(img.get('Id', '')))} ({gib:.1f} GiB)"
             )
     if not acted:
-        print(f"{tag}: nothing to reap")
+        if not args.for_hook:
+            print(f"{tag}: nothing to reap")
     else:
         verb = "would reap" if dry else "reaped"
         print(f"{tag}: {verb} {len(acted)}: {' '.join(acted)}")

@@ -95,7 +95,7 @@
 # at most hourly — see prune_build_cache below.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with reap-worktrees).
-# Usage: scripts/reap-test-dbs [--dry-run]
+# Usage: scripts/reap-test-dbs [--dry-run] [--for-hook]
 #
 # Wired in .claude/settings.json (SessionStart), after `reap-worktrees` — so
 # the eager teardown gets first refusal and this only sees what it missed.
@@ -104,7 +104,15 @@ set -uo pipefail
 [ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+FOR_HOOK=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY_RUN=1 ;;
+        # gr499042: SessionStart output is carried every turn — a reaper that
+        # found nothing prints nothing under --for-hook.
+        --for-hook) FOR_HOOK=1 ;;
+    esac
+done
 
 command -v docker >/dev/null 2>&1 || exit 0
 # A stopped colima / unreachable daemon must never make a SessionStart hook
@@ -376,7 +384,7 @@ prune_build_cache() {
 prune_build_cache
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
-    echo "reap-test-dbs: nothing to reap"
+    [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: nothing to reap"
 elif [ "$DRY_RUN" = 1 ]; then
     echo "reap-test-dbs --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
 else

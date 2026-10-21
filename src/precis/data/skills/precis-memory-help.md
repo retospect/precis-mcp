@@ -43,9 +43,11 @@ replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
 `precis memory mirror import|export` is how harness `MEMORY.md` and its topic files
 become `SPACE:repo-dev` nodes (the one-shot `precis memory import` is the cutover
 tool, not a seeding path); `precis memory index` prints only the live
-threads for session start: `section:threads` nodes edited in the last 14
+threads: `section:threads` nodes edited in the last 14
 days (`--days N`), newest first, one `- me<id> <Title> — <Left: line>` each
-(first body line, else `meta.hook`), plus a count of older ones. Everything
+(first body line, else `meta.hook`), plus a count of older ones. The
+SessionStart hook prints just the `--for-hook` counts line pointing here —
+run the command when you want the roster. Everything
 else is recalled by `search`; `--full` prints the old every-node list.
 A thread node's first line is `Left: …`; keep it true or `delete` the node.
 A `SPACE:repo-dev` memory's index text is `meta={'hook': 'one line'}`, on

@@ -1,18 +1,27 @@
 """Retirement test 4a — the graph serves ``MEMORY.md``'s index role.
 
 docs/backlog/memory-native-authoring.md test 4a / AC 3: seed the synthetic
-``tests/fixtures/file_mirror/`` tree through the importer, run the real
-``scripts/hooks/session-start-memory.sh`` against the test DB, and the output
-must carry the fixture's ``## Section`` headers and, for each fixture
-``- [Title](slug.md) — hook`` bullet, ``- Title (me<id>) — hook`` (the graph
-node is the truth now, addressed by handle), in order. A green test is the condition for
+``tests/fixtures/file_mirror/`` tree through the importer, render
+``precis memory index`` against the test DB, and the output must carry the
+fixture's ``## Section`` headers and, for each fixture ``- [Title](slug.md)
+— hook`` bullet, ``- Title (me<id>) — hook`` (the graph node is the truth
+now, addressed by handle), in order. A green test is the condition for
 deleting the ``MEMORY.md`` index by hand.
 
+gr499042 update: ``scripts/hooks/session-start-memory.sh`` no longer prints
+the block — hook output is injected once and carried on every later turn,
+so it prints the ``--for-hook`` one-line counts summary plus the gripe
+digest instead. The block contract below is asserted on the CLI render
+(the same interpreter via the ``PRECIS_MEMORY_CLI`` seam); the hook tests
+pin the summary shape, the node export, the last-good cache and the
+fail-soft paths.
+
 ``PRECIS_MEMORY_CLI`` is the seam: it points the hook at this interpreter's
-CLI entry point instead of ``uv run precis`` (no uv inside the gate container).
-``PRECIS_MEMORY_CACHE`` keeps the hook's last-good copy under ``tmp_path``, and
-``PRECIS_HARNESS_MEMORY_MD`` points the hook's cutover gate at a fixture
-``MEMORY.md`` (absent by default, which counts as cut over).
+CLI entry point instead of ``uv run precis`` (no uv inside the gate
+container). ``PRECIS_MEMORY_CACHE`` keeps the hook's last-good copy under
+``tmp_path``, and ``PRECIS_HARNESS_MEMORY_MD`` points the hook's cutover
+gate at a fixture ``MEMORY.md`` (absent by default, which counts as cut
+over).
 """
 
 from __future__ import annotations
@@ -37,6 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOK = REPO_ROOT / "scripts" / "hooks" / "session-start-memory.sh"
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "file_mirror"
 
+SUMMARY_RE = re.compile(
+    r"🧠 memory: (?:\d+ live threads?|no live threads).*"
+    r"'precis memory index' for the list"
+)
+GRIPES_RE = re.compile(
+    r"gripes: \d+ open · \d+ older than 3d.* — get\(kind='gripe', id='/open'\)"
+)
+
 
 def _cache(tmp_path: Path) -> Path:
     return tmp_path / "cache" / "memory-index.md"
@@ -46,23 +63,14 @@ def _nodes(tmp_path: Path) -> Path:
     return tmp_path / "cache" / "memory-nodes"
 
 
-def _run_hook(
-    tmp_path: Path,
-    dsn: str,
-    *,
-    claude_md_bytes: int = 100,
-    memory_md: Path | None = None,
-    nodes: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    project = tmp_path / "project"
-    project.mkdir(exist_ok=True)
-    (project / "CLAUDE.md").write_text("x" * claude_md_bytes, encoding="utf-8")
+def _hook_env(
+    tmp_path: Path, dsn: str, nodes: Path | None, memory_md: Path | None
+) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
             "PRECIS_DATABASE_URL": dsn,
             "PRECIS_MEMORY_CLI": f"{sys.executable} -m precis.cli.main",
-            "CLAUDE_PROJECT_DIR": str(project),
             "PRECIS_MEMORY_CACHE": str(_cache(tmp_path)),
             "PRECIS_MEMORY_NODES": str(nodes or _nodes(tmp_path)),
             "PRECIS_HARNESS_MEMORY_MD": str(
@@ -70,10 +78,34 @@ def _run_hook(
             ),
         }
     )
+    return env
+
+
+def _run_hook(
+    tmp_path: Path,
+    dsn: str,
+    *,
+    memory_md: Path | None = None,
+    nodes: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(HOOK)],
         cwd=str(REPO_ROOT),
-        env=env,
+        env=_hook_env(tmp_path, dsn, nodes, memory_md),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+
+
+def _run_cli(dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """``precis memory index <args>`` through the same interpreter seam —
+    the render the hook's summary line now points at."""
+    return subprocess.run(
+        [sys.executable, "-m", "precis.cli.main", "memory", "index", *args],
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "PRECIS_DATABASE_URL": dsn},
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -114,33 +146,46 @@ def _assert_matches_fixture(got: list[str]) -> None:
     assert seen == set(want)
 
 
-def test_hook_output_is_the_live_threads_block(store: Store, tmp_path: Path) -> None:
+def test_index_render_is_the_live_threads_block(store: Store) -> None:
     import_memory_dir(store, FIXTURE)
-    proc = _run_hook(tmp_path, _active_dsn())
+    proc = _run_cli(_active_dsn())
     assert proc.returncode == 0, proc.stderr
     got = [ln for ln in proc.stdout.splitlines() if ln.startswith(("## ", "- "))]
     _assert_matches_fixture(got)
-    # the hook adds nothing but the live-thread block (nothing older here)
+    # the render adds nothing but the live-thread block (nothing older here)
     assert proc.stdout.startswith("## Live threads")
     assert "older thread nodes" not in proc.stdout
 
 
-def test_hook_over_budget_drops_threads_into_the_older_count(
-    store: Store, tmp_path: Path
+def test_index_render_over_budget_drops_threads_into_the_older_count(
+    store: Store,
 ) -> None:
     import_memory_dir(store, FIXTURE)
-    # CLAUDE.md of 32000 bytes = the whole 8000-tok preamble budget -> budget 0.
-    proc = _run_hook(tmp_path, _active_dsn(), claude_md_bytes=32000)
+    proc = _run_cli(_active_dsn(), "--budget-tok", "0")
     assert proc.returncode == 0, proc.stderr
     lines = proc.stdout.rstrip("\n").splitlines()
     assert lines[0] == "## Live threads (edited ≤14 days)"
     assert lines[1].startswith("(+3 older thread nodes: search(kind='memory'")
-    # The open-gripe digest line rides after the index, outside its budget.
-    assert re.fullmatch(
-        r"gripes: \d+ open · \d+ older than 3d.* — get\(kind='gripe', id='/open'\)",
-        lines[2],
-    ), lines[2]
-    assert len(lines) == 3
+    assert len(lines) == 2
+
+
+def test_hook_output_is_one_summary_line_plus_gripes(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr499042: what SessionStart carries is the counts line + the gripe
+    digest — bounded bytes, no thread roster."""
+    import_memory_dir(store, FIXTURE)
+    proc = _run_hook(tmp_path, _active_dsn())
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.rstrip("\n").splitlines()
+    assert SUMMARY_RE.fullmatch(lines[0]), lines[0]
+    assert lines[0].startswith("🧠 memory: 3 live threads"), lines[0]
+    assert GRIPES_RE.fullmatch(lines[1]), lines[1]
+    assert len(lines) == 2
+    assert "## " not in proc.stdout and not any(ln.startswith("- me") for ln in lines)
+    # The hook's whole contribution stays far under the ~600 B SessionStart
+    # budget even with the digest appended.
+    assert len(proc.stdout.encode("utf-8")) <= 400
 
 
 def test_hook_exports_the_node_bodies_next_to_the_cache(
@@ -152,8 +197,9 @@ def test_hook_exports_the_node_bodies_next_to_the_cache(
     files = sorted(_nodes(tmp_path).glob("me*.md"))
     assert len(files) == len(_fixture_bullets())  # one per topic node, no sections
     assert all(f.read_text(encoding="utf-8").startswith("# ") for f in files)
-    # every printed thread handle has its exported body
-    printed = re.findall(r"^- (me\d+) ", proc.stdout, re.M)
+    # every thread handle in the CLI render has its exported body
+    rendered = _run_cli(_active_dsn())
+    printed = re.findall(r"^- (me\d+) ", rendered.stdout, re.M)
     assert len(printed) == 3 and {f.stem for f in files} >= set(printed)
 
     # a dead DB leaves the last good node set (and the index copy) untouched
@@ -173,8 +219,7 @@ def test_hook_unwritable_node_dir_does_not_change_the_index_or_exit_code(
     blocker.write_text("a file, so the node dir cannot be created", encoding="utf-8")
     proc = _run_hook(tmp_path, _active_dsn(), nodes=blocker / "memory-nodes")
     assert proc.returncode == 0, proc.stderr
-    got = [ln for ln in proc.stdout.splitlines() if ln.startswith(("## ", "- "))]
-    _assert_matches_fixture(got)
+    assert SUMMARY_RE.fullmatch(proc.stdout.splitlines()[0])
     assert "node export" in proc.stderr
     assert _cache(tmp_path).read_text(encoding="utf-8") == proc.stdout
 
@@ -199,7 +244,6 @@ def test_hook_dead_dsn_prints_the_last_good_copy(store: Store, tmp_path: Path) -
     assert proc.returncode == 0, proc.stderr
     lines = proc.stdout.rstrip("\n").splitlines()
     assert proc.stdout.startswith(good.stdout)
-    _assert_matches_fixture([ln for ln in lines if ln.startswith(("## ", "- "))])
     assert lines[-1].startswith("(memory index: precis memory index exited")
     assert "showing the cached copy from " in lines[-1]
     assert "postgresql://" not in proc.stdout
@@ -213,7 +257,6 @@ def test_hook_unrunnable_cli_prints_one_line_and_exits_zero(tmp_path: Path) -> N
             **os.environ,
             "PRECIS_DATABASE_URL": "postgresql://nobody@localhost:1/none",
             "PRECIS_MEMORY_CLI": "/nonexistent/precis-cli",
-            "CLAUDE_PROJECT_DIR": str(tmp_path),
             "PRECIS_MEMORY_CACHE": str(_cache(tmp_path)),
             "PRECIS_HARNESS_MEMORY_MD": str(tmp_path / "absent" / "MEMORY.md"),
         },
@@ -252,6 +295,4 @@ def test_hook_prints_once_memory_md_carries_the_graph_marker(
     )
     proc = _run_hook(tmp_path, _active_dsn(), memory_md=memory_md)
     assert proc.returncode == 0, proc.stderr
-    _assert_matches_fixture(
-        [ln for ln in proc.stdout.splitlines() if ln.startswith(("## ", "- "))]
-    )
+    assert SUMMARY_RE.fullmatch(proc.stdout.splitlines()[0])

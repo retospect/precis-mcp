@@ -56,7 +56,7 @@
 # Escape hatches: PRECIS_NO_AUTOREAP=1 → no-op. PRECIS_NO_CI_REF_REAP=1 →
 # worktrees still reaped, remote refs left alone (also the switch for a
 # machine that should never touch the remote).
-# Usage: scripts/reap-worktrees [--dry-run]
+# Usage: scripts/reap-worktrees [--dry-run] [--for-hook]
 #
 # Wired in .claude/settings.json (SessionStart), after `inflight --for-hook`.
 set -uo pipefail
@@ -64,7 +64,15 @@ set -uo pipefail
 [ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+FOR_HOOK=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY_RUN=1 ;;
+        # gr499042: SessionStart output is carried every turn — a reaper that
+        # found nothing prints nothing under --for-hook.
+        --for-hook) FOR_HOOK=1 ;;
+    esac
+done
 
 GRACE_SECONDS="${PRECIS_REAP_GRACE_SECONDS:-60}"
 PURPOSE_FRESH_SECONDS="${PRECIS_REAP_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
@@ -330,7 +338,7 @@ sweep_ci_refs
 reap_branchless_branches
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
-    echo "reap-worktrees: nothing to reap"
+    [ "$FOR_HOOK" = 1 ] || echo "reap-worktrees: nothing to reap"
 elif [ "$DRY_RUN" = 1 ]; then
     echo "reap-worktrees --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
 else

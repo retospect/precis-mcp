@@ -749,21 +749,18 @@ def _thread_lead(handler: Any, ref: Any) -> str:
     return lead
 
 
-def _render_live_threads(
+def _live_thread_lines(
     store: Store,
     loaded: tuple[list[Any], dict[int, Any]],
-    budget_tok: int | None,
     *,
     days: int,
     now: datetime | None,
-) -> str:
-    """``## Live threads`` block: ``section:threads`` nodes edited in ``days`` days.
+) -> tuple[list[str], int]:
+    """(bullet lines for live threads, total top-level thread count).
 
     Only top-level threads: ones with no ``part-of`` parent or a hub parent.
-
-    ``refs.updated_at`` is the edit clock (body, title and meta writes all bump
-    it). Newest first. ``budget_tok`` caps the size (~4 bytes/token): the
-    oldest listed lines drop first and join the "older" count.
+    ``refs.updated_at`` is the edit clock (body, title and meta writes all
+    bump it). Newest first.
     """
     from precis.dispatch import Hub
     from precis.handlers.memory import MemoryHandler
@@ -789,17 +786,60 @@ def _render_live_threads(
         and top_level(r.id)
     ]
     threads.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
-    live = [r for r in threads if r.updated_at >= cutoff]
     handler = MemoryHandler(hub=Hub(store=store))
     lines = []
-    for r in live:
+    for r in threads:
+        if r.updated_at < cutoff:
+            continue
         handle = handle_registry.try_format("memory", r.id) or str(r.id)
         lead = _thread_lead(handler, r)
         lines.append(f"- {handle} {r.title}" + (f" — {lead}" if lead else ""))
+    return lines, len(threads)
+
+
+def render_hook_summary(
+    store: Store,
+    loaded: tuple[list[Any], dict[int, Any]],
+    *,
+    days: int = LIVE_THREAD_DAYS,
+    now: datetime | None = None,
+) -> str:
+    """``precis memory index --for-hook``: one counts line, not the list.
+
+    gr499042: SessionStart output is injected once and then carried on every
+    later turn, so the live-threads block moved behind the on-demand
+    ``precis memory index`` this line names.
+    """
+    lines, total = _live_thread_lines(store, loaded, days=days, now=now)
+    n_live = len(lines)
+    older = total - n_live
+    if n_live:
+        counts = f"{n_live} live thread{'s' if n_live != 1 else ''}"
+        if older:
+            counts += f" (+{older} older)"
+    else:
+        counts = "no live threads" + (f" ({older} older)" if older else "")
+    return f"🧠 memory: {counts} — 'precis memory index' for the list\n"
+
+
+def _render_live_threads(
+    store: Store,
+    loaded: tuple[list[Any], dict[int, Any]],
+    budget_tok: int | None,
+    *,
+    days: int,
+    now: datetime | None,
+) -> str:
+    """``## Live threads`` block: ``section:threads`` nodes edited in ``days`` days.
+
+    ``budget_tok`` caps the size (~4 bytes/token): the
+    oldest listed lines drop first and join the "older" count.
+    """
+    lines, total = _live_thread_lines(store, loaded, days=days, now=now)
 
     def render(n_shown: int) -> str:
         out = [f"## Live threads (edited ≤{days} days)", *lines[:n_shown]]
-        older = len(threads) - n_shown
+        older = total - n_shown
         if older:
             out.append(
                 f"(+{older} older thread nodes: search(kind='memory', "
@@ -1214,6 +1254,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Print the old whole-graph index (every node, grouped by section).",
     )
     idx.add_argument(
+        "--for-hook",
+        action="store_true",
+        help=(
+            "SessionStart form (gr499042): one counts line "
+            "(N live threads +M older) naming this command, not the list. "
+            "Wins over --full/--budget-tok."
+        ),
+    )
+    idx.add_argument(
         "--export-dir",
         default=None,
         metavar="DIR",
@@ -1431,7 +1480,9 @@ def run(args: argparse.Namespace) -> None:
             )
         else:
             loaded = _load_nodes(store)
-            if args.full:
+            if args.for_hook:
+                rendered = render_hook_summary(store, loaded, days=args.days, now=None)
+            elif args.full:
                 rendered = _render_loaded(loaded, args.budget_tok, store)
             else:
                 rendered = _render_live_threads(
@@ -1458,6 +1509,7 @@ __all__ = [
     "add_parser",
     "export_memory_nodes",
     "import_memory_dir",
+    "render_hook_summary",
     "render_memory_index",
     "run",
 ]

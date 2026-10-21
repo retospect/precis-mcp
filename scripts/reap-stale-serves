@@ -26,14 +26,22 @@
 # on this sweep's own awk and the sweep cannot pattern-match itself.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with the other reapers).
-# Usage: scripts/reap-stale-serves [--dry-run]
+# Usage: scripts/reap-stale-serves [--dry-run] [--for-hook]
 # PRECIS_REAP_SERVE_CMD overrides the matched command substring (tests).
 set -uo pipefail
 
 [ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+FOR_HOOK=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY_RUN=1 ;;
+        # gr499042: SessionStart output is carried every turn — a reaper that
+        # found nothing prints nothing under --for-hook.
+        --for-hook) FOR_HOOK=1 ;;
+    esac
+done
 
 command -v ps >/dev/null 2>&1 || exit 0
 
@@ -75,7 +83,7 @@ stale_pids=$(ps -axwwo pid,ppid,etime,command 2>/dev/null | awk '
 ')
 
 if [ -z "${stale_pids// /}" ]; then
-    echo "reap-stale-serves: nothing to reap"
+    [ "$FOR_HOOK" = 1 ] || echo "reap-stale-serves: nothing to reap"
     exit 0
 fi
 
