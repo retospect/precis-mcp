@@ -424,13 +424,18 @@ def test_relations_compare_the_measurand_unit_snapshot() -> None:
 
 
 def test_measurand_unchecked_names_measure_and_measurand() -> None:
-    # the wall computers are registered (slice 2a); surface charge density
-    # is not among them, so b.q still reports declared-but-unchecked
+    # the wall computers are registered (slice 2a), as are the flow
+    # computers (se-flow-kernel slice 2); surface charge density is not
+    # among them, so b.q still reports declared-but-unchecked
     assert set(COMPUTERS) == {
         "net-partial-charge",
         "h-bond-donor-count",
         "h-bond-acceptor-count",
         "electrostatic-potential",
+        "breakthrough-fraction",
+        "residence-time-t0",
+        "resistance-ratio",
+        "evenness",
     }
     tree = _tree(
         _BOX,

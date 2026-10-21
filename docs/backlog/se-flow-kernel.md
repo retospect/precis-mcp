@@ -94,16 +94,21 @@ card tells whether that size is still inside the model.
 *Slice 1 (kernel package `src/precis_flow/`) landed 2026-10-20 — the
 commit carrying this line; `git log` has the sha.*
 
-2. **se adapter**: cad envelope → `Domain` (thin-axis detection, depth
-   map, `patch:` ports), `view='flow'` (field, streamlines, card),
-   measures through `COMPUTERS`. Test: the cfdtest hex chamber rebuilt
-   as a cad envelope reproduces cfdtest's breakthrough fraction within
-   its own seed scatter. `view='flow'` also serves the player payload
-   of slice 2b: chamber mesh (outline + floor depth map), the recorded
-   frames (`trace(record_frames=K)`, float32 `(K, n, 3)` reduced
-   positions, `z*` 0 = floor, 1 = ceiling) as one binary blob, the
-   scale triple and the regime card. Over ~20 MB the server subsamples
-   particles, then frames, and the payload says by how much.
+2. **se adapter** *(landed 2026-10-21 — the commit carrying this
+   line)*: cad envelope → `Domain` (thin-axis detection, depth map,
+   `patch:` ports), `view='flow'` (field, streamlines, card), measures
+   through `COMPUTERS`. Test: the cfdtest hex chamber rebuilt as a cad
+   envelope reproduces cfdtest's breakthrough fraction within its own
+   seed scatter. `view='flow'` also serves the player payload of slice
+   2b: chamber mesh (outline + floor depth map), the recorded frames
+   (`trace(record_frames=K)`, float32 `(K, n, 3)` reduced positions,
+   `z*` 0 = floor, 1 = ceiling) as one binary blob, the scale triple
+   and the regime card. Over ~20 MB the server subsamples particles,
+   then frames, and the payload says by how much. Landed as
+   `src/precis_se/flow.py`: `domain_from_solid` accepts a `Placed`
+   envelope or a `(Design, Expr)` cad solid; the chamber spec is a
+   pocket shaped `flow:in=<patch>;out=<patch>;dv=<d_v*>[;profile=…]
+   [;zplane=…]`; the adapter's profile default is `parabolic` (Q4).
 
 2b. **Web particle player** (Reto 2026-10-20). A Flow tab beside the
    se/cad 3-D viewer in `precis_web`, on the vendored three.js
@@ -155,6 +160,15 @@ Slice 2b follows slice 2.
   slice 2 adopts the profile behind `profile='parabolic'|'plug'`,
   default parabolic; `plug` reproduces cfdtest for the reproduction
   test.
+
+  **Mechanism landed (the commit carrying this line).** `trace` now takes
+  `profile='plug'|'parabolic'`; `'parabolic'` weights the horizontal step
+  by `6 psi (1 − psi)` (vertical model untouched). The *kernel* default is
+  `'plug'` so the landed slice-1 tracer and its cfdtest-calibrated tests
+  are unchanged — the parabolic-as-default *policy* belongs to slice 2's
+  adapter, which selects `profile='parabolic'` and runs its reproduction
+  test against `'plug'`. Only that policy choice is still Reto's to confirm;
+  the capability is ready.
 
 ## Explicitly NOT in scope
 

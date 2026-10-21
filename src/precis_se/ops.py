@@ -2284,13 +2284,14 @@ def _pocket_shared(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[st
 
 
 def _vet_pocket_shape(raw: Any, *, opname: str) -> str:
-    """A cad-DSL envelope string (block-local frame), ``'hull'``, or a
-    ``mol:<block>@<clearance Å>`` molecule-surface shape token (Q8)."""
+    """A cad-DSL envelope string (block-local frame), ``'hull'``, a
+    ``mol:<block>@<clearance Å>`` molecule-surface shape token (Q8), or a
+    ``flow:in=…;out=…;dv=…`` flow-chamber spec (se-flow-kernel slice 2)."""
     if not isinstance(raw, str) or not raw.strip():
         raise OpError(
             f"{opname} 'shape' must be a cad DSL string (e.g. "
-            f"'sphere:r5e-10'), {HULL!r} or 'mol:<block>@<clearance Å>', "
-            f"got {raw!r}"
+            f"'sphere:r5e-10'), {HULL!r}, 'mol:<block>@<clearance Å>' or "
+            f"'flow:in=<patch>;out=<patch>;dv=<d_v*>', got {raw!r}"
         )
     shape = raw.strip()
     if shape == HULL:
@@ -2301,6 +2302,14 @@ def _vet_pocket_shape(raw: Any, *, opname: str) -> str:
         try:
             parse_selector(shape)
         except MeasureError as exc:
+            raise OpError(f"{opname}: {exc}") from exc
+        return shape
+    if shape.startswith("flow:"):
+        from precis_se.flow import parse_flow_shape
+
+        try:
+            parse_flow_shape(shape)
+        except ValueError as exc:
             raise OpError(f"{opname}: {exc}") from exc
         return shape
     _validate_envelope(shape)

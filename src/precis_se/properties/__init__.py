@@ -61,21 +61,33 @@ from precis_se.measures import LEGACY_MEASURANDS
 Computer = Callable[[Any, Any], float | None]
 
 
-class _LazyComputer:
-    """A :data:`COMPUTERS` entry that defers importing
-    :mod:`precis_se.properties.computers` — and with it the surface
-    painter's structure/ase imports — until the measurand is actually
-    evaluated, so this package's import stays light. ``reason`` forwards
-    the real computer's last None reason for ``measure_uncomputable``."""
+#: Lazy computer tables: a short name → (module, dict) resolved on first
+#: use, so this package's import stays light (the surface painter's
+#: structure/ase imports and the flow adapter's scipy solve only load
+#: when their measurand is actually evaluated).
+_LAZY_TABLES: dict[str, tuple[str, str]] = {
+    "wall": ("precis_se.properties.computers", "WALL_COMPUTERS"),
+    "flow": ("precis_se.flow", "FLOW_COMPUTERS"),
+}
 
-    def __init__(self, name: str):
+
+class _LazyComputer:
+    """A :data:`COMPUTERS` entry that defers importing its table — and
+    with it the surface painter's structure/ase imports or the flow
+    adapter — until the measurand is actually evaluated, so this
+    package's import stays light. ``reason`` forwards the real
+    computer's last None reason for ``measure_uncomputable``."""
+
+    def __init__(self, name: str, table: str = "wall"):
         self._name = name
+        self._table = table
         self.reason: str | None = None
 
     def __call__(self, tree: Any, measure: Any) -> float | None:
-        from precis_se.properties.computers import WALL_COMPUTERS
+        import importlib
 
-        real = WALL_COMPUTERS[self._name]
+        module, attr = _LAZY_TABLES[self._table]
+        real = getattr(importlib.import_module(module), attr)[self._name]
         value = real(tree, measure)
         self.reason = getattr(real, "reason", None)
         return value
@@ -83,7 +95,9 @@ class _LazyComputer:
 
 #: measurand slug → computer. The wall-side region computers
 #: (:mod:`precis_se.properties.computers`, pocket-from-molecule slice 2a)
-#: — every other measurand stays declared-but-unchecked.
+#: and the flow-chamber computers (:mod:`precis_se.flow`,
+#: se-flow-kernel slice 2) — every other measurand stays
+#: declared-but-unchecked.
 COMPUTERS: dict[str, Computer] = {
     slug: _LazyComputer(slug)
     for slug in (
@@ -93,6 +107,17 @@ COMPUTERS: dict[str, Computer] = {
         "electrostatic-potential",
     )
 }
+COMPUTERS.update(
+    {
+        slug: _LazyComputer(slug, table="flow")
+        for slug in (
+            "breakthrough-fraction",
+            "residence-time-t0",
+            "resistance-ratio",
+            "evenness",
+        )
+    }
+)
 
 
 def is_checked(measurand: str | None) -> bool:

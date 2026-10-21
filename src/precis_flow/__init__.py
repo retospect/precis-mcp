@@ -56,7 +56,11 @@ API
 - :class:`Domain` — ``(mask, h_star, ports)``; the discretised shape.
 - :func:`solve` — ``Domain -> Field(U*, p*, R*)``.
 - :class:`Seed` / :func:`trace` — ``(field, seed, n, d_v_star, seed_rng,
-  record_frames=0) -> Paths(breakthrough, residence, ...)``.
+  record_frames=0, profile='plug'|'parabolic') -> Paths(breakthrough,
+  residence, ...)``. ``profile`` selects the horizontal velocity profile
+  (Q4): ``'plug'`` (default) advects at the depth-averaged speed and
+  reproduces cfdtest; ``'parabolic'`` applies the Hele-Shaw gap shear
+  ``6 psi (1 - psi)`` that spreads a tracer pulse.
 - :class:`RegimeCard` — ``from_physical(...)`` -> the six verdict lines.
 - :func:`nonuniformity` — evenness score over first-crossing points.
 - :func:`rasterize_holes` — blind-pocket topography -> ``depth*`` field.

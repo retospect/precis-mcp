@@ -313,6 +313,24 @@ class SeHandler(Handler):
                 "charge",
                 "multiplicity",
                 "density",
+                "inlet",
+                "outlet",
+                "dv",
+                "n",
+                "nx",
+                "frames",
+                "profile",
+                "zplane",
+                "seed",
+                "seed_z",
+                "mu",
+                "rho",
+                "dp",
+                "u0",
+                "particle_d",
+                "rho_p",
+                "molecular_d",
+                "mean_free_path",
                 "prefunits",
             }
         ),
@@ -1944,6 +1962,10 @@ class SeHandler(Handler):
             if node is None:
                 raise NotFound(_block_not_found(tree, str(name).strip()))
             return Response(body=render_surface(self.store, node, args or {}))
+        if v == "flow":
+            from precis_se.flow import render_flow
+
+            return Response(body=render_flow(self.store, tree, args or {}))
         if v == "drc":
             body = _render_drc(
                 tree,
@@ -7055,6 +7077,30 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "mechanics": frozenset(),
     "literature": frozenset({"block"}),
     "fret": frozenset(),
+    "flow": frozenset(
+        {
+            "block",
+            "inlet",
+            "outlet",
+            "dv",
+            "n",
+            "nx",
+            "frames",
+            "profile",
+            "zplane",
+            "seed",
+            "seed_z",
+            "mu",
+            "rho",
+            "dp",
+            "u0",
+            "particle_d",
+            "rho_p",
+            "molecular_d",
+            "mean_free_path",
+            "format",
+        }
+    ),
     "links": frozenset(),
     "print": frozenset({"block", "fmt", "path", "scale"}),
     "fab": frozenset(),

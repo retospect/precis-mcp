@@ -27,7 +27,12 @@ card or the caller states it; the kernel never picks a default.
 gap fraction ``psi``: 0 = floor, 1 = ceiling. The tracer's vertical coordinate
 is the continuity-reconstructed mean-field height above — the Hele-Shaw
 parabolic profile is NOT resolved, so a particle's depth-averaged ``psi`` is
-what the model physically carries; do not read a no-slip profile into it.
+what the model physically carries; do not read a no-slip profile into it. That
+is ``profile='plug'``, the kernel default. ``profile='parabolic'`` instead
+weights the horizontal step by the Hele-Shaw gap profile ``6 psi (1 - psi)``
+(1.5x at mid-gap, 0 at floor and lid) so sheared heights spread a tracer pulse
+by Taylor dispersion; the vertical model is unchanged (Q4,
+docs/backlog/se-flow-kernel.md).
 
 The *first* time ``z~`` crosses the domain's tracking plane is recorded, with
 the crossing ``(x*, y*)`` located by sub-step linear interpolation (accuracy
@@ -181,14 +186,29 @@ def _seed_positions(
     return np.column_stack([x, y, b + frac * h])
 
 
-def _velocity(field: Field, pos: np.ndarray) -> np.ndarray:
-    """3-D reduced mean velocity (n, 3) at particle positions."""
+def _velocity(field: Field, pos: np.ndarray, profile: str = "plug") -> np.ndarray:
+    """3-D reduced mean velocity (n, 3) at particle positions.
+
+    ``profile='plug'`` advects every particle horizontally at the depth-averaged
+    reduced speed ``U*`` whatever its height (cfdtest's tracker). ``'parabolic'``
+    weights the horizontal step by the Hele-Shaw gap profile ``6 psi (1 - psi)``
+    (1.5x at mid-gap, 0 at floor and lid), so particles at different heights
+    travel at different speeds — the shear that spreads a tracer pulse (Taylor
+    dispersion). The vertical velocity ``w~`` stays the continuity-reconstructed
+    *depth-averaged* field either way; the profile touches only the horizontal
+    advection (Q4, docs/backlog/se-flow-kernel.md).
+    """
     z = pos[:, 2]
     ux, uy, h, b, bx, by = _sample(field, pos[:, 0], pos[:, 1])
     # w~ = (U*.grad* b~)(1 - psi): U*.grad* b~ at the floor, 0 at the ceiling.
+    # Reconstructed from the depth-averaged U*, so it is profile-independent.
     u_dot_gradb = ux * bx + uy * by
     psi = np.clip((z - b) / np.where(h > 1e-9, h, 1.0), 0.0, 1.0)
     w = u_dot_gradb * (1.0 - psi)
+    if profile == "parabolic":
+        shear = 6.0 * psi * (1.0 - psi)
+        ux = ux * shear
+        uy = uy * shear
     return np.column_stack([ux, uy, w])
 
 
@@ -211,6 +231,7 @@ def trace(
     d_v_star: float,
     seed_rng: np.random.Generator | int,
     record_frames: int = 0,
+    profile: str = "plug",
 ) -> Paths:
     """Advect the swarm and record first plane crossings.
 
@@ -218,11 +239,22 @@ def trace(
     floor, ``D_v* = D_v t0 / h0^2`` — transits per vertical mixing time. The
     regime card or the caller states it; there is no hidden default.
 
+    ``profile`` selects the horizontal velocity profile (Q4,
+    docs/backlog/se-flow-kernel.md). ``'plug'`` (the kernel default — it keeps
+    the cfdtest-calibrated behaviour of the landed slice-1 tracer) moves every
+    particle at the depth-averaged speed. ``'parabolic'`` weights the
+    horizontal step by the Hele-Shaw gap profile ``6 psi (1 - psi)``, the shear
+    that spreads a tracer pulse; the se adapter (slice 2) selects it. Only the
+    horizontal advection changes — ``d_v_star`` and the vertical model are
+    untouched.
+
     ``record_frames > 0`` additionally returns ``Paths.frames``, a float32
     ``(record_frames, n, 3)`` array of ``(x*, y*, psi)`` at ``frame_t`` =
     ``linspace(0, t*_end, record_frames)`` (a web player consumes it later;
     resolved particles hold their final position).
     """
+    if profile not in ("plug", "parabolic"):
+        raise ValueError(f"profile must be 'plug' or 'parabolic', got {profile!r}")
     domain = field.domain
     rng = (
         seed_rng
@@ -262,9 +294,9 @@ def trace(
         p = pos[idx]
 
         # RK2 (midpoint) advection by the mean field.
-        v1 = _velocity(field, p)
+        v1 = _velocity(field, p, profile)
         pmid = p + 0.5 * dt * v1
-        v2 = _velocity(field, pmid)
+        v2 = _velocity(field, pmid, profile)
         pnew = p + dt * v2
 
         # Stochastic vertical mixing where the floor is deepened:

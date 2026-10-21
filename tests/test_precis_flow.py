@@ -281,6 +281,80 @@ def test_no_frames_by_default():
     assert res.frames is None and res.frame_t is None
 
 
+# --- horizontal velocity profile (Q4) ---------------------------------------
+
+
+def test_profile_defaults_to_plug():
+    # The kernel keeps the cfdtest-calibrated plug behaviour by default; the
+    # se adapter (slice 2) selects 'parabolic'.
+    assert inspect.signature(trace).parameters["profile"].default == "plug"
+
+
+def test_plug_is_the_default_behaviour():
+    rng = np.random.default_rng(0)
+    d = _rect_domain(holes=_holes(rng, 8, depth=2.0))
+    f = solve(d)
+    default = trace(f, _seed(d), 120, d_v_star=6.0, seed_rng=3)
+    plug = trace(f, _seed(d), 120, d_v_star=6.0, seed_rng=3, profile="plug")
+    assert plug.breakthrough == default.breakthrough
+    assert np.array_equal(plug.positions, default.positions)
+
+
+def test_invalid_profile_raises():
+    d = _rect_domain()
+    try:
+        trace(solve(d), _seed(d), 10, d_v_star=6.0, seed_rng=0, profile="poiseuille")
+    except ValueError as e:
+        assert "profile" in str(e)
+    else:
+        raise AssertionError("invalid profile must raise ValueError")
+
+
+def test_parabolic_differs_from_plug_and_stays_valid():
+    rng = np.random.default_rng(0)
+    d = _rect_domain(holes=_holes(rng, 10, depth=2.5))
+    f = solve(d)
+    plug = trace(f, _seed(d), 150, d_v_star=6.0, seed_rng=2, profile="plug")
+    para = trace(f, _seed(d), 150, d_v_star=6.0, seed_rng=2, profile="parabolic")
+    # The shear changes transport, so the swarm's final state differs.
+    assert not np.allclose(plug.positions, para.positions)
+    assert 0.0 <= para.breakthrough <= 1.0
+
+
+def test_parabolic_is_deterministic():
+    d = _rect_domain(holes=_holes(np.random.default_rng(0), 4, depth=2.0))
+    f = solve(d)
+    a = trace(f, _seed(d), 100, d_v_star=6.0, seed_rng=9, profile="parabolic")
+    b = trace(f, _seed(d), 100, d_v_star=6.0, seed_rng=9, profile="parabolic")
+    assert a.breakthrough == b.breakthrough
+    assert np.array_equal(a.positions, b.positions)
+
+
+def test_parabolic_shears_by_height_but_plug_does_not():
+    # Flat channel: no vertical motion (w~ = 0) and no dispersion (depth* = 0),
+    # so a particle holds its seeded gap fraction psi. Under 'parabolic' a
+    # mid-gap band (psi ~ 0.5, shear ~ 1.5x) transits faster than a lower band
+    # (psi ~ 0.25, shear ~ 1.1x) — both bands are kept clear of the walls so
+    # every particle still resolves. Under 'plug' height is irrelevant, so the
+    # two bands have identical residence.
+    d = _rect_domain()
+    f = solve(d)
+    mid = Seed.across_inlet(d, z_lo=0.45, z_hi=0.55)
+    low = Seed.across_inlet(d, z_lo=0.2, z_hi=0.3)
+
+    # The tracer stops at EXIT_FRACTION resolution, so a slow tail stays
+    # unresolved (NaN residence); nanmean compares the resolved populations.
+    r_mid = trace(f, mid, 200, d_v_star=6.0, seed_rng=4, profile="parabolic")
+    r_low = trace(f, low, 200, d_v_star=6.0, seed_rng=4, profile="parabolic")
+    assert r_mid.resolved_fraction >= EXIT_FRACTION - 1e-9
+    assert r_low.resolved_fraction >= EXIT_FRACTION - 1e-9
+    assert np.nanmean(r_mid.residence) < np.nanmean(r_low.residence)
+
+    p_mid = trace(f, mid, 200, d_v_star=6.0, seed_rng=4, profile="plug")
+    p_low = trace(f, low, 200, d_v_star=6.0, seed_rng=4, profile="plug")
+    assert np.allclose(p_mid.residence, p_low.residence, equal_nan=True)
+
+
 # --- scale invariance --------------------------------------------------------
 
 

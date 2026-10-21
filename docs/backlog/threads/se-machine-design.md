@@ -209,8 +209,10 @@ off that gap until it closes.
 0. **backlog/se-flow-kernel.md** — dimension-free Hele-Shaw + tracer on
    cad envelopes (mm to 50 cm thin chambers) with a regime card; ready
    2026-10-20 (Q1–Q3 decided); slice 1 landed 2026-10-20 on `flow-s1`
-   (`src/precis_flow/` + tests), slice 2 waits for pocket-from-molecule
-   slice 2, slice 2b (web particle player) follows 2.
+   (`src/precis_flow/` + tests), slice 2 landed 2026-10-21 on `flow-s2`
+   (`src/precis_se/flow.py`: envelope→Domain, `view='flow'` + 2b
+   payload, `flow:` pocket + COMPUTERS), slice 2b (web particle player)
+   follows.
 0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
    halves as the negative (Reto 2026-10-21); draft, Q1–Q4 open.
