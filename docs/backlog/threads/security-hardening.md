@@ -53,6 +53,11 @@ residual items.
 3. **backlog/web-basic-auth-users.md** — shipped and live 2026-08-22;
    only residuals remain (full CSP, feed-token rotate race). Pending Reto's housekeeping ruling on whether the file closes
    (td461205).
+4. **backlog/multi-user-overhaul.md** — four-role model, per-name vault
+   ACL, settings scopes, authenticated human actor; its S1/S2/S4 close the
+   HPC D1/D2 and trust Q2 risks accepted 2026-10-21. Draft; Reto's open
+   questions first. `backlog/out-of-box-setup.md` (admin users screen)
+   waits on its S3.
 
 ## Parked
 
