@@ -19,6 +19,7 @@ from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.store import Store
 from precis.workers.job_types import pcb_place
+from tests._pcb_outline import closed_outline
 
 pytestmark = pytest.mark.db
 
@@ -112,8 +113,12 @@ def test_pcb_place_refuses_to_commit_a_worse_placement(
     source copper and the job WROTE the poses with 186 pre-route errors
     over a stored placement with 37. The gate is now measured before and
     after the anneal: a worse count refuses the write (nothing persisted),
-    ``force=True`` writes it and says so in the summary."""
-    ref_id = _seed(store, "place-worse", _CROSSED)
+    ``force=True`` writes it and says so in the summary.
+
+    The board carries a closed outline so the stored placement is clean:
+    without one the gate's ``outline_missing`` (gr500431) puts an error on
+    BOTH sides and the "stored one has 0" baseline is gone."""
+    ref_id = _seed(store, "place-worse", {**_CROSSED, "features": [closed_outline()]})
     before = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
