@@ -28,8 +28,10 @@ if ! curl -fsS -m 5 "http://$addr:$port/health" >/dev/null 2>&1; then
     exit 2
 fi
 
-# vLLM's /v1/messages rejects the system-role turns Claude Code sends (hook
-# output) and lacks count_tokens; scripts/anthropic-shim.py rewrites them.
+# scripts/anthropic-shim.py fixes what the upstream /v1/messages can't take:
+# it rewrites system-role turns and counts tokens for vLLM, and on SGLang
+# (detected via /get_model_info) it translates to /v1/chat/completions —
+# SGLang's gpt-oss Messages path stalls after a tool result (gr500583).
 # One shim per machine on loopback, started on demand.
 shim_port="${CLAUDE_LOCAL_SHIM_PORT:-18800}"
 if ! curl -fsS -m 2 "http://127.0.0.1:$shim_port/health" >/dev/null 2>&1; then
