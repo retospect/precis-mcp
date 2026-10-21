@@ -356,15 +356,16 @@ def _tunnel_sites(net: Net, tun: Tunnel, pos: np.ndarray) -> dict[str, Any]:
         e["r_A"] = float(math.hypot(x, y))
         e["theta_deg"] = float(math.degrees(math.atan2(y, x)))
     # pendant pairs: two open-valence lumen/junction atoms close enough to
-    # share one adsorbate
+    # share one adsorbate (the band test is rounded to the solver's 1e-9 A
+    # tie grid so a distance on the edge classifies the same everywhere)
     lo, hi = 2.5, 3.0
     open_sites = [e for e in sites if e["role"] in ("lumen", "unbonded")]
-    pairs = [
-        [a["ordinal"], b["ordinal"]]
-        for i, a in enumerate(open_sites)
-        for b in open_sites[i + 1 :]
-        if lo <= float(np.linalg.norm(pos[a["ordinal"]] - pos[b["ordinal"]])) <= hi
-    ]
+    pairs = []
+    for i, ea in enumerate(open_sites):
+        for eb in open_sites[i + 1 :]:
+            d = float(np.linalg.norm(pos[ea["ordinal"]] - pos[eb["ordinal"]]))
+            if round(d - lo, 9) >= 0 and round(d - hi, 9) <= 0:
+                pairs.append([ea["ordinal"], eb["ordinal"]])
     return {"sites": sites, "pairs": pairs}
 
 
@@ -806,7 +807,7 @@ def _junction_checks(
                 Severity.WARN,
                 f"{len(hits)} nonbonded pair(s) under 1.2 A "
                 f"(worst {min(w[2] for w in hits):.2f} A)",
-                data=(("pairs", sorted(hits, key=lambda w: w[2])[:20]),),
+                data=(("pairs", sorted(hits, key=lambda w: (w[2], w[0], w[1]))[:20]),),
             )
         )
     else:
@@ -869,9 +870,15 @@ def _junction_checks(
         if tag.startswith("reducer:"):
             sj = strain_by_tag.get(tag, [])
             data = dict(sj[0].data) if sj else {}
-            if (data.get("seam_bonds_max_A") or 0.0) > _STEP_STRAIN_BOND_A or (
-                data.get("angle_dev_max_deg") or 0.0
-            ) > _STEP_STRAIN_ANGLE_DEG:
+            if (
+                round((data.get("seam_bonds_max_A") or 0.0) - _STEP_STRAIN_BOND_A, 9)
+                > 0
+                or round(
+                    (data.get("angle_dev_max_deg") or 0.0) - _STEP_STRAIN_ANGLE_DEG,
+                    9,
+                )
+                > 0
+            ):
                 out.append(
                     Finding(
                         "step.overstrained",

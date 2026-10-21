@@ -59,6 +59,19 @@ _SCALE_LO, _SCALE_HI, _SCALE_STEP = 0.55, 1.45, 0.01
 #: skip cost in the pairing DP, in units of sigma^2: skipping a boundary
 #: atom beats bonding it over more than ~2.5 sigma
 _SKIP_SIGMA2 = 6.25
+#: Deterministic near-tie resolution (gr502249): every solver branch that
+#: orders or classifies floats runs on keys rounded to a fixed grid --
+#: positions/lengths/areas at 1e-9 A, angles at 1e-9 rad, pairing costs
+#: (summed squared distances, ~10^2 A^2) at 1e-6 A^2.  The grids are far
+#: below any lattice scale and far above the last-ulp noise numpy/BLAS/
+#: libm produce differently across platforms (macOS Accelerate vs Linux
+#: OpenBLAS swapped two same-ray atoms in a rim's cyclic order, which
+#: picked a different twist, cut, seam and defect census for identical
+#: input).  Sorts then tie-break on the atom ordinal; scans keep the
+#: first candidate of an equal rounded key.
+_TIE_POS = 9
+_TIE_ANG = 9
+_TIE_COST = 6
 
 
 @dataclass(frozen=True)
@@ -193,9 +206,11 @@ def rim_loop_end(
     # inside it so rib-edge atoms a site deep are excluded
     window = 0.6 * sigma
     if end == "low":
-        sel = dangling[h[dangling] <= float(h[dangling].min()) + window]
+        bound = float(h[dangling].min()) + window
+        sel = dangling[np.round(h[dangling] - bound, _TIE_POS) <= 0]
     elif end == "high":
-        sel = dangling[h[dangling] >= float(h[dangling].max()) - window]
+        bound = float(h[dangling].max()) - window
+        sel = dangling[np.round(h[dangling] - bound, _TIE_POS) >= 0]
     else:
         raise ValueError(f"rim_loop_end: end must be 'low' or 'high', got {end!r}")
     centre = coords[sel].mean(axis=0)
@@ -205,12 +220,20 @@ def rim_loop_end(
     plane_u /= np.linalg.norm(plane_u)
     plane_v = np.cross(axis, plane_u)
     rel = coords[sel] - centre
-    order = np.argsort(np.arctan2(rel @ plane_v, rel @ plane_u), kind="stable")
+    angs = np.arctan2(rel @ plane_v, rel @ plane_u)
+    # a rail star's spokes put two dangling atoms on one ray: identical
+    # angles, so the cyclic order between them is a coin toss the last
+    # ulp decides -- tie-break on the ordinal, not float noise
+    order = sorted(
+        range(len(sel)),
+        key=lambda i: (round(float(angs[i]), _TIE_ANG), int(sel[i])),
+    )
     atoms = tuple(int(sel[i]) for i in order)
+    slab_mid = float(h[sel].mean())
     slab = {
         a
         for a in range(n)
-        if abs(float(h[a] - float(h[sel].mean()))) < 2.0 * Lattice().sigma_A
+        if abs(round(float(h[a]) - slab_mid, _TIE_POS)) < 2.0 * Lattice().sigma_A
     }
     band = _within(_adjacency(bonds, n), frozenset(int(s) for s in sel), 2) & slab
     return RimLoop(atoms=atoms, band=frozenset(band))
@@ -229,7 +252,7 @@ def _dart_faces(
             dv = pos2d[y] - pos2d[x]
             darts.setdefault(x, []).append((math.atan2(dv[1], dv[0]), y))
     for v in darts:
-        darts[v].sort(key=lambda t: t[0])
+        darts[v].sort(key=lambda t: (round(t[0], _TIE_ANG), t[1]))
     visited: set[tuple[int, int]] = set()
     faces: list[tuple[int, ...]] = []
     for i, j, _ in bonds:
@@ -248,7 +271,13 @@ def _dart_faces(
 
 
 def _points_in_polygon(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
-    """Ray casting, vectorised over ``points``."""
+    """Ray casting, vectorised over ``points``.  Both operands are
+    snapped to the 1e-9 A tie grid first: identical inputs then give
+    bit-identical crossings on every platform (scalar IEEE ops are
+    correctly rounded), so an atom sitting on the cut edge classifies
+    the same way in every environment."""
+    points = np.round(np.asarray(points, dtype=float), _TIE_POS)
+    poly = np.round(np.asarray(poly, dtype=float), _TIE_POS)
     x, y = poly[:, 0], poly[:, 1]
     px, py = points[:, 0], points[:, 1]
     inside = np.zeros(len(points), dtype=bool)
@@ -324,13 +353,17 @@ def _hole_walk(
         poly = pos2[list(face)]
         if not _points_in_polygon(centre[None], poly)[0]:
             continue
-        area = 0.5 * abs(
-            float(
-                np.sum(
-                    poly[:, 0] * np.roll(poly[:, 1], -1)
-                    - np.roll(poly[:, 0], -1) * poly[:, 1]
+        area = round(
+            0.5
+            * abs(
+                float(
+                    np.sum(
+                        poly[:, 0] * np.roll(poly[:, 1], -1)
+                        - np.roll(poly[:, 0], -1) * poly[:, 1]
+                    )
                 )
-            )
+            ),
+            _TIE_POS,
         )
         if area < 1e-9:
             continue
@@ -357,13 +390,17 @@ def _outer_walk(
         poly = pos2[list(face)]
         if not _points_in_polygon(centre[None], poly)[0]:
             continue
-        area = 0.5 * abs(
-            float(
-                np.sum(
-                    poly[:, 0] * np.roll(poly[:, 1], -1)
-                    - np.roll(poly[:, 0], -1) * poly[:, 1]
+        area = round(
+            0.5
+            * abs(
+                float(
+                    np.sum(
+                        poly[:, 0] * np.roll(poly[:, 1], -1)
+                        - np.roll(poly[:, 0], -1) * poly[:, 1]
+                    )
                 )
-            )
+            ),
+            _TIE_POS,
         )
         if area < 1e-9:
             continue
@@ -451,7 +488,10 @@ def _pair(
         spp = sp[::-1] if rev else sp
         for phase in range(nl):
             perm = [(phase + i) % nl for i in range(ns)]
-            cost = float(np.sum(np.linalg.norm(lp[perm] - spp, axis=1) ** 2))
+            cost = round(
+                float(np.sum(np.linalg.norm(lp[perm] - spp, axis=1) ** 2)),
+                _TIE_COST,
+            )
             if best is None or cost < best[0]:
                 best = (cost, phase, rev)
     assert best is not None
@@ -569,9 +609,13 @@ def twist_coords(
 
 
 def _rim_axis(rim_pos: np.ndarray) -> np.ndarray:
-    """The rim dangling ring's least-variance axis (its own normal)."""
+    """The rim dangling ring's least-variance axis (its own normal),
+    signed largest-component-positive -- LAPACK's eigenvector sign is
+    arbitrary and differs across platforms, which would flip the twist
+    direction (the ``_surface_normal`` convention in build.py)."""
     _, _, vh = np.linalg.svd(rim_pos - rim_pos.mean(axis=0))
-    return vh[2]
+    ax = vh[2]
+    return ax if float(ax[int(np.argmax(np.abs(ax)))]) > 0.0 else -ax
 
 
 def scan_opening(
@@ -604,15 +648,23 @@ def scan_opening(
         )
         if len(bondable) == target:
             angs = np.arctan2(spos[bondable, 1] - cen2[1], spos[bondable, 0] - cen2[0])
-            hp = spos[[bondable[i] for i in np.argsort(angs)]]
+            order = sorted(
+                range(len(bondable)),
+                key=lambda i: (round(float(angs[i]), _TIE_ANG), bondable[i]),
+            )
+            hp = spos[[bondable[i] for i in order]]
             cheapest = math.inf
             for rev in (False, True):
                 rr = rim_pos[::-1] if rev else rim_pos
                 for ph in range(target):
-                    c = float(
-                        np.sum(
-                            np.linalg.norm(hp - np.roll(rr, ph, axis=0), axis=1) ** 2
-                        )
+                    c = round(
+                        float(
+                            np.sum(
+                                np.linalg.norm(hp - np.roll(rr, ph, axis=0), axis=1)
+                                ** 2
+                            )
+                        ),
+                        _TIE_COST,
                     )
                     if c < cheapest:
                         cheapest = c
@@ -687,8 +739,8 @@ def armchair_opening(
         if got is None:
             continue
         cost, scale, polygon = got
-        if best is None or cost < best[0]:
-            best = (cost, tw, tp, polygon)
+        if best is None or round(cost, _TIE_COST) < best[0]:
+            best = (round(cost, _TIE_COST), tw, tp, polygon)
     if best is None:
         raise ValueError(
             f"armchair opening: no (twist, scale) left a boundary cycle of "

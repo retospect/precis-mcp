@@ -128,7 +128,13 @@ credible judge here (200 steps degrade the seams to 4.6 Å).
   (no margin widening); the next lever is p ≠ N or a wider slant.
 
 **Not in scope.** Changing the cone construction before the real-rung
-numbers are in; the host-vs-container build difference (its own gripe).
+numbers are in. The host-vs-container build difference was gr502249:
+a same-ray near-tie in `rim_loop_end`'s angular order flipped between
+Accelerate and OpenBLAS and picked a different twist, cut and seam per
+platform — fixed by rounding every solver branch key to a tie grid
+(positions 1e-9 A, angles 1e-9 rad, costs 1e-6 A^2) with ordinal
+tie-breaks; topology is now pinned by
+`tests/hexfold/test_tunnel_steps.py::test_stepped_rail_tunnel_topology_is_deterministic`.
 
 **Target.** `src/hexfold/check.py` (per-zone counts),
 `tests/test_se_tunnel_steps.py` (fixture, gate reads the counts),

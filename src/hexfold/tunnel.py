@@ -39,6 +39,8 @@ from .ids import AtomPath
 from .join import Block, block_from_net
 from .lattice import Lattice, Site
 from .opening import (
+    _TIE_COST,
+    _TIE_POS,
     Opening,
     RimLoop,
     apply_opening,
@@ -141,7 +143,7 @@ def _end_rims(block: Block, net: Net, kind: str) -> tuple[RimLoop, RimLoop]:
         hi = rim_loop_port(net, "out")
         zlo = np.asarray(block.coords)[list(lo.atoms), 2].mean()
         zhi = np.asarray(block.coords)[list(hi.atoms), 2].mean()
-        return (lo, hi) if zlo <= zhi else (hi, lo)
+        return (lo, hi) if round(float(zlo - zhi), _TIE_POS) <= 0 else (hi, lo)
     axis = np.array([0.0, 0.0, 1.0])
     return (
         rim_loop_end(block.coords, block.bonds, axis, "low"),
@@ -188,7 +190,7 @@ def tunnel_reservoirs(
     for name, rim, cen in (("low", rim_lo, cen_lo), ("high", rim_hi, cen_hi)):
         rp = tc[list(rim.atoms)]
         need = float(np.linalg.norm(rp[:, :2] - cen[:2], axis=1).max()) + _MARGIN
-        if need > min(half_x, half_y):
+        if round(need - min(half_x, half_y), _TIE_POS) > 0:
             raise ValueError(
                 f"reservoir sheet {sheet} too small for the {name} mouth: "
                 f"needs half-extent >= {need:.2f} A, has "
@@ -213,7 +215,7 @@ def tunnel_reservoirs(
         gb = scan_opening(sheet_hi, rim_hi, tp)
         if ga is None or gb is None:
             continue
-        cost = ga[0] + gb[0]
+        cost = round(ga[0] + gb[0], _TIE_COST)
         if best is None or cost < best[0]:
             best = (cost, float(tw), tp)
     if best is None:
@@ -333,16 +335,17 @@ def tunnel_reservoirs(
             axis=2,
         ).min()
     )
+    sep_close = round(sep - _MIN_JUNCTION_SEP_A, _TIE_POS) < 0
     findings.append(
         Finding(
             code="junction.spacing",
-            severity=Severity.WARN if sep < _MIN_JUNCTION_SEP_A else Severity.INFO,
+            severity=Severity.WARN if sep_close else Severity.INFO,
             message=(
                 f"mouths {sep:.1f} A apart"
                 + (
                     f" — below the {_MIN_JUNCTION_SEP_A:g} A relaxation-decay "
                     "margin (junction strain fields couple; relax together)"
-                    if sep < _MIN_JUNCTION_SEP_A
+                    if sep_close
                     else f" — clear of the {_MIN_JUNCTION_SEP_A:g} A "
                     "relaxation-decay margin"
                 )
@@ -488,7 +491,7 @@ def _cone_step(
     z_col = cpos[:, 2].copy()
 
     def surf_z(r: float) -> float:
-        sel = np.abs(r_c - r) < 0.8
+        sel = np.round(np.abs(r_c - r) - 0.8, _TIE_POS) < 0
         return float(np.median(z_col[sel])) if sel.any() else np.nan
 
     surf_w = [surf_z(float(r)) for r in w_star]
@@ -637,7 +640,7 @@ def tunnel_steps(
         w_pos, n_pos = c, nxt
         w_min, w_max = _rim_radii(c, w_rim)
         n_min, n_max = _rim_radii(nxt, n_rim)
-        if n_min > w_min:
+        if round(n_min - w_min, _TIE_POS) > 0:
             # the "next" segment is the wider one (an upward step)
             w_i, n_i = n_i, i
             w_rim, n_rim = lo_next, hi
@@ -677,7 +680,7 @@ def tunnel_steps(
                 z_lo = delta
             washers.append((w_i, n_i, z_lo, cut2, op_in2, op_out))
             continue
-        if n_max + _STEP_THROAT_A > w_min:
+        if round(n_max + _STEP_THROAT_A - w_min, _TIE_POS) > 0:
             raise ValueError(
                 f"step {i}: the narrower segment's rim reaches "
                 f"{n_max:.2f} A off the axis but the wider segment's star "
@@ -698,7 +701,13 @@ def tunnel_steps(
         got: tuple[Block, Opening, Block, Opening] | None = None
         for wsize in range(int(need / 0.9) + 8, int(need / 0.9) + 60):
             cand, _rim = _sheet(wsize, wsize)
-            if float(np.ptp(cand.coords[:, :2], axis=0).min()) / 2.0 < need:
+            if (
+                round(
+                    float(np.ptp(cand.coords[:, :2], axis=0).min()) / 2.0 - need,
+                    _TIE_POS,
+                )
+                < 0
+            ):
                 continue
             cc = np.asarray(cand.coords, dtype=float).copy()
             cc[:, :2] -= cc[:, :2].mean(axis=0)
@@ -842,7 +851,7 @@ def tunnel_steps(
     for name, rim, cen in (("low", rim_lo, cen_lo), ("high", rim_hi, cen_hi)):
         rp = tc[list(rim.atoms)]
         need = float(np.linalg.norm(rp[:, :2] - cen[:2], axis=1).max()) + _MARGIN
-        if need > min(half_x, half_y):
+        if round(need - min(half_x, half_y), _TIE_POS) > 0:
             raise ValueError(
                 f"reservoir sheet {sheet} too small for the {name} mouth: "
                 f"needs half-extent >= {need:.2f} A, has "
@@ -866,7 +875,7 @@ def tunnel_steps(
         gb = scan_opening(sheet_hi, rim_hi, tp)
         if ga is None or gb is None:
             continue
-        cost = ga[0] + gb[0]
+        cost = round(ga[0] + gb[0], _TIE_COST)
         if best is None or cost < best[0]:
             best = (cost, float(tw), tp)
     if best is None:
