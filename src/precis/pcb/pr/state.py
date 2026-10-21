@@ -72,10 +72,13 @@ class PrProblem:
     layers: tuple[str, ...]
     outline: np.ndarray  # (V, 2) convex polygon, CCW
     edge_mm: float  # copper-to-board-edge clearance
+    clearance_mm: float  # house tier fallback (per-pair use required_mm)
+    track_mm: float  # widest track any wire wants (graph pricing basis)
     via_dia_mm: float
     via_drill_mm: float
     wires: tuple[WireSpec, ...]
     obs: Obstacles
+    pads: tuple[dict[str, Any], ...]  # gerber pad rows (topo + DRC model)
     ctx: rules.RuleContext
     net_rules: dict[str, rules.NetRules]
     net_name: tuple[str, ...]  # net id -> name, index-aligned with the IR
@@ -267,10 +270,13 @@ def build_problem(
         layers=layers,
         outline=np.asarray(outline, dtype=np.float64),
         edge_mm=realize._board_edge_min_mm(config),
+        clearance_mm=max(r.clearance_mm for r in net_rules.values()),
+        track_mm=max(w.width_mm for w in wires) if wires else 0.0,
         via_dia_mm=via_dia_mm,
         via_drill_mm=via_drill_mm,
         wires=tuple(wires),
         obs=obs,
+        pads=tuple(pads),
         ctx=ctx,
         net_rules=net_rules,
         net_name=net_name,
