@@ -19,6 +19,7 @@ from precis.pcb import ir as pcb_ir
 from precis.pcb import planes as pcb_planes
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.profiles import profile_rules as pcb_profile_rules
 
 __all__ = ["board_furniture"]
 
@@ -38,6 +39,7 @@ def board_furniture(
     date: str | None = None,
     polarized: frozenset[str] = frozenset(),
     label_spots: dict[str, str] | None = None,
+    profile: str | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[dict[str, Any]]],
@@ -118,7 +120,19 @@ def board_furniture(
     first three placed — the only ordering under which every board-
     level feature that CAN move out of the way for another one
     actually does.
+
+    ``profile`` (the board's authored ``meta['profile']``, ``None``/
+    ``'prod'`` unchanged) sets the refdes label height off
+    :func:`precis.pcb.profiles.profile_rules`'s ``refdes_height_mm`` —
+    the ``prototype`` default (1.2mm) stands in for
+    :data:`~precis.pcb.silk.DEFAULT_REFDES_HEIGHT_MM` at BOTH
+    :func:`~precis.pcb.silk.build_silk` call sites below, so a board
+    with no outline (the early-return branch) gets the same taller
+    label a normally-furnished one does.
     """
+    refdes_height_mm = (
+        pcb_profile_rules(profile).refdes_height_mm or pcb_silk.DEFAULT_REFDES_HEIGHT_MM
+    )
     warnings: list[str] = []
     if not outline:
         # Both builders need a bounding box. Say so rather than
@@ -135,6 +149,7 @@ def board_furniture(
             capability=capability,
             polarized=polarized,
             label_spots=label_spots,
+            height_mm=refdes_height_mm,
         )
         warnings.extend(f"silk: {m}" for m in silk_only.dropped)
         warnings.extend(f"silk: {m}" for m in silk_only.relocated)
@@ -335,6 +350,7 @@ def board_furniture(
         outline=[(float(p[0]), float(p[1])) for p in outline],
         polarized=polarized,
         label_spots=label_spots,
+        height_mm=refdes_height_mm,
     )
     warnings.extend(f"silk: {m}" for m in silk_result.dropped)
     warnings.extend(f"silk: {m}" for m in silk_result.relocated)

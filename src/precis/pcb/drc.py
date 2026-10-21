@@ -149,6 +149,7 @@ from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
+from precis.pcb.profiles import ProfileRules
 from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
 from precis.pcb.rules import (
     NetRules,
@@ -3980,6 +3981,155 @@ def check_undeclared_pads(
     return findings
 
 
+# ── prototype-profile-only rules (docs/backlog/pcb-board-profile-prototype.md)
+# — never emitted for `prod` (`run_geometric_drc`'s own `profile_rules=None`
+# default keeps every existing caller silent on this axis, the same "None
+# means off" contract every other optional rule input in this module uses).
+
+
+#: Pad pitch below which a hand iron (not reflow) reliably bridges the
+#: neighbour — not a profile-tunable figure (the profile's JSON row only
+#: names the rule, see ``profiles.py``'s ``KNOWN_CHECKS``), a fixed
+#: physical fact about soldering with a tip, not a fab capability.
+FINE_PITCH_THRESHOLD_MM = 0.5
+
+
+def check_via_under_part(
+    model: dict[str, Any], courtyards: Sequence[Courtyard]
+) -> list[DrcFinding]:
+    """INFO: how many realized vias sit under a part's courtyard — never a
+    keep-out (Reto, 2026-10-17: "only a little"), just the count the
+    ``prototype`` profile's router-cost rule is meant to shrink. One
+    finding for the whole board, not one per via: the count is the useful
+    signal, not any one via's identity."""
+    vias = [
+        (float(item["x"]), float(item["y"]))
+        for item in model.get("copper") or []
+        if item.get("ctype") == "via"
+    ]
+    hits = vias_in_courtyard_count(vias, [poly for _, poly in courtyards])
+    if not hits:
+        return []
+    return [
+        DrcFinding(
+            rule="via_under_part",
+            severity="info",
+            where="board",
+            detail=(
+                f"{hits} via(s) sit under a part's courtyard — a soft "
+                "router cost, never a keep-out"
+            ),
+            objects=({"count": hits},),
+        )
+    ]
+
+
+def check_via_density(
+    model: dict[str, Any],
+    outline: Sequence[Sequence[float]] | None,
+    *,
+    max_per_mm2: float,
+    window_mm: float,
+    step_mm: float,
+) -> list[DrcFinding]:
+    """WARN: a ``window_mm`` x ``window_mm`` window anywhere over the
+    board carrying more via centres than ``max_per_mm2 * window_mm**2`` —
+    the ``prototype`` profile's soft density ceiling: vias are what a
+    rework pass has to dig past, so the limit is on any one window, never
+    the board average (docs/backlog/pcb-board-profile-prototype.md). The
+    window slides by ``step_mm`` over the outline's own bounding box.
+    Advisory only — never blocks a route. Reports the single WORST window,
+    not one finding per window: a packed cluster is one complaint, not a
+    wall of identical ones."""
+    if not outline:
+        return []
+    vias = [
+        (float(item["x"]), float(item["y"]))
+        for item in model.get("copper") or []
+        if item.get("ctype") == "via"
+    ]
+    if not vias:
+        return []
+    xs = [float(p[0]) for p in outline]
+    ys = [float(p[1]) for p in outline]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    max_count = max_per_mm2 * window_mm * window_mm
+    worst = 0
+    worst_at: tuple[float, float] | None = None
+    wx = min_x
+    while wx <= max_x:
+        wy = min_y
+        while wy <= max_y:
+            count = sum(
+                1
+                for x, y in vias
+                if wx <= x <= wx + window_mm and wy <= y <= wy + window_mm
+            )
+            if count > max_count and count > worst:
+                worst, worst_at = count, (wx, wy)
+            wy += step_mm
+        wx += step_mm
+    if worst_at is None:
+        return []
+    density = worst / (window_mm * window_mm)
+    return [
+        DrcFinding(
+            rule="via_density",
+            severity="warn",
+            where=f"window @ ({worst_at[0]:g}, {worst_at[1]:g})",
+            detail=(
+                f"{worst} via(s) in a {window_mm:g}x{window_mm:g} mm window "
+                f"({density:.2f}/mm^2) exceeds the {max_per_mm2:.2f}/mm^2 "
+                "prototype ceiling — vias are what a rework pass has to dig "
+                "past"
+            ),
+            objects=({"count": worst, "window_mm": window_mm},),
+        )
+    ]
+
+
+def check_fine_pitch_pad(model: dict[str, Any]) -> list[DrcFinding]:
+    """WARN: a part whose own pads sit closer than
+    :data:`FINE_PITCH_THRESHOLD_MM` centre-to-centre — hard to hand
+    solder with an iron. One finding per refdes, naming its tightest
+    pair. Pads are deduped by ``(refdes, pin)`` first, so a through-hole
+    pad flashed on more than one layer never reads as its own
+    neighbour."""
+    by_refdes: dict[str, dict[Any, tuple[float, float]]] = {}
+    for pad in model.get("pads") or []:
+        refdes = pad.get("refdes")
+        if not refdes:
+            continue
+        key = pad.get("pin") if pad.get("pin") is not None else id(pad)
+        by_refdes.setdefault(str(refdes), {})[key] = (
+            float(pad["x"]),
+            float(pad["y"]),
+        )
+    findings: list[DrcFinding] = []
+    for refdes, pins in sorted(by_refdes.items()):
+        centers = list(pins.values())
+        if len(centers) < 2:
+            continue
+        best = min(_dist(a, b) for i, a in enumerate(centers) for b in centers[i + 1 :])
+        if best < FINE_PITCH_THRESHOLD_MM:
+            findings.append(
+                DrcFinding(
+                    rule="fine_pitch_pad",
+                    severity="warn",
+                    where=f"part {refdes}",
+                    detail=(
+                        f"{refdes}: pads {best * 1000:.0f} um apart, below "
+                        f"the {FINE_PITCH_THRESHOLD_MM * 1000:.0f} um "
+                        "prototype hand-solder floor"
+                    ),
+                    objects=({"refdes": refdes, "pitch_mm": best},),
+                    margin_mm=best - FINE_PITCH_THRESHOLD_MM,
+                )
+            )
+    return findings
+
+
 def run_geometric_drc(
     model: dict[str, Any],
     *,
@@ -3998,6 +4148,7 @@ def run_geometric_drc(
     phase: str = "netlist",
     undeclared_unchecked: Sequence[str] = (),
     courtyard_clearance_mm: float | None = None,
+    profile_rules: ProfileRules | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -4051,6 +4202,14 @@ def run_geometric_drc(
     ``model["pads"]``, plus a not-checked note for the refdes
     ``undeclared_unchecked`` names). ``None``/empty keeps a caller that
     never built them silent on that axis — same contract as ``unrouted``.
+
+    ``profile_rules`` (:func:`precis.pcb.profiles.profile_rules` for the
+    board's authored profile) gates the prototype-only rules
+    (:func:`check_via_density`, :func:`check_via_under_part`,
+    :func:`check_fine_pitch_pad`) by its ``checks`` set — ``None`` (the
+    default, same as a ``prod`` board's all-off rules) emits none of the
+    three, so a caller that does not pass it stays byte-identical to
+    before these rules existed.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -4086,6 +4245,25 @@ def run_geometric_drc(
         findings += check_courtyard_hole(courtyards, holes)
     findings += check_silk_missing(census or (), model)
     findings += check_silk_printability(census or (), capability)
+    if profile_rules is not None:
+        checks = profile_rules.checks
+        if (
+            "via_density" in checks
+            and profile_rules.via_density_max_per_mm2 is not None
+            and profile_rules.via_density_window_mm is not None
+            and profile_rules.via_density_step_mm is not None
+        ):
+            findings += check_via_density(
+                model,
+                outline,
+                max_per_mm2=profile_rules.via_density_max_per_mm2,
+                window_mm=profile_rules.via_density_window_mm,
+                step_mm=profile_rules.via_density_step_mm,
+            )
+        if "via_under_part" in checks and courtyards:
+            findings += check_via_under_part(model, courtyards)
+        if "fine_pitch_pad" in checks:
+            findings += check_fine_pitch_pad(model)
     return findings
 
 

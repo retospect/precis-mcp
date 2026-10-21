@@ -53,6 +53,13 @@ same findings, same table.
   rank ≥ a pin's declared `min_dielectric` (C0G > X7R > X5R > Y5V/Z5U)
   on the pin's rail. The findings name both numbers and the policy; a
   description that does not parse is a not-checked info row.
+- Three rules fire only on `profile='prototype'` boards (`prod` DRC
+  output is unchanged — [[precis-pcb-help]]): `via_density` (warn — more
+  vias in some 10×10mm window than the profile's per-mm² ceiling allows),
+  `via_under_part` (info, with a count — vias sitting under a part's
+  courtyard; a soft router-cost signal, never a keep-out), `fine_pitch_pad`
+  (warn — a part's own pads closer than 0.5mm centre-to-centre, hard to
+  hand-solder).
 
 ## Read a run as a delta — finding ids
 

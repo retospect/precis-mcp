@@ -4063,6 +4063,7 @@ class PcbHandler(Handler):
         date: str | None = None,
         polarized: frozenset[str] = frozenset(),
         label_spots: dict[str, str] | None = None,
+        profile: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, list[dict[str, Any]]],
@@ -4089,6 +4090,7 @@ class PcbHandler(Handler):
             date=date,
             polarized=polarized,
             label_spots=label_spots,
+            profile=profile,
         )
 
     def _drc_pads(self, ref_id: int, layers: list[str]) -> list[dict[str, Any]]:
@@ -4482,9 +4484,8 @@ class PcbHandler(Handler):
             for i in design["instances"]
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
-        capability = self._stackup_capability(
-            board["stackup"], pcb_profiles.board_profile(board.get("meta"))
-        )
+        board_profile_name = pcb_profiles.board_profile(board.get("meta"))
+        capability = self._stackup_capability(board["stackup"], board_profile_name)
         pads, silk_draws, furniture_warnings, silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -4500,6 +4501,7 @@ class PcbHandler(Handler):
                 clearance_mm=self._furniture_clearance_mm(board["stackup"]),
                 capability=capability,
                 date=_export_date(),
+                profile=board_profile_name,
             )
         )
         warnings.extend(furniture_warnings)
@@ -6933,9 +6935,8 @@ class PcbHandler(Handler):
         copper = self.store.pcb_copper_list(int(board["board_id"]))
         vias = [c for c in copper if c.get("ctype") == "via"]
         outline = self._outline_from_features(ref_id) or []
-        capability = self._stackup_capability(
-            board["stackup"], pcb_profiles.board_profile(board.get("meta"))
-        )
+        board_profile_name = pcb_profiles.board_profile(board.get("meta"))
+        capability = self._stackup_capability(board["stackup"], board_profile_name)
         pads, silk_draws, furniture_warnings, _silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -6951,6 +6952,7 @@ class PcbHandler(Handler):
                 clearance_mm=self._furniture_clearance_mm(board["stackup"]),
                 capability=capability,
                 date=_export_date(),
+                profile=board_profile_name,
             )
         )
         model: dict[str, Any] = {

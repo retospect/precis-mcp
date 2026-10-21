@@ -20,6 +20,7 @@ import pytest
 from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
+from precis.pcb.profiles import profile_rules
 from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.pcb.silk import SilkPlacement
@@ -3217,3 +3218,243 @@ def test_unnetted_items_are_not_the_same_net() -> None:
     }
     findings = drc.check_clearance(model, _CAP4, net_rules={})
     assert [f.severity for f in findings] == ["error"]
+
+
+# ── prototype-profile-only rules (docs/backlog/pcb-board-profile-prototype.md)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _via_at(x: float, y: float) -> dict[str, Any]:
+    """The minimal ``model["copper"]`` via shape :func:`drc.
+    vias_in_courtyard_count`/:func:`drc.check_via_under_part`/
+    :func:`drc.check_via_density` actually read -- ``ctype``, ``x``, ``y``;
+    ``dia_mm`` is carried too since every real via row has one, though none
+    of these three functions look at it."""
+    return {"ctype": "via", "x": x, "y": y, "dia_mm": 0.3}
+
+
+def test_fine_pitch_threshold_is_half_a_millimetre() -> None:
+    assert drc.FINE_PITCH_THRESHOLD_MM == 0.5
+
+
+# ── vias_in_courtyard_count ─────────────────────────────────────────────
+
+
+def test_vias_in_courtyard_count_counts_inside_only() -> None:
+    poly = _square(0.0, 0.0, half=1.0)
+    assert drc.vias_in_courtyard_count([(0.0, 0.0)], [poly]) == 1
+    assert drc.vias_in_courtyard_count([(10.0, 10.0)], [poly]) == 0
+
+
+def test_vias_in_courtyard_count_empty_inputs_are_zero() -> None:
+    poly = _square(0.0, 0.0, half=1.0)
+    assert drc.vias_in_courtyard_count([], [poly]) == 0
+    assert drc.vias_in_courtyard_count([(0.0, 0.0)], []) == 0
+    assert drc.vias_in_courtyard_count([], []) == 0
+
+
+# ── check_via_under_part ─────────────────────────────────────────────────
+
+
+def test_check_via_under_part_quiet_when_no_via_is_under_a_courtyard() -> None:
+    model = {"copper": [_via_at(10.0, 10.0)]}
+    courtyards = [("U1", _square(0.0, 0.0))]
+    assert drc.check_via_under_part(model, courtyards) == []
+
+
+def test_check_via_under_part_fires_one_finding_with_the_aggregated_count() -> None:
+    model = {
+        "copper": [
+            _via_at(0.0, 0.0),  # under U1
+            _via_at(0.5, 0.5),  # under U1
+            _via_at(5.0, 5.0),  # under U2
+            _via_at(20.0, 20.0),  # under nothing
+        ]
+    }
+    courtyards = [("U1", _square(0.0, 0.0)), ("U2", _square(5.0, 5.0))]
+    findings = drc.check_via_under_part(model, courtyards)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "via_under_part" and f.severity == "info"
+    assert f.objects == ({"count": 3},)
+
+
+# ── check_via_density ──────────────────────────────────────────────────
+
+
+def test_check_via_density_fires_on_a_clustered_patch() -> None:
+    # Acceptance criterion 6: 6 vias clustered in a 2x2mm patch, with
+    # max_per_mm2=1.0, window_mm=2.0 -> max_count = 4, cluster has 6 -> fires.
+    model = {
+        "copper": [
+            _via_at(0.2, 0.2),
+            _via_at(1.8, 0.2),
+            _via_at(0.2, 1.8),
+            _via_at(1.8, 1.8),
+            _via_at(1.0, 1.0),
+            _via_at(0.5, 1.5),
+        ]
+    }
+    outline = [[0.0, 0.0], [2.0, 2.0]]
+    findings = drc.check_via_density(
+        model, outline, max_per_mm2=1.0, window_mm=2.0, step_mm=0.5
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "via_density" and f.severity == "warn"
+
+
+def test_check_via_density_quiet_when_the_same_vias_are_spread_far_apart() -> None:
+    # Same 6 vias, same thresholds, but spread on a 9mm pitch over a big
+    # outline -- no 2x2mm window ever holds more than one via.
+    model = {
+        "copper": [
+            _via_at(0.0, 0.0),
+            _via_at(9.0, 0.0),
+            _via_at(18.0, 0.0),
+            _via_at(0.0, 9.0),
+            _via_at(9.0, 9.0),
+            _via_at(18.0, 9.0),
+        ]
+    }
+    outline = [[0.0, 0.0], [18.0, 9.0]]
+    findings = drc.check_via_density(
+        model, outline, max_per_mm2=1.0, window_mm=2.0, step_mm=0.5
+    )
+    assert findings == []
+
+
+def test_check_via_density_empty_outline_is_a_noop() -> None:
+    model = {"copper": [_via_at(0.0, 0.0)]}
+    assert (
+        drc.check_via_density(model, [], max_per_mm2=1.0, window_mm=2.0, step_mm=0.5)
+        == []
+    )
+    assert (
+        drc.check_via_density(model, None, max_per_mm2=1.0, window_mm=2.0, step_mm=0.5)
+        == []
+    )
+
+
+def test_check_via_density_empty_vias_is_a_noop() -> None:
+    model: dict[str, Any] = {"copper": []}
+    outline = [[0.0, 0.0], [10.0, 10.0]]
+    assert (
+        drc.check_via_density(
+            model, outline, max_per_mm2=1.0, window_mm=2.0, step_mm=0.5
+        )
+        == []
+    )
+
+
+# ── check_fine_pitch_pad ──────────────────────────────────────────────
+
+
+def _fine_pitch_pad(refdes: str, pin: str, x: float, y: float) -> dict[str, Any]:
+    return {"refdes": refdes, "pin": pin, "x": x, "y": y}
+
+
+def test_check_fine_pitch_pad_fires_for_a_tight_pair_on_one_refdes() -> None:
+    model = {
+        "pads": [
+            _fine_pitch_pad("U1", "1", 0.0, 0.0),
+            _fine_pitch_pad("U1", "2", 0.3, 0.0),  # 0.3mm < 0.5mm threshold
+        ]
+    }
+    findings = drc.check_fine_pitch_pad(model)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "fine_pitch_pad" and f.severity == "warn"
+    assert f.objects[0]["refdes"] == "U1"
+    assert f.objects[0]["pitch_mm"] == pytest.approx(0.3)
+    assert f.margin_mm is not None and f.margin_mm < 0
+    assert f.margin_mm == pytest.approx(0.3 - drc.FINE_PITCH_THRESHOLD_MM)
+
+
+def test_check_fine_pitch_pad_does_not_cross_refdes() -> None:
+    # Each pad is 0.1mm from the OTHER part's pad, but each refdes has
+    # only one pad of its own -- no within-part pair to measure.
+    model = {
+        "pads": [
+            _fine_pitch_pad("U1", "1", 0.0, 0.0),
+            _fine_pitch_pad("U2", "1", 0.1, 0.0),
+        ]
+    }
+    assert drc.check_fine_pitch_pad(model) == []
+
+
+def test_check_fine_pitch_pad_single_pad_refdes_never_fires() -> None:
+    model = {"pads": [_fine_pitch_pad("U3", "1", 0.0, 0.0)]}
+    assert drc.check_fine_pitch_pad(model) == []
+
+
+def test_check_fine_pitch_pad_quiet_at_or_above_the_threshold() -> None:
+    model = {
+        "pads": [
+            _fine_pitch_pad("U4", "1", 0.0, 0.0),
+            _fine_pitch_pad(
+                "U4", "2", drc.FINE_PITCH_THRESHOLD_MM, 0.0
+            ),  # exactly 0.5mm
+        ]
+    }
+    assert drc.check_fine_pitch_pad(model) == []
+
+
+def test_check_fine_pitch_pad_dedupes_the_same_pin_flashed_on_two_layers() -> None:
+    # A through-hole pad flashed on two layers: two rows, same refdes+pin,
+    # same coordinates -- must not count as its own neighbour.
+    model = {
+        "pads": [
+            _fine_pitch_pad("U5", "1", 0.0, 0.0),
+            _fine_pitch_pad("U5", "1", 0.0, 0.0),
+        ]
+    }
+    assert drc.check_fine_pitch_pad(model) == []
+
+
+# ── run_geometric_drc: profile_rules gating ──────────────────────────────
+
+
+def _via_under_part_model_and_courtyards() -> tuple[dict[str, Any], list]:
+    """A board whose single via sits inside U1's courtyard -- would trigger
+    :func:`drc.check_via_under_part` if that rule were called directly."""
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [_via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.2)],
+    }
+    courtyards = [("U1", _square(0.0, 0.0))]
+    return model, courtyards
+
+
+def test_run_geometric_drc_default_profile_rules_is_silent_about_via_under_part() -> (
+    None
+):
+    model, courtyards = _via_under_part_model_and_courtyards()
+    findings = drc.run_geometric_drc(
+        model, capability=_CAP4, outline=None, courtyards=courtyards
+    )
+    assert "via_under_part" not in {f.rule for f in findings}
+
+
+def test_run_geometric_drc_prototype_profile_rules_emits_via_under_part() -> None:
+    model, courtyards = _via_under_part_model_and_courtyards()
+    findings = drc.run_geometric_drc(
+        model,
+        capability=_CAP4,
+        outline=None,
+        courtyards=courtyards,
+        profile_rules=profile_rules("prototype"),
+    )
+    assert "via_under_part" in {f.rule for f in findings}
+
+
+def test_run_geometric_drc_prod_profile_rules_stays_as_silent_as_none() -> None:
+    model, courtyards = _via_under_part_model_and_courtyards()
+    findings = drc.run_geometric_drc(
+        model,
+        capability=_CAP4,
+        outline=None,
+        courtyards=courtyards,
+        profile_rules=profile_rules("prod"),
+    )
+    assert "via_under_part" not in {f.rule for f in findings}

@@ -610,10 +610,10 @@ def run(
     rather than a second, narrower one."""
     board = design["board"]
     stackup = board["stackup"]
+    board_profile_name = pcb_profiles.board_profile(board.get("meta"))
+    board_profile_rules = pcb_profiles.profile_rules(board_profile_name)
     try:
-        capability = pcb_session.board_capability(
-            stackup, pcb_profiles.board_profile(board.get("meta"))
-        )
+        capability = pcb_session.board_capability(stackup, board_profile_name)
     except ValueError as exc:
         raise BadInput(f"pcb: {exc}") from exc
     layer_names = [str(layer.get("name")) for layer in stackup]
@@ -818,6 +818,7 @@ def run(
             ).clearance_mm,
             capability=capability,
             date=export_date(),
+            profile=board_profile_name,
         )
     )
     model = {
@@ -878,6 +879,7 @@ def run(
         phase=phase,
         courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
         undeclared_unchecked=undeclared_unchecked,
+        profile_rules=board_profile_rules,
     )
     # Parylene-coater size (gr414481): drc.py knows no components, so
     # the EWOD gate (an `ewod_pad_array` generator) is decided here.

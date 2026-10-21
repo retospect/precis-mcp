@@ -172,7 +172,14 @@ is read by the handler, the DRC render, `pcb_route` and `pcb_argue`; a
 has no consumer until a drill-size check exists.
 
 1. **Router cost, `vias_under_part` count, `via_density`,
-   `via_under_part`, `fine_pitch_pad`, silk height.** Items 4 and 6.
+   `via_under_part`, `fine_pitch_pad`, silk height — shipped.** Items 4
+   and 6. Router cost and the job-summary count: gr502369 (see the via
+   cost note). `drc.check_via_density`/`check_via_under_part`/
+   `check_fine_pitch_pad` run in `run_geometric_drc`, gated by its
+   `profile_rules` argument's `.checks` set (`check_run` passes it;
+   `None`, every other caller, emits none of them — criterion 8).
+   `furniture.board_furniture(profile=...)` threads
+   `refdes_height_mm` into both `build_silk` calls.
 2. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
    [pcb-stackup-regions](pcb-stackup-regions.md) slice 10 (it owns the
    spoke generator and the per-class key); this slice then only sets the

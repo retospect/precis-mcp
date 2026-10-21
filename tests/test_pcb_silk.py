@@ -29,10 +29,13 @@ from precis.pcb import (
     stroke_font,
 )
 from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.furniture import board_furniture
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import from_graph, instance_courtyard_polygon
 from precis.pcb.planes import plane_pours, point_in_pour
+from precis.pcb.profiles import profile_rules
 from precis.pcb.silk import (
+    DEFAULT_REFDES_HEIGHT_MM,
     FIDUCIAL_COPPER_DIA_MM,
     FIDUCIAL_MARGIN_MM,
     FIDUCIAL_MASK_DIA_MM,
@@ -3309,3 +3312,42 @@ def test_a_via_no_bend_clears_still_cuts_the_outline():
     assert f"broken around {label}" in str(row.reason), row.reason
     assert "bent around" not in str(row.reason)
     assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
+
+
+# ── board_furniture: profile-tuned refdes label height ───────────────────
+#
+# docs/backlog/pcb-board-profile-prototype.md item 6: `board_furniture`
+# threads `profile_rules(profile).refdes_height_mm` into both `build_silk`
+# call sites. `outline=None` below takes the no-outline branch (fiducials
+# and the title block skipped), which still computes the height BEFORE
+# that branch -- so this also covers "a board with no outline gets the
+# same taller label a normally-furnished one does" (furniture.py's own
+# docstring).
+
+
+def _furnish(profile: str | None):
+    ir = from_graph(_graph("U1", 16, x=10.0, y=5.0), stackup=DEFAULT_STACKUP)
+    _pads, _draws, _warnings, census, _copper = board_furniture(
+        ir,
+        pads=[],
+        vias=[],
+        instance_sides={"U1": "top"},
+        copper=[],
+        outline=None,
+        layer_names=["F.Cu", "B.Cu"],
+        slug="test",
+        clearance_mm=None,
+        profile=profile,
+    )
+    return {c.height_mm for c in census if c.kind == "refdes"}
+
+
+@pytest.mark.parametrize("profile", [None, "prod"])
+def test_board_furniture_prod_keeps_the_default_refdes_height(profile):
+    assert _furnish(profile) == {DEFAULT_REFDES_HEIGHT_MM}
+
+
+def test_board_furniture_prototype_profile_raises_the_refdes_height():
+    expected = profile_rules("prototype").refdes_height_mm
+    assert expected != DEFAULT_REFDES_HEIGHT_MM  # the test would be vacuous otherwise
+    assert _furnish("prototype") == {expected}

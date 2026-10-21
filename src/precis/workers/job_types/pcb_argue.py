@@ -160,6 +160,7 @@ def _board_inputs(
         ),
         "fixed_copper": fixed_copper,
         "copper": store.pcb_copper_list(int(board_id)),
+        "profile": pcb_profiles.board_profile(board.get("meta")),
         "capability": pcb_session.stackup_capability(
             stackup, pcb_profiles.board_profile(board.get("meta"))
         ),
@@ -208,6 +209,7 @@ def _catalogue(
             date=datetime.now(UTC).date().isoformat(),
             polarized=pcb_session.polarized_refdes(design),
             label_spots=pcb_session.label_spots(design),
+            profile=inp["profile"],
         )
         model: dict[str, Any] = {
             "layers": inp["layers"],
