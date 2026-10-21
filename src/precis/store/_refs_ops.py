@@ -3529,6 +3529,7 @@ class RefsMixin:
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
+        meta_eq: tuple[str, str] | None = None,
     ) -> tuple[int, list[tuple[tuple[str | None, ...], int]]]:
         """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
 
@@ -3581,6 +3582,7 @@ class RefsMixin:
             exclude_ref_ids=exclude_ref_ids,
             since=since,
             until=until,
+            meta_eq=meta_eq,
         )
         where = " AND ".join(clauses)
 
@@ -3654,6 +3656,7 @@ def filtered_ref_clauses(
     exclude_ref_ids: list[int] | None = None,
     since: Any = None,
     until: Any = None,
+    meta_eq: tuple[str, str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """The ``WHERE`` clause list (+ ordered params) shared by the
     ``view='count'`` SQL and any per-kind drill into the *same* filtered
@@ -3661,6 +3664,9 @@ def filtered_ref_clauses(
     needed to intersect exactly the set the count described
     (mcp-introspection gap closures 2026-10-14). Aliases table ``r`` =
     ``refs``; callers append their own clauses after these.
+
+    ``meta_eq`` is a scalar ``meta ->> key = value`` equality filter
+    (gr502653: job's ``meta.job_type``).
     """
     clauses = ["r.retired_at IS NULL", "r.kind = %s"]
     params: list[Any] = [kind]
@@ -3709,6 +3715,9 @@ def filtered_ref_clauses(
     if until is not None:
         clauses.append("r.created_at < %s")
         params.append(until)
+    if meta_eq is not None:
+        clauses.append("r.meta ->> %s = %s")
+        params.extend(meta_eq)
     return clauses, params
 
 

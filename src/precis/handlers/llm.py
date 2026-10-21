@@ -41,7 +41,9 @@ class LlmHandler(NumericRefHandler):
             "q='careful SQL'). The llm_reconcile pass mints + refreshes cards "
             "against the live OpenRouter feed and flags drift. "
             "get(kind='llm', id='/placement') reports the local vs cloud share "
-            "of logged calls, routed vs landed, per tier and day. Never exported. "
+            "of logged calls, routed vs landed, per tier and day; "
+            "get(kind='llm', id='op:<source>', view='stats') rolls up "
+            "llm_call_log per calling op. Never exported. "
             "See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
@@ -105,6 +107,22 @@ class LlmHandler(NumericRefHandler):
             return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
+        # ``id='op:<source>'`` — per-op ``llm_call_log`` stats (gr502653):
+        # the source names the calling op (e.g. ``op:graph_garden:propose``).
+        if isinstance(id, str) and id.strip().startswith("op:"):
+            source = id.strip()[3:].strip()
+            if not source:
+                raise BadInput(
+                    "op: needs the llm_call_log source name",
+                    next="get(kind='llm', id='op:<source>', view='stats')",
+                )
+            if view not in (None, "stats"):
+                raise BadInput(
+                    f"view={view!r} doesn't apply to an op: read",
+                    options=["stats"],
+                    next=f"get(kind='llm', id='op:{source}', view='stats')",
+                )
+            return Response(body=self._render_op_stats(source))
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if concrete and view in ("tote", "reviews"):
             assert id is not None  # `concrete` already guarantees this
@@ -318,6 +336,36 @@ class LlmHandler(NumericRefHandler):
             for src, r in by_src:
                 err = f", err {r.error_rate:.0%}" if r.error_rate is not None else ""
                 lines.append(f"  {src}: {r.calls} calls, ${r.cost_usd:.4f}{err}")
+        return "\n".join(lines)
+
+    def _render_op_stats(self, source: str, *, window_days: int = 30) -> str:
+        """``id='op:<source>', view='stats'`` — the per-op tote rollup over
+        ``llm_call_log`` plus a per-model split (gr502653)."""
+        tote = llm_catalog.llm_op_tote(self.store, source, window_days=window_days)
+        lines = [f"# llm op stats — {source} (last {window_days}d)"]
+        if tote.calls == 0:
+            lines.append(f"no llm_call_log rows for source {source!r} in the window.")
+            return "\n".join(lines)
+        lines.append(f"calls: {tote.calls}")
+        lines.append(f"realized cost: ${tote.cost_usd:.4f}")
+        if tote.error_rate is not None:
+            lines.append(f"error rate: {tote.error_rate:.1%}")
+        if tote.p50_duration_ms is not None:
+            lines.append(f"p50 duration: {tote.p50_duration_ms:.0f} ms")
+        if tote.avg_turns is not None:
+            lines.append(f"avg turns: {tote.avg_turns:.2f}")
+        if tote.input_tokens or tote.output_tokens:
+            lines.append(
+                f"tokens: {tote.input_tokens:,} in / {tote.output_tokens:,} out"
+            )
+        by_model = llm_catalog.llm_op_models(
+            self.store, source, window_days=window_days
+        )
+        if len(by_model) > 1:
+            lines += ["", "by model:"]
+            for model, r in by_model:
+                err = f", err {r.error_rate:.0%}" if r.error_rate is not None else ""
+                lines.append(f"  {model}: {r.calls} calls, ${r.cost_usd:.4f}{err}")
         return "\n".join(lines)
 
     def _render_placement(

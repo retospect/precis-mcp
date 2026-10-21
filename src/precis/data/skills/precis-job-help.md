@@ -307,6 +307,38 @@ The answer for "is the queue healthy *here*?" — never raw `refs`/`links`
 SQL. `link=` stays right for jobs pointing AT a ref; `under=` is the
 hierarchy question.
 
+## Jobs of one type — how many ran, finished, failed?
+
+`args={'job_type': ...}` filters on `meta.job_type` — listing, count, and
+`under=` all honour it, and `view='count'` + `group_by='state'` gives the
+status facets ("minted/finished/failed since <t>"):
+
+```python
+search(kind="job", args={"job_type": "graph_garden"})                 # list, recency
+search(kind="job", view="count",
+       args={"job_type": "graph_garden", "group_by": "state"})        # counts by status
+search(kind="job", view="count", status="*",
+       args={"job_type": "graph_garden", "since": "2026-10-20",
+             "group_by": "state"})                                    # in a window
+search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
+```
+
+`status=` narrows to one STATUS; `since=`/`until=` bound `created_at`
+(mint time). `q=` is title-lexical on this path; `sort=`/`mode=` are
+rejected — they belong to the unfiltered ranked path. This is the MCP
+answer for what used to need `refs.meta->>'job_type'` SQL.
+
+## When does a cadence fire next?
+
+```python
+get(kind="job", id="/cadence/graph_garden")   # interval, next_fire_at, last fire+host
+get(kind="job", id="/cadence")                # every scheduler_leases row
+```
+
+Each recurring cadence holds a `scheduler_leases` row — the lease clock
+the decentralized scheduler claims. `next_fire_at` in the past means the
+cadence is due, not broken (any live worker may claim it).
+
 ## Cancel a running job
 ## Stop a job that's taking too long
 

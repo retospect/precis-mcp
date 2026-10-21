@@ -107,6 +107,48 @@ class TestReviewLog:
         assert "observed-telemetry" in body
 
 
+class TestOpStats:
+    """``get(kind='llm', id='op:<source>', view='stats')`` — the per-op
+    ``llm_call_log`` rollup (gr502653)."""
+
+    def test_tote_rolls_up_one_source(self, store: Any) -> None:
+        from precis.llm_catalog import llm_op_tote
+
+        src = "test_op:propose"
+        _log_call(store, "model-a", source=src, cost=0.01)
+        _log_call(store, "model-a", source=src, cost=0.01, errored=True)
+        _log_call(store, "model-b", source=src, cost=0.02)
+        _log_call(store, "model-c", source="other_op", cost=0.50)
+
+        tote = llm_op_tote(store, src)
+        assert tote.calls == 3
+        assert abs(tote.cost_usd - 0.04) < 1e-6
+        assert tote.error_rate == pytest.approx(1 / 3)
+
+    def test_view_renders(self, store: Any) -> None:
+        src = "test_op:plan"
+        _log_call(store, "model-a", source=src, cost=0.01)
+        _log_call(store, "model-b", source=src, cost=0.02)
+        body = _handler(store).get(id=f"op:{src}", view="stats").body
+        assert f"op stats — {src}" in body
+        assert "calls: 2" in body
+        assert "by model:" in body
+        assert "model-a" in body and "model-b" in body
+
+    def test_empty_source(self, store: Any) -> None:
+        body = _handler(store).get(id="op:no-such-source", view="stats").body
+        assert "no llm_call_log rows" in body
+
+    def test_bad_view_and_empty_source_rejected(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        with pytest.raises(BadInput, match="view="):
+            h.get(id="op:x", view="tote")
+        with pytest.raises(BadInput, match="source"):
+            h.get(id="op:", view="stats")
+
+
 class TestTote:
     def test_rollup(self, store: Any) -> None:
         from precis.llm_catalog import llm_tote

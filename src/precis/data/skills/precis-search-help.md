@@ -400,6 +400,12 @@ bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind
 per call — no cross-kind or `sort=` on this shape.
 
+Jobs of ONE `job_type` (the "how many `graph_garden` jobs ran/failed
+since <t>" question): `args={'job_type': '<type>'}` filters listing and
+count alike — `view='count'` + `group_by='state'` is the status-facet
+answer; on the listing `q=`/`status=`/`since=`/`link=` all still narrow
+(see `precis-job-help`).
+
 ## What keys/tags does a kind actually carry? (view='meta' / 'tags')
 ## Inventory a kind's meta fields or tag values — no raw SQL
 

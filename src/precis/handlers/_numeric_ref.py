@@ -1139,6 +1139,7 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None,
         since: str | None = None,
         until: str | None = None,
+        meta_eq: tuple[str, str] | None = None,
     ) -> Response:
         """``search(kind=K, view='count')`` — filtered total + facet counts.
 
@@ -1185,6 +1186,7 @@ class NumericRefHandler(Handler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            meta_eq=meta_eq,
         )
 
         filters: list[str] = []
@@ -1194,6 +1196,8 @@ class NumericRefHandler(Handler):
             filters.append(f"tags={tags!r}")
         if link_label:
             filters.append(f"linked to {link_label}")
+        if meta_eq is not None:
+            filters.append(f"meta.{meta_eq[0]}={meta_eq[1]!r}")
         if since_dt is not None or until_dt is not None:
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
@@ -1257,6 +1261,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             since=since_dt,
             until=until_dt,
+            meta_eq=meta_eq,
             total=total,
         )
         if extra:
@@ -1275,6 +1280,7 @@ class NumericRefHandler(Handler):
         exclude_ref_ids: list[int] | None,
         since: datetime | None,
         until: datetime | None,
+        meta_eq: tuple[str, str] | None,
         total: int,
     ) -> str:
         """Optional per-kind trailer on ``view='count'`` (default: none).

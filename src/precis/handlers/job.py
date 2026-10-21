@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._numeric_ref import NumericRefHandler, _parse_window_bound
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 from precis.store._refs_ops import filtered_ref_clauses
 from precis.store._salience import current_background_actor
 from precis.store.types import Ref
@@ -124,6 +125,24 @@ _UNDER_MEMBER_CAP = 5000
 _UNDER_JOB_CAP = 25000
 #: Lines the ``view='tree'`` render may emit.
 _UNDER_TREE_CAP = 300
+
+
+def _fmt_utc(value: Any) -> str:
+    """``YYYY-MM-DDTHH:MM:SSZ`` for a timestamp, ``-`` when absent."""
+    dt = as_utc(value)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt is not None else "-"
+
+
+def _fmt_interval(seconds: int) -> str:
+    """``300`` → ``5m``; whole hours/days collapse, else ``<n>s``."""
+    s = int(seconds)
+    if s and s % 86400 == 0:
+        return f"{s // 86400}d"
+    if s and s % 3600 == 0:
+        return f"{s // 3600}h"
+    if s and s % 60 == 0:
+        return f"{s // 60}m"
+    return f"{s}s"
 
 
 def _norm_error_head(text: str | None) -> str:
@@ -334,7 +353,7 @@ class JobHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "logs", "builds", "throughput")
+        return ("recent", "logs", "builds", "throughput", "cadence")
 
     def get(
         self,
@@ -387,7 +406,72 @@ class JobHandler(NumericRefHandler):
         if view == "throughput" or view.startswith("throughput?"):
             _, _, query_string = view.partition("?")
             return self._render_throughput_view(query_string)
+        if view == "cadence" or view.startswith("cadence/"):
+            _, _, name = view.partition("/")
+            return self._render_cadence_view(name or None)
         return super()._list_view(view)
+
+    def _render_cadence_view(self, name: str | None) -> Response:
+        """``id='/cadence[/<name>]'`` — the ``scheduler_leases`` lease
+        clocks: when each recurring cadence next fires (gr502653 — the
+        "when does <cadence> run next" read used to need prod-psql)."""
+        leases = self.store.scheduler_leases()
+        if name is None:
+            from precis.format import render_agent_table
+
+            rows = [
+                {
+                    "name": ln.name,
+                    "every": _fmt_interval(ln.interval_s),
+                    "next_fire_at": _fmt_utc(ln.next_fire_at),
+                    "last_fired_at": _fmt_utc(ln.last_fired_at),
+                    "last_host": ln.last_host or "-",
+                }
+                for ln in leases
+            ]
+            body = (
+                f"# cadences ({len(rows)})\n\n"
+                + render_agent_table(
+                    rows,
+                    schema=[
+                        "name",
+                        "every",
+                        "next_fire_at",
+                        "last_fired_at",
+                        "last_host",
+                    ],
+                )
+                if rows
+                else "# cadences\n\nno scheduler_leases rows."
+            )
+            return Response(body=body, result_count=len(rows))
+        lease = next((ln for ln in leases if ln.name == name), None)
+        if lease is None:
+            raise NotFound(
+                f"no cadence {name!r} in scheduler_leases",
+                options=[ln.name for ln in leases],
+                next="get(kind='job', id='/cadence') lists every cadence",
+            )
+        now = datetime.now(UTC)
+        due = lease.next_fire_at - now
+        when = (
+            f"due now (overdue by {_fmt_interval(max(0, int(-due.total_seconds())))})"
+            if due.total_seconds() <= 0
+            else f"in {_fmt_interval(int(due.total_seconds()))}"
+        )
+        lines = [
+            f"# cadence {lease.name}",
+            f"interval: {_fmt_interval(lease.interval_s)}",
+            f"next fire: {_fmt_utc(lease.next_fire_at)} ({when})",
+            f"last fired: {_fmt_utc(lease.last_fired_at)}",
+        ]
+        if lease.last_host:
+            lines.append(f"last host: {lease.last_host}")
+        lines.append(
+            "related: search(kind='job', args={'job_type': '<type>'}) for the "
+            "jobs a fire mints"
+        )
+        return Response(body="\n".join(lines), result_count=1)
 
     def _render_throughput_view(self, query_string: str) -> Response:
         """``id='/throughput?since=<hrs>'`` — is the fleet working or idle?
@@ -1805,6 +1889,7 @@ class JobHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None,
         since: datetime | None,
         until: datetime | None,
+        meta_eq: tuple[str, str] | None,
         total: int,
     ) -> str:
         """Top-N error heads per failing job_type over the *same* filtered
@@ -1827,6 +1912,7 @@ class JobHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             since=since,
             until=until,
+            meta_eq=meta_eq,
         )
         clauses.append(_COUNT_FAILED_CLAUSE)
         params.append(_COUNT_HEAD_SCAN_CAP)
@@ -1897,8 +1983,14 @@ class JobHandler(NumericRefHandler):
         until: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        job_type: str | None = None,
         **kw: Any,
     ) -> Response:
+        if job_type is not None and not str(job_type).strip():
+            raise BadInput(
+                "job_type= must be a non-empty job_type name",
+                next="search(kind='job', args={'job_type': 'fix_gripe'})",
+            )
         if under is not None or depth is not None or axis is not None:
             for bad in ("q", "tags", "link", "mode", "sort"):
                 v = kw.get(bad)
@@ -1921,6 +2013,25 @@ class JobHandler(NumericRefHandler):
                 until=until,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                job_type=job_type,
+            )
+        if job_type is not None:
+            return self._search_by_job_type(
+                str(job_type).strip(),
+                q=kw.get("q"),
+                view=view,
+                status=status,
+                tags=kw.get("tags"),
+                link=kw.get("link"),
+                page_size=page_size,
+                page=page,
+                group_by=group_by,
+                since=since,
+                until=until,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                sort=kw.get("sort"),
+                mode=kw.get("mode"),
             )
         return super().search(
             view=view,
@@ -1950,6 +2061,7 @@ class JobHandler(NumericRefHandler):
         until: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
+        job_type: str | None = None,
     ) -> Response:
         """``search(kind='job', under=<ref>)`` — jobs *for* a root ref.
 
@@ -2002,7 +2114,11 @@ class JobHandler(NumericRefHandler):
         root = self._resolve_under_root(under)
         members, member_capped = self._under_members(root.id, n_depth)
         jobs = self._under_jobs(
-            [m[0] for m in members], status=status, since=since, until=until
+            [m[0] for m in members],
+            status=status,
+            since=since,
+            until=until,
+            job_type=job_type,
         )
         if include_ref_ids is not None:
             allowed = set(include_ref_ids)
@@ -2117,6 +2233,7 @@ class JobHandler(NumericRefHandler):
         status: str | None,
         since: str | None,
         until: str | None,
+        job_type: str | None = None,
     ) -> list[tuple[int, int | None, int | None, str, str, str | None, str]]:
         """Live jobs attached to the member set: ``(ref_id, parent_id,
         link_member_id, title, job_type, status, created_iso)``.
@@ -2145,6 +2262,9 @@ class JobHandler(NumericRefHandler):
                 params.append(
                     _parse_window_bound(bound, "since" if op == ">=" else "until")
                 )
+        if job_type is not None:
+            clauses.append("j.meta->>'job_type' = %s")
+            params.append(job_type)
         sql = f"""
             SELECT j.ref_id, j.parent_id, lm.member_id, j.title,
                    j.meta->>'job_type' AS job_type, st.value AS status,
@@ -2191,6 +2311,155 @@ class JobHandler(NumericRefHandler):
                 str(r[6]),
             )
         return list(out.values())
+
+    def _search_by_job_type(
+        self,
+        job_type: str,
+        *,
+        q: Any,
+        view: str | None,
+        status: str | None,
+        tags: Any,
+        link: Any,
+        page_size: int,
+        page: int,
+        group_by: str | list[str] | None,
+        since: str | None,
+        until: str | None,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+        sort: Any,
+        mode: Any,
+    ) -> Response:
+        """``search(kind='job', args={'job_type': ...})`` — jobs of one
+        ``meta.job_type`` (gr502653: the watch question "how many
+        <type> jobs minted/finished/failed since <t>" needed raw
+        ``refs.meta->>'job_type'`` SQL).
+
+        The filtered set runs through :func:`filtered_ref_clauses` —
+        the same builder ``view='count'`` uses — so the listing's
+        "N of K" and the count's facets describe an identical set.
+        ``q=`` is title-lexical here (``refs.title`` tsquery, like the
+        count's ``q``); the hybrid ranked path stays the unfiltered
+        one. ``view='count'`` delegates to the shared aggregate, so
+        ``group_by='state'`` gives the status facets.
+        """
+        if view is not None and view != "count":
+            raise BadInput(
+                f"unknown view {view!r} for a job_type-filtered job search",
+                options=["count"],
+                next="search(kind='job', view='count', "
+                "args={'job_type': '<type>', 'group_by': 'state'})",
+            )
+        if sort is not None:
+            raise BadInput(
+                "sort= doesn't apply to a job_type-filtered job search "
+                "(the listing is recency-ordered)",
+                next="search(kind='job', args={'job_type': '<type>'})",
+            )
+        if mode is not None:
+            raise BadInput(
+                "mode= has no ranked-search meaning on a job_type-filtered "
+                "job search — q= is title-lexical",
+                next="drop mode=, or drop job_type= for the hybrid ranked path",
+            )
+        effective_tags, status_note, excluded = self._apply_status_default(
+            status, tags if isinstance(tags, list) else None
+        )
+        normalized_tags = Tag.normalize_filter(effective_tags, kind=self.kind)
+        if view == "count":
+            return self._count_view(
+                q=q,
+                tags=normalized_tags,
+                exclude_tags=excluded or None,
+                status_note=status_note,
+                link=link,
+                group_by=group_by,
+                sort=None,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                since=since,
+                until=until,
+                meta_eq=("job_type", job_type),
+            )
+        link_ref_id: int | None = None
+        if link is not None and str(link).strip():
+            link_ref_id = parse_link_target(str(link), store=self.store).ref_id
+        clauses, params = filtered_ref_clauses(
+            kind="job",
+            tags=normalized_tags,
+            exclude_tags=excluded or None,
+            q=q,
+            q_in_chunks=self.search_body_chunks,
+            q_card_kinds=self.search_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=_parse_window_bound(since, "since"),
+            until=_parse_window_bound(until, "until"),
+            meta_eq=("job_type", job_type),
+        )
+        where = " AND ".join(clauses)
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+        offset = (page - 1) * page_size
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            assert row is not None
+            total = int(row[0])
+            rows = conn.execute(
+                f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE {where} "
+                "ORDER BY r.updated_at DESC LIMIT %s OFFSET %s",
+                [*params, page_size, offset],
+            ).fetchall()
+        refs = [_row_to_ref(r) for r in rows]
+        shown = len(refs)
+        if page > 1:
+            frag = f"rows {offset + 1}-{offset + shown} of {total}"
+        elif total > shown:
+            frag = f"{shown} of {total}"
+        else:
+            frag = str(total)
+        head = (
+            f"# {frag} job entr{'y' if total == 1 else 'ies'} "
+            f"with job_type {job_type!r}"
+        )
+        parts = [head]
+        if status_note:
+            parts.append(status_note)
+        if not refs:
+            parts[0] = f"no job entries with job_type {job_type!r}"
+            parts.append(
+                render_next_section(
+                    [
+                        (
+                            "search(kind='job', view='count', "
+                            "args={'group_by': 'meta.job_type,state'})",
+                            "which job_types exist, counted by status",
+                        ),
+                        (
+                            "get(kind='job', id='/recent')",
+                            "recent jobs of any type",
+                        ),
+                    ]
+                )
+            )
+            return Response(body="\n".join(parts), result_count=0)
+        parts.append(self._render_hits_table(refs))
+        parts.append(
+            render_next_section(
+                [
+                    (
+                        "search(kind='job', view='count', args={'job_type': "
+                        f"'{job_type}', 'group_by': 'state'}})",
+                        "the same set counted by status",
+                    ),
+                ]
+            )
+        )
+        return Response(body="\n".join(parts), result_count=shown)
 
     def _render_under_listing(
         self,

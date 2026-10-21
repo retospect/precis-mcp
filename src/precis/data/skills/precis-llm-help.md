@@ -71,6 +71,18 @@ kept local, and how many fell back to cloud (local rung skipped, slot busy, or
 failover). `billed_usd` leaves out calls that landed local, because their cost
 is a priced estimate, not money spent.
 
+## What did one op's LLM calls cost?
+
+```python
+get(kind="llm", id="op:graph_garden:propose", view="stats")
+```
+
+`op:<source>` is the `llm_call_log.source` the calling op writes (the
+`<pass>:<step>` convention — `graph_garden:propose`, `summarize:x`). The
+last 30 days: calls, realized cost, error rate, p50 duration, avg turns,
+tokens, and a per-model split. This is the MCP answer for what used to
+need raw `llm_call_log` SQL.
+
 ## Leave a note about how a model did
 ## Record that a model was great / weak at something
 

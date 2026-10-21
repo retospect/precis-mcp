@@ -486,6 +486,38 @@ def llm_tote_by_source(
     return [(r[0] or "?", _tote_row(r[1:])) for r in rows]
 
 
+def llm_op_tote(store: Store, source: str, *, window_days: int = 30) -> ToteRow:
+    """Roll up ``llm_call_log`` for one ``source`` over the window.
+
+    The per-op counterpart of :func:`llm_tote` (gr502653): "what did the
+    ``graph_garden:propose`` op cost, and how often did it error" used to
+    need raw ``llm_call_log`` SQL. A live query, like the model tote.
+    """
+    sql = (
+        f"SELECT {_TOTE_COLS} FROM llm_call_log "
+        "WHERE source = %s AND ts > now() - (%s * interval '1 day')"
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(sql, (source, window_days)).fetchone()
+    return (
+        _tote_row(row) if row is not None else _tote_row((0, 0, None, None, None, 0, 0))
+    )
+
+
+def llm_op_models(
+    store: Store, source: str, *, window_days: int = 30, limit: int = 8
+) -> list[tuple[str, ToteRow]]:
+    """Per-``model`` tote rows for one ``source``, busiest first."""
+    sql = (
+        f"SELECT model, {_TOTE_COLS} FROM llm_call_log "
+        "WHERE source = %s AND ts > now() - (%s * interval '1 day') "
+        "GROUP BY model ORDER BY count(*) DESC LIMIT %s"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (source, window_days, limit)).fetchall()
+    return [(r[0] or "?", _tote_row(r[1:])) for r in rows]
+
+
 # ── local vs cloud share (routed vs landed) ─────────────────────────────
 
 
@@ -1224,6 +1256,8 @@ __all__ = [
     "build_meta",
     "derive_observed_axes",
     "list_reviews",
+    "llm_op_models",
+    "llm_op_tote",
     "llm_tote",
     "llm_tote_by_source",
     "placement_share",
