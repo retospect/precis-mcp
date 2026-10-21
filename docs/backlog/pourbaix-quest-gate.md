@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: catalyst quests gate candidates on the bulk Pourbaix verdict at their operating U/pH window, recomputably
 pillar: 3d-design
 prio: high
@@ -55,6 +55,50 @@ been started.
 from the Codex checkpoint via the catalysis session, with their unit tests
 green; nothing beyond unit tests has run. Status stays `draft` until the
 one production proof job succeeds on a deploy that carries this code.
+
+## Rule-out / lift slice (ready 2026-10-21)
+
+`status: ready` covers this slice only. The rest of In scope items 4–5
+(the `leached` candidate proposal, the flags in the leaderboard, the tick
+prose) and the last acceptance bullet (qu202468 on prod) stay follow-ups.
+Items 1, 2, 3 and 6 are on main (`src/precis/quest/pourbaix.py`).
+
+1. **Stamp the rule inputs.** `harvest_pourbaix_candidate` also stamps
+   `pourbaix_dissolved_everywhere` (the result's `dissolved_everywhere`)
+   and `pourbaix_verdict_source` (the result's `verdict_source`); both go
+   in `frontier._META_NON_MEASURE`.
+2. **Rule-out.** In the same harvest path, after the stamp: add
+   `ruled-out:pourbaix-dissolved` when all of these hold — the quest's
+   `operating_conditions` has a `window`; `dissolved_everywhere` is true;
+   `verdict_source == "host_phase"`; the point verdict is not `unmatched`.
+   Dopant sub-verdicts (`verdict_source: "elemental"`) never drive it.
+   Write one `dead-end` logbook entry naming the candidate and the basis.
+   Skip the tag (no-op) if the candidate already has it.
+3. **Lift.** In the same path, when a newly harvested succeeded job no
+   longer meets rule 2 and the candidate carries
+   `ruled-out:pourbaix-dissolved`: `store.remove_tag` of that one tag and
+   one logbook entry (`entry_type` `note`) citing the old and new
+   `pourbaix_basis`. A lift happens only when a new job is harvested, i.e.
+   after a change to `U_RHE`, `pH`, `ion_conc_M` or `window` (the inputs
+   in the idem key). MP-version and tolerance changes do not trigger a
+   re-run in this slice. If conditions are cleared or the new job fails,
+   the old tag stays until a later succeeded harvest; this is accepted.
+4. **Interaction with `already_out`.** A pourbaix tag makes
+   `harvest_measures`'s `already_out` guard true, so a later relax-failed
+   ruling is suppressed; accepted (the candidate is already out). The
+   pourbaix rule-out and lift do not consult `already_out`.
+
+Acceptance (unit tests, fixture = job `meta` verdict dicts harvested
+through `harvest_pourbaix_candidate`):
+
+- window set; candidate A `dissolved_everywhere: true`, `verdict_source:
+  host_phase` → A ruled out with a `dead-end` entry; candidate B point
+  verdict `dissolved`, `dissolved_everywhere: false` → not ruled out.
+- a later succeeded job for A with `dissolved_everywhere: false` → tag
+  removed, one `note` entry citing both bases.
+- a host `stable` result with a dopant `elemental` `dissolved` sub-verdict
+  → not ruled out.
+- no `window` → never ruled out; no `operating_conditions` → no dispatch.
 
 ## Motivation / why
 
@@ -146,3 +190,17 @@ start only once a quest has `operating_conditions`.
   this item ships, not before (item 6's prod gate).
 - **Reto (review-queue `catalysis-selectivity-4`A):** the Materials Project
   key `PRECIS_MP_API_KEY` is in the overlay. Part A builds and tests without it.
+
+### Ready-check 2026-10-21 (rule-out / lift slice: In scope items 4 rule-out clause + 5)
+
+Verdict: needs-work (4 blockers, 3 advisories). Split not warranted for this slice; the full item does bundle `leached` candidate proposal and tick prose as separable follow-ups.
+
+- blocker: "verdict did not come from the elemental fallback" is vacuous as written. The host-level result always carries `verdict_source: "host_phase"` (`pourbaix_bulk.py` ~l.635); `"elemental"` exists only on dopant sub-verdicts, which the engine docstring says never drive a rule-out. Pin the predicate (e.g. rule applies only when the result's `verdict_source == "host_phase"` and point verdict is not `unmatched`) and restate the "elemental-fallback" test as "a dopant elemental `dissolved` never rules out".
+- blocker: the rule needs `dissolved_everywhere` and `verdict_source`, but `harvest_pourbaix_candidate` (`src/precis/quest/pourbaix.py`) stamps neither and In-scope item 3's stamp list omits them. Name the stamp keys and add them to `frontier._META_NON_MEASURE`.
+- blocker: lift triggers "new operating point, window, MP version, tolerance" have no input path: tolerance is not a quest input (`handlers/quest.py::_check_operating_conditions` accepts only U_RHE/pH/ion_conc_M/window), the idem key omits MP version and `stability_tol`, and the header defers MP-version refresh. Also unstated: what happens to an existing tag when conditions are cleared or the new-input job fails (harvest returns None, tag silently persists). Restrict the slice to lift on point/window/ion_conc change evaluated at harvest of the new-input succeeded job, and state the stale-tag behaviour.
+- blocker: the file never delimits this slice. Items 1, 2, 3, 6 are already on main (`quest/pourbaix.py`, `_META_NON_MEASURE`), the header says the slice "does not rule candidates out", and the `_META_NON_MEASURE` comment says verdicts are diagnostic only; In scope items 4-5 read as untouched. State: slice = rule-out clause of item 4 + item 5 + the first four acceptance tests; `leached` proposal, flags/leaderboard/tick prose are follow-ups.
+- advisory: item 5's "exempt from `harvest_measures`'s `already_out` guard" misdescribes the code: that guard only gates the relax-failed rule-out (compute.py ~l.3731). Lift is just `store.remove_tag` of this one tag; but a pourbaix tag will make `already_out` true and suppress a later relax-failed ruling, so say whether that is accepted.
+- advisory: logbook `entry_type` for the rule-out (`dead-end`, like relax-failed) and the lift note is unspecified; name them and require the lift note to cite the new basis.
+- advisory: acceptance tests need fixture shape named (job `meta.verdict` dicts with `dissolved_everywhere`/`verdict_source`, harvested through `harvest_pourbaix_candidate`); "dissolved only at the point" must mean `point.verdict == dissolved` with `dissolved_everywhere` false. The last acceptance bullet (qu202468 prod) is Reto/deploy-gated and outside this slice.
+- checked: no dangling `blocked-by`; sibling `surface-pourbaix-staircase-optimizer.md` treats this item as Part B base and does not conflict; operating_conditions shape matches `handlers/quest.py` validation and the window reader in `pathway-selectivity-u-ph-window.md`'s consumers.
+- **Resolved 2026-10-21 (readychecks):** all four blockers above are resolved from code in §Rule-out / lift slice; both advisories on `already_out` and logbook types are decided there. No Reto question.

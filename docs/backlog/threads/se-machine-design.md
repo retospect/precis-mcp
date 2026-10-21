@@ -152,9 +152,9 @@ off that gap until it closes.
    a consumer was never built. Peer session EWOD found this the same day.
    Vet round 3 folded 2026-10-02; two passes (pcb side first), both
    carry migrations. Reto accepted the five v1 calls 2026-10-02.
-   - **Rough box first** (Reto 2026-10-03T20:30Z), proposed in item
-     se-machine-design-8 and awaiting his decision. It is one build, no
-     migration:
+   - **Rough box first** (Reto 2026-10-03T20:30Z; "rough box yes" standing
+     default 2026-10-12). Ready 2026-10-21 as §Rough box (v0) in the
+     spec: one build, one se migration (the `bound_kind` CHECK):
      - an se block bound to a board slug, resolved at read time;
      - a box of the board outline × (tallest bottom part + 1.6 mm,
        flagged + tallest top part);

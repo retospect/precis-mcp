@@ -239,3 +239,41 @@ the agent-facing MCP surface is untouched.
   per-run wall-clock kill switch.
 * Whether the failure-cause tag is agent-assigned, operator-assigned, or
   judge-assigned. Judge-assigned inherits the judge's error bars.
+
+**Ready-check 2026-10-21 (ready agent): needs-work**
+
+* blocker: bundles independent deliverables (instrumentation items 1-8 vs. item 9 frozen eval world on spark: infra/restore/versioning); split item 9 out, it needs only the run-version field from item 1.
+* blocker: open question "Postgres major version / pgvector on spark" gates item 9's restore and is unresolved (blocker-severity by the template rule).
+* blocker: item 9 and the open "Spark 2.8 TB / reset vs clone" entry leave the reset mechanism undecided (batch reset vs clone-per-run); acceptance bullet 7 assumes batch reset, so state it as decided.
+* blocker: item 6 `outcome` vocabulary includes `halted_wall_clock` but the open question says no per-run wall-clock cap exists; either add the cap to scope or drop the value (nothing can ever write it).
+* blocker: failure-cause tags (item 7) have no stated assigner (open question); builder cannot write the tagging path without guessing.
+* blocker: item 1 names "prompt version", "tool-schema version", "graph version" with no definition or existing source (agentlog.py has none); specify how each is computed and where "graph version" comes from outside the eval world.
+* blocker: item 6 re-prefill token count has no source; vllm-per-node-serving.md only mentions evicted/restarted sequence counts, and nothing is served yet. Name the producer or defer the column.
+* blocker: item 4 capture mechanism underspecified: "per-run flag" (set where/how?), NFS path/env var, blob row-reference column, and redaction function (session-history-into-precis.md is status draft, so no shipped path to reuse; acceptance has no redaction test).
+* blocker: item 8 "novel-work" is not defined (how a call is classed as retrieval of a prior run's deposit from an args hash alone; hash equality across runs does not show prior-run deposit); acceptance only says "computable".
+* advisory: acceptance lacks checks for items 1, 2, 6, 7 (version fields recorded, tag, outcome values, seq numbering) and the blob-GC 30-day/env-var rule; name the env var.
+* advisory: Target section omits the blob store, outcome/verdict writers (who sets outcome at run end), and the spark/eval-world deploy bits.
+* advisory: overlaps mcp-call-pattern-analytics.md (tool_calls ledger mining) and session-history-into-precis.md (redaction); acknowledge both.
+* advisory: model tier: infrastructure + schema + judgment-heavy design; declare model: opus.
+
+### Questions for Reto (readychecks, 2026-10-21) — stays `draft`
+
+Builder-resolvable once these are answered: version definitions (prompt
+version = hash of the assembled prompt template; tool-schema version = hash
+of the served tool schemas; graph version = eval-world derivation id, null
+on prod runs); re-prefill token count nullable, filled by
+`vllm-per-node-serving.md`; payload capture blocked-by
+`session-history-into-precis.md` for redaction; a stated novel-work rule.
+
+1. Split item 9 (frozen eval world on spark) into its own file,
+   blocked-by this one? Recommended: yes; it needs only item 1's run-version
+   field, and it owns the spark Postgres/pgvector check.
+2. Reset mechanism. Recommended: batch reset is the decided default;
+   clone-per-run only if the novel-work fraction shows contamination.
+3. `halted_wall_clock` has no writer (no per-run wall-clock cap).
+   Recommended: drop the value now; file the cap separately.
+4. Who assigns failure-cause tags? Recommended: the operator (manual tag)
+   in this item; a judge-assigned tag inherits the judge's error bars.
+5. Novel-work definition. Recommended: a call is non-novel if its (verb,
+   kind, args-hash) was already seen in a prior run on the same world
+   version, or it reads a ref a prior run wrote.

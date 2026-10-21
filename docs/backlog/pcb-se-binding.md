@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 prio: normal
 pillar: 3d-design
@@ -39,6 +39,70 @@ values via `precis_se.catalog.to_metres(v, "mm")`, the envelope as a
 unit-tagged cad DSL string (`box:w100mmd80mmh1.6mm`) that the DSL
 parser converts. The crossing adds no ×1e-3 site anywhere (vet round 3
 resolved the Motivation/In-scope contradiction this way).
+
+## Rough box (v0) — the build to do first (ready 2026-10-21)
+
+Reto 2026-10-03T20:30Z "rough box first"; "rough box yes" is the standing
+default (Reto 2026-10-12, `threads/PRIORITIES.md`). `status: ready` covers
+this section only. It is In scope below minus three items, with two
+changes; everything else in In scope, Acceptance and v2 stays as written
+for later passes.
+
+**Taken from In scope unchanged:** `pcb` joins `_BINDING_KINDS`;
+read-time derivation in its own pure module returning `BoardDerived`
+(`envelope`, `ports`, `segments`, `why_not`; one segment); the frame
+mapping and its pinned test; the `persist.py` load pass mirroring
+`attach_catalog`; the se migration widening `se_blocks_bound_kind_check`
+(next free se number at land — so v0 is **one se migration, no core
+migration**, not "no migration" as the thread says; it lands through the
+release owner); a `'pcb'` decision at every `bound_kind` reader (`drc.py`,
+`fasten.py`, `persist.py`, `handler.py`, `printsolid.py`,
+`printgroup.py`, `ops_export.py`).
+
+**Deferred out of v0:** the `pcb_boards.thickness_mm` column (v0 uses
+`precis.pcb.export.DEFAULT_THICKNESS_MM`, 1.6 mm); the additive
+`mechanical_profile` keys (`w_mm`/`d_mm`/`rot_deg`/`roles`); connector
+roles and connector ports.
+
+**Change 1 — heights.** Each instance's height, in this order:
+(a) its own `height_mm` (the `mechanical_profile` block value) when not
+null; (b) else a package-class maximum from a new pure-data module
+`src/precis/pcb/package_heights.py`, keyed by the instance `footprint`
+string through an ordered list of (regex, height_mm, source note) rows;
+(c) else the table's largest value. The rows are derived from
+heater-base-test's footprints: one row per footprint class, covering at
+least the six largest classes (113 of its 140 parts, per the thread),
+each value the published maximum body height for that package, with the
+source in the row's note. Reto may veto values after the build. Heights
+from (b) or (c) carry `origin: proposed`; finding `pcb_height_proposed`
+(warn) names every such refdes with its source (table row or fallback).
+
+**Change 2 — holes.** Each `mounting_hole` feature becomes a
+`segments[0]` hole item (centre, diameter from the feature's
+`geom.diameter`, through the board thickness) and an se port `H1..Hn`
+(board order) on `BoardDerived.ports`, axis along board +z, at the
+bottom copper face. Nothing is subtracted from the envelope. `fasten.py`'s
+clearance gate treats `'pcb'` as not applicable in v0.
+
+**Envelope.** One `box`: outline bounding box w × d × (tallest bottom
+part + 1.6 mm + tallest top part), built as a unit-tagged DSL string
+from mm values (`catalog.to_metres` / DSL tokens only, no ×1e-3 site);
+z = 0 at the bottom copper face.
+
+**Acceptance (v0).** A fixture board with a known rectangular outline,
+two mounting holes, one top part with own height 3 mm, one bottom part
+whose footprint matches a table row, and one part with an unmapped
+footprint:
+
+- the bound block's `node.derived.envelope` resolves at tree load (no
+  further ops) to the expected metre box, and the frame-mapping test
+  passes;
+- `pcb_height_proposed` names exactly the table-row and unmapped refdes,
+  each with its source;
+- ports `H1`, `H2` exist at the hole centres;
+- an unknown slug gives `pcb_binding_unresolved` (warn) and
+  `why_not`, never an op error;
+- existing se and pcb tests stay green.
 
 ## In scope
 
@@ -466,3 +530,33 @@ test: dogfood loop — a deliberately undersized se outline linked to a
 board whose escape capacity fails; the demand finding names the
 shortfall; one `set_envelope` growth; re-run places and routes clean;
 se DRC confirms the grown box still clears its neighbours.
+
+### Readiness check, rough-box slice (readychecks, 2026-10-21)
+
+Verdict needs-work for the rough-box slice: the slice is defined only in `threads/se-machine-design.md` (Do next 6), not in this spec; building from this file would give the full v1, not the slice.
+
+- **blocker** — the rough box has no spec text here: the thread describes "one build, no migration" (box of outline x (tallest bottom part + 1.6 mm, flagged + tallest top part), holes as through-cylinders with fastener ports, heights from a package-class-maximum table), while this file specifies two passes with two migrations (`pcb_boards.thickness_mm`, se `bound_kind` CHECK), 1 mm proposed prisms, marker-only holes, `roles=connector` ports. Two different builds; the file needs a "Slice 1: rough box" section that supersedes or subsets In scope.
+- **blocker** — a "no migration" slice cannot work as written: `se_blocks_bound_kind_check` (`precis_se/migrations/0008_se_drop_nm_tables.sql`) rejects `bound_kind='pcb'` at persist, so the se CHECK-widening migration is unavoidable. The slice must say it carries that one se migration (and drop "no migration"), or name another binding mechanism.
+- **blocker** — height source contradicts: thread says "no part has a stored height today" and wants a package-class maximum table; this spec and the code use `pcb_instances.height_mm` (`0047_pcb_kind.sql`, filled by `precis/pcb/catalog.py::_height_mm`) with a flat 1 mm fallback. The table's location, classes, values, and fallback for unmapped packages are unspecified (thread cites only "six largest classes cover 113 of 140 parts").
+- **blocker** — the 1.6 mm board thickness in the thread formula vs `thickness_mm` as board data (new column) in this spec; the slice must say whether it hardcodes `DEFAULT_THICKNESS_MM` (no pass A) or includes the column.
+- **blocker** — "mounting holes as through-cylinders with fastener ports" contradicts In scope "Holes are markers only, never subtracted ... no v1 check consumes a hole" and v2 item 2; the port naming, direction, and axis, and what `fasten.py` does with them, are undefined. Also "Stacks are v2" is undefined here.
+- **blocker** — thread says item -8 rough-box decision is "awaiting his decision" (se-machine-design.md line ~155), while Do next 6 says "rough box yes is the standing default, Reto 2026-10-12". Reconcile and record the ruling in this file's decisions log.
+- **blocker** — thread requires "Before building, tell ewod-pcb and pcb-easyeda-round-trip" (a human/coordination step, no builder action defined); an unattended build cannot do it. Resolve by recording it as done or removing it.
+- **advisory** — stale migration claim: "`se-region-property-layer` slice A takes 0018" but se migrations already reach 0022; "next free number at land" is fine, drop the 0018 note. Core next-free is after 0228.
+- **advisory** — acceptance criteria are for the full v1; the slice needs its own (box dimension test with a bottom/top part fixture, finding naming every non-own-height part, `set_binding(kind='pcb')` accepted and resolved at load).
+- **advisory** — `handlers/pcb.py` thickness plumbing: the caller at ~3480 is the JLC order path (`args.get("thickness_mm") or DEFAULT`); `mechanical_profile`'s caller must be re-located by name, not the "~1981" cited elsewhere.
+- **advisory** — spec is `status: draft`; the dangling-link check passed (`pcb-flexboard.md`, `cross-scale-single-assembly.md`, `se-region-property-layer.md` all exist). Split: pass A (thickness column, `mechanical_profile` keys, connector roles) is separable from the rough box and should be deferred explicitly, not left implied.
+
+#### Rough-box addendum (readychecks, 2026-10-21, after coordinator message)
+
+Memory search (`pcb-se-binding rough box`, SPACE:repo-dev) returned nothing relevant to the rough box; the only source is `threads/se-machine-design.md` Do next 6 plus `threads/PRIORITIES.md` ("rough box yes" standing default, Reto 2026-10-12). A `## Rough box (v0)` section in this file must state:
+
+- **blocker** — the binding mechanism, including the unavoidable se migration widening `se_blocks_bound_kind_check` (so "no migration" is "no core migration"); `_BINDING_KINDS` (`precis_se/ops.py:445`), `persist.py` load pass beside `attach_catalog` (line ~795), `drc.py` (~273, ~471, ~514) and `fasten.py` (349, 422, 1607) each get a stated `'pcb'` decision.
+- **blocker** — the package-class maxima table: the module path (suggest `src/precis/pcb/` next to `catalog.py`, pure data), key (`pcb_instances` carries `package` per `0047_pcb_kind.sql:256`; confirm the instances in `pcb_graph` expose it, else the builder must join `part_footprints`/catalog), the exact class to height values for the six classes, the match rule (exact string vs prefix such as 0402/0603/SOIC-8/QFN-*), and the fallback for unmapped packages. An own `height_mm` (column exists) wins; only the rest come from the table.
+- **blocker** — the finding: a name (suggest `pcb_height_proposed`, reusing the v1 name, severity warn) listing every refdes whose height came from the table or fallback; and the unresolved slug finding `pcb_binding_unresolved`.
+- **blocker** — hole/fastener ports: port names (suggest `H1..Hn` by feature order), axis (board normal), diameter source (`geom.diameter` of `mounting_hole`, or IR holes as `mechanical_profile` does), and which port kind `fasten.py` mates with (it gates on `bound_kind != "component"` at line 349, so the board needs an explicit decision). The v1 text says holes are markers only; the rough box says through-cylinders; say which wins for v0.
+- **blocker** — the box formula in units and frame: width x depth from the outline bbox (`mechanical_profile` outline, mm, built in `precis/pcb/export.py:493`), height = bottom-max + 1.6 mm + top-max, conversion via `catalog.to_metres` / DSL unit tokens only, z origin and y convention (v1 frame-mapping paragraph applies); state whether 1.6 is the constant `DEFAULT_THICKNESS_MM` (recommended for v0; no thickness column).
+- **blocker** — acceptance test: a fixture board with a known outline, one tall top part, one tall bottom part and one unmapped-package part; assert the envelope string/metre value, the finding lists exactly the non-own-height refdes, unknown slug yields the warning not an op error, and bound board resolves at tree load.
+- **advisory** — buildable verified-against-code: `mechanical_profile` already supplies outline, holes, blocks (layer, height_mm); the missing pieces are only the package key and w/d per part (not needed for the box, which uses outline bbox only). Skip the additive `w_mm/d_mm/rot_deg/roles` keys and connector roles for v0.
+- **advisory** — the thread's "tell ewod-pcb and pcb-easyeda-round-trip first": record as a prerequisite already done or drop it; not unattended-executable.
+- **Resolved 2026-10-21 (readychecks):** blockers above are resolved in §Rough box (v0): own section; one se migration (not none); own height first, then `src/precis/pcb/package_heights.py` keyed on footprint; thickness = `DEFAULT_THICKNESS_MM`; holes as `H1..Hn` ports, fasten not applicable; pass A deferred; acceptance fixture named. The 'tell ewod-pcb and pcb-easyeda-round-trip first' step is done by pointer lines in both thread files (same commit). Defaults Reto may overrule: table values (veto after build), fasten not applicable to board holes in v0.

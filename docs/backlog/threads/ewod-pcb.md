@@ -14,6 +14,7 @@ effort: medium
 - **Worktree:** work/pcb/plaza-row-exits in codex-pcb/.scratch/plaza-row-exits, fresh origin/main; completed-levers evidence docs only. Owner pcb/window6; original bootstrap/branches/scratch preserved. Native startup/src source is distinct; no real-board or provider work.
 - **Builds:** Not estimated here; use the owning slice estimate.
 - **Detail:** fleet-state `inbox/pcb-r14-route-gate-repair-ready.md/.json`, then `inbox/pcb-snapshot-ready.md/.json`, `inbox/pcb-escape-diagnosis.md/.json`, then `inbox/pcb-escape-ready.md`. [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+- **Seam, FYI (2026-10-21):** [pcb-se-binding §Rough box (v0)](../pcb-se-binding.md) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; it touches no router, generator or realizer file. No action needed here.
 
 ## Current source evidence
 

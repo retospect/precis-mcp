@@ -85,3 +85,40 @@ harvest/frontier tests for unknown provenance, per-measure demotion and
 order-independent conflicting-cohort handling. No legacy backfill or
 experiment runs are authorized by this spec. Review the proposed tuple
 before implementation; it is not yet a persisted response contract.
+
+## Open questions / decisions log
+
+Ready-check 2026-10-21 (ready agent; checked against `compute._network_basis`, `frontier.same_network_basis`/`current_network_basis`/`apply_network_demotion`, `tests/test_pathway_correction_basis.py`, catpath `corrections.py`/`pipeline.py` record shape, and `kinetics-engine-v2.md`). Verdict: needs-work, 3 blockers, 6 advisories, no split.
+
+- blocker: Policy selection is an unresolved open loop ("Policy selection is still open"; "Review the proposed tuple before implementation; not yet a persisted response contract"). The integration cannot be built without choosing the reference policy for `apply_network_demotion` (quest's requested policy from where? what if the quest states none?) and what "report the conflicting cohort as provisional" means in flags/measures.
+- blocker: Integration acceptance is unverifiable. The matrix covers only the pure comparator; "harvest/frontier tests for unknown provenance, per-measure demotion and order-independent conflicting-cohort handling" name no expected outputs. Not stated: stamp key name and shape inside `network_basis` (e.g. a `correction_policy` key, hashed tuple vs dict), and whether it is also part of `network_basis_by_key` for every `NETWORK_DEPENDENT_KEYS` measure.
+- blocker: Un-restamped stamps are undefined. Candidates already harvested under 0.24+ carry a `network_basis` with no policy key. `environment_basis` precedent (`same_network_basis` docstring, kin-s1 ruling): absent key is compatible with anything. This spec's rule "a >=0.24 missing record is unknown, never compares" conflicts if applied to an absent stamp key (would demote the whole frontier on deploy). Say which: absent key = legacy-compatible (as environment_basis) or demoted, and whether a re-harvest is required.
+- advisory: Stale premise text. Spec says Reto took catpath 0.24.0; `pyproject.toml` now pins v0.32.0 (+aeb3fa3). Re-confirm the `results.corrections` shape (verified present in `pipeline.py`: `enabled`, `sets`, `unanchored`, `host_metal`, `state_shifts`) and update the version wording.
+- advisory: "config/result-disagreeing provenance" is undefined. Name the compared fields (`config.corrections.gas|h_star` vs `results.corrections.<part>.enabled`) and what an absent config key means (catpath default is ON, which clashes with "not today's defaults").
+- advisory: "verify released fixtures against that table before adoption" has no target, no pass criterion; make it a named test or drop it.
+- advisory: Version gate ">=0.24" needs a rule for `autocatpath_version` null/unparseable (`_version_key` returns `()`); legacy or unknown?
+- advisory: Sibling coordination. `kinetics-engine-v2.md` (D1 "stays unbuilt and is not a dependency", D3 derived `table_version`, D10, D11 "gains `tpd_set_sha256`") extends this tuple; `electrochem-mlip-ladder.md` and `electrochem-kinetics-beyond-che.md` also say they join it. Add a line here that this spec lands first and that `table_version` may become a derived stamp (v2 D3). Note v2 is internally inconsistent (D3 folds the TPD sha into `table_version`; D11 adds a separate `tpd_set_sha256` field); not this spec's bug.
+- advisory: No `model:` set (defaults sonnet) and no In scope / Not in scope / Target + blast radius sections. Content is contract design plus frontier-integration judgement (opus-sized); list targets: `compute._network_basis`, `frontier.same_network_basis`, `current_network_basis`, `apply_network_demotion`, harvest stamping, the xfail test file.
+- Subsumption by kinetics-engine-v2: NOT subsumed. v2 explicitly keeps this spec as a separate, unbuilt item and extends the tuple (v2 D1 Basis field, D3 `VERSION` derivation, D10 "extends, does not replace", D11 last bullets, Target + blast radius). v2 builds the environment basis, not the gas/H* correction-policy comparator, the matrix or the strict-xfail removal.
+
+### Questions for Reto (readychecks, 2026-10-21) — stays `draft`
+
+Not subsumed by the kinetics v2 basis fold: `kinetics-engine-v2.md` D1
+says this item "stays unbuilt and is not a dependency", D10 "extends, does
+not replace", D11 adds `tpd_set_sha256` to this tuple. v2 builds
+`environment_basis`; the gas/H* policy comparator, the test matrix and the
+xfail removal exist only here. Order: this item first, v2 extends it.
+Blocker 2 (integration acceptance) a builder can write from code
+(`network_basis.correction_policy` set through `network_basis_by_key`;
+xfails removed; three named harvest/frontier tests).
+
+1. When a quest's candidates carry different correction policies, which is
+   the reference? Recommended: the policy in the quest's explicit config
+   (`corrections.gas`, `corrections.h_star`, host override if set); if the
+   quest states none, there is no reference and every candidate whose tuple
+   differs is provisional (measure moved to `flags['<key>_untrusted_value']`
+   as `apply_network_demotion` does). Never candidate iteration order.
+2. Candidates harvested before this ships have no policy key. Recommended:
+   absent key = legacy-compatible (the `environment_basis` precedent in
+   `same_network_basis`); only a present null/unknown value never compares;
+   no re-harvest.

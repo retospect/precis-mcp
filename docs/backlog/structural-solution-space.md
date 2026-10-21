@@ -605,3 +605,42 @@ solution-space programme supplied the consumer); SIMP result is a cad
 field leaf, not a mesh and not a block (Reto 2026-09-18); print `intent`
 is `model` | `manufacture` on the group, loads declared never scaled
 (Reto 2026-09-18).
+
+## Open questions / decisions log
+
+Ready-check 2026-10-21 (scope: O5 + "declared flat faces" only):
+
+- blocker: O5 is not defined anywhere in the repo — this spec's §Slice 4 bridge has no O1–O5 list; the only definition is "note §14" in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` (outside the repo, unreachable by an unattended builder). Thread `docs/backlog/threads/se-machine-design.md` (Do next 2) says only "O5 + declared flat faces (load ports with a solid contact boss): about 1 build, no migration".
+- blocker: "declared flat faces" has no grammar or semantics in the spec — no op/param name, where it is declared (se port? `realize` arg? `objectives`?), what "flat" means for a face (planar tolerance? normal?), boss dimensions/derivation, how it composes with today's `load_at`/`fixed_at` face tokens + passive-element pinning in `precis_se/simp_bridge.py`, nor what a port with a boss does on a non-axis-aligned face.
+- blocker: no acceptance criteria for either item (existing bridge acceptance covers only the cantilever/intent groups); nothing a green gate or post-deploy look can check (e.g. "a posed load port with boss yields solid >= X mm contact patch in the density field; print view passes").
+- blocker: unresolved open question to Reto in the thread (item -6): declared flat faces with O5 ahead of O2-O4 — the ordering half is moot (O2-O4 shipped 2026-10-15) but the go/no-go and design half is unanswered.
+- advisory: the Slice 4 bridge round A text says "objectives carry no position (`load_at`/`fixed_at` live only on the realize op)" — flat-face declaration likely touches that same open gap; the spec should say whether this build closes it.
+- advisory: item sits inside a 600-line mostly-built spec (`status: draft`); put the O5/flat-faces slice in its own backlog file or a clearly marked "Open work" bullet so a builder does not re-read shipped rounds.
+- advisory: `model: opus` is appropriate (new declaration grammar); no tier mismatch. No `blocked-by` declared.
+
+Coordinator follow-up 2026-10-21 (where O5 / flat faces are defined):
+
+- blocker: searched repo docs, git history (b5ebf6e5d, 264f412c0) and repo-dev memory: the only text on O5 is thread `docs/backlog/threads/se-machine-design.md` Do-next 2 ("O5 + declared flat faces (load ports with a solid contact boss): about 1 build, no migration") and its Resume open question (item -6); the O1-O5 list itself is "note §14" in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`, outside the repo. O1 (field redistance, gr464340/464343) and O2-O4 (`min_member=`, default rounding, stall-damped OC; b5ebf6e5d) are inferable from commits, O5 is not. A thread line is a pointer, not a spec; the spec must gain a subsection under §Slice 4 bridge ("round C: declared flat faces / O5") that states, at minimum: (a) the O5 behaviour in one paragraph, (b) the declaration surface (op/param/port field; today `load_at`/`fixed_at` are realize-op args per `simp_bridge.py`), (c) boss geometry (footprint from the port, thickness, passive solid via `simp_optimize(passive=)`), (d) flat-face definition and refusal for non-planar / non-axis-aligned faces, (e) interaction with `view='print'` voxel overhang rule and `min_member`, (f) acceptance criteria, (g) a moved `load_at` port invalidating the inputs hash (already noted at simp_bridge.py ~939).
+- advisory: memory search (kind='memory', SPACE:repo-dev) returned no entry on O5/flat faces; nothing there to import.
+
+### Questions for Reto (readychecks, 2026-10-21) — O5 + flat faces stay `draft`
+
+O5 is defined only in "note §14" of a review file outside the repo; the
+thread (`threads/se-machine-design.md` Do next 2) has one line: "O5 +
+declared flat faces (load ports with a solid contact boss): about 1 build,
+no migration".
+
+1. What is O5? Recommended: confirm this reading (or paste §14's O5 entry
+   here) — a posed `load_at`/`fixed_at` port may declare `boss=<thickness>`;
+   the SIMP domain pins a passive solid slab of that thickness normal to
+   the face over the port footprint (`simp_optimize(passive=)`, as
+   `simp_bridge.py` already pins passives); axis-aligned faces only, a
+   non-axis-aligned face is refused with a next step; no migration.
+2. Build it now? Recommended: yes — O2–O4 shipped 2026-10-15, so the
+   ordering half of thread item -6 is moot and PRIORITIES.md ranks this
+   next.
+3. Acceptance. Recommended: a `realize(strategy='simp')` run with a
+   declared boss gives a fully solid contact patch of at least the declared
+   thickness and footprint under the load; `view='print'` reports zero
+   `overhang` findings at the declared `build_dir` for that patch; the load
+   path is not cut; moving the port changes the inputs hash.

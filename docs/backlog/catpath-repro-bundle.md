@@ -268,3 +268,45 @@ For Reto:
 7. Include failed and low-confidence seeds and trust records
    (`autocatpath.trust`)? Proposed yes ("right or wrong").
 8. Which compound goes first?
+
+### Ready-check (slices 1 and 2 only), 2026-10-21
+
+- blocker: slice 1 "outdir regenerated through `report::rebuild`" cannot work from stored data: `rebuild(outdir)` reads `manifest.json` (state energies, thumbs, selection, side routes), `graph.json`, `results.json`, `structures/*.extxyz` from a catpath run folder, but `PathwayArtifact`/`pathway_meta` hold only config, snapshot, results_json, graph_json, methods_md, structures_extxyz. No `manifest.json`, thumbs, kinetics.json or PNGs are persisted, so the "What exists" row ("outputs not archived where precis can hand them out") is the gap slice 1 must close, not assume away. Decide: persist the catpath outdir at run time (new storage), or synthesise `manifest.json` from stored artifact, or ship viewer-less outputs in slice 1.
+- blocker: where slice 1 runs is unspecified. `report::rebuild` needs `autocatpath` + ase/rdkit; pyproject says the web export excludes autocatpath (`catalyst` extra, host wheelhouse). Name the process/extra the export mode and `view='bundle-plan'` run in, and what happens when autocatpath is not importable (refuse with next=).
+- blocker: slice 1 vs layout mismatch: layout lists env/, platform.json, weights.json, validation_manifest.json, corrections, TPD set, kmc seeds; slice 1 says "from what exists today" without naming which layout paths it writes and which are omitted/placeholder (slice 2 adds env/). RO-Crate hasPart and MANIFEST must be defined for the slice-1 subset; `bundle_id` changes when slice 2 adds files.
+- blocker: done-gate (Q1) is an unresolved blocker-severity question and gate item 2 depends on unbuilt kinetics-engine-v2 D10 `validation_manifest`. Slice 1 must state which gate it enforces (e.g. aggregate complete + frozen STATUS tag only, preliminary flag otherwise) and how "frozen" is detected (STATUS: tag value? finding link type?).
+- blocker: open Qs affecting slices 1-2 still unresolved: Q3 (outputs licence goes into crate root `license`; bundling the private catpath wheel publishes it), Q2 (weights shipped vs hash-only changes slice 2 `env/weights.json` and size), Q4 (checksum format), Q5 (bundle_id per compound vs engine version).
+- blocker: slice 2 "closes `catpath-wheel-version-reuse.md`" but that spec prefers git-derived versioning in catpath and says repro-bundle slice 2 "takes the sha-assert option"; the wheel sha256+rev stamp for a wheel built where, from which checkout (catpath path, clean-tree rule), and how the rev is read from `uv.lock` is not specified. Also unspecified: where weights come from for the hash (which backend/model file paths, MACE cache location), what "lock slice" means (which pyproject extras/pins are pruned), and the `platform.json` field source for accelerator class/driver.
+- blocker: slice 2 test "platform is recorded but not hashed into `manifest_id`" - `manifest_id` is a kinetics-engine-v2 D10 concept and slice 2 does not build it; the bundle's own id is `bundle_id` (hash of MANIFEST, which includes platform.json, contradicting "not hashed"). Reconcile.
+- advisory: secret gate: scanner lives as private `_scan`/`_credential_findings` in the test with patterns; `precis.utils.secret_scan.find_secrets` already exists. Name the module the factored callable lands in (tests must not be imported by src) and how `secret-gate: allow` and binary/zip handling apply to staged files; hostname/absolute-home-path checks are not in the current gate and are new patterns.
+- advisory: determinism test (byte-identical) conflicts with "build time (UTC)" in provenance/ and any generated viewer timestamps; say whether build time is an input or excluded.
+- advisory: acceptance criteria are per-spec, not per-slice; "fixture bundle verifies on macOS arm64 and Linux x86_64" needs slice 3. Slice 1/2 criteria = the listed slice tests; fixture "EMT pathway" does not yet exist as a persisted pathway fixture (verify under tests/).
+- advisory: model tier: not declared; this is new-abstraction work (bundle format, RO-Crate) - set `model: opus`.
+- advisory: viewer "no network references" test must define the check (regex over http(s):// excluding xmlns/doc links?).
+- note: blocked-by not declared; sibling specs exist (catpath-wheel-version-reuse, kinetics-engine-v2, claim-publication-nanopub-ots) and were checked. Split: slices 1 and 2 are separable (2 depends on 1's manifest; both fine as separate items), but 1 itself hinges on the persistence decision above.
+
+### Questions for Reto (readychecks, 2026-10-21) — stays `draft`
+
+Builder-resolvable once these are answered: the slice-1 file list, the
+slice-2 wheel/lock/platform sources (reuse `scripts/lib/autocatpath-wheel.sh`),
+and dropping the "platform not hashed" claim from the slice-2 test
+(`platform.json` stays in `MANIFEST.sha256`).
+
+1. `report::rebuild` needs `manifest.json`, thumbs and PNGs that
+   `pathway_meta` does not store. Recommended: synthesise `manifest.json`
+   from the stored artifact if catpath's `rebuild` accepts it; otherwise
+   slice 1 ships without the viewer and viewer persistence is its own item.
+2. Where does the export run (it needs autocatpath, ase, rdkit)?
+   Recommended: a job on a catalyst-extra host; the handler refuses with
+   `next=` when `import autocatpath` fails.
+3. The done gate (Q1). Recommended: slice 1 enforces "aggregate complete +
+   frozen marker" and writes `preliminary: true` in the crate otherwise;
+   the kinetics gate joins when kinetics v2 D10 ships. Frozen marker: an
+   open tag `repro:frozen` on the pathway, set by Reto.
+4. Q2 weights: recommended hash + fetch recipe, no weights in the bundle.
+5. Q3 licence and wheel: recommended CC-BY-4.0 for outputs; bundle the
+   catpath wheel only if catpath goes public, otherwise record rev + sha
+   and say so in the crate.
+6. Q4 checksums: recommended SHA-256 (zip CRC32 as a free extra).
+7. Q5 identity: recommended one `bundle_id` per (compound, engine
+   version), all under one concept DOI.
