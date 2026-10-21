@@ -267,6 +267,11 @@ def _comp_amounts(composition: Any) -> dict[str, float]:
     return {str(el.symbol): float(n) for el, n in composition.items()}
 
 
+def _entry_id(raw: Any) -> str | None:
+    """JSON-safe entry id: pymatgen/mp-api carry ``EntryID`` objects."""
+    return None if raw is None else str(raw)
+
+
 def match_host_phase(
     entries: Sequence[Any], host: Mapping[str, float]
 ) -> dict[str, Any] | None:
@@ -304,7 +309,7 @@ def match_host_phase(
     return {
         "entry": best_entry,
         "formula": str(best_entry.composition.reduced_formula),
-        "entry_id": best_entry.entry_id,
+        "entry_id": _entry_id(best_entry.entry_id),
         "distance": float(best[0]),
     }
 
@@ -752,7 +757,7 @@ def entries_to_json(entries: Iterable[Any]) -> list[dict[str, Any]]:
     for pe in entries:
         row: dict[str, Any] = {
             "energy": float(pe.entry.energy),
-            "entry_id": pe.entry_id,
+            "entry_id": _entry_id(pe.entry_id),
             "concentration": float(pe.concentration),
         }
         if pe.phase_type == "Ion":

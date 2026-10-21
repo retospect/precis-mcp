@@ -532,3 +532,28 @@ def test_missing_extra_fails_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fail[1]["failure_class"] == "config"
     assert "httpx" in fail[1]["reason"]
     assert "[pourbaix] extra" in fail[1]["reason"]
+
+
+class _OpaqueId:
+    """Stands in for mp-api's ``EntryID``: not a str, not JSON serialisable."""
+
+    def __str__(self) -> str:
+        return "mp-1234-GGA"
+
+
+def test_verdict_result_is_json_serialisable_with_non_str_entry_ids() -> None:
+    entries = _cu_entries()
+    for pe in entries:
+        pe.entry_id = _OpaqueId()
+    result = engine.verdict(
+        entries,
+        {"Cu": 1.0},
+        {},
+        {"U_RHE": 0.0, "pH": 7.0},
+        {"U_RHE": [-0.5, 0.5], "pH": [6.0, 8.0]},
+    )
+    assert result["matched_phase"]["entry_id"] == "mp-1234-GGA"
+    json.dumps(result)
+    rows = engine.entries_to_json(entries)
+    json.dumps(rows)
+    assert all(isinstance(r["entry_id"], str) for r in rows)
