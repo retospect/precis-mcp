@@ -8,6 +8,7 @@ the assertion reads.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -504,3 +505,90 @@ def test_event_override_is_merged_into_only() -> None:
     with pytest.raises(ValueError, match="merged-into"):
         with revision_context(event="deleted"):
             pass
+
+
+# ── slice 1b: revision_diff + view='history'/'diff' + the nightly count ──
+
+
+def test_revision_diff_renders_prior_state_against_now(store: Store) -> None:
+    """AC 9: `revision_at(target, sha)` serves the diff. A title edit's
+    `prev_sha` diffs the recorded prior row against the current one."""
+    fid = _finding(store)
+    _set_title(store, fid, "NO reduces to NH3 on Cu(111)")
+    (rev,) = store.revisions_for("ref", fid)
+    assert rev.prev_sha is not None
+    diff = store.revision_diff("ref", fid, rev.prev_sha)
+    assert "-title: 'NO reduces to NH3 on Cu(100)'" in diff
+    assert "+title: 'NO reduces to NH3 on Cu(111)'" in diff
+    assert store.revision_diff("ref", fid, store.target_sha("ref", fid) or "") == ""
+
+
+def test_revision_diff_chunk_delegates_to_chunk_events(store: Store) -> None:
+    """The chunk arm of `revision_diff` is the draft-review chain."""
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    _ref, title = store.drafts.create_draft(
+        name="diff-rev", title="T", project_ref_id=proj
+    )
+    sha = store.drafts.record_review(title.chunk_id, "human")
+    assert store.revision_diff("chunk", title.chunk_id, sha) == ""
+    store.drafts.edit_text(title.handle, "T (revised)")
+    diff = store.revision_diff("chunk", title.chunk_id, sha)
+    assert "-T" in diff and "+T (revised)" in diff
+
+
+def test_view_history_and_diff_through_dispatch(
+    runtime_with_store: PrecisRuntime, store: Store, memory_id: int
+) -> None:
+    runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": memory_id,
+            "mode": "replace",
+            "text": "the newer wording",
+            "reason": "reworded for the diff test",
+        },
+    )
+    hist = runtime_with_store.dispatch(
+        "get", {"kind": "memory", "id": memory_id, "view": "history"}
+    )
+    assert "edited" in hist and "reworded for the diff test" in hist
+    (rev,) = store.revisions_for("ref", memory_id)
+    diff = runtime_with_store.dispatch(
+        "get",
+        {
+            "kind": "memory",
+            "id": memory_id,
+            "view": "diff",
+            "__extras__": {"since": rev.prev_sha},
+        },
+    )
+    assert "the old wording" in diff and "the newer wording" in diff
+
+
+def test_unrecorded_revisions_pass_counts_and_marks(store: Store) -> None:
+    """AC 10's second half: the nightly count reports the unwrapped
+    write paths, grouped so the writer is named."""
+    from precis.workers.revisions_unrecorded import run_unrecorded_revisions_pass
+
+    fid = _finding(store)
+    _set_title(store, fid, "unwrapped one")
+    _set_title(store, fid, "unwrapped two")
+
+    result = run_unrecorded_revisions_pass(store)
+    assert result.claimed == result.ok and result.ok >= 2
+
+    groups = store.unrecorded_revision_breakdown(
+        datetime.now(UTC) - timedelta(minutes=5)
+    )
+    group = next(
+        g for g in groups if g["target_kind"] == "ref" and g["subject"] == "finding"
+    )
+    assert group["event"] == "edited" and group["count"] >= 2
+
+    from precis.budget import settings as app_settings
+
+    doc = json.loads(
+        app_settings.get_setting(store, "revisions_unrecorded:last") or "{}"
+    )
+    assert doc["total"] >= 2 and doc["groups"]

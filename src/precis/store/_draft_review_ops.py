@@ -1,8 +1,20 @@
-"""Store ops for the chunk-review ledger — the ``chunk_review`` table
-(migration 0086) backing the draft-chunk approval workflow: a per-
-``(chunk, checker)`` approval watermark keyed on ``content_sha``.
-"Requires review" is a derived query — current content_sha != the
-approved_sha the checker last recorded (or no row at all).
+"""Store ops for the chunk-review ledger — the ``reviews`` table
+(migration 0185, local-mesh-upkeep §2) backing the draft-chunk approval
+workflow: a per-``(chunk, checker)`` approval watermark keyed on
+``content_sha``. "Requires review" is a derived query — current
+content_sha != the content_sha the checker's latest review recorded
+(or no row at all).
+
+Reads switched from ``chunk_review`` (migration 0086) to ``reviews`` in
+local-mesh-upkeep slice 1b: writers still write ``chunk_review`` (the
+upserted per-``(chunk, checker)`` shape ``record_review``/
+``retract_review`` and the executor writeback need, including the
+``toc`` persona's digest pin that ``reviews.content_sha`` cannot
+express) and the 0185 mirror trigger copies each write into the ledger.
+Because ``reviews`` is append-only where ``chunk_review`` upserts, every
+read takes the LATEST row per ``(chunk, actor)``; a retraction (the
+mirror's ``verdict='rejected'``, ``note='(retracted)'`` row) counts as
+"no review", matching the old row-deleted semantics.
 
 Carved out of :class:`precis.store._draft_ops.DraftStore` — the first
 cut of that module's decomposition (see
@@ -175,13 +187,20 @@ class DraftReviewStore:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
-                SELECT cr.chunk_id, cr.checker
-                  FROM chunk_review cr
-                  JOIN chunks c ON c.chunk_id = cr.chunk_id
-                 WHERE c.ref_id = %s
-                   AND c.retired_at IS NULL
-                   AND cr.approved_sha = c.content_sha
-                   AND cr.verdict = 'approved'
+                SELECT t.target_id, t.actor
+                  FROM (
+                    SELECT DISTINCT ON (r.target_id, r.actor)
+                           r.target_id, r.actor, r.content_sha, r.verdict
+                      FROM reviews r
+                      JOIN chunks c ON c.chunk_id = r.target_id
+                     WHERE r.target_kind = 'chunk'
+                       AND c.ref_id = %s
+                       AND c.retired_at IS NULL
+                     ORDER BY r.target_id, r.actor, r.at DESC, r.review_id DESC
+                  ) t
+                  JOIN chunks c2 ON c2.chunk_id = t.target_id
+                 WHERE t.verdict = 'approved'
+                   AND t.content_sha IS NOT DISTINCT FROM c2.content_sha
                 """,
                 (ref_id,),
             ).fetchall()
@@ -240,8 +259,11 @@ class DraftReviewStore:
         """Live draft chunks of ``ref_id`` that are dirty for ``checker`` —
         never reviewed, or reviewed at a sha other than the chunk's current
         one. Same NOT-EXISTS shape as the workers' fresh-claim predicate
-        (``workers/base.py:_claim_fresh``), keyed on `chunk_review` instead
-        of a typed artifact table."""
+        (``workers/base.py:_claim_fresh``), keyed on `reviews` instead
+        of a typed artifact table. The checker's LATEST review counts —
+        any verdict at the current sha is a delivered review; a latest row
+        that is a retraction (``note='(retracted)'``) counts as never
+        reviewed, matching the old row-deleted semantics."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -251,10 +273,17 @@ class DraftReviewStore:
                    AND c.content_sha IS NOT NULL
                    AND c.retired_at IS NULL
                    AND NOT EXISTS (
-                           SELECT 1 FROM chunk_review r
-                            WHERE r.chunk_id = c.chunk_id
-                              AND r.checker = %(checker)s
-                              AND r.approved_sha IS NOT DISTINCT FROM c.content_sha
+                           SELECT 1 FROM (
+                               SELECT r.content_sha, r.note
+                                 FROM reviews r
+                                WHERE r.target_kind = 'chunk'
+                                  AND r.target_id = c.chunk_id
+                                  AND r.actor = %(checker)s
+                                ORDER BY r.at DESC, r.review_id DESC
+                                LIMIT 1
+                           ) l
+                          WHERE l.content_sha IS NOT DISTINCT FROM c.content_sha
+                            AND l.note IS DISTINCT FROM '(retracted)'
                        )
                  ORDER BY c.chunk_id
                 """,
@@ -314,8 +343,16 @@ class DraftReviewStore:
             current_sha = row[0]
             rows = conn.execute(
                 """SELECT checker, approved_sha, verdict, at
-                     FROM chunk_review
-                    WHERE chunk_id = %s
+                     FROM (
+                       SELECT DISTINCT ON (r.actor)
+                              r.actor AS checker, r.content_sha AS approved_sha,
+                              coalesce(r.note, r.verdict) AS verdict, r.at,
+                              r.note = '(retracted)' AS retracted
+                         FROM reviews r
+                        WHERE r.target_kind = 'chunk' AND r.target_id = %s
+                        ORDER BY r.actor, r.at DESC, r.review_id DESC
+                     ) latest
+                    WHERE NOT retracted
                     ORDER BY checker""",
                 (chunk_id,),
             ).fetchall()
@@ -404,7 +441,22 @@ class DraftReviewStore:
                        cr.checker, cr.approved_sha, cr.verdict, cr.at,
                        (cr.approved_sha IS DISTINCT FROM c.content_sha) AS dirty
                   FROM chunks c
-             LEFT JOIN chunk_review cr ON cr.chunk_id = c.chunk_id
+             LEFT JOIN LATERAL (
+                       SELECT checker, approved_sha, verdict, at, dirty
+                         FROM (
+                           SELECT DISTINCT ON (r.actor)
+                                  r.actor AS checker,
+                                  r.content_sha AS approved_sha,
+                                  coalesce(r.note, r.verdict) AS verdict, r.at,
+                                  (r.content_sha IS DISTINCT FROM c.content_sha) AS dirty,
+                                  r.note = '(retracted)' AS retracted
+                             FROM reviews r
+                            WHERE r.target_kind = 'chunk'
+                              AND r.target_id = c.chunk_id
+                            ORDER BY r.actor, r.at DESC, r.review_id DESC
+                         ) latest
+                        WHERE NOT retracted
+                     ) cr ON true
                  WHERE c.ref_id = %s
                    AND c.content_sha IS NOT NULL
                    AND c.retired_at IS NULL

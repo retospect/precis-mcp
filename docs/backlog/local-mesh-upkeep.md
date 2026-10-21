@@ -402,6 +402,9 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
    its trigger, plus the sha registry, the backfill, hub_refine on the
    ledger, `edit(reason=)`, and `view='history'`/`'diff'`. A branch to
    the orchestrator.
+   **1b BUILT 2026-10-21** (`mesh-upkeep-1b` worktree): the due rule and
+   the `chunk_review` readers read `reviews`; `view='history'`/`'diff'`
+   on ref kinds; the `revisions_unrecorded` nightly count.
 2. **Feed.** Proposals into the queue, the review lane, the bars applied
    per action. Waits on the queue and the controller existing.
 

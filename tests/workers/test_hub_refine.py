@@ -1024,6 +1024,65 @@ def test_backstop_elapsed_reclaims_a_hub(store: Any, monkeypatch) -> None:
     assert second["claimed"] == 1
 
 
+def test_scope_edit_reopens_via_the_ledger_sha(store: Any) -> None:
+    """The due rule reads the ``reviews`` ledger (local-mesh-upkeep 1b):
+    a covered-meta edit (``scope`` — in ``kinds.covered_meta`` for
+    'finding') makes the hub's last hub-refine review non-current and
+    reclaims it, even though ``claim_sha(title)`` — the legacy reopen
+    check — never moved."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A scope-edit reopen probe claim.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
+
+    # A covered-meta edit: the ledger sha moves, claim_sha(title) doesn't.
+    store.update_ref(hub, meta_patch={"scope": {"regime": "cryogenic"}})
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+
+
+def test_legacy_meta_stamp_fallback_when_no_ledger_row(store: Any) -> None:
+    """A stamp predating migration 0185 has no ``reviews`` row — the lazy
+    migration window — so due-ness falls back to the meta stamps and the
+    ``claim_sha(title)`` comparison until the next refine re-stamps (the
+    mirror writes the ledger row)."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A pre-ledger stamp probe claim.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+
+    # Simulate the pre-ledger world: meta stamps stand, no reviews row.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM reviews WHERE target_kind = 'ref' AND target_id = %s",
+            (hub,),
+        )
+        conn.commit()
+
+    # Meta sha still matches the live title -> not due (legacy semantics).
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
+
+    # Stale the stored sha WITHOUT touching last_refined_at (no mirror
+    # row is minted — the trigger fires only on last_refined_at changes),
+    # so the fallback's claim_sha check is what reopens the hub.
+    store.update_ref(hub, meta_patch={hub_refine._META_LAST_REFINED_SHA: "stale"})
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+
+
 # ── (d) rejection memo — a supports=no candidate is verified once ───
 
 

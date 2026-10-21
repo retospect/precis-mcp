@@ -807,6 +807,9 @@ class TaxonHandler(NumericRefHandler):
         q: str | None = None,
         sort: str | None = None,
         cross: list[str] | None = None,
+        # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
+        # the base dispatch; declared so the extras gate accepts it here.
+        since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='path'`` / ``view='facets'`` (``args={'sort': …, 'cross':
@@ -843,7 +846,7 @@ class TaxonHandler(NumericRefHandler):
                     "· links, log, raw (generic)"
                 ),
             )
-        return super().get(id=id, view=view, q=q, **_kw)
+        return super().get(id=id, view=view, q=q, since=since, **_kw)
 
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent", "unrooted", "unmapped")

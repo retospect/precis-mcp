@@ -91,7 +91,7 @@ _FILLER_FIRST_LINE = re.compile(
 # additional views should override `get()` to layer their dispatch
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
-_BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw")
+_BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw", "history", "diff")
 
 # Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
 # ``batch_ids = True``. Sized to the measured loops it replaces (runs of
@@ -565,6 +565,14 @@ class NumericRefHandler(Handler):
         view: str | None = None,
         q: str | None = None,
         of_kind: str | None = None,
+        # ``view='diff'``'s sha, arriving through ``get``'s ``args=``
+        # extras channel (``args={'since': <sha>}`` — the sha a review's
+        # ``content_sha`` carries, or any ``prev_sha``/``new_sha`` in the
+        # ref's ``view='history'`` chain). Named like finding's
+        # payload/loser/page rather than swallowed by ``**_kw``:
+        # ``_accepted_kwargs`` excludes VAR_KEYWORD catch-alls, so an
+        # undeclared extras key would be rejected as a typo upstream.
+        since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
@@ -649,6 +657,14 @@ class NumericRefHandler(Handler):
                     body=self._render_raw(ref, self.store.tags_for(ref.id)),
                     result_count=1,
                 )
+            if view == "history":
+                from precis.handlers._revision_view import render_revision_history
+
+                return render_revision_history(self.store, ref)
+            if view == "diff":
+                from precis.handlers._revision_view import render_revision_diff
+
+                return render_revision_diff(self.store, ref, since)
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's

@@ -72,7 +72,9 @@ graph-health-metrics, five parked gripes, and the seam with
   sign-off is retired. The extraction-pass plan is in the spec
   §"Next slice" — Spark reader, pa5044 first, the versioned anchor
   scheme ported first.
-- **Next:** local-mesh-upkeep slice 1b.
+- **Next:** local-mesh-upkeep slice 2 (feed), once the queue and the
+  controller exist; a mesh-eval candidate score, once a serving window
+  opens.
 - **Graph gardener v1 built (2026-10-14, worktree `gardener`, landed):** deterministic detectors → routed LLM proposer →
   reviews-ledger proposals (never a graph write), the `graph_garden`
   job dark until a `service_config` row lights it, a merge apply/undo
@@ -133,9 +135,12 @@ graph-health-metrics, five parked gripes, and the seam with
    + the 80-item holdout awaiting Reto's labels; `mesh retest`
    reproduces the packed pair's 0.794. Still waits on a serving window
    to score a candidate — the runner needs only an endpoint URL.
-   Slice 1a (0185) is live. Slice 1b is next after the measures
-   pilot gaps: the hub_refine due rule on the ledger, the `chunk_review`
-   readers, `view='history'`/`'diff'` and the `(unrecorded)` count. The
+   Slice 1a (0185) is live. **Slice 1b built 2026-10-21** (worktree
+   `mesh-upkeep-1b`): the hub_refine due rule and the `chunk_review`
+   readers read the `reviews` ledger; `view='history'`/`'diff'` land on
+   every numeric-ref kind via `Store.revision_diff`; the daily
+   `revisions_unrecorded` cadence counts unwrapped write paths.
+   Remaining: slice 2 (feed) waits on the queue and the controller. The
    as-built choices are in the item's decisions log.
 4. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151): the cheap duplicate-hub reconcile, in order:

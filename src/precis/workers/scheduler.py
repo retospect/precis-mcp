@@ -558,6 +558,24 @@ def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_unrecorded_revisions(store: Store, batch_size: int) -> None:
+    """One ``(unrecorded)``-revisions count (local-mesh-upkeep §2's
+    "nightly count names the write paths to fix"), fired from the daily
+    host-agnostic ``revisions_unrecorded`` cadence. ``batch_size`` is
+    unused — the pass counts the whole partial-index set each fire.
+    See workers/revisions_unrecorded.py; pure local SQL plus one
+    ``app_settings`` marker write, no LLM."""
+    from precis.workers.revisions_unrecorded import run_unrecorded_revisions_pass
+
+    result = run_unrecorded_revisions_pass(store)
+    log.info(
+        "scheduler: revisions_unrecorded inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_structural(
     # test_scheduler_pass.py's wrapper-only unit test calls this directly
     # with a bare sentinel object() (the downstream pass is monkeypatched
@@ -954,6 +972,18 @@ CADENCES: tuple[Cadence, ...] = (
         name="secret_check",
         interval_s=7 * 24 * 3600 + 29 * 60,
         run=_run_secret_check,
+    ),
+    # local-mesh-upkeep §2's nightly count: how many `revisions` rows
+    # landed with reason='(unrecorded)', grouped by the write path
+    # (target kind, event, actor, covered subject) so the unwrapped
+    # writers stay named until they're wrapped. Host-agnostic, daily,
+    # off the exact day boundary like the other daily sweeps. No
+    # `eligible` check: pure local SQL + one app_settings marker write.
+    # spends=False: no LLM anywhere in the count.
+    Cadence(
+        name="revisions_unrecorded",
+        interval_s=24 * 3600 + 67 * 60,
+        run=_run_unrecorded_revisions,
     ),
 )
 

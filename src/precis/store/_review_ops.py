@@ -30,6 +30,8 @@ coordinator's one-way strict switch.
 
 from __future__ import annotations
 
+import difflib
+import json
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -129,6 +131,34 @@ def _trust_table(target_kind: str) -> tuple[str, str]:
         ) from None
 
 
+_REF_DIFF_KEYS = ("kind", "title", "authors", "year", "parent_id", "retired_at")
+_LINK_DIFF_KEYS = (
+    "src_ref_id",
+    "src_chunk_id",
+    "dst_ref_id",
+    "dst_chunk_id",
+    "relation",
+)
+
+
+def _target_state_lines(
+    target_kind: str, state: dict[str, Any], covered_meta_keys: list[str]
+) -> list[str]:
+    """One ``key: value`` line per field the target sha covers — the
+    canonical serialization ``revision_diff`` diffs line-wise."""
+    keys = _REF_DIFF_KEYS if target_kind == "ref" else _LINK_DIFF_KEYS
+    lines = [f"{k}: {state.get(k)!r}" for k in keys]
+    meta = state.get("meta") or {}
+    for k in covered_meta_keys:
+        if k in meta:
+            lines.append(f"meta.{k}: {json.dumps(meta[k], sort_keys=True)}")
+    for ch in sorted(
+        state.get("chunks") or [], key=lambda c: (c["ord"], c["chunk_id"])
+    ):
+        lines.append(f"chunk[ord={ch['ord']}]: {ch['text']}")
+    return lines
+
+
 def _check_kind(target_kind: str) -> None:
     if target_kind not in _TARGET_KINDS:
         raise BadInput(
@@ -137,9 +167,12 @@ def _check_kind(target_kind: str) -> None:
 
 
 class ReviewsMixin:
-    """``reviews`` / ``revisions`` access; needs ``self.pool``."""
+    """``reviews`` / ``revisions`` access; needs ``self.pool`` and, for the
+    chunk arm of :meth:`revision_diff`, ``self.drafts`` (both provided by
+    :class:`~precis.store.store.Store`)."""
 
     pool: Any
+    drafts: Any
 
     def _review_conn(self, conn: Connection | None) -> AbstractContextManager[Any]:
         return nullcontext(conn) if conn is not None else self.pool.connection()
@@ -255,6 +288,130 @@ class ReviewsMixin:
                 return rev.prev_state
         return None
 
+    def revision_diff(
+        self,
+        target_kind: str,
+        target_id: int,
+        sha: str,
+        *,
+        conn: Connection | None = None,
+    ) -> str:
+        """A unified diff of the target as recorded at ``sha`` against its
+        state now — the one reader backing ``view='diff'`` for all three
+        target kinds (local-mesh-upkeep §2b).
+
+        ``sha`` is a ``content_sha`` a review carries, or any ``prev_sha`` /
+        ``new_sha`` in the revision chain. For a chunk this delegates to
+        ``chunk_events`` (draft-family chunks only — a body chunk's row
+        identity IS its version, so its ``'chunk:<id>'`` sha diffs empty).
+        For a ref or link, ``state_at`` names the recorded prior row; the
+        diff covers the fields the sha covers (columns + covered meta +
+        recorded body-chunk replacements). Returns ``""`` when ``sha`` is
+        the current sha. Raises :class:`NotFound` when ``sha`` never
+        appeared in the chain."""
+        if target_kind == "chunk":
+            with self._review_conn(conn) as c:
+                row = c.execute(
+                    "SELECT content_sha FROM chunks WHERE chunk_id = %s",
+                    (target_id,),
+                ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {target_id}")
+            if row[0] is None:
+                # A body chunk is append-only: its id stands for its one
+                # version ('chunk:<id>' is the sha the registry reports).
+                if sha == f"chunk:{target_id}":
+                    return ""
+                raise BadInput(
+                    f"chunk {target_id} has no content_sha — a body chunk's "
+                    "id is its version; only draft-family chunks keep a "
+                    "text history",
+                    next="diff a draft chunk (its reviews carry content_sha)",
+                )
+            if row[0] == sha:
+                return ""
+            return self.drafts.review.review_diff_since(target_id, sha)
+        if target_kind not in ("ref", "link"):
+            raise BadInput(
+                f"revision diffs cover chunk|ref|link, not {target_kind!r}",
+                options=["chunk", "ref", "link"],
+            )
+        if self.target_sha(target_kind, target_id, conn=conn) == sha:
+            return ""
+        prev = self.state_at(target_kind, target_id, sha, conn=conn)
+        if prev is None:
+            raise NotFound(
+                f"no recorded state at sha {sha!r} for {target_kind} {target_id} "
+                "— it is neither the current sha nor any chain entry's prev_sha"
+            )
+        now = self._target_state_now(target_kind, target_id, conn=conn)
+        if now is None:
+            raise NotFound(f"{target_kind} {target_id} is gone")
+        with self._review_conn(conn) as c:
+            if target_kind == "ref":
+                krow = c.execute(
+                    "SELECT covered_meta FROM kinds WHERE slug = %s",
+                    (prev.get("kind") or now.get("kind"),),
+                ).fetchone()
+                covered = list(krow[0]) if krow and krow[0] else []
+                prev_ords = {int(ch["ord"]) for ch in prev.get("chunks") or []}
+                if prev_ords:
+                    crows = c.execute(
+                        "SELECT chunk_id, ord, chunk_kind, text FROM chunks "
+                        " WHERE ref_id = %s AND ord = ANY(%s) "
+                        "   AND retired_at IS NULL ORDER BY ord",
+                        (target_id, list(prev_ords)),
+                    ).fetchall()
+                    now["chunks"] = [
+                        {
+                            "chunk_id": int(r[0]),
+                            "ord": int(r[1]),
+                            "chunk_kind": r[2],
+                            "text": r[3],
+                        }
+                        for r in crows
+                    ]
+            else:
+                covered = list(
+                    c.execute("SELECT precis_link_covered_meta()").fetchone()[0]
+                )
+        prev_lines = _target_state_lines(target_kind, prev, covered)
+        now_lines = _target_state_lines(target_kind, now, covered)
+        return "\n".join(
+            difflib.unified_diff(
+                prev_lines,
+                now_lines,
+                fromfile=f"at {sha}",
+                tofile="current",
+                lineterm="",
+            )
+        )
+
+    def _target_state_now(
+        self,
+        target_kind: str,
+        target_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> dict[str, Any] | None:
+        """The target's row now, ``to_jsonb``-shaped like ``prev_state`` —
+        plus ``chunks`` for a ref: every live body chunk at the ords a
+        ``prev_state`` may have recorded (populated by the caller's
+        ``_target_state_lines`` pairing, which diffs only ords present in
+        the recorded prior)."""
+        with self._review_conn(conn) as c:
+            if target_kind == "ref":
+                row = c.execute(
+                    "SELECT to_jsonb(r) FROM refs r WHERE r.ref_id = %s",
+                    (target_id,),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT to_jsonb(l) FROM links l WHERE l.link_id = %s",
+                    (target_id,),
+                ).fetchone()
+        return dict(row[0]) if row is not None else None
+
     def unrecorded_revision_count(
         self, since: datetime, *, conn: Connection | None = None
     ) -> int:
@@ -267,6 +424,35 @@ class ReviewsMixin:
                 (since,),
             ).fetchone()
         return int(row[0]) if row is not None else 0
+
+    def unrecorded_revision_breakdown(
+        self, since: datetime, *, conn: Connection | None = None
+    ) -> list[dict[str, Any]]:
+        """The ``(unrecorded)`` rows since ``since``, grouped by what
+        names the write path: ``target_kind`` + ``event`` + ``actor`` +
+        the covered subject (a ref's ``kind``, a link's ``relation``) —
+        the breakdown the nightly ``revisions_unrecorded`` cadence
+        reports so an operator can see *which* unwrapped writer produced
+        the rows, not just how many."""
+        with self._review_conn(conn) as c:
+            rows = c.execute(
+                "SELECT target_kind, event, actor,"
+                "       coalesce(prev_state->>'kind', prev_state->>'relation', ''),"
+                "       count(*) FROM revisions"
+                " WHERE reason = '(unrecorded)' AND at >= %s"
+                " GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC, 1, 2, 3, 4",
+                (since,),
+            ).fetchall()
+        return [
+            {
+                "target_kind": r[0],
+                "event": r[1],
+                "actor": r[2],
+                "subject": r[3],
+                "count": int(r[4]),
+            }
+            for r in rows
+        ]
 
     # ── trust state (0214) ────────────────────────────────────────────────
 

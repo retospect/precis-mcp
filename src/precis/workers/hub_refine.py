@@ -640,11 +640,10 @@ def _is_hub_due(
     *,
     is_due_tagged: bool,
     has_coverage: bool,
-    last_refined_at: str | None,
-    last_refined_sha: str | None,
+    last_refined_at: str | datetime | None,
+    sha_current: bool,
     last_refined_version: str | None,
     is_signed: bool,
-    title: str,
     backstop_h: float,
 ) -> bool:
     """The due predicate — any of:
@@ -655,14 +654,24 @@ def _is_hub_due(
        re-fires even if the tag pop was lost, so a corroborator is never
        silently dropped; migration 0175), or
     2. never refined (``last_refined_at`` absent), or
-    3. edited since last refine (stored ``last_refined_sha`` absent or no
-       longer matches the live title's :func:`taproot.canon.claim_sha` —
-       a reopen), or
-    4. refined under older rules (stored ``last_refined_version`` != the
+    3. edited since last refine (``sha_current`` False — a reopen), or
+    4. refined under older rules (the last refine's ``version`` != the
        live :data:`REFINE_VERSION`) **and not signed** — the one arm the
        signature exempts, see that constant, or
     5. the long backstop has elapsed (nothing is ever permanently stuck if
        a due-tag is lost to a failed pass).
+
+    ``last_refined_at`` / ``sha_current`` / ``last_refined_version`` come
+    from the ``reviews`` ledger (the latest ``hub-refine`` ``approved``
+    row — local-mesh-upkeep slice 1b), where ``sha_current`` is the
+    ledger's own currency rule: the review's ``content_sha`` still equals
+    ``precis_target_sha('ref', hub)``, so a scope/caveats/body edit
+    reopens the hub exactly like a title retitle did under
+    ``claim_sha``. A hub with no ledger row yet (a stamp predating
+    migration 0185 — the lazy-migration window) falls back to the legacy
+    meta stamps and the ``claim_sha(title)`` comparison; its next refine
+    stamps ``meta.last_refined_*`` again, which the mirror trigger writes
+    into the ledger.
 
     ``is_signed`` means "has a ``nanopub_publish`` row past ``candidate``"
     — the same frozen-claim test ``taproot.reword`` excludes its cohort by
@@ -675,12 +684,16 @@ def _is_hub_due(
         return True
     if last_refined_at is None:
         return True
-    if last_refined_sha is None or last_refined_sha != claim_sha(title):
+    if not sha_current:
         return True
     if not is_signed and last_refined_version != REFINE_VERSION:
         return True
     try:
-        refined_at = datetime.fromisoformat(last_refined_at)
+        refined_at = (
+            last_refined_at
+            if isinstance(last_refined_at, datetime)
+            else datetime.fromisoformat(last_refined_at)
+        )
     except (TypeError, ValueError):
         # Malformed timestamp -- fail open (due) rather than get stuck.
         return True
@@ -733,7 +746,10 @@ def _claim_hubs_due_for_refine(
     """
     rows = conn.execute(
         f"""
-        SELECT r.ref_id, r.title, r.meta,
+        SELECT r.ref_id, r.title, r.meta, rv.at, rv.version,
+               rv.content_sha IS NOT NULL
+                 AND rv.content_sha = precis_target_sha('ref', r.ref_id)
+                 AS rev_sha_current,
                EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -761,6 +777,13 @@ def _claim_hubs_due_for_refine(
                     AND np.state IN ('candidate', 'reviewed')
                ) AS under_review
           FROM refs r
+         LEFT JOIN LATERAL (
+                 SELECT v.content_sha, v.version, v.at
+                   FROM reviews v
+                  WHERE v.target_kind = 'ref' AND v.target_id = r.ref_id
+                    AND v.actor = 'hub-refine' AND v.verdict = 'approved'
+                  ORDER BY v.at DESC, v.review_id DESC LIMIT 1
+               ) rv ON true
          WHERE r.kind = 'finding'
            AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
@@ -791,6 +814,9 @@ def _claim_hubs_due_for_refine(
         ref_id,
         title,
         meta,
+        rev_at,
+        rev_version,
+        rev_sha_current,
         is_due_tagged,
         has_coverage,
         has_attempt_lease,
@@ -803,19 +829,37 @@ def _claim_hubs_due_for_refine(
             # of which due reason would otherwise fire.
             continue
         meta = dict(meta or {})
-        last_refined_at = meta.get(_META_LAST_REFINED_AT)
-        last_refined_sha = meta.get(_META_LAST_REFINED_SHA)
+        if rev_at is not None:
+            # The reviews ledger governs (slice 1b): the last hub-refine
+            # stamp's at/version, and currency as the ledger sha — a
+            # scope/caveats/body edit reopens too, not just a retitle.
+            last_refined_at: str | datetime | None = rev_at
+            sha_current = bool(rev_sha_current)
+            last_refined_version = rev_version
+        else:
+            # Lazy-migration window (migration 0185): a stamp predating the
+            # ledger has no reviews row — fall back to meta + claim_sha.
+            last_refined_at = meta.get(_META_LAST_REFINED_AT)
+            stored_sha = meta.get(_META_LAST_REFINED_SHA)
+            sha_current = stored_sha is not None and stored_sha == claim_sha(
+                str(title or "")
+            )
+            last_refined_version = meta.get(_META_LAST_REFINED_VERSION)
         if only_hub is not None or _is_hub_due(
             is_due_tagged=bool(is_due_tagged),
             has_coverage=bool(has_coverage),
             last_refined_at=last_refined_at,
-            last_refined_sha=last_refined_sha,
-            last_refined_version=meta.get(_META_LAST_REFINED_VERSION),
+            sha_current=sha_current,
+            last_refined_version=last_refined_version,
             is_signed=bool(is_signed),
-            title=str(title or ""),
             backstop_h=backstop_h,
         ):
-            candidates.append((bool(under_review), int(ref_id), last_refined_at))
+            at_key = (
+                last_refined_at.isoformat()
+                if isinstance(last_refined_at, datetime)
+                else last_refined_at
+            )
+            candidates.append((bool(under_review), int(ref_id), at_key))
 
     # hubs with a live candidate/reviewed nanopub row (a human is about to
     # sign them) first, then never-refined, then oldest last_refined_at,

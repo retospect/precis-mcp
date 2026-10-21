@@ -877,6 +877,9 @@ class FindingHandler(NumericRefHandler):
         # ``view='judgments'``'s 1-based page, same channel
         # (``args={'page': 2}``).
         page: int | None = None,
+        # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
+        # the base dispatch; declared so the extras gate accepts it here.
+        since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='evidence'`` renders a claim hub's evidence, split by
@@ -925,7 +928,9 @@ class FindingHandler(NumericRefHandler):
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if isinstance(id, list):
-            return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
+            return super().get(
+                id=id, view=view, q=q, since=since, **_kw
+            )  # refused: no batch form
         id = self._resolve_pub_id_slug(id)
         if view == "evidence":
             ref_id = self._coerce_id(id)
@@ -961,7 +966,7 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_merge.render_merge_plan_view(self.store, int(ref.id), loser)
-        return super().get(id=id, view=view, q=q, **_kw)
+        return super().get(id=id, view=view, q=q, since=since, **_kw)
 
     def eye(
         self,

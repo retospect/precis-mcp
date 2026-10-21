@@ -345,6 +345,9 @@ class MemoryHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
+        # the base dispatch; declared so the extras gate accepts it here.
+        since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
@@ -370,7 +373,7 @@ class MemoryHandler(NumericRefHandler):
                     "· links, log, raw (generic)"
                 ),
             )
-        return super().get(id=id, view=view, q=q, **_kw)
+        return super().get(id=id, view=view, q=q, since=since, **_kw)
 
     def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.
