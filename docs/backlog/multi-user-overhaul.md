@@ -238,6 +238,31 @@ scope, human-actor functions) · `src/precis/settings.py` ·
 `deploy/roles/postgres`, `deploy/roles/precis_web`, `deploy/mcp-http` ·
 skills `precis-overview`, `precis-status`.
 
+## Decisions (Reto 2026-10-21, batch 11)
+
+Q1–Q10 approved as recommended, with two changes:
+
+- **Q5, changed: agents never see secret values.** Reto: "the code that
+  starts the agent needs to know, but the agents should not be able to
+  see." An *agent* here is any LLM-driven caller (`dev-agent`: Claude/Codex
+  sessions over stdio or the shared MCP, cluster quest/job agents, Devins).
+  The *launcher* is service code (workers, the MCP daemon's handlers, job
+  runners) running as `precis_system`/`precis_ingress`. Rule: secret values,
+  `svc/api/*` included, are read only by service code and used server-side;
+  no agent-facing surface (a verb's result, a skill, a log line, the env
+  of a process an agent controls) returns or exposes one. An agent gets
+  the capability (the handler makes the paid call), never the key.
+  Consequence the build must resolve: a stdio session runs handler code in
+  its own process with its own DSN, so `dev-agent` gets no vault read;
+  paid-API calls from a stdio session route through the shared daemon or a
+  worker job. Keys put in a launched agent's environment (e.g. a model API
+  key for a cluster agent) move behind a server-side proxy where feasible;
+  each remaining exception is listed in this file with its reason.
+- **Q8, extended: Discord is private too.** Discord-sourced content (asa
+  turns, `message`/`conv` rows from Discord) defaults private to its
+  bound speaker, alongside memory, draft, conv, profile, anki and email.
+  Unmapped speakers stay `reader` (S9).
+
 ## Open questions for Reto (each with a recommendation)
 
 1. **Boundary statement.** Accept that `reader`/`user` are daemon-enforced

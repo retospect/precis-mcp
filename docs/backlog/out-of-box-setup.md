@@ -180,6 +180,15 @@ New `src/precis/cli/setup.py`, `cli/doctor.py`, `precis_web/routes/users.py`,
 | O6 admin users screen | 2 d | new admin route; `cli/users.py` docstring | `multi-user-overhaul.md` S3 |
 | O7 `setup --roles` | 0.5 d | role creation + env file | `multi-user-overhaul.md` S1, S4 |
 
+## Decisions (Reto 2026-10-21, batch 11)
+
+Q11–Q18 approved as recommended (`precis setup`; extras only with
+`--install-extras`; `~/.config/precis/precis.env`; vault key via
+`ALTER DATABASE`; CI in a real python:3.13-slim container; generated
+passwords shown once; admin screen disables, `rm` stays CLI; Compose
+quickstart after O2). Agents never see secret values (multi-user Q5
+ruling): `precis setup` writes secrets for service code only.
+
 ## Open questions for Reto (each with a recommendation)
 
 1. **Name.** `precis setup` or `precis init`? Recommendation: `setup`;
