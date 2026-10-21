@@ -3,10 +3,14 @@ status: draft
 pillar: local-compute
 ---
 
-# slullama HPC model — placement-chain rung + cluster access
+# External HPC — slullama LLM rung, batch runner, Apptainer image
 
-- **Status**: leg 1 (static card) SHIPPED (dark); leg 2 (chain rung) OPEN —
-  blocked on external cluster access.
+- **Status**: batch runner (submit, recover, collect) and Apptainer image
+  specced 2026-10-21, not started; the `precis.remote` core is on main with
+  no caller. slullama leg 1 (static card) SHIPPED (dark); leg 2 (chain rung)
+  OPEN, blocked on external cluster access.
+- **Owner:** thread `local-compute` Do next 2b. This file is the one spec for
+  external HPC; `precis-dispatch.md`'s "second backend" trigger points here.
 - **Refs**: memory `slullama_cluster_llm`; ADR 0066 (git-only ADR,
   capability tiers + placement chains); `precis.utils.llm` package
   docstring §4 ("Chain"); `precis.llm_catalog.seed_slullama_card`.
@@ -168,4 +172,238 @@ share controller limits across workers rather than letting each poll separately.
 Open prerequisites: usable vault-backed SSH consumer, actual project/resource
 entitlement, chosen compatible wheel/model and pilot fixture. Coordinator
 assigns implementation/validation and live pilot sequencing; no remote run has
-been performed by writing this draft.
+been performed by writing this draft. The consumer is specced in § Batch
+runner below; the image in § Apptainer image.
+
+## Batch runner: submit, recover, collect (spec, 2026-10-21)
+
+Wires `precis.remote` into the worker as a detached job_type, so a precis job
+can run on the external HPC and come back as the same records a local run
+writes. No live remote run happens until slice B4, under the pilot gate above.
+
+### What exists, and what it lacks
+
+`precis.remote.slurm.SlurmRunner` (on main, tests `tests/test_remote_slurm.py`)
+has six operations over an injected transport: `stage`, `submit`, `recover`,
+`status`, `cancel`, `collect`. `precis.remote.credentials.vault_ssh_session`
+gives that transport from vault refs with pinned host keys and an identity
+that lives at most 60 s. Nothing calls either.
+
+Properties to keep:
+
+- **Durable intent before acceptance.** `submit` fsyncs a journal entry under
+  a caller token before `sbatch`. The remote run directory holds a
+  `submitted.once` guard and a `receipt`. Re-running `submit` with the same
+  token never submits twice.
+- **Uncertain acknowledgement reconciles; it does not resubmit.** `recover`
+  finds the job id from the receipt, `squeue` and `sacct` by job name
+  `mpx-<token>`. Two matches raise `submission_conflict`. No match leaves
+  `submission_unknown`.
+- **Scheduler identity check.** `status` refuses accounting whose user,
+  account or job name differ from the intent.
+- **Hash-checked staging and collection.** Every staged file and every
+  collected output is checked against sha256 on both ends.
+
+Gaps this spec closes (slices B1–B3):
+
+1. No caller: no job_type, no handle in `meta.compute_handle`, no host pin.
+2. The journal is a local directory. If the worker host loses it, every
+   in-flight intent is lost to `_load`.
+3. Preemption and node failure are terminal `failed`. Nothing decides whether
+   to run the work again.
+4. `stage` takes the whole bundle as in-memory bytes, capped at 2 GiB, over
+   one `cat` with a 120 s timeout. A 3 GiB SIF does not fit that path.
+5. No cleanup. Stage and run directories stay on the project filesystem, and
+   inodes are the binding quota (Do next 2b in the thread).
+6. `collect` returns bytes and outcomes. Nothing turns them into precis
+   records.
+
+### Slices
+
+**B1. Runner changes in `precis.remote.slurm` (unit tests, fake transport).**
+
+- `sbatch --no-requeue`. A preempted or node-failed job then shows as a
+  terminal `PREEMPTED`/`NODE_FAIL` row in `sacct`, instead of rerunning in
+  place under the same job id over a half-written run directory. Rerun
+  decisions move to B2, where they are visible and capped.
+- `status` maps `PREEMPTED`, `NODE_FAIL` and `BOOT_FAIL` to state
+  `preempted`, separate from `failed`. The job script's own nonzero exit stays
+  `failed`.
+- **Image stage, separate from the run stage.** New `stage_image(path,
+  sha256)` streams a local file over ssh stdin in fixed chunks, writes
+  `images/<sha256>.sif.tmp`, checks `sha256sum`, then renames it. It is a
+  no-op when `images/<sha256>.sif` exists and its hash matches. Images are
+  kept between jobs (one inode each). Run stages stay small: manifests,
+  scripts and inputs, under the existing 2 GiB cap.
+- `cleanup(handle)`, allowed only after `collect` reached `complete`: removes
+  `run-<token>`, then removes `stage-<id>` when no other journal entry that
+  has not been collected names it. Images are removed only by an explicit
+  `prune_images(keep=[sha…])`, never by `cleanup`.
+- `Limits.max_wall_seconds` and `max_inflight` come from the caller (B2
+  reads them from settings). The 600 s default stays as the pilot ceiling.
+- **Many tasks per job.** `task_ids` already exist on the intent. The job
+  script reads `tasks.json` from the stage, writes `out/<task_id>/…`, and
+  `collect` takes per-task output names so a missing task is
+  `missing_output` for that task only. One `sbatch` carries many short
+  ML-potential relaxes (use (c) in the thread). Slurm arrays are out of
+  scope until a measured queue cost says one job per batch is too slow.
+
+**B2. Job type `hpc_batch` on the `ssh_node` executor (detached submit/poll).**
+
+New `src/precis/workers/job_types/hpc_batch.py`, with `submit` and `poll` per
+the `JobTypeSpec` contract. Params: `workload` (adapter name), `tasks`,
+`resources` (nodes, cpus, gpus, memory, wall seconds), `image_sha256`.
+Account, partition, QoS, remote root, SSH profile and vault refs come from
+`app_settings` and the gitignored overlay, never from params or the repo.
+
+- **Host pin.** Every `hpc_batch` job carries `params.target_node` = the one
+  controller host (from `PRECIS_HPC_CONTROLLER_NODE`, as `struct_relax` pins
+  with `PRECIS_DFT_NODE`). One host to start: the journal lock is a local
+  `flock`, so two hosts would each think they own the in-flight budget.
+- **Token.** `sha256(job ref id, attempt)[:32]`. A worker restart or a lease
+  reclaim reuses the same token, so the remote `submitted.once` guard stops a
+  second `sbatch` even if the local journal is gone.
+- **Journal durability.** `journal_root` is a persistent host path under the
+  worker's data directory, not container scratch. After every runner call,
+  the job writes the journal state into `meta.compute_handle`. If the journal
+  file is missing, `poll` rewrites it from `meta.compute_handle` (same
+  `profile_id` and `user`, or refuse) before calling `recover`.
+- **One SSH session per pass.** `poll` opens one `vault_ssh_session` per
+  `ssh_node` pass and polls every handle through it. The runner's
+  `status_interval` (30 s) and `submission_interval` (10 s) bound scheduler
+  load whatever the pass rate is.
+- **State map.**
+
+  | runner state | precis job | action |
+  |---|---|---|
+  | `submission_unknown` | running | `recover` each pass; after `meta.deadline`, fail `infra` with "submission unknown: check squeue by job name `mpx-<token>` before any resubmit" |
+  | `pending`, `running` | running | renew lease |
+  | `succeeded` | running → done | `collect`, then B3, then `cleanup` |
+  | `failed`, `timeout`, `cancelled` | failed | `collect` logs only, record the failure, `cleanup` |
+  | `preempted` | queued again | new attempt number, so a new token; at most `hpc.max_preempt_retries` (default 2), then failed `infra` |
+  | collection `pending` | running | retry `collect` next pass; same intent |
+  | collection `failed` (hash or size) | failed | keep the remote run directory for inspection; no `cleanup` |
+
+- **Cancel.** `precis jobs kill` on an `hpc_batch` job calls
+  `runner.cancel`, and the job turns terminal only after `status` sees a
+  terminal row. The request alone is not proof (the runner says so too).
+
+**B3. Collect into precis records.**
+
+- **Logs.** `slurm.out`/`slurm.err` tails (bounded, 64 KiB each) become
+  `job_event` chunks on the job, as the `ssh_node` relax path writes them.
+- **Results.** Each workload adapter maps `out/<task_id>/result.json` to the
+  writer the local path already uses. For relaxes that is the
+  `struct_relax` calculation record, so downstream readers cannot tell a
+  remote relax from a local one except by provenance. The adapter checks
+  shape, units, finite values and that the result names its staged input
+  hash. A result that fails the check is `invalid_output` for that task.
+- **Provenance** on every written record: intent token, scheduler job id,
+  stage id, image sha256, task manifest hash, and the source sha of the
+  workload wheel.
+- **Accounting measures.** One `kind='measure'` row per job with `run_key` =
+  token and subject = the job ref: elapsed seconds, queue wait seconds
+  (Start minus submit), and node-hours by allocated TRES from `sacct`. Mint
+  the measurands if absent. These are the inputs the rate controls above and
+  the "is HPC worth it" read need.
+
+**B4. Live pilot.** The ML-potential pilot above, run through `hpc_batch`
+instead of by hand. Same gate: one real result captured by precis with
+provenance, plus the actual job id, resources, runtime and allocation use.
+Needs B1–B3, image I1 (MLIP) and Reto's go for the allocation spend.
+
+### Tests (B1–B3, no network)
+
+- Fake transport replays scheduler output for: lost acknowledgement then
+  receipt found; lost acknowledgement then `sacct` match; two matches
+  (conflict); `PREEMPTED` with `--no-requeue`; collection timeout then
+  success; hash mismatch.
+- Journal deleted between passes: `poll` rehydrates from
+  `meta.compute_handle` and the fake transport sees no second `sbatch`.
+- `cleanup` keeps a stage another uncollected intent still names.
+- `hpc_batch` with a fake runner drives a precis job through each row of the
+  state map against the test DB.
+
+## Apptainer image (SIF-1..5, spec 2026-10-21)
+
+The project filesystem cannot hold a loose Python environment (about 26k
+inodes free). One SIF per workload is one inode. The 2026-10-05/07 handoff
+(td471801, paused) froze the plan below as five closure conditions; none is
+built. Build order: I1 is the ML-potential image for B4; the GPAW image
+follows the same items after its prerequisite.
+
+**Prerequisite for the GPAW image: one GPAW relax completes in prod on
+pollux.** None has (thread `chemistry`, Do next: both DFT-rung jobs ever
+dispatched failed). The pollux image has no MPI; the MPI build is on branch
+`chemistry-dft-mpi-env`, and Reto ruled 2026-10-10 to rebuild it only when
+something needs the `gpaw` rung. HPC DFT (use (b)) is that need, but the
+local completion comes first: a SIF of an image that has never finished a
+relax moves the failure to a queue we pay for. The ML-potential image has no
+such prerequisite.
+
+**Build.** Convert the existing Docker image for each workload
+(`docker/precis-dft` for GPAW; a MACE + torch-CUDA image from the pinned
+catpath wheel for ML potentials) with `apptainer build x.sif
+docker-archive://…`, on an amd64 builder (the Mac and the DGX nodes are
+arm64). Install offline from the hash-pinned wheel set; no network at build
+or run time. Size cap: SIF plus external controls at most 3 GiB, refuse above
+it; no larger cap or repacking fallback.
+
+Each item below is one of td471801's five conditions, with its test.
+
+- **I1 (SIF-1). The launcher never unpacks the image.** It runs the SIF
+  read-only (squashfs mount) and refuses before any root filesystem is
+  materialised, including when a helper fails after the capability check.
+  Test: launcher dry run against a host shim that reports "no FUSE / no
+  setuid" exits nonzero with a durable refusal, and leaves no sandbox
+  directory behind.
+- **I2 (SIF-2). Environment allowlists, outer and inner.** Run with
+  `--cleanenv --contain --no-home`, binds only the stage (read-only), the run
+  directory and job-private local scratch. The host-launcher and in-image
+  allowlists are separate. Any `APPTAINER_*` bind, config or loader variable,
+  `LD_*` or shell variable not on the list refuses the run. Test: each
+  forbidden variable set in the fake environment refuses.
+- **I3 (SIF-3). A write table, enforced at write time.** One row per writer:
+  path, byte cap, inode cap, enforcement, failure. Caches, temp, `HOME` and
+  Apptainer's own cache/config/tmp all go to job-private node-local scratch,
+  capped (proposed 64 MiB and 256 inodes, plus a 1 GiB and 1024-inode
+  reserve). The project filesystem gets only the result files, an early
+  report, the ledger and the logs (16 MiB results, 16 MiB scheduler logs).
+  If local scratch is unset, not local, not writable, wrongly owned, a symlink
+  or short of headroom, the job refuses; it never falls back to `HOME`, the
+  project filesystem or the default tmp. Test: each guard on a fake
+  scratch tree.
+- **I4 (SIF-4). One supervised entry, real time budget.** One container
+  entry runs the checks and the model. Metadata steps have short timeouts,
+  separate from the whole-job wall time. The job's real exit code and an
+  early report reach the run directory even when the checks fail. Pilot
+  budget: at least 540 s left for the model inside a 600 s allocation after
+  image, hash and mount checks; measured, not assumed. Test: a failing check
+  writes the early report and the checker's own exit code, and clears any
+  earlier success markers (the bootstrap hook already does this; keep it).
+- **I5 (SIF-5). Identities without cycles.** Image, runtime profile, task
+  manifest and index hashes form a chain with no self-reference: the image
+  holds no manifest, SIF hash or job id; the external profile binds the SIF
+  hash and the image's internal input index; the manifests are bound
+  read-only at fixed paths. An installed-file census is inside the image or
+  in a hash-bound file off the cluster. External controls at most 64 KiB
+  each. The expected CPU reference manifest is separate from the generated
+  artifact. Test: rebuild from the same inputs gives the same index hash;
+  changing one wheel changes the profile hash and refuses the old manifest.
+
+**Image acceptance.** The SIF exists with a measured size and sha256, fits the
+3 GiB cap, and passes I1–I5 off the cluster. The first on-cluster check (FUSE
+or squashfs mount, `--nv` driver passthrough, ABI) happens inside B4's one
+allocation, with the early report collected even if it fails. No separate
+preflight allocation.
+
+### Open for Reto (defaults taken so the build is not blocked)
+
+- First workload on HPC: ML potentials, not GPAW. Default taken: yes, because
+  the GPAW image waits on the pollux completion above.
+- `--no-requeue`, with reruns decided by precis and capped at 2. Default
+  taken: yes.
+- One controller host holds the vault key and the journal. Default taken:
+  yes; the host is chosen at deploy time from the overlay.
+- The inode raise or cleanup request to the provider (thread Do next 2b) is
+  still Reto's to send.

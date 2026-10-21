@@ -166,7 +166,12 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    read 97% full by bytes and inodes (about 26k inodes free), so a loose
    Python environment cannot be installed there. Minimal footprint is one
    image per workload, per-job writes on node-local scratch only, stage
-   deleted after collect.
+   deleted after collect. **Specced 2026-10-21** in
+   `backlog/slullama-hpc-placement.md` § Batch runner (B1 runner gaps, B2
+   `hpc_batch` job type on `ssh_node`, B3 collect into records, B4 live
+   pilot) and § Apptainer image (I1–I5 = SIF-1..5). Next: B1, then I1 for
+   the ML-potential image; the GPAW image waits on the pollux completion
+   in (b).
    **Storage answer for Reto (2026-10-12, from td471801's 2026-10-05 quota
    read and the twins' image inventory):** the project space is 10,000
    GiB with 9,711 used (289 GiB free) and 1,000,000 inodes with 973,336

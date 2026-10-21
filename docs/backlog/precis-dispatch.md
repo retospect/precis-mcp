@@ -32,7 +32,11 @@ git-history sketches — that is the point of waiting.
   appears → extract the seam.** Only then pull `WorkloadSpec` /
   `Runner` / `Stager` out of the concrete relax code, shaped by *two*
   real cases. Do NOT write `SlurmRunner`/`AwsBatchRunner` stubs or
-  contract tests before this.
+  contract tests before this. **Fired:** `precis.remote.slurm.SlurmRunner`
+  exists for the external HPC; its wiring is specced in
+  `slullama-hpc-placement.md` § Batch runner as a detached `ssh_node`
+  job_type. Extract the shared seam from that and the pollux relax once
+  both run.
 - **When OOM/walltime bites → the right-sizing loop:** generous
   default + bump-on-failure via the existing `FailureMode` retry;
   analytic estimator / learned profiles only if that proves
