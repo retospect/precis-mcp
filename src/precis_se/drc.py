@@ -87,7 +87,7 @@ from precis_se.measures import (
     stackup,
 )
 from precis_se.ops import SeBlock, SeTree, effective_envelope
-from precis_se.properties import is_checked
+from precis_se.properties import COMPUTERS, is_checked
 from precis_se.validate import (
     _KERNEL_BAND,
     _KERNEL_TARGET,
@@ -671,6 +671,68 @@ def drc(
                 severity="warn",
             )
         )
+
+    # 5a''. registered computers actually run (region property layer
+    # slice B): the realised value is compared with the measure's
+    # declared target/band — outside is ``measure_unmet`` (warn, naming
+    # realised and required); a computer returning nothing is
+    # ``measure_uncomputable`` (warn, carrying its reason) rather than a
+    # silent pass.
+    for m in tree.measures:
+        if m.measurand is None:
+            continue
+        computer = COMPUTERS.get(m.measurand)
+        if computer is None:
+            continue
+        subject = f"{m.block}.{m.name}"
+        reason: str | None
+        try:
+            realised = computer(tree, m)
+        except Exception as exc:  # a read-time check never crashes the read
+            realised = None
+            reason = f"{type(exc).__name__}: {exc}"
+        else:
+            reason = getattr(computer, "reason", None)
+        if realised is None:
+            findings.append(
+                ValidationIssue(
+                    rule="measure_uncomputable",
+                    subject=subject,
+                    detail=(
+                        f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) "
+                        f"could not be computed: {reason or 'no value returned'}"
+                    ),
+                    severity="warn",
+                )
+            )
+            continue
+        band = declared_band(m)
+        unmet: str | None = None
+        if band is not None:
+            if not (band[0] <= realised <= band[1]):
+                unmet = (
+                    f"realised {realised:g} {m.unit} outside required band "
+                    f"[{band[0]:g}, {band[1]:g}] {m.unit}"
+                )
+        elif m.value is not None:
+            tol = float((m.relation or {}).get("tol") or 0.0)
+            if abs(realised - m.value) > tol:
+                unmet = (
+                    f"realised {realised:g} {m.unit} vs required "
+                    f"{m.value:g} {m.unit}" + (f" (tol {tol:g})" if tol > 0 else "")
+                )
+        if unmet is not None:
+            findings.append(
+                ValidationIssue(
+                    rule="measure_unmet",
+                    subject=subject,
+                    detail=(
+                        f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) "
+                        f"{' on ' + m.datum if m.datum else ''}: {unmet}"
+                    ),
+                    severity="warn",
+                )
+            )
 
     # 5a'. region datums (se_datums.resolve, store-free): a datum that
     # resolves to an error is a reference that points at nothing

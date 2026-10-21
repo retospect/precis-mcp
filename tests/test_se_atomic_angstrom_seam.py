@@ -57,6 +57,19 @@ _ALLOWED: dict[str, str] = {
         "envelope_fit's design(m)↔atomistic(Å) conversion against a bound "
         "structure scene — the permanent structure-enclave crossing"
     ),
+    "datums.py": (
+        "region resolution poses the bound structure's Å atoms into the "
+        "se metre world (the structure-enclave crossing), and the mol: "
+        "token's clearance is written Å in the grammar but stored metres"
+    ),
+    "properties/computers.py": (
+        "the wall-side computers read a mol: shape's clearance, stored "
+        "in metres, back into the painter's Å frame — the enclave crossing"
+    ),
+    "properties/pocket_spec.py": (
+        "patch centroids are ranked in the wall frame: painted-surface Å "
+        "crosses the block pose's metres both ways — the enclave crossing"
+    ),
 }
 
 #: One legal param set per registered generator, cheapest realization of

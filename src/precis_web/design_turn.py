@@ -709,7 +709,16 @@ _SE_DRY_RUN_PREPARE: dict[str, Callable[[Any, SeTree, dict[str, Any], str], Any]
 #: Skipping is not the same as passing them to ``se_apply_ops``, which
 #: knows only the pure table and would report the op as unknown.
 _SE_DRY_RUN_SKIPPED: frozenset[str] = frozenset(
-    {"relax_chain", "fold_layout", "make_steps"}
+    {
+        "relax_chain",
+        "fold_layout",
+        "make_steps",
+        # pocket-from-molecule slice 2b: its whole cost IS the work — a
+        # GFN2 single point plus the paint/cluster — and it writes through
+        # the pure add_pocket/add_measure paths only, so the dry-run has
+        # nothing pure to prepare.
+        "pocket_from_molecule",
+    }
 )
 
 

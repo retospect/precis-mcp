@@ -123,7 +123,8 @@ VOCABULARY = (
     "frame | port:<name> | face:<instance>.<tag> | axis:<instance> | "
     "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly | "
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
-    "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>]"
+    "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>] | "
+    "mpatch:<block>:<id> | mol:<block>@<clearance Å>"
 )
 
 #: A face whose normal is within this many degrees of ±x takes block-local
@@ -168,6 +169,14 @@ class Selector:
     lo: int | None = None
     hi: int | None = None
     indices: tuple[int, ...] = ()
+    #: ``mpatch:<block>:<id>`` — the molecule-surface patch ordinal
+    #: (ranked by ``(z, θ)`` of the patch centroid in the wall frame,
+    #: :func:`precis_se.properties.pocket_spec.cluster_patches`).
+    patch_id: int | None = None
+    #: ``mol:<block>@<clearance>`` — the pocket-shape token's clearance,
+    #: written in Å in the token text, stored in metres like every se
+    #: length.
+    clearance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +204,11 @@ class ResolvedDatum:
     #: or a stale pin) — declared intent, not a broken reference, so
     #: ``datum_unresolved`` stays quiet about it.
     expected: bool = False
+    #: For an ``atoms:``/``sites:``/``mpatch:`` selector resolved against
+    #: the bound structure: the ordinals it names (atom positions are
+    #: ``id ASC`` in the loaded scene). Empty when unresolved or when the
+    #: kind carries no atom set.
+    atoms: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -277,9 +291,56 @@ def parse_selector(text: Any) -> Selector:
                 f"(largest | normal=±x|±y|±z | perp=assembly), got {s!r}"
             )
         return Selector(kind="face", instance=inst.strip(), tag=tag.strip())
+    if head == "mol":
+        return _parse_mol(s, body)
+    if head == "mpatch":
+        return _parse_mpatch(s, body)
     raise MeasureError(
         f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
     )
+
+
+def _parse_mol(s: str, body: str) -> Selector:
+    """``mol:<block>@<clearance>`` — the offset vdW surface of that
+    molecule block (the pocket-shape token, Q8). ``clearance`` is written
+    in Å and stored in metres; ``< 0`` is refused, ``0`` allowed."""
+    shape_msg = (
+        f"mol selector is 'mol:<block>@<clearance Å>' (the molecule's "
+        f"offset vdW surface, the pocket-shape token), got {s!r} — "
+        f"vocabulary: {VOCABULARY}"
+    )
+    block, at, clear_text = body.partition("@")
+    if not at or not block.strip() or not clear_text.strip():
+        raise MeasureError(shape_msg)
+    try:
+        clearance_A = float(clear_text.strip())
+    except ValueError:
+        raise MeasureError(shape_msg) from None
+    if not math.isfinite(clearance_A):
+        raise MeasureError(f"mol clearance must be finite, got {s!r}")
+    if clearance_A < 0.0:
+        raise MeasureError(
+            f"mol clearance must be ≥ 0 Å (the pocket surface offsets "
+            f"outward), got {clearance_A:g} Å in {s!r}"
+        )
+    return Selector(kind="mol", instance=block.strip(), clearance=clearance_A * 1e-10)
+
+
+def _parse_mpatch(s: str, body: str) -> Selector:
+    """``mpatch:<block>:<id>`` — patch ``id`` (a nonneg ordinal) of the
+    molecule surface of block ``<block>``, naming the wall region
+    opposite it."""
+    shape_msg = (
+        f"mpatch selector is 'mpatch:<block>:<id>' (patch <id> of the "
+        f"molecule's painted surface — the wall region opposite it), got "
+        f"{s!r} — vocabulary: {VOCABULARY}"
+    )
+    block, colon, pid = body.rpartition(":")
+    if not colon or not block.strip() or not pid.strip():
+        raise MeasureError(shape_msg)
+    if not pid.strip().isdigit():
+        raise MeasureError(f"mpatch id must be a nonneg integer, got {s!r}")
+    return Selector(kind="mpatch", instance=block.strip(), patch_id=int(pid.strip()))
 
 
 def _parse_patch(s: str, body: str) -> Selector:
@@ -581,12 +642,18 @@ def resolve(
             normal=placed.xform.apply_dir(np.array([0.0, 0.0, 1.0])),
         )
     if sel.kind in ("sites", "atoms"):
-        note = _atomic_region_note(tree, sel, pin)
+        return _resolve_atomic(tree, sel, pin, text)
+    if sel.kind == "mpatch":
+        return _resolve_mpatch(tree, node, sel, text)
+    if sel.kind == "mol":
         return ResolvedDatum(
             selector=text,
-            kind=sel.kind,
-            error=note,
-            expected=_atomic_note_is_expected(tree, sel),
+            kind="mol",
+            error=(
+                "mol: names a pocket shape (the molecule's offset "
+                "surface), not a datum — it has no feature geometry to "
+                "measure against"
+            ),
         )
     if sel.kind in ("patch", "ring"):
         target = sel.instance or node.name
@@ -967,6 +1034,209 @@ def _atomic_region_note(tree: SeTree, sel: Selector, pin: str | None = None) -> 
     )
 
 
+def posed_structure_atoms(
+    tree: SeTree, name: str
+) -> tuple[list[str], list[str], Any, list[int], Any] | None:
+    """``(labels, elements, world-frame coords in Å, formal charges,
+    bound meta)`` of the block's bound structure — the atom cloud the
+    region selectors and the wall-side computers index into. ``None``
+    when the block is missing, unbound, or the tree carries no
+    :attr:`SeTree.structures` resolver / the design fails to load."""
+    node = tree.blocks.get(name)
+    if node is None:
+        return None
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if owner.bound_kind != "structure" or not owner.bound:
+        return None
+    resolver = getattr(tree, "structures", None)
+    if resolver is None:
+        return None
+    bound = resolver(owner.bound)
+    if bound is None:
+        return None
+    scene = bound.scene
+    labels = list(scene.atoms)
+    cell = scene.cell
+    fracs = [scene.atoms[la].frac for la in labels]
+    local_A = np.asarray([cell.frac_to_cart(f) for f in fracs], dtype=float)
+    # Pose the atoms with the NAMED block's transform (an instance's own
+    # placement), reading the binding off the owner.
+    placement = cad_pose(as_vec3(node.pose), as_vec3(node.rot))
+    coords_A = np.asarray(
+        [
+            np.asarray(
+                placement.apply(as_vec3([float(c) * 1e-10 for c in p])), dtype=float
+            )
+            * 1e10
+            for p in local_A
+        ],
+        dtype=float,
+    )
+    elements = [scene.atoms[la].element for la in labels]
+    formal = [int(scene.atoms[la].charge or 0) for la in labels]
+    return labels, elements, coords_A, formal, bound.meta
+
+
+def _resolve_atomic(
+    tree: SeTree, sel: Selector, pin: str | None, text: str
+) -> ResolvedDatum:
+    """``atoms:``/``sites:`` against the bound structure — real resolution
+    now that a store-bound scene resolver exists (region property layer
+    slice B; pocket-from-molecule ruling 3). The pin-stale and
+    cannot-load answers keep the lenient ``expected`` notes; a missing
+    block stays a plain error, as do indices that overshoot the scene."""
+    name = sel.instance or ""
+    node = tree.blocks.get(name)
+    if node is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"no block {name!r} — {sel.kind}: names the block that "
+            "owns the atoms",
+        )
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if pin is not None:
+        stale = _stale_for(tree, sel, pin)
+        if stale is not None:
+            return ResolvedDatum(
+                selector=text, kind=sel.kind, error=stale, expected=True
+            )
+    if owner.bound_kind != "structure" or not owner.bound:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(
+                f"block {name!r} binds no structure design — {sel.kind}: "
+                "addresses atoms of a bound structure (bind_structure or "
+                "generate first)"
+            ),
+            expected=True,
+        )
+    got = posed_structure_atoms(tree, name)
+    if got is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(
+                f"{sel.kind}: on {name!r} addresses atoms of structure "
+                f"{owner.bound!r}, whose coordinates this resolver does "
+                "not load — the region is declared; its geometry resolves "
+                "where the structure resolver is wired"
+            ),
+            expected=True,
+        )
+    labels, _elements, coords_A, _formal, meta = got
+    if sel.kind == "atoms":
+        ordinals = sel.indices
+        if ordinals and max(ordinals) >= len(labels):
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"{sel.kind}: names atom {max(ordinals)} but structure "
+                    f"{owner.bound!r} has {len(labels)} atoms — re-declare "
+                    "the region"
+                ),
+            )
+    else:  # sites
+        records = ((meta.get("generated") or {}).get("sites") or {}).get("sites")
+        if not isinstance(records, list):
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"sites: structure {owner.bound!r} carries no seam-site "
+                    "list (its generated record has none) — the region is "
+                    "declared; it resolves on a generated structure"
+                ),
+                expected=True,
+            )
+        entries = [e for e in records if e.get("region") == sel.seam]
+        if not entries:
+            roster = sorted({str(e.get("region")) for e in records})
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"sites: no region {sel.seam!r} in {owner.bound!r}'s "
+                    f"site list (has: {', '.join(roster) or 'none'})"
+                ),
+            )
+        if sel.hi is not None and sel.hi >= len(entries):
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"sites: names s{sel.hi} of {sel.seam!r} but it has "
+                    f"{len(entries)} site(s) — re-declare the region"
+                ),
+            )
+        ordinals = tuple(
+            int(e["ordinal"]) for e in entries[sel.lo or 0 : (sel.hi or 0) + 1]
+        )
+    point = None
+    if ordinals:
+        point = coords_A[list(ordinals)].mean(axis=0) * 1e-10
+    return ResolvedDatum(
+        selector=text,
+        kind=sel.kind,
+        resolved=_selector_text(sel),
+        point=point,
+        normal=None,
+        atoms=tuple(ordinals),
+    )
+
+
+def _resolve_mpatch(
+    tree: SeTree, node: SeBlock, sel: Selector, text: str
+) -> ResolvedDatum:
+    """``mpatch:<molecule>:<id>`` — the wall region opposite patch ``<id>``
+    of the molecule's painted surface: the wall-block (``node``) atoms
+    within ``clearance + 3 Å`` of the patch's surface points. Needs the
+    molecule painted (GFN2), so it lives behind the same store-bound
+    resolver the other atomic selectors use; load/paint failures stay
+    lenient ``expected`` notes (the wall-side computer's
+    ``measure_uncomputable`` carries the detail)."""
+    from precis_se.properties.pocket_spec import molecule_patch_points
+
+    def err(msg: str, *, expected: bool = True) -> ResolvedDatum:
+        return ResolvedDatum(selector=text, kind="mpatch", error=msg, expected=expected)
+
+    mol_node = tree.blocks.get(sel.instance or "")
+    if mol_node is None:
+        return err(
+            f"no block {sel.instance!r} — mpatch: names the molecule block",
+            expected=False,
+        )
+    points_A = molecule_patch_points(tree, node, sel)
+    if isinstance(points_A, str):
+        return err(points_A)
+    if points_A is None or not len(points_A):
+        return err(f"mpatch: patch {sel.patch_id} of {sel.instance!r} is empty")
+    wall = posed_structure_atoms(tree, node.name)
+    if wall is None:
+        return err(
+            f"block {node.name!r} binds no loadable structure — the wall "
+            "region opposite the patch cannot resolve"
+        )
+    _labels, _elements, coords_A, _formal, _meta = wall
+    from precis_se.properties.computers import pocket_clearance_A
+
+    cut_A = pocket_clearance_A(tree, node.name, text) + 3.0
+    dist = np.linalg.norm(coords_A[:, None, :] - points_A[None, :, :], axis=2)
+    ordinals = tuple(sorted(int(i) for i in np.nonzero(dist.min(axis=1) <= cut_A)[0]))
+    centroid = points_A.mean(axis=0)
+    return ResolvedDatum(
+        selector=text,
+        kind="mpatch",
+        resolved=text,
+        point=centroid * 1e-10,
+        atoms=ordinals,
+    )
+
+
 def _selector_text(sel: Selector) -> str:
     if sel.kind == "frame":
         return "frame"
@@ -983,6 +1253,10 @@ def _selector_text(sel: Selector) -> str:
         return f"sites:{sel.instance}/{sel.seam}/s{sel.lo}..s{sel.hi}"
     if sel.kind == "atoms":
         return f"atoms:{sel.instance}[{_index_text(sel.indices)}]"
+    if sel.kind == "mpatch":
+        return f"mpatch:{sel.instance}:{sel.patch_id}"
+    if sel.kind == "mol":
+        return f"mol:{sel.instance}@{float(sel.clearance or 0.0) * 1e10!r}"
     if sel.pred == "largest":
         return "face:largest"
     if sel.pred == "normal":
@@ -1046,7 +1320,7 @@ def rank_datums(
     return out
 
 
-_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms"})
+_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms", "mpatch"})
 
 
 def region_datum_notes(

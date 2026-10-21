@@ -206,7 +206,7 @@ from precis_se.ops import (
     resolve_template,
 )
 from precis_se.pockets import region_measures as se_region_measures
-from precis_se.properties import is_checked
+from precis_se.properties import COMPUTERS, is_checked
 from precis_se.state_arg import merged_occupancy, resolve_state_arg
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -5393,11 +5393,23 @@ def _region_measure_line(m: Any, tree: SeTree | None = None) -> str:
     if m.value is not None:
         parts.append(f"value {_fmt_in_unit(m.value, m.unit)}")
     parts.append(m.strength)
-    parts.append(
-        "realised: —"
-        if is_checked(m.measurand)
-        else "realised: — (no computer — measurand_unchecked)"
-    )
+    if not is_checked(m.measurand):
+        parts.append("realised: — (no computer — measurand_unchecked)")
+    elif m.measurand is not None and m.measurand in COMPUTERS and tree is not None:
+        computer = COMPUTERS[m.measurand]
+        try:
+            realised = computer(tree, m)
+        except Exception as exc:  # a read-time check never crashes the read
+            realised = None
+            parts.append(f"realised: — ({type(exc).__name__}: {exc})")
+        else:
+            if realised is None:
+                reason = getattr(computer, "reason", None) or "no value"
+                parts.append(f"realised: — ({reason})")
+            else:
+                parts.append(f"realised: {_fmt_in_unit(realised, m.unit)}")
+    else:
+        parts.append("realised: —")
     if tree is not None and se_datums.stale_pin_note(tree, m) is not None:
         parts.append(f"pin {m.datum_pin} STALE (region_pin_stale)")
     return "  - " + " · ".join(parts)

@@ -336,7 +336,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
@@ -386,12 +386,28 @@ from precis_se.measures import (
 )
 from precis_se.modes import ModeError, parse_mode
 from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
-from precis_se.pockets import HULL, PocketSpec
+from precis_se.pockets import HULL, PocketSpec, stamp_class_hashes
 from precis_se.properties.measurand import Measurand, MeasurandResolver
 
 #: A structure design's slug → its current version (``None`` = no such
 #: design); see :attr:`SeTree.structure_versions`.
 StructureVersionResolver = Callable[[str], "int | None"]
+
+
+class BoundScene(NamedTuple):
+    """A bound structure design as a region resolver/computer needs it:
+    the loaded ``scene`` (atom ordinals are ``id ASC`` positions, the
+    ``atoms:`` selector's numbering) and the ref's ``meta`` — which
+    carries ``generated`` (the build record with seam-site lists for
+    ``sites:``) and ``version`` (the pin's currency check)."""
+
+    scene: Any
+    meta: dict[str, Any]
+
+
+#: A structure design's slug → :class:`BoundScene` (``None`` = no such
+#: design or it fails to load); see :attr:`SeTree.structures`.
+StructureSceneResolver = Callable[[str], "BoundScene | None"]
 
 #: Characters a block name may not contain: the region selectors
 #: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
@@ -783,6 +799,17 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     structure_versions: StructureVersionResolver | None = field(
         default=None, repr=False, compare=False
     )
+    #: Store-bound structure-scene lookup
+    #: (:func:`precis_se.persist.structure_scene_resolver`): a structure
+    #: design's slug → :class:`BoundScene`. Wired by the loader like
+    #: :attr:`structure_versions`; read by :func:`precis_se.datums.resolve`
+    #: for ``atoms:``/``sites:``/``mpatch:`` region resolution and by the
+    #: wall-side region computers (:data:`precis_se.properties.COMPUTERS`).
+    #: ``None`` (a bare tree) leaves those selectors lenient-unresolved —
+    #: declared intent, never a guess.
+    structures: StructureSceneResolver | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -926,7 +953,11 @@ def apply_ops(
     the core's generic :func:`~precis.blocktree.ops.apply_ops`. ``notes``
     is the echo-on-write list (``understood:`` lines) the core's
     ``apply_ops`` fills while bound."""
-    return blocktree.apply_ops(tree, ops, _OPS, notes=notes)
+    out = blocktree.apply_ops(tree, ops, _OPS, notes=notes)
+    # A pocket's class hash is derived, never authored: recompute it
+    # after every op batch so a later add_measure still lands in it.
+    stamp_class_hashes(tree)
+    return out
 
 
 # ── helpers (imported from the core; se calls these directly for its own
@@ -2253,15 +2284,26 @@ def _pocket_shared(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[st
 
 
 def _vet_pocket_shape(raw: Any, *, opname: str) -> str:
-    """A cad-DSL envelope string (block-local frame) or ``'hull'``."""
+    """A cad-DSL envelope string (block-local frame), ``'hull'``, or a
+    ``mol:<block>@<clearance Å>`` molecule-surface shape token (Q8)."""
     if not isinstance(raw, str) or not raw.strip():
         raise OpError(
             f"{opname} 'shape' must be a cad DSL string (e.g. "
-            f"'sphere:r5e-10') or {HULL!r}, got {raw!r}"
+            f"'sphere:r5e-10'), {HULL!r} or 'mol:<block>@<clearance Å>', "
+            f"got {raw!r}"
         )
     shape = raw.strip()
-    if shape != HULL:
-        _validate_envelope(shape)
+    if shape == HULL:
+        return shape
+    if shape.startswith("mol:"):
+        from precis_se.datums import parse_selector
+
+        try:
+            parse_selector(shape)
+        except MeasureError as exc:
+            raise OpError(f"{opname}: {exc}") from exc
+        return shape
+    _validate_envelope(shape)
     return shape
 
 

@@ -44,7 +44,8 @@ from precis_se.flatpack.se_op import (
 )
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
-from precis_se.persist import structure_version_resolver
+from precis_se.persist import structure_scene_resolver, structure_version_resolver
+from precis_se.properties import pocket_spec
 from precis_se.properties.measurand import measurand_resolver
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
 from precis_se.simp_bridge import SimpRequest, prepare_simp
@@ -101,6 +102,11 @@ HANDLER_LEVEL_OPS = (
     # through ``flatpack_params`` for the handler's ``meta['flatpack']``
     # home.
     "flatpack_box",
+    # A molecule's painted surface inverted into a pocket spec
+    # (:mod:`precis_se.properties.pocket_spec`, pocket-from-molecule
+    # slice 2b): store-read for the bound structures, GFN2 for the ESP
+    # — it emits add_pocket/add_measure through the pure paths.
+    "pocket_from_molecule",
 )
 
 
@@ -195,6 +201,10 @@ def apply_ops_with_atomic(
         # through the taxonomy — the one store read the pure measure ops
         # need, wired the ``tree.foreign`` way.
         tree.measurands = measurand_resolver(store)
+    if tree.structures is None:
+        # Region resolution (atoms:/sites:/mpatch:) and the wall-side
+        # computers read the bound structure through this resolver.
+        tree.structures = structure_scene_resolver(store)
     # Baseline for the post-walk pin stamp: which atoms:/sites: measures
     # this call writes (:func:`precis_se.datums.stamp_region_pins`).
     datums_before = snapshot_measure_datums(tree)
@@ -357,6 +367,9 @@ def apply_ops_with_atomic(
                 flatpack_params.append(dict(flatpack_pending.params))
                 flatpack_last_ids = {p.block_name for p in flatpack_pending.panels}
                 pending_flatpacks.append(flatpack_pending)
+                continue
+            if name == "pocket_from_molecule":
+                echoes.append(pocket_spec.op_pocket_from_molecule(store, tree, op))
                 continue
             try:
                 apply_ops(tree, [op])

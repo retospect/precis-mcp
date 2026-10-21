@@ -55,12 +55,44 @@ from typing import Any
 
 from precis_se.measures import LEGACY_MEASURANDS
 
-#: A region computer: ``(tree, measure) -> realised value or None``. The
-#: signature is provisional until slice B lands its first computer.
+#: A region computer: ``(tree, measure) -> realised value or None`` —
+#: ``None`` means "not computable here" and the entry carries a
+#: ``reason`` attribute saying why (:mod:`precis_se.properties.computers`).
 Computer = Callable[[Any, Any], float | None]
 
-#: measurand slug → computer. EMPTY in slice A (module docstring).
-COMPUTERS: dict[str, Computer] = {}
+
+class _LazyComputer:
+    """A :data:`COMPUTERS` entry that defers importing
+    :mod:`precis_se.properties.computers` — and with it the surface
+    painter's structure/ase imports — until the measurand is actually
+    evaluated, so this package's import stays light. ``reason`` forwards
+    the real computer's last None reason for ``measure_uncomputable``."""
+
+    def __init__(self, name: str):
+        self._name = name
+        self.reason: str | None = None
+
+    def __call__(self, tree: Any, measure: Any) -> float | None:
+        from precis_se.properties.computers import WALL_COMPUTERS
+
+        real = WALL_COMPUTERS[self._name]
+        value = real(tree, measure)
+        self.reason = getattr(real, "reason", None)
+        return value
+
+
+#: measurand slug → computer. The wall-side region computers
+#: (:mod:`precis_se.properties.computers`, pocket-from-molecule slice 2a)
+#: — every other measurand stays declared-but-unchecked.
+COMPUTERS: dict[str, Computer] = {
+    slug: _LazyComputer(slug)
+    for slug in (
+        "net-partial-charge",
+        "h-bond-donor-count",
+        "h-bond-acceptor-count",
+        "electrostatic-potential",
+    )
+}
 
 
 def is_checked(measurand: str | None) -> bool:

@@ -205,8 +205,10 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'name': '
 - `set_measure` / `remove_measure` — `block`, `name` (set needs ≥1
   field; no explicit nulls — remove then re-add)
 - `measurand=` (charge, contact angle, field…), region selectors
-  (`patch:`/`ring:`/`sites:`/`atoms:`) and `add_pocket`/`set_pocket`/
-  `remove_pocket` + `view='pockets'` — see `precis-se-regions-help`.
+  (`patch:`/`ring:`/`sites:`/`atoms:`/`mpatch:`), `mol:` pocket shapes
+  and `add_pocket`/`set_pocket`/`remove_pocket` + `view='pockets'` — see
+  `precis-se-regions-help`. `pocket_from_molecule` inverts a posed
+  molecule's painted surface into a wall pocket spec (same skill).
 
 ## Ops — modes, binding, fabrication
 

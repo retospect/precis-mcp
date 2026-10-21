@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Pocket-from-molecule (`pocket-from-molecule`, Reto 2026-10-17), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
+- **Next:** Pocket-from-molecule slice 3 (held-shape spec, `pocket-from-molecule` — slices 1–2 shipped 2026-10), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
 - **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14; H2 steps and H3 relax since); the H2 cone's relaxed washer-zone gate remains open.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.

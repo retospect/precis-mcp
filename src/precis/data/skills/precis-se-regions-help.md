@@ -67,8 +67,13 @@ search(kind='taxon', under='measurand', q='charge')
 |---|---|---|
 | `patch:<block>.<face>@<u>,<v>+<w>x<h>` | a w×h rectangle on a face, centred (u, v) from the face centre, metres | patch centre + face normal |
 | `ring:<block>.<face>` | the boundary loop of a face (a rim, an edge loop) | loop centre + face normal as axis |
-| `sites:<block>/<seam>/s<i>..s<j>` | seam sites i to j of a hexfold block | not resolved yet (see below) |
-| `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | not resolved yet |
+| `sites:<block>/<seam>/s<i>..s<j>` | seam sites i to j of a hexfold block | the sites' atom ordinals on the bound structure (when the scene resolver is wired) |
+| `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | the atoms' ordinals + centroid |
+| `mpatch:<block>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
+
+A pocket's `shape` also accepts `mol:<block>@<clearance Å>` — the
+molecule's surface offset outward by the clearance (provisional 0;
+clearance < 0 is refused, 0 allowed).
 
 - `u` runs along the face's first in-plane axis: the block's local +x
   projected onto the face, or local +y when the face normal is within 5°
@@ -150,10 +155,40 @@ All warn, one per measure (subject `<block>.<measure>`):
 
 - `datum_unresolved` — the datum names a missing block, face or envelope,
   or a patch centre off its face. The detail has the selector and the
-  resolver's error. `sites:`/`atoms:` on an existing block are exempt.
+  resolver's error. `sites:`/`atoms:`/`mpatch:` on an existing block are
+  exempt.
 - `patch_exceeds_face` — a patch rectangle reaches past its face.
 - `region_pin_stale` — see Pins.
+- `measure_unmet` — a measure whose measurand has a computer (net
+  partial charge, H-bond donor/acceptor count, electrostatic potential)
+  was realised outside its declared target/band — the detail names the
+  realised and required values.
+- `measure_uncomputable` — the computer ran but returned no value; the
+  detail carries its reason (structure not loadable, no atoms in the
+  region's cut, no GFN2 backend).
 - `measurand_unchecked` — see the last section.
+
+## pocket_from_molecule
+
+`{'op': 'pocket_from_molecule', 'molecule': '<block>', 'wall': '<block>',
+'z_window': [z0, z1], 'clearance_A'?: 0}` — a handler-level op (needs GFN2
+and bound structures): it paints the molecule block's surface (the
+`view='surface'` machinery), clusters it into patches, and writes one
+pocket on the wall block named `<wall>-<molecule>@z<z0>-<z1>r<a>-<b>-<c>` (window in integer Å, so
+[2.0, 4.5] nm is `@z20-45`; `r…` is the molecule's canonical body frame
+→ wall rotation in integer degrees, x-y-z Euler as the block `rot`, `m`
+for minus as in `r0-m90-0`, omitted when all zero; a linear molecule's
+undefined spin reads 0. Same name = same window and rotation, so a
+second pocket there refuses — move the window or rotate the molecule)
+with shape
+`mol:<molecule>@<clearance>` and one `mpatch:` region per patch whose
+centroid z (in the wall frame) sits inside `z_window` (nm). Each region
+carries the measures the patch implies: the mirrored ESP band
+(electrostatic potential), an H-bond donor count ≥ 1 opposite each
+acceptor patch, and hydrophobicity index `hydrophobic` opposite each
+nonpolar patch. The pocket's `class_hash` (sha256 over the canonical
+region list, derived and never authored) identifies the spec class —
+same pose, same hash.
 
 ## Read regions back
 

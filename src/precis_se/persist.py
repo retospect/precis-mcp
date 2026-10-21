@@ -119,7 +119,14 @@ from precis_se.catalog import Derived
 from precis_se.chain.vocab import DomainSpec
 from precis_se.measures import MeasureSpec
 from precis_se.notes import NoteSpec
-from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree, compose_world_pose
+from precis_se.ops import (
+    BoundScene,
+    ConnectSpec,
+    PortSpec,
+    SeBlock,
+    SeTree,
+    compose_world_pose,
+)
 from precis_se.pockets import PocketSpec
 from precis_se.properties.measurand import measurand_resolver
 
@@ -156,7 +163,7 @@ _MEASURE_COLS = (
 )
 #: ``se_pockets`` (migration ``0018_se_regions.sql``) — block-row keyed
 #: like ``se_ports``, written in lockstep with the fresh block ids.
-_POCKET_COLS = "block_id, name, shape, regions"
+_POCKET_COLS = "block_id, name, shape, regions, class_hash"
 _BOM_COLS = (
     "block, block_uid, a_block, a_block_uid, a_port, b_block, b_block_uid, "
     "b_port, item_kind, item, qty, uom, reason"
@@ -414,7 +421,10 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
         if block_row is None:  # pragma: no cover — defensive only
             continue
         tree.blocks[block_row["name"]].pockets[k["name"]] = PocketSpec(
-            name=k["name"], shape=k["shape"], regions=list(k["regions"] or [])
+            name=k["name"],
+            shape=k["shape"],
+            regions=list(k["regions"] or []),
+            class_hash=k.get("class_hash"),
         )
     for c in connect_rows:
         tree.connects.append(
@@ -554,6 +564,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     # workbench's dry run applies pure ops to a loaded tree).
     tree.measurands = measurand_resolver(store)
     tree.structure_versions = structure_version_resolver(store)
+    tree.structures = structure_scene_resolver(store)
     return tree
 
 
@@ -687,6 +698,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         tree.foreign = foreign_resolver(store)
         tree.measurands = measurand_resolver(store)
         tree.structure_versions = structure_version_resolver(store)
+        tree.structures = structure_scene_resolver(store)
     return tree
 
 
@@ -714,6 +726,34 @@ def structure_version_resolver(store: Any) -> Callable[[str], int | None]:
         return cache[slug]
 
     return version_of
+
+
+def structure_scene_resolver(store: Any) -> Callable[[str], BoundScene | None]:
+    """A structure design's slug → its loaded :class:`BoundScene` (scene
+    plus ref meta — ``meta['generated']`` carries the seam-site records
+    ``sites:`` selectors index into, ``meta['version']`` the pin's
+    currency), or ``None`` when no live design has the slug or its load
+    fails (a resolver answers "cannot load", never raises — the lenient
+    posture :mod:`precis_se.datums` resolves region selectors under).
+    Memoized per returned closure — one load per slug per call; backs
+    ``atoms:``/``sites:``/``mpatch:`` resolution and the wall-side region
+    computers."""
+    cache: dict[str, BoundScene | None] = {}
+
+    def scene_of(slug: str) -> BoundScene | None:
+        if slug not in cache:
+            out: BoundScene | None = None
+            try:
+                ref = store.get_ref(kind="structure", id=slug)
+                if ref is not None:
+                    scene, _handles = store.structure_load(ref.id)
+                    out = BoundScene(scene=scene, meta=dict(ref.meta or {}))
+            except Exception:
+                out = None
+            cache[slug] = out
+        return cache[slug]
+
+    return scene_of
 
 
 def foreign_resolver(store: Any) -> Callable[[str], SeTree | None]:
@@ -1294,9 +1334,15 @@ def save_tree(
                 )
             for pocket in node.pockets.values():
                 c.execute(
-                    "INSERT INTO se_pockets (block_id, name, shape, regions) "
-                    "VALUES (%s,%s,%s,%s)",
-                    (name_to_id[name], pocket.name, pocket.shape, list(pocket.regions)),
+                    "INSERT INTO se_pockets (block_id, name, shape, regions, "
+                    "class_hash) VALUES (%s,%s,%s,%s,%s)",
+                    (
+                        name_to_id[name],
+                        pocket.name,
+                        pocket.shape,
+                        list(pocket.regions),
+                        pocket.class_hash,
+                    ),
                 )
         for conn_spec in tree.connects:
             # Canonicalize the endpoint order so the unordered-pair

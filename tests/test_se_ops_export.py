@@ -634,7 +634,15 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "origin": "op",
         "re": "op",
     },
-    "PocketSpec": {"name": "op", "regions": "op", "shape": "op"},
+    "PocketSpec": {
+        "name": "op",
+        "regions": "op",
+        "shape": "op",
+        # derived: recomputed by stamp_class_hashes on every apply_ops —
+        # replaying the region selectors + measures yields the same hash,
+        # so it is never exported or authored
+        "class_hash": "derived",
+    },
     "ThreadingSpec": {"a": "op", "b": "op"},
     "DomainSpec": {
         "end": "op",

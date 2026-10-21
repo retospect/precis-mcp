@@ -132,6 +132,12 @@ _PATCH = "patch:b.top@0.02,-0.01+0.01x0.01"
             "atoms:cnt[9,0,3,5-7,5]",
             Selector(kind="atoms", instance="cnt", indices=(0, 3, 5, 6, 7, 9)),
         ),
+        ("mpatch:mol:7", Selector(kind="mpatch", instance="mol", patch_id=7)),
+        (
+            "mol:mol@1.5",
+            Selector(kind="mol", instance="mol", clearance=1.5e-10),
+        ),
+        ("mol:mol@0", Selector(kind="mol", instance="mol", clearance=0.0)),
     ],
 )
 def test_new_selector_forms_parse_and_round_trip(text: str, want: Selector) -> None:
@@ -166,6 +172,12 @@ def test_new_selector_forms_parse_and_round_trip(text: str, want: Selector) -> N
         "atoms:cnt[5-3]",  # backwards
         "atoms:[1]",  # no block
         "atoms:cnt[0-200000]",  # past the expansion cap
+        "mpatch:mol",  # no id
+        "mpatch:mol:x",  # id not an integer
+        "mpatch:mol:-1",  # negative id
+        "mol:mol",  # no clearance
+        "mol:mol@-0.5",  # negative clearance
+        "mol:mol@x",  # not a number
     ],
 )
 def test_malformed_new_selectors_are_refused(text: str) -> None:
@@ -412,7 +424,14 @@ def test_relations_compare_the_measurand_unit_snapshot() -> None:
 
 
 def test_measurand_unchecked_names_measure_and_measurand() -> None:
-    assert COMPUTERS == {}  # slice A registers no computer
+    # the wall computers are registered (slice 2a); surface charge density
+    # is not among them, so b.q still reports declared-but-unchecked
+    assert set(COMPUTERS) == {
+        "net-partial-charge",
+        "h-bond-donor-count",
+        "h-bond-acceptor-count",
+        "electrostatic-potential",
+    }
     tree = _tree(
         _BOX,
         _q(),

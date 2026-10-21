@@ -93,6 +93,16 @@ Two pocket cases:
 - **Molecule surface (slice 1).**
   `src/precis_se/properties/surface.py::paint_surface` samples a
   scaled-vdW surface and paints it; there is no SAS or SES code.
+- **Pocket spec from surface (slice 2, shipped).** 2a: the four
+  wall-side computers (`precis_se.properties.computers`), the
+  atoms:/sites: region resolution (`SeTree.structures`), DRC's
+  `measure_unmet`/`measure_uncomputable`, and core migration 0228
+  seeding `electrostatic potential` (V) and `binding energy` (eV).
+  2b: `mol:<block>@<clearance Å>`/`mpatch:<block>:<id>` tokens,
+  `precis_se.properties.pocket_spec` (patch clustering + inversion),
+  the handler-level `pocket_from_molecule` op, and the pocket
+  `class_hash` (se migration 0022).
+  shipped: 6955949c5 (2a), this commit (2b).
 
 ## Slices
 
@@ -135,45 +145,6 @@ orbitals carry the same total density either way. Spin-polarised GFN2
 (`spin_polarization=1.0`) lowers it by 0.196 eV. Whether slices 3–5
 turn spin polarisation on for doublets is open question 12; where the
 read can run in prod is open question 13.
-
-### 2. Pocket spec from surface (case a)
-
-Split (readiness note, Reto 2026-10-18 "Sounds good"): **2a** the
-computers (`COMPUTERS` entries) plus the core migration; **2b**
-`pocket_spec.py` plus the `pocket_from_molecule` op. Clearance stays
-provisional at 0 Å for slice 2 (Q4).
-
-**Owning code:** new `src/precis_se/properties/pocket_spec.py`; a new se
-op `pocket_from_molecule` in `src/precis_se/ops.py` that writes through
-the existing `add_pocket` and `add_measure` paths; one forward-only core
-migration seeding the measurands `electrostatic potential` and
-`binding energy`.
-
-**Input:** a design, the molecule block, the wall block (the tube),
-the station z-window, and a clearance in Å.
-
-**Output:** one pocket on the wall block, named for the station:
-
-- shape: the molecule surface offset outward by the clearance;
-- one region per surface patch (patches cluster adjacent points of the
-  same class), each carrying measures: the opposite sign of the
-  patch's ESP band; for each acceptor, H-bond donor count ≥ 1 on the
-  wall opposite it; for each non-polar patch, hydrophobicity index
-  `nonpolar` opposite it.
-
-This is the region-property layer's slice C: the canonicalised region
-set is hashed into a `class` node. Slice 1's painter, run on a wall
-cluster instead of a molecule, is the layer's slice B: it registers in
-`COMPUTERS` as the computer for net partial charge, H-bond donor and
-acceptor count, and electrostatic potential, so DRC checks those
-measures instead of reporting `measurand_unchecked`.
-
-test: `tests/test_se_pocket_from_molecule.py` (new) — on posed NO,
-`pocket_from_molecule` writes a pocket whose regions round-trip through
-`view='pockets'` and `view='ops'`; every acceptor patch has a donor
-requirement facing it; re-running on the same pose yields the same
-class hash; DRC on a wall with no computed values reports no
-`measurand_unchecked` for the three computed measurands.
 
 ### 3. Constrained-shape spec (case b)
 
@@ -268,6 +239,35 @@ stubbed to fixed offsets, a candidate carries energies at all three
 levels; a stubbed rank swap between GFN2 and MLIP triggers one spec
 correction and one GFN2 re-run; the stored rows give the GFN2 error per
 candidate.
+
+### 6. Categorical measure targets (follow-up, Reto 2026-10-21, later)
+
+Slice 2 stores the `hydrophobicity index` requirement (`hydrophobic` on a
+nonpolar patch) in the measure's reason text, because `add_measure`
+takes only numeric targets/bands and the measurand is categorical
+(allowed values hydrophilic / amphiphilic / hydrophobic, migration 0182).
+DRC therefore cannot check it. Accepted for v1. This slice lets
+`add_measure` carry a categorical target (one of the measurand's allowed
+values, refused by name otherwise), gives `hydrophobicity index` a
+computer in `COMPUTERS` (classification of the wall region's painted
+polarity), makes DRC emit `measure_unmet` on a mismatch, and moves
+`pocket_from_molecule` from the reason text to the target. Migration if
+the measure row needs a text target column.
+
+test: a categorical target round-trips through `view='pockets'` and
+`view='ops'`; an allowed-value check refuses `nonpolar`; DRC reports
+`measure_unmet` for a hydrophilic wall facing a nonpolar patch.
+
+### 7. Station frame (follow-up, 2026-10-21)
+
+**Station frame rule.** A pocket's name carries its own molecule's
+canonical body frame → wall rotation
+(`<wall>-<molecule>@z<z0>-<z1>r<a>-<b>-<c>`, integer Å and degrees, `m` =
+minus, suffix omitted at zero); the tube's frame (θ = 0, z = 0) is fixed
+by the product's canonical pose at its exit station (e.g. NH3 for
+NO→NH3). Today the wall frame is the wall block's own pose frame; the
+anchoring from the product's exit-station pose is not built:
+tube frame from the product's exit-station pose.
 
 ## Honest limits
 
