@@ -15,7 +15,6 @@ design-review: yes
 - **Worktree:** `pcb-easyeda-round-trip`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
-- **Seam, FYI (2026-10-21):** [pcb-se-binding §Rough box (v0)](../pcb-se-binding.md) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; no EasyEDA reader/writer file changes. The cross-design align case still rides the later pcb-se-binding passes.
 
 ## Thread context
 
@@ -328,3 +327,4 @@ export/fab if this file outgrows itself.
   history; findings live in `src/precis/pcb/epro.py`'s module docstring) —
   resolved 2026-09-29 against the real board; R2 and R3 stay open inside
   items 4 and 2.
+- **pcb-se-binding seam (2026-10-21)** — [pcb-se-binding §Rough box (v0)](../pcb-se-binding.md) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; no EasyEDA reader/writer file changes. The cross-design align case still rides the later pcb-se-binding passes.
