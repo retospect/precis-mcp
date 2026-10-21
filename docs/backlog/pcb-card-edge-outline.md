@@ -103,9 +103,11 @@ v1 ships with authored numeric ops + layer-10 vectors only).
   PCIe-style key notch via `outline_ops`), asserting mask openings and
   edge-clearance exemption on the finger edge.
 
-## Open questions (user input welcome)
+## Decisions (Reto 2026-10-21)
 
-- v1 part source: user-provided footprints (they offered) vs. the two
-  fetched candidates — both work under the authored contract.
-- Should edge-locking be a hard placement constraint (v1: yes,
-  simplest) or a soft cost term?
+- Build now as additive keys on today's canonical footprint dict; they
+  survive the later Component/LandPattern split (`pcb-component-model.md`)
+  unchanged, and the derived-outline site is independent of that split.
+- v1 defaults: hard edge-lock placement constraint; the C2765186 fixture as
+  the v1 part source.
+- Buildable now.

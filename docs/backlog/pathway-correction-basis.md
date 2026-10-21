@@ -101,24 +101,23 @@ Ready-check 2026-10-21 (ready agent; checked against `compute._network_basis`, `
 - advisory: No `model:` set (defaults sonnet) and no In scope / Not in scope / Target + blast radius sections. Content is contract design plus frontier-integration judgement (opus-sized); list targets: `compute._network_basis`, `frontier.same_network_basis`, `current_network_basis`, `apply_network_demotion`, harvest stamping, the xfail test file.
 - Subsumption by kinetics-engine-v2: NOT subsumed. v2 explicitly keeps this spec as a separate, unbuilt item and extends the tuple (v2 D1 Basis field, D3 `VERSION` derivation, D10 "extends, does not replace", D11 last bullets, Target + blast radius). v2 builds the environment basis, not the gas/H* correction-policy comparator, the matrix or the strict-xfail removal.
 
-### Questions for Reto (readychecks, 2026-10-21) — stays `draft`
+### Decisions (Reto 2026-10-21)
 
 Not subsumed by the kinetics v2 basis fold: `kinetics-engine-v2.md` D1
 says this item "stays unbuilt and is not a dependency", D10 "extends, does
-not replace", D11 adds `tpd_set_sha256` to this tuple. v2 builds
-`environment_basis`; the gas/H* policy comparator, the test matrix and the
-xfail removal exist only here. Order: this item first, v2 extends it.
-Blocker 2 (integration acceptance) a builder can write from code
-(`network_basis.correction_policy` set through `network_basis_by_key`;
-xfails removed; three named harvest/frontier tests).
+not replace", D11 adds `tpd_set_sha256` to this tuple. Order: this item
+first, v2 extends it. Blocker 2 (integration acceptance) a builder writes
+from code (`network_basis.correction_policy` set through
+`network_basis_by_key`; xfails removed; three named harvest/frontier tests).
 
-1. When a quest's candidates carry different correction policies, which is
-   the reference? Recommended: the policy in the quest's explicit config
-   (`corrections.gas`, `corrections.h_star`, host override if set); if the
-   quest states none, there is no reference and every candidate whose tuple
-   differs is provisional (measure moved to `flags['<key>_untrusted_value']`
-   as `apply_network_demotion` does). Never candidate iteration order.
-2. Candidates harvested before this ships have no policy key. Recommended:
-   absent key = legacy-compatible (the `environment_basis` precedent in
-   `same_network_basis`); only a present null/unknown value never compares;
-   no re-harvest.
+1. Reference policy: the quest's explicit config (`corrections.gas`,
+   `corrections.h_star`, host override if set). With none stated there is
+   no reference, and every candidate whose tuple differs is provisional
+   (measure moved to `flags['<key>_untrusted_value']` as
+   `apply_network_demotion` does). Never candidate iteration order.
+2. Working default listed with the question (not individually ruled):
+   absent policy key = legacy-compatible (the `environment_basis` precedent
+   in `same_network_basis`); only a present null/unknown value never
+   compares; no re-harvest.
+
+Buildable now.

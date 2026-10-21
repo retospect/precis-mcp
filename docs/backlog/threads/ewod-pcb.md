@@ -363,7 +363,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 10. **backlog/pcb-ewod-mechanical-sheets.md** (gr451662) — mech2d v1
     shipped; left: stencil bridges, channel-cutout variant, coating
     extent, `view='cutsheets'` (not `mechanical`, which is the fab view),
-    generator-row persistence. Waits on Reto's dimensions.
+    generator-row persistence. Dimensions ruled 2026-10-21: items 1, 2, 4,
+    5 buildable; 3 waits on gr414481.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +

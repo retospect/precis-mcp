@@ -61,8 +61,7 @@ gr346534, soft-deleted)
 - Waiting on others: the review session's resend of dedupe items 1 and 2
   (Do-next 1); the orchestrator's round for the NFS-hang branch (Do-next 2),
   whose `*Hung`/`*Absent` rules join the rendered set when it lands.
-- Later, no outside wait: the attributability-journal design note (Do-next 3),
-  then Do-next 4 once it is ruled ready.
+- Later, no outside wait: Do-next 3 once it is ruled ready.
 
 ## Do next
 
@@ -101,25 +100,18 @@ gr346534, soft-deleted)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-3. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
-   the attributability journal: one event when a non-fleet identity starts
-   writing to prod, carrying whatever provenance exists. The investigation
-   half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
-   took them), so what is left is the monitor. Second: it is the only open
-   code work here that is mine to start, but nothing is specced yet and the
-   thing it would watch is not currently costing anything.
-4. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
+3. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
    orchestrator; draft, do not build yet). The nightly B2 sync failed on
    every run for 7 weeks into a log nobody reads. The fix is a
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
-5. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
+4. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
    gr472019 and gr476100; the router tracker binding shipped, what is left
-   is the OTS batch 7 re-stamp). It ranks below 1–4 because the alerts still
+   is the OTS batch 7 re-stamp). It ranks below 1–3 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
-6. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
-   the role shipped; what is left is the deploy-time steps and open points
-   in that item (secret names, login, bind address, flag flip). Ranks last
+5. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
+   the role shipped; waits on Reto's vault DSNs and `prometheus_reader`
+   login (2026-10-22), then the deploy steps in that item. Ranks last
    because the gate already stops the false NodeDown/PostgresDown.
 6. **backlog/host-session-events.md** (filed 2026-10-19 from gr496610;
    IDEA, nothing specced). Record host reboot, network loss and regain, power
@@ -136,15 +128,15 @@ gr346534, soft-deleted)
    `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
    Ruled 2026-10-11 (Reto): such identities may keep claiming; record an
    attribution event per claim instead of refusing.
-   Left on the Horizon only as a pointer — Do-next 3 is the narrow read-only
-   slice of it and is still this thread's.
+   The unattributed-claimant alert shipped (7b83f2e5b); Reto 2026-10-21
+   ruled the alert sufficient and the unnamed-container item closed.
 2. **backlog/alert-failure-id-registry.md** — fully shipped (agent ack via
    `tag(kind='alert', add=['ack:6h'])`, 2026-10-15); only its read-cost
    revisit triggers are left.
 3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
-   the condition registry; Do-next 3 exists because a host has no
-   durable identity separating "ephemeral by design" from "vanished", so
-   attributability-by-container is a slice here. Last: largest, no
+   the condition registry; a host has no durable identity separating
+   "ephemeral by design" from "vanished", so attributability-by-container
+   is a slice here. Last: largest, no
    independently shippable piece touching this thread.
 4. Unify `/alerts`, `/gripes` and `/needs-you` into one triage surface:
    a design question in Reto's queue as td479394, not a defect.

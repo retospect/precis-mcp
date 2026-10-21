@@ -100,7 +100,8 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    rewritten to it) ·
    `pa-arm-locate-should-capture-a-verbatim-quote` ·
    `taproot-sole-supporter-coverage` (half shipped; open = name a candidate
-   originator) · `taproot-numeral-audit` · `taproot-backfill-defects`
+   originator) · gr503439 (numeral-absent FP + 17-hub check;
+   advisory-only, Reto 2026-10-21) · `taproot-backfill-defects`
    (open: [pc] silent drop, fragment continuation clauses, the 8-finding
    demotion triage, the extract_claim outage audit in `chase.py` and the
    `hub_refine` paths) ·

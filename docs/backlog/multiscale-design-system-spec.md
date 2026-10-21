@@ -1,5 +1,5 @@
 ---
-status: draft
+status: canonical
 title: multiscale design system — the detailed build spec (data model, constraint catalogue, optimiser, MCP surface, molecular tier)
 prio: high
 model: opus
@@ -7,6 +7,14 @@ pillar: 3d-design
 ---
 
 # Ownership routing (added on intake, 2026-09-11)
+
+## Decisions (Reto 2026-10-21)
+
+- `status: canonical`: this is the spec of record; build slices are carved
+  from it as their own items.
+- First carved item: §5.4 inspection toolkit v1 (`cast_ray`, `max_stress`,
+  `under_utilised`, `digest`), step 2 of the decided build order; it needs
+  only the shipped se block tree.
 
 Reto's system spec, taken in verbatim below (was briefly at the repo
 root). This is the *detailed* leg doc under the map

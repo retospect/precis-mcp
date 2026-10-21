@@ -15,6 +15,12 @@ PDF.js find now, `page_first` only a visibly-marked approximate fallback.
 This design's remaining value: true page/bbox accuracy for that fallback,
 plus the per-region hover/highlight-precision work below.
 
+## Decisions (Reto 2026-10-21)
+
+- Stays parked; no corpus re-extract scheduled. If funded later, scope the
+  first run to reader-opened papers (claim shape "papers lacking bbox AND
+  viewed since <date>") so GPU cost tracks use.
+
 ## Goal
 
 Give the paper reader (`/papers`) **precise per-chunk highlight overlays**

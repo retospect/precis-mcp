@@ -24,14 +24,13 @@ The point of this item: all three are symptoms of one missing concept. Each was 
 Make explicit a declared marker on the block that says whether a block's own envelope is a real part, a nominal assembly boundary, or both — and have the renderer, toolaccess/fasten, validate, and the order view all read that one marker instead of each guessing.
 
 Concretely:
-- Define the marker (name and mechanism deliberately left open — see open questions below for the three candidates).
+- Define the marker: `envelope_role` (see Decisions).
 - Audit the three existing consumers (renderer, toolaccess/fasten/validate, order view) to name the specific heuristics they currently use, and verify each reads the new marker correctly instead.
 - Propose a migration path for existing designs: default behavior on unmarked blocks (backward compatibility).
 - Write the validation rule that checks for inconsistent or invalid marker values.
 
 ## Explicitly NOT in scope
 
-- Deciding *which* mechanism the marker uses (flag, `kind` variant, derived from envelope properties) — that is an open question below.
 - Changing the semantic meaning of the marker once chosen (this item documents what it should mean; a later item enforces it across all consumers in one go if needed).
 - Fixing the Order/BOM view's child-drop behavior — that is gripe gr450524, tracked separately. This item is the prerequisite that makes the fix possible across all three subsystems at once.
 
@@ -52,10 +51,16 @@ Concretely:
 - Order/BOM view route (exact location TBD, but see gripe gr450524).
 - The `precis-se-help` skill's op/view rosters if a new op is added.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- **(a) Storage mechanism:** Is it a flag (e.g., `is_assembly_container: bool`), a `kind` variant (e.g., `kind='container'` or `kind='part'`), or derived from whether the envelope has a material/process assigned? Each has trade-offs: a flag is explicit and easy to migrate; a `kind` reuses the existing taxonomy but may overload its meaning; derivation is implicit but may be surprising on re-read.
+- **(a) Storage:** an explicit per-block field `envelope_role` ∈ {`part`,
+  `boundary`, `both`}, a new nullable column via a forward-only migration.
+  Not a `kind` variant (it would overload the taxonomy the renderer and ops
+  already switch on) and not derived from material/process.
+- **(b) Unmarked blocks:** null means `both`.
+- Buildable now.
 
-- **(b) Backward compatibility and migration:** What should unmarked blocks default to? Option 1: inherit from a design-level setting (e.g., `unicycle-c1`'s root is "assembly container" by default, inner blocks are "parts"). Option 2: all unmarked blocks are inferred as "both" (most conservative, least surprising, but carries the ambiguity forward). Option 3: per-context inference (e.g., the renderer infers from structure, but `toolaccess` treats it differently). Current lean: Option 2 for now; a design-level setting can be added later if needed.
+## Open questions
 
-- **(c) Relationship to the existing `validate.envelope_overlaps` rule:** That docstring already articulates the ancestor/descendant exclusion. Should we re-express it in terms of the new marker, or keep the two separate? Current lean: refactor `envelope_overlaps` to use the marker if one exists, but keep the ancestor check as a fallback for unmarked blocks.
+- **(c) `validate.envelope_overlaps`:** current lean is to read the marker
+  when set and keep the ancestor/descendant check as the fallback for null.

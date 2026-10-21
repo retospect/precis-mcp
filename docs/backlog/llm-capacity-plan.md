@@ -1,5 +1,5 @@
 ---
-status: draft
+status: canonical
 title: LLM capacity plan — what model runs where, on what memory and slots, against what demand
 pillar: local-compute
 prio: high
@@ -117,17 +117,16 @@ Rough cost: about 5 build cycles to the big-eval result. B adds 3–4 plus hardw
   decisions above; each moves in its own item.
 - Model quality — that is `model-qualification.md`.
 
-## Acceptance criteria
+## Decisions (Reto 2026-10-21)
 
-- One table, every LLM/embedder served on the cluster plus the planned
-  rows, each with node role, memory, slots, measured demand, and the date
-  the numbers were read.
-- Slot capacity reconciled against the server's real parallelism; every
-  mismatch listed.
-- For each of the three consuming decisions, one line on what the table
-  says about it.
-- `tests/test_deploy_tree_no_secrets.py` stays green (no hostnames or
-  addresses).
+- This file is the `canonical` layout/role record (the role table and the
+  "not scheduled" plan are rulings other items cite). The one-table
+  acceptance is dropped: the live inventory is `get(kind='llm',
+  id='/placement')` plus `resource_slots`.
+- Departure (2) below is confirmed by `local-rungs-small-medium.md`'s ruling
+  (rung 0 of `llm.chain.small` is local gpt-oss-120b). Departure (1), the
+  melchior glm slot as warm standby vs torn down, is this file's one open
+  line.
 
 ## Target + blast radius
 

@@ -37,6 +37,9 @@ except where noted, and are the ones every consumer kind
 1. **backlog/pattern-groups.md**
 2. **backlog/make-tree-vs-design-tree.md**
 3. **backlog/attached-models-layer.md**
+4. **backlog/multiscale-design-system-spec.md** §5.4 — carve the inspection
+   toolkit v1 as its own item; Reto 2026-10-21 named it the first carved
+   slice (step 2 of the decided build order).
 
 (design-state-core.md deleted 2026-10-15: shipped in r37; the post-deploy
 check passed — designs load and validate, no dangling_* in drc, checkpoint

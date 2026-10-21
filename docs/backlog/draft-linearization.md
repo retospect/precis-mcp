@@ -67,6 +67,9 @@ composes one — `handlers/quest.py::quest_gist`).
    naming the source node.
 4. The render of a 200-node outline completes within the MCP response
    budget or pages via `more()`.
+5. Forking a rendered draft via `copy-of` produces an ordinary draft with no
+   `rendered_from` provenance and no `derived-from` links to source nodes,
+   and `edit` on its chunks succeeds.
 
 ## Target + blast radius
 
@@ -76,10 +79,10 @@ composes one — `handlers/quest.py::quest_gist`).
 - `src/precis/data/skills/precis-draft-help.md`
 - tests: render idempotence, stale marking, refusal of hand edits
 
-## Open questions / decisions log
+## Decisions
 
-- **[decided 2026-09-30, Reto]** Render-only v1: hand edits on a rendered
-  draft are refused; the fork below is the escape hatch.
-- **[open]** Whether a rendered draft may be forked (`copy-of`) into a
-  hand-editable draft as the escape hatch. Leaning yes: the fork drops the
-  `rendered_from` provenance and becomes an ordinary draft.
+- **Reto 2026-09-30:** render-only v1: hand edits on a rendered draft are
+  refused.
+- **Reto 2026-10-21:** a rendered draft may be forked via `copy-of` into a
+  hand-editable draft; the fork drops `rendered_from` and becomes an
+  ordinary draft (acceptance item 5). Still blocked by `knowledge-mesh`.

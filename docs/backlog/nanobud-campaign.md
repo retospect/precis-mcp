@@ -7,6 +7,17 @@ pillar: quests
 
 Grouped 2026-09-26 from 4 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
+## Decisions (Reto 2026-10-21)
+
+- Reto takes the whole adjudication set in one sitting on 2026-10-22: the
+  seven blocked hubs, staged n1–n9, the four keep-or-drop calls and the five
+  draft-integrity flags. Before it, prepare all of them as one question
+  sheet.
+- The Reto-free remainder runs now, under the existing write door: mint
+  candidate 4, re-ground the five deleted mis-groundings, re-ingest
+  pa199068/pa40723/pa170590. After the sitting, compact this file to open
+  items only.
+
 ## Nanobud paper (dr173020) — batch-3 open queue
 
 _Grouped 2026-09-26; was `nanobud-nanopub-batch3`, status draft._

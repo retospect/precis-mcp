@@ -34,6 +34,12 @@ agent-declines-to-propose → cost. Two causes, both now specced:
 
 Background: `gr447337`, and the decision entry on the quest's own logbook.
 
+### Decisions (Reto 2026-10-21)
+
+- Restart qu401863 now: both named causes are fixed. Run steps 3–6 below;
+  the step-4 dry-run is the safety check, and a failed dry-run stops the
+  restart.
+
 ### Restart checklist
 
 1. `quest-tick-incident-fix.md` has shipped and deployed — in particular

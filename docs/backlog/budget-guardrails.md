@@ -19,6 +19,13 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 `rejected` / ≥ `PRECIS_QUOTA_CEILING_PCT`, auto-clearing), plus the
 `/budget` "Resume paid work now" soft-trip override.
 
+## Decisions (Reto 2026-10-21)
+
+- A tripped **dollar** cap pauses cloud SMALL too: gate SMALL on the dollar
+  breaker only; the quota taper keeps "SMALL never gated". The SMALL-gating
+  slice is buildable now; Piece A, Piece C and the hourly runaway check are
+  each ready-sized slices of their own.
+
 ## Open scope
 
 - **Piece A — cost-band affordance:** `budget/bands.py` has the
@@ -40,7 +47,8 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 - **The breaker never gates SMALL** — `bands._TIER_BANDS[SMALL]=FREE`, so
   `breaker.gate_tier` lets SMALL through even when a cap has tripped. SMALL
   is the highest-volume tier and has been all-cloud since 2026-08-15, so a
-  tripped cap pauses MEDIUM/BIG/FRONTIER while SMALL keeps spending.
+  tripped cap pauses MEDIUM/BIG/FRONTIER while SMALL keeps spending. Fix per
+  the decision above: the dollar breaker gates SMALL; the quota path does not.
 - **The hourly runaway check** — an alert-board / scheduled inspection over
   the token-first rollups (`spend_rollup`, `llm_tote`, `precis llm cost`).
   The rollups exist; nothing schedules the check.

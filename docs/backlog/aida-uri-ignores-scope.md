@@ -6,6 +6,15 @@ title: "scope-forked hubs mint the same AIDA URI — the collision is a symptom 
 
 # Two distinct claims, one published identity
 
+## Decisions (Reto 2026-10-21)
+
+- Merge `fi191179`/`fi191260` (same claim) in the dedup pass. Reword the Pt
+  binding-energy pair (`fi191192`/`fi191262`) to carry each qualifier only if
+  their scopes differ materially; otherwise merge it too. Both happen while
+  the hubs are `candidate`, before re-approval.
+- `aida_uri` stays sentence-only. The scope-qualifier lint below needs its
+  own spec if wanted.
+
 `nanopub/aida.py::aida_uri` keys on the canonicalized **sentence alone**.
 `identity.py::make_taproot_hub_paper_id` keys on the sentence **plus the
 `scope` object**. So two hubs deliberately forked on scope are distinct
@@ -42,7 +51,7 @@ carrying a load-bearing qualifier out of the assertion.
 
 ## What this decides for the dedup pass
 
-The two pairs resolve one of two ways, and the AIDA collision is the tell:
+The two pairs resolve one of two ways (ruled above), and the AIDA collision is the tell:
 
 - **They are the same claim** → merge them (the dedup pass's job); the
   collision disappears with the duplicate.

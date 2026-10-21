@@ -54,10 +54,10 @@ from the session's subject, turns as blocks, metadata carrying the session
 id, the worktree, the branch, and the shas the session shipped. Idempotent
 on the session uuid so a re-run updates rather than duplicates.
 
-**Selective turn capture.** A raw transcript is mostly tool traffic. The
-default should keep user turns, assistant prose, and tool *calls* with their
-arguments — and summarise or drop bulk tool *results* (file reads, test
-output, log dumps). Those are the bytes, they are the least reusable
+**Selective turn capture.** A raw transcript is mostly tool traffic. Keep
+user turns, assistant prose, and tool *calls* with their arguments; drop
+tool *results* (file reads, test output, log dumps) and pasted external
+content. Those are the bytes, they are the least reusable
 content, and they are what would swamp the embedding budget.
 
 **Redaction before write.** Session transcripts routinely contain the things
@@ -78,6 +78,7 @@ patterns where they apply.
   (recent sessions) and widen once the volume and redaction behaviour are
   measured.
 - **Cross-machine collection.** This machine's sessions first.
+- **Other projects' sessions.** Only this repo's project directory.
 - **Embedding raw tool output.** See selective capture above.
 
 ## Acceptance criteria
@@ -91,6 +92,7 @@ patterns where they apply.
 - A session containing a known-secret pattern (a prod DSN, a tailnet
   address) has it redacted in the stored blocks — verified by a test with a
   synthetic transcript, not by inspection.
+- A session whose directory holds the opt-out marker file is not ingested.
 - Ingesting a large real session does not blow the chunk budget: measure
   chunks-per-session and state the number in the item before `--apply`.
 
@@ -100,35 +102,33 @@ New ingest module under `src/precis/ingest/`, a CLI entry point, and the
 existing `conv` handler as the write target. Touches the chunk/embedding
 cascade by volume — the main risk here is corpus dilution, not correctness:
 thousands of conversational chunks competing with papers in search results.
-Whether `conv` chunks should be weighted down, or excluded from cross-kind
-search by default, is a decision this item must make before it ships.
+`conv` chunks are excluded from cross-kind search (Decisions).
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- **Dilution.** Should session chunks participate in ordinary cross-kind
-  search, or only in `kind='conv'`-scoped search? Leaning scoped-only at
-  first — a dev-session chunk outranking a paper on a science query would be
-  a bad trade, and scoping is reversible.
+- **Privacy posture / what is searchable:** user turns, assistant prose, and
+  tool-call names with their arguments, after the deploy-tree secret
+  patterns run. Tool results and any pasted external content are dropped.
+- **Dilution:** `kind='conv'`-scoped search only; session chunks do not join
+  cross-kind search.
+- **Scope:** this repo's project directory only. A per-session opt-out
+  marker file excludes a session.
+- **Redaction:** one module shared with `eval-run-spine.md`.
+- **Retention:** `refs.auto_refresh_days`.
+- Buildable now; the two open questions below are build-time calls.
+
+## Open questions
+
 - **What counts as a turn?** One block per message is the `conv` contract,
   but a single assistant message can carry a dozen tool calls. One block per
   message with calls summarised inline, or one block per call?
-- **Retention.** Do sessions expire? `refs.auto_refresh_days` exists for
-  decaying relevance and may be the right default rather than permanence.
 - **Attribution.** `set_by` is a channel vocabulary (`agent`/`user`/…), so
   which human drove a session needs somewhere else to live — same question
   the paper-review-notes item answered with `web_users.abbrev`.
-- **Does this subsume `agentlog`?** `agentlog` records cluster agent *runs*;
-  this records interactive sessions. They look adjacent. Decide whether
-  they converge or stay distinct before building a second overlapping
-  surface.
-- **Privacy posture.** Sessions contain unguarded thinking, half-formed
-  judgements about people's work, and pasted third-party content. Worth an
-  explicit decision on what is acceptable to make searchable, rather than
-  discovering it after the fact.
 
 ## Cross-subsumption with `agentlog` — answered 2026-09-29
 
-The open question above ("does this overlap `agentlog`") got a ruling in the
+The question "does this overlap `agentlog`" got a ruling in the
 local-model design session (Reto, big-model-manage worktree): **split by
 origin.** `conv` refs are for human Claude Code sessions, which is this
 item. `agentlog` plus a content-addressed blob is for machine agent runs,

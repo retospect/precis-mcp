@@ -53,27 +53,18 @@ already-loaded `ref.meta` or one batched query per kind per page. Whatever
 this item does must be readable in that same batched shape, which in
 practice means: precomputed at write, not derived at read.
 
-## Open questions — these are the ruling
+## Decisions (Reto 2026-10-21)
 
-1. **Where does the value live?** A real nullable column
-   (`characteristic_scale_m double precision`) is sortable and indexable but
-   costs a forward-only migration and touches a hot table. A `refs.meta` key
-   avoids the migration but sorts badly and is invisible to the query
-   planner. Recommendation: real column, because the whole point is sorting.
-2. **Who populates it?** Cleanest is the owning handler at write time, the
-   way `pcb` already stamps `meta['last_route']` in place. That means
-   touching `precis_se`, `structure`, and `pcb` handlers rather than adding
-   a sweep job.
-3. **One unit, or per-kind units?** Recommendation: store metres always,
-   render with `utils/units.py`. Mixed units in one column is how the
-   "3 nm vs 1.2 m" comparison stops working.
-4. **Backfill.** 1120 `structure` + 5 `se` + 2 `pcb` rows. Small enough to
-   backfill in the migration, but `structure` extents need the Å→m
-   conversion to be right first.
-5. **Does `component` participate?** Its titles already carry dimensions
-   ("6204-2RS deep groove ball bearing (20x47x14mm)") but parsing a title
-   for a physical quantity is a bad idea. Recommendation: no — leave
-   `component` null rather than guess.
+1. A forward-only migration adds nullable
+   `refs.characteristic_scale_m double precision`; no `refs.meta` key.
+2. The owning handler stamps it at write (`precis_se`, `structure`, `pcb`),
+   the way `pcb` stamps `meta['last_route']`; no sweep job.
+3. Metres always, rendered with `utils/units.py`.
+4. The migration backfills the ~1,127 design rows (1120 `structure` + 5
+   `se` + 2 `pcb`); verify the `structure` Å→m conversion first.
+5. `component` stays null.
+
+Buildable now.
 
 ## Acceptance
 

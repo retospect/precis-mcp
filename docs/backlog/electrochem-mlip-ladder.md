@@ -230,7 +230,7 @@ cation)` — lateral interactions change `E0`, not `a`.
   card on the owning quest (`meta.potentials[]`). The `(backend, model)`
   key joins `pathway-correction-basis.md`'s `model_keys`, and
   `potential_response.version` joins the tuple, so margins with and without
-  σ terms never compare. First-class potential ref: open question 4
+  σ terms never compare. First-class potential ref: open question 1
   (shared with `ephemeral-potentials-for-catpath.md`).
 - **Active-learning loop (tier 1).** `mlip_finetune` job: sample frames
   from catpath runs on the quest's candidates → committee uncertainty →
@@ -375,21 +375,26 @@ labelled with its `source`.
 8. Scope: tier 2 is a research programme. Mitigation: gated on slice 5
    showing cation-sensitive decisive forks.
 
+## Decisions (Reto 2026-10-21)
+
+- Fund slice 4 (Cu-vs-Au CO₂RR volcano, ~1–2 node-weeks, Ringe's numbers
+  pa498298, pa492258) as the method's acceptance test before the NO→NH₃/Pd
+  slice 5. Slices 1–4 run in order.
+- Working defaults listed with the question (not individually ruled): label
+  engine GPAW-SJM in the existing `precis-dft` image; K⁺ only for slice 2.
+- Slices 1–2 are buildable now (pure functions, behind `response: off`);
+  each slice needs a catpath release + pin bump
+  (`catpath-wheel-version-reuse.md`).
+
 ## Open questions for Reto
 
-1. Label engine: GPAW-SJM in the existing `precis-dft` image (recommended)
-   vs QE + ENVIRON through catpath's `dft.py` vs JDFTx (catpath's
-   `jdftx-gcdft-backend.md`)?
-2. Validate the method on CO₂RR (Au/Ag/Cu, Ringe's numbers, slice 4) before
-   NO→NH₃ — about 1–2 node-weeks on a chemistry outside the quest?
-3. Cation set: K⁺ only (KHCO₃/KOH cells) or the Li⁺…Cs⁺ sweep for slice 2?
-4. Where a trained potential lives: job artifact + quest card (proposed) or
+1. Where a trained potential lives: job artifact + quest card (proposed) or
    a first-class ref (shared decision with `ephemeral-potentials-for-catpath.md`)?
-5. Tier-2 go/no-go rule as written (gated on slice 5), or run Pd(111)/water
+2. Tier-2 go/no-go rule as written (gated on slice 5), or run Pd(111)/water
    now to anchor `U_pzc` for the whole Pd campaign?
-6. Research budget: the session's Perplexity hourly cap ($20) was hit during
+3. Research budget: the session's Perplexity hourly cap ($20) was hit during
    this survey; raise it for research sessions?
-7. CatMAP parity (GPL) stays with `electrochem-kinetics-beyond-che.md`
+4. CatMAP parity (GPL) stays with `electrochem-kinetics-beyond-che.md`
    slice 3 — keep it as the cross-check for slice 4?
 
 ## Rough compute cost

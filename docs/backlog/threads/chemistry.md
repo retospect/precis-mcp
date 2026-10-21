@@ -192,8 +192,9 @@ it at five; engine-over-UI still holds.
    **backlog/harvest-bookmark-concurrency.md** — small `idea`s homed here
    by the sweep; harvest-bookmark has no live repro (one job per
    candidate today).
-12. **backlog/protomia-gap-eval-and-molecular-properties.md** — eval a
-   candidate tool, then close the molecular-property gap it exposes.
+12. **backlog/protomia-gap-eval-and-molecular-properties.md** — `idea`:
+   Hessian rung + structure intake, picked up only when a named quest,
+   pathway or draft needs frequencies (Reto 2026-10-21, eval dropped).
 13. **backlog/reaction-kind-and-synthesis-cost.md** — sourced reaction-fact
    store and cost over routes; rung 1 (the `rxn` kind, e2f420ab4) shipped,
    rungs 2-5 left.

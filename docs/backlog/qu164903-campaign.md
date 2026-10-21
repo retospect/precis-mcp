@@ -429,14 +429,8 @@ candidate's own U_opt, `U_L` at U = 0 — candidates are compared at different
 potentials. Add `_AXIS_DESCRIPTIONS` (definition, unit, sign, at which U,
 reference electrode, T, trust gating) rendered under the plot.
 
-**Items 4/6 — landing spot.** Make the candidate structure page the hub with
-URL-addressable tabs (`?tab=structure|pathway|pourbaix|runs`; pattern =
-`cad/detail.html.j2` mode buttons): pareto click → `?tab=pathway` showing the
-best trusted pathway's profile inline (tier toggle intact) + the list of
-others; Pourbaix tab = (b)+(c) when coverage data exists, else a "not
-computed — N relaxations" stub. Blocker: the profile viewer is inline JS in
-the pathway template — embedding it needs the payload builders factored out
-of the pathway route (backlog `pathway-profile-renderer-unification`).
+**Items 4/6** moved to `surface-pourbaix-staircase-optimizer.md` slice 2
+(Reto 2026-10-21).
 
 **Items 2/3 — small, shippable now.** (2) legend row: solid = chemical step
 (NEB barrier, U-independent) · dashed = PCET (shifts n_H·eU, no barrier in
@@ -481,8 +475,10 @@ trust/blocked_by status.
   ```
   Effect: frontier dominance now includes `log_tof` for the 32 that have it
   and `barrier` for all; `energy` stops steering the proposer. No rerun.
-- Items 2, 3 (legend row, TS footnote) and 4/6 (structure hub tabs): still
-  Reto's call; 4/6 folds into `surface-pourbaix-staircase-optimizer.md` slice 2 if approved.
+- 2026-10-21 Reto: items 2 and 3 (legend row, TS footnote) are approved as
+  one small web slice, buildable now (`pathway_detail.html.j2` + the
+  route's payload for the footnote). Items 4/6 fold into
+  `surface-pourbaix-staircase-optimizer.md` slice 2.
 
 ## Surface Pourbaix view (levels b + c)
 

@@ -379,8 +379,9 @@ task set.
       All machines, the file server included, are in
       `llm-capacity-plan.md`. Ad-hoc heavy compute goes to spark at half
       its cores, never melchior (ruled, local-compute-7).
-5. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4b); wires
-   the model Slice 0 picks into the tier ladder.
+5. **backlog/local-rungs-small-medium.md** — unblocked (Reto 2026-10-21):
+   small chain goes local gpt-oss now, medium stays Claude pending a per-op
+   trial; the remainder waits on the maintenance queue and sensitivity gate.
 6. **backlog/llm-dispatch-feedback-controller.md** — ~32 running sequences
    per serving box, held by a feedback loop on the server's
    running/waiting/KV metrics; card `max_parallel`, slot capacity and the

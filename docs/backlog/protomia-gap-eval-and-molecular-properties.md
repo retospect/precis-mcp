@@ -1,16 +1,24 @@
 ---
-status: draft
-title: Eval Protomia hands-on, then close the molecular-property gap it exposes
+status: idea
+title: Close the molecular-property gap (Hessian rung, structure intake), gated on a named consumer
 prio: normal
 pillar: 3d-design
 ---
 
-# Eval Protomia hands-on, then close the molecular-property gap it exposes
+# Close the molecular-property gap (Hessian rung, structure intake)
+
+## Decisions (Reto 2026-10-21)
+
+- Phase 0 (the hands-on Protomia eval) is dropped: nothing it could find
+  changes what Phase 1 would build, and it would mean registering a
+  third-party account in Reto's name.
+- Phase 1 (Hessian rung) is `idea`, gated on a named consumer: a live quest,
+  pathway or draft that needs frequencies or thermochemistry. Phase 2
+  follows the same rule.
 
 Source for every capability claim below:
 <https://aitomistic.com/protomia/docs/features> and `/docs/capabilities`,
-read 2026-09-20. Claims are *their* marketing copy — Phase 0 exists to
-check which of them hold.
+read 2026-09-20. Claims are *their* marketing copy, not checked.
 
 **This is not a competitive item.** Précis has no buyers and is not chasing a
 market; the reason to read another group's tool carefully is that it is a free
@@ -63,23 +71,6 @@ risk; only the property ladder is.
 
 ## In scope
 
-**Phase 0 — eval (do first; gates everything below).** Register on the free
-tier at <https://aitomistic.xyz/>, run a fixed probe set, and write the result
-up as a short findings note in this file:
-
-1. Frequencies + IR on a small organic (benzene or similar) — does it return a
-   real spectrum, and at what method/cost?
-2. TS search + IRC on a textbook reaction — does the IRC actually confirm the
-   endpoints, or is it a chained optimisation with a confident summary?
-3. UV–Vis on a chromophore — vertical excitations vs nuclear ensemble.
-4. Image→structure: photograph a drawn structure, check the geometry it reads out.
-5. A periodic slab + adsorption through CP2K, for direct comparison with our
-   `structure` lane.
-6. Whether "prepares Gaussian input" means a validated deck or a plausible-looking one.
-
-Each probe records: what was claimed, what came back, wall time, and whether an
-unasked-for method substitution happened.
-
 **Phase 1 — Hessian rung.** Add a vibrational-analysis rung over the existing
 ASE calculators: finite-difference Hessian → normal modes, ZPE, thermochemistry
 (RRHO), IR intensities where the calculator exposes dipole derivatives. New
@@ -95,8 +86,8 @@ Phases beyond 2 (excited states, cube-file export, TS eigenvector + IRC,
 element coverage past our current MLIPs) are deliberately left unscoped, and
 the criterion for picking one up is **which of them unblocks open scientific
 work** — a property a live quest, pathway or draft actually needs and cannot
-currently get — not what a competitor advertises. Phase 0 tells us what is
-reachable and at what cost; the ordering comes from our own queue.
+currently get — not what a competitor advertises; the ordering comes from
+our own queue.
 
 ## Explicitly NOT in scope
 
@@ -111,20 +102,17 @@ reachable and at what cost; the ordering comes from our own queue.
 
 ## Acceptance criteria
 
-1. Phase 0 written up in this file: six probes, each with claim / observed /
-   wall time / substitution-or-not. Any claim that does not reproduce is stated
-   plainly as not reproducing.
-2. Phase 1: a frequency run on a small organic returns normal modes, ZPE and an
+1. Phase 1: a frequency run on a small organic returns normal modes, ZPE and an
    RRHO thermochemistry block; the lowest three modes of a relaxed minimum are
    real (no spurious imaginaries beyond translation/rotation); a known TS
    returns exactly one imaginary mode.
-3. Phase 1 results are cached and re-served on an identical second call, and a
+2. Phase 1 results are cached and re-served on an identical second call, and a
    cross-method comparison is refused the same way
    `handlers/structure.py::guard_energy_comparable` already refuses a
    cross-fingerprint ΔE.
-4. Phase 2: "benzene" and a SMILES string both produce a relaxable scene; an
+3. Phase 2: "benzene" and a SMILES string both produce a relaxable scene; an
    uploaded `.xyz` still wins over a name lookup; provenance distinguishes the two.
-5. The owning package docstring (`src/precis/structure/__init__.py`) gains the
+4. The owning package docstring (`src/precis/structure/__init__.py`) gains the
    new seam, and this file is deleted in the shipping commit.
 
 ## Target + blast radius
@@ -137,9 +125,6 @@ and the `structure` skills under `src/precis/data/skills/`.
 
 ## Open questions / decisions log
 
-- **Q (Reto):** is Phase 0 worth paying for past the free tier, or is the free
-  allowance enough for six probes? Free tier is one LLM and a limited weekly
-  allowance; paid starts at 1,000 RMB/month academic trial.
 - **Q:** finite-difference Hessian only, or analytic where GPAW/PySCF offers it?
   Finite difference is calculator-agnostic and works today for every rung;
   analytic is cheaper but engine-specific.

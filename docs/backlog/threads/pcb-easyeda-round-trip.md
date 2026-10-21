@@ -249,7 +249,8 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    design work in Horizon. Filed from the orchestrator's round-1 review.
 6. **backlog/pcb-epro-mcp-roundtrip.md** (gr495289) — verify, the
    download route and `op='import_epro'` are built per Reto's rulings;
-   left: real-board export timing, and gerber/fab downloads (needs a go).
+   left: real-board export timing, and gerber/fab downloads (go given
+   2026-10-21, buildable).
    Below 5: nothing here writes outside the export root.
 7. **backlog/pcb-realize-silk-version-stamp.md** — nothing versions
    realized copper, so a router change is invisible on stored boards.

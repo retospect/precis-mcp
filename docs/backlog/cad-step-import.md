@@ -102,14 +102,14 @@ else.
 5. Reply per body: route (`analytic`), node count, dimensions recovered,
    volume (OCC `GProp` vs `get(view='volume')`), bounding box.
 6. Keep the original STEP as a `chunk_blobs` payload on the design ref
-   (Open question 4).
+   (working default 4: keep it).
 
 What "modifiable" means: the result is ordinary cad source with named
 dimensions (`box:w..`, `cyl:r..`), so it edits like any hand-authored
 design. Honest consequence: with the current primitive set, extruded
 sketches with holes, fillets, lofts and freeform faces - most OnShape
 parts - are refused. Slice 1 alone imports box/cylinder/cone/sphere/torus
-CSG parts and little else; see Open question 2 on ordering.
+CSG parts and little else; see working default 1 on ordering.
 
 Hard cases the recogniser must handle or refuse by name:
 
@@ -124,11 +124,11 @@ Hard cases the recogniser must handle or refuse by name:
   native only as convex constant-radius `rd`; others refused.
 - Mirrored placements, scaled placements: refused.
 - Repeated parts (same product, many locations): `use` instances with
-  rigid poses (may defer, Open question 6).
+  rigid poses (deferred, working default 6).
 - Threads, draft angles: draft on planes is a tilted plane (native via
   `frustum`/half-space where convex); threads refused.
 
-Acceptance (numbers are proposals, Open question 7):
+Acceptance (numbers per working default 7):
 
 - A corpus of >= 10 small STEP files: hand-built analytic parts (box with
   bolt circle, stepped shaft, flange, sphere-in-block, torus ring) plus
@@ -220,27 +220,25 @@ for NURBS, a 3-body assembly); comparisons against OCC `GProp` volume
 and `BRepExtrema` surface probes; hostile-input cases (truncated file,
 non-STEP, size cap, entity bomb).
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-1. **Slice order.** With no sampled fallback, slice 1 imports only
-   box/cylinder/cone/sphere/torus CSG parts; typical OnShape output
-   (extruded sketches, fillets) is refused until `Extrusion`/`Revolve`
-   exist (slice 2). Build slice 2's primitives first or alongside? Needs
-   an ADR 0041 amendment or new ADR either way.
-2. **Partial import.** Default is all-or-nothing with a per-body
-   breakdown; `partial=True` saves the importable bodies. Right default?
-3. **File transport**: `PRECIS_ROOT` is a read-only mount for the
-   session MCP, and a multi-MB STEP through `text=` hits MCP frame
-   limits. Options: web upload at `/cad` (precis_web), a worker-visible
-   drop path, or `text=` for small files only. Which?
-4. **Keep the original STEP** as a stored blob? Enables re-import after
-   the kernel widens; costs storage per design, and the prod store may
-   hold proprietary parts.
-5. **Where `[cad-step]` lives**: the extra is not in the base image;
-   import needs it on the worker that runs the job. Add to the worker
-   image (~200 MB) or a dedicated cad worker?
-6. Instance de-duplication into `use` in slice 1 or later? Cheap when the
-   STEP product structure is clean.
-7. Acceptance numbers above are proposals (1e-4 volume, 1e-6 m deviation,
-   30 s, 50 MB); confirm or replace.
+3. **File transport:** web upload at `/cad` (precis_web) writing to a worker
+   scratch dir, plus `text=` for files under ~1 MB. MCP `put(mode='import')`
+   takes a path/handle, never bytes.
 8. Sampled fallback: not wanted for now (Reto 2026-10-18), see Parked.
+
+Working defaults (listed with the 2026-10-21 question, not individually
+ruled; Reto may override):
+
+1. **Slice order:** build slice 1 first (it proves the recogniser; the
+   acceptance corpus's hand-built parts import today); open the profiles
+   item from `cad-machine-spec` in parallel.
+2. **Partial import:** all-or-nothing with a per-body breakdown;
+   `partial=True` saves the importable bodies.
+4. **Keep the original STEP** as a stored blob.
+5. **`[cad-step]`** goes into the worker image.
+6. Instance de-duplication into `use`: later, not slice 1.
+7. Acceptance numbers accepted as written (1e-4 volume, 1e-6 m deviation,
+   30 s, 50 MB).
+
+Slice 1 is buildable now.

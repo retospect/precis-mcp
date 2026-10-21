@@ -30,6 +30,13 @@ route and the import share), the route in `precis_web/routes/pcb.py` with
 a link on the board page, `op='import_epro'`
 (`PcbHandler._op_import_epro`), and the `precis-pcb-fab-help` section.
 
+## Decisions (Reto 2026-10-21)
+
+- Apply the GET-rebuild-with-`?sha=` pattern to `view='gerber'` and
+  `view='fab'` downloads: the same determinism constraints hold
+  (`zip_epro` precedent), no bytes go through MCP, no state changes.
+  Buildable now.
+
 ## Constraints the rulings rest on (keep them true)
 
 - **Deterministic bytes, nothing stored.** `zip_epro` pins member order
@@ -60,9 +67,8 @@ a link on the board page, `op='import_epro'`
   in a worker thread per request; a slow real board is the reason to
   look again (not to add a store).
 - **Gerber and fab downloads.** `view='gerber'`/`'fab'` have the same
-  "path on the server" gap. The same pattern (a GET that rebuilds the
-  zip, with a sha guard) fits them; not covered by the ruling, so it
-  needs its own go.
+  "path on the server" gap. Build the same pattern for them: a GET that
+  rebuilds the zip with a `?sha=` guard (see Decisions).
 - **Export dir confinement** stays its own item
   ([pcb-export-dir-confinement](pcb-export-dir-confinement.md)); the
   route and the import never touch `args['dir']`.

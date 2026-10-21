@@ -33,35 +33,29 @@ from scratch.
   `_autofix_lint` (ruff) pass.
 
 ## Acceptance criteria
-A failed fixer build (`NEEDS_YOU`) leaves an inspectable artifact — either a
-pushed branch or an on-disk worktree — reachable from the report, instead of
-being discarded by the `finally` cleanup.
+A failed fixer build (`NEEDS_YOU`) leaves its worktree on disk under
+`.fixer-work/`, with the path in the report, instead of being discarded by
+the `finally` cleanup; an OK run still removes it. Test on a fake repo.
 
 ## Target + blast radius
 - `src/precis/fixer/tick.py::run_tick` — the `NEEDS_YOU` return paths and the
   `finally` cleanup.
 - The report emitter (`Report` construction) — needs to surface the salvage
-  pointer (branch name or worktree path).
-- Branch GC — whichever salvage mechanism is chosen adds artifacts that need
-  a cleanup story paired with it.
+  pointer (worktree path).
 - Extends ADR 0048 (fixer / sandbox-run job type).
 
-## Open questions / decisions log
-- **Push vs. on-disk worktree.** Two candidate salvage mechanisms:
-  - Push the branch on `NEEDS_YOU` too (not just OK) — but pushed
-    half-built branches accumulate on origin, worsening the existing
-    stale-branch-cleanup residual; would need pairing with branch GC.
-  - Keep the failing worktree on disk under `.fixer-work/` with a pointer
-    in the report, instead of pushing.
-- **Branch GC pairing.** If push-on-failure is chosen, what's the cleanup
-  policy for salvaged-but-abandoned branches (age-based? explicit
-  resolution?) — undecided.
+## Decisions (Reto 2026-10-21)
+
+- On `NEEDS_YOU` before ship, keep the failing worktree on disk under
+  `.fixer-work/` and put its path in the report and the gripe write-back;
+  push stays OK-path only, so no branch GC is needed (the next pick of the
+  same branch replaces a stale worktree). Buildable now: skip
+  `_worktree_remove` in `run_tick`'s `finally` for an unshipped
+  `NEEDS_YOU`.
 
 ## Residuals (from OPEN-ITEMS)
 
-Pair push-on-NEEDS_YOU with branch GC so half-built branches don't
-accumulate (or keep the failing worktree under .fixer-work/ with a report
-pointer). Related fixer ops, batched here: stale branches to clean —
+Related fixer ops, batched here: stale branches to clean —
 fix/smoke, fix/build-prompt-map-freshness, fix/fixer-persistent-log,
 fix/launchd-smoke (origin) + fix/shippath (local), needs Reto's OK;
 PRECIS_FIXER_DISCORD_WEBHOOK unset, so loud NEEDS_YOU reports are log-only;

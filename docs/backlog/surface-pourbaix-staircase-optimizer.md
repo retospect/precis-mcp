@@ -361,6 +361,13 @@ Slice 2's qu164903 asks, beyond the render ruling above:
   limit (single-species terminations, no lateral interactions);
 - test: a pH change moves axis labels only, ΔG lines unchanged on the RHE
   scale.
+- the structure page as hub with URL-addressable tabs
+  (`?tab=structure|pathway|pourbaix|runs`; qu164903-campaign items 4/6,
+  folded here by Reto 2026-10-21): pareto click → `?tab=pathway` with the
+  best trusted pathway's profile inline; Pourbaix tab = (b)+(c) when
+  coverage data exists, else a "not computed — N relaxations" stub. Needs
+  the pathway route's payload builders factored out of the inline-JS
+  profile viewer.
 
 ## Sign convention (fixed 2026-10-13, coordinator; binds A2 export and A4 masks)
 

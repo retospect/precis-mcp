@@ -339,8 +339,8 @@ simulated time at 1 bar H₂). The acceptance is `ε = 10⁻²` on every channel
 with ≥ 10⁴ firings and `net production within its 90 % CI of zero`.
 
 Entropies: `thermo.ThermoConfig.adsorbate_mode: ts0 | harmonic | hindered`
-(default becomes `hindered` in slice 2 — Q4 in §Decisions, proposed
-2026-10-20), a new field orthogonal to the existing `mode: none | table |
+(default becomes `hindered` in slice 2 — Q4 in §Decisions, Reto
+2026-10-21), a new field orthogonal to the existing `mode: none | table |
 vib` — `mode` says where adsorbate data comes from, `adsorbate_mode`
 which entropy model prices it; `vib` is not folded into `harmonic`. `hindered` = Sprowl–Campbell (pa2203) for the two frustrated
 translations and the azimuthal rotation, harmonic for the rest, with
@@ -1245,37 +1245,19 @@ Nielsen et al. 2013). No redistribution of the binary." Unknowns the
 portal did not show: whether an academic licence requires an institutional
 affiliation beyond the work e-mail, and the exact licence term text.
 
-**Open (rewritten as asked):**
+### Decisions (Reto 2026-10-21)
 
-- **Q4 — `adsorbate_mode` default.** Keep `ts0` (TS = 0 for adsorbates;
-  every existing margin stays comparable) or switch to `hindered` now
-  (Sprowl–Campbell partition functions; desorption prefactors become
-  physical, NH₃/NO adsorption K moves by 0.2–0.35 eV at 298 K) and
-  re-stamp the basis for the whole qu164903 frontier? Trade-off: `ts0`
-  keeps the frontier comparable but every D11 TPD prefactor is wrong by
-  10³–10⁵ until the switch; `hindered` makes TPD and kinetics right and
-  demotes every existing margin to a new basis in one step.
-  **Proposed 2026-10-20 (applied in D3, awaiting Reto): switch to
-  `hindered` in slice 2 and re-stamp once;** D11 is not meaningful on
-  `ts0`; CPES is the named follow-on (pa498867).
-- **Q6 — where does `autocatpath_kinetics` run?** Join the tier ladder
-  (runs automatically on every `verify`-tier candidate after its
-  aggregate) or be its own rung the quest requests per candidate?
-  Trade-off: on the ladder every verify candidate gets kinetics (≈ 1–2
-  CPU-hours each with the sweep; MF-only ≈ seconds) with no quest logic;
-  as its own rung the quest spends it only on the frontier.
-  **Proposed 2026-10-20 (applied in D9, awaiting Reto): MF + sweep + TPD
-  on the ladder (cheap, every verify candidate); KMC as its own rung** the
-  quest requests for the frontier and for the optimum point. The MF
-  failure modes without interactions (pa498837, pa498858) are invisible to
-  the MF solve itself, which is why the KMC rung cannot be dropped.
-- **Q9 — σ-shift extension** (Ringe, youtube `NCvmskkpvws` chunks 18,
-  30–33, 38, 49): strongly affected species OH and CO₂, weakly H and CO;
-  the coordinator wants it optional. **Proposed 2026-10-20 (awaiting
-  Reto): the sibling spec owns the `a_i` values, the PZC and the cation
-  model; this spec owns only the seam (D2) and the CHE instance (slice
-  8). The σ term enters as `ShiftProvider` shifts and is optional per the
-  coordinator.**
+- **Q4:** `adsorbate_mode` default switches to `hindered` in slice 2, and
+  the qu164903 frontier basis is re-stamped once (applied in D3). CPES is
+  the named follow-on (pa498867).
+- **Q6:** MF + sweep + TPD run on the tier ladder for every verify
+  candidate; KMC is its own rung the quest requests for the frontier and
+  the optimum point (applied in D9).
+- **Q9:** the σ-shift term is optional, entering as `ShiftProvider` shifts;
+  the electrochem sibling spec owns the `a_i` values, the PZC and the cation
+  model; this spec owns the seam (D2) and the CHE instance (slice 8).
+
+Slice 2 is buildable now; its brief goes out on `hindered`.
 
 **Ready-check 2026-10-20** (ready agent, against catpath 0.31.1; 10
 blockers, 11 advisories) is folded into D1 (legacy rule, repricing,
@@ -1284,7 +1266,7 @@ inputs, derived `VERSION`), D4 (`σ_c`, `σ_model`, `_capped`), D8
 (migration), D10 (hash sources), the slices and the blast radius, in
 the commit after ceb385f69. Still open from it: slice 7's paper and
 cluster-expansion source (unnamed; slice stays out of unattended waves),
-the Zacros licence (unsubmitted), and Reto's confirmation of Q4/Q6/Q9.
+and the Zacros licence (unsubmitted; gates nothing before slice 5).
 
 ## Data flow
 

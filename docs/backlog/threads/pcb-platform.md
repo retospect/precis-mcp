@@ -67,7 +67,8 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    placement gate, silk draws the shared coincident wall (a569db907);
    the dogfood-b C2/J2 hulls sit 0.9µm apart, never overlapped.
 7. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
-   outline modification, waits on 2's footprint contract.
+   outline modification, buildable now on today's footprint dict (Reto
+   2026-10-21), independent of 2's split.
 8. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
    deliberately filed to be built only after the engine gaps close —
    waits on ewod-pcb's routing work, not on anything in this file.

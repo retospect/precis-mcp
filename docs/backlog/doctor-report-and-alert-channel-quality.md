@@ -17,24 +17,20 @@ fix for gr346813 (86934f6af), and the ceiling-knob/env notes
 gr225018's orphan chores are prod closes tracked as a fleet todo, not
 here. What is left:
 
+## Decisions (Reto 2026-10-21)
+
+- The brief's attention count includes `waiting-for:reto` todos (change the
+  count query in `src/precis/workers/briefing.py`). Acceptance: a brief with
+  N `waiting-for:reto` todos counts N.
+- The alert lane stays independent of the doctor's verdicts. Side note kept
+  for the next doctor-prompt touch: its "0 log lines" reads suggest the pass
+  filter misses `precis.workers.runner` lines that name the pass in the
+  message.
+- Buildable now: the count change plus the index below.
+
 ## Open
 
-1. **Brief attention count — ruling needed (Reto).** The brief counts
-   `OPEN:ask-user*` todos; the doctor's needs-a-human todos are
-   `waiting-for:reto`, so the 09-20 brief said "two tasks waiting on
-   your input" the morning the doctor had minted twelve. Fold
-   `waiting-for:reto` into the brief's attention count, or leave the
-   doctor's queue to `/asks`.
-2. **Should the alert lane defer to the doctor's verdicts?** The 09-20
-   brief re-diagnosed alerts the doctor had already classified
-   ("something structural broke in the scheduler" vs the doctor's
-   fail-closed config gate, gr179498). With the health line fixed the
-   brief carries the doctor's top classification; whether the lane
-   should defer to the verdicts is undecided. Related: the doctor's
-   "0 log lines" reads suggest its pass filter misses
-   `precis.workers.runner` lines that name the pass in the message —
-   worth a look when the doctor prompt is next touched.
-3. **`worker_logs` `ts` index.** The table has only a partial level
+1. **`worker_logs` `ts` index.** The table has only a partial level
    index and no plain `ts` btree, so `/logs?level=INFO` with no
    host/handler facet scans unindexed; add the index in a forward-only
    migration when the view gets real use.

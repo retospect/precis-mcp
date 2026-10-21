@@ -250,24 +250,35 @@ New: `src/precis_pathway/bundle.py`, a Zenodo publish module, a
 migration through slice 4 (bundles are files; the DOI goes in `meta`);
 slice 5 may need one.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-For Reto:
+1. Slice-1 persistence: synthesise `manifest.json` from the stored artifact
+   for `report::rebuild` if catpath's `rebuild` accepts it; otherwise slice 1
+   ships without the viewer and viewer persistence becomes its own item.
 
-1. Done gate: "aggregate complete + reproduced re-validation + frozen
-   link", or allow earlier export flagged "preliminary" in the crate?
-2. Weights: ship them when the licence allows (bigger, fully offline), or
-   hash + fetch recipe only?
-3. Licences: code is GPL-3.0-or-later; outputs CC-BY-4.0 or CC0? Bundling
-   the catpath wheel publishes catpath, which is private today; acceptable?
-4. Checksum: SHA-256 as the record with the zip's CRC32 as a free extra, or
-   do you want CRC32 in the manifest too?
-5. One bundle per compound, or per (compound, engine version) under one
-   Zenodo concept DOI with versions?
-6. Zenodo account (personal or org) and a "precis catalysis" community?
-7. Include failed and low-confidence seeds and trust records
-   (`autocatpath.trust`)? Proposed yes ("right or wrong").
-8. Which compound goes first?
+Working defaults (the file's recommendations, carried by the 2026-10-21
+sweep; not individually ruled, Reto may override):
+
+2. Export runs as a job on a catalyst-extra host; the handler refuses with
+   `next=` when `import autocatpath` fails.
+3. Done gate: slice 1 enforces "aggregate complete + frozen marker" and
+   writes `preliminary: true` in the crate otherwise; the kinetics gate joins
+   when kinetics-engine-v2 D10 ships. Frozen marker: open tag `repro:frozen`
+   on the pathway, set by Reto.
+4. Weights: hash + fetch recipe, no weights in the bundle.
+5. Licence: CC-BY-4.0 for outputs. Bundle the catpath wheel only if catpath
+   goes public; otherwise record rev + sha and say so in the crate.
+6. Checksums: SHA-256 (zip CRC32 as a free extra).
+7. Identity: one `bundle_id` per (compound, engine version), all under one
+   Zenodo concept DOI.
+8. Include failed and low-confidence seeds and trust records.
+
+Slices 1 and 2 are buildable once the builder writes the slice-1 file list
+and the slice-2 wheel/lock/platform sources (reuse
+`scripts/lib/autocatpath-wheel.sh`), and drops the "platform not hashed"
+claim from the slice-2 test (`platform.json` stays in `MANIFEST.sha256`).
+Still open, not blocking slices 1-2: Zenodo account (personal or org) and
+community; which compound goes first.
 
 ### Ready-check (slices 1 and 2 only), 2026-10-21
 
@@ -284,29 +295,3 @@ For Reto:
 - advisory: model tier: not declared; this is new-abstraction work (bundle format, RO-Crate) - set `model: opus`.
 - advisory: viewer "no network references" test must define the check (regex over http(s):// excluding xmlns/doc links?).
 - note: blocked-by not declared; sibling specs exist (catpath-wheel-version-reuse, kinetics-engine-v2, claim-publication-nanopub-ots) and were checked. Split: slices 1 and 2 are separable (2 depends on 1's manifest; both fine as separate items), but 1 itself hinges on the persistence decision above.
-
-### Questions for Reto (readychecks, 2026-10-21) — stays `draft`
-
-Builder-resolvable once these are answered: the slice-1 file list, the
-slice-2 wheel/lock/platform sources (reuse `scripts/lib/autocatpath-wheel.sh`),
-and dropping the "platform not hashed" claim from the slice-2 test
-(`platform.json` stays in `MANIFEST.sha256`).
-
-1. `report::rebuild` needs `manifest.json`, thumbs and PNGs that
-   `pathway_meta` does not store. Recommended: synthesise `manifest.json`
-   from the stored artifact if catpath's `rebuild` accepts it; otherwise
-   slice 1 ships without the viewer and viewer persistence is its own item.
-2. Where does the export run (it needs autocatpath, ase, rdkit)?
-   Recommended: a job on a catalyst-extra host; the handler refuses with
-   `next=` when `import autocatpath` fails.
-3. The done gate (Q1). Recommended: slice 1 enforces "aggregate complete +
-   frozen marker" and writes `preliminary: true` in the crate otherwise;
-   the kinetics gate joins when kinetics v2 D10 ships. Frozen marker: an
-   open tag `repro:frozen` on the pathway, set by Reto.
-4. Q2 weights: recommended hash + fetch recipe, no weights in the bundle.
-5. Q3 licence and wheel: recommended CC-BY-4.0 for outputs; bundle the
-   catpath wheel only if catpath goes public, otherwise record rev + sha
-   and say so in the crate.
-6. Q4 checksums: recommended SHA-256 (zip CRC32 as a free extra).
-7. Q5 identity: recommended one `bundle_id` per (compound, engine
-   version), all under one concept DOI.

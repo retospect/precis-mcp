@@ -61,22 +61,16 @@ There is also a scope inversion: the defect belongs to a
 as a property of the hub alone, so it would keep blocking that hub for
 every *other* draft too.
 
-## Options
+## Decisions (Reto 2026-10-21)
 
-1. **A distinct relation** for cite-misuse (`misused-by`? `overclaimed-in`?)
-   pointing hub→draft-chunk, leaving `contradicts` to mean evidence only.
-   Cleanest; needs a migration and a writer change wherever the review
-   lens emits these.
-2. **Discriminate on the source kind at read time** — a `contradicts`
-   whose `src_ref_id` is a `finding` review artifact rather than an
-   evidence-kind ref (`taproot/hub.py::EVIDENCE_SRC_KINDS`) doesn't count
-   toward `disputed` / `check_contradicts`. No migration; risks being a
-   heuristic that drifts.
-3. **Leave the relation, add an adjudication door** (stage 8) that can
-   retire an edge once the prose is fixed. Largest, and wanted anyway —
-   see `docs/backlog/taproot-adjudicate-reopened-claims.md`.
-
-Find the writer first: whichever review lens emits these (the
-`raises-concern-about` / `cites` fan-out in `quest/review_fanout.py` is
-the likely source — dr173020 carries 20 `raises-concern-about` edges)
-decides whether option 1 is a one-line change at the write site.
+- Build option 1: a new `misused-by` relation (hub → draft-chunk) for
+  cite-misuse, so a prose critique no longer even *disputes* the science.
+  One forward-only migration adds the relation row and repoints the 3
+  review-critique rows above (fi255164, fi192706, fi255165) from `disputes`
+  to `misused-by`; the review-lens writer emits `misused-by` from then on.
+  Read-time discrimination (old option 2) and the adjudication door (old
+  option 3, owned by `disputes-adjudication-workflow.md`) are not this item.
+- Buildable now. First find which writer files these critiques today:
+  `quest/review_fanout.py` no longer emits `contradicts`/`disputes`; current
+  writers are `workers/conflict_search.py`, `inbound_ground.py`,
+  `hub_refine.py`, `quest/dossier.py`.

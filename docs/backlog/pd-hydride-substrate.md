@@ -140,6 +140,14 @@ decisive. It competes with qu164903's ticks for the two GPU slots.
 Proposed, not yet asked: set `fidelity_promote_*` to 0 on that quest for
 the duration, and record the pause in the quest logbook.
 
+## Decisions (Reto 2026-10-21)
+
+- The item-25 hold stays: no top-10 β re-run until the surface-Pourbaix
+  optimizer exists, because the bare-surface construction may change once
+  the resting state at the operating point is known. The precis-side
+  pieces (`struct_relax` lattice write-back, `preflight` on H-loaded slabs,
+  the frontier "never ranks bare vs hydride" test) are not held.
+
 ## Open questions / decisions log
 
 - (Cross-link.) `surface-pourbaix-staircase-optimizer.md` open question 6

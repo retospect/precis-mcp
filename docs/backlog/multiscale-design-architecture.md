@@ -1,5 +1,5 @@
 ---
-status: draft
+status: canonical
 title: multiscale design architecture — one geometry currency, layered cost terms; the map of the design-space programme
 prio: high
 model: opus
@@ -7,6 +7,11 @@ pillar: 3d-design
 ---
 
 # Multiscale design architecture — the map
+
+## Decisions (Reto 2026-10-21)
+
+- `status: canonical`: this map is the spec of record; build slices are
+  filed as their own items. Nothing here is dispatchable as written.
 
 Absorbs Reto's `multiscale-geometry-architecture.md` (2026-09-10, briefly at
 the repo root; removed with this doc). That paper re-derived most of the

@@ -89,10 +89,12 @@ drop the method attribution that makes the claim defensible.
 `_record_reground_citations`), reusing `taproot/reground.py`. Raises per-site
 LLM cost — price it before running corpus-wide.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- Is a per-site cost increase acceptable on a bulk arm, or should the quote set
-  be captured only at promote time? Undecided.
-- Cap on pairs per site? An unbounded set invites an LLM to pad with weak
-  support. A small cap (3-4) with the rest dropped is probably right, but
-  unmeasured.
+- Capture the quote set at backfill, not at promote: `verify_atoms_batch` is
+  one MEDIUM call per hub×paper and replaces the current locate confirm
+  rather than adding a call. Wrap the span as
+  `CanonicalClaim(sentence=span_text, scope={})`.
+- Cap 4 pairs per site; zero validated pairs → `reground-nomatch`, never a
+  whole-chunk fallback.
+- Buildable now.

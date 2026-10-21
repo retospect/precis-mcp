@@ -41,14 +41,16 @@ vault on the control side and renders them into `/etc/precis/db-exporters.env`
    `up`; a second run of 18a reports no changed tasks. Rotation: change the vault
    var, re-run 18a (the changed env file restarts both units).
 
-## Open points (Reto decides)
+## Decisions (Reto 2026-10-21)
 
-- Bind address: all interfaces today (`db_exporters_listen_host` empty); tailnet
-  only?
-- New alert rules beyond `PostgresDown` (connections, replication lag,
-  pgbouncer pool waits).
-- Pinned release tarballs are used because homebrew-core has no formula for
-  either exporter and the DB node is macOS; confirm that is acceptable.
+- Reto adds the two vault DSNs and creates the `prometheus_reader`
+  (`pg_monitor`) login on 2026-10-22; until then this item stays open,
+  waiting on Reto. After that, cluster-desk runs playbooks 02 (tag
+  `pgbouncer`) + 18a and flips the gate per the steps above.
+- Bind the exporters to the tailnet address only (set
+  `db_exporters_listen_host` in the private inventory).
+- Pinned release tarballs on the macOS DB node are fine.
+- New alert rules beyond `PostgresDown`: later, not this item.
 
 Out of scope: the accepted trade-off that these alerts are silent while Postgres
 or asa_bot is down (thread `monitors-that-go-quiet.md`).

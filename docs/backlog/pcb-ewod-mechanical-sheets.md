@@ -32,15 +32,11 @@ or Cricut. Architected by Reto 2026-09-26; ruled 2026-10-12 (design-fold).
    `tests/test_pcb_dead_exports.py::_KNOWN_UNWIRED`.
 5. Persist the layers as generator rows, so a re-put regenerates them.
 
-**Needs Reto (dimensions).** All of these stay named placeholders in
-`MechSpec` until supplied:
-
-| Dimension | Proposed value |
-|---|---|
-| ITO inset | 0.5 mm |
-| Window margin | +1 mm |
-| Alignment hole and slot sizes | none proposed |
-| Mirror default | off |
+**Decisions (Reto 2026-10-21).** `MechSpec` defaults: ITO inset 0.5 mm,
+window margin +1 mm, mirror off. Alignment hole and slot sizes stay
+required `MechSpec` inputs with no default (a wrong default cuts a wrong
+sheet). Items 1, 2, 4 and 5 are buildable now; item 3 waits on gr414481's
+numbers.
 
 **Later (Reto: "later").** A parylene-liner-edge note and a Cricut importer
 check.

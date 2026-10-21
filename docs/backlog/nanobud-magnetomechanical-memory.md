@@ -3,6 +3,7 @@ status: draft
 title: magnetomechanical memory in carbon nanobuds — intrinsic magnetic order coupled to structural state
 model: opus
 pillar: 3d-design
+blocked-by: nanobud-campaign
 ---
 
 # Nanobud magnetomechanical memory
@@ -40,10 +41,16 @@ The nanobuds architecture presently lacks a high-density, purely mechanical stor
 
 ## Target + blast radius
 
-- **The nanobuds mechanical architecture** (`docs/backlog/nm-kind.md`, structural state / envelope work).
+- **The nanobuds mechanical architecture** (`docs/backlog/se-atomic-round2.md`, structural state / envelope work).
 - **The knowledge base** (`dr173020` and the fi189548 claim corpus).
 - **Concurrent rare-earth-magnet evaluation** — this item feeds into and is fed by the magnetism-claim verification.
 - **Future storage-layer design** — if the premise holds, informs a later mechanical-actuator + magnetic-storage subsystem build.
+
+## Decisions (Reto 2026-10-21)
+
+- Parked behind `nanobud-campaign.md`'s sign-off of fi189548: the
+  campaign's re-review of fi189548 is the magnetism validation. No split
+  into a separate validation item.
 
 ## Open questions / decisions log
 
@@ -52,4 +59,3 @@ The nanobuds architecture presently lacks a high-density, purely mechanical stor
 - **Which structural degree of freedom couples to magnetism, and is it bistable?** Candidates include bond-bending (C–C rotation in the nanobud cage), point-defect mobility (carbon vacancy or topological defect), or larger-scale distortions. Must reverse without breaking the structure (i.e. no net chemical change, no bond rupture).
 - **What write energy is acceptable?** Mechanical actuation (STM, AFM, voltage, photon) comes with a floor; does it overlap with energies the nanobud can tolerate without thermal runaway or plasticity?
 - **Cycle life vs. storage density trade-off.** Higher bit density (more magnetic sites per nanobud) may increase cross-talk or reduce cycle life. Where is the sweet spot?
-- **Split into two investigations.** Validating the magnetism (items 1–2 above, a 2–4 week literature + shallow computation pass) is independent of the coupling investigation (items 3–5, a longer structural + energetics screening). If the magnetism fails (Tc is low, or it is an artefact), the coupling work is moot. Consider splitting into `nanobud-magnetism-validation` (ready first) and `nanobud-magnetomechanical-mechanism` (blocked on magnetism confirmation) if both are priorities.

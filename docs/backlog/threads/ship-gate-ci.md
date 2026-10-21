@@ -114,15 +114,12 @@ nightly — the diff-cover verdict is still open.
    project down at exit (ae5084ae3), and colima's docker pools were widened
    from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
    the orchestrator 19:01Z).
-5. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
-   renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
-   unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 6 diagnosable.
-8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 5 diagnosable.
+7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 

@@ -107,15 +107,16 @@ NOH* has no thermo data.
   flagged where the margin exceeds the medium/large band.
 - No result pooled across footings anywhere in the quest output.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- Reto decides: does the current SPSO top set still equal the single Pareto
-  member st261823, or is the surface list widened (master default, not a
-  ruling).
-- Reto decides: the cluster-compute budget for step 2, whose barriers are MLIP
-  NEBs on about 90-atom cells (the review in gr489182 comment 2 puts DFT NEB
-  at hundreds of node-hours per candidate, so it stays a separate request).
-- Reto decides: whether a DFT single-point job type is built (none exists;
-  me470247) or ruling (5)'s DFT refinement waits indefinitely.
+- Once catpath 0.30.0 is deployed, run step 1 (both MLIP models, same
+  structure/config) on the single Pareto candidate st261823 with the master
+  defaults: no widened surface list, no DFT single-point job type.
+- The step-2 NEB compute budget and any DFT refinement become separate
+  requests after step 1's table exists.
+- Step 1 is runnable as soon as catpath 0.30.0 is deployed (external block).
+
+## Open questions
+
 - Reto decides: whether to verify the [pplx] DOIs of gr489182 comment 1
   before any draft cites them (comment 2 lists the unchecked ones).

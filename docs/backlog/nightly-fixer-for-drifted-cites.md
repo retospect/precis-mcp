@@ -60,12 +60,10 @@ drift at once instead of one reword at a time.
 - One reword touching many cites yields one job per (draft, section).
 - A draft with no drift mints nothing.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- Open: gate on the same `meta.draft_refresh.enabled` opt-in
-  `draft_refresh_scan` uses, or a separate flag? Reusing it means one
-  switch per draft; a separate one lets a draft accept drift fixes
-  without accepting wholesale section rewrites.
-- Open: does a blocked export also kick the fixer, so the fix is in
-  flight by the time someone looks? Cheap, but couples two surfaces that
-  are otherwise independent.
+- Measure first: one read-only pass of `view='hygiene'` drifted-cite counts
+  across drafts with hub cites. Build the fixer only if the total is ≥20
+  drifted cites; below that, record the count here and stop.
+- If built: gate on the existing `meta.draft_refresh.enabled` opt-in (one
+  switch per draft), and a blocked export does not kick the fixer.

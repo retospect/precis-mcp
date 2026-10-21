@@ -3,10 +3,22 @@ status: draft
 pillar: local-compute
 title: Write local rungs under the SMALL/MEDIUM tiers, once Slice 0 picks a model
 prio: normal
-blocked-by: vllm-per-node-serving
 ---
 
 # Local rungs under SMALL/MEDIUM
+
+## Decisions (Reto 2026-10-21)
+
+- Apply the staged `llm.chain.small` write now: rung 0 local
+  `openai/gpt-oss-120b`, cloud glm overflow. Model pick is settled (gpt-oss
+  120B, Reto 2026-10-11), so the `vllm-per-node-serving` blocker is gone.
+- `llm.chain.medium` stays on Claude. Trial MEDIUM per-op via
+  `llm.op.chase:verify` before touching the tier chain (40-task compare:
+  gpt-oss 0.812 vs haiku 0.875, gap entirely in the `partial` stratum).
+- After the small write lands, read `/placement` after 24 h into this file.
+  What stays open here: the maintenance-lane `placement='local'` pin (needs
+  `graph-maintenance-queue.md`) and the sensitivity precondition (needs
+  `content-sensitivity-placement.md`).
 
 Mining pass, 2026-09-30. The compiled tier ladder has **zero local rungs**
 by default — `src/precis/utils/llm/live_config.py`: "a tier left with no
@@ -57,8 +69,8 @@ eval's output as a standalone capability with no consumer.
 
 ## Acceptance criteria
 
-- SMALL and MEDIUM each have at least one live local rung serving real
-  traffic on summarise, classify, or pre-search/condense.
+- SMALL has a live local rung serving real traffic (`llm.chain.small`
+  rung 0). MEDIUM gets one only after a per-op trial passes.
 - `graph-maintenance-queue.md`'s lanes show `placement='local'` pinned, not
   inferred, in `llm_call_log`.
 - A proprietary-content job routed through a new local rung passes
@@ -71,11 +83,6 @@ eval's output as a standalone capability with no consumer.
 `live_config.py` (tier ladder rungs), `src/precis/utils/llm/router.py`
 (placement pinning for the maintenance-queue lanes); no change to
 BIG/FRONTIER.
-
-## Open questions / decisions log
-
-- None yet — blocked entirely on `local-serving-eval.md`/`vllm-per-node-serving.md`
-  Slice 0's model choice.
 
 Closest existing items: `local-summarizer.md` (the dedicated summariser
 slice; this item is the general SMALL/MEDIUM rung), `router-cost-coverage.md` (the pre-filter-tier ask

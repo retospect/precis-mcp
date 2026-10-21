@@ -10,7 +10,8 @@ and hand operate, in the fully assembled state) and its viewer render (the
 3D page's "tool volumes" toggle, `/se/<slug>/tool-volumes.json`) are
 built; their contract lives in `src/precis_se/toolaccess.py`'s module
 docstring and `precis_web.blocktree_3d.tool_volume_group`. Three things
-remain, none buildable without a decision or a prerequisite.
+remain; the first is ruled and buildable, the other two wait on a
+decision or a prerequisite.
 
 ## Rulings that still bind the rest (Reto, 2026-09-29)
 
@@ -24,15 +25,20 @@ remain, none buildable without a decision or a prerequisite.
   hex keys and the rest keep the no-hand treatment until their own item
   (`se-tool-sector-and-lkey-access.md`).
 
-## Open: a fastener blocked only by another fastener (2026-10-03)
+## Decisions (Reto 2026-10-21): a fastener blocked only by another fastener
 
 `fastener_insertion_path` checks the final state, so a screw whose path
 crosses only another fastener reports an error even when inserting it
-first would work. First case: unicycle-c1's `flange_bolt_left` is blocked
-by `seatpost_clamp_bolt`; with the pinch bolt out it goes in. Needs Reto:
-should a blocker that is itself a fastener become an install-order finding
-(phase 2's declared boundaries) or stay an error under "all bolts
-accessible all the time"?
+first would work (first case: unicycle-c1's `flange_bolt_left` behind
+`seatpost_clamp_bolt`).
+
+- The standing rule "all bolts accessible all the time" stays: the
+  finding is an `error` by default.
+- A design may declare a per-fastener install-order exception naming the
+  blocking fastener. With it declared, the finding drops to warn-tier
+  `fastener_install_order`; undeclared, it stays an `error`.
+- The finding text names the blocking fastener either way.
+- Buildable now; it does not wait on phase 2's load-path boundaries.
 
 ## Phase 2: declared install-order boundaries, load-path tuning
 

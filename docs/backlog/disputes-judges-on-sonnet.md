@@ -7,9 +7,14 @@ prio: high
 
 # Run the two disputes judges on Sonnet instead of Haiku
 
-Waiting on Reto's decision (claims-and-evidence-5, decision 2, "second opinion
-on a stronger model"). The tier eval below is that decision's evidence (P4 of
-claims-and-evidence-6).
+## Decisions (Reto 2026-10-21)
+
+- Route both judges at `Tier.BIG` (Sonnet): `hub_refine.py::judge_edge_strict`
+  and the verify call in `_chase_llm.py::_verify_support_with_caveats` (not
+  locate/disambiguate). This answers claims-and-evidence-5 decision 2; the
+  tier eval below is its evidence. Buildable now; name the exact chain model
+  and check the `BIG` profile's timeouts, tool exposure and budget lane for
+  a one-shot JSON judge.
 
 ## Motivation / why
 Both hub_refine judges route `Tier.MEDIUM` (Haiku 4.5):

@@ -63,8 +63,7 @@ chunks render exactly as today). Every field is **structured data**, never
 markup, and every field is read by **both** exporters.
 
 1. **`align: [str]`** — per-column alignment, length = `len(header)`, each
-   in `{'l','c','r'}` (optionally `'d'` decimal-align, deferred to an open
-   question — needs `siunitx` in LaTeX and has no clean Word analogue).
+   in `{'l','c','r'}` (optionally `'d'` decimal-align, deferred — needs `siunitx` in LaTeX and has no clean Word analogue).
    LaTeX: the `p{…}` colspec gains `\raggedleft`/`\centering`. Word:
    `paragraph.alignment` per cell. Lowest risk, highest daily value.
 2. **`spans: [{row, col, rowspan?, colspan?}]`** — a sparse list of merged
@@ -99,7 +98,7 @@ Plus the **plumbing** that carries these end-to-end:
   presentation fields untouched; a `table=` full-replace may set them.
 - A small **edit surface** for each (e.g. `edit(kind='draft', id='dc<id>',
   align=[…])`) — or fold them under the existing `table=` replace only.
-  **Open question** — see below.
+  Slice 1 uses `table=` (see Decisions).
 
 ## Explicitly NOT in scope
 
@@ -157,30 +156,18 @@ Plus the **plumbing** that carries these end-to-end:
 - **Amends ADR 0035 §1** (richer structured table schema) — the ADR update
   rides the implementing ship.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- **Edit surface: dedicated params vs `table=`-only.** Either add
-  `align=`/`spans=`/`rules=`/`notes=` edit params (ergonomic, but four more
-  params on an already-wide `edit` surface *and* they arrive as list/dict
-  args — the same client-side backslash/serialization boundary that bit
-  gr178512, though these fields carry little backslash content), or require
-  the full `table=` replace to set them (fewer params, must re-send the
-  grid). **Leaning:** `table=` (as a JSON **string**, the backslash-safe
-  channel shipped for gr178512) sets everything at once; add a dedicated
-  `align=` only, since it's the highest-frequency, lowest-structure field.
-  Decide when wiring.
-- **Word `rules` via `w:tcBorders`.** Confirm the low-level border XML is
-  robust across templates, or ship `rules` LaTeX-only first and file the
-  Word half. Spike before committing the acceptance criterion.
-- **Decimal alignment (`'d'`).** Needs `siunitx` `S` columns in LaTeX and
-  has no clean Word analogue (fake it with a right-align + fixed decimals?).
-  Deferred unless a concrete corpus need appears.
-- **Ingest population.** Should the marker/table ingester *infer* alignment
-  and spans from source PDFs, or are these authoring-only for now? Inference
-  is a separate, larger effort (the discovery layer, not this) — this
-  proposal delivers the **schema + exporters + edit surface**; auto-population
-  from ingest is explicitly a follow-up.
-- **Split check.** This is one coherent deliverable (schema + both
-  exporters + edit surface), but the four fields are independently
-  shippable — `align` alone is a valuable first cut. The `ready` gate
-  should decide whether to land it as one proposal or slice by field.
+- Slice by field: (1) `align` first, in both exporters, set through the
+  `table=` JSON-string edit path; (2) `spans` + `rules`; (3) `notes` /
+  `cell_marks`. Slice 1 is buildable now.
+- Decimal alignment (`'d'`) and ingest population stay deferred.
+
+## Open questions
+
+- **Dedicated edit params.** Whether `spans`/`rules`/`notes` (or a dedicated
+  `align=`) get their own `edit` params beyond `table=`; decide when wiring
+  slice 2.
+- **Word `rules` via `w:tcBorders`** (slice 2). Spike the low-level border
+  XML across templates, or ship `rules` LaTeX-only first and file the Word
+  half.

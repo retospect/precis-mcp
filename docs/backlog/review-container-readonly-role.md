@@ -15,3 +15,14 @@ MCP tool conflicts with the seven-verbs invariant asserted in server.py: a
 design call for Opus/Reto, not mechanical; don't blind-flip. Also: the OAuth
 token appears in `docker inspect` Config.Env — move secrets to `--env-file`
 if the never-in-inspect guarantee matters.
+
+## Decisions (Reto 2026-10-21)
+
+- Option (a): a kind-level carve-out in `denied_verbs`/dispatch lets
+  `put(kind='gripe')` through under write:none. The verbs stay seven; the DB
+  role is the real boundary and `file_gripe_readonly` already enforces it.
+  No separate `file_gripe` MCP tool.
+- Buildable now. Test: under write:none, `put(kind='finding')` is still
+  refused and `put(kind='gripe')` succeeds on an agent_ro connection. After
+  it ships, the deployment owner sets `PRECIS_MCP_DB_ROLE=agent_ro` on the
+  review container and moves the token to `--env-file`.

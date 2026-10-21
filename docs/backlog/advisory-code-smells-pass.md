@@ -5,6 +5,13 @@ pillar: platform
 
 # Advisory code-smell pass (DRY / class design) — periodic, not the gate
 
+## Decisions (Reto 2026-10-21)
+
+- Home: a new `scripts/smell-review` runs `uvx pylint` + `uvx vulture
+  --min-confidence 80` on demand and prints a ranked report to stdout; it is
+  never wired into `scripts/ship`. Top clusters are filed as gripes by hand.
+- Buildable as specced.
+
 The gate now enforces the deterministic design checks (import-linter
 contracts in `pyproject.toml`, `tests/test_schema_design.py`). The
 judgment-laden smell detectors deliberately stayed out — under sibling
@@ -25,5 +32,5 @@ instead, alongside /whatneedsdoing's hygiene scan or a
 Findings route to backlog items / gripes, not exit codes. Related:
 lint-and-except-debt (ruff-ignore re-evaluation belongs there).
 
-Test: the advisory run completes on today's tree and emits a ranked
-report; nothing is wired into scripts/ship.
+Test: `scripts/smell-review` completes on today's tree, prints a ranked
+report, exits 0; `scripts/ship` is untouched.

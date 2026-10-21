@@ -190,9 +190,9 @@ se-machine-design's `backlog/se-region-property-layer.md`.
 3. **backlog/se-interface-reaction-forces.md** — waits on 2 for somewhere to
    put the number; delivers Reto's original ask and the load-path data 4
    needs.
-4. **backlog/se-mechanical-drc.md** beyond fastener_insertion_path — phase
-   2: declared install-order boundaries, load-path-aware tuning. Waits on
-   3, which answers the file's open question (c).
+4. **backlog/se-mechanical-drc.md** beyond fastener_insertion_path — the
+   declared per-fastener install-order exception is ruled and buildable
+   now (2026-10-21); phase 2 load-path tuning waits on 3.
 5. **backlog/se-container-block-is-not-first-class.md** — three subsystems
    each guess what a container is. Waits on nothing; ranked here because
    the payoff shows only once viewer, validator and DRC all read

@@ -100,11 +100,11 @@ last blocks:
 - The unresolved-`disputes` queue lists open flags; resolving one removes
   it from the queue.
 
-## Open questions / decisions log
+## Decisions (Reto 2026-10-21)
 
-- Should the adjudication hub's `pub_id` hash the two claim ids alongside
-  the sentence? Probably yes — otherwise two adjudications of *different*
-  pairs sharing a sentence ("These claims differ in measurement regime.")
-  collide into one.
-- Does verdict wiring (item 2) run mechanically on mint of the
-  adjudication hub, or stay a human follow-through checklist in slice 1?
+- The adjudication hub's `pub_id` hashes both claim ids alongside the
+  sentence, so two adjudications of different pairs sharing a sentence do
+  not collide.
+- Verdict wiring (item 2) stays a human follow-through checklist in
+  slice 1; it does not run on mint. The gate change (item 1) lands alone
+  first and is buildable now.
