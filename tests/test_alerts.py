@@ -1219,3 +1219,102 @@ def test_resolve_quiet_alerts_ignores_other_families(
     _age(store, aid, 10 * 24 * 3600)
     assert alerts_mod.resolve_quiet_alerts(store) == 0
     assert _resolved(store, aid)[0] is None
+
+
+# ── breaker ↔ quiet-resolve end-to-end (gr500373) ────────────────────
+
+
+def _latest_alert_id(store: Store, fingerprint: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'alert' AND fingerprint = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_budget_cap_alert_survives_quiet_window_while_tripped(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standing cap trip keeps the alert open: the breaker's periodic
+    refresh (``_ALERT_REFRESH_S``) bumps ``updated_at``, so the quiet sweep
+    never sees a live breach as stale (gr500373)."""
+    from precis.budget import breaker as breaker_mod
+    from precis.budget.meter import BudgetStatus
+
+    breaker_mod._reset_alert_state()
+    try:
+        tripped = BudgetStatus(
+            hourly_spent=22.4, daily_spent=22.4, hourly_cap=20.0, daily_cap=50.0
+        )
+        breaker_mod._sync_alert(store, "hourly", tripped)
+        aid = _latest_alert_id(store, "cap-hourly")
+        assert alerts_mod.STATE_OPEN in _tags(store, aid)
+
+        # Age the row past the quiet window, then run the refresh tick.
+        _age(store, aid, alerts_mod.QUIET_RESOLVE_BUDGET_S + 600)
+        monkeypatch.setattr(breaker_mod, "_last_refresh", 0.0)
+        breaker_mod._sync_alert(store, "hourly", tripped)
+        assert alerts_mod.resolve_quiet_alerts(store) == 0
+        assert _resolved(store, aid)[0] is None
+        assert alerts_mod.STATE_OPEN in _tags(store, aid)
+    finally:
+        breaker_mod._reset_alert_state()
+
+
+def test_budget_cap_alert_resolves_when_window_rolls_under_cap(
+    store: Store,
+) -> None:
+    """Breach raises cap-hourly; once the rolling hour is back under the cap
+    the next gate sync resolves it (gr500373)."""
+    from precis.budget import breaker as breaker_mod
+    from precis.budget.meter import BudgetStatus
+
+    breaker_mod._reset_alert_state()
+    try:
+        tripped = BudgetStatus(
+            hourly_spent=22.4, daily_spent=22.4, hourly_cap=20.0, daily_cap=50.0
+        )
+        breaker_mod._sync_alert(store, "hourly", tripped)
+        aid = _latest_alert_id(store, "cap-hourly")
+        assert alerts_mod.STATE_OPEN in _tags(store, aid)
+
+        breaker_mod._sync_alert(store, None, None)
+        assert _resolved(store, aid)[0] is not None
+        assert alerts_mod.STATE_OPEN not in _tags(store, aid)
+    finally:
+        breaker_mod._reset_alert_state()
+
+
+def test_budget_cap_alert_reraises_after_quiet_resolve(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quiet-resolved cap alert whose trip is still standing re-opens as a
+    fresh alert on the next refresh tick — a new breach is never swallowed by
+    the closed row (gr500373)."""
+    from precis.budget import breaker as breaker_mod
+    from precis.budget.meter import BudgetStatus
+
+    breaker_mod._reset_alert_state()
+    try:
+        tripped = BudgetStatus(
+            hourly_spent=22.4, daily_spent=22.4, hourly_cap=20.0, daily_cap=50.0
+        )
+        breaker_mod._sync_alert(store, "hourly", tripped)
+        aid = _latest_alert_id(store, "cap-hourly")
+
+        # The quiet sweep closes it (e.g. a lull where no paid call reached
+        # the gate), then the still-tripped breaker's refresh re-raises.
+        _age(store, aid, alerts_mod.QUIET_RESOLVE_BUDGET_S + 600)
+        assert alerts_mod.resolve_quiet_alerts(store) == 1
+        monkeypatch.setattr(breaker_mod, "_last_refresh", 0.0)
+        breaker_mod._sync_alert(store, "hourly", tripped)
+
+        aid2 = _latest_alert_id(store, "cap-hourly")
+        assert aid2 != aid
+        assert alerts_mod.STATE_OPEN in _tags(store, aid2)
+        assert _resolved(store, aid2)[0] is None
+    finally:
+        breaker_mod._reset_alert_state()
