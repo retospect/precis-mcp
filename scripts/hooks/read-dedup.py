@@ -17,6 +17,18 @@ What this does, per session (state: one JSON file under the temp dir keyed by
   (30 KB) passes through with a non-blocking ``additionalContext`` hint:
   fetch a part with offset/limit, or query the python/md kind for code/docs.
 
+Two traps the first cut hit (witty review, 2026-10-21):
+
+* ``tool_use_id``. Registered globally AND per-project, the hook fires twice
+  per Read on the same state file — the second run then denied the FIRST
+  read. Each record carries the call's ``tool_use_id``; a repeat with the
+  same id is the same call seen twice, not a re-read, so it allows.
+* Compaction. ``/compact``, ``/clear`` and resume drop file bodies from
+  context while the session's state file survives — the stub's "still in
+  your context" becomes a lie. Run with ``--session-start`` (wired as a
+  SessionStart hook) the script deletes the session's state file when the
+  payload's ``source`` is ``compact``/``clear``/``resume``.
+
 Never blocks: a first read, a read after the file changed (mtime or size
 moved), a ranged read of a new range, or an image/PDF/binary read (suffix or
 magic-byte sniff — those render, they don't re-serve text). Missing
@@ -27,7 +39,8 @@ it outright.
 
 Self-contained (stdlib only): the same file runs from the repo at
 ``scripts/hooks/read-dedup.py`` and globally from ``~/.claude/hooks/``.
-Wired in ``.claude/settings.json`` (PreToolUse, matcher ``Read``).
+Wired in ``.claude/settings.json`` (PreToolUse, matcher ``Read``;
+SessionStart, ``--session-start``).
 """
 
 from __future__ import annotations
@@ -110,17 +123,22 @@ def evaluate(
     mtime_ns: int,
     size: int,
     now: float,
+    tool_use_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Update ``state`` for this read; return (deny_reason, hint). Pure.
 
-    ``state`` maps ``abspath -> {range_key -> {"m", "s", "at"}}``. An
-    unchanged repeat of a recorded (path, range) denies; anything else is
-    recorded and allowed, with a hint when it is the session's first full
-    read of a file over ``LARGE_BYTES``.
+    ``state`` maps ``abspath -> {range_key -> {"m", "s", "at", "tu"}}``. An
+    unchanged repeat of a recorded (path, range) denies — unless the record
+    carries THIS call's ``tool_use_id``: the hook can be registered twice
+    (global + project), and the second fire of the same call must pass.
+    Anything else is recorded and allowed, with a hint when it is the
+    session's first full read of a file over ``LARGE_BYTES``.
     """
     per_file = state.setdefault(path, {})
     prev = per_file.get(range_key)
     if prev and prev.get("m") == mtime_ns and prev.get("s") == size:
+        if tool_use_id and prev.get("tu") == tool_use_id:
+            return None, None  # same call, second registration firing
         at = datetime.fromtimestamp(prev.get("at", now), UTC).strftime("%H:%MZ")
         return (
             f"unchanged since your read at {at}; it is still in your context — "
@@ -128,7 +146,7 @@ def evaluate(
             None,
         )
     first_full = range_key == _FULL and _FULL not in per_file
-    per_file[range_key] = {"m": mtime_ns, "s": size, "at": now}
+    per_file[range_key] = {"m": mtime_ns, "s": size, "at": now, "tu": tool_use_id}
     if first_full and size > LARGE_BYTES:
         return None, (
             f"[read-dedup] {path} is {size // 1024}KB — if you only need part "
@@ -182,7 +200,7 @@ def _hint(note: str) -> None:
     )
 
 
-def _run(session: str, path: str, tool_input: dict) -> int:
+def _run(session: str, path: str, tool_input: dict, tool_use_id: str | None) -> int:
     if path.lower().endswith(_BINARY_SUFFIXES):
         return 0
     try:
@@ -204,6 +222,7 @@ def _run(session: str, path: str, tool_input: dict) -> int:
         st.st_mtime_ns,
         st.st_size,
         time.time(),
+        tool_use_id,
     )
     if deny:
         _deny(deny)
@@ -214,6 +233,27 @@ def _run(session: str, path: str, tool_input: dict) -> int:
     return 0
 
 
+def _session_start(payload: dict) -> int:
+    """Drop this session's dedup state after compaction/clear/resume.
+
+    Those events evict file bodies from context, so "still in your context"
+    stops being true; the next read must serve again, not be denied.
+    ``startup`` keeps state (a fresh session has a fresh id anyway).
+    """
+    if not isinstance(payload, dict):
+        return 0
+    if payload.get("source") not in {"compact", "clear", "resume"}:
+        return 0
+    session = payload.get("session_id") or os.environ.get("CLAUDE_SESSION_ID")
+    if not session:
+        return 0
+    try:
+        os.unlink(_state_path(str(session)))
+    except OSError:
+        pass
+    return 0
+
+
 def main() -> int:
     if os.environ.get("PRECIS_READ_DEDUP_OFF"):
         return 0
@@ -221,6 +261,11 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
+    if "--session-start" in sys.argv[1:]:
+        try:
+            return _session_start(payload)
+        except Exception:  # fail open, same rule
+            return 0
     if not isinstance(payload, dict) or payload.get("tool_name") != "Read":
         return 0
     tool_input = payload.get("tool_input")
@@ -232,8 +277,14 @@ def main() -> int:
     session = payload.get("session_id") or os.environ.get("CLAUDE_SESSION_ID")
     if not session:
         return 0
+    tool_use_id = payload.get("tool_use_id")
     try:
-        return _run(str(session), path, tool_input)
+        return _run(
+            str(session),
+            path,
+            tool_input,
+            str(tool_use_id) if tool_use_id else None,
+        )
     except Exception:  # a dedup hook fails OPEN, never closed
         return 0
 

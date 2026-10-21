@@ -13,6 +13,7 @@ same-size-different-mtime edge.
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import os
 import subprocess
@@ -20,6 +21,7 @@ import sys
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "read-dedup.py"
+_TU = itertools.count(1)  # each fake tool call gets a fresh tool_use_id
 
 
 def _load():
@@ -33,13 +35,15 @@ def _load():
 hook = _load()
 
 
-def _run(tmp_path: Path, payload: dict | str, session: str = "s1") -> dict | None:
+def _run(
+    tmp_path: Path, payload: dict | str, argv: tuple[str, ...] = ()
+) -> dict | None:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "PRECIS_READ_DEDUP_DIR": str(tmp_path),
     }
     proc = subprocess.run(
-        [sys.executable, str(HOOK)],
+        [sys.executable, str(HOOK), *argv],
         input=payload if isinstance(payload, str) else json.dumps(payload),
         capture_output=True,
         text=True,
@@ -52,10 +56,13 @@ def _run(tmp_path: Path, payload: dict | str, session: str = "s1") -> dict | Non
     return json.loads(proc.stdout)["hookSpecificOutput"]
 
 
-def _read(path: Path, session: str = "s1", **tool_input) -> dict:
+def _read(
+    path: Path, session: str = "s1", tool_use_id: str | None = None, **tool_input
+) -> dict:
     return {
         "session_id": session,
         "tool_name": "Read",
+        "tool_use_id": tool_use_id or f"tu-{next(_TU)}",
         "tool_input": {"file_path": str(path), **tool_input},
     }
 
@@ -145,6 +152,39 @@ def test_unsniffable_file_is_allowed_and_not_recorded(tmp_path: Path) -> None:
     assert _run(tmp_path, _read(missing)) is None  # stat fails → allow
     _write(missing, "now it exists\n")
     assert _run(tmp_path, _read(missing)) is None  # real first read, not denied
+
+
+def test_same_tool_use_id_twice_is_allowed(tmp_path: Path) -> None:
+    """Registered twice (global + project), the hook fires twice per Read —
+    the second fire of the SAME call must not deny the first read."""
+    f = tmp_path / "a.txt"
+    _write(f, "hello\n")
+    assert _run(tmp_path, _read(f, tool_use_id="tu-1")) is None
+    assert _run(tmp_path, _read(f, tool_use_id="tu-1")) is None  # second fire
+    out = _run(tmp_path, _read(f, tool_use_id="tu-2"))  # a real repeat
+    assert out is not None and out["permissionDecision"] == "deny"
+
+
+def test_compact_clear_resume_reset_state(tmp_path: Path) -> None:
+    """After compaction the body is gone from context — a re-read serves."""
+    for source in ("compact", "clear", "resume"):
+        sid = f"s-{source}"
+        f = tmp_path / "a.txt"
+        _write(f, "hello\n")
+        assert _run(tmp_path, _read(f, session=sid)) is None
+        payload = {"session_id": sid, "source": source}
+        assert _run(tmp_path, payload, argv=("--session-start",)) is None
+        assert _run(tmp_path, _read(f, session=sid)) is None  # allowed again
+
+
+def test_startup_source_keeps_state(tmp_path: Path) -> None:
+    f = tmp_path / "a.txt"
+    _write(f, "hello\n")
+    assert _run(tmp_path, _read(f)) is None
+    payload = {"session_id": "s1", "source": "startup"}
+    assert _run(tmp_path, payload, argv=("--session-start",)) is None
+    out = _run(tmp_path, _read(f))
+    assert out is not None and out["permissionDecision"] == "deny"
 
 
 def test_state_is_keyed_by_session(tmp_path: Path) -> None:
