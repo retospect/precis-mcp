@@ -130,8 +130,82 @@ commit carrying this line; `git log` has the sha.*
 3. **Nano propagator**: test-particle Monte Carlo with diffuse wall
    reflection on a hexfold lumen (`generated.sites` + vdW-offset wall),
    same `trace` outputs; the card routes `Kn ≫ 1` here.
+   Reduced time `t* = t v̄/L` with `v̄ = sqrt(8kT/πm)`. Transmission then
+   depends on shape and the accommodation coefficient `α` only: the same
+   dimension-free claim the continuum kernel makes.
+   Acceptance (`tests/test_precis_flow_nano.py`, kernel;
+   `tests/test_se_flow_nano.py`, adapter):
+   - **Clausing.** For a straight cylinder with diffuse walls (`α = 1`),
+     `n = 10⁵`, transmission at `L/R = 1, 2, 10` is `0.6720, 0.5136,
+     0.1910` within ±0.005 absolute (3σ ≈ 0.0045). Transmission falls
+     monotonically with `L/R` and approaches `8R/3L` from below for
+     `L/R ≥ 50`.
+   - **Specular limit.** `α = 0` on a straight tube gives transmission
+     exactly 1.
+   - **Cosine law.** Re-emitted directions from a diffuse wall pass χ²
+     against `cos θ` (p > 0.01, 10⁵ samples).
+   - **Equilibrium.** A closed lumen with no ports, run long, gives a
+     uniform number density per accessible volume bin (χ², p > 0.01),
+     with no build-up at the walls.
+   - **Size invariance.** The same shape at two absolute scales with the
+     same seed gives identical transmission and identical `t*`
+     residences.
+   - **Hexfold lumen.** A tube from the hexfold generator, with the wall
+     made of `generated.sites` spheres at vdW radius. Transmission lies
+     within 10% of the cylinder Clausing value at `R_eff = R_axis −
+     r_vdW` and the same `L/R_eff`. The measured deviation is recorded in
+     the test docstring as the corrugation effect.
+   - **Same outputs.** The propagator returns a `Paths`
+     (`breakthrough` = transmission, `residence`, `frames`), so the four
+     `FLOW_COMPUTERS` measures and the slice-2b payload work unchanged.
+     Test this on a hexfold lumen block through `view='flow'`.
+   - **Routing.** `RegimeCard.from_physical` with `Kn ≥ 10` names
+     `regime.knudsen` and routes to the propagator. `view='flow'` runs it
+     without being asked. With `0.01 < Kn < 10` (transition regime) both
+     solvers refuse, and the reason names DSMC as out of scope. Slip
+     (`se-multiphysics.md` slice 5) later moves the lower bound to 0.1.
+   - **Determinism.** Same `seed_rng` gives bitwise-equal `Paths`.
 4. **Annealer as an se op**: hole/port placement under the realize loop
    (cfdtest `anneal.py`), cost terms as measures.
+   The pure annealer is vendored as `precis_flow.anneal`: Metropolis, with
+   add / remove / perturb proposals scaled by `T/T0`, geometric cooling,
+   and the tracer reseeded identically every evaluation (common random
+   numbers). The se op is handler-level `anneal_chamber`, because it
+   spends compute; above the inline budget it runs as a job. The cost is
+   the weighted sum of the chamber's **soft** measures
+   (`breakthrough-fraction` maximised, `resistance-ratio` and hole count
+   minimised, `evenness` maximised), with weights in the measure meta.
+   **Hard** measures are constraints: a proposal that violates one is
+   rejected.
+   Acceptance (`tests/test_precis_flow_anneal.py`,
+   `tests/test_se_flow_anneal.py`):
+   - **Cost parity.** On the hex chamber (`test_se_flow.py` fixture) with
+     cfdtest's default weights (`w_break 10, w_holes 0.5, w_res 5,
+     w_even 5`) as soft measures, `profile='plug'` and the same seed, the
+     op's cost of the initial hole set equals cfdtest `cost.evaluate`'s
+     `total` within 1e-9.
+   - **Common random numbers.** Evaluating the same state twice gives a
+     bitwise-equal cost.
+   - **Reproduction.** At cfdtest's default config (iterations, cooling
+     0.97, 3 iterations per temperature), the best cost lies within the
+     spread of cfdtest `anneal` over 5 seeds. The best is strictly below
+     the initial cost.
+   - **Determinism.** The same seed gives the same best hole set.
+   - **Hard constraints hold.** With a hard `resistance-ratio ≤ 1.2`, no
+     accepted state violates it, and `view='drc'` on the result is clean
+     for that measure.
+   - **Origin.** Holes land as cad `body add` cylinders with
+     `origin='proposed'`. A `user` hole is never moved or removed, and a
+     test pins one through the whole run. Re-running revises only its own
+     proposed holes, as one revision per call.
+   - **Manufacturable.** Hole depth stays at or below the floor plate
+     thickness minus the process `min_wall`. Spacing between holes stays
+     at or above `min_wall`. Both are asserted on every accepted state.
+   - **Round trip.** After the op, the four flow measures re-evaluated
+     through `COMPUTERS` equal the op's reported best breakdown within
+     1e-9.
+   - **Budget.** An `iterations` value over the inline cap is refused
+     with `next=` naming the job form.
 
 ## Decisions (Reto 2026-10-20: "yes")
 
