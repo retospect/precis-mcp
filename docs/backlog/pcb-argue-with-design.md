@@ -64,15 +64,20 @@ The Edge_Cuts group of `render_fab_svg` now carries
   `precis-job-help` listing (`DESCRIPTION` + `known_job_types()`). No
   prod row is owed. A per-job_type kill switch would be new machinery —
   file a gripe if operators ever want one.
-- **`%TO.C` — decided (the spec's "decide deliberately"): no.** Keep the
-  fab export byte-stable; the writer emits no component-level `%TO.C`
-  (the status quo — `gerber._emit_object_attrs` emits only `%TO.N` /
-  `%TO.P`; `gerber_view._part_body_els` boxes a part from those pads). A
-  part with no `%TO.P` pads therefore has no body click target; it is reached
-  by its net (`net:…`), a neighbouring pad, or the whole-design
-  (no-handle) argument instead. Flipping every fab-export byte assertion
-  — forever — to win a click target for pad-less (pure-mechanical /
-  unplaced) parts is not worth it.
+- **`%TO.C` — RULED (Reto 2026-10-21): emit it, next round.** Overrides
+  the shipping Devin's "no" (5d36040ce). Fab and assembly people open the
+  export in their own Gerber viewers and need the component labels, even
+  though the fab process does not. Slice: `gerber._emit_object_attrs` emits
+  `%TO.C,<refdes>*%` on each component's objects (copper pads alongside
+  `%TO.P`, plus silk / courtyard / mechanical outlines, so pad-less parts
+  such as mounting holes, fiducials and logos are labelled too), cleared
+  with `%TD*%` as the X2 spec requires; `gerber_view._part_body_els` boxes a
+  part from `%TO.C` objects when it has no `%TO.P` pads. Update the
+  fab-export golden bytes once, in the same commit. Acceptance: every
+  placed part's refdes appears in a `%TO.C` attribute; KiCad's gerbview
+  (or another X2 viewer) shows the component on hover; the KiCad and
+  EasyEDA round-trip tests stay green; a pad-less part is clickable in the
+  argue view.
 - Acceptance criterion 1 (the cross-document click on `ewod-dogfood-1` at
   1280×800, screenshot) is still owed: the repo has no JS test runner, so
   `static/pcb-argue.js` has no unit test and the `<object>` listener was
