@@ -8,8 +8,8 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Do next 1, CI runner starvation (gr495187: main runs wait ~70 min for shards); then Do next 2 (confirm the prod-as-second-parent test); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
-- **Blocked by:** Nothing; verify the prod-as-second-parent test exists before retiring Do next 2.
+- **Next:** Do next 1, CI runner starvation (gr495187: main runs wait ~70 min for shards). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
+- **Blocked by:** Nothing.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `ship-gate-ci`
@@ -73,12 +73,6 @@ nightly — the diff-cover verdict is still open.
    every other item here ships through that queue. gr492653's adaptive
    shard count is the nearest lever.
 
-2. **Release rounds (was backlog/release-branch-rounds.md, deleted 2026-10-07 as
-   shipped)**: slice (a) `round cut` + `release/**` CI (06247b684), slice (b)
-   `ship --release` (2026-10-04), slice (c) `round gate`/`deploy` on the
-   release head with the `deployed/r<N>` tag and merge-back (`scripts/round`;
-   tags `deployed/r6`–`r16` on origin). Left here: confirm the
-   prod-as-second-parent test exists under `tests/`; if not, add it.
 3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate

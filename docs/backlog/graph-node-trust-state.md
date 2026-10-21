@@ -400,7 +400,7 @@ Questions 1-5 go back to Reto when 2b starts.”
 
 - **2a — BUILT (tree `trust-2a`).** No schema change. What it ships and
   the classing it chose for question 4 are under “Slice 2a as built” below.
-- **2b — WAITING for Reto.** Defined-grounding storage, the authenticated
+- **2b — RULED 2026-10-21 (below), buildable.** Defined-grounding storage, the authenticated
   Reto-only review, link-time refusal of definition-only evidential edges,
   the “definition (who, UTC date)” rendering and the term/concept admit
   act. It is a migration, so it lands through /go, never /qgo. These
@@ -418,6 +418,28 @@ Questions 1-5 go back to Reto when 2b starts.”
      stay unregistered.
   5. Slice 1's lock/trigger overhead measurement and strict activation
      have not been run.
+
+**2b rulings (Reto 2026-10-21, on the memo of tree `trust2b-memo`,
+relayed by chat-99):**
+- Q1 (not contested): a `groundings` table holds current state;
+  `revisions.trust_acts` gets ground/unground acts as history. Never meta.
+- Q2 LAX FOR NOW: "we should aspire, but I trust the agents not to
+  impersonate for now." 2b records the review actor as the caller states
+  it; no DB role, ingress boundary or login allowlist is built. The
+  role-behind-ingress design stays the target for a later slice.
+- Q3 yes: a new trust-subject sha (no timeline chunks, plus the
+  grounding's pins); 0185's sha unchanged.
+- Q5 yes, decoupled from strict, provided it holds under lax Q2.
+- Q6 yes. Admission is a code gate: `precis trust admit` checks the four
+  conditions in one transaction (body definition present, a stored
+  `sourced` grounding whose pins resolve, a current approved review,
+  a consider act) and refuses with a named rule per missing one. The
+  judgement inside the review is the LLM's (or Reto's); the gate
+  checks that it exists, is current and approved.
+- Q7: Reto OR an Opus review approval applies a gardener structural
+  proposal (origin stays generated, admitted by `review_id`). Builder
+  default: only Reto's approval yields the `defined` grounding (rule 3);
+  an Opus-applied edge carries a machine review and is not `defined`.
 
 The bullets below are the full slice-2 contract. Those not marked done in
 “Slice 2a as built” belong to 2b.
