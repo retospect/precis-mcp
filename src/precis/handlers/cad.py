@@ -32,7 +32,7 @@ import numpy as np
 from precis.cad import catalog
 from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
-from precis.cad.dsl import FIELD_ALIAS, DslError
+from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, DslError, format_spec
 from precis.cad.dsl import parse as parse_shape
 from precis.cad.export import (
     ExportError,
@@ -478,6 +478,7 @@ class CadHandler(Handler):
                 "grammar: get(kind='skill', id='precis-cad-help')",
             ) from exc
         spec.field_loader = self.store.field_loader()
+        spec.hmap_loader = self.store.hmap_loader()
         nodes = []
         for node in spec.nodes:
             if node.config.startswith(f"{FIELD_ALIAS}:"):
@@ -490,6 +491,19 @@ class CadHandler(Handler):
                         next="store the grid with put_field, then reference its sha256",
                     ) from exc
                 node = replace(node, config=f"{FIELD_ALIAS}:{sha}")
+            elif node.config.startswith(f"{RELIEF_ALIAS}:"):
+                parsed = parse_shape(node.config)
+                try:
+                    sha = self.store.hmap_sha(parsed.ref or "")
+                except NotFound as exc:
+                    raise BadInput(
+                        f"node {node.name!r}: {exc}",
+                        next="store the map with put_hmap, then reference its sha256",
+                    ) from exc
+                node = replace(
+                    node,
+                    config=format_spec(replace(parsed, ref=sha)),
+                )
             nodes.append(node)
         spec.nodes = nodes
         return spec

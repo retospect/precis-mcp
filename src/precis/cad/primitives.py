@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -1196,6 +1196,273 @@ class Field(Primitive):
                 t_in = bisect(float(ts[k - 1]), float(ts[k]), True)
             elif not inside[k] and t_in is not None:
                 spans.append((t_in, bisect(float(ts[k - 1]), float(ts[k]), False)))
+                t_in = None
+        if t_in is not None:
+            spans.append((t_in, float(ts[-1])))
+        return merge_intervals(spans, eps=t_tol)
+
+
+# ---------------------------------------------------------------------------
+# CylRelief — a cylinder carrying a height-map relief (the wrap-mold leaf)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, eq=False)
+class CylRelief(Primitive):
+    """A cylinder of height ``h`` whose lateral surface is displaced by a
+    2-D height map: ``ρ(θ, z) = r + s·depth·h(u, v)`` with ``u = θ/2π``
+    periodic, ``v = z/h``, ``hmap[i, j]`` at ``u = (i+0.5)/nu``,
+    ``v = j/(nv-1)`` (the :class:`~precis.cad.hmap.HeightMap` convention).
+    ``s = +1`` embosses, ``s = −1`` debosses; ``repeat`` tiles the map
+    ``repeat`` times around; ``twist`` shears it by that many radians of
+    ``θ`` over the full height (helical skew). Flat caps at ``z = 0`` and
+    ``z = h`` close the solid.
+
+    ``k``/``alpha``/``phi`` record the intended pull layout (``k`` radial
+    slides at ``phi + 2πj/k``, draft ``alpha``) — the map generators
+    (:mod:`precis.cad.hmap`) use them to shape moldable flanks; the leaf
+    keeps them so slice 2's undercut check reads the design's own intent.
+    They carry no geometry.
+
+    **Distance** is the conservative bound the spec fixes:
+    ``d = max((ρ − r − s·depth·h(u, v)) / L, −z, z − h)`` where
+    ``L = sqrt(1 + depth²·max[(h_u·repeat/(2π·ρ_min))² +
+    ((h_u·twist/(2π) + h_v)/h)²])`` is computed once from the map's max
+    sampled gradient (periodic central differences in ``u``). Each term
+    is a Lipschitz lower bound of one constraint, so their max is a lower
+    bound on the true distance — sphere tracing and the narrow-band test
+    stay correct; the bound is exact on the zero set and loose near rim
+    corners, the same contract the CSG fold already states. Below
+    ``ρ_min`` (the relief's innermost radius) the radial term saturates
+    and the residual is extended inward as ``ρ − ρ_min`` — still inside
+    and still conservative (the surface is unreachable there).
+
+    The map must be periodic in ``u`` — the seam rule is enforced at
+    construction (see :func:`precis.cad.hmap.check_seam`).
+    ``ray_hits_local`` marches the ray through the bounding slab at steps
+    finer than the finest map cell and bisects sign changes — a feature
+    thinner than a map cell between two samples is not resolved, the same
+    limit the map itself has.
+    """
+
+    r: float
+    h: float
+    hmap: NDArray[np.floating[Any]]
+    depth: float
+    s: float = 1.0
+    repeat: int = 1
+    twist: float = 0.0
+    k: int | None = None
+    alpha: float | None = None
+    phi: float | None = None
+    seam_tol: float = 1e-3
+    # derived once from the map in __post_init__
+    _rho_min: float = field(init=False, repr=False)
+    _rho_max: float = field(init=False, repr=False)
+    _lip: float = field(init=False, repr=False)
+    _cell: float = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        m = np.asarray(self.hmap)
+        if m.ndim != 2 or min(m.shape) < 2:
+            raise ValueError(
+                f"a relief map must be (nu, nv) with both axes >= 2, got "
+                f"shape {m.shape}"
+            )
+        if not np.all(np.isfinite(m)):
+            raise ValueError("a relief map must be finite everywhere")
+        if not (self.r > 0.0 and math.isfinite(self.r)):
+            raise ValueError(f"relief radius must be positive, got {self.r}")
+        if not (self.h > 0.0 and math.isfinite(self.h)):
+            raise ValueError(f"relief height must be positive, got {self.h}")
+        if not (self.depth >= 0.0 and math.isfinite(self.depth)):
+            raise ValueError(f"relief depth must be >= 0, got {self.depth}")
+        if self.s not in (-1.0, 1.0):
+            raise ValueError("relief sign must be +1 (emboss) or -1 (deboss)")
+        if int(self.repeat) < 1:
+            raise ValueError(f"relief repeat must be >= 1, got {self.repeat}")
+        if self.k is not None and self.k not in (2, 3):
+            raise ValueError(f"relief k must be 2 or 3, got {self.k}")
+        m = np.ascontiguousarray(m, dtype=np.float32)
+        # the wrap interpolation across the u-seam must be near-continuous:
+        # a jumping edge is a cliff in the relief (spec seam rule)
+        from precis.cad.hmap import seam_error, seam_tolerance
+
+        err = seam_error(m)
+        tol = seam_tolerance(m, self.seam_tol)
+        if err > tol:
+            raise ValueError(
+                f"relief map is not periodic in u: edge columns differ by "
+                f"{err:.4g} (seam tolerance {tol:.4g}) — cross-fade the edges "
+                "(hmap seam='blend') before wrapping"
+            )
+        object.__setattr__(self, "hmap", m)
+        object.__setattr__(self, "repeat", int(self.repeat))
+        lo = m.min()
+        hi = m.max()
+        sgn = float(self.s)
+        rho_min = self.r + sgn * self.depth * (lo if sgn > 0.0 else hi)
+        rho_max = self.r + sgn * self.depth * (hi if sgn > 0.0 else lo)
+        if not rho_min > 0.0:
+            raise ValueError(
+                f"relief would close up: innermost surface radius "
+                f"{rho_min:g} <= 0 — reduce depth or raise r"
+            )
+        object.__setattr__(self, "_rho_min", rho_min)
+        object.__setattr__(self, "_rho_max", rho_max)
+        # L = sqrt(1 + max|∇f|² off-axis) once from the map (spec): forward
+        # and backward differences on the samples bound the bilinear
+        # interpolant's true Lipschitz constant.
+        nu, nv = m.shape
+        mf = m.astype(np.float64)
+        du = (
+            np.maximum(
+                np.abs(np.roll(mf, -1, axis=0) - mf),
+                np.abs(mf - np.roll(mf, 1, axis=0)),
+            )
+            * nu
+        )  # ∂h/∂u (periodic)
+        # ∂h/∂v: per sample, the larger of its two adjacent diffs (edge
+        # samples keep their one-sided diff)
+        fd = np.abs(mf[:, 1:] - mf[:, :-1]) * (nv - 1)
+        dv = np.concatenate(
+            [fd[:, :1], np.maximum(fd[:, :-1], fd[:, 1:]), fd[:, -1:]], axis=1
+        )
+        tang = du * self.repeat / (2.0 * math.pi * rho_min)
+        axial = (du * self.twist / (2.0 * math.pi) + dv) / self.h
+        g2 = float(np.max(tang * tang + axial * axial))
+        object.__setattr__(self, "_lip", math.sqrt(1.0 + self.depth * self.depth * g2))
+        object.__setattr__(
+            self,
+            "_cell",
+            min(
+                self.h / (nv - 1),
+                2.0 * math.pi * rho_min / (nu * self.repeat),
+            ),
+        )
+
+    @property
+    def _eps(self) -> float:
+        return _linear_eps(max(self.r, self.h))
+
+    def aabb_local(self) -> tuple[Vec3, Vec3]:
+        rm = self._rho_max
+        return vec3(-rm, -rm, 0.0), vec3(rm, rm, self.h)
+
+    def faces_local(self) -> list[Face]:
+        return []
+
+    def _h_at(
+        self, u: NDArray[np.float64], v: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Bilinear sample of the map — ``u`` periodic, ``v`` clamped."""
+        m = self.hmap
+        nu, nv = m.shape
+        xu = np.mod(u, 1.0) * nu - 0.5
+        i0 = np.floor(xu)
+        fu = xu - i0
+        i0m = np.mod(i0, nu).astype(np.int64)
+        i1m = np.mod(i0 + 1.0, nu).astype(np.int64)
+        yv = np.clip(v, 0.0, 1.0) * (nv - 1)
+        j0 = np.clip(np.floor(yv).astype(np.int64), 0, nv - 2)
+        fv = yv - j0
+        g = m.astype(np.float64)
+        return (
+            g[i0m, j0] * (1 - fu) * (1 - fv)
+            + g[i1m, j0] * fu * (1 - fv)
+            + g[i0m, j0 + 1] * (1 - fu) * fv
+            + g[i1m, j0 + 1] * fu * fv
+        )
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        rho = np.hypot(arr[:, 0], arr[:, 1])
+        z = arr[:, 2]
+        u_cyl = np.mod(np.arctan2(arr[:, 1], arr[:, 0]) / (2.0 * math.pi), 1.0)
+        v = np.clip(z / self.h, 0.0, 1.0)
+        u_map = np.mod(self.repeat * u_cyl + self.twist * v / (2.0 * math.pi), 1.0)
+        hm = self._h_at(u_map, v)
+        rho_c = np.maximum(rho, self._rho_min)
+        f_lat = (rho_c - self.r - self.s * self.depth * hm) / self._lip + (rho - rho_c)
+        return np.maximum(np.maximum(f_lat, -z), z - self.h)
+
+    def distance_local(self, p: Vec3) -> float:
+        return float(self.distance_local_np(as_vec3(p)[None, :])[0])
+
+    def contains_local(self, p: Vec3) -> bool:
+        return self.distance_local(p) <= self._eps
+
+    def scaled(self, k: float) -> CylRelief:
+        """The same relief in another length unit (lengths × ``k``; the
+        map is normalized and passes through)."""
+        return CylRelief(
+            r=self.r * k,
+            h=self.h * k,
+            hmap=self.hmap,
+            depth=self.depth * k,
+            s=self.s,
+            repeat=self.repeat,
+            twist=self.twist,
+            k=self.k,
+            alpha=self.alpha,
+            phi=self.phi,
+        )
+
+    def ray_hits_local(self, o: Vec3, d: Vec3) -> Intervals:
+        o = as_vec3(o)
+        d = as_vec3(d)
+        eps = self._eps
+        dir_eps = _dir_eps(d)
+        lo, hi = self.aabb_local()
+        # clip the ray to the bounding box (slab test; the xy box is a
+        # superset of the bounding cylinder, and no sign change can occur
+        # in the corners where ρ > ρ_max anyway)
+        t0, t1 = NEG_INF, POS_INF
+        for i in range(3):
+            oi, di = float(o[i]), float(d[i])
+            if abs(di) <= dir_eps:
+                if oi < lo[i] - eps or oi > hi[i] + eps:
+                    return []
+                continue
+            ta = (lo[i] - eps - oi) / di
+            tb = (hi[i] + eps - oi) / di
+            t0 = max(t0, min(ta, tb))
+            t1 = min(t1, max(ta, tb))
+        if t0 > t1 or not (math.isfinite(t0) and math.isfinite(t1)):
+            return []
+        dnorm = float(np.linalg.norm(d))
+        if dnorm <= 0.0:
+            return []
+        t_tol = eps / dnorm
+        step = max(0.5 * self._cell, eps)
+        steps = max(2, math.ceil((t1 - t0) * dnorm / step) + 1)
+        steps = min(steps, 1_000_000)
+        ts = np.linspace(t0, t1, steps)
+        vals = self.distance_local_np(o[None, :] + ts[:, None] * d[None, :])
+        inside = vals <= 0.0
+
+        def f(t: float) -> float:
+            return self.distance_local(o + t * d)
+
+        def bisect(ta: float, tb: float, entering: bool) -> float:
+            lo_t, hi_t = ta, tb
+            for _ in range(256):
+                if hi_t - lo_t <= t_tol:
+                    break
+                mid = 0.5 * (lo_t + hi_t)
+                if (f(mid) > 0.0) == entering:
+                    lo_t = mid
+                else:
+                    hi_t = mid
+            return 0.5 * (lo_t + hi_t)
+
+        spans: Intervals = []
+        t_in: float | None = float(ts[0]) if inside[0] else None
+        for k_i in range(1, steps):
+            if inside[k_i] and t_in is None:
+                t_in = bisect(float(ts[k_i - 1]), float(ts[k_i]), True)
+            elif not inside[k_i] and t_in is not None:
+                spans.append((t_in, bisect(float(ts[k_i - 1]), float(ts[k_i]), False)))
                 t_in = None
         if t_in is not None:
             spans.append((t_in, float(ts[-1])))

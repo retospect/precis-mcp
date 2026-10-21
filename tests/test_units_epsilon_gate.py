@@ -100,6 +100,9 @@ _EXEMPT_NAMES = frozenset(
         "_FILTER_GAMMA",  # structsolve density-filter exponent, dimensionless
         "_SINGULAR_RTOL",  # relative by construction (rtol)
         "_DEDUP_TOL",  # cad/printability: unit-vector dedup, dimensionless
+        # cad/hmap: seam-check floor on NORMALIZED height-map values
+        # (h ∈ ~[0, 1]; length enters only as depth·h at render time)
+        "_SEAM_ATOL",
         # -- structsolve's broader dimensionless/count inventory (dossier §2) --
         "_AM_P",
         "_AM_STENCIL",

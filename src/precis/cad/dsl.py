@@ -109,9 +109,12 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
+from precis.cad.hmap import HeightMap
 from precis.cad.primitives import (
     CircularFrustum,
+    CylRelief,
     Field,
     HalfSpace,
     Primitive,
@@ -128,6 +131,7 @@ from precis.errors import BadInput
 from precis.utils.units import (
     ANGLE_UNIT_TOKEN,
     LENGTH_UNIT_TOKEN,
+    Dimension,
     UnitRequiredError,
     format_dsl_number,
     parse_quantity,
@@ -169,7 +173,7 @@ FIELD_ALIAS = "field"
 
 #: ``field:`` accepts a sha256 or a unique prefix of at least this many
 #: hex chars (the store resolves the prefix; the canonical stored form is
-#: the full 64).
+#: the full 64). ``relief:``'s ``map:`` token takes the same form.
 FIELD_REF_MIN = 12
 _FIELD_REF_RE = re.compile(rf"^[0-9a-f]{{{FIELD_REF_MIN},64}}$")
 
@@ -178,6 +182,15 @@ _FIELD_REF_RE = re.compile(rf"^[0-9a-f]{{{FIELD_REF_MIN},64}}$")
 #: never reaches for the store; the one production loader is built by
 #: ``Store.cad_load`` and rides on :attr:`precis.cad.scene.SceneSpec.field_loader`.
 FieldLoader = Callable[[str], Field]
+
+#: Resolves a ``relief:`` node's ``map:<sha>`` reference to the stored
+#: :class:`~precis.cad.hmap.HeightMap`. Same injection pattern as
+#: :data:`FieldLoader` — rides on
+#: :attr:`precis.cad.scene.SceneSpec.hmap_loader`.
+HmapLoader = Callable[[str], HeightMap]
+
+#: The relief leaf's alias — dims plus a ``map:<sha>`` content address.
+RELIEF_ALIAS = "relief"
 
 
 #: ``<key><number>`` — keys longest-first so ``rb``/``rt``/``rd`` beat ``r``.
@@ -215,6 +228,15 @@ _ALIAS_KEYS: dict[str, tuple[str, ...]] = {
     "pyramid": ("n", "r", "h"),
     "chamfer": ("size", "angle"),
     FIELD_ALIAS: (),
+    RELIEF_ALIAS: ("r", "h", "d"),
+}
+
+#: Optional keys per alias, in canonical output order, with defaults
+#: applied at build. ``relief``: ``s`` sign (±1), ``n`` tile count,
+#: ``k`` slide count (2|3), ``a`` draft, ``p`` parting angle, ``t``
+#: twist — all of them recorded intent or modifiers, none required.
+_ALIAS_OPTIONAL: dict[str, tuple[str, ...]] = {
+    RELIEF_ALIAS: ("s", "n", "k", "a", "p", "t"),
 }
 
 #: The edge-rounding key (:class:`~precis.cad.primitives.Rounded`).
@@ -233,6 +255,10 @@ _ROUND_REFUSED: dict[str, str] = {
     FIELD_ALIAS: (
         "rounding a sampled field is fieldops.open (convex) / close (concave) "
         "/ offset, applied to the grid before it is stored — not rd"
+    ),
+    RELIEF_ALIAS: (
+        "rounding a relief leaf is a height-map filter applied before the "
+        "map is stored — not rd"
     ),
 }
 
@@ -282,6 +308,9 @@ def parse(
                 f"{hint}"
             )
         return ShapeSpec(alias, {}, ref=ref)
+
+    if alias == RELIEF_ALIAS:
+        return _parse_relief(rest, config, require_units, warnings)
 
     if alias == "chamfer":
         if require_units:
@@ -377,6 +406,113 @@ def parse(
     if ROUND_KEY in params:
         shrunk(alias, params)  # validates; raises DslError naming the dimension
     return ShapeSpec(alias, params)
+
+
+#: ``relief:`` grammar: numeric tokens then a terminating ``map:<sha>``.
+#: The map ref must come last — a token after it would start with hex
+#: characters and be ambiguous against the sha tail.
+_RELIEF_RE = re.compile(rf"^(?P<num>.*?)map:(?P<ref>[0-9a-f]{{{FIELD_REF_MIN},64}})$")
+_RELIEF_TOKEN_RE = re.compile(rf"(r|h|d|s|n|k|a|p|t)({_NUM})")
+_RELIEF_UNIT_TOKEN_RE = re.compile(
+    rf"(r|h|d|s|n|k|a|p|t)({_NUM})({LENGTH_UNIT_TOKEN}|{ANGLE_UNIT_TOKEN})?"
+)
+
+#: Per relief-key unit class: ``length`` keys take LENGTH_UNIT_TOKEN,
+#: ``angle`` keys take ANGLE_UNIT_TOKEN (radians canonical), ``count``
+#: keys are bare.
+_RELIEF_KEY_KIND: dict[str, Dimension | Literal["count"]] = {
+    "r": "length",
+    "h": "length",
+    "d": "length",
+    "a": "angle",
+    "p": "angle",
+    "t": "angle",
+    "s": "count",
+    "n": "count",
+    "k": "count",
+}
+
+
+def _parse_relief(
+    rest: str, config: str, require_units: bool, warnings: list[str] | None
+) -> ShapeSpec:
+    """Parse the ``relief:`` body: numeric tokens then ``map:<sha>``."""
+    m = _RELIEF_RE.match(rest.lower())
+    if not m:
+        raise DslError(
+            f"relief config must end in 'map:<sha256>' — the stored height "
+            f"map's content address, {FIELD_REF_MIN}..64 hex chars (got {rest!r})"
+        )
+    num_part, ref = m.group("num"), m.group("ref")
+    token_re = _RELIEF_UNIT_TOKEN_RE if require_units else _RELIEF_TOKEN_RE
+    params: dict[str, float] = {}
+    pos = 0
+    for tm in token_re.finditer(num_part):
+        if tm.start() != pos:
+            raise DslError(f"unexpected text in config near {num_part[pos:]!r}")
+        key, num = tm.group(1), tm.group(2)
+        if key in params:
+            raise DslError(f"duplicate key {key!r} in config {config!r}")
+        kind = _RELIEF_KEY_KIND[key]
+        if require_units:
+            unit = tm.group(3)
+            if kind == "count":
+                if unit:
+                    raise DslError(
+                        f"relief:{key} is a dimensionless count/sign, not a "
+                        f"quantity — no unit allowed (got {tm.group(0)!r})"
+                    )
+                value = float(num)
+            elif not unit:
+                raise UnitRequiredError(
+                    float(num), kind, arg_name=f"{RELIEF_ALIAS}:{key}"
+                )
+            else:
+                value = parse_quantity(
+                    f"{num}{unit}",
+                    kind,
+                    arg_name=f"{RELIEF_ALIAS}:{key}",
+                    warnings=warnings,
+                )
+        else:
+            value = float(num)
+        params[key] = value
+        pos = tm.end()
+    if pos != len(num_part):
+        raise DslError(f"unexpected text in config near {num_part[pos:]!r}")
+    missing = set(_ALIAS_KEYS[RELIEF_ALIAS]) - params.keys()
+    if missing:
+        raise DslError(
+            f"relief needs {sorted(_ALIAS_KEYS[RELIEF_ALIAS])}, missing "
+            f"{sorted(missing)} in {config!r}"
+        )
+    extra = (
+        params.keys()
+        - set(_ALIAS_KEYS[RELIEF_ALIAS])
+        - set(_ALIAS_OPTIONAL[RELIEF_ALIAS])
+    )
+    if extra:
+        raise DslError(f"relief got unexpected key(s) {sorted(extra)}")
+    if ROUND_KEY in params:
+        raise DslError(f"relief does not take rd: {_ROUND_REFUSED[RELIEF_ALIAS]}")
+    _validate_relief(params)
+    return ShapeSpec(RELIEF_ALIAS, params, ref=ref)
+
+
+def _validate_relief(p: dict[str, float]) -> None:
+    if not (p["r"] > 0.0 and p["h"] > 0.0):
+        raise DslError("relief needs r > 0 and h > 0")
+    if not (p["d"] >= 0.0):
+        raise DslError(f"relief depth must be >= 0, got {p['d']}")
+    if "s" in p and p["s"] not in (-1.0, 1.0):
+        raise DslError(f"relief s must be 1 (emboss) or -1 (deboss), got {p['s']}")
+    if "n" in p and (p["n"] != int(p["n"]) or p["n"] < 1):
+        raise DslError(f"relief n (tile count) must be an integer >= 1, got {p['n']}")
+    if "k" in p and p["k"] not in (2.0, 3.0):
+        raise DslError(f"relief k (slide count) must be 2 or 3, got {p['k']}")
+    for key in ("a", "p"):
+        if key in p and not (0.0 <= p[key] <= math.pi):
+            raise DslError(f"relief {key} must lie in [0, 180°], got {p[key]} rad")
 
 
 def _round_limit(alias: str, params: dict[str, float]) -> tuple[float, str]:
@@ -492,7 +628,12 @@ def shrunk(alias: str, params: dict[str, float]) -> dict[str, float]:
     return out
 
 
-def build(spec: ShapeSpec, *, field_loader: FieldLoader | None = None) -> Primitive:
+def build(
+    spec: ShapeSpec,
+    *,
+    field_loader: FieldLoader | None = None,
+    hmap_loader: HmapLoader | None = None,
+) -> Primitive:
     """Build a kernel :class:`Primitive` from a :class:`ShapeSpec`.
 
     A ``field:<sha>`` spec is resolved through ``field_loader`` (a
@@ -527,6 +668,34 @@ def build(spec: ShapeSpec, *, field_loader: FieldLoader | None = None) -> Primit
             return field_loader(ref)
         except (LookupError, ValueError) as exc:
             raise DslError(f"field:{ref}: {exc}") from exc
+    if a == RELIEF_ALIAS:
+        ref = spec.ref or ""
+        if hmap_loader is None:
+            raise DslError(
+                f"relief map:{ref} needs a height-map loader to build — load "
+                "the design through the store (cad_load) or pass hmap_loader= "
+                "to build_design/build_config; the map is never inlined in "
+                "the DSL"
+            )
+        try:
+            hm = hmap_loader(ref)
+        except (LookupError, ValueError) as exc:
+            raise DslError(f"relief map:{ref}: {exc}") from exc
+        try:
+            return CylRelief(
+                r=p["r"],
+                h=p["h"],
+                hmap=hm.values,
+                depth=p["d"],
+                s=p.get("s", 1.0),
+                repeat=int(p.get("n", 1)),
+                twist=p.get("t", 0.0),
+                k=int(p["k"]) if "k" in p else None,
+                alpha=p.get("a"),
+                phi=p.get("p"),
+            )
+        except ValueError as exc:
+            raise DslError(f"relief: {exc}") from exc
     if ROUND_KEY in p:
         rd = p[ROUND_KEY]
         inner = build(ShapeSpec(a, shrunk(a, p)))
@@ -570,11 +739,16 @@ def build_config(
     *,
     require_units: bool = False,
     field_loader: FieldLoader | None = None,
+    hmap_loader: HmapLoader | None = None,
 ) -> Primitive:
     """Convenience: ``parse`` then ``build``. See :func:`parse` for
     ``require_units``'s two-mode contract and :func:`build` for
-    ``field_loader``."""
-    return build(parse(config, require_units=require_units), field_loader=field_loader)
+    ``field_loader``/``hmap_loader``."""
+    return build(
+        parse(config, require_units=require_units),
+        field_loader=field_loader,
+        hmap_loader=hmap_loader,
+    )
 
 
 def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
@@ -598,6 +772,18 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
     angle_suffix = "rad" if units else ""
     if spec.alias == FIELD_ALIAS:
         return f"{FIELD_ALIAS}:{spec.ref or ''}"
+    if spec.alias == RELIEF_ALIAS:
+        tokens: list[str] = []
+        for key in (*_ALIAS_KEYS[RELIEF_ALIAS], *_ALIAS_OPTIONAL[RELIEF_ALIAS]):
+            if key not in spec.params:
+                continue
+            suffix_k = (
+                ""
+                if _RELIEF_KEY_KIND[key] == "count"
+                else ("rad" if units and _RELIEF_KEY_KIND[key] == "angle" else suffix)
+            )
+            tokens.append(f"{key}{format_dsl_number(spec.params[key])}{suffix_k}")
+        return f"{RELIEF_ALIAS}:{''.join(tokens)}map:{spec.ref or ''}"
     if spec.alias == "chamfer":
         return (
             f"chamfer:{format_dsl_number(spec.params['size'])}{suffix}"

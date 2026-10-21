@@ -42,7 +42,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from precis.cad.dsl import FIELD_REF_MIN, FieldLoader
+from precis.cad.dsl import FIELD_REF_MIN, FieldLoader, HmapLoader
 from precis.cad.fieldops import (
     FIELD_MIME,
     decode_field,
@@ -50,6 +50,13 @@ from precis.cad.fieldops import (
     payload_sha256,
 )
 from precis.cad.fieldops import field_header as _wire_header
+from precis.cad.hmap import (
+    HMAP_MIME,
+    HeightMap,
+    decode_hmap,
+    encode_hmap,
+)
+from precis.cad.hmap import hmap_header as _hmap_wire_header
 from precis.cad.primitives import Field
 from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern, spec_to_source
 from precis.cad.vec import as_float3
@@ -236,6 +243,7 @@ class CadMixin:
                 components.append(str(component))
         spec.components = components or ["part"]
         spec.field_loader = self.field_loader()
+        spec.hmap_loader = self.hmap_loader()
         return spec, handles
 
     # -- sampled-field grids (chunk_blobs) --------------------------------
@@ -374,6 +382,112 @@ class CadMixin:
 
         def _load(ref: str) -> Field:
             return self.get_field(ref)[1]
+
+        return _load
+
+    # -- relief height maps (chunk_blobs, HMAP_MIME — the field payload
+    # machinery, mime-split: no migration needed until 'hmap' gets its own
+    # chunk_kind) -------------------------------------------------------
+
+    def put_hmap(
+        self,
+        ref_id: int,
+        hm: HeightMap,
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> str:
+        """Store a :class:`~precis.cad.hmap.HeightMap` as a ``chunk_kind=
+        'field'`` chunk + ``chunk_blobs`` payload under ``HMAP_MIME`` —
+        same content-addressing contract as :meth:`put_field` (identical
+        payload → same sha, no write; a changed map is a new chunk).
+        Returns the ``map:<sha256>`` the ``relief:`` DSL carries."""
+        prov = dict(provenance or {})
+        payload = encode_hmap(hm, prov)
+        sha = payload_sha256(payload)
+        header = _hmap_wire_header(hm, prov)
+        with self.tx() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                (FIELD_PUT_LOCK_NAMESPACE, int(ref_id)),
+            )
+            hit = conn.execute(
+                "SELECT 1 FROM chunk_blobs WHERE sha256 = %s AND mime = %s",
+                (sha, HMAP_MIME),
+            ).fetchone()
+            if hit is not None:
+                return sha
+            nu, nv = hm.shape
+            row = conn.execute(
+                """
+                INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta)
+                VALUES (
+                    %s, 'agent',
+                    (SELECT COALESCE(MAX(ord), -1) + 1 FROM chunks WHERE ref_id = %s),
+                    'field', %s, %s
+                )
+                RETURNING chunk_id
+                """,
+                (
+                    ref_id,
+                    ref_id,
+                    f"relief height map {nu}×{nv}"
+                    + (f", source: {prov['source']}" if prov.get("source") else ""),
+                    Jsonb({"hmap": header}),
+                ),
+            ).fetchone()
+            assert row is not None
+            conn.execute(
+                "INSERT INTO chunk_blobs (chunk_id, bytes, mime, sha256, size_bytes) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (int(row[0]), payload, HMAP_MIME, sha, len(payload)),
+            )
+        return sha
+
+    def hmap_sha(self, ref: str) -> str:
+        """The full sha256 of the one stored height map ``ref`` (sha256 or
+        ``>= 12``-char prefix) names — mime-scoped so a ``field:`` sha
+        never collides. Raises :class:`FieldNotFound` /
+        :class:`FieldAmbiguous` naming ``ref``."""
+        r = self._field_ref(ref)
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT sha256 FROM chunk_blobs "
+                "WHERE mime = %s AND sha256 LIKE %s LIMIT 2",
+                (HMAP_MIME, r + "%"),
+            ).fetchall()
+        if not rows:
+            raise FieldNotFound(
+                f"no stored height map matches {ref!r} — put_hmap it first "
+                "(the design references a map by content address)"
+            )
+        if len(rows) > 1:
+            raise FieldAmbiguous(
+                f"height-map reference {ref!r} matches more than one stored "
+                "map — give more of the sha256"
+            )
+        return str(rows[0][0])
+
+    def get_hmap(self, ref: str) -> tuple[dict[str, Any], HeightMap]:
+        """Load a stored height map → ``(header, map)``. ``ref`` as in
+        :meth:`hmap_sha`, whose errors this raises."""
+        sha = self.hmap_sha(ref)
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT bytes FROM chunk_blobs WHERE sha256 = %s AND mime = %s LIMIT 1",
+                (sha, HMAP_MIME),
+            ).fetchone()
+        if row is None:  # pragma: no cover - hmap_sha just saw it
+            raise FieldNotFound(f"no stored height map matches {ref!r}")
+        header, hm = decode_hmap(bytes(row[0]))
+        header["sha256"] = sha
+        return header, hm
+
+    def hmap_loader(self) -> HmapLoader:
+        """A :data:`~precis.cad.dsl.HmapLoader` bound to this store —
+        what :meth:`cad_load` attaches to every spec it returns."""
+
+        def _load(ref: str) -> HeightMap:
+            return self.get_hmap(ref)[1]
 
         return _load
 

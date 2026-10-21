@@ -79,7 +79,8 @@ many slides" before any geometry is cut.
 
 ## Slices
 
-1. **Relief leaf.** `CylRelief` + DSL + blob storage (reuse
+1. ~~**Relief leaf.**~~ slice 1 landed 2026-10-21: `primitives.py::CylRelief`, `hmap.py` (map, PHMP blob, seam rule, png/array/knurl/ribs/sketch/stroke/text with Q1 pull-aware flanks), `relief:…map:<sha>`, `tests/test_cad_relief.py`.
+   `CylRelief` + DSL + blob storage (reuse
    `fieldops.encode_field` storage pattern), the three inputs (PNG via
    Pillow, array, generators knurl/ribs, sketch polygons with flank
    draft), seam check, export. Tests: h ≡ 0 equals `cyl:`; h ≡ c equals

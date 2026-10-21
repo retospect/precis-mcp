@@ -137,7 +137,9 @@ from typing import Any, Literal, TypedDict
 from precis.cad import catalog
 from precis.cad.dsl import (
     FIELD_ALIAS,
+    RELIEF_ALIAS,
     FieldLoader,
+    HmapLoader,
     build,
     build_config,
     format_spec,
@@ -432,6 +434,9 @@ class SceneSpec:
     components: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=lambda: {"units": "mm"})
     field_loader: FieldLoader | None = field(default=None, compare=False, repr=False)
+    #: Same plumbing as ``field_loader``, for ``relief:`` nodes'
+    #: ``map:<sha>`` references (:data:`~precis.cad.dsl.HmapLoader`).
+    hmap_loader: HmapLoader | None = field(default=None, compare=False, repr=False)
     #: Advisory strings from the strict parse (awkward-mantissa quantities,
     #: gr336344) — runtime only, never persisted or compared; the handler
     #: surfaces them on the put/derive reply.
@@ -1441,8 +1446,8 @@ def _parse_source(text: str) -> SceneSpec:
             # author's unit-suffixed source (which the canonical/storage
             # parse mode used on every reload could not re-parse).
             node_spec = parse(config, require_units=True, warnings=_WARN_SINK.get())
-            if node_spec.alias != FIELD_ALIAS:
-                build(node_spec)  # a field builds only through its loader
+            if node_spec.alias not in (FIELD_ALIAS, RELIEF_ALIAS):
+                build(node_spec)  # a field/relief builds only through its loader
             alias = node_spec.alias
             config = format_spec(node_spec)
         if alias == "chamfer":
@@ -2757,22 +2762,26 @@ def build_design(
     resolve: Resolver | None = None,
     state: dict[str, Any] | None = None,
     field_loader: FieldLoader | None = None,
+    hmap_loader: HmapLoader | None = None,
 ) -> Design:
     """Build a live :class:`Design` from a :class:`SceneSpec`.
 
     ``resolve`` is required only when ``spec`` instances another design;
     ``state=`` poses its joints — both are threaded through
     :func:`expand_instances`. ``field_loader`` resolves ``field:<sha>``
-    leaves; ``None`` falls back to :attr:`SceneSpec.field_loader`, and a
-    field leaf with neither is a :class:`~precis.cad.dsl.DslError`.
+    leaves, ``hmap_loader`` the ``map:<sha>`` of a ``relief:`` node;
+    ``None`` falls back to :attr:`SceneSpec.field_loader` /
+    :attr:`SceneSpec.hmap_loader`, and a content-addressed leaf with
+    neither is a :class:`~precis.cad.dsl.DslError`.
     """
     loader = field_loader or spec.field_loader
+    hm_loader = hmap_loader or spec.hmap_loader
     spec = expand_instances(spec, resolve, state)
     design = Design()
     per_component: dict[str, Expr] = {}
 
     for node in spec.nodes:
-        prim = build_config(node.config, field_loader=loader)
+        prim = build_config(node.config, field_loader=loader, hmap_loader=hm_loader)
         if node.pattern is not None:
             node_expr: Expr = design.pattern(node.name, prim, _pattern_transforms(node))
         else:

@@ -45,7 +45,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 import numpy as np
 
-from precis.cad.dsl import FIELD_ALIAS, ROUND_KEY, format_spec, parse
+from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, ROUND_KEY, format_spec, parse
 from precis.cad.fieldmesh import FieldMeshError, field_mesh, snap_lo
 from precis.cad.fold import Diff, Expr, Inter, Union
 from precis.cad.graph import Design
@@ -73,7 +73,9 @@ _FN = 64
 _MM_PER_M = 1000.0
 
 #: Shape-DSL param keys that are never a length — never rescaled.
-_NON_LENGTH_KEYS = frozenset({"n", "angle"})
+#: ``relief:``'s ``s`` (sign), ``k`` (slide count) and ``a``/``p``/``t``
+#: (radians) join ``n`` and chamfer's ``angle``.
+_NON_LENGTH_KEYS = frozenset({"n", "angle", "s", "k", "a", "p", "t"})
 
 #: Field-backend pitch when the caller passes none: this fraction of the
 #: design's AABB diagonal (≈ 0.27 mm on a 40×20×10 mm part). Callers with
@@ -137,6 +139,8 @@ def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
         components=list(spec.components),
         meta=dict(spec.meta),
         field_loader=mm_loader,
+        # a relief map is normalized — no unit scaling on the loader
+        hmap_loader=spec.hmap_loader,
     )
 
 
@@ -195,6 +199,11 @@ def _scad_primitive(config: str) -> str:
         raise ExportError(
             "a sampled field leaf has no OpenSCAD form — export stl/3mf (the "
             "field backend meshes it) instead"
+        )
+    if a == RELIEF_ALIAS:
+        raise ExportError(
+            "a relief leaf has no OpenSCAD form — export stl/3mf (the field "
+            "backend meshes it) instead"
         )
     raise ExportError(f"shape {a!r} has no OpenSCAD export")
 
@@ -383,7 +392,7 @@ def needs_field_backend(spec: SceneSpec) -> bool:
         if node.blend > 0.0:
             return True
         shape = parse(node.config)
-        if shape.alias == FIELD_ALIAS or ROUND_KEY in shape.params:
+        if shape.alias in (FIELD_ALIAS, RELIEF_ALIAS) or ROUND_KEY in shape.params:
             return True
     return False
 
