@@ -8,6 +8,7 @@ vLLM (v0.20.1) serves ``/v1/messages`` but its schema only accepts ``user`` and
 
 * rewrites every ``system`` turn into a ``user`` turn tagged
   ``[harness system turn]`` and merges adjacent same-role turns;
+* drops echoed ``thinking`` blocks (SGLang 500s on them);
 * answers ``count_tokens`` with a chars/4 estimate;
 * streams everything else through unchanged (SSE passthrough).
 
@@ -42,12 +43,23 @@ def _as_blocks(content: object) -> list[dict]:
     return [{"type": "text", "text": json.dumps(content)}]
 
 
+_THINKING = {"thinking", "redacted_thinking"}
+
+
 def rewrite_messages(messages: list[dict]) -> list[dict]:
-    """``system`` turns become tagged ``user`` turns; adjacent same roles merge."""
+    """``system`` turns become tagged ``user`` turns; adjacent same roles merge.
+
+    Echoed ``thinking`` blocks are dropped: SGLang's ``/v1/messages`` answers a
+    request carrying one with HTTP 500.
+    """
     out: list[dict] = []
     for m in messages:
         role = m.get("role")
-        blocks = _as_blocks(m.get("content"))
+        blocks = [
+            b for b in _as_blocks(m.get("content")) if b.get("type") not in _THINKING
+        ]
+        if not blocks:
+            continue
         if role == "system":
             role = "user"
             blocks = [{"type": "text", "text": "[harness system turn]"}, *blocks]
