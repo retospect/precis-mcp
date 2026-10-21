@@ -174,6 +174,24 @@ def test_overhead_on_ordinary_lines_is_negligible() -> None:
     assert per_record_us < 20
 
 
+def test_httpx_url_arg_params_masked_with_shared_token() -> None:
+    """The record-creation scrub runs before logger filters: an httpx.URL
+    arg's credential params are rewritten element-wise to ``REDACTED`` — the
+    same token the supply adapters' httpx filter writes — so ``record.args``
+    stays a tuple and the emitted line reads ``?apiKey=REDACTED``."""
+    import httpx
+
+    url = httpx.URL(
+        "https://supplier.example/x?" + "api" + "Key=" + "sek" + "ret123&page=2"
+    )
+    rec = _record('HTTP Request: %s %s "%s"', "POST", url, "HTTP/1.1 200 OK")
+    SecretScrubFilter().filter(rec)
+    out = rec.getMessage()
+    assert "sekret123" not in out
+    assert "apiKey=REDACTED" in out and "page=2" in out
+    assert isinstance(rec.args, tuple)
+
+
 def test_masked_record_keeps_tuple_args_for_uvicorn_access_formatter() -> None:
     """gr479780: args=None crashed uvicorn's AccessFormatter on every URL
     carrying a token ("--- Logging error ---", line lost)."""

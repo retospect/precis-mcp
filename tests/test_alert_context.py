@@ -17,8 +17,6 @@ from precis.store import Store, Tag
 
 pytestmark = pytest.mark.db
 
-_NOW = datetime.now(UTC)
-
 #: Assembled from fragments — the credential gate
 #: (tests/test_deploy_tree_no_secrets.py) flags any source LINE that is
 #: credential-shaped; a runtime-built fake keeps the masking assertion
@@ -60,11 +58,15 @@ def _log(
     level: str = "WARN",
     ts: datetime | None = None,
 ) -> None:
+    # Stamp at insert time, not module import: under xdist the module is
+    # collected (and ``now()`` would freeze) long before the test runs, and
+    # the context view only shows ±10min around the alert's own timestamps.
+    ts = ts or datetime.now(UTC)
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO worker_logs (ts, host, process, pass, level, message) "
             "VALUES (%s, %s, %s, %s, %s, %s)",
-            (ts or _NOW, host, process, pass_, level, message),
+            (ts, host, process, pass_, level, message),
         )
         conn.commit()
 
@@ -113,7 +115,7 @@ class TestContextView:
         _log(
             store,
             message="yesterday's line",
-            ts=_NOW - timedelta(hours=2),
+            ts=datetime.now(UTC) - timedelta(hours=2),
         )
         resp = alerts.get(id=ref_id, view="context")
         assert "yesterday's line" not in resp.body

@@ -88,17 +88,35 @@ _URL_PW = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:([^\s@/]+)@")
 # keeps the parameter name readable — ``?<redacted:url api_key param>`` —
 # and the finding excerpt (first 4 chars of the span) shows ``api_…``, never
 # secret characters. ``mailto``/``email`` are masked too: contact addresses
-# in query strings are identifying, not operational.
-_URL_QUERY_CRED = re.compile(
-    r"(?i)[?&]("
+# in query strings are identifying, not operational. A placeholder VALUE
+# (``REDACTED``, ``***``, ``$VAR``) is left alone — it is already masked, and
+# re-flagging it would churn text that was scrubbed upstream.
+_CRED_PARAM_NAME = (
     r"api_?key|private_key|access_key|key|"
     r"access_token|refresh_token|id_token|client_secret|token|"
     r"secret|signature|sig|authorization|auth|"
     r"password|passwd|bearer|sessionid|session|"
     r"x-amz-signature|x-amz-credential|credential|jwt|code|"
     r"mailto|email"
-    r")=([^\s&#\"'`<>\]{}()]+)"
 )
+_URL_QUERY_CRED = re.compile(rf"(?i)[?&]({_CRED_PARAM_NAME})=([^\s&#\"'`<>\]{{}}()]+)")
+# For a structured URL object a dotted envelope still names the credential —
+# ``callInfo.apiKey`` (Farnell). Kept off the free-text pattern above: prose
+# like ``scene.design.token=`` is not a credential.
+_CRED_PARAM_FULL = re.compile(rf"(?i)^(?:[a-z0-9_\-]+\.)*(?:{_CRED_PARAM_NAME})$")
+
+#: Value written over a credential-named URL param in a log line —
+#: ``?apiKey=REDACTED``. It is a ``_PLACEHOLDER_WORDS`` member, so re-scanning
+#: a line masked this way does not flag it again.
+CREDENTIAL_MASK = "REDACTED"
+
+
+def is_credential_param(name: str) -> bool:
+    """True when a query-param *name* is credential-shaped (``apiKey``,
+    ``callInfo.apiKey``, ``token``, …) whatever its value looks like."""
+    return _CRED_PARAM_FULL.match(name) is not None
+
+
 # Bare ``Bearer <token>`` — the ``bearer token`` specific pattern only fires
 # under an ``Authorization:`` prefix; a header value echoed without it (or a
 # scheme name alone in a stack line) still carries the credential.
@@ -202,6 +220,8 @@ def _scan_line(line: str) -> list[tuple[str, int, int]]:
         for m in pat.finditer(line):
             add(kind, m)
     for m in _URL_QUERY_CRED.finditer(line):
+        if _is_placeholder(m.group(2)):
+            continue  # value is already a mask/placeholder, not a credential
         out.append((f"url {m.group(1).lower()} param", m.start(1), m.end(2)))
     for m in _BARE_BEARER.finditer(line):
         s, e = m.span()

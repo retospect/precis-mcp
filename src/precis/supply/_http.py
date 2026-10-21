@@ -2,8 +2,11 @@
 
 Farnell and Mouser require query credentials; HTTPX logs the request URL at
 INFO even on success. Keep an idempotent filter on that logger so concurrent
-requests cannot expose keys when logging is enabled. Actual requests are
-unchanged; errors returned to callers use only safe stage/status diagnostics.
+requests cannot expose keys when logging is enabled. The credential-name rule
+and the ``REDACTED`` token are shared with the record-creation scrub
+(:mod:`precis.utils.log_scrub`), which runs earlier — one mask shape on
+either path. Actual requests are unchanged; errors returned to callers use
+only safe stage/status diagnostics.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from dataclasses import replace
 import httpx
 
 from precis.supply.base import SupplierError
+from precis.utils.secret_scan import CREDENTIAL_MASK, is_credential_param
 
 
 class _QueryKeys(logging.Filter):
@@ -24,8 +28,8 @@ class _QueryKeys(logging.Filter):
             for arg in record.args:
                 if isinstance(arg, httpx.URL):
                     for name in arg.params:
-                        if name.lower() in {"apikey", "callinfo.apikey"}:
-                            arg = arg.copy_set_param(name, "REDACTED")
+                        if is_credential_param(name):
+                            arg = arg.copy_set_param(name, CREDENTIAL_MASK)
                 args.append(arg)
             record.args = tuple(args)
         return True

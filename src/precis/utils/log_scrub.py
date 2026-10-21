@@ -28,7 +28,11 @@ import threading
 import traceback
 from typing import Any
 
-from precis.utils.secret_scan import might_contain_secret
+from precis.utils.secret_scan import (
+    CREDENTIAL_MASK,
+    is_credential_param,
+    might_contain_secret,
+)
 
 _SELF = "precis.utils.secret_scan"
 _guard = threading.local()
@@ -81,12 +85,33 @@ class SecretScrubFilter(logging.Filter):
         return True
 
 
-def _mask_args_in_place(record: logging.LogRecord, text: str) -> bool:
-    """Mask string args element-wise, keeping ``record.args`` a tuple.
+def _mask_url_credentials(arg: Any) -> Any:
+    """An ``httpx.URL`` arg renders its raw query string — credentials
+    included — when the record is formatted. Rewrite credential-named params
+    to ``CREDENTIAL_MASK`` (``?apiKey=REDACTED``), the same token the supply
+    adapters' httpx filter writes, so a line masked on either path reads
+    identically and a downstream re-scan sees placeholders, not secrets."""
+    try:
+        import httpx
+    except ImportError:
+        return arg
+    if not isinstance(arg, httpx.URL):
+        return arg
+    for name in [n for n in arg.params if is_credential_param(n)]:
+        arg = arg.copy_set_param(name, CREDENTIAL_MASK)
+    return arg
 
-    Formatters that unpack ``record.args`` (uvicorn's ``AccessFormatter``
-    reads a 5-tuple) crash on ``args=None``, so collapsing to a pre-formatted
-    message is the last resort. True when the rewritten record formats clean.
+
+def _mask_args_in_place(record: logging.LogRecord, text: str) -> bool:
+    """Mask args element-wise, keeping ``record.args`` a tuple.
+
+    String args get ``mask_secrets``; ``httpx.URL`` args get their
+    credential-named params rewritten (:func:`_mask_url_credentials`) — an
+    ``args=None`` collapse here would also defeat the httpx logger's own
+    redact filter, which never sees the URL object. Formatters that unpack
+    ``record.args`` (uvicorn's ``AccessFormatter`` reads a 5-tuple) crash on
+    ``args=None``, so collapsing to a pre-formatted message is the last
+    resort. True when the rewritten record formats clean.
     """
     from precis.utils.secret_scan import mask_secrets
 
@@ -94,7 +119,8 @@ def _mask_args_in_place(record: logging.LogRecord, text: str) -> bool:
     if not isinstance(args, tuple):
         return False
     new_args = tuple(
-        mask_secrets(a, warn=False) if isinstance(a, str) else a for a in args
+        mask_secrets(a, warn=False) if isinstance(a, str) else _mask_url_credentials(a)
+        for a in args
     )
     try:
         candidate = record.msg % new_args if isinstance(record.msg, str) else None
