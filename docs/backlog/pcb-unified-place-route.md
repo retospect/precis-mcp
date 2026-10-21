@@ -427,6 +427,20 @@ ships with its finite-difference check.
 | Rounds of insert/descend exceed the job wall on taz15-size boards | budget per segment and per round; the best round is restored (`anneal_route_loop` already does this) |
 | Slices 0–3 land before the kernel exists and build a second distance code path | T4/T5/T8 use shapely polygon distance until slice 2 lands, then switch; the oracle test pins agreement |
 
+## Decision (Reto 2026-10-21, supersedes D10's bar)
+
+"Switch to vector router asap. And the placer too, we switch to the new
+kind and dogfood it and cycle and make it awesome tonight." The vector
+router is already the only router (d42369679, on prod). The placer
+switches to the field placer now, even where it is initially worse than
+the annealer: `OptimizeConfig.field_polish` defaults on, slice 2 (θ as a
+real variable, wells T9/T10) is the next build, and the annealer stays
+only as a comparison column in `scripts/pcb-route-bench` until the field
+path routes every bench board, then it is deleted. Improvement runs as a
+dogfood loop (bench → read the boards → fix → re-bench), not as a gate
+before the switch. gr499239's two annealer flags are not benched; the
+field placer's pad-granular terms supersede them.
+
 ## Decisions (Reto 2026-10-18)
 
 Numbers 1–10 answer the former open questions; D11–D16 were approved after.
