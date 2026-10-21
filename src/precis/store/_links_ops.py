@@ -32,7 +32,9 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -52,7 +54,11 @@ from precis.store._mappers import (
     _row_to_s2_neighbor,
 )
 from precis.store._tag_filter import build_tag_filter
-from precis.store.revision_context import trust_door
+from precis.store.revision_context import (
+    RevisionContext,
+    current_revision_context,
+    trust_door,
+)
 from precis.store.types import (
     FINDING_TRUST_TIERS,
     ActorSlug,
@@ -344,6 +350,286 @@ def _nbh_edge(
     return e
 
 
+# ── machine-edge write rule (graph-gardener-value slice 1) ─────────────
+#
+# A stored edge adds value only when it holds something retrieval cannot
+# recompute on demand — stance, a connection below the similarity floor,
+# a settled judgment, provenance (docs/backlog/graph-gardener-value.md,
+# "The argument"). Per the 2026-10-21 ruling there is **one door**: the
+# gate lives inside the trust-state link admission,
+# :meth:`LinksMixin.add_link`, not in a separate checker a caller could
+# forget. Every machine writer passes it; doors that only *repoint*
+# existing edges (``graph.garden.apply``'s merge/undo, ``migrate_links``)
+# write raw INSERTs and are not new machine edges, so they never reach
+# it.
+
+#: A write is a *machine* edge write when the resolved trust origin is
+#: ``generated`` or ``computed`` **and** the context names the model behind
+#: it (``precis.model``). The second half matters: an agent's plain
+#: ``link`` verb call on a converted kind resolves ``generated`` yet
+#: carries no model identity — one shared MCP credential cannot say which
+#: model wrote the edge — so agent-without-model and human writes stay
+#: untouched (the ruling's explicit carve-out).
+_MACHINE_EDGE_ORIGINS: frozenset[str] = frozenset({"generated", "computed"})
+
+#: Human-only relations for a machine writer. A machine ``related-to``
+#: restates what the index already computes — the fisheye renders stored
+#: links, so duplicating the similarity index only adds noise.
+MACHINE_EDGE_HUMAN_ONLY: frozenset[str] = frozenset({"related-to", "see-also"})
+
+#: Structural relations a machine writer may never write directly: they
+#: reach the graph only as gardener-ledger proposals, which carry no
+#: evidence-chunk requirement and stay generated/unreviewed until a
+#: recorded review. Both spellings of each inverse pair are listed so the
+#: direction of the write cannot dodge the rule.
+MACHINE_EDGE_STRUCTURAL: frozenset[str] = frozenset(
+    {
+        "specialises",
+        "generalises",
+        "part-of",
+        "contains",
+        "instance-of",
+        "has-instance",
+    }
+)
+
+#: The stance/provenance relations a machine edge may carry (the
+#: 2026-10-21 list): stance and provenance are exactly what retrieval
+#: cannot recompute, so these skip the co-retrieval distance check.
+#: ``explains`` is in the list but is handled by the claim-hub routing
+#: below — it is not an evidence edge (migration 0203).
+MACHINE_EDGE_STANCE: frozenset[str] = frozenset(
+    {
+        "supports",
+        "disputes",
+        "qualifies",
+        "derived-from",
+        "establishes",
+        "corroborates",
+        "refines",
+        "explains",
+    }
+)
+
+#: The writer annotation every accepted machine edge records in
+#: ``links.meta``: model identity, prompt version, run id, and one
+#: ``why`` sentence — the reason a reader cannot get from the pin alone.
+#: The trust fields themselves (``trust_origin``, ``trust_confidence=hunch``)
+#: are stamped by the 0214 triggers from the write context, and
+#: ``grounding=sourced`` is the presence of the evidence pins — neither is
+#: a meta key here.
+MACHINE_EDGE_META_KEYS: tuple[str, ...] = ("model", "prompt_version", "run_id", "why")
+
+#: Set while :func:`precis.taproot.hub.link_claims` performs its gated
+#: write — the door already ran the claim-hub and cycle checks, so the
+#: inner ``add_link`` must not route the edge back into it.
+_CLAIM_LINK_DOOR: ContextVar[bool] = ContextVar("precis_claim_link_door", default=False)
+
+
+@contextmanager
+def claim_link_door() -> Iterator[None]:
+    """Mark the enclosed ``add_link`` calls as the claim-link door's own
+    writes (the ``explains`` route must not re-enter the door it came
+    through)."""
+    token = _CLAIM_LINK_DOOR.set(True)
+    try:
+        yield
+    finally:
+        _CLAIM_LINK_DOOR.reset(token)
+
+
+def _machine_write_context() -> RevisionContext | None:
+    """The active context when this write is a machine-edge write
+    (:data:`_MACHINE_EDGE_ORIGINS` + a model identity), else ``None``."""
+    ctx = current_revision_context()
+    if ctx is None or ctx.trust_origin not in _MACHINE_EDGE_ORIGINS:
+        return None
+    if not (ctx.model or "").strip():
+        return None
+    return ctx
+
+
+def _edge_evidence_pins(meta: dict[str, Any] | None) -> list[str]:
+    """The chunk handles ``meta['evidence']`` names — ``pc…`` in the common
+    case, but any registered chunk code counts (``fb``, ``mc``, …): a pin
+    is a handle that parses to a chunk row."""
+    evidence = (meta or {}).get("evidence")
+    if isinstance(evidence, str):
+        evidence = [evidence]
+    if not isinstance(evidence, (list, tuple)):
+        return []
+    pins: list[str] = []
+    for item in evidence:
+        parsed = handle_registry.parse(item) if isinstance(item, str) else None
+        if parsed is not None and parsed[1]:
+            pins.append(item)
+    return pins
+
+
+def _card_cosine_distance(
+    c: Connection, src_ref_id: int, dst_ref_id: int
+) -> float | None:
+    """The minimum cosine distance between the two refs'
+    ``card_combined`` vectors under the default embedder — the distance
+    the ``+recall`` rung itself would see. ``None`` when either side has
+    no embedded card: the index then has nothing to offer the pair, so
+    the edge cannot be a retrieval restatement."""
+    row = c.execute(
+        """
+        SELECT min(av.vector <=> bv.vector)
+          FROM chunks ac
+          JOIN chunk_embeddings av ON av.chunk_id = ac.chunk_id
+              AND av.status = 'ok' AND av.vector IS NOT NULL
+          JOIN embedders ae ON ae.name = av.embedder AND ae.is_default
+          JOIN chunks bc
+              ON bc.ref_id = %(d)s AND bc.chunk_kind = 'card_combined'
+              AND bc.retired_at IS NULL
+          JOIN chunk_embeddings bv ON bv.chunk_id = bc.chunk_id
+              AND bv.embedder = av.embedder
+              AND bv.status = 'ok' AND bv.vector IS NOT NULL
+         WHERE ac.ref_id = %(s)s AND ac.chunk_kind = 'card_combined'
+           AND ac.retired_at IS NULL
+        """,
+        {"s": src_ref_id, "d": dst_ref_id},
+    ).fetchone()
+    return None if row is None or row[0] is None else float(row[0])
+
+
+def _require_machine_annotation(meta: dict[str, Any] | None) -> None:
+    """Refuse a machine edge missing its writer annotation
+    (:data:`MACHINE_EDGE_META_KEYS`) — the row must record who/what made
+    it and one sentence of why."""
+    missing = [
+        key
+        for key in MACHINE_EDGE_META_KEYS
+        if not str((meta or {}).get(key) or "").strip()
+    ]
+    if missing:
+        raise BadInput(
+            f"machine-edge-annotation: a machine-written edge records "
+            f"meta.{', meta.'.join(missing)} — missing here",
+            next=(
+                "set meta={'model': <writer model>, 'prompt_version': <ver>, "
+                "'run_id': <run>, 'why': <one sentence a reader can't get "
+                "from the pin>}"
+            ),
+        )
+
+
+def _machine_edge_admission(
+    store: LinksMixin,
+    c: Connection,
+    *,
+    relation: str,
+    src_ref_id: int,
+    dst_ref_id: int,
+    src_chunk_id: int | None,
+    dst_chunk_id: int | None,
+    meta: dict[str, Any] | None,
+    set_by: str,
+) -> Link | None:
+    """The machine-edge gate inside link admission. Returns the written
+    :class:`Link` when the edge was routed through another door
+    (``explains`` between claim hubs), else ``None`` to proceed with the
+    plain insert. Raises ``BadInput`` — one named rule per refusal — for
+    a machine edge that must not be stored.
+
+    ``explains`` is not an evidence edge (migration 0203): the
+    evidence-chunk rule below belongs to the hubs' own paper→hub edges,
+    never to the claim→claim advisory link itself — so it is exempt here
+    and the write routes through :func:`precis.taproot.hub.link_claims`,
+    which owns the hub/cycle checks.
+    """
+    in_claim_door = _CLAIM_LINK_DOOR.get()
+    if relation == "explains" and not in_claim_door:
+        if (
+            src_chunk_id is not None
+            or dst_chunk_id is not None
+            or not _both_claim_hubs(c, src_ref_id, dst_ref_id)
+        ):
+            raise BadInput(
+                "machine-edge-claim-hub: 'explains' is claim hub → claim hub "
+                f"only (ref-level, both live TAPROOT:claim findings); "
+                f"{src_ref_id} → {dst_ref_id} is not that",
+                next=(
+                    "claim-hub edges go through the claim-link door: "
+                    "precis.taproot.hub.link_claims(store, "
+                    "from_hub_ref_id=…, to_hub_ref_id=…, relation='explains')"
+                ),
+            )
+        from precis.taproot.hub import link_claims
+
+        link_claims(
+            cast("Store", store),
+            from_hub_ref_id=src_ref_id,
+            to_hub_ref_id=dst_ref_id,
+            relation=relation,
+            set_by=set_by,
+            meta=meta,
+            conn=c,
+        )
+        row = c.execute(
+            f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s "
+            "AND l.relation = %s AND l.src_chunk_id IS NULL "
+            "AND l.dst_chunk_id IS NULL",
+            (src_ref_id, dst_ref_id, relation),
+        ).fetchone()
+        assert row is not None, "link_claims wrote no explains row"
+        return _row_to_link(row)
+    if relation in MACHINE_EDGE_HUMAN_ONLY:
+        raise BadInput(
+            f"machine-edge-human-only: '{relation}' is a human gesture — "
+            "a machine edge adds nothing the index does not already find",
+            next="a human can file it through the web UI; a machine "
+            "writer should pick a stance/provenance relation instead "
+            f"({', '.join(sorted(MACHINE_EDGE_STANCE - {'explains'}))})",
+        )
+    if relation in MACHINE_EDGE_STRUCTURAL:
+        raise BadInput(
+            f"machine-edge-structural: a machine writer may not write "
+            f"'{relation}' directly — structural edges from machines are "
+            "proposals, not writes",
+            next="file a gardener-ledger proposal: "
+            "precis.graph.garden.proposals.emit_proposal(store, "
+            "GardenCandidate(action=…, payload={'relation': …})); it "
+            "needs no evidence chunk and stays generated/unreviewed "
+            "until a recorded review",
+        )
+    if relation != "explains" and not _edge_evidence_pins(meta):
+        raise BadInput(
+            "machine-edge-no-evidence: a machine edge names at least one "
+            "evidence chunk (a `pc…` chunk handle) in meta.evidence",
+            next="set meta={'evidence': ['pc<chunk id>', …], 'why': …} — "
+            "the pin is what makes the edge grounding=sourced",
+        )
+    _require_machine_annotation(meta)
+    if relation not in MACHINE_EDGE_STANCE:
+        from precis.utils.eye_render import RECALL_MAX_DISTANCE
+
+        dist = _card_cosine_distance(c, src_ref_id, dst_ref_id)
+        if dist is not None and dist <= RECALL_MAX_DISTANCE:
+            raise BadInput(
+                f"machine-edge-co-retrievable: '{relation}' between two "
+                f"refs {dist:.3f} card-cosine apart sits inside the "
+                f"+recall floor ({RECALL_MAX_DISTANCE}) — the index "
+                "co-retrieves the pair, so the stored edge adds nothing",
+                next="only edges RAG cannot recompute are worth storing: "
+                "a stance/provenance relation, or a pair past the +recall "
+                "distance floor",
+            )
+    return None
+
+
+def _both_claim_hubs(c: Connection, src_ref_id: int, dst_ref_id: int) -> bool:
+    """True iff both endpoints are live ``TAPROOT:claim`` findings — the
+    ``explains`` contract (lazy import: ``taproot.hub`` sits above the
+    store layer)."""
+    from precis.taproot.hub import _is_claim_hub
+
+    return _is_claim_hub(src_ref_id, conn=c) and _is_claim_hub(dst_ref_id, conn=c)
+
+
 class LinksMixin:
     """v2 link insert / remove / read with inverse-relation rewrite."""
 
@@ -586,6 +872,16 @@ class LinksMixin:
         One row per edge — asymmetric pairs (``cites`` / ``cited-by``)
         are NOT auto-mirrored. The "who cites me?" filter is handled
         at read time in :meth:`links_for`.
+
+        Machine-edge write rule (graph-gardener-value slice 1): when the
+        write context resolves to a machine writer (``trust_origin``
+        ``generated``/``computed`` *and* a model identity), the write
+        passes :func:`_machine_edge_admission` first — human-only
+        relations, bare structural writes, missing evidence pins or
+        writer annotation, and non-stance edges the index already
+        co-retrieves are refused; ``explains`` between claim hubs routes
+        through :func:`precis.taproot.hub.link_claims`. Human and
+        agent-without-model writes are untouched.
         """
 
         def _do(c: Connection) -> Link:
@@ -603,6 +899,25 @@ class LinksMixin:
                         "within one ref, or pick a different target"
                     ),
                 )
+
+            # Machine-edge write rule (graph-gardener-value slice 1): the
+            # one gate, inside this admission. A routed write (``explains``
+            # between claim hubs → ``link_claims``) returns here instead
+            # of the plain INSERT below.
+            if _machine_write_context() is not None:
+                routed = _machine_edge_admission(
+                    self,
+                    c,
+                    relation=relation,
+                    src_ref_id=src_ref_id,
+                    dst_ref_id=dst_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=meta,
+                    set_by=set_by,
+                )
+                if routed is not None:
+                    return routed
 
             # ``meta_clause`` is a fixed literal (never interpolates caller
             # data), toggled only by the ``merge_meta`` opt-in above.

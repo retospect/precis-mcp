@@ -38,6 +38,7 @@ from precis.identity import (
     normalize_text_for_hash,
 )
 from precis.ingest.provenance import check_ref_retraction
+from precis.store._links_ops import claim_link_door
 from precis.store.revision_context import trust_door
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
@@ -1961,6 +1962,7 @@ def link_claims(
     to_hub_ref_id: int,
     relation: str = "refines",
     set_by: str = "agent",
+    meta: dict[str, Any] | None = None,
     conn: Any = None,
 ) -> bool:
     """Write one hub ``--relation--> hub`` advisory claim-link. Returns
@@ -2039,13 +2041,20 @@ def link_claims(
                 next="explains is directed mechanism -> effect; check the "
                 "direction of the pair",
             )
-        store.add_link(
-            src_ref_id=from_hub_ref_id,
-            dst_ref_id=to_hub_ref_id,
-            relation=validated,
-            set_by=set_by,
-            conn=c,
-        )
+        # ``claim_link_door``: under a machine-writer context the
+        # machine-edge gate in ``add_link`` would route this ``explains``
+        # write straight back here — the marker tells it this door already
+        # ran the hub/cycle checks. ``meta`` carries the machine writer's
+        # annotation (model/prompt_version/run_id/why) the gate requires.
+        with claim_link_door():
+            store.add_link(
+                src_ref_id=from_hub_ref_id,
+                dst_ref_id=to_hub_ref_id,
+                relation=validated,
+                set_by=set_by,
+                meta=meta,
+                conn=c,
+            )
         log.info(
             "taproot: linked hub %s --%s--> hub %s",
             from_hub_ref_id,

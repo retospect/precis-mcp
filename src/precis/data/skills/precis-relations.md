@@ -274,6 +274,23 @@ link(kind="memory", id=47, target="pa5")  # rel='related-to' by default
 `related-to` is symmetric — querying from either side surfaces the
 edge without a separate inverse row. Omit `rel=` to get it.
 
+## Machine-written edges (one rule)
+
+A write made under a machine-writer context — trust origin
+`generated`/`computed` *with* a model identity, the gardener/mesher/
+scout shape — is gated at link admission: `related-to`/`see-also` are
+human-only; `specialises`/`generalises`, `part-of`/`contains` and
+`instance-of` are gardener-ledger proposals, never direct writes;
+everything else needs a chunk pin in `meta.evidence`, the
+`meta.{model,prompt_version,run_id,why}` annotation, and — outside the
+stance/provenance rels (`supports`, `disputes`, `qualifies`,
+`derived-from`, `establishes`, `corroborates`, `refines`, `explains`) —
+endpoints past the `+recall` distance floor (a nearer pair is one RAG
+already co-retrieves, so the edge adds nothing). `explains` stays claim
+hub → claim hub via `taproot.hub.link_claims` and carries no evidence
+pins itself. A plain agent `link` call carries no model identity and is
+untouched.
+
 ## See also
 
 - [[precis-link-help]] — link verb mechanics, target=, mode=

@@ -43,25 +43,17 @@ duplicates the index and makes the fisheye (which renders links) noisier.
 
 ## Slices
 
-1. **Machine-edge write rule + annotation.** One gate every machine
-   writer passes (gardener apply, mesher, scout, any `set_by='agent'`
-   write with a model): the edge is refused unless
-   - `rel` is not `related-to` / `see-also` (those stay human-only), and
-   - it names at least one evidence chunk (`pc…`) in `meta.evidence`, and
-   - either the rel is a stance/provenance rel, or the endpoints' card
-     cosine is below the retrieval cutoff the fisheye's `+recall` rung
-     uses (so RAG would not co-retrieve them).
-   The annotation is NOT a new shape: it is the decided trust contract
-   of [graph-node-trust-state](graph-node-trust-state.md) (origin,
-   grounding, review, confidence, plus writer model/version/run
-   identities). A machine edge writes `origin=generated`, writer model +
-   prompt version + run id, `grounding=sourced` pinned to the evidence
-   chunk(s), `review=unreviewed`, `confidence=hunch` (considered needs a
-   recorded act, never a model's own score). The only addition is one
-   `links.meta.why` sentence, the reason a reader cannot get from the
-   pin alone. No numeric confidence (the contract forbids inferring
-   considered from a probability). Tests: each refusal by name; an
-   accepted stance edge round-trips its trust fields and `why`.
+1. ~~Machine-edge write rule + annotation.~~ slice 1 landed at
+   9aae68dea (worktree `gardener-s1`): the gate lives in
+   `store/_links_ops.py::add_link` (`_machine_edge_admission`); a machine
+   writer is a `generated`/`computed` trust context carrying a model
+   identity — human and agent-without-model writes are untouched.
+   `related-to`/`see-also` refused; structural rels refused with a
+   gardener-ledger `next=`; other rels need `meta.evidence` chunk pins +
+   `meta.{model,prompt_version,run_id,why}`; non-stance rels need
+   endpoints past `eye_render.RECALL_MAX_DISTANCE`; `explains` hub→hub
+   routes through `taproot.hub.link_claims` (meta param + the
+   `claim_link_door` re-entry marker). Merge repointing is exempt.
 2. ~~Retrieval eval (the value measure).~~ slice 2 landed at d1099d8b8
    (`precis mesh retrieval` / `retrieval-compare`,
    `mesh_eval/retrieval.py`); gold labels await Reto's review — builder:
@@ -158,10 +150,6 @@ a new scout pass beside the gardener service. Skills:
 
 ## Open questions (Reto)
 
-- Q1 Where does the gate live relative to trust-state slice 1/2a
-  (trees `mesh-trust`, `trust-2a`): in the same link-write admission, or a
-  separate machine-writer check? Recommended: same admission path, so
-  there is one door.
 - Q2 Reviewer tier for the burn-down: Opus sample of 20/day, or Fable?
 
 Ready-check 2026-10-21 (coordinator; all three slices needs-work; no

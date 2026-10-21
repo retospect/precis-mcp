@@ -1226,7 +1226,11 @@ def _expand_second_hop(
 _RECALL_K = 8
 #: Cosine-distance floor for ``+recall``: past it a "neighbour" is just the
 #: closest unrelated chunk, and listing it would read as a connection.
-_RECALL_MAX_DISTANCE = 0.6
+#: Public name — the machine-edge write gate
+#: (:mod:`precis.store._links_ops`) anchors its "RAG would co-retrieve the
+#: pair" check to this same floor, and so does the gardener relink/prune
+#: band (``graph.garden.candidates.RELINK_MIN_DISTANCE``).
+RECALL_MAX_DISTANCE = 0.6
 
 
 def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) -> str:
@@ -1258,7 +1262,7 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         kinds=kinds,
         tags=space or None,
         limit=_RECALL_K * 3,
-        max_distance=_RECALL_MAX_DISTANCE,
+        max_distance=RECALL_MAX_DISTANCE,
         exclude_ref_ids=[ref_id],
         # memory-like kinds embed their whole-ref card (ord -1), not a body
         # chunk; let it match, as `seed_chunk_for_ref` does for the seed.

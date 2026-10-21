@@ -131,6 +131,18 @@ Job params: `pass`, `limit` (candidates per detector, default 50),
 `scan_cap`, `max_proposals` (writes per tick, default 20), `stale_days`,
 `kinds`, `tag_namespaces`, `tag_kinds`, `exclusive_axes`.
 
+## The machine-edge write rule
+
+Any write the gardener (or another model-backed pass) makes through
+`store.add_link` under a machine-writer context is gated at the link
+admission — see `precis-link-help` §Machine-written edges for the full
+rule. In short: no `related-to`/`see-also`, no direct structural writes
+(those stay proposals), stance/provenance edges plus any other rel need
+`meta.evidence` chunk pins and the `meta.{model,prompt_version,run_id,
+why}` annotation, and non-stance rels must join endpoints past the
+`+recall` distance floor. Merge repointing (`precis garden apply`/`undo`)
+is exempt — it moves existing edges, it does not mint new ones.
+
 ## If you land on a garden proposal while working
 
 Treat `verdict='proposed'` rows as pending evidence, not truth. To

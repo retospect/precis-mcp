@@ -154,6 +154,10 @@ def apply_merge(
 
         # Snapshot every link touching the loser, then repoint each onto
         # the winner (insert-substituted-copy; dedup via the unique key).
+        # Exempt from the machine-edge write rule (graph-gardener-value
+        # slice 1): repointing an existing edge onto the merge winner is
+        # not a new machine edge — the rule lives in ``store.add_link``'s
+        # admission, which this raw INSERT deliberately bypasses.
         link_rows = conn.execute(
             "SELECT link_id, src_ref_id, src_chunk_id, dst_ref_id, "
             "       dst_chunk_id, relation, set_by, meta FROM links "
@@ -290,7 +294,8 @@ def undo_merge(store: Store, merge_id: str) -> dict[str, int]:
                 )
                 deleted += cur.rowcount or 0
             # Restore the original edge (idempotent — a re-created twin
-            # just dedups in).
+            # just dedups in). Same machine-edge exemption as apply: this
+            # restores a pre-existing edge, it is not a new machine edge.
             conn.execute(
                 "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
                 "  dst_chunk_id, relation, set_by, meta) "

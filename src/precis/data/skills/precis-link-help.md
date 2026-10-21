@@ -141,6 +141,23 @@ cap is rejected. The current parent shows under `## parent` in
 `get(kind='todo', id=141, view='links')`. See `precis-todo-help` for
 the full tree workflow.
 
+## Machine-written edges
+
+A write under a machine-writer context (trust origin `generated`/
+`computed` with a model identity — a gardener/mesher/scout pass, not a
+plain agent `link` call) is gated at the link admission itself:
+
+- `related-to` / `see-also` are refused — human-only.
+- Structural rels (`specialises`/`generalises`, `part-of`/`contains`,
+  `instance-of`) are refused — file a gardener-ledger proposal instead.
+- Other rels need a chunk pin in `meta.evidence` (a `pc…` handle), the
+  annotation `meta.{model,prompt_version,run_id,why}`, and — unless the
+  rel is stance/provenance (`supports`, `disputes`, `qualifies`,
+  `derived-from`, `establishes`, `corroborates`, `refines`, `explains`) —
+  endpoints past the `+recall` distance floor.
+- `explains` is claim hub → claim hub only and routes through
+  `taproot.hub.link_claims`; it carries no evidence pins itself.
+
 ## See also
 
 - [[precis-relations]] — relation vocabulary, per-kind constraints
