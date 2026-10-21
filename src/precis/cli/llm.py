@@ -215,6 +215,23 @@ def add_parser(subparsers: Any) -> None:
         "--tier", default=None, help="Override tier (frontier/big/medium/small)."
     )
     ops.add_argument("--model", default=None, help="Override model id.")
+    grp = ops.add_mutually_exclusive_group()
+    grp.add_argument(
+        "--chain",
+        default=None,
+        metavar="JSON",
+        help="Per-operation rung chain — a JSON list in the llm.chain.<tier> "
+        "grammar, validated through parse_chain_rungs, e.g. "
+        '\'[{"placement":"local","model":"<served id>","transport":"local"}]\'. '
+        "New keys merge into the existing override row (op clear resets).",
+    )
+    grp.add_argument(
+        "--local",
+        default=None,
+        metavar="MODEL",
+        help="Shorthand for --chain with one local rung "
+        "(placement=local, transport=local) on the served model.",
+    )
     ops.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     opc = opsub.add_parser("clear", help="Clear the live override for one operation.")
@@ -578,6 +595,44 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
         print(f"  skipped ({len(report.skipped)}): " + "; ".join(report.skipped))
 
 
+def _format_op_rung(rung: Any) -> str:
+    """One ``chain`` rung for ``llm op list`` — ``[placement] model (transport,
+    extras…)``; a non-dict entry is repr'd as-is (a malformed row still prints)."""
+    if not isinstance(rung, dict):
+        return repr(rung)
+    detail = str(rung.get("transport") or "?")
+    extras = ", ".join(
+        f"{k}={v}"
+        for k, v in rung.items()
+        if k not in ("placement", "model", "transport")
+    )
+    if extras:
+        detail = f"{detail}, {extras}"
+    return f"[{rung.get('placement') or '?'}] {rung.get('model') or '?'} ({detail})"
+
+
+def _format_op_override(override: dict) -> str:
+    """One readable line for an ``llm.op.<source>`` override — the tier/model
+    scalars plus a per-rung rendering of a ``chain`` (a chain-only row used to
+    print as '—/—', hiding the only override such an op carries)."""
+    parts: list[str] = []
+    if override.get("tier"):
+        parts.append(f"tier={override['tier']}")
+    if override.get("model"):
+        parts.append(f"model={override['model']}")
+    chain = override.get("chain")
+    if isinstance(chain, list):
+        parts.append("chain: " + " → ".join(_format_op_rung(r) for r in chain))
+    elif chain is not None:
+        parts.append(f"chain={chain!r}")
+    # Unknown keys ride along verbatim so a newer field is visible, not hidden.
+    shown = {"tier", "model", "chain"}
+    for key, value in override.items():
+        if key not in shown:
+            parts.append(f"{key}={value!r}")
+    return " ".join(parts) if parts else "—"
+
+
 def _cmd_op_list(store: Store) -> None:
     from precis.utils.llm import live_config, operations
 
@@ -585,11 +640,7 @@ def _cmd_op_list(store: Store) -> None:
     for source, default in operations.LLM_OPERATIONS.items():
         override = live_config.op_override(source)
         default_str = f"{default.tier.value}/{default.model or '(tier default)'}"
-        override_str = (
-            f"{override.get('tier', '—')}/{override.get('model', '—')}"
-            if override
-            else "—"
-        )
+        override_str = _format_op_override(override) if override else "—"
         print(
             f"  {source:<20} {default.label:<20} default={default_str:<28} "
             f"override={override_str}"
@@ -622,16 +673,47 @@ def _cmd_op_list(store: Store) -> None:
 
 
 def _cmd_op_set(store: Store, args: argparse.Namespace) -> None:
-    import json
-
     from precis.budget import settings as budget_settings
     from precis.utils.llm import live_config, operations
-    from precis.utils.llm.router import Tier
+    from precis.utils.llm.router import Tier, parse_chain_rungs
 
-    if args.tier is None and args.model is None:
-        raise SystemExit("llm op set: at least one of --tier / --model is required")
+    if all(v is None for v in (args.tier, args.model, args.chain, args.local)):
+        raise SystemExit(
+            "llm op set: at least one of --tier / --model / --chain / --local "
+            "is required"
+        )
 
-    payload: dict[str, str] = {}
+    chain: Any = None
+    if args.local is not None:
+        chain = [{"placement": "local", "model": args.local, "transport": "local"}]
+    elif args.chain is not None:
+        try:
+            chain = json.loads(args.chain)
+        except ValueError as exc:
+            raise SystemExit(f"llm op set: --chain is not valid JSON: {exc}") from None
+    if chain is not None:
+        if not isinstance(chain, list) or not chain:
+            raise SystemExit(
+                "llm op set: --chain must be a non-empty JSON list of rung objects"
+            )
+        _, bad = parse_chain_rungs(chain)
+        if bad is not None:
+            reason, i, detail = bad
+            raise SystemExit(f"llm op set: --chain rung {i} {reason} ({detail!r})")
+
+    key = live_config.op_key(args.source)
+    # Merge into the existing row: a set that only mentions --tier must not
+    # silently drop a chain (or any key this CLI doesn't know about), which is
+    # the same class of footgun the raw-SQL workaround in gr502328 hid.
+    payload: dict[str, Any] = {}
+    raw = budget_settings.get_setting(store, key)
+    if raw:
+        try:
+            prev = json.loads(raw)
+        except ValueError:
+            prev = None  # a malformed row is replaced wholesale
+        if isinstance(prev, dict):
+            payload = prev
     if args.tier is not None:
         try:
             payload["tier"] = Tier(args.tier).value
@@ -642,12 +724,12 @@ def _cmd_op_set(store: Store, args: argparse.Namespace) -> None:
             ) from None
     if args.model is not None:
         payload["model"] = args.model
+    if chain is not None:
+        payload["chain"] = chain
 
-    budget_settings.set_setting(
-        store, live_config.op_key(args.source), json.dumps(payload)
-    )
+    budget_settings.set_setting(store, key, json.dumps(payload))
     live_config.bust_cache()
-    print(f"set {live_config.op_key(args.source)} = {payload}")
+    print(f"set {key} = {_format_op_override(payload)}")
 
     if args.source in operations.EXCLUDED_OPERATIONS:
         reason = operations.EXCLUDED_OPERATIONS[args.source].reason
