@@ -168,10 +168,11 @@ off that gap until it closes.
    `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
    with real heights and subtracted mounting holes. Blocked-by 6.
 8. **backlog/pcb-argue-with-design.md** — slices 1+2 shipped; the
-   `pcb_argue` job answers open notes in place. Left in the file: the
-   prod `service_config` row (ops), the `%TO.C` gerber-bytes decision
-   (Reto), the browser click check (human), and `pcb-argue-backport-se`
-   now unblocked.
+   `pcb_argue` job answers open notes in place. Both decisions now made
+   in-file: no prod `service_config` row owed (a job_type rides the
+   `job_inproc` lane, not a per-type row like a pass), and `%TO.C` is
+   NOT emitted (keep fab bytes stable). Left: only the browser click
+   check (human); `pcb-argue-backport-se` unblocked.
 9. **backlog/cross-scale-single-assembly.md** — blocked-by 6
    (pcb-se-binding).
 

@@ -52,13 +52,27 @@ The Edge_Cuts group of `render_fab_svg` now carries
 
 ## Left
 
-- **prod `service_config` row for `pcb_argue`** — the doc's fourth
-  wiring item, owed to prod ops (the same gap that bit disputes
-  conflict-search and the `se_propose_atomic` rename). Without it the
-  job type has no console record and no enablement story.
-- A part body is known only from `%TO.P` pad attributes — a part with no
-  named pads has no click target. `%TO.C` on silk would fix it but changes
-  gerber bytes (every fab-export byte assertion); decide deliberately.
+- **`service_config` row — decided: not owed (pass-vs-job_type).** The
+  conflict-search / `se_propose_atomic` precedent is a worker *pass*
+  (`ServiceSpec` in `workers/registry.py`), and a pass gets its own
+  `service_config` row. `pcb_argue` is a *job_type*: `service_config`
+  gates the `job_inproc` *lane* it rides (itself a `ServiceSpec`,
+  `registry.py:451`), never a per-job_type name — `conflict_sweep` and
+  the other job_types carry no gate of their own either. Its enablement
+  story is the mint door (`put(kind='job', job_type='pcb_argue', …)`) +
+  the live `job_inproc` lane row; its console record is the
+  `precis-job-help` listing (`DESCRIPTION` + `known_job_types()`). No
+  prod row is owed. A per-job_type kill switch would be new machinery —
+  file a gripe if operators ever want one.
+- **`%TO.C` — decided (the spec's "decide deliberately"): no.** Keep the
+  fab export byte-stable; the writer emits no component-level `%TO.C`
+  (the status quo — `gerber._emit_object_attrs` emits only `%TO.N` /
+  `%TO.P`; `gerber_view._part_body_els` boxes a part from those pads). A
+  part with no `%TO.P` pads therefore has no body click target; it is reached
+  by its net (`net:…`), a neighbouring pad, or the whole-design
+  (no-handle) argument instead. Flipping every fab-export byte assertion
+  — forever — to win a click target for pad-less (pure-mechanical /
+  unplaced) parts is not worth it.
 - Acceptance criterion 1 (the cross-document click on `ewod-dogfood-1` at
   1280×800, screenshot) is still owed: the repo has no JS test runner, so
   `static/pcb-argue.js` has no unit test and the `<object>` listener was

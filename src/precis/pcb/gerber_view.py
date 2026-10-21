@@ -970,7 +970,11 @@ def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
     to it when nothing above carries a handle. A refdes is known here
     only from ``%TO.P`` pad attributes — the writer emits no component-
     level ``%TO.C`` (module docstring), and the pads' extent is the body
-    a user means when they click "the chip"."""
+    a user means when they click "the chip". Emitting ``%TO.C`` to give a
+    pad-less (pure-mechanical / unplaced) part a body here was decided
+    AGAINST (pcb-argue-with-design.md): it would flip every fab-export
+    byte assertion, forever, and such a part is already reachable by its
+    net, a neighbouring pad, or the whole-design (no-handle) argument."""
     boxes: dict[str, list[float]] = {}
     for key, art in arts.items():
         if not key.endswith("_Cu"):
