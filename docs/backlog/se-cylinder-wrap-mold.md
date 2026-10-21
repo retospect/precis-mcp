@@ -117,16 +117,34 @@ many slides" before any geometry is cut.
 
 - Q1 No undercuts, ever. The outer surface is pulled in 2 or 3
   directions (k ∈ {2, 3}), so the pattern adapts to the mold, not the
-  mold to the pattern. Positional constraint: a point at θ from its
-  slide's pull with flank β releases at draft α when θ + β ≤ 90° − α;
-  slide half-width is 180°/k, so the steepest allowed flank is
-  `β_max(θ) = 90° − α − θ`: up to 89° facing the pull, 29° at a k = 3
-  join, 0° at a k = 2 join (the pattern must fade out there). Bare
-  cylinder at the join is exempt (zero draft accepted). The op picks
-  k ∈ {2, 3} and the parting angle φ that remove least pattern.
+  mold to the pattern. Positional constraint (corrected 2026-10-21,
+  Reto: "it depends which side of the feature we are on"): at a point
+  at signed angle θ from its slide's pull (θ > 0 toward the nearer
+  join), local frame radial `e_r`, tangential `e_t` (toward the join),
+  axial `e_z`, the pull is `p = cos θ e_r − sin θ e_t`. A flank tilted
+  β from the local surface, its normal leaning in direction ψ
+  (ψ = 0 toward the join, 180° toward the pull centre, 90° axial), has
+  `n = cos β e_r + sin β (cos ψ e_t + sin ψ e_z)` and releases at draft
+  α when `n·p = cos β cos θ − sin β sin θ cos ψ ≥ sin α`. Cases:
+  - join-facing flank (ψ = 0): `β ≤ 90° − α − θ` (29° at a k = 3 join,
+    0° at a k = 2 join, where the feature must fade out);
+  - centre-facing flank (ψ = 180°): `β ≤ 90° − α + θ`, i.e. it may be
+    vertical or even lean over the surface once θ > α;
+  - axial-facing flank (ψ = 90°): `cos β cos θ ≥ sin α`, nearly free
+    (88° at θ = 60°) until close to the join.
+  Which flank faces the join flips between emboss and deboss: on a
+  ridge it is the flank on the join side; in a groove it is the wall on
+  the centre side (its normal points into the groove, toward the join).
+  So every feature is asymmetric off-centre, and mirrored across the
+  pull centre. Slice 2's check evaluates `n·p` from the map gradient
+  per point, so it needs none of these cases; the cases are what the
+  flank generator uses. Bare cylinder at the join is exempt (zero draft
+  accepted). The op picks k ∈ {2, 3} and the parting angle φ that
+  remove least pattern.
 - Q2 Pull direction is modelled in both places. **Design:** shape,
   line and text inputs get pull-aware flanks: each flank's slope is
-  chosen from `β_max(θ)` at its position, so they come out moldable.
+  chosen per side from the Q1 inequality (join-facing side bounded,
+  centre-facing side nearly free), so they come out moldable.
   **DRC:** `mold.undercut` checks every point against its own slide's
   pull (relief maps and anything hand-made); relief maps are refused
   with the undercut image, `relief_fit: clip` on request.
