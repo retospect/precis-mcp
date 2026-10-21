@@ -83,6 +83,24 @@
   </div>
 {% endmacro %}
 
+{# ── macro: the operating points, local first (gr502698) ────────
+   A card can carry more than one offering — e.g. a fleet-served model with a
+   cloud fallback. Show them all: `local:castor` names the serving host(s);
+   a cloud offering shows its in-price. #}
+{% macro offerings_strip(c) %}
+  {% if c.offerings %}
+  <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px]">
+    {% for o in c.offerings %}
+    {% if not loop.first %}<span class="text-fg-ghost">·</span>{% endif %}
+    <span class="{% if o.local %}text-success-strong{% else %}text-fg-faint{% endif %}"
+          title="{% if o.local %}free — served on {{ o.hosts | join(', ') or 'the fleet' }}{% elif o.price_in is not none or o.price_out is not none %}${{ '%g' % o.price_in if o.price_in is not none else '?' }} / ${{ '%g' % o.price_out if o.price_out is not none else '?' }} per 1M in/out{% else %}cloud offering{% endif %}">
+      {{ o.transport }}{% if o.hosts %}:{{ o.hosts | join(',') }}{% endif %}{% if not o.local and o.price_in is not none %} ${{ '%g' % o.price_in }}{% endif %}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+{% endmacro %}
+
 {# ── Cloud rungs ─────────────────────────────────────────────── #}
 <section class="mb-8">
   <div class="flex items-baseline gap-2 mb-3">
@@ -124,6 +142,8 @@
         {% if c.transport %}<span class="font-mono text-fg-faint">{{ c.transport }}</span>{% endif %}
         {% if c.quant %}<span class="font-mono text-fg-faint">{{ c.quant }}</span>{% endif %}
       </div>
+
+      {{ offerings_strip(c) }}
 
       {% if c.caps %}{{ caps(c.caps) }}{% endif %}
       {% if c.prose %}<p class="mt-2 text-[11px] leading-snug text-fg-subtle line-clamp-3">{{ c.prose }}</p>{% endif %}
@@ -171,6 +191,7 @@
       <p class="mt-2 text-[11px] text-fg-faint">Tier anchor — resolves to a live served model at dispatch.</p>
       {% endif %}
 
+      {{ offerings_strip(c) }}
       {% if c.prose %}<p class="mt-2 text-[11px] leading-snug text-fg-subtle line-clamp-3">{{ c.prose }}</p>{% endif %}
     </div>
     {% endfor %}

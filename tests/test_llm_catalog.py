@@ -194,6 +194,176 @@ class TestServedBy:
             )
 
 
+class TestLocalOffering:
+    """gr502698 — a card-level ``served_by`` derives a ``transport='local'``
+    offering in ``meta.offerings``, and no writer may silently drop it."""
+
+    def test_upsert_derives_local_offering_from_served_by(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        served = [{"host": "castor", "endpoint": "http://x/v1", "max_parallel": 4}]
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="oss-local",
+            text="Served on the fleet AND on OpenRouter.",
+            offerings=[{"transport": "openai_compat", "price_in": 0.5}],
+            served_by=served,
+        )
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        # local first: the derived mirror of the card-level served_by, then
+        # the caller's cloud offering.
+        assert offs[0] == {"transport": "local", "served_by": served}
+        assert offs[1]["transport"] == "openai_compat"
+
+    def test_offerings_rewrite_preserves_the_local_offering(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        served = [{"host": "castor", "max_parallel": 2}]
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="oss-local2",
+            text="x",
+            offerings=[{"transport": "openai_compat", "price_in": 0.5}],
+            served_by=served,
+        )
+        # The gripe's shape: a later wholesale offerings write (a seed's
+        # cloud-only list) must not drop the local operating point.
+        llm_catalog.upsert_card(
+            store,
+            model_id="oss-local2",
+            text="x2",
+            offerings=[{"transport": "openai_compat", "price_in": 0.6}],
+        )
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        assert offs[0] == {"transport": "local", "served_by": served}
+        assert offs[1]["price_in"] == 0.6
+        # …and a re-run is stable (the derived offering is not duplicated).
+        llm_catalog.upsert_card(
+            store,
+            model_id="oss-local2",
+            text="x3",
+            offerings=[{"transport": "openai_compat", "price_in": 0.7}],
+        )
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        assert [o["transport"] for o in offs] == ["local", "openai_compat"]
+
+    def test_served_by_change_resyncs_the_derived_offering(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="oss-moved",
+            text="x",
+            served_by=[{"host": "castor"}],
+        )
+        llm_catalog.upsert_card(
+            store,
+            model_id="oss-moved",
+            text="x",
+            served_by=[{"host": "spark", "max_parallel": 1}],
+        )
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        assert offs == [
+            {"transport": "local", "served_by": [{"host": "spark", "max_parallel": 1}]}
+        ]
+
+    def test_clearing_served_by_drops_the_derived_offering(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="oss-unserved",
+            text="x",
+            offerings=[{"transport": "openai_compat"}],
+            served_by=[{"host": "castor"}],
+        )
+        llm_catalog.upsert_card(store, model_id="oss-unserved", text="x", served_by=[])
+        meta = store.get_ref(kind="llm", id=rid).meta
+        assert meta["served_by"] == []
+        assert [o["transport"] for o in meta["offerings"]] == ["openai_compat"]
+
+    def test_seed_frontier_keeps_the_local_offering(self, store: Any) -> None:
+        """The exact gr502698 regression: ``seed --frontier`` rewrites
+        ``meta.offerings`` wholesale — the local operating point must survive."""
+        from precis import llm_catalog
+
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="openai/gpt-oss-120b",
+            text="x",
+            served_by=[
+                {
+                    "host": "castor",
+                    "endpoint": "http://x:8000/v1",
+                    "max_parallel": 32,
+                    "source": "static",
+                }
+            ],
+        )
+        llm_catalog.seed_frontier_cards(store)
+        meta = store.get_ref(kind="llm", id=rid).meta
+        assert meta["offerings"][0]["transport"] == "local"
+        assert meta["offerings"][0]["served_by"][0]["host"] == "castor"
+        assert meta["offerings"][1]["transport"] == "openai_compat"
+
+    def test_reconcile_resyncs_a_drifted_card(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        rid, _ = llm_catalog.upsert_card(store, model_id="drifted-local", text="x")
+        # A direct meta write that bypassed the writer — the drifted shape.
+        store.update_ref(
+            rid,
+            meta_patch={
+                "served_by": [{"host": "castor"}],
+                "offerings": [{"transport": "openai_compat"}],
+            },
+        )
+        run_llm_reconcile_pass(store, force=True, _fetch=False)
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        assert [o["transport"] for o in offs] == ["local", "openai_compat"]
+
+    def test_hand_authored_local_offering_is_preserved(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        hand = {
+            "transport": "local",
+            "served_by": [{"host": "other", "max_parallel": 1}],
+        }
+        rid, _ = llm_catalog.upsert_card(
+            store,
+            model_id="two-local",
+            text="x",
+            offerings=[hand, {"transport": "openai_compat"}],
+            served_by=[{"host": "castor"}],
+        )
+        offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
+        assert offs[0]["served_by"][0]["host"] == "castor"  # derived, first
+        assert offs[1] == hand  # the hand-authored one survives verbatim
+
+
+class TestListCommand:
+    def test_list_shows_offerings_local_first_with_hosts(
+        self, store: Any, capsys: Any
+    ) -> None:
+        from precis import llm_catalog
+        from precis.cli.llm import _cmd_list
+
+        llm_catalog.upsert_card(
+            store,
+            model_id="listed-local",
+            text="x",
+            offerings=[{"transport": "openai_compat"}],
+            served_by=[{"host": "castor", "max_parallel": 4}],
+        )
+        _cmd_list(store)
+        line = next(
+            l for l in capsys.readouterr().out.splitlines() if "listed-local" in l
+        )
+        assert "local(castor), openai_compat" in line
+        assert line.index("local(castor)") < line.index("openai_compat")
+
+
 class TestHandler:
     def test_get_resolves_by_model_slug(self, store: Any) -> None:
         from precis import llm_catalog

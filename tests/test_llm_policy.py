@@ -9,9 +9,23 @@ catalog so the shared test DB's other cards don't leak into the candidate set.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
+
+
+def _seed_heartbeat(store: Any, host: str, *, minutes_ago: float = 0.0) -> None:
+    """Mark a serving host alive (or dark) via its host_heartbeat row — the
+    freshness signal ``_live_served_hosts`` consults."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval, %s::jsonb) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host, minutes_ago, json.dumps({})),
+        )
+        conn.commit()
 
 
 @pytest.fixture
@@ -384,3 +398,91 @@ class TestFreeLocal:
         # The cloud card is filtered by the tripped cap; the served-local one
         # survives (would have degraded to the tier floor if it were gated too).
         assert sel.from_catalog is True and sel.model == "local-big"
+
+
+class TestLocalOfferingSelection:
+    """gr502698 — the picked *offering*: a live local serving host books the
+    $0 ``transport='local'`` operating point; a dark host falls back to the
+    cloud offering on the same card."""
+
+    def _served_card(self, store: Any, model_id: str = "oss-served") -> int:
+        return _card(
+            store,
+            model_id,
+            tier_floor="medium",
+            offerings=[{"transport": "openai_compat", "price_in": 0.5}],
+            served_by=[{"host": "castor", "max_parallel": 4}],
+            capability={"code": 3},
+        )
+
+    def test_live_host_picks_the_local_offering(self, clean_catalog: Any) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        sel = select_offering(clean_catalog, _req(tier_floor="medium"))
+        assert sel.from_catalog and sel.model == "oss-served"
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "local"
+        assert sel.offering["served_by"][0]["host"] == "castor"
+
+    def test_dark_host_falls_back_to_the_cloud_offering(
+        self, clean_catalog: Any
+    ) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        _seed_heartbeat(clean_catalog, "castor", minutes_ago=60)  # stale past HOST_DARK
+        sel = select_offering(clean_catalog, _req(tier_floor="medium"))
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "openai_compat"
+
+    def test_no_heartbeat_row_reads_as_dark(self, clean_catalog: Any) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        sel = select_offering(clean_catalog, _req(tier_floor="medium"))
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "openai_compat"
+
+    def test_transport_local_requirement_picks_live_local(
+        self, clean_catalog: Any
+    ) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        sel = select_offering(
+            clean_catalog, _req(tier_floor="medium", transport="local")
+        )
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "local"
+
+    def test_transport_local_requirement_falls_back_when_dark(
+        self, clean_catalog: Any
+    ) -> None:
+        """An explicit ``transport='local'`` requirement does not book a dead
+        loopback — the cloud fallback wins (the strict pin is
+        ``LlmRequest.placement='local'``, a different layer)."""
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        _seed_heartbeat(clean_catalog, "castor", minutes_ago=60)
+        sel = select_offering(
+            clean_catalog, _req(tier_floor="medium", transport="local")
+        )
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "openai_compat"
+
+    def test_transport_openai_compat_still_picks_cloud_when_local_is_live(
+        self, clean_catalog: Any
+    ) -> None:
+        from precis.utils.llm.policy import select_offering
+
+        self._served_card(clean_catalog)
+        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        sel = select_offering(
+            clean_catalog, _req(tier_floor="medium", transport="openai_compat")
+        )
+        assert sel.offering is not None
+        assert sel.offering["transport"] == "openai_compat"

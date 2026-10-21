@@ -38,6 +38,7 @@ import psycopg
 
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_stale_alerts
+from precis.llm_catalog import synced_offerings
 from precis.store import Store
 from precis.workers import _throttle
 from precis.workers.runner import BatchResult
@@ -342,6 +343,20 @@ def run_llm_reconcile_pass(
                         },
                     )
                     endpoints_reconciled += 1
+
+                # (A3) resync the derived local offering to the card-level
+                # served_by (gr502698): a card whose offerings were rewritten
+                # cloud-only (a seed, a manual put) gets its ``transport:
+                # 'local'`` mirror back on the next pass instead of staying
+                # cloud-catalogued while fleet-served.
+                synced = synced_offerings(
+                    meta.get("offerings"),
+                    meta.get("served_by"),
+                    prev_served_by=meta.get("served_by"),
+                )
+                if synced != (meta.get("offerings") or []):
+                    store.update_ref(card.id, meta_patch={"offerings": synced})
+                    refreshed += 1
 
                 # (B) drift: a proxy-routed offering for a model the proxy can't
                 # serve. Only assert absence when proxy_models is authoritative.

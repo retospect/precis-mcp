@@ -110,6 +110,13 @@ def _axis_ordinal(
     return int(score) if score is not None else 0
 
 
+#: Freshness window for a serving host's ``host_heartbeat`` row — the same
+#: 10-minute cutoff as ``precis.workers.nursery.HOST_DARK_SILENCE_MIN`` (the
+#: host-dark detector) and the ``/factory`` UI's 600s "alive" threshold. Kept
+#: local so the policy doesn't import the worker chain.
+_LIVE_SERVED_MINUTES = 10
+
+
 def _served_local(meta: dict[str, Any]) -> bool:
     """True when this card is served on a local llama-swap slot — a
     ``served_by`` entry at card level or nested under any offering (§6). That is
@@ -125,6 +132,62 @@ def _served_local(meta: dict[str, Any]) -> bool:
         if isinstance(o, dict) and o.get("served_by"):
             return True
     return False
+
+
+def _served_hosts(meta: dict[str, Any]) -> set[str]:
+    """Every host named by the card's ``served_by`` declarations (card-level +
+    offering-nested, §6)."""
+    out: set[str] = set()
+    entries = list(meta.get("served_by") or [])
+    for o in meta.get("offerings") or []:
+        if isinstance(o, dict):
+            entries += o.get("served_by") or []
+    for e in entries:
+        if isinstance(e, dict) and e.get("host"):
+            out.add(str(e["host"]))
+    return out
+
+
+def _live_served_hosts(store: Store, meta: dict[str, Any]) -> frozenset[str]:
+    """Which of a card's ``served_by`` hosts are live right now — a
+    ``host_heartbeat`` row fresh within :data:`_LIVE_SERVED_MINUTES`. Empty on
+    any lookup failure: a liveness miss must never break selection, and the
+    "dark host" answer is the correct one anyway (the caller falls back to the
+    cloud offering)."""
+    hosts = _served_hosts(meta)
+    if not hosts:
+        return frozenset()
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT host FROM host_heartbeat WHERE host = ANY(%s) "
+                "AND ts > now() - (%s || ' minutes')::interval",
+                (sorted(hosts), str(_LIVE_SERVED_MINUTES)),
+            ).fetchall()
+    except Exception:  # pragma: no cover — a lookup failure reads as "dark"
+        return frozenset()
+    return frozenset(str(r[0]) for r in rows)
+
+
+def _is_local_offering(o: dict[str, Any]) -> bool:
+    """Mirrors ``llm_catalog._is_local_offering`` (kept inline so policy stays
+    free of the catalog import chain): ``local`` transport or its own
+    ``served_by``."""
+    return o.get("transport") == "local" or bool(o.get("served_by"))
+
+
+def _offering_live(
+    o: dict[str, Any], meta: dict[str, Any], live_hosts: frozenset[str]
+) -> bool:
+    """A local offering whose serving host is live. The offering's own nested
+    ``served_by`` hosts win; a ``local`` transport with none falls back to the
+    card-level declaration; a bare local operating point (no hosts anywhere)
+    counts as live — there is no host to check."""
+    if not _is_local_offering(o):
+        return False
+    entries = o.get("served_by") or meta.get("served_by") or []
+    hosts = [e.get("host") for e in entries if isinstance(e, dict) and e.get("host")]
+    return not hosts or any(h in live_hosts for h in hosts)
 
 
 def _model_price(meta: dict[str, Any]) -> float:
@@ -149,13 +212,33 @@ def _model_price(meta: dict[str, Any]) -> float:
 
 
 def _pick_offering(
-    meta: dict[str, Any], transport: str | None
+    meta: dict[str, Any],
+    transport: str | None,
+    live_hosts: frozenset[str] = frozenset(),
 ) -> dict[str, Any] | None:
-    offerings = meta.get("offerings") or []
+    """The offering a selection books. ``transport`` is a preference honoured
+    here: an explicit value matches only an offering on that transport — and
+    for ``'local'``, only a *live* one (a dark serving host books nothing).
+    With no transport asked for, a live local offering wins: it is the $0
+    operating point of the same card, so it beats paying cloud rates. A dead
+    or absent local offering falls back to the first non-dead offering — the
+    cloud fallback. ``live_hosts`` comes from
+    :func:`_live_served_hosts` (the host_heartbeat freshness check);
+    ``select_offering`` computes it for the chosen card."""
+    offerings = [o for o in (meta.get("offerings") or []) if isinstance(o, dict)]
     if transport:
         for o in offerings:
-            if isinstance(o, dict) and o.get("transport") == transport:
-                return o
+            if o.get("transport") != transport:
+                continue
+            if _is_local_offering(o) and not _offering_live(o, meta, live_hosts):
+                continue  # a dark local can't serve — fall through to cloud
+            return o
+    for o in offerings:
+        if _offering_live(o, meta, live_hosts):
+            return o
+    for o in offerings:
+        if not _is_local_offering(o) or _offering_live(o, meta, live_hosts):
+            return o
     return offerings[0] if offerings else None
 
 
@@ -311,7 +394,9 @@ def select_offering(store: Store, req: Requirement) -> Selection:
         booked = f"; booked {variant}" if variant else ""
     return Selection(
         model=chosen_mid,
-        offering=_pick_offering(chosen_meta, req.transport),
+        offering=_pick_offering(
+            chosen_meta, req.transport, _live_served_hosts(store, chosen_meta)
+        ),
         next_better=_next_better(survivors, chosen_meta, req.axis),
         from_catalog=True,
         reason=(

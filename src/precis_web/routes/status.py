@@ -1531,19 +1531,65 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
     meta = ref.meta or {}
     model_id = meta.get("model_id") or f"llm:{ref.id}"
     tier = meta.get("tier_floor") or ""
-    offerings = meta.get("offerings") or []
-    off = offerings[0] if offerings and isinstance(offerings[0], dict) else {}
-
-    hosts = [
-        {
-            "host": e.get("host"),
-            "endpoint": e.get("endpoint"),
-            "slots": e.get("max_parallel"),
-            "model": e.get("model"),
-        }
+    raw_offerings = meta.get("offerings") or []
+    card_hosts = [
+        str(e["host"])
         for e in (meta.get("served_by") or [])
         if isinstance(e, dict) and e.get("host")
     ]
+
+    # The serving hosts — card-level ``served_by`` plus any nested under an
+    # offering (§6), deduped. This is the union every "where is it served"
+    # surface (chips, is_cloud, offerings) keys on.
+    hosts: list[dict[str, Any]] = []
+    seen_hosts: set[Any] = set()
+    entries = list(meta.get("served_by") or [])
+    for o in raw_offerings:
+        if isinstance(o, dict):
+            entries += o.get("served_by") or []
+    for e in entries:
+        if not isinstance(e, dict) or not e.get("host"):
+            continue
+        if e["host"] in seen_hosts:
+            continue
+        seen_hosts.add(e["host"])
+        hosts.append(
+            {
+                "host": e.get("host"),
+                "endpoint": e.get("endpoint"),
+                "slots": e.get("max_parallel"),
+                "model": e.get("model"),
+            }
+        )
+
+    # Every operating point, local first (a fleet-served card shows its free
+    # local offering ahead of the cloud fallback — gr502698).
+    offers: list[dict[str, Any]] = []
+    for o in raw_offerings:
+        if not isinstance(o, dict):
+            continue
+        local = o.get("transport") == "local" or bool(o.get("served_by"))
+        ohosts = [
+            str(e["host"])
+            for e in (o.get("served_by") or [])
+            if isinstance(e, dict) and e.get("host")
+        ] or (card_hosts if local else [])
+        offers.append(
+            {
+                "transport": o.get("transport") or "—",
+                "local": local,
+                "hosts": ohosts,
+                "endpoint": o.get("endpoint"),
+                "price_in": o.get("price_in"),
+                "price_out": o.get("price_out"),
+                "window": o.get("max_input"),
+                "quant": o.get("quant"),
+            }
+        )
+    offers.sort(key=lambda o: not o["local"])
+    # The headline operating point: the first non-local offering (a served
+    # card's cloud rate), else the first offering at all.
+    off = next((o for o in offers if not o["local"]), offers[0] if offers else {})
 
     if "/" in model_id:
         provider = model_id.split("/", 1)[0]
@@ -1578,9 +1624,10 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
         "price_in": off.get("price_in"),
         "price_out": off.get("price_out"),
         "transport": off.get("transport"),
-        "window": off.get("max_input"),
+        "window": off.get("window"),
         "quant": off.get("quant"),
         "hosts": hosts,
+        "offerings": offers,
         "caps": caps,
         "prose": (ref.title or "").strip(),
     }

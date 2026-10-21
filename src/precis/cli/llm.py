@@ -118,6 +118,12 @@ def add_parser(subparsers: Any) -> None:
     s.add_argument(
         "--structured", action="store_true", help="Require structured output."
     )
+    s.add_argument(
+        "--transport",
+        default=None,
+        help="Prefer an offering on this transport (e.g. local — honoured only "
+        "while a serving host is live, else the cloud offering books).",
+    )
     s.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     ch = lsub.add_parser(
@@ -291,6 +297,21 @@ def _cmd_reconcile(store: Store) -> None:
     )
 
 
+def _offering_label(o: dict[str, Any], card_hosts: list[str]) -> str:
+    """One offering as ``transport`` (``transport(host, host)`` when it is
+    locally served — nested ``served_by`` hosts, else the card-level ones)."""
+    transport = str(o.get("transport") or "?")
+    is_local = o.get("transport") == "local" or bool(o.get("served_by"))
+    hosts = [
+        str(e["host"])
+        for e in (o.get("served_by") or [])
+        if isinstance(e, dict) and e.get("host")
+    ]
+    if not hosts and is_local:
+        hosts = card_hosts
+    return f"{transport}({', '.join(hosts)})" if hosts else transport
+
+
 def _cmd_list(store: Store) -> None:
     cards = store.list_refs(kind="llm", limit=200)
     if not cards:
@@ -298,10 +319,23 @@ def _cmd_list(store: Store) -> None:
         return
     for c in cards:
         meta = c.meta or {}
+        card_hosts = [
+            str(e["host"])
+            for e in (meta.get("served_by") or [])
+            if isinstance(e, dict) and e.get("host")
+        ]
+        offerings = [o for o in (meta.get("offerings") or []) if isinstance(o, dict)]
+        # local first — the free operating point is what an operator scans for.
+        offerings.sort(
+            key=lambda o: (
+                0 if (o.get("transport") == "local" or o.get("served_by")) else 1
+            )
+        )
+        label = ", ".join(_offering_label(o, card_hosts) for o in offerings) or "—"
         print(
             f"lm{c.id}  {meta.get('model_id', '?'):32}  "
             f"floor={meta.get('tier_floor', '?')}  "
-            f"offerings={len(meta.get('offerings') or [])}"
+            f"offerings={label}"
         )
 
 
@@ -347,10 +381,21 @@ def _cmd_select(store: Store, args: argparse.Namespace) -> None:
         max_input=args.window,
         needs_tools=args.tools,
         needs_structured=args.structured,
+        transport=args.transport,
     )
     sel = select_offering(store, req)
     src = "catalog" if sel.from_catalog else "tier-floor"
     print(f"model: {sel.model}  [{src}] — {sel.reason}")
+    if sel.offering:
+        hosts = ", ".join(
+            str(e["host"])
+            for e in (sel.offering.get("served_by") or [])
+            if isinstance(e, dict) and e.get("host")
+        )
+        print(
+            f"offering: transport={sel.offering.get('transport')}"
+            + (f" hosts={hosts}" if hosts else "")
+        )
     if sel.endpoint:
         e = sel.endpoint
         print(

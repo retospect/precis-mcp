@@ -119,6 +119,42 @@ def test_served_by_hosts_dominate_a_provider_slugged_model_id() -> None:
     assert [h["host"] for h in v["hosts"]] == ["spark"]
 
 
+def test_card_view_lists_offerings_local_first_with_hosts() -> None:
+    """gr502698 — a fleet-served + cloud-offered card shows BOTH operating
+    points, the derived local one first, and its serving host — while the
+    headline price stays the cloud rate."""
+    ref = _ref(
+        162513,
+        "openai/gpt-oss-120b",
+        tier_floor="medium",
+        served_by=[
+            {
+                "host": "castor",
+                "endpoint": "http://x:8000/v1",
+                "max_parallel": 32,
+                "model": "gpt-oss-120b",
+            }
+        ],
+        offerings=[
+            {
+                "transport": "local",
+                "served_by": [{"host": "castor", "max_parallel": 32}],
+            },
+            {"transport": "openai_compat", "max_input": 131072, "price_in": 0.037},
+        ],
+    )
+    v = _llm_card_view(ref)
+    assert v["is_cloud"] is False  # served → Local grid despite the slug
+    assert [o["transport"] for o in v["offerings"]] == ["local", "openai_compat"]
+    assert v["offerings"][0]["local"] is True
+    assert v["offerings"][0]["hosts"] == ["castor"]
+    assert v["offerings"][1]["local"] is False
+    # headline keeps the cloud rate (the first non-local offering)
+    assert v["price_in"] == 0.037 and v["window"] == 131072
+    # the card-level + nested served_by dedupe to one host chip
+    assert [h["host"] for h in v["hosts"]] == ["castor"]
+
+
 def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
     refs = [
         _ref(
@@ -264,6 +300,13 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
             165574,
             "qwen3.6-35b-a3b",
             served_by=[{"host": "balthazar", "max_parallel": 1}],
+            offerings=[
+                {
+                    "transport": "local",
+                    "served_by": [{"host": "balthazar", "max_parallel": 1}],
+                },
+                {"transport": "openai_compat", "price_in": 0.4},
+            ],
         ),
     ]
     html = client.get("/status?tab=models").text
@@ -271,6 +314,8 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
     assert "0.969" in html  # headline list price
     assert "qwen3.6-35b-a3b" in html  # local card name
     assert "balthazar" in html  # served-by host chip
+    assert "local:balthazar" in html  # the local offering names its host
+    assert "openai_compat" in html  # and the cloud fallback renders too
     # The active-routing header renders with a row per capability tier.
     assert "Active routing" in html
     for tier in ("frontier", "big", "medium", "small"):

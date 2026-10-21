@@ -282,6 +282,48 @@ def build_meta(
     return meta
 
 
+def _is_local_offering(o: Any) -> bool:
+    """An offering is a local-serving operating point when it rides the
+    ``local`` transport or declares its own ``served_by`` hosts (§6)."""
+    return isinstance(o, dict) and (
+        o.get("transport") == "local" or bool(o.get("served_by"))
+    )
+
+
+def synced_offerings(
+    offerings: Any,
+    served_by: Any,
+    *,
+    prev_served_by: Any = None,
+) -> list[dict[str, Any]]:
+    """``offerings`` with the derived local offering synced to ``served_by``.
+
+    §6 carries local serving in two places: the card-level ``meta.served_by``
+    and a ``served_by`` nested under a ``transport='local'`` offering — the
+    offering form is what ``select_offering``, ``llm list`` and the Models tab
+    read. This keeps the offering a *mirror* of the card declaration, so a
+    writer that rewrites ``offerings`` wholesale (a seed) can never drop local
+    serving (gr502698) and a ``served_by`` change resyncs its mirror.
+
+    The previous derived offering is identified exactly — ``{"transport":
+    "local", "served_by": prev_served_by}`` — and replaced by the fresh
+    mirror; a local offering that doesn't match it byte-for-byte is treated
+    as hand-authored and preserved. Result is local-first (derived, then
+    other local offerings, then cloud)."""
+    prev_derived = (
+        {"transport": "local", "served_by": [dict(e) for e in prev_served_by]}
+        if prev_served_by
+        else None
+    )
+    rest = [o for o in (offerings or []) if isinstance(o, dict) and o != prev_derived]
+    if not served_by:
+        return rest
+    derived = {"transport": "local", "served_by": [dict(e) for e in served_by]}
+    locals_ = [o for o in rest if _is_local_offering(o) and o != derived]
+    clouds = [o for o in rest if not _is_local_offering(o)]
+    return [derived, *locals_, *clouds]
+
+
 def upsert_card(
     store: Store,
     *,
@@ -301,6 +343,12 @@ def upsert_card(
     ``card_combined``; a later sight merges the fresh facts into ``meta`` and re-emits
     the card (so a changed prose re-embeds). The card body (``refs.title``) is a scalar
     column, not an append-only body chunk, so refreshing it is a plain UPDATE.
+
+    The offerings patch is run through :func:`synced_offerings` before it lands:
+    a card with card-level ``served_by`` always carries its derived
+    ``transport='local'`` offering (local-first), even when the caller rewrote
+    ``offerings`` to cloud-only — so ``llm seed --frontier`` can't quietly turn
+    a fleet-served model back into a cloud-only card (gr502698).
     """
     if not text or not text.strip():
         raise BadInput("an llm card requires text= (the capability prose)")
@@ -316,12 +364,24 @@ def upsert_card(
     )
     existing = store.find_ref_by_meta(kind=LLM_KIND, key="model_id", value=model_id)
     if existing is None:
+        synced = synced_offerings(meta.get("offerings"), meta.get("served_by"))
+        if synced or "offerings" in meta:
+            meta["offerings"] = synced
         with store.tx() as conn:
             ref = store.insert_ref(
                 kind=LLM_KIND, slug=None, title=text, meta=meta, conn=conn
             )
             store.chunks.upsert_card_combined(ref.id, text, conn=conn)
         return ref.id, True
+    prev_meta = existing.meta or {}
+    prev_offerings = prev_meta.get("offerings") or []
+    base = meta.get("offerings", prev_offerings)
+    eff_served = meta.get("served_by", prev_meta.get("served_by"))
+    synced = synced_offerings(
+        base, eff_served, prev_served_by=prev_meta.get("served_by")
+    )
+    if synced != prev_offerings or "offerings" in meta:
+        meta["offerings"] = synced
     store.update_ref(existing.id, title=text, meta_patch=meta)
     with store.tx() as conn:
         store.chunks.upsert_card_combined(existing.id, text, conn=conn)
@@ -1267,5 +1327,6 @@ __all__ = [
     "seed_default_cards",
     "seed_frontier_cards",
     "seed_slullama_card",
+    "synced_offerings",
     "upsert_card",
 ]

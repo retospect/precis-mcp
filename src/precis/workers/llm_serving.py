@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any
 
-from precis.llm_catalog import LLM_KIND, upsert_card
+from precis.llm_catalog import LLM_KIND, synced_offerings, upsert_card
 from precis.workers.llm_reconcile import llm_served_slots_from_cards
 
 if TYPE_CHECKING:
@@ -188,12 +188,21 @@ def advertise_local_llm(
             served = [e for e in current if not _is_auto_here(e)]
             served.append(entry)
             # Dirty-check: skip the refs write when the rebuilt served_by is,
-            # order-insensitively, unchanged from what's already stored. Safe
-            # to skip — dispatch liveness comes from the resource_slots
-            # reservation + served_by.endpoint, re-read on a process-local
-            # 60s timer, not from this write's cadence or updated_at.
-            if _served_by_signature(served) != _served_by_signature(current):
-                store.update_ref(card.id, meta_patch={"served_by": served})
+            # order-insensitively, unchanged from what's already stored AND the
+            # derived local offering is already in sync (gr502698 — the offering
+            # mirrors the card-level served_by). Safe to skip — dispatch liveness
+            # comes from the resource_slots reservation + served_by.endpoint,
+            # re-read on a process-local 60s timer, not from this write's cadence
+            # or updated_at.
+            synced = synced_offerings(
+                (card.meta or {}).get("offerings"), served, prev_served_by=current
+            )
+            if _served_by_signature(served) != _served_by_signature(
+                current
+            ) or synced != ((card.meta or {}).get("offerings") or []):
+                store.update_ref(
+                    card.id, meta_patch={"served_by": served, "offerings": synced}
+                )
             else:
                 log.debug(
                     "llm_serving: served_by unchanged for %s on %s, skipping "
@@ -210,8 +219,18 @@ def advertise_local_llm(
         if card_model_id not in discovered and any(_is_auto_here(e) for e in served):
             pruned_served = [e for e in served if not _is_auto_here(e)]
             # Same dirty-check as the advertise path above.
-            if _served_by_signature(pruned_served) != _served_by_signature(served):
-                store.update_ref(card.id, meta_patch={"served_by": pruned_served})
+            synced = synced_offerings(
+                (card.meta or {}).get("offerings"),
+                pruned_served,
+                prev_served_by=served,
+            )
+            if _served_by_signature(pruned_served) != _served_by_signature(
+                served
+            ) or synced != ((card.meta or {}).get("offerings") or []):
+                store.update_ref(
+                    card.id,
+                    meta_patch={"served_by": pruned_served, "offerings": synced},
+                )
             else:
                 log.debug(
                     "llm_serving: served_by unchanged pruning %s on %s, "
