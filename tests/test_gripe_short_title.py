@@ -13,6 +13,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from mcp.types import CallToolResult
 
 from precis.cli.gripe import shorten_titles
 from precis.dispatch import Hub
@@ -20,7 +21,9 @@ from precis.errors import BadInput
 from precis.handlers import _gripe_title
 from precis.handlers._gripe_title import TITLE_MAX, short_title
 from precis.handlers.gripe import GripeHandler
+from precis.runtime import PrecisRuntime
 from precis.store.revision_context import revision_context
+from precis.tools import core as tools_core
 from tests._gripe import insert_gripe
 
 LONG = (
@@ -77,6 +80,64 @@ def test_no_boundary_cuts_at_a_word_and_never_exceeds_the_cap() -> None:
     assert len(short_title("x" * 200) or "") == TITLE_MAX
 
 
+def test_a_clause_boundary_inside_parens_or_quotes_is_not_a_cut() -> None:
+    """gr500645: an MCP-shaped first line was cut mid-call at the first
+    comma inside its own parentheses/quotes."""
+    assert (
+        short_title(
+            "get(kind='job', id='/logs', q=) refused; the skill puts q inside the id"
+        )
+        == "get(kind='job', id='/logs', q=) refused"
+    )
+    # A comma inside quotes alone is likewise part of the clause.
+    line = "logs say 'timeout, retrying' on every pass of the nightly sweep"
+    title = short_title(line)
+    assert title is not None and title.startswith("logs say 'timeout, retrying'")
+
+
+# ── the MCP boundary (gr500645 comment) ─────────────────────────────────
+
+
+def _text(out: Any) -> str:
+    if isinstance(out, CallToolResult):
+        return out.content[0].text  # type: ignore[union-attr]
+    return out
+
+
+def test_edit_title_via_the_verb_tolerates_the_injected_verdict(
+    gripe: GripeHandler,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tools_core.edit`` injects ``verdict='approved'`` on every call
+    (``_WRAPPER_DEFAULTED_KWARGS``); a gripe title rewrite must not refuse
+    it, and ``title`` rides ``args=`` under the slim schema."""
+    monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+    gripe.put(text="router: pours vanish")
+    gid = _latest(gripe)
+
+    out = tools_core.edit(kind="gripe", id=gid, args={"title": "pcb: pours vanish"})
+    assert not isinstance(out, CallToolResult) or not out.isError, _text(out)
+    assert _title(gripe, gid) == "pcb: pours vanish"
+
+    # mode='replace' (the spelling an agent reaches for) works too.
+    out = tools_core.edit(
+        kind="gripe", id=gid, mode="replace", args={"title": "pcb: pours gone"}
+    )
+    assert not isinstance(out, CallToolResult) or not out.isError, _text(out)
+    assert _title(gripe, gid) == "pcb: pours gone"
+
+    # And the top-level title= the slim verb promotes out of args=.
+    out = tools_core.edit(kind="gripe", id=gid, title="pcb: pours really gone")
+    assert not isinstance(out, CallToolResult) or not out.isError, _text(out)
+    assert _title(gripe, gid) == "pcb: pours really gone"
+
+    # A caller-supplied verdict is still refused — only the verb's
+    # injected default is dropped.
+    out = tools_core.edit(kind="gripe", id=gid, verdict="rejected", args={"title": "x"})
+    assert "verdict" in _text(out) and _title(gripe, gid) == "pcb: pours really gone"
+
+
 # ── put / ack ─────────────────────────────────────────────────────────────
 
 
@@ -86,7 +147,7 @@ def test_long_put_stores_a_short_title_and_the_full_body(gripe: GripeHandler) ->
     want = short_title(LONG)
     assert _title(gripe, gid) == want
     assert f'title shortened to "{want}"' in body
-    assert f"edit(kind='gripe', id={gid}, title='<new title>')" in body
+    assert f"edit(kind='gripe', id={gid}, args={{'title': '<new title>'}})" in body
     full = gripe.get(id=gid, view="full").body
     assert LONG in full
 

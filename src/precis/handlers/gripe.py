@@ -714,6 +714,12 @@ class GripeHandler(NumericRefHandler):
         comment timeline are append-only: add context with
         ``put(id=N, text=...)``. ``text=``/``body=`` are declared only so
         they are refused here, with that recovery named."""
+        # The edit verb injects ``verdict='approved'`` on every call
+        # (``_WRAPPER_DEFAULTED_KWARGS``); drop that default so the
+        # refusal below doesn't fire on a kwarg the caller never sent
+        # (gr500645). A caller-supplied verdict still lists as unaccepted.
+        if kw.get("verdict") == "approved":
+            kw.pop("verdict")
         extra = sorted(
             [k for k, v in kw.items() if v is not None and k != "mode"]
             + [k for k, v in (("text", text), ("body", body)) if v is not None]
@@ -724,7 +730,7 @@ class GripeHandler(NumericRefHandler):
                 + (f"; {', '.join(extra)} not accepted" if extra else ""),
                 next=(
                     f"edit(kind={self.kind!r}, id={id or '<id>'}, "
-                    "title='Area: what is wrong') — add context with "
+                    "args={'title': 'Area: what is wrong'}) — add context with "
                     f"put(kind={self.kind!r}, id=N, text='...')"
                 ),
             )
@@ -732,7 +738,10 @@ class GripeHandler(NumericRefHandler):
         if not new:
             raise BadInput(
                 "title= is empty",
-                next=f"edit(kind={self.kind!r}, id={id}, title='Area: what is wrong')",
+                next=(
+                    f"edit(kind={self.kind!r}, id={id}, "
+                    "args={'title': 'Area: what is wrong'})"
+                ),
             )
         ref = self._resolve_live_ref(self._coerce_id(id))
         if dry_run:
@@ -1042,7 +1051,7 @@ class GripeHandler(NumericRefHandler):
             body += (
                 f'\ntitle shortened to "{short_title}" (the body keeps the full '
                 f"text); edit(kind={self.kind!r}, id={ref_id}, "
-                "title='<new title>') to change it."
+                "args={'title': '<new title>'}) to change it."
             )
         body += render_next_section(
             [

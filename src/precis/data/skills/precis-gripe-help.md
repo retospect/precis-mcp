@@ -47,7 +47,7 @@ is how a gripe gets onto its thread.
 
 Make the first line `Area: what's wrong`, under 60 chars. A longer first
 line is shortened for the title (the ack shows it; the body keeps the
-full text); `edit(kind='gripe', id=N, title='…')` changes it.
+full text); `edit(kind='gripe', id=N, args={'title': '…'})` changes it.
 
 The cost of a wrong gripe is one `delete` call. File freely. (Quests file
 their own too — a tick's `needs` lands as a `quest:<id>` +
