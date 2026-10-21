@@ -286,7 +286,6 @@ def _process_chunk(
     if getattr(result, "paused", False):
         stats["consecutive_errors"] = stats.get("consecutive_errors", 0) + 1
         return "paused"
-    stats["consecutive_errors"] = 0
     if getattr(result, "error", None) or not getattr(result, "text", ""):
         stats["llm_errors"] += 1
         stats["consecutive_errors"] = stats.get("consecutive_errors", 0) + 1
@@ -562,6 +561,25 @@ def _phase_await(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     )
 
 
+def _zero_write_failure(
+    stats: dict[str, Any], escalations: list[dict[str, Any]]
+) -> str | None:
+    """Failure line when chunks were attempted, errors occurred and nothing
+    was written; ``None`` for a legitimately empty run."""
+    if int(stats.get("written") or 0) > 0 or int(stats.get("llm_errors") or 0) <= 0:
+        return None
+    counts: dict[str, int] = {}
+    for e in escalations:
+        if e.get("kind") in {"llm_exception", "llm_error"}:
+            d = str(e.get("detail") or "")
+            counts[d] = counts.get(d, 0) + 1
+    dominant = max(counts, key=lambda d: counts[d]) if counts else "unknown error"
+    return (
+        f"FAILED: 0 rows written, {stats.get('llm_errors')} of "
+        f"{stats.get('calls')} chunk calls errored; dominant error: {dominant}"
+    )
+
+
 def _survey_done(
     ctx: DispatchContext,
     stats: dict[str, Any],
@@ -587,6 +605,9 @@ def _survey_done(
         lines.append(f"escalations ({len(escalations)}):")
         for e in escalations[:50]:
             lines.append("  " + ", ".join(f"{k}={v}" for k, v in e.items()))
+    failure = _zero_write_failure(stats, escalations)
+    if failure:
+        lines.insert(1, failure)
     ctx.append_chunk("job_summary", "\n".join(lines))
     meta: dict[str, Any] = {
         "extraction_run": run_token,
@@ -595,7 +616,7 @@ def _survey_done(
     }
     if acceptance:
         meta["acceptance"] = acceptance
-    return Done(summary="\n".join(lines), success=True, summary_meta=meta)
+    return Done(summary="\n".join(lines), success=failure is None, summary_meta=meta)
 
 
 SPEC = JobTypeSpec(

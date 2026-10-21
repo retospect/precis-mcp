@@ -205,6 +205,22 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "sweep."
         ),
     ),
+    "survey_extract": OpDefault(
+        tier=Tier.BIG,
+        model=None,
+        label="Survey extractor",
+        description=(
+            "The per-chunk reader inside the `survey_extract` job — reads "
+            "one paper chunk against the measure vocabulary and proposes "
+            "measure rows. The acceptance sampling (`measure_accept`) is a "
+            "separate call and is not covered by this op."
+        ),
+        note=(
+            "BIG by default, as the job's own `tier` param. The prod "
+            "`llm.op.survey_extract` row steers it to the castor local "
+            "chain for the gardener-value slice 5 trial."
+        ),
+    ),
     "graph_garden:propose": OpDefault(
         tier=Tier.MEDIUM,
         model=None,
