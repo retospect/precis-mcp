@@ -46,8 +46,9 @@ melchior, confirm a live pid.
 
 `ProcessType=Interactive` in the plist raises the jetsam band toward the
 foreground tier so the worker is culled last. Applied to the agent worker, the
-system worker (runs `fetch_oa`, pinned to melchior, plus
-embed/summarize/dispatch) and asa-bot.
+system worker (embed/summarize/dispatch), the dedicated `fetch_oa` lane
+(`com.precis.worker-fetch`, since 2026-10-21 — the fetch pass moved out of
+the serial rotation; see 20b's option-A block) and asa-bot.
 
 ## Consequences of a melchior cull
 

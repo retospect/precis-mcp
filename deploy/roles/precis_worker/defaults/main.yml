@@ -75,6 +75,32 @@ precis_worker_taproot_chase: false
 # host (the gateway) so the flag only bites where the fetch pass runs.
 precis_worker_fetch_markup: false
 
+# ── Dedicated OA-fetch lane (Reto 2026-10-21, option A) ──────────────────
+# fetch_oa used to get one ~300 s slot inside the collapsed worker's serial
+# rotation (~0.05 req/s effective, ~30 papers/h). When this flag is on,
+# `fetch` gets its own daemon — rendered by 20b as com.precis.worker-fetch /
+# precis-worker-fetch.service, `precis worker --only fetch`, on the hosts
+# listed in `precis_capabilities.oa_fetch` — and every OTHER unit renders
+# PRECIS_OA_FETCH=0 explicitly, so the single-fetcher invariant ("two
+# fetchers race the shared inbox", docs/reference/config-variables.md)
+# can't be broken by an overlay `PRECIS_OA_FETCH=1` still landing in a
+# main unit's env. Rollback: set false — the dedicated unit is removed and
+# the overlay's env decides again.
+precis_worker_fetch_dedicated: true
+# Lane knobs — feed the unit's argv/env. PASS_WALL_S bounds one pass's
+# stub loop (see fetch_oa._pass_wall_s); WORKERS is the intra-pass stub
+# concurrency AND the aggregate-rate knob — per-provider pace is bound by
+# the shared external_rate_limits buckets and PRECIS_OA_FETCH_INFLIGHT's
+# in-flight cap either way, so N workers can never exceed a provider's
+# published rate, only spend more wall waiting on it.
+precis_worker_fetch_batch_size: 32
+precis_worker_fetch_idle_seconds: 5
+precis_worker_fetch_pass_wall_s: 600
+precis_worker_fetch_workers: 6
+# Optional PRECIS_OA_FETCH_INFLIGHT override (bare int or JSON map,
+# e.g. '{"crossref": 1}') — empty = fetch_oa's code default decides.
+precis_worker_fetch_inflight: ""
+
 # Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
 # registry delta sync + ots_sweep calendar anchoring). Default ON
 # cluster-wide, unlike the per-host gates above: the cadence lease is a

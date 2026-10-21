@@ -180,11 +180,22 @@
        (email/API-key contacts) are vault-overridden via
        precis_identity_env (gr204873). #}
     {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
-    {% if not (env_key == 'PRECIS_SUMMARIZE_MODEL' and precis_local_llm_model_override is defined) %}
+    {% if not (env_key == 'PRECIS_SUMMARIZE_MODEL' and precis_local_llm_model_override is defined)
+       and not (env_key == 'PRECIS_OA_FETCH' and (precis_worker_fetch_dedicated | default(false))) %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>
     {% endif %}
     {% endfor %}
+    {# Dedicated OA-fetch lane (option A, Reto 2026-10-21): `fetch` lives in
+       com.precis.worker-fetch (20b) while precis_worker_fetch_dedicated holds,
+       so this split rollback unit must not carry the overlay's
+       PRECIS_OA_FETCH=1 — two fetchers race the shared watch inbox. The
+       explicit '0' keeps the invariant visible in the rendered plist even
+       while the overlay still sets '1'. #}
+    {% if precis_worker_fetch_dedicated | default(false) %}
+    <key>PRECIS_OA_FETCH</key>
+    <string>0</string>
+    {% endif %}
     {# Host-local served_by bypass (Track 2): point Tier.LOCAL_SMALL straight
        at this host's real llama-swap model id, so router.local_serving's
        resource_slots gate actually matches and the call is served locally.

@@ -92,8 +92,17 @@ Environment=PRECIS_NODE={{ inventory_hostname }}
 # keys (email/API-key contacts) are vault-overridden via precis_identity_env
 # (gr204873).
 {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
+{% if not (env_key == 'PRECIS_OA_FETCH' and (precis_worker_fetch_dedicated | default(false))) %}
 Environment={{ env_key }}={{ env_val }}
+{% endif %}
 {% endfor %}
+# Dedicated OA-fetch lane (option A, Reto 2026-10-21): `fetch` lives in
+# precis-worker-fetch.service (20b) while precis_worker_fetch_dedicated
+# holds — pin the switch off here so a leftover overlay PRECIS_OA_FETCH=1
+# can't run a second fetcher against the shared watch inbox.
+{% if precis_worker_fetch_dedicated | default(false) %}
+Environment=PRECIS_OA_FETCH=0
+{% endif %}
 
 # surya-ocr-2 memory cap — insurance for any marker/OCR path a job spawns
 # here (the primary OCR path is precis-watch). Keeps the vLLM container

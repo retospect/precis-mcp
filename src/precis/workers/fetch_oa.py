@@ -2522,6 +2522,17 @@ def run_oa_fetch_pass(
     watchers race the inbox, so a single fetcher feeds them all. This
     mirrors ``gp_fetch``'s ``PRECIS_GP_FETCH`` single-host pin and
     keeps every other node from re-claiming the same stubs.
+
+    Deployment (Reto 2026-10-21, option A): the pass runs in its own
+    daemon — ``precis worker --only fetch``, rendered as
+    ``com.precis.worker-fetch`` / ``precis-worker-fetch.service`` by
+    ``deploy/playbooks/20b-precis-worker-collapsed.yml`` on the
+    ``precis_capabilities.oa_fetch`` host — rather than one slot inside
+    the collapsed worker's serial rotation. While
+    ``precis_worker_fetch_dedicated`` holds, every non-lane unit renders
+    ``PRECIS_OA_FETCH=0`` explicitly, so ``'1'`` lives in exactly one
+    process. ``--only`` bypasses the ``service_config`` pass_gate, so
+    this env is the lane's only switch.
     """
     if not _oa_fetch_enabled():
         return {"claimed": 0, "ok": 0, "failed": 0}

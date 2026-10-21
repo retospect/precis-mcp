@@ -90,6 +90,30 @@
 #   * every folded pass has a ServiceSpec (reconcile stays retired, not
 #     re-added — paper_reconcile already covers it)
 #   * run-as→deploy cutover is done for both split unit families
+#
+# ── Dedicated OA-fetch lane (Reto 2026-10-21, option A) ──────────────────
+# `fetch` (fetch_oa) also gets its own daemon here — com.precis.worker-fetch
+# / precis-worker-fetch.service running `precis worker --only fetch` on the
+# hosts named by `precis_capabilities.oa_fetch` (the gateway today) — instead
+# of one ~300 s slot inside this unit's serial rotation (~0.05 req/s
+# effective, ~30 papers/h against a 25k-stub backlog). Two pieces keep the
+# single-fetcher invariant intact (two fetchers race the shared watch inbox):
+#
+#   * the collapsed unit's env below pins `PRECIS_OA_FETCH=0` whenever
+#     `precis_worker_fetch_dedicated` is on — AFTER the shared-env combine,
+#     so an overlay `PRECIS_OA_FETCH=1` left over from the single-unit era
+#     can't re-arm the pass inside this unit; and
+#   * the lane unit re-arms it (`'1'`) after the same shared combine, so it
+#     inherits the same PRECIS_WATCH_INBOX / credentials / identity env the
+#     fetch pass resolved inside the collapsed unit.
+#
+# `--only fetch` also bypasses the per-cycle `service_config` pass_gate
+# (cli/worker.py: `pass_gate` is None under `--only`), so the lane can't be
+# console-starved — PRECIS_OA_FETCH is its only switch. The pass keeps its
+# own pacing: intra-pass stub concurrency PRECIS_OA_FETCH_WORKERS, pass wall
+# PRECIS_OA_FETCH_PASS_WALL_S, per-provider in-flight caps
+# (PRECIS_OA_FETCH_INFLIGHT) and the shared external_rate_limits buckets —
+# all read by the lane unit's env below.
 
 - name: Deploy the collapsed precis worker (one service_unit per host)
   hosts:
@@ -232,6 +256,7 @@
              {'PRECIS_FETCH_MARKUP': '1'}
              if (os_family == 'darwin' and (precis_worker_fetch_markup | default(false))) else {}
            )
+         | combine({'PRECIS_OA_FETCH': '0'} if (precis_worker_fetch_dedicated | default(false)) else {})
          | combine({'PRECIS_MIRROR_ENABLED': '1'} if (precis_worker_nanopub_mirror | default(true)) else {})
          | combine({'PRECIS_OTS_ENABLED': '1'} if (precis_worker_nanopub_ots | default(true)) else {})
          | combine(
@@ -382,6 +407,42 @@
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
          | combine(_l_b_fix_env) | combine(_l_b_tts_env) }}
+    # ── dedicated OA-fetch lane env (header's option-A block) ──
+    # The collapsed-unit union minus everything `fetch` never reads, PLUS the
+    # shared/identity env verbatim — that is what carried PRECIS_WATCH_INBOX,
+    # the polite-mailto identity keys and the legacy credential fallbacks to
+    # the pass when it ran in-rotation, so the lane inherits byte-identical
+    # inputs. PRECIS_OA_FETCH='1' lands after that combine (wins over an
+    # overlay value); PRECIS_FETCH_MARKUP mirrors the same host_var gate the
+    # collapsed unit uses (minus the darwin clause — the lane itself is the
+    # per-host scoping now, so markup follows fetch wherever oa_fetch moves).
+    _l_b_fetch_env: >-
+      {{ precis_shared_env
+         | combine(precis_identity_env | default({}))
+         | combine({
+             'HOME': ('/var/lib/precis' if os_family == 'linux' else '/Users/deploy'),
+             'PATH': (
+               precis_worker_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+               if os_family == 'darwin'
+               else precis_worker_venv + '/bin:/usr/local/bin:/usr/bin:/bin'
+             ),
+             'PRECIS_DATABASE_URL': precis_worker_dsn,
+             'PGPASSFILE': ('/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass'),
+             'HF_HOME': precis_worker_hf_home,
+             'PRECIS_PROCESS': 'precis-worker-fetch',
+             'PRECIS_SOURCE': 'precis-worker-fetch',
+             'PRECIS_OA_FETCH': '1',
+             'PRECIS_OA_FETCH_PASS_WALL_S': precis_worker_fetch_pass_wall_s | string,
+             'PRECIS_OA_FETCH_WORKERS': precis_worker_fetch_workers | string,
+           })
+         | combine({'PRECIS_FETCH_MARKUP': '1'} if (precis_worker_fetch_markup | default(false)) else {})
+         | combine({'PRECIS_OA_FETCH_INFLIGHT': precis_worker_fetch_inflight | string}
+             if (precis_worker_fetch_inflight | default('')) else {}) }}
+    # Where the lane runs — kept as one var so the render and the stale-unit
+    # removal below can never disagree about "should exist here".
+    _l_b_fetch_lane_on: >-
+      {{ (precis_worker_fetch_dedicated | default(false) | bool)
+         and (inventory_hostname in (precis_capabilities.oa_fetch | default([]))) }}
   # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
   # `tasks_from:` is not a selector, it silently becomes a role VAR and the
   # role runs its FULL main.yml. That exact bug re-rendered the split
@@ -437,4 +498,81 @@
           --embedder-url {{ precis_worker_embedder_url }}
           --summarizer-model {{ precis_worker_summarizer }}
         service_unit_env: "{{ _l_b_env }}"
+
+    # ── Dedicated OA-fetch lane — the option-A daemon from the header ──
+    - name: render + load the dedicated OA-fetch worker unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-fetch
+        service_unit_run_as: deploy
+        # /tmp: same getcwd()-EPERM-on-NFS reasoning as the collapsed unit.
+        service_unit_working_dir: /tmp
+        # Jetsam band + 60s drain — same as the collapsed unit's; the lane
+        # runs on the RAM-pressured gateway.
+        service_unit_process_type: Interactive
+        service_unit_timeout_stop_sec: 60
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_exec: >-
+          {{ precis_worker_venv }}/bin/precis worker --only fetch
+          --batch-size {{ precis_worker_fetch_batch_size }}
+          --idle-seconds {{ precis_worker_fetch_idle_seconds }}
+        service_unit_env: "{{ _l_b_fetch_env }}"
+      when: _l_b_fetch_lane_on | bool
+
+    # Flag-off / host-left-oa_fetch cleanup: a stale lane unit would keep
+    # PRECIS_OA_FETCH=1 running while the collapsed unit re-arms — the exact
+    # two-fetcher race this lane exists to prevent. Bootout is a no-op when
+    # the label was never loaded; the `rm` removes the render so nothing
+    # re-loads it. Runs wherever the lane must NOT exist.
+    - name: retire a stale fetch-lane LaunchDaemon (macOS)
+      when:
+        - os_family == 'darwin'
+        - not (_l_b_fetch_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          launchctl bootout system/com.precis.worker-fetch 2>/dev/null || true
+          rm -f /Library/LaunchDaemons/com.precis.worker-fetch.plist
+      changed_when: false
+      failed_when: false
+
+    - name: retire a stale fetch-lane systemd unit (Linux)
+      when:
+        - os_family == 'linux'
+        - not (_l_b_fetch_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          systemctl disable --now precis-worker-fetch.service 2>/dev/null || true
+          rm -f /etc/systemd/system/precis-worker-fetch.service
+          systemctl daemon-reload
+      changed_when: false
+      failed_when: false
+
+    # Code-refresh bounce for the site.yml path ONLY (mirrors 20e's own
+    # task): on redeploy `precis_deploy_changed` is defined and the step-2
+    # `com.precis.*.plist` / `precis-*.service` glob already restarts this
+    # unit; site.yml never sets the fact, so kickstart/restart here or a
+    # venv refresh above leaves the lane on stale code (service_unit's own
+    # reload fires only on a unit-FILE diff).
+    - name: Bounce the fetch lane on a code refresh (site.yml path, macOS)
+      ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-fetch
+      when:
+        - os_family == 'darwin'
+        - _l_b_fetch_lane_on | bool
+        - precis_deploy_changed is not defined
+      changed_when: true
+      failed_when: false
+
+    - name: Bounce the fetch lane on a code refresh (site.yml path, Linux)
+      ansible.builtin.systemd:
+        name: precis-worker-fetch
+        daemon_reload: true
+        state: restarted
+      when:
+        - os_family == 'linux'
+        - _l_b_fetch_lane_on | bool
+        - precis_deploy_changed is not defined
   tags: [precis-worker-collapsed, precis]
