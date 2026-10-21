@@ -177,7 +177,7 @@
                user can narrow/widen via the Source/Author kind chips on
                the results page. #}
             <form method="get" action="/drive" class="ml-1 flex items-center gap-1">
-              <input name="q" data-key="/" data-shortcut="/" data-shortcut-label="Search" placeholder="🔍 search everything (/)…"
+              <input name="q" data-key="/" data-shortcut="/" data-shortcut-label="Search" data-slash-complete placeholder="🔍 search everything (/)…"
                      class="bg-chrome-raised border border-chrome text-chrome placeholder-chrome-faint text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-chrome-brand transition-all" />
             </form>
             {# "?" tour launcher — only on a page a tour manifest's route
@@ -264,6 +264,52 @@
           // actually left.
           header.addEventListener('focusin', _e => setHidden(false));
           header.addEventListener('focusout', _e => window.setTimeout(evaluate, 0));
+        }
+      }
+      // gr500642 — Tab completes the first slash-command suggestion in
+      // the "search everything" box: the same /drive/complete roster the
+      // Drive popdown serves, filtered client-side with the same
+      // prefix/plural rule. The roster is warmed lazily on the first
+      // "/token" keystroke, so a plain search costs no fetch; a Tab with
+      // no live suggestion (no "/token", an empty or still-loading
+      // roster, no prefix match) and every Shift+Tab fall through to the
+      // browser's normal focus navigation.
+      //
+      // The template-wide empty-parens ban applies here too, so
+      // preventDefault and json go through .call and every helper takes
+      // a named parameter even where unused.
+      {
+        const navQ = document.querySelector('[data-slash-complete]');
+        if (navQ) {
+          // null = roster not fetched yet; [] after a failed fetch.
+          let roster = null;
+          const warm = _kick => {
+            if (roster !== null) return;
+            roster = [];
+            fetch('/drive/complete?text=%2F')
+              .then(r => (r.ok ? r.json.call(r) : []))
+              .then(items => { roster = items; })
+              .catch(_e => {});
+          };
+          const slashToken = el => {
+            const pos = el.selectionStart ?? el.value.length;
+            return el.value.slice(0, pos).match(/(?:^|\s)\/([A-Za-z0-9_+-]*)$/);
+          };
+          navQ.addEventListener('input', _e => { if (slashToken(navQ)) warm(0); });
+          navQ.addEventListener('keydown', e => {
+            if (e.key !== 'Tab' || e.shiftKey) return;
+            const m = slashToken(navQ);
+            if (!m || roster === null) return;
+            const p = m[1].toLowerCase.call(m[1]);
+            const first = roster.find(
+              s => s.name.startsWith(p) || (p.endsWith('s') && s.name.startsWith(p.slice(0, -1))));
+            if (!first) return;
+            e.preventDefault.call(e);
+            const pos = navQ.selectionStart ?? navQ.value.length;
+            const start = pos - m[1].length - 1;
+            navQ.value = navQ.value.slice(0, start) + first.insert + ' ' + navQ.value.slice(pos);
+            navQ.setSelectionRange(start + first.insert.length + 1, start + first.insert.length + 1);
+          });
         }
       }
     </script>

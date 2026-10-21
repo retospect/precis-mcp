@@ -138,8 +138,10 @@
       {# Slash-command popdown (gr486407): while the query ends in a
          "/token" the debounced submit stays off and this lists the kind
          commands /drive/complete serves — the same roster
-         _split_kind_tokens resolves. mousedown.prevent on a row picks
-         before the input's blur can swallow the click. #}
+         _split_kind_tokens resolves. Arrows move the highlight, Tab or
+         Enter picks it (gr500642 — Tab defaults to the first row),
+         Esc closes; mousedown.prevent on a row picks before the input's
+         blur can swallow the click. #}
       <div x-show="slashOpen" x-cloak
            class="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded-md border border-line bg-surface shadow-lg">
         <template x-for="(s, i) in slashItems" :key="s.insert">
@@ -374,7 +376,7 @@
         if (!this.slashOpen || !this.slashItems.length) return;
         if (e.key === 'ArrowDown') { e.preventDefault(); this.slashSel = (this.slashSel + 1) % this.slashItems.length; }
         else if (e.key === 'ArrowUp') { e.preventDefault(); this.slashSel = (this.slashSel + this.slashItems.length - 1) % this.slashItems.length; }
-        else if (e.key === 'Enter') { e.preventDefault(); this.pickSlash(this.slashItems[this.slashSel]); }
+        else if (e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); this.pickSlash(this.slashItems[this.slashSel]); }
         else if (e.key === 'Escape') { e.preventDefault(); this.slashOpen = false; }
       },
     }));

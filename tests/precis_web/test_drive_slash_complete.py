@@ -110,13 +110,54 @@ def test_query_input_routes_through_slash_guard():
 
 
 def test_popdown_keyboard_and_mouse_contract():
-    """Arrows move, Enter picks, Esc closes, mousedown picks before blur."""
+    """Arrows move, Tab or Enter picks the highlighted row (gr500642 —
+    Tab defaults to the first), Esc closes, mousedown picks before
+    blur."""
     for marker in (
         "ArrowDown",
         "ArrowUp",
         "'Enter'",
+        "'Tab'",
         "'Escape'",
         "mousedown.prevent",
         "/drive/complete",
     ):
         assert marker in TEMPLATE, marker
+
+
+def test_popdown_tab_only_hijacks_with_a_suggestion():
+    """Tab must not break normal focus navigation: the drive handler
+    early-returns unless the popdown is open with rows, and Shift+Tab
+    keeps its backwards-traversal meaning (gr500642)."""
+    assert "if (!this.slashOpen || !this.slashItems.length) return;" in TEMPLATE
+    assert "e.key === 'Tab' && !e.shiftKey" in TEMPLATE
+
+
+# ── gr500642: same Tab-complete in the header's "search everything" box ──
+
+BASE_TEMPLATE = (
+    Path(__file__).resolve().parents[2] / "src/precis_web/templates/base.html.j2"
+).read_text(encoding="utf-8")
+
+
+def test_nav_search_box_tab_completes_first_suggestion():
+    """The header box carries the data-slash-complete hook and its own
+    Tab branch over the same /drive/complete roster — with the roster's
+    prefix/plural filter and the trailing-space insert the drive
+    pickSlash writes."""
+    assert "data-slash-complete" in BASE_TEMPLATE
+    assert "'/drive/complete?text=%2F'" in BASE_TEMPLATE
+    assert "e.key !== 'Tab' || e.shiftKey" in BASE_TEMPLATE
+    assert "roster.find" in BASE_TEMPLATE
+
+
+def test_nav_search_box_tab_falls_through_without_a_suggestion():
+    """No "/token", a still-loading/empty roster or no prefix match all
+    return before preventDefault, so plain Tab still moves focus."""
+    assert "if (!m || roster === null) return;" in BASE_TEMPLATE
+    assert "if (!first) return;" in BASE_TEMPLATE
+    # preventDefault must come AFTER those guards, via .call — the
+    # base-template empty-parens ban covers every call site.
+    guard = BASE_TEMPLATE.index("if (!first) return;")
+    hijack = BASE_TEMPLATE.index("e.preventDefault.call(e);")
+    assert guard < hijack
