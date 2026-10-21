@@ -70,12 +70,13 @@ keeps direct members only. It combines with `q=`, `tags=` and `view='index'`;
 without `q=` memory hits list newest-touched first. Todo and taxon keep their
 own `under=` (todo subtree, concept descendants).
 `angle=`/`like=`/`n=` run the diverse-cone salience spray seeded from a ref
-handle or `q=` — `search(args={'angle': 0.5, 'like': 'quest:164903', 'n': 8})`.
-They are the spray's own verb-level params, not a kind's `args=` keys — no
-handler's `search` accepts them, so on a single named kind (`kind='paper'`)
-the same call fails BadInput. Omit `kind=` for the default target set
-(paper+memory+draft), or pass a comma-list (`kind='memory,draft'`) to aim
-the spray. `view='dreamable'` / `'stubs'` / `'chase-queue'` swap in a
+handle or `q=` — `search(angle=0.5, like='quest:164903', n=8)`.
+They are **verb-level params**, not a kind's `args=` keys — pass them
+top-level like `page_size=` (nested in `args={…}` the spray keys are
+hoisted back out, so either spelling works; a bare `args={'n': 5}` with
+no spray trigger is still refused). Omit `kind=` for the default target set
+(paper+memory+draft), or pass a comma-list (`kind='memory,draft'`) or a
+single kind (`kind='paper'`) to aim the spray. `view='dreamable'` / `'stubs'` / `'chase-queue'` swap in a
 different result shape and ignore `q=` — a salience pick, or the
 paper-acquisition backlog (`precis-stubs-help`). `view='count'` on a
 numeric-ref kind returns the

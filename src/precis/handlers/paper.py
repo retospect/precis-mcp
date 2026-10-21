@@ -31,7 +31,7 @@ from typing import Any, ClassVar
 
 from precis import settings
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._eye import is_eye_view
@@ -109,6 +109,11 @@ def _pa(ref: Ref) -> str:
 
 #: Cap on ``search(view='status', ids=[…])`` — one bulk query, one page.
 _STATUS_MAX_IDS = 200
+
+#: Cap on ``get(id=[...])`` — the same 50 the numeric-ref batch uses
+#: (:data:`precis.handlers._numeric_ref.BATCH_ID_CAP`), restated here
+#: because the slug-addressed handler doesn't share that base class.
+_BATCH_ID_CAP = 50
 
 _SUPPORTED_VIEWS = (
     "bibtex",
@@ -1015,6 +1020,36 @@ class PaperHandler(Handler):
                     next=f"search(kind={self.spec.kind!r}, q={str(q).strip()!r})",
                 )
             return self.search(q=str(q).strip())
+        if isinstance(id, list):
+            # ``get(id=[...], q='…')`` maps find-in-ref over the batch —
+            # the same per-id fan-out ``_get_batch`` gives a view.
+            if not str(q or "").strip():
+                raise BadInput(
+                    "find-in-ref needs q= on a batch",
+                    next=(
+                        f"get(kind='{self.spec.kind}', id=[<id>, ...], q='your query')"
+                    ),
+                )
+            if len(id) > _BATCH_ID_CAP:
+                raise BadInput(
+                    f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(id)}",
+                    next=f"split into calls of {_BATCH_ID_CAP} or fewer",
+                )
+            blocks: list[str] = []
+            for elem in id:
+                try:
+                    blocks.append(self.find_in_ref(id=elem, view=view, q=q).body)
+                except NotFound:
+                    blocks.append(f"{elem}  not found")
+                except Gone:
+                    blocks.append(f"{elem}  deleted")
+            return Response(
+                body=(
+                    f"# {len(id)} {self.spec.kind}s (batch find, "
+                    f"q={str(q).strip()!r})\n\n" + "\n\n".join(blocks)
+                ),
+                result_count=len(id),
+            )
         find_preflight(kind=self.spec.kind, id=id, view=view, q=q)
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
@@ -1057,7 +1092,7 @@ class PaperHandler(Handler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
@@ -1077,6 +1112,8 @@ class PaperHandler(Handler):
             return self.search(q=q)
         if id is None:
             return self._render_list_papers()
+        if isinstance(id, list):
+            return self._get_batch(id, view=view)
         raw_id = _maybe_resolve_doi(self.store, str(id))
         kind = self.spec.kind
         slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
@@ -1178,6 +1215,138 @@ class PaperHandler(Handler):
             return self._render_overview(ref)
 
         return self._render_view(ref, effective_view)
+
+    # -- batch get (``id=[...]``, gr501175) -----------------------------------
+
+    def _get_batch(self, ids: list[Any], *, view: str | None = None) -> Response:
+        """``get(id=[...])``: one summary block per id, gripe-style
+        (``_numeric_ref._get_batch``).
+
+        Elements take every address the single ``get`` does — slug,
+        ``pa<id>`` record handle, bare ref_id, DOI/arXiv, a ``pc<id>``
+        chunk handle, or an id carrying its own ``~N``/``/view``
+        selector (that element renders the single-id shape, so a list
+        of ``pc`` handles reads several chunks at once). The default
+        renders a compact block — handle, title, byline/venue, block
+        count — not the full overview, for the same reason the
+        numeric-ref batch is summary-shaped; ``view=`` maps the
+        single-id view over the list, and ``view='status'`` delegates
+        to the search-side status table (``search(view='status',
+        ids=[…])``, gr500651) — "state of these N ids" is the same
+        question asked on the other verb. A missing or deleted element
+        is a one-line block, not a failed call.
+        """
+        kind = self.spec.kind
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next=f"get(kind='{kind}', id=[<handle-or-slug>, ...])",
+            )
+        if len(ids) > _BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(ids)}",
+                next=f"split into calls of {_BATCH_ID_CAP} or fewer",
+            )
+        if str(view or "").strip() == "status":
+            # ``search(kind='paper', view='status', ids=[…])`` is the
+            # same table — the caller already had the list, just on the
+            # other verb (the gr501175 arg sample).
+            return self._fetch_status_view([str(i) for i in ids])
+        blocks: list[str] = []
+        for elem in ids:
+            shown = str(elem)
+            try:
+                raw, slug, chunk_spec, path_view = self._resolve_batch_element(elem)
+                if view is not None or chunk_spec is not None or path_view is not None:
+                    blocks.append(self.get(id=raw, view=view).body)
+                    continue
+                ref = resolve_live_slug_ref(
+                    self.store,
+                    kind=kind,
+                    id=slug,
+                    next_hint=f"search(kind='{kind}', q='...') to find existing",
+                )
+                blocks.append(self._batch_summary(ref))
+            except NotFound:
+                blocks.append(f"{shown}  not found")
+            except Gone:
+                blocks.append(f"{shown}  deleted")
+        body = f"# {len(ids)} {kind}s (batch)\n\n" + "\n\n".join(blocks)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='{kind}', id={ids[0]!r})",
+                    f"read the first {kind} in full",
+                ),
+                (
+                    f"search(kind='{kind}', view='status', ids=[…])",
+                    "per-paper ingest/fetch state",
+                ),
+            ]
+        )
+        return Response(body=body, result_count=len(ids))
+
+    def _resolve_batch_element(
+        self, elem: Any
+    ) -> tuple[str, str, tuple[int, int] | None, str | None]:
+        """One ``id=[...]`` element → ``(raw, slug, chunk_spec, path_view)``.
+
+        Universal handles self-identify: a ``pa<id>`` record handle
+        rewrites to the slug, a ``pc<id>`` chunk handle to
+        ``<slug>~<ord>`` — the same rewrite dispatch's single-id path
+        does (``_maybe_infer_kind_from_handle``) — so a batch of ``pc``
+        handles reads chunks, and a handle of another kind refuses
+        naming the right one. ``raw`` is the re-parsable id string
+        (selectors preserved) for the full-render path; ``slug`` is
+        the bare ref address for the summary path.
+        """
+        kind = self.spec.kind
+        raw = str(elem).strip()
+        mm = re.match(r"^([a-zA-Z]{2}\d+)([~/].*)$", raw)
+        base, suffix = (mm.group(1), mm.group(2)) if mm else (raw, "")
+        normalized = handle_registry.normalize(base)
+        if handle_registry.is_well_formed(normalized):
+            resolved = self.store.resolve_handle(normalized)
+            if resolved is not None:
+                if resolved.kind != kind:
+                    raise BadInput(
+                        f"id element {raw!r} is a {resolved.kind} handle, not {kind}",
+                        next=f"get(kind={resolved.kind!r}, id={raw!r})",
+                    )
+                if resolved.chunk_id is not None:
+                    if resolved.chunk_ord is not None:
+                        raw = f"{resolved.public_id}~{resolved.chunk_ord}"
+                    # ``chunk_ord=None`` falls through — the raw handle
+                    # parses as a slug below and NotFound's cleanly.
+                else:
+                    raw = resolved.public_id + suffix
+        raw = _maybe_resolve_doi(self.store, raw)
+        slug, chunk_spec, path_view = _parse_paper_id(raw, kind)
+        return raw, slug, chunk_spec, path_view
+
+    def _batch_summary(self, ref: Ref) -> str:
+        """The compact per-ref block for ``get(id=[...])``: handle +
+        title line, then byline/venue and the block count."""
+        meta = ref.meta or {}
+        title = _clean_inline_text(ref.title or "").split("\n", 1)[0].strip()
+        head = f"{_pa(ref)}  {title}".rstrip()
+        sub: list[str] = []
+        authors = _format_authors(ref.authors)
+        if authors:
+            sub.append(authors)
+        venue = ", ".join(
+            x
+            for x in (
+                _clean_inline_text(str(meta.get("journal") or "")),
+                str(ref.year) if ref.year else "",
+            )
+            if x
+        )
+        if venue:
+            sub.append(venue)
+        n_blocks = self.store.chunks.count_chunks(ref.id)
+        sub.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
+        return head + "\n" + " · ".join(sub)
 
     # -- search --------------------------------------------------------------
 

@@ -73,6 +73,40 @@ def test_kind_filter_keeps_only_targets(runtime_with_store: PrecisRuntime) -> No
     assert "no neighbours" in out
 
 
+def test_spray_keys_nested_in_args_hoist_to_the_verb(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr501176/501177: precis-search-help showed the spray knobs inside
+    ``args={…}`` — no handler's ``search`` accepts them there, so the
+    extras gate refused. They are verb-level params; dispatch hoists them
+    so the spray fires either way."""
+    rt = runtime_with_store
+    a = _put_memory(rt, "copper catalyses nitrate reduction")
+    b = _put_memory(rt, "palladium absorbs hydrogen gas")
+    _embed_card(rt, a, "copper catalyses nitrate reduction")
+    _embed_card(rt, b, "palladium absorbs hydrogen gas")
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "__extras__": {"angle": 1.0, "like": f"memory:{a}", "n": 1},
+        },
+    )
+    assert "not accepted" not in out
+    assert "neighbour" in out
+    assert f"#{b}" in out
+
+
+def test_n_alone_in_args_still_refused(runtime_with_store: PrecisRuntime) -> None:
+    """``n``/``top_k`` hoist only alongside a spray trigger — a bare
+    ``args={'n': 5}`` is still an unknown extras key, not a spray."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "memory", "q": "x", "__extras__": {"n": 5}},
+    )
+    assert "not accepted" in out
+
+
 # ── guards / errors ─────────────────────────────────────────────────
 
 

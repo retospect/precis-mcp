@@ -81,6 +81,14 @@ search(kind="paper", q="<author or topic>")  # → rows carry pa<id>/pc<id>
 get(kind="paper", id="<DOI>")  # DOI of a held paper → its overview; read the handle
 ```
 
+Holding several ids, pass them at once:
+`get(kind='paper', id=['pa1', 'pa2', 'slug-or-doi'])` returns one compact
+block per id (handle, title, byline/venue, block count; ≤50, a missing id
+is a `not found` line, not a failed call). `view=` maps the single-id view
+over the batch (`view='abstract'` for each), `view='status'` gives the
+`search(view='status', ids=[…])` table, and `pc<id>` elements render their
+chunks — a list of chunk handles reads several blocks in one call.
+
 ## Find a paper by topic
 ## Discover papers about a subject I'm researching
 ## I don't know any slugs — find papers by keyword
@@ -436,7 +444,9 @@ the keyword column where a gloss hasn't been written yet.
 Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`. The
 `view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
-above).
+above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
+`get(id='pc512', view='abstract')` is refused; use the paper handle
+(`pa<id>`) for every view but `'toc'`, which also scopes to `pa<id>~N..M`.
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper

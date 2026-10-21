@@ -789,6 +789,88 @@ class TestChunks:
 
 
 # ---------------------------------------------------------------------------
+# Batch get — ``id=[...]`` (gr501175)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchGet:
+    def test_batch_summary_one_block_per_id(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        a = _seed_paper(store, slug="paper-a", title="Alpha")
+        b = _seed_paper(store, slug="paper-b", title="Beta")
+        resp = handler.get(id=[f"pa{a}", "paper-b", "no-such-slug"])
+        assert "# 3 papers (batch)" in resp.body
+        assert f"pa{a}" in resp.body and "Alpha" in resp.body
+        assert f"pa{b}" in resp.body and "Beta" in resp.body
+        assert "no-such-slug  not found" in resp.body
+
+    def test_batch_accepts_slugs_handles_and_ref_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        a = _seed_paper(store, slug="paper-a", title="Alpha")
+        b = _seed_paper(store, slug="paper-b", title="Beta")
+        resp = handler.get(id=["paper-a", f"pa{b}", a])
+        assert "# 3 papers (batch)" in resp.body
+        assert resp.body.count("Alpha") == 2  # slug and bare ref_id both resolve
+        assert "Beta" in resp.body
+
+    def test_batch_view_maps_the_single_view(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="paper-a", title="Alpha", abstract="Abs A.")
+        _seed_paper(store, slug="paper-b", title="Beta", abstract="Abs B.")
+        resp = handler.get(id=["paper-a", "paper-b"], view="abstract")
+        assert "Abs A." in resp.body
+        assert "Abs B." in resp.body
+
+    def test_batch_status_view_delegates(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr501175's second sample: ``id=[...]`` + ``view='status'`` is
+        ``search(view='status', ids=[…])`` asked on the wrong verb — the
+        batch routes to the same table."""
+        a = _seed_paper(store, slug="paper-a", title="Alpha")
+        resp = handler.get(id=[f"pa{a}"], view="status")
+        assert "fetch status" in resp.body
+        assert f"pa{a}" in resp.body
+
+    def test_batch_chunk_handles_render_chunks(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="paper-a", title="Alpha", blocks=["first", "second"])
+        pc0 = chunk_handle(store, "paper-a", ord=0)
+        pc1 = chunk_handle(store, "paper-a", ord=1)
+        resp = handler.get(id=[pc0, pc1])
+        assert "first" in resp.body
+        assert "second" in resp.body
+
+    def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:
+        with pytest.raises(BadInput, match="empty"):
+            handler.get(id=[])
+        with pytest.raises(BadInput, match="at most"):
+            handler.get(id=["x"] * 51)
+
+    def test_batch_wrong_kind_handle_named(
+        self, store: Store, handler: PaperHandler, hub: Hub
+    ) -> None:
+        _seed_paper(store, slug="paper-a", title="Alpha")
+        TodoHandler(hub=hub).put(text="a todo")
+        todo_id = store.list_refs(kind="todo", limit=1)[0].id
+        with pytest.raises(BadInput, match="todo handle"):
+            handler.get(id=["paper-a", f"td{todo_id}"])
+
+    def test_batch_q_maps_find_in_ref(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="paper-a", title="Alpha", blocks=["nitrate here"])
+        _seed_paper(store, slug="paper-b", title="Beta", blocks=["unrelated"])
+        resp = handler.get(id=["paper-a", "paper-b"], q="nitrate")
+        assert "nitrate" in resp.body
+        assert "batch find" in resp.body
+
+
+# ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
 

@@ -36,6 +36,12 @@ The DOI resolves to the same paper a slug would. The response shows the
 paper's **handle** (`pa<id>`) and per-chunk handles (`pc<id>`) — paste those
 for any chunk-level work (e.g. `get(id='pc38')`, or a range `pa<id>~38..42`).
 
+`view=` is **ref-level**: it takes a `pa<id>`, slug or DOI — never a
+`pc<id>` chunk handle. `get(id='pc38', view='abstract')` is refused;
+the abstract lives on the paper, so drop the chunk handle:
+`get(id='pa<id>', view='abstract')`. The one range-scoped view is
+`'toc'` — `pa<id>~38..42` + `view='toc'` scopes the TOC to that range.
+
 ## Pass a view with a DOI without breaking on the slash
 ## Why does view= have to be a kwarg for DOIs?
 ## DOI plus view — the kwarg-only quirk

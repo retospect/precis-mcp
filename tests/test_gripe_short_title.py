@@ -197,6 +197,25 @@ def test_edit_refuses_anything_but_a_title(gripe: GripeHandler) -> None:
         gripe.edit(id=gid)
 
 
+def test_edit_verdict_names_the_resolution_recipe(gripe: GripeHandler) -> None:
+    """gr501173: ``verdict=`` is the draft chunk sign-off param — an agent
+    generalising it to ``edit(kind='gripe')`` wants to record a ruling,
+    so the refusal's ``next:`` names the resolved: comment + STATUS:done
+    recipe rather than the generic title door. (A non-'approved' verdict
+    is genuinely caller-supplied — 'approved' is the verb's injected
+    default and is tolerated.)"""
+    gripe.put(text="router: pours vanish")
+    gid = _latest(gripe)
+    with pytest.raises(BadInput, match="verdict not accepted") as exc:
+        gripe.edit(id=gid, title="pcb: pours vanish", verdict="rejected")
+    nxt = exc.value.next
+    assert isinstance(nxt, str)
+    assert "draft" in nxt
+    assert f"put(kind='gripe', id={gid}" in nxt
+    assert "resolved: <sha>" in nxt
+    assert "STATUS:done" in nxt
+
+
 # ── the gardening pass ────────────────────────────────────────────────────
 
 

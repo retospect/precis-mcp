@@ -1371,6 +1371,29 @@ class DispatchMixin(RuntimeShape):
             )
         return page_body, False
 
+    @staticmethod
+    def _hoist_spray_args(args: dict[str, Any]) -> None:
+        """``args={'angle':…,'like':…}`` → top-level ``angle=``/``like=``.
+
+        The angle spray's knobs are verb-level ``search`` params, not a
+        kind's ``args=`` keys — no handler's ``search`` accepts them, so
+        nested they always died as ``keys ['angle'] not accepted by
+        <kind>.search`` (gr501176, gr501177). A caller who nests them
+        plainly wants the spray: hoist so the ``_dispatch_angle``
+        intercept fires. ``n``/``top_k`` ride along only when a spray
+        trigger is present; alone they're legitimately refused by the
+        kind's extras gate. Runs before ``_resolve_under`` so the
+        under=/angle= refusal sees the hoisted keys too.
+        """
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict):
+            return
+        if "angle" not in extras and "like" not in extras:
+            return
+        for key in ("angle", "like", "n", "top_k"):
+            if key in extras:
+                args[key] = extras.pop(key)
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -1393,6 +1416,7 @@ class DispatchMixin(RuntimeShape):
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None
         if verb == "search":
+            self._hoist_spray_args(args)
             note, listing_kinds = self._resolve_under(args)
         if verb == "search" and (
             args.get("uncited") is not None

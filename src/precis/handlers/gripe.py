@@ -725,14 +725,28 @@ class GripeHandler(NumericRefHandler):
             + [k for k, v in (("text", text), ("body", body)) if v is not None]
         )
         if id is None or title is None or extra:
+            next_hint = (
+                f"edit(kind={self.kind!r}, id={id or '<id>'}, "
+                "args={'title': 'Area: what is wrong'}) — add context with "
+                f"put(kind={self.kind!r}, id=N, text='...')"
+            )
+            if {"verdict", "review"} & set(extra):
+                # gr501173: ``verdict=``/``review=`` are the draft
+                # chunk sign-off params (edit(kind='draft',
+                # review='human')); an agent generalising them onto a
+                # gripe is trying to record its ruling — name the
+                # resolution recipe, not the title door.
+                next_hint = (
+                    f"{self.kind} takes no verdict — that sign-off "
+                    "shape is draft-only. Record a resolution with "
+                    f"put(kind={self.kind!r}, id={id or '<id>'}, "
+                    "text='resolved: <sha> — <how verified>', "
+                    "tags=['STATUS:done'])"
+                )
             raise BadInput(
                 f"edit(kind={self.kind!r}) rewrites the title only"
                 + (f"; {', '.join(extra)} not accepted" if extra else ""),
-                next=(
-                    f"edit(kind={self.kind!r}, id={id or '<id>'}, "
-                    "args={'title': 'Area: what is wrong'}) — add context with "
-                    f"put(kind={self.kind!r}, id=N, text='...')"
-                ),
+                next=next_hint,
             )
         new = " ".join(title.split())
         if not new:
