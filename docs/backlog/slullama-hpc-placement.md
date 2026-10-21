@@ -124,6 +124,8 @@ implementation belongs in an isolated worktree, not that checkout's main.
 1. Precis resolves SSH credentials through its existing vault. First verify
    supported secret names, multiline private-key entry, passphrase handling and
    pinned host identity. No credentials in job manifests, logs or shared notes.
+   The vault is readable by every DSN holder today; decision D1 (under Open
+   for Reto) decides where the key lives instead.
 2. Check authentication and run `myquota` once to discover project, storage and
    granted resources; inspect permitted partition/QoS. Do not infer entitlement
    from cluster visibility or username. No repeated quota polling.
@@ -202,7 +204,8 @@ Properties to keep:
 - **Scheduler identity check.** `status` refuses accounting whose user,
   account or job name differ from the intent.
 - **Hash-checked staging and collection.** Every staged file and every
-  collected output is checked against sha256 on both ends.
+  collected output is checked against sha256 on both ends. For collection
+  this catches transport damage only; the remote computes the hash (B3).
 
 Gaps this spec closes (slices B1–B3):
 
@@ -255,6 +258,8 @@ the `JobTypeSpec` contract. Params: `workload` (adapter name), `tasks`,
 `resources` (nodes, cpus, gpus, memory, wall seconds), `image_sha256`.
 Account, partition, QoS, remote root, SSH profile and vault refs come from
 `app_settings` and the gitignored overlay, never from params or the repo.
+Which of these may live in `app_settings` is decision D2 below (recommended:
+SSH host, port, user and `host_keys` from the overlay only).
 
 - **Host pin.** Every `hpc_batch` job carries `params.target_node` = the one
   controller host (from `PRECIS_HPC_CONTROLLER_NODE`, as `struct_relax` pins
@@ -268,6 +273,17 @@ Account, partition, QoS, remote root, SSH profile and vault refs come from
   the job writes the journal state into `meta.compute_handle`. If the journal
   file is missing, `poll` rewrites it from `meta.compute_handle` (same
   `profile_id` and `user`, or refuse) before calling `recover`.
+- **The stored handle is a hint, not an authority.** `meta` is writable by
+  agent_rw, so rehydration recomputes everything that names a remote path or
+  job: token = `sha256(job ref id, attempt)[:32]`, `remote_dir` =
+  `remote_root/run-<token>`, `stage_id` from the job's own params. If the
+  stored handle disagrees with any recomputed value, `poll` refuses (fail
+  `infra`, "compute_handle disagrees with recomputed <field>") and touches
+  nothing remote. `cleanup`, `scancel` and every remote `cat` take their
+  targets from `remote_root` plus the recomputed token, never from the handle.
+- **Stage template.** `job.sh` is a versioned template in the repo, its
+  sha256 pinned in the runner and recorded in provenance; per-job data goes
+  only into `tasks.json`, never into the script text.
 - **One SSH session per pass.** `poll` opens one `vault_ssh_session` per
   `ssh_node` pass and polls every handle through it. The runner's
   `status_interval` (30 s) and `submission_interval` (10 s) bound scheduler
@@ -287,17 +303,39 @@ Account, partition, QoS, remote root, SSH profile and vault refs come from
 - **Cancel.** `precis jobs kill` on an `hpc_batch` job calls
   `runner.cancel`, and the job turns terminal only after `status` sees a
   terminal row. The request alone is not proof (the runner says so too).
+  Cancel is host-bound: the kill is acted on at the controller's next `poll`,
+  so while the controller is down it waits (see runbook R2 under B4).
+- **Rerun budget.** The preempt retry cap counts attempts, not cost. Add
+  `hpc.node_hours_budget`: a rerun is refused, failed `infra`, when the
+  node-hours already recorded for the job (B3 measures) plus the requested
+  allocation would exceed it.
 
 **B3. Collect into precis records.**
 
+Collected output is untrusted input. The remote side computes the sha256 the
+local side compares against, so a compromised HPC account controls both the
+file and its hash: the hash check catches transport damage, not tampering.
+The checks below are the security boundary, not data hygiene.
+
 - **Logs.** `slurm.out`/`slurm.err` tails (bounded, 64 KiB each) become
-  `job_event` chunks on the job, as the `ssh_node` relax path writes them.
+  `job_event` chunks on the job, as the `ssh_node` relax path writes them,
+  with a provenance flag `origin=remote_unverified`. Agent-facing readers
+  (job views, fisheye, search snippets) surface that flag as "remote,
+  unverified" next to the text: log tails are a prompt-injection channel.
 - **Results.** Each workload adapter maps `out/<task_id>/result.json` to the
   writer the local path already uses. For relaxes that is the
   `struct_relax` calculation record, so downstream readers cannot tell a
-  remote relax from a local one except by provenance. The adapter checks
-  shape, units, finite values and that the result names its staged input
-  hash. A result that fails the check is `invalid_output` for that task.
+  remote relax from a local one except by provenance. `result.json` is parsed
+  with a strict schema (unknown keys refuse) under a size cap; no pickle, npz,
+  `eval` or any other format that executes or allocates from the file; no
+  path component is ever taken from the file. Each result must name both its
+  staged input hash and the task-manifest hash, and both must equal the local
+  values. The shape, units and finite-value check runs after that. A result
+  that fails any check is `invalid_output` for that task.
+- **Nothing from the remote run directory is executed, imported or sourced
+  locally**, including by adapters and tests.
+- **Accounting rows.** The full `sacct` rows stay in the local journal; only
+  the extracted measures below go into `meta` and `measure` rows.
 - **Provenance** on every written record: intent token, scheduler job id,
   stage id, image sha256, task manifest hash, and the source sha of the
   workload wheel.
@@ -312,6 +350,28 @@ instead of by hand. Same gate: one real result captured by precis with
 provenance, plus the actual job id, resources, runtime and allocation use.
 Needs B1–B3, image I1 (MLIP) and Reto's go for the allocation spend.
 
+Prerequisites (blocking). B4 is blocked on D1, D2 and R1; R2 must exist
+before the first live run but blocks nothing else.
+
+- **D1** (open decision below): who can reveal the HPC key and passphrase.
+- **D2** (open decision below): where SSH host, port, user and `host_keys`
+  come from.
+- **R1. Key rotation and revocation runbook.** Rotation: mint the keypair
+  offline → register the public key with the provider → `precis secret set`
+  both refs (key, passphrase) → verify the old key is refused by a login
+  attempt → delete the old key everywhere. Immediate revocation: within the
+  first hour, delete the secret (or the host key file under D1 (b)) and
+  contact the provider to remove the public key. The SSH profile records the
+  key's creation date so an age alert can fire.
+- **R2. Move-controller runbook.** One controller host is a single point of
+  failure. The runbook: stop the controller worker, copy the journal to the
+  new host, change the controller node setting, restart; same `profile_id`
+  and `user`. Without the journal copy, the new controller rehydrates from
+  `meta.compute_handle` under B2's recompute rule. While the controller is
+  down, in-flight Slurm jobs keep running and finish on the cluster;
+  nothing is collected, and `precis jobs kill` is recorded but acted on only
+  at the controller's next poll, after a successful `recover`.
+
 ### Tests (B1–B3, no network)
 
 - Fake transport replays scheduler output for: lost acknowledgement then
@@ -320,6 +380,13 @@ Needs B1–B3, image I1 (MLIP) and Reto's go for the allocation spend.
   success; hash mismatch.
 - Journal deleted between passes: `poll` rehydrates from
   `meta.compute_handle` and the fake transport sees no second `sbatch`.
+- Tampered `meta.compute_handle` (token, `remote_dir` or `stage_id` changed):
+  `poll` refuses, and the fake transport sees no `cat`, `scancel` or `rm`.
+- B3 hostile output, each `invalid_output` with nothing written: unknown key,
+  oversize file, a pickle/npz payload, a path in a field, wrong input hash,
+  wrong task-manifest hash, a hash pair that matches but a non-finite value.
+- Log tails land with `origin=remote_unverified`, and the job view shows the
+  "remote, unverified" label.
 - `cleanup` keeps a stage another uncollected intent still names.
 - `hpc_batch` with a fake runner drives a precis job through each row of the
   state map against the test DB.
@@ -403,7 +470,27 @@ preflight allocation.
   the GPAW image waits on the pollux completion above.
 - `--no-requeue`, with reruns decided by precis and capped at 2. Default
   taken: yes.
-- One controller host holds the vault key and the journal. Default taken:
-  yes; the host is chosen at deploy time from the overlay.
+- One controller host holds the journal and runs every `hpc_batch` job.
+  Default taken: yes; the host is chosen at deploy time from the overlay. The
+  host pin does not protect the key: it decides only where the job runs. The
+  key and passphrase resolve through `precis.secrets::require_vault_secret` →
+  `vault.reveal`, which migration 0111 grants to PUBLIC, so every DSN holder
+  (every worker, the web app, the session MCP as agent_rw) can reveal them
+  today. See D1.
+- **D1 — OPEN, Reto. Who can reveal the HPC SSH key.** (a) Promote the
+  deferred per-name vault ACL (`precis.secrets` module docstring) so only a
+  dedicated controller DB role can reveal the two HPC refs; needs a new role,
+  a migration and a GRANT. (b) Keep the key and passphrase out of the DB: a
+  host-local file on the controller (0600, root-owned), read through a new
+  `require_host_secret` seam that `precis.remote.credentials::vault_ssh_session`
+  takes instead of the vault refs. Recommendation: (b), because it does not
+  depend on the ACL being built and no DSN holder or other host can read it.
+- **D2 — OPEN, Reto. Where SSH host, port, user and host-key pins come
+  from.** They are planned for `app_settings`, which agent_rw can write
+  (`precis.settings::set_setting`); a write there could point the controller
+  at an attacker's server with a matching pinned key. Option: these four come
+  only from the gitignored overlay, rendered at deploy time like
+  `PRECIS_DFT_NODE`; `app_settings` keeps account, partition, QoS and limits
+  only. Recommendation: overlay-only.
 - The inode raise or cleanup request to the provider (thread Do next 2b) is
   still Reto's to send.
