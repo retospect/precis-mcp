@@ -35,9 +35,13 @@ wait, and five orphan gripes)
 
 ## Do next
 
-1. **backlog/mcp-concurrency-load-test.md §Still owed** — py-spy at N=32
-   names what holds the GIL; decides whether the multi-process arm is
-   topology or workaround. One hour, and everything below reads its answer.
+1. **backlog/mcp-concurrency-load-test.md §Still owed** — GIL holder and
+   the prod-shaped re-measure are both answered (2026-10-15/16 and
+   2026-10-21): the deliberate 4-permit `PRECIS_MCP_TOOL_CONCURRENCY`
+   dispatch cap binds first, Postgres fan-out cost behind it, the GIL
+   out of reach while calls are IO-heavy. Remaining there: slice 2
+   (needs a serving vLLM + cluster compute) and the `--url` prod run,
+   which is Reto's.
 2. **backlog/eval-run-spine.md** — items 1-3 and 6 (run versioning, sequence
    numbers, verdict column) have no host dependency and unblock
    curation-gate and `backlog/model-qualification.md` (which writes its

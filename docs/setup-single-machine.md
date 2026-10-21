@@ -97,7 +97,10 @@ scripts/dev env PRECIS_DATABASE_URL=postgresql://postgres@precis-test-db:5432/pr
   truncates the slice tables, inserts the slice, drops rows whose foreign
   keys point outside it and moves sequences past the copied ids, all in
   one transaction. Re-running replaces the slice; dev writes to those
-  tables go with it.
+  tables go with it. The excluded embeddings regenerate on dev with
+  `precis worker --only embed --embedder mock` (the load registers the
+  dev `embedders` row for this); `scripts/mcp-loadtest --db precis_dev`
+  measures against the seeded corpus.
 
 ## 3. Pick an embedder
 

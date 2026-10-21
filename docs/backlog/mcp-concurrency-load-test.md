@@ -246,6 +246,76 @@ search path: `_nearest_chunk` and `dreamable_region` (`_chunks_ops.py`)
 and `search_tags_semantic` (`_tags_ops.py`). Each would take the same
 `_vec_param` wrap if a profile ever shows it.
 
+## MEASURED 2026-10-21 — prod-shaped corpus: a deliberate cap binds first
+
+`scripts/dev seed-prod-shaped` into `precis_dev` (1131 refs, 12990
+chunks), then `precis worker --only embed --embedder mock` refilled the
+excluded `chunk_embeddings` (12871 rows; deterministic mock vectors —
+the *shape* is prod's, the similarity is not). Two harness pieces
+landed for this: `--db NAME` targets a prepared database and refuses
+to start unless `refs`, `chunks` and `chunk_embeddings` are all
+non-empty, so a "prod-shaped" run cannot silently re-measure an empty
+schema; and the seed's `load` now registers `embedders 'mock'`, without
+which the drain's writes fail `chunk_embeddings_embedder_fkey`. Two
+stale mix entries were fixed along the way: kind-scoped search pages
+with `page_size` (a `k` arg lands in `__extras__` and is BadInput).
+
+Default serve config, `scripts/mcp-loadtest --db precis_dev`, ramp
+1..32 at 20 s/step, **0 errors in 2780 calls**:
+
+| N | canary p95 ms | pg conns | server CPU | calls/s |
+|---|---|---|---|---|
+| 1 | 32 | 3 | 0.25 | 18.0 |
+| 8 | 414 | 4 | 0.28 | 17.2 |
+| 16 | 1069 | 4 | 0.30 | 18.9 |
+| 32 | 2195 | 4 | 0.34 | 17.4 |
+
+Same flat-throughput/rising-latency curve as the empty-DB runs, but the
+server burns only ~0.3 of 8 cores — nothing saturates. The queue is
+**deliberate**: `PRECIS_MCP_TOOL_CONCURRENCY` defaults to 4 permits
+process-wide (`_FairSemaphore` in `server.py::_offload_sync`, landed
+2026-09-08 in `f2cbcb295`), capping in-flight calls to protect the DB
+pool (max 10). `calllat` shows `wait_ms` ≈ the whole latency at N≥8 —
+calls park in `fair.acquire`, not in work.
+
+That semaphore was in force for every earlier run too. The 2026-09-29
+"GIL wall" reading held anyway because four CPU-bound calls saturate ~1
+core either way; on the seeded corpus the same four slots spend their
+time waiting on Postgres, so the serve process idles and the cap
+itself is the visible queue.
+
+Control run to name what sits behind the cap —
+`PRECIS_MCP_TOOL_CONCURRENCY=32` (the wrapper passes it through), ramp
+1,8,16,32:
+
+| N | canary p95 ms | search:lexical p50 ms | search:paper p50 ms | server CPU | calls/s |
+|---|---|---|---|---|---|
+| 1 | 33 | 54 | 26 | 0.30 | 17.6 |
+| 8 | 38 | 833 | 54 | 0.29 | 17.2 |
+| 16 | 49 | 1344 | 30 | 0.45 | 22.1 |
+| 32 | 82 | 2617 | 32 | 0.46 | 24.6 |
+
+* The canary goes flat — the earlier "one queue" really was the
+  semaphore.
+* The unscoped cross-kind `search` still degrades to ~2.6 s at N=32
+  with `wait_ms` = 0 while the kind-scoped paper search stays ~30 ms.
+  The ~12-leg kind fan-out is the cost: the Postgres container burned
+  ~0.9 core during the step (the serve process held 0.46). On a real
+  corpus the work moved into Postgres; client connections peaked at 7
+  of 100, so the pool (max 10) never bound. Absolute numbers are
+  VM-shaped — this dev Postgres shares a loaded colima VM; the shape
+  is the finding.
+* The GIL ceiling is untouched, just out of reach: with calls
+  IO-wait-heavy, 32 concurrent calls still leave the serve process
+  under half a core.
+
+For the serving plan: the effective per-process ceiling is a *setting*,
+not a wall — `PRECIS_MCP_TOOL_CONCURRENCY` (4) must rise in step with
+`PRECIS_DB_POOL_MAX_SIZE` for the 24-session target, and the resource
+behind it is Postgres-side fan-out cost, not the serve process's GIL.
+The earlier "N≈8 sessions per process" is subsumed: per-process
+in-flight calls are set by the semaphore, and sessions past that queue.
+
 ## Prod run (Reto's)
 
 The harness has a `--url` mode for an already-running server. It refuses to
@@ -283,13 +353,10 @@ if canary p95 is still flat at 16.
   section above): psycopg's pure-Python array dump of the fused-search
   `query_vec` — ~59% of GIL time. Fixed 2026-10-16 (`_vec_param`):
   19.7 → 37.5 calls/s at N=32, GIL held 62% → 41%.
-* **Confirm on prod-shaped data.** This ran against a migrated but nearly
-  empty `precis_loadtest`. Row counts change the DB verbs' cost; they do not
-  obviously change a GIL ceiling, but the claim should be re-measured against
-  a restored corpus before the number is quoted as prod's. The dev path is
-  `scripts/dev seed-prod-shaped` (fills `precis_dev`); the harness creates
-  its own `precis_loadtest`, so it needs a database switch before it can use
-  the seed.
+* ~~**Confirm on prod-shaped data.**~~ **Done 2026-10-21** (section
+  above): `--db precis_dev` + a seeded-corpus guard. The deliberate
+  4-permit dispatch semaphore binds first; behind it, Postgres-side
+  fan-out cost — the serve process's GIL never gets to bind.
 * **Slice 2 (re-prefill measurement, admission-controller prototype)** needs
   a serving vLLM and cluster compute; not started.
 

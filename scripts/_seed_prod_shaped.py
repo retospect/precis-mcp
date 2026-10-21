@@ -662,6 +662,16 @@ def load_slice(dsn: str, path: Path, *, migrate: bool = True) -> dict[str, int]:
                 conn.execute(stmt, (Jsonb(batch[i : i + 2000]),))
             loaded.append(t)
 
+        # The slice excludes every *_embeddings table; regenerating them is
+        # the documented dev path (`precis worker --only embed --embedder
+        # mock`) but chunk_embeddings.embedder FKs to embedders, and 'mock'
+        # is a dev-only name (prod's bge-m3 arrives via the baseline).
+        # Register it here or the drain fails on a fresh seed.
+        conn.execute(
+            "INSERT INTO embedders (name, dim, description) "
+            "VALUES ('mock', 1024, 'deterministic dev embedder') "
+            "ON CONFLICT (name) DO NOTHING"
+        )
         pruned = _prune_dangling(conn, set(loaded))
         _bump_sequences(conn, loaded)
         counts = {

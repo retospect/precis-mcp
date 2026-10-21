@@ -66,11 +66,13 @@ VERB_MIX: list[tuple[str, str, dict[str, Any], bool]] = [
     ("search:semantic", "search", {"q": "carbon nanotube junction", "k": 5}, True),
     # DB-only, kind-scoped lexical search: a different handler path from the
     # cross-kind fan-out above. (The old get(kind='paper', view='list') call
-    # became BadInput when bare-q get turned into a search.)
+    # became BadInput when bare-q get turned into a search; kind-scoped
+    # search pages with page_size, not k — k lands in __extras__ and is
+    # BadInput.)
     (
         "search:paper",
         "search",
-        {"kind": "paper", "q": "carbon", "mode": "lexical", "k": 5},
+        {"kind": "paper", "q": "carbon", "mode": "lexical", "page_size": 5},
         False,
     ),
 ]
@@ -426,6 +428,48 @@ def max_connections(dsn: str | None) -> int | None:
         return None
 
 
+#: Tables whose emptiness means "not seeded" for a ``--db`` run. ``refs`` and
+#: ``chunks`` are the corpus; ``chunk_embeddings`` is what the worker
+#: regenerates after a seed — without it the semantic leg measures the
+#: empty-table path, which is the exact mis-measurement ``--db`` exists to
+#: fix.
+SEEDED_TABLES = ("refs", "chunks", "chunk_embeddings")
+
+
+def corpus_counts(dsn: str) -> dict[str, int] | None:
+    """Row counts of :data:`SEEDED_TABLES`; None when the DB cannot be read."""
+    import psycopg
+    from psycopg import sql
+
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
+            out: dict[str, int] = {}
+            for t in SEEDED_TABLES:
+                cur.execute(
+                    sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(t))
+                )
+                row = cur.fetchone()
+                out[t] = int(row[0]) if row else 0
+            return out
+    except Exception:
+        return None
+
+
+def seeded_error(counts: dict[str, int]) -> str | None:
+    """Refusal text when a ``--db`` target lacks the corpus it was asked to
+    load; None when every :data:`SEEDED_TABLES` table has rows."""
+    empty = [f"{t}=0" for t in SEEDED_TABLES if counts.get(t, 0) <= 0]
+    if not empty:
+        return None
+    return (
+        "target DB is not seeded: "
+        + ", ".join(empty)
+        + ". Fill it with `scripts/dev seed-prod-shaped`, then drain the "
+        "embed queue (`precis worker --only embed --embedder mock`) before "
+        "re-measuring — an empty corpus re-measures the empty-DB arm."
+    )
+
+
 def verdict(
     ramp: list[int],
     calls: list[Call],
@@ -534,10 +578,16 @@ def verdict(
                 )
             else:
                 out.append(
-                    "WALL = anyio worker pool or a lock inside it. The canary "
-                    "touches neither the DB nor the embedder and the server is "
-                    "NOT CPU-bound, so the time is spent waiting, not working "
-                    "— the signature in memory `mcp-fleet-concurrency-limit`."
+                    "WALL = anyio worker pool, the tool-dispatch semaphore, "
+                    "or a lock. The canary touches neither the DB nor the "
+                    "embedder and the server is NOT CPU-bound, so the time is "
+                    "spent waiting, not working — the signature in memory "
+                    "`mcp-fleet-concurrency-limit`. First suspect is the "
+                    "deliberate one: `PRECIS_MCP_TOOL_CONCURRENCY` defaults "
+                    "to 4 permits process-wide (server.py "
+                    "`_FairSemaphore`), which queues every call past four "
+                    "in flight; re-run with it raised to separate the cap "
+                    "from a real resource wall."
                 )
         else:
             out.append(
@@ -581,6 +631,7 @@ def render(
     duration: float,
     n_servers: int = 1,
     target: str = "local",
+    corpus: dict[str, int] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# MCP concurrency load test")
@@ -589,6 +640,10 @@ def render(
         f"Run {datetime.now(UTC).isoformat()} · {duration:.0f}s per step · "
         f"target {target} · {n_servers} server process(es)"
     )
+    if corpus is not None:
+        lines.append(
+            "corpus: " + ", ".join(f"{t}={corpus.get(t, 0)}" for t in SEEDED_TABLES)
+        )
     lines.append("")
     lines.append("## Verdict")
     lines.append("")
@@ -649,6 +704,7 @@ async def amain(args: argparse.Namespace) -> int:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     procs: list[subprocess.Popen[bytes]] = []
+    corpus: dict[str, int] | None = None
     if args.url:
         # External target: its CPU and Postgres are not ours to sample.
         token = os.environ["PRECIS_LOADTEST_TOKEN"]
@@ -662,6 +718,22 @@ async def amain(args: argparse.Namespace) -> int:
         urls = [f"http://127.0.0.1:{args.port + k}/mcp" for k in range(n_servers)]
         dsn = os.environ.get("PRECIS_DATABASE_URL")
         target = "local"
+        if args.require_seeded:
+            if dsn is None:
+                print(
+                    "ERR: --require-seeded needs PRECIS_DATABASE_URL",
+                    file=sys.stderr,
+                )
+                return 2
+            corpus = corpus_counts(dsn)
+            err = (
+                f"cannot read the corpus in {dsn} — is the DB migrated?"
+                if corpus is None
+                else seeded_error(corpus)
+            )
+            if err:
+                print(f"ERR: {err}", file=sys.stderr)
+                return 2
         for k in range(n_servers):
             log = out_dir / f"{stamp}-server{k}.log"
             procs.append(start_server(args.port + k, token, log))
@@ -691,7 +763,7 @@ async def amain(args: argparse.Namespace) -> int:
             with contextlib.suppress(Exception):
                 p.wait(timeout=20)
 
-    md = render(ramp, calls, samples, pg_max, args.duration, n_servers, target)
+    md = render(ramp, calls, samples, pg_max, args.duration, n_servers, target, corpus)
     (out_dir / f"{stamp}-report.md").write_text(md, encoding="utf-8")
     (out_dir / f"{stamp}-raw.json").write_text(
         json.dumps(
@@ -701,6 +773,7 @@ async def amain(args: argparse.Namespace) -> int:
                 "target": target,
                 "n_servers": n_servers,
                 "pg_max_connections": pg_max,
+                "corpus": corpus,
                 "calls": [asdict(c) for c in calls],
                 "samples": [asdict(s) for s in samples],
             }
@@ -732,6 +805,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="required with --url: confirms you mean to load a live server",
     )
+    p.add_argument(
+        "--require-seeded",
+        action="store_true",
+        help="refuse to start unless PRECIS_DATABASE_URL's DB already holds a "
+        "corpus (refs, chunks, chunk_embeddings all non-empty). The wrapper's "
+        "--db sets this so a prod-shaped run cannot silently measure an "
+        "empty schema.",
+    )
     p.add_argument("--out", default="scripts/mcp_loadtest/out")
     args = p.parse_args(argv)
     if args.servers < 1:
@@ -745,6 +826,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             p.error("--servers starts local processes; it does not apply to --url")
         if not os.environ.get("PRECIS_LOADTEST_TOKEN"):
             p.error("--url needs the bearer token in PRECIS_LOADTEST_TOKEN")
+        if args.require_seeded:
+            p.error(
+                "--require-seeded checks the local PRECIS_DATABASE_URL corpus; "
+                "a --url target's DB is not reachable from here"
+            )
     return args
 
 

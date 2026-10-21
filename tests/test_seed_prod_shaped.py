@@ -307,6 +307,26 @@ def test_load_is_idempotent_and_replaces_the_slice(
     assert new_id is not None and new_id[0] > 900002
 
 
+def test_load_registers_the_dev_embedder(store: Store, tmp_path: Path) -> None:
+    """The slice excludes embeddings; the documented drain
+    (`precis worker --only embed --embedder mock`) needs 'mock' in
+    ``embedders`` or chunk_embeddings' FK refuses every write."""
+    assert store.dsn is not None
+    slice_path = tmp_path / "slice.jsonl"
+    meta = {"version": seed.SLICE_VERSION, "tree": ["refs"], "lookups": []}
+    lines = [
+        {"_meta": meta},
+        {"t": "refs", "r": {"ref_id": 920001, "kind": "memory", "title": "x"}},
+    ]
+    slice_path.write_text(
+        "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
+    )
+    seed.load_slice(store.dsn, slice_path, migrate=False)
+    with psycopg.connect(store.dsn) as conn:
+        rows = conn.execute("SELECT name, dim FROM embedders").fetchall()
+    assert ("mock", 1024) in rows
+
+
 def test_dangling_fks_are_pruned(store: Store, tmp_path: Path) -> None:
     """A link to a ref outside the slice is dropped, not loaded dangling."""
     assert store.dsn is not None

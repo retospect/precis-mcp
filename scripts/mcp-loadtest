@@ -12,12 +12,18 @@
 #   scripts/mcp-loadtest --ramp 1,4,8 --duration 10
 #   scripts/mcp-loadtest --smoke                  # 1,2 at 5s — wiring check
 #   scripts/mcp-loadtest --servers 3              # multi-process arm
+#   scripts/mcp-loadtest --db precis_dev          # run against a seeded DB
+#       (scripts/dev seed-prod-shaped, then drain the embed queue); the
+#       harness refuses to start unless the target already holds a corpus.
 #
 # The --url mode for a live server (Reto's prod run) runs harness.py on the
 # host instead; the exact command is in docs/backlog/mcp-concurrency-load-test.md.
 #
 # Env:
 #   PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY   the interactive embed budget
+#   PRECIS_MCP_TOOL_CONCURRENCY                   tool-dispatch semaphore
+#       (default 4 permits process-wide). Passed through so a control run
+#       can raise it and tell the deliberate cap apart from a resource wall.
 #   PRECIS_COMPOSE                                override the compose file
 #   PRECIS_LOADTEST_PTRACE=1                      add CAP_SYS_PTRACE and a
 #       stable container name so py-spy can attach to `precis serve` mid-run:
@@ -27,9 +33,12 @@
 #       trace; root exec inherits the bounding set). Attach-only profiling —
 #       py-spy record's own output window covers the ramp step it samples.
 #
-# DEV DB ONLY. It creates and migrates its own `precis_loadtest` database on
-# the dev Postgres, so a run cannot disturb the test DB a sibling gate is
-# using, and never touches prod.
+# DEV DB ONLY. By default it creates and migrates its own `precis_loadtest`
+# database on the dev Postgres, so a run cannot disturb the test DB a sibling
+# gate is using, and never touches prod. `--db NAME` instead targets a
+# prepared database on the same dev Postgres — `precis_dev` after
+# `scripts/dev seed-prod-shaped` — so the ramp measures a prod-shaped corpus
+# rather than an empty schema.
 #
 # Output lands in scripts/mcp_loadtest/out/<stamp>-report.md (plus raw JSON
 # and the server log, which is where a crashed server explains itself).
@@ -38,14 +47,34 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
 
+DB="precis_loadtest"
 ARGS=()
-for a in "$@"; do
-    if [[ "$a" == "--smoke" ]]; then
-        ARGS+=(--ramp 1,2 --duration 5)
-    else
-        ARGS+=("$a")
-    fi
+while (($#)); do
+    case "$1" in
+        --smoke)
+            ARGS+=(--ramp 1,2 --duration 5)
+            ;;
+        --db)
+            DB="${2:?--db needs a database name}"
+            ARGS+=(--require-seeded)
+            shift
+            ;;
+        --db=*)
+            DB="${1#--db=}"
+            ARGS+=(--require-seeded)
+            ;;
+        *)
+            ARGS+=("$1")
+            ;;
+    esac
+    shift
 done
+
+# The name interpolates into the DSN and a CREATE DATABASE below.
+[[ "${DB}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || {
+    echo "ERR: --db '${DB}' is not a safe database name" >&2
+    exit 1
+}
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || {
@@ -63,7 +92,7 @@ compose() {
 echo "▶ bringing up the dev Postgres"
 compose up -d --wait precis-test-db >/dev/null
 
-DSN="postgresql://postgres@precis-test-db:5432/precis_loadtest"
+DSN="postgresql://postgres@precis-test-db:5432/${DB}"
 ADMIN="postgresql://postgres@precis-test-db:5432/postgres"
 
 # One BLAS thread per process, same reasoning as scripts/test: an uncapped
@@ -87,20 +116,33 @@ if [[ "${PRECIS_LOADTEST_PTRACE:-0}" == "1" ]]; then
     PTRACE_ARGS=(--cap-add SYS_PTRACE --name "mcp-lt-${COMPOSE_PROJECT}")
 fi
 
+# Control-run knob: raise the tool-dispatch semaphore inside the container to
+# tell the deliberate cap (default 4) apart from a resource wall.
+TCAP_ENV=()
+if [[ -n "${PRECIS_MCP_TOOL_CONCURRENCY:-}" ]]; then
+    TCAP_ENV=(-e "PRECIS_MCP_TOOL_CONCURRENCY=${PRECIS_MCP_TOOL_CONCURRENCY}")
+    echo "▶ tool-dispatch semaphore = ${PRECIS_MCP_TOOL_CONCURRENCY} (control run)"
+fi
+
 compose run --rm --no-deps ${PTRACE_ARGS[@]+"${PTRACE_ARGS[@]}"} -v "${WORKTREE}":/app \
     ${THREAD_CAP[@]+"${THREAD_CAP[@]}"} \
+    ${TCAP_ENV[@]+"${TCAP_ENV[@]}"} \
     -e "PRECIS_DATABASE_URL=${DSN}" \
+    -e "LOADTEST_DB=${DB}" \
     precis-dev bash -lc '
 set -euo pipefail
 uv run --no-sync python - <<PY
+import os
 import psycopg
+from psycopg import sql
+db = os.environ["LOADTEST_DB"]
 with psycopg.connect("'"${ADMIN}"'", autocommit=True) as c, c.cursor() as cur:
-    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("precis_loadtest",))
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db,))
     if not cur.fetchone():
-        cur.execute("CREATE DATABASE precis_loadtest")
-        print("created precis_loadtest")
+        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db)))
+        print(f"created {db}")
     else:
-        print("reusing precis_loadtest")
+        print(f"reusing {db}")
 PY
 echo "▶ applying migrations"
 uv run --no-sync precis migrate >/dev/null

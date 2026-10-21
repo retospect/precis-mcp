@@ -230,3 +230,56 @@ def test_verb_mix_has_no_known_stale_call():
 def test_live_target_without_url_is_rejected():
     with pytest.raises(SystemExit):
         h.parse_args(["--live-target"])
+
+
+# --- seeded guard (--require-seeded, set by the wrapper's --db) -------------
+
+
+def test_seeded_error_none_when_corpus_present():
+    counts = {t: 5 for t in h.SEEDED_TABLES}
+    assert h.seeded_error(counts) is None
+
+
+def test_seeded_error_names_only_the_empty_tables():
+    counts = {"refs": 0, "chunks": 12, "chunk_embeddings": 0}
+    err = h.seeded_error(counts)
+    assert err is not None
+    assert "refs=0" in err
+    assert "chunk_embeddings=0" in err
+    assert "chunks=0" not in err
+    # The refusal must say how to fix it, not just that it refused.
+    assert "seed-prod-shaped" in err
+
+
+def test_seeded_error_missing_table_counts_as_empty():
+    assert h.seeded_error({}) is not None
+
+
+def test_require_seeded_accepted_for_local_run():
+    args = h.parse_args(["--require-seeded"])
+    assert args.require_seeded
+
+
+def test_require_seeded_rejected_with_url(monkeypatch):
+    # An external target's DB is not reachable for the corpus check; a silent
+    # no-op would read as "verified".
+    monkeypatch.setenv("PRECIS_LOADTEST_TOKEN", "t")
+    with pytest.raises(SystemExit):
+        h.parse_args(["--url", "http://x/mcp", "--live-target", "--require-seeded"])
+
+
+def test_render_records_corpus_line():
+    md = h.render(
+        [1],
+        [],
+        [],
+        None,
+        5.0,
+        corpus={"refs": 10, "chunks": 20, "chunk_embeddings": 20},
+    )
+    assert "corpus: refs=10, chunks=20, chunk_embeddings=20" in md
+
+
+def test_render_omits_corpus_line_when_unmeasured():
+    md = h.render([1], [], [], None, 5.0)
+    assert "corpus:" not in md
