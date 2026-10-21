@@ -35,10 +35,8 @@ def add_db_args(ap: argparse.ArgumentParser) -> None:
     )
 
 
-def connect_ro(args: argparse.Namespace) -> Any:
-    """Open a psycopg connection inside a read-only transaction."""
-    import psycopg
-
+def _resolve_dsn(args: argparse.Namespace) -> str:
+    """The DSN ``connect_ro``/``store_ro`` open, resolved once."""
     if args.prod:
         # Load readonly_dsn by path: ``import precis_web`` pulls fastapi, which
         # a non-web env lacks — the rewrite/verify module itself is psycopg-only.
@@ -58,10 +56,29 @@ def connect_ro(args: argparse.Namespace) -> Any:
         dsn_file = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
         dsn = mod.rewrite_dsn(dsn_file.read_text(encoding="utf-8"))
         mod.verify_read_only(dsn)
-    elif args.database_url:
-        dsn = args.database_url
-    else:
-        raise SystemExit("pass --prod or --database-url")
-    conn = psycopg.connect(dsn)
+        return dsn
+    if args.database_url:
+        return str(args.database_url)
+    raise SystemExit("pass --prod or --database-url")
+
+
+def connect_ro(args: argparse.Namespace) -> Any:
+    """Open a psycopg connection inside a read-only transaction."""
+    import psycopg
+
+    conn = psycopg.connect(_resolve_dsn(args))
     conn.execute("SET TRANSACTION READ ONLY")
     return conn
+
+
+def store_ro(args: argparse.Namespace) -> Any:
+    """Open a :class:`precis.store.Store` on the same resolved DSN.
+
+    For builders whose candidate pool needs the store API (``search_chunks``,
+    ``render_eye``) rather than raw SQL. Under ``--prod`` the DSN is the
+    verified ``agent_ro`` role, so read-only holds at the DB role; builders
+    issue reads only.
+    """
+    from precis.store import Store
+
+    return Store.connect(_resolve_dsn(args))

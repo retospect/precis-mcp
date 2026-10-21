@@ -90,6 +90,36 @@ def add_parser(subparsers: Any) -> None:
     rt.add_argument("--campaign", default="norr-her-meta")
     rt.add_argument("--top", type=int, default=12)
 
+    re_ = sub.add_parser(
+        "retrieval",
+        help="Retrieval eval (gardener value): search vs fisheye arms over "
+        "a quest's rubric-question gold set — recall@10 + tokens-to-first-gold.",
+    )
+    re_.add_argument("--gold", required=True, metavar="JSONL")
+    re_.add_argument(
+        "--arm",
+        choices=["search", "fisheye", "both"],
+        default="both",
+        help="Which arm(s) to run (default: both).",
+    )
+    re_.add_argument("--k", type=int, default=30, help="Search hits per question.")
+    re_.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    re_.add_argument(
+        "--prod",
+        action="store_true",
+        help="Read PROD via the agent_ro role (secrets-file DSN, rewritten "
+        "and verified read-only).",
+    )
+    re_.add_argument("--out", default=None, help="Write the report JSON here.")
+
+    rc = sub.add_parser(
+        "retrieval-compare",
+        help="Compare two retrieval-eval reports across a gardener pass "
+        "(keep / no effect).",
+    )
+    rc.add_argument("before", metavar="BEFORE", help="Report JSON before the pass.")
+    rc.add_argument("after", metavar="AFTER", help="Report JSON after the pass.")
+
 
 def _judge_fn(cfg: Any) -> Any:
     """Build a frontier judge: ask the judge endpoint to accept/reject a reply."""
@@ -224,30 +254,31 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         print(f"per-item results -> {out}", file=sys.stderr)
 
 
+def _prod_ro_dsn() -> str:
+    """The secrets-file DSN rewritten to ``agent_ro`` and verified on a real
+    connection (same path ``scripts/guide-web`` uses). Loaded by file path:
+    ``import precis_web`` pulls fastapi, absent in a non-web env."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "readonly_dsn",
+        Path(__file__).resolve().parents[3] / "src" / "precis_web" / "readonly_dsn.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    dsn_file = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+    ro = mod.rewrite_dsn(dsn_file.read_text(encoding="utf-8"))
+    mod.verify_read_only(ro)
+    return ro
+
+
 def _cmd_usefulness(args: argparse.Namespace) -> None:
     from precis.mesh_eval.usefulness import collect_usefulness, format_usefulness
 
     if args.prod:
-        # The secrets-file DSN, rewritten to agent_ro and verified on a real
-        # connection (same path scripts/guide-web uses). Loaded by file path:
-        # ``import precis_web`` pulls fastapi, absent in a non-web env.
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location(
-            "readonly_dsn",
-            Path(__file__).resolve().parents[3]
-            / "src"
-            / "precis_web"
-            / "readonly_dsn.py",
-        )
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        dsn_file = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
-        ro = mod.rewrite_dsn(dsn_file.read_text(encoding="utf-8"))
-        mod.verify_read_only(ro)
-        dsn = ro
+        dsn = _prod_ro_dsn()
     else:
         from precis.cli._common import resolve_dsn
 
@@ -262,6 +293,66 @@ def _cmd_usefulness(args: argparse.Namespace) -> None:
         )
         conn.rollback()
     print(format_usefulness(rep))
+
+
+def _cmd_retrieval(args: argparse.Namespace) -> None:
+    from precis.mesh_eval.retrieval import (
+        load_gold,
+        render_report,
+        run_retrieval,
+    )
+
+    if args.prod:
+        dsn = _prod_ro_dsn()
+    else:
+        from precis.cli._common import resolve_dsn
+
+        dsn = resolve_dsn(args.database_url)
+
+    from precis.config import load_config
+    from precis.store import Store
+
+    gold = load_gold(args.gold)
+    arms = ("search", "fisheye") if args.arm == "both" else (args.arm,)
+    store = Store.connect(dsn)
+    try:
+        embedder = None
+        if "search" in arms:
+            from precis.cli._common import cli_embedder
+
+            # needed=False: hybrid degrades to lexical-only, the same call
+            # the verb makes when the embedder is down.
+            embedder = cli_embedder(
+                load_config(), store, needed=False, prog="precis mesh retrieval"
+            )
+        report = run_retrieval(
+            store,
+            gold,
+            arms=arms,
+            k=args.k,
+            embedder=embedder,
+            gold_path=str(args.gold),
+        )
+    finally:
+        store.close()
+    print(render_report(report))
+    if args.out:
+        out = Path(args.out)
+        out.write_text(
+            json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"report -> {out}", file=sys.stderr)
+
+
+def _cmd_retrieval_compare(args: argparse.Namespace) -> None:
+    from precis.mesh_eval.retrieval import (
+        compare,
+        load_report,
+        render_comparison,
+    )
+
+    cmp = compare(load_report(args.before), load_report(args.after))
+    print(render_comparison(cmp))
 
 
 def _cmd_retest(args: argparse.Namespace) -> None:
@@ -280,5 +371,9 @@ def run(args: argparse.Namespace) -> None:
         _cmd_usefulness(args)
     elif args.mesh_cmd == "retest":
         _cmd_retest(args)
+    elif args.mesh_cmd == "retrieval":
+        _cmd_retrieval(args)
+    elif args.mesh_cmd == "retrieval-compare":
+        _cmd_retrieval_compare(args)
     else:  # pragma: no cover - argparse enforces required=True
         raise BadInput(f"unknown mesh subcommand {args.mesh_cmd!r}")

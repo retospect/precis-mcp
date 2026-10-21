@@ -32,6 +32,10 @@ Layout:
   accept/reject/escalate.
 - :mod:`.usefulness` — the mesh-usefulness metric (orphans, duplicate
   candidates, stale nodes, next-hop follow-through) as read-only queries.
+- :mod:`.retrieval` — the gardener-value retrieval eval (graph-gardener-
+  value slice 2): a quest's rubric-question gold set scored under two
+  arms, ``search`` vs the quest's ``fisheye+1hop`` render — recall@10 and
+  tokens-to-first-gold, with a keep/no-effect before/after compare.
 
 Two bars (``local-mesh-upkeep.md`` §1, Reto 2026-10-03): **auto-apply**
 needs agreement with gold at or above the frontier's own test-retest on

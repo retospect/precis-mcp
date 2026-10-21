@@ -62,13 +62,11 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    pin alone. No numeric confidence (the contract forbids inferring
    considered from a probability). Tests: each refusal by name; an
    accepted stance edge round-trips its trust fields and `why`.
-2. **Retrieval eval (the value measure).** `precis.llm_eval` gains a
-   `retrieval` task: for one quest, a gold set of its rubric questions
-   with the chunks that answer them (built from prod, gitignored like the
-   other gold sets). Arms: plain `search` (RAG), RAG + `fisheye+1hop`,
-   and the same after a gardener/scout pass. Scores: recall@k of gold
-   chunks and tokens consumed to reach them. Pilot quest: qu500066
-   (kinetics). A pass stays on only if it moves recall or tokens.
+2. ~~Retrieval eval (the value measure).~~ slice 2 landed at d1099d8b8
+   (`precis mesh retrieval` / `retrieval-compare`,
+   `mesh_eval/retrieval.py`); gold labels await Reto's review — builder:
+   `uv run python scripts/llm_eval/build_retrieval_gold.py --prod --quest
+   qu500066 --endpoint-url <url> --model <id>`.
 3. **Gardener v1 corrections** — slice 3 landed (worktree
    `gardener-s3`, commits 7a9cfe309/9d623d044/9ad06c3d3/d2ec4e443):
    relink keeps only orphans past `RELINK_MIN_DISTANCE` (the
