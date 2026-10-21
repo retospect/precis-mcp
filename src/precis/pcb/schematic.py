@@ -26,6 +26,15 @@ Reading aids, all deterministic:
 * every stub carries a ``<title>`` naming the net and its full member
   list, so hover answers "where does this go".
 
+**Focus mode and pinning** (``docs/backlog/pcb-workbench-layout.md``
+slice 1). ``render_schematic_svg(graph, focus=<handle>)`` dims every part
+outside the focus target's one-hop neighbourhood (signal nets only — a
+part's power/ground nets would flood the view), keeping positions fixed;
+the web tab reloads ``schematic.svg?focus=<handle>`` to enter it. A part
+whose instance is placement-locked (``pcb_instances.fixed``) is drawn
+with a pushpin and stamped ``data-pinned`` — ``POST /pcb/{slug}/pin``
+toggles the lock, so the pin survives a reload.
+
 **Cross-probe identity.** Every part is wrapped in a ``data-handle``
 group and every pin stub and net label carries the same grammar the fab
 render stamps (:mod:`precis.pcb.argue` — ``U1``, ``U1.3``, ``net:GND``),
@@ -85,6 +94,44 @@ def _is_power(name: str, net_class: str | None) -> bool:
     return (net_class or "").lower() == "power"
 
 
+def _focus_set(
+    focus: str | None,
+    all_refdes: set[str],
+    net_names: set[str],
+    parts_on_net: dict[str, set[str]],
+    nets_of_part: dict[str, set[str]],
+    net_class_of: dict[str, str | None],
+) -> tuple[set[str] | None, str | None]:
+    """The one-hop neighbourhood to keep bright in focus mode, else
+    ``(None, None)`` for no focus (nothing dimmed). ``focus`` is a
+    cross-probe handle: a refdes (``U1``), a pin (``U1.3`` — focuses its
+    part), or a net (``net:GND``). A part focus expands through its SIGNAL
+    nets only — power/ground nets are shared board-wide, so expanding
+    through them would flood the view with everything; excluding them is
+    the same rule the click cross-probe follows (static/pcb-crossprobe.js).
+    A focus target the design doesn't hold is a no-op (returns no focus),
+    never a view dimmed down to one missing part."""
+    f = (focus or "").strip()
+    if not f:
+        return None, None
+    if f.startswith("net:"):
+        name = f[4:]
+        if name not in net_names:
+            return None, None
+        return set(parts_on_net.get(name, set())), None
+    refdes = f.split(".", 1)[0] if "." in f else f
+    if refdes not in all_refdes:
+        return None, None
+    bright = {refdes}
+    for net in nets_of_part.get(refdes, set()):
+        if _is_ground(net, net_class_of.get(net)) or _is_power(
+            net, net_class_of.get(net)
+        ):
+            continue
+        bright |= parts_on_net.get(net, set())
+    return bright, refdes
+
+
 class _Part:
     """One component box: pins split left/right in natural order."""
 
@@ -94,10 +141,16 @@ class _Part:
         label: str,
         pins: list[str],
         pin_net: dict[str, str],
+        *,
+        fixed: bool = False,
     ) -> None:
         self.refdes = refdes
         self.label = label
         self.pin_net = pin_net
+        #: the instance carries a placement lock (``pcb_instances.fixed`` is
+        #: 'xy'/'both') — "I want this part to stay here". Drawn as a pushpin
+        #: and stamped ``data-pinned`` so the pin survives a reload.
+        self.fixed = fixed
         ordered = sorted(pins, key=_natural_key)
         # First half left, second half right — a numeric dual-row part
         # comes out in its datasheet's counter-clockwise convention; a
@@ -162,18 +215,31 @@ def _label_glyph(
     )
 
 
-def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> str:
-    """The whole design as one net-label schematic SVG (see module doc)."""
+def render_schematic_svg(
+    graph: dict[str, Any], *, title: str = "schematic", focus: str | None = None
+) -> str:
+    """The whole design as one net-label schematic SVG (see module doc).
+
+    ``focus`` enters focus mode (the spec's "fisheye"): the given part or
+    net and its one-hop neighbours stay bright while every other part is
+    dimmed in place — nothing moves. ``focus`` is a cross-probe handle
+    (``U1``, ``U1.3``, ``net:GND``); an unknown target dims nothing.
+    """
     net_class_of: dict[str, str | None] = {}
     net_members: dict[str, list[str]] = {}
     pin_net: dict[tuple[str, str], str] = {}
+    parts_on_net: dict[str, set[str]] = {}
+    nets_of_part: dict[str, set[str]] = {}
     for net in graph.get("nets", []):
         name = str(net.get("name", "?"))
         net_class_of[name] = net.get("net_class")
         members = [f"{m['refdes']}.{m['pin']}" for m in net.get("members", [])]
         net_members[name] = members
         for m in net.get("members", []):
-            pin_net[(str(m["refdes"]), str(m["pin"]))] = name
+            refdes = str(m["refdes"])
+            pin_net[(refdes, str(m["pin"]))] = name
+            parts_on_net.setdefault(name, set()).add(refdes)
+            nets_of_part.setdefault(refdes, set()).add(name)
 
     # Every pin the design knows about: net members + explicit no-connects.
     pins_of: dict[str, set[str]] = {}
@@ -192,8 +258,18 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
                 str(inst.get("label") or ""),
                 pins,
                 {p: pin_net.get((refdes, p), "") for p in pins},
+                fixed=bool(inst.get("fixed")),
             )
         )
+
+    bright, focus_ref = _focus_set(
+        focus,
+        {p.refdes for p in parts},
+        set(net_members),
+        parts_on_net,
+        nets_of_part,
+        net_class_of,
+    )
 
     # ── shelf packing: fill rows left-to-right, wrap at the target width
     rows: list[list[_Part]] = [[]]
@@ -218,10 +294,18 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
             # it carry their own, so closest('[data-handle]') from a stub
             # resolves the pin and from the box the part — the same rule
             # the board SVG's stamped handles follow.
-            body.append(
-                f'<g class="sch-part" data-handle="{esc(part.refdes, quote=True)}"'
-                f' data-pcb-part="{esc(part.refdes, quote=True)}">'
+            cls = "sch-part"
+            if bright is not None and part.refdes not in bright:
+                cls += " dimmed"  # outside focus's one-hop neighbourhood
+            elif focus_ref == part.refdes:
+                cls += " focused"  # the part focus is centred on
+            attrs = (
+                f'class="{cls}" data-handle="{esc(part.refdes, quote=True)}"'
+                f' data-pcb-part="{esc(part.refdes, quote=True)}"'
             )
+            if part.fixed:
+                attrs += ' data-pinned="1"'
+            body.append(f"<g {attrs}>")
             body.append(
                 f'<rect x="{bx:.1f}" y="{by:.1f}" width="{part.box_w:.1f}" '
                 f'height="{part.box_h:.1f}" class="part"/>'
@@ -230,6 +314,13 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
                 f'<text x="{bx + part.box_w / 2:.1f}" y="{by + 14:.1f}" '
                 f'text-anchor="middle" class="refdes">{escape(part.refdes)}</text>'
             )
+            if part.fixed:
+                # a small pushpin in the box's top-right corner
+                body.append(
+                    f'<g class="pin-mark" transform="translate('
+                    f'{bx + part.box_w - 8.0:.1f},{by + 8.0:.1f})">'
+                    f'<circle r="3.2"/><path d="M 0 3 v 6"/></g>'
+                )
             if part.label:
                 body.append(
                     f'<text x="{bx + part.box_w / 2:.1f}" y="{by + 25:.1f}" '
@@ -297,6 +388,8 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
     n_parts = len(parts)
     n_nets = len(net_members)
     heading = escape(f"{title} — {n_parts} part(s), {n_nets} net(s), net-label style")
+    if bright is not None:
+        heading += escape(f" · focus {focus_ref or (focus or '').strip()}")
     # Attribute position: escape() alone leaves `"` intact, which would let a
     # slug break out of aria-label.
     aria = escape(title, {'"': "&quot;"})
@@ -312,6 +405,13 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
   .part {{ fill: #fdfdf6; stroke: #222; stroke-width: 1.4; rx: 3; }}
   .stub {{ stroke: #444; stroke-width: 1.3; fill: none; }}
   .nc {{ fill: none; stroke: #999; stroke-width: 1.3; }}
+  /* focus mode: the one-hop neighbourhood stays bright, the rest dims in
+     place (static/pcb-focus.js reloads the schematic with a focus query). */
+  .sch-part.dimmed {{ opacity: 0.16; }}
+  .sch-part.focused > rect.part {{ stroke: #1558b0; stroke-width: 2.6; }}
+  /* the placement-lock pushpin */
+  .pin-mark circle {{ fill: #b26a00; stroke: none; }}
+  .pin-mark path {{ stroke: #b26a00; stroke-width: 1.5; fill: none; }}
 </style>
 <rect x="0" y="0" width="{doc_w:.0f}" height="{doc_h:.0f}" fill="#ffffff"/>
 <text x="{_MARGIN:.0f}" y="{_MARGIN - 6:.0f}" class="plabel">{heading}</text>

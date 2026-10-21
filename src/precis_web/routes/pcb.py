@@ -656,14 +656,51 @@ async def pcb_part_thumb(request: Request, slug: str, refdes: str) -> RawRespons
 
 
 @router.get("/pcb/{slug}/schematic.svg")
-async def pcb_schematic_svg(request: Request, slug: str) -> RawResponse:
+async def pcb_schematic_svg(
+    request: Request, slug: str, focus: str | None = None
+) -> RawResponse:
     store = get_store(request)
     try:
         ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
     except NotFound:
         return RawResponse(status_code=404, content="not found")
-    resp = _handler(store).get(id=ref.slug, view="schematic")
+    # ?focus=<handle> enters focus mode: the target part/net and its one-hop
+    # neighbours stay bright, the rest dims (static/pcb-focus.js reloads the
+    # <object> with this query; the render stays a pure fn of the graph).
+    args = {"focus": focus} if focus and focus.strip() else None
+    resp = _handler(store).get(id=ref.slug, view="schematic", args=args)
     return _svg_response(resp.body)
+
+
+@router.post("/pcb/{slug}/pin")
+async def pcb_pin(
+    request: Request,
+    slug: str,
+    refdes: str = Form(...),
+    pinned: str = Form(""),
+) -> JSONResponse:
+    """Toggle a part's placement lock — the focus-mode "pin" ("I want this
+    part to stay here", docs/backlog/pcb-workbench-layout.md slice 1). Sets
+    ``pcb_instances.fixed`` to ``'xy'`` (pin) or clears it (unpin) via the
+    authorized inline edit path; no geometry moves. The pin survives a
+    reload because it is a persisted column, re-read by ``pcb_graph``."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
+    except NotFound:
+        return JSONResponse({"error": f"no live pcb design {slug!r}"}, status_code=404)
+    rd = refdes.strip()
+    if not rd:
+        return JSONResponse({"error": "refdes required"}, status_code=400)
+    want = pinned.strip().lower() in ("1", "true", "on", "yes")
+    ok = await asyncio.to_thread(
+        store.pcb_move_instance, ref.id, rd, fixed=("xy" if want else None)
+    )
+    if not ok:
+        return JSONResponse(
+            {"error": f"no instance {rd!r} on {slug!r}"}, status_code=404
+        )
+    return JSONResponse({"ok": True, "refdes": rd, "pinned": want})
 
 
 @router.post("/pcb/{slug}/chat")

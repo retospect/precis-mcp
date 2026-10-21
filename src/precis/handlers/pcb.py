@@ -3708,9 +3708,10 @@ class PcbHandler(Handler):
 
             ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
             slug = (ref.slug if ref is not None else None) or "pcb"
+            focus = str((args or {}).get("focus") or "").strip() or None
             return Response(
                 body=schematic.render_schematic_svg(
-                    self.store.pcb_graph(ref_id), title=slug
+                    self.store.pcb_graph(ref_id), title=slug, focus=focus
                 )
             )
         if view == "footprints":

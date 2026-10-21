@@ -1,7 +1,8 @@
 /* pcb-workbench.js — the two-pane pcb workbench's page glue
-   (docs/backlog/pcb-workbench-layout.md slice 1): the draggable divider
-   whose split is remembered per user, the layout flip button, and
-   attaching static/viewport.js to both panes. */
+   (docs/backlog/pcb-workbench-layout.md, the "Decided" layout): the
+   draggable divider whose split is remembered per user, the layout flip
+   button, and attaching static/viewport.js to both panes. Focus mode and
+   pinning (slice 1) live in static/pcb-focus.js. */
 (function () {
   'use strict';
   const el = (id) => document.getElementById(id);

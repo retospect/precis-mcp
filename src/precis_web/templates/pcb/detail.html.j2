@@ -60,7 +60,16 @@
 <div id="pcb-workbench" class="mb-1">
   <section id="pcb-pane-schematic" class="pcb-pane rounded border border-line bg-surface p-2">
     <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Schematic
-      <span class="font-normal text-xs text-fg-faint">net-label style — matching labels are the connection</span>
+      <span class="font-normal text-xs text-fg-faint">net-label style — matching labels are the connection · double-click a part to focus</span>
+      {# Focus bar (slice 1): hidden until a double-click enters focus mode.
+         Pin toggles the focused part's placement lock; exit leaves focus. #}
+      <span id="pcb-focus-bar" class="hidden items-center gap-1 pl-2 align-middle text-xs font-normal">
+        <span id="pcb-focus-label" class="font-mono text-fg-secondary"></span>
+        <button type="button" id="pcb-focus-pin"
+                title="pin this part in place (lock its placement)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">pin</button>
+        <button type="button" id="pcb-focus-exit"
+                title="leave focus (Esc)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">exit focus</button>
+      </span>
       <span class="vp-tools float-right inline-flex gap-1">
         <button type="button" data-vp="in" data-shortcut-label="Zoom in" title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>
         <button type="button" data-vp="out" data-shortcut-label="Zoom out" title="zoom out (-)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">−</button>
@@ -68,7 +77,10 @@
         <button type="button" data-vp="reset" data-shortcut-label="Reset view" title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
       </span>
     </h2>
-    <object id="pcb-schematic-object" type="image/svg+xml" data="/pcb/{{ slug | urlencode }}/schematic.svg">
+    <object id="pcb-schematic-object" type="image/svg+xml"
+            data="/pcb/{{ slug | urlencode }}/schematic.svg"
+            data-base="/pcb/{{ slug | urlencode }}/schematic.svg"
+            data-pin-url="/pcb/{{ slug | urlencode }}/pin">
       schematic unavailable
     </object>
   </section>
@@ -158,6 +170,7 @@
 <script src="/static/viewport.js" defer></script>
 <script src="/static/pane-split.js" defer></script>
 <script src="/static/pcb-workbench.js" defer></script>
+<script src="/static/pcb-focus.js" defer></script>
 <script src="/static/pcb-argue.js" defer></script>
 <script src="/static/pcb-hover.js" defer></script>
 <script src="/static/pcb-selection.js" defer></script>

@@ -124,6 +124,50 @@ def test_detail_shows_vitals_and_both_panes(pcb_client, runtime_with_store) -> N
     assert "/pcb/web_pcb/schematic.svg" in r.text
 
 
+def test_schematic_focus_query_reaches_the_renderer(
+    pcb_client, runtime_with_store
+) -> None:
+    """``schematic.svg?focus=<handle>`` enters focus mode server-side (the
+    route threads it through the handler to the renderer). Without the query
+    nothing is focused."""
+    _seed(runtime_with_store, slug="web_focus")
+    plain = pcb_client.get("/pcb/web_focus/schematic.svg").text
+    assert '<g class="sch-part" data-handle="U1"' in plain
+    assert "focus U1" not in plain
+    focused = pcb_client.get("/pcb/web_focus/schematic.svg?focus=U1").text
+    assert '<g class="sch-part focused" data-handle="U1"' in focused
+    assert "focus U1" in focused
+
+
+def test_pin_toggles_the_lock_and_survives_a_reload(
+    pcb_client, runtime_with_store
+) -> None:
+    """POST /pin locks a part's placement; the lock is a persisted column,
+    so a fresh schematic GET (a reload) still shows the pushpin. Unpin
+    clears it. This is the slice-1 pin-survives-reload exit."""
+    _seed(runtime_with_store, slug="web_pin")
+    assert 'data-pinned="1"' not in pcb_client.get("/pcb/web_pin/schematic.svg").text
+
+    r = pcb_client.post("/pcb/web_pin/pin", data={"refdes": "U1", "pinned": "1"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "refdes": "U1", "pinned": True}
+
+    # a brand-new request (reload) still shows U1 pinned
+    svg = pcb_client.get("/pcb/web_pin/schematic.svg").text
+    assert 'data-handle="U1" data-pcb-part="U1" data-pinned="1"' in svg
+    assert 'data-handle="R1" data-pcb-part="R1" data-pinned' not in svg
+
+    r = pcb_client.post("/pcb/web_pin/pin", data={"refdes": "U1", "pinned": "0"})
+    assert r.status_code == 200 and r.json()["pinned"] is False
+    assert 'data-pinned="1"' not in pcb_client.get("/pcb/web_pin/schematic.svg").text
+
+
+def test_pin_unknown_refdes_is_404(pcb_client, runtime_with_store) -> None:
+    _seed(runtime_with_store, slug="web_pin_404")
+    r = pcb_client.post("/pcb/web_pin_404/pin", data={"refdes": "ZZ", "pinned": "1"})
+    assert r.status_code == 404
+
+
 def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -> None:
     """The workbench layout (docs/backlog/pcb-workbench-layout.md slice 1):
     schematic left, layout right, a divider between them, the info strip
@@ -142,10 +186,12 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         'id="pcb-info-strip"',
         'id="pcb-cursor-readout"',
         'id="pcb-flip"',
+        'id="pcb-focus-bar"',
         'id="pcb-schematic-object"',
         'id="pcb-board-object"',
         "/static/viewport.js",
         "/static/pcb-workbench.js",
+        "/static/pcb-focus.js",
     ):
         assert marker in r.text, marker
     # schematic is the left pane; the strip sits below both panes

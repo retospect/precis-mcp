@@ -81,9 +81,16 @@ The keys register through the shortcuts module (`static/shortcuts.js`,
 
 ## Slices
 
+Slice numbers are stable anchors (code comments cite them); don't renumber.
 
-1. **Focus mode and pinning** on the schematic. Exit: a focus render test,
-   and a test that the pin state survives a reload.
+1. **Focus mode and pinning** on the schematic — *shipped*. Double-click a
+   part or net label enters focus (`schematic.svg?focus=<handle>`): the
+   target's one-hop neighbourhood stays bright, the rest dims in place
+   (signal nets only — power/ground never flood). A part's placement lock is
+   drawn as a pushpin and toggled by `POST /pcb/{slug}/pin`, surviving a
+   reload. Not yet: animated re-layout on an explicit action (the schematic
+   is still deterministic shelf-packing; pinning only constrains a future
+   placement). Code: `precis.pcb.schematic`, `static/pcb-focus.js`.
 2. **Multiple sheets.** Sheets come from placement groups, with tabs and
    off-sheet connectors. Exit: a schematic test that a cross-sheet net gets
    connectors on both sheets, and that cross-probing picks the sheet.
