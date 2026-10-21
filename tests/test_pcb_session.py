@@ -592,6 +592,48 @@ def test_placement_drc_report_flags_fixed_violators_and_subject():
     assert "violator(s) you can pin or move: SW3" in block
 
 
+def test_courtyard_overlap_is_legalized_away_and_reported_naming_both_refdes():
+    """gr496366, the two placement-side asks on one small board: a stored
+    pose whose courtyard overlaps a neighbour's is (1) moved apart by
+    ``legalize_start`` (courtyard-to-courtyard >= 0 is a hard legality
+    constraint, not a price), and (2) while it stands — here, both parts
+    fixed so nothing may move it — the pre-route gate reports
+    ``courtyard_overlap`` naming BOTH refdes."""
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.optimize import OptimizeConfig, optimize
+    from precis.pcb.session import placement_drc_findings
+
+    def overlaps(ir):
+        return [
+            f
+            for f in placement_drc_findings(ir, capability=capability_for("4layer"))
+            if f.rule == "courtyard_overlap"
+        ]
+
+    # Movable arm: two parts stacked on one spot. The SAT legality test
+    # makes the pose illegal, so the pre-anneal legalize pass walks one
+    # off the other and the gate goes quiet on the pair.
+    ir = build_ir(_two_pin_two_net_graph())
+    ir.inst_x[1] = ir.inst_x[0]
+    ir.inst_y[1] = ir.inst_y[0]
+    assert overlaps(ir), "seeded pair must be seen overlapping first"
+    result = optimize(ir, OptimizeConfig(seed=3, iters=50))
+    assert result.legalized, "legalize_start moved nothing"
+    assert not overlaps(ir)
+
+    # Frozen arm: nothing may move, so the finding stands and names both
+    # refdes — the report a human (or the route gate) reads.
+    locked = build_ir(_two_pin_two_net_graph())
+    locked.inst_x[1] = locked.inst_x[0]
+    locked.inst_y[1] = locked.inst_y[0]
+    locked.inst_fixed_xy[:] = True
+    findings = overlaps(locked)
+    assert len(findings) == 1
+    f = findings[0]
+    assert set(str(f.where).split(" <-> ")) == {"U1", "U2"}
+    assert f.objects[0]["a"] != f.objects[0]["b"]
+
+
 def test_run_placement_drc_is_a_subset_of_run_geometric_drc():
     # The subset contract: run_placement_drc fires only rules that exist
     # before routing. On a 2-pin net with a stub that stops short,

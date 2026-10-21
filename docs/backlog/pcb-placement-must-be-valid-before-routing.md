@@ -93,7 +93,9 @@ and records the override in the job summary and route log. The gate runs
 after the anneal on purpose: movable violators get the anneal's
 `courtyard_overlap` term first, and only what survives is refused. `pcb_place` refuses writing a pose set
 with more placement errors than the stored board unless `force=True`
-(09dbaf447, fb44ae4e3). Still open here: a gate without a placer cost term
+(09dbaf447, fb44ae4e3). `outline_missing` joined the placement-only gate
+2026-10-21 (gr500431): a board without a closed outline fails there too,
+not only at the routed run. Still open here: a gate without a placer cost term
 for pad/via keepout or a way to shift a `fixed='both'` violator ((b)/(c))
 refuses boards it could have placed.
 

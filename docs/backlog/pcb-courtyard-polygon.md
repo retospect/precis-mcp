@@ -5,7 +5,7 @@ prio: medium
 pillar: 3d-design
 ---
 
-shipped: courtyard polygon + shared SAT legality/DRC/silk (3e9975e24, 3f5dec8ef, 0e49dcdef), graded signed-separation term + seeds-1-5 fixtures (b3530e55d); open: lone pin-1-dot suppression decision, side_obstacles broad phase, soldermask_expansion/silk_to_mask JLCPCB re-verification
+shipped: courtyard polygon + shared SAT legality/DRC/silk (3e9975e24, 3f5dec8ef, 0e49dcdef), graded signed-separation term + seeds-1-5 fixtures (b3530e55d); gr496366 asks verified 2026-10-21 — overlap is a hard legality constraint already (legalize_start separates a stored pair, fixed pairs report `courtyard_overlap` naming both refdes, silk draws the shared wall per comment 5); open: lone pin-1-dot suppression decision, side_obstacles broad phase, soldermask_expansion/silk_to_mask JLCPCB re-verification
 
 # The anneal steers by a courtyard it no longer enforces
 

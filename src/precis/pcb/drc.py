@@ -4977,7 +4977,10 @@ def run_placement_drc(
     copper/copper clearance (:func:`check_clearance`), pad/via keep-out
     (:func:`check_via_pad_keepout`), via/via keep-out
     (:func:`check_via_via_keepout`), courtyard overlap
-    (:func:`check_courtyard_overlap`) and outline containment
+    (:func:`check_courtyard_overlap`), a missing/defective board outline
+    (:func:`check_outline_missing`, gr500431 — a board with no closed
+    outline fails here, not only at the routed gate) and outline
+    containment
     (:func:`check_outline_containment`) — and NONE of the rules that need
     router output (trace width, annular ring, connectivity, unrouted, silk)
     or a drill census this seam does not carry. Every finding it returns is
@@ -4996,6 +4999,7 @@ def run_placement_drc(
     findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_via_pad_keepout(model, capability)
     findings += check_via_via_keepout(model, capability)
+    findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_edge_mating(edge_mates, outline=outline)
     if courtyards:

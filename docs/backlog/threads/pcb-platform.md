@@ -61,6 +61,11 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    blocks + routed bundles) sits on top of 2–4, not before them.
 6. **backlog/pcb-courtyard-polygon.md** — `draft/medium`; mostly shipped
    (items 1–6 landed 2026-08-30), one open cost-curve question survives.
+   gr496366 verified 2026-10-21 (g-courtyard): courtyard-to-
+   courtyard >= 0 is a hard legality constraint (`legalize_start` moves
+   a stored overlap apart), `courtyard_overlap` names both refdes in the
+   placement gate, silk draws the shared coincident wall (a569db907);
+   the dogfood-b C2/J2 hulls sit 0.9µm apart, never overlapped.
 7. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, waits on 2's footprint contract.
 8. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;

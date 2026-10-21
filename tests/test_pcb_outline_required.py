@@ -62,6 +62,21 @@ def test_geometric_drc_reports_outline_missing_only_without_an_outline() -> None
     assert "outline_missing" not in [f.rule for f in ok]
 
 
+def test_placement_drc_reports_outline_missing_only_without_an_outline() -> None:
+    """gr500431: the placement-only gate runs the same predicate — a board
+    with no closed outline fails there too, not only at the routed gate."""
+    from precis.pcb.capabilities import capability_for
+
+    model: dict[str, Any] = {"copper": [], "pads": [], "layers": ["F.Cu", "B.Cu"]}
+    cap = capability_for("4layer")
+    bare = pcb_drc.run_placement_drc(model, capability=cap, outline=None)
+    flagged = [f for f in bare if f.rule == "outline_missing"]
+    assert len(flagged) == 1
+    assert flagged[0].severity == "error"
+    ok = pcb_drc.run_placement_drc(model, capability=cap, outline=_RECT)
+    assert "outline_missing" not in [f.rule for f in ok]
+
+
 _DESIGN: dict[str, Any] = {
     "components": [
         {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
