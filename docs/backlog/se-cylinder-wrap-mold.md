@@ -162,11 +162,16 @@ All end as `h(u, v)` and then pass the pull-aware flank / DRC step, so
    construction (domes have gentle flanks). Combines with 2/3: segment a
    photo's wall regions and fill them with masonry.
 
-Ångström analogue: the same `(u, v)` pattern can carry a categorical
-field (charge sign, polar/nonpolar) instead of height; slice 4's shared
-wrap map then places it on a hexfold tube as pocket patch regions
-(pocket-from-molecule's ESP bands). The "pull direction" there is the
-molecule's approach pose.
+Ångström analogue (Reto 2026-10-21): the same `(u, v)` pattern carries
+categorical fields instead of height: charge sign/ESP band, hydrophobic
+vs polar, H-bond donor/acceptor, and so on (the region classes pocket-
+from-molecule already paints). Slice 4's shared wrap map projects them
+onto a hexfold tube's **outer and inner** wall as pocket patch regions,
+repeating with the lattice period. No draft, no pull, no undercut rule
+at this scale: atoms are placed, not demolded; the constraint that
+replaces draft is the lattice itself (a patch edge lands on sites, so
+pattern resolution is one site spacing) and the molecule's approach
+pose.
 
 ## Explicitly NOT in scope
 
