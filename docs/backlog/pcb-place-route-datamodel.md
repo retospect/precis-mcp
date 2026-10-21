@@ -519,3 +519,58 @@ beyond what appetite gives; component heights and 3D clearance
 3. Algorithmic sub-clustering, kept if it beats v1.
 4. Discrete moves beyond side flip and swaps (tree re-planning).
 5. Physical layer terms beyond loop area (impedance, stitching).
+
+## Slice 1 results
+
+Reto 2026-10-21 run, d-pr-s1 worktree, CPU (Apple Silicon dev box, torch
+2.13 CPU; no GPU/Spark was reachable — evals/s is CPU only).
+
+Provisional parameters (fixed per the brief): length weight 1/mm; via
+cost 1.0 mm wire-equivalent (= `vroute.Request.via_cost_mm`); one-sided
+quadratic barrier on gap < 0, stiffness 20→400 ramped with linear width
+growth 0→full over the first `grow_steps`; K = 16; linear temperature
+anneal T = 2.0 → 0.3 in 4b; via sites every 2 mm; piece ≤ 2 mm; swept
+check = orientation-sign flip on same-layer foreign pairs, halve ≤ 5×;
+CEM α = 0.7, elite 25 %, Q floor 0.02; 3 outer rounds in the bench
+(shorter than the spec's open loop — a bench-budget choice, reported).
+
+Fixtures are `qfp_fanout` 2-layer (`sources="grid"`), fixed pads, no
+placement. vroute numbers are `realize.realize` on the same IR —
+context only; no frozen-table row is a 2-layer fixed-pad board.
+
+| fixture | wires | unrouted | vias | wire mm | DRC findings (non-silk) |
+|---|---|---|---|---|---|
+| pr small (pps=6, n=12) | 12 | 6 | 2 | 60.6 | clearance 33, trace_width 49, annular_ring 14 |
+| vroute same IR | 12 | 0 | 8 | 101.8 | clearance 12, trace_width 20, annular_ring 20 |
+| pr main (pps=10, n=40) | 40 | 9 | 36 | 334.3 | clearance 190, trace_width 195, annular_ring 76, via_pad_keepout 1, via_via_keepout 2 |
+| vroute same IR | 40 | 5 | 23 | 420.2 | clearance 13, trace_width 58, annular_ring 63 |
+
+1. **Legal crossing-free result: no on both fixtures.** Unrouted wires
+   are real (the seed is whole-wire-per-layer; every QFP pad pins its
+   wire's last span to B.Cu, so the seed's B.Cu is congested and 4d
+   moves — out of slice scope — are what would recover it). Clearance
+   errors are seeded over-capacity claims the barrier could not relax
+   away: first debt, main fixture — `portal 21 on B.Cu, 0.298 mm gap,
+   1 wire through 0 lane(s)`. `trace_width` counts pad-neck checks too
+   (vroute shows the same rule on the same IR).
+2. **Vias/length vs vroute, same IR:** pr uses more vias (36 vs 23) and
+   less wire (334 vs 420 mm) on main — expected: span-level layer choice
+   buys F.Cu escapes cheaply; vroute pays wire to stay planar.
+3. **Layer loop settles, not oscillates:** mean per-span belief entropy
+   0.915 → 0.638 → 0.153 bits over 3 rounds (small), 0.816 → 0.207 (main).
+4. **Swept collision blocks:** small 9.3 % of sample-steps needed ≥1
+   halving; main 9.1 blocked sample-rejections per relax step (heavier —
+   the seeded B.Cu crowding sits on the check; no step ever applied a
+   crossing).
+5. **Throughput (CPU):** 19.1 evals/s at N=103 spans (small); 2.2
+   evals/s at N=361 (main). wall 9 s / 94 s. Spark not measured — no
+   GPU/Spark host was reachable from the tree.
+6. Parameters: listed above.
+
+Reading: the approach produces measurable answers but slice-1 legality
+is capped by two structural limits the numbers name — whole-wire seed
+layers leave B.Cu over capacity (soft-capacity seeds exist but the
+debt is reported, not solved), and span subdivision at seed granularity
+makes crossing-free relaxation depend on where the via sites happened
+to land. Both are 4d/4a-business for slice 2, not blockers for the
+measurement this slice exists to produce.

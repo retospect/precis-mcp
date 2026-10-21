@@ -140,23 +140,26 @@ def run(problem: PrProblem, params: PrParams | None = None) -> PrRun:
                 float(scores[k_best]),
                 pos[k_best].numpy().copy(),
                 assign_np[k_best].copy(),
+                layout,
             )
-    # capacity check on the best sample's final geometry
+    # capacity check on the best sample's final geometry — under the
+    # layout that sample was relaxed on (the layout may have been
+    # rebuilt in a later round)
     assert best is not None
-    best_pos, best_assign = best[1], best[2]
+    best_pos, best_assign, best_layout = best[1], best[2], best[3]
     wires_poly: list[np.ndarray] = []
     layers_of: list[int] = []
     for wi in range(len(problem.wires)):
-        pts = best_pos[layout.wire_of_point == wi]
+        pts = best_pos[best_layout.wire_of_point == wi]
         wires_poly.append(pts)
-        pcs = np.nonzero(layout.piece_wire == wi)[0]
+        pcs = np.nonzero(best_layout.piece_wire == wi)[0]
         layers_of.append(
             int(np.bincount(best_assign[pcs]).argmax()) if len(pcs) else -1
         )
     over = prseed.capacity_violations(problem, seeded, wires_poly, layers_of)
     rres = to_realize_result(
         problem,
-        layout,
+        best_layout,
         best_pos,
         best_assign,
         unrouted=unrouted,
@@ -176,7 +179,7 @@ def run(problem: PrProblem, params: PrParams | None = None) -> PrRun:
         relax_seconds=stats.seconds,
         wall_s=wall,
         blocked_frac=(stats.blocked / stats.steps) if stats.steps else 0.0,
-        n_segments=layout.n_spans,
+        n_segments=best_layout.n_spans,
         over_capacity=over,
         via_count=len(rres.vias),
         wire_mm=sum(t.length_mm for t in rres.tracks),
