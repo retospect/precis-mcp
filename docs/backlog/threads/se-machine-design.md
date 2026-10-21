@@ -216,6 +216,10 @@ off that gap until it closes.
 0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
    halves as the negative (Reto 2026-10-21); draft, Q1–Q4 open.
+0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
+   compliance/power-law/two-phase on the thin-gap kernel + external 3-D
+   backend; se carries BCs as patch measures (Reto 2026-10-21); draft,
+   follows flow-kernel slice 2.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
