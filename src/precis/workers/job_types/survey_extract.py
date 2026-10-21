@@ -27,11 +27,23 @@ parent's summary.
 ``measure_accept`` is also a standalone job_type — re-accepting a batch
 (more samples, a different bar, a new frontier model) never re-runs the
 extraction.
+
+Castor-trial knobs on the extract pass: ``params.measurands`` narrows
+the reader vocabulary to the named taxa plus their descendants (the
+default is the whole ``measurand_root`` subtree); chunks in
+bibliography/admin sections or with non-prose/table kinds are skipped
+unless ``params.include_all_sections``; a ``paused`` router result parks
+the slice rather than spending the consecutive-error budget — a
+saturated local slot is not a down lane. ``stats`` carries per-reason
+drop counters (``drop:<reason>``, ``unparseable_reply``, ``truncated``,
+``write_refused``, ``flag:<name>``, ``paused``) and every escalation
+carries ``chunk_kind`` plus ``stop_reason`` on reply failures.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +71,23 @@ log = logging.getLogger(__name__)
 
 _ACTOR = "survey-extract"
 _ESCALATION_CAP = 200
+
+#: Router ``stop_reason`` values meaning the reply hit the token cap.
+_TRUNCATION_STOPS = frozenset({"length", "max_tokens"})
+
+#: The chunk kinds the reader may see — body prose and tables carry a
+#: paper's numbers; cards, headings, captions, equations and bibliography
+#: rows don't (castor trial review finding 4).
+_EXTRACT_CHUNK_KINDS = frozenset({"paragraph", "table"})
+
+#: ``section_path`` tails that carry no first-party results — matched
+#: case-insensitively, leading section numbering allowed.
+_SKIP_SECTION_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*\.?\s*)?"
+    r"(?:references|bibliography|author contributions|acknowledg(e)?ments?)"
+    r"\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 # ── helpers shared by both job types ────────────────────────────────
@@ -132,15 +161,81 @@ def _measurand_root(store: Store, raw: Any) -> int | None:
     return int(row[0]) if row else None
 
 
-def _vocab(store: Store, root: int | None) -> dict[int, VocabEntry]:
-    """The measurand vocabulary the reader may name."""
-    if root is None:
+def _measurand_allow(store: Store, raw: Any) -> list[int] | None:
+    """``measurands`` param → resolved live taxon ref_ids, ``None`` when
+    unset. Entries are taxon slugs or ref_ids (a digit string counts as
+    an id); anything that is not a live taxon refuses the job up front."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise BadInput(
+            f"survey_extract: params.measurands must be a list, got {raw!r}",
+            next="pass measurands=[<taxon slug or ref_id>, …]",
+        )
+    if not raw:
+        return None
+    want_ids: list[int] = []
+    want_slugs: list[str] = []
+    bad: list[str] = []
+    for item in raw:
+        if isinstance(item, bool):
+            bad.append(repr(item))
+        elif isinstance(item, int):
+            want_ids.append(item)
+        elif isinstance(item, str):
+            text = item.strip()
+            if text.isdigit():
+                want_ids.append(int(text))
+            elif text:
+                want_slugs.append(text)
+            else:
+                bad.append(repr(item))
+        else:
+            bad.append(repr(item))
+    if bad:
+        raise BadInput(
+            "survey_extract: params.measurands entries must be taxon slugs "
+            f"or ids, got {bad}",
+            next="pass measurands=[<taxon slug or ref_id>, …]",
+        )
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta->>'slug' FROM refs "
+            "WHERE kind = 'taxon' AND retired_at IS NULL "
+            "AND (ref_id = ANY(%s) OR meta->>'slug' = ANY(%s))",
+            (want_ids, want_slugs),
+        ).fetchall()
+    found_ids = {int(r[0]) for r in rows}
+    found_slugs = {str(r[1]) for r in rows if r[1]}
+    missing = [str(i) for i in want_ids if i not in found_ids] + [
+        s for s in want_slugs if s not in found_slugs
+    ]
+    if missing:
+        raise BadInput(
+            f"survey_extract: unknown measurand(s) {missing}",
+            next=(
+                "pass live taxon slugs or ref_ids — "
+                "search(kind='taxon', q='<name>') lists them"
+            ),
+        )
+    return sorted(found_ids)
+
+
+def _vocab(
+    store: Store, root: int | None, allow: list[int] | None = None
+) -> dict[int, VocabEntry]:
+    """The measurand vocabulary the reader may name: ``root`` plus all
+    its descendants; when ``allow`` (the resolved ``measurands`` param)
+    is set, only those taxa plus their own descendants."""
+    seeds = allow if allow else ([root] if root is not None else [])
+    if not seeds:
         return {}
-    ids = [root]
-    try:
-        ids += [rid for rid, _depth, _axis in store.taxon_descendants(root)]
-    except Exception:
-        log.debug("survey_extract: taxon_descendants(%s) failed", root)
+    ids = list(seeds)
+    for seed in seeds:
+        try:
+            ids += [rid for rid, _depth, _axis in store.taxon_descendants(seed)]
+        except Exception:
+            log.debug("survey_extract: taxon_descendants(%s) failed", seed)
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, meta, title FROM refs WHERE ref_id = ANY(%s) "
@@ -154,6 +249,31 @@ def _vocab(store: Store, root: int | None) -> dict[int, VocabEntry]:
             m["name"] = str(title or "")
         out[int(rid)] = vocab_entry(int(rid), m)
     return out
+
+
+def _result_field(results: Any, location: str, key: str) -> Any:
+    """``results[i][key]`` for a proposal's ``results[i]`` location —
+    ``None`` when it cannot be resolved."""
+    if not isinstance(results, list) or not location.startswith("results["):
+        return None
+    try:
+        i = int(location[len("results[") : -1])
+    except ValueError:
+        return None
+    if not 0 <= i < len(results):
+        return None
+    raw = results[i]
+    return raw.get(key) if isinstance(raw, dict) else None
+
+
+def _skippable(chunk: dict[str, Any]) -> bool:
+    """A chunk the reader pass skips by policy: a kind that is not body
+    prose or a table, or a ``section_path`` tail naming a bibliography /
+    admin section."""
+    if chunk["chunk_kind"] not in _EXTRACT_CHUNK_KINDS:
+        return True
+    section = chunk.get("section")
+    return isinstance(section, str) and bool(_SKIP_SECTION_RE.match(section))
 
 
 def _escalate(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
@@ -183,6 +303,11 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "chunks_per_slice": {"type": ["integer", "null"]},
         "min_chars": {"type": ["integer", "null"]},
         "measurand_root": {"type": ["integer", "null"]},
+        "measurands": {
+            "type": ["array", "null"],
+            "items": {"type": ["integer", "string"]},
+        },
+        "include_all_sections": {"type": ["boolean", "null"]},
         "run_token": {"type": ["string", "null"]},
         "skip_accept": {"type": ["boolean", "null"]},
         "accept_model": {"type": ["string", "null"]},
@@ -230,8 +355,19 @@ def _fresh_stats() -> dict[str, int]:
         "written": 0,
         "skipped_dup": 0,
         "skipped_short": 0,
+        "skipped_section": 0,
         "dropped": 0,
+        "drop:bad_shape": 0,
+        "drop:literal_not_in_span": 0,
+        "drop:unknown_measurand": 0,
+        "drop:unresolvable_anchor": 0,
+        "unparseable_reply": 0,
+        "truncated": 0,
+        "write_refused": 0,
+        "value_form_inferred": 0,
+        "paused": 0,
         "llm_errors": 0,
+        "consecutive_errors": 0,
     }
 
 
@@ -266,7 +402,12 @@ def _process_chunk(
         placement=None if model_pin else "local",
         thinking=False,
         temperature=0.0,
-        max_tokens=2048,
+        # Unpinned on purpose: a caller cap beats the chain rung's
+        # max_tokens, and the prod llm.op.survey_extract row carries 4096
+        # (gpt-oss reasoning tokens eat a small cap and truncation then
+        # reads as unparseable JSON — the mismeasurement this split makes
+        # visible).
+        max_tokens=None,
         log_blobs=False,
     )
     stats["calls"] += 1
@@ -274,12 +415,13 @@ def _process_chunk(
         result = route(req)
     except Exception as exc:
         stats["llm_errors"] += 1
-        stats["consecutive_errors"] = stats.get("consecutive_errors", 0) + 1
+        stats["consecutive_errors"] += 1
         _escalate(
             escalations,
             {
                 "kind": "llm_exception",
                 "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
                 "detail": str(exc)[:200],
             },
         )
@@ -287,16 +429,21 @@ def _process_chunk(
             "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None
         )
     if getattr(result, "paused", False):
-        stats["consecutive_errors"] = stats.get("consecutive_errors", 0) + 1
+        # A saturated local slot is a wait, not an error — it must not
+        # burn the consecutive-error budget that fails the job on a
+        # genuinely down lane.
+        stats["paused"] += 1
         return "paused"
     if getattr(result, "error", None) or not getattr(result, "text", ""):
         stats["llm_errors"] += 1
-        stats["consecutive_errors"] = stats.get("consecutive_errors", 0) + 1
+        stats["consecutive_errors"] += 1
         _escalate(
             escalations,
             {
                 "kind": "llm_error",
                 "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "stop_reason": getattr(result, "stop_reason", None),
                 "detail": str(getattr(result, "error", "empty reply"))[:200],
             },
         )
@@ -308,11 +455,16 @@ def _process_chunk(
     model_used = getattr(result, "model", None) or model_pin
     if reply is None:
         stats["dropped"] += 1
+        stop = getattr(result, "stop_reason", None)
+        truncated = stop in _TRUNCATION_STOPS
+        stats["truncated" if truncated else "unparseable_reply"] += 1
         _escalate(
             escalations,
             {
-                "kind": "unparseable_reply",
+                "kind": "truncated" if truncated else "unparseable_reply",
                 "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "stop_reason": stop,
                 "detail": (result.text or "")[:200],
             },
         )
@@ -328,29 +480,55 @@ def _process_chunk(
     )
     for drop in outcome.dropped:
         stats["dropped"] += 1
+        reason = str(drop.get("reason") or "unknown")
+        stats[f"drop:{reason}"] = stats.get(f"drop:{reason}", 0) + 1
         _escalate(
             escalations,
             {
                 "kind": "dropped",
                 "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
                 "reason": drop.get("reason"),
                 "location": drop.get("location"),
                 "detail": str(drop.get("detail"))[:200],
             },
         )
     for oflag in outcome.flags:
+        flag_name = str(oflag.get("flag") or "unknown")
+        stats[f"flag:{flag_name}"] = stats.get(f"flag:{flag_name}", 0) + 1
         _escalate(
             escalations,
             {
                 "kind": "flag",
                 "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
                 "flag": oflag.get("flag"),
                 "location": oflag.get("location"),
                 "detail": str(oflag.get("detail"))[:200],
             },
         )
+    raw_results = reply.get("results") or []
     for proposal in outcome.proposals:
         stats["proposals"] += 1
+        # gr503034: an emitted value_form that isn't a registered form is
+        # dropped so the literal's shape infers one — count it so the
+        # trial sees how often castor invents a form.
+        raw_form = _result_field(raw_results, proposal.location, "value_form")
+        if raw_form is not None and proposal.output.value_form is None:
+            stats["value_form_inferred"] += 1
+            _escalate(
+                escalations,
+                {
+                    "kind": "value_form_inferred",
+                    "chunk": chunk["chunk_id"],
+                    "chunk_kind": chunk["chunk_kind"],
+                    "location": proposal.location,
+                    "detail": (
+                        f"emitted value_form {raw_form!r} discarded — "
+                        "inferred from the literal"
+                    ),
+                },
+            )
         try:
             run = ctx.store.insert_measure(
                 proposal.output,
@@ -363,11 +541,13 @@ def _process_chunk(
                 stats["skipped_dup"] += 1
             else:
                 stats["dropped"] += 1
+                stats["write_refused"] += 1
                 _escalate(
                     escalations,
                     {
                         "kind": "write_refused",
                         "chunk": chunk["chunk_id"],
+                        "chunk_kind": chunk["chunk_kind"],
                         "location": proposal.location,
                         "detail": str(exc)[:200],
                     },
@@ -375,11 +555,13 @@ def _process_chunk(
             continue
         stats["written"] += 1
         for flag in proposal.flags:
+            stats[f"flag:{flag}"] = stats.get(f"flag:{flag}", 0) + 1
             _escalate(
                 escalations,
                 {
                     "kind": "flag",
                     "chunk": chunk["chunk_id"],
+                    "chunk_kind": chunk["chunk_kind"],
                     "flag": flag,
                     "location": proposal.location,
                     "measure": run.output_id,
@@ -412,11 +594,12 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
         or state.get("run_token")
         or f"survey-extract:{ctx.ref_id}"
     )
-    stats = dict(state.get("stats") or _fresh_stats())
+    stats = {**_fresh_stats(), **dict(state.get("stats") or {})}
     escalations = list(state.get("escalations") or [])
     idx = int(state.get("idx") or 0)
     per_slice = _chunks_per_slice(params)
     min_chars = _min_chars(params)
+    include_all = bool(params.get("include_all_sections"))
     tier = tier_from_str(params.get("tier") or "big", default=Tier.BIG)
     model_pin = params.get("model") if isinstance(params.get("model"), str) else None
     refusal = placement_refusal(
@@ -438,7 +621,12 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             success=False,
         )
     title = _paper_title(ctx.store, paper)
-    vocab = _vocab(ctx.store, _measurand_root(ctx.store, params.get("measurand_root")))
+    allow = _measurand_allow(ctx.store, params.get("measurands"))
+    vocab = _vocab(
+        ctx.store,
+        (None if allow else _measurand_root(ctx.store, params.get("measurand_root"))),
+        allow,
+    )
 
     if ctx.is_cancel_requested():
         return Done(summary="survey_extract cancelled", success=False)
@@ -447,6 +635,9 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     while idx < len(chunks) and processed < per_slice:
         chunk = chunks[idx]
         idx += 1
+        if not include_all and _skippable(chunk):
+            stats["skipped_section"] += 1
+            continue
         if len(chunk["text"].strip()) < min_chars:
             stats["skipped_short"] += 1
             continue
@@ -464,10 +655,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             stats=stats,
             escalations=escalations,
         )
-        if outcome == "failed" or (
-            outcome == "paused"
-            and int(stats.get("consecutive_errors") or 0) >= _max_extract_errors()
-        ):
+        if outcome == "failed":
             return Done(
                 summary=(
                     f"survey_extract: the reader failed "
@@ -634,6 +822,7 @@ def _survey_done(
         "extraction_run": run_token,
         "stats": stats,
         "escalation_count": len(escalations),
+        "escalations": escalations,
     }
     if acceptance:
         meta["acceptance"] = acceptance

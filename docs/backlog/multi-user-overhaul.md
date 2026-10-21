@@ -45,7 +45,7 @@ Verified against the tree on 2026-10-21. One row per assumption; the
 |---|---|---|---|---|
 | 1 | `src/precis_web/auth.py` module docstring; `migrations/0131_web_users.sql` | every `web_users` row is fully authorised; no role column, no per-route ACL | any login is admin | S3 |
 | 2 | `src/precis_web/routes/secrets.py` (writes via `vault.set_secret`/`delete_secret`) | any login replaces or deletes any fleet secret | credential tampering by a non-admin | S3, S1 |
-| 3 | `src/precis_web/routes/settings.py::set`, `routes/budget.py`, `routes/factory.py` (`set_setting` callers) | any login edits app settings, spend caps, cloud enable, chain config | spend and routing changed by a non-admin | S2, S3 |
+| 3 | `src/precis_web/routes/settings.py::set_setting`, `routes/budget.py`, `routes/factory.py` (`set_setting` callers) | any login edits app settings, spend caps, cloud enable, chain config | spend and routing changed by a non-admin | S2, S3 |
 | 4 | `src/precis_web/routes/console.py` docstring | every verb incl. `put`/`delete`, as `web:owner` | full-write console for any login | S3, S6 |
 | 5 | `src/precis_web/routes/env.py`, `routes/agentlogs.py` | operator introspection (agent env, prompts, logs) readable by any login | prompt/config disclosure | S3 |
 | 6 | `src/precis_web/routes/account.py` (`discord_user_id` form), `src/asa_bot/identity.py::resolve_speaker` | a login self-claims any Discord snowflake; asa then attributes that Discord user's turns to the claimant | identity squat; writes attributed to the wrong account | S9 |

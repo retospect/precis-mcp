@@ -15,6 +15,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from precis.errors import BadInput
 from precis.store import Migrator, Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils.llm.router import Rung, Transport
@@ -26,6 +27,7 @@ from tests.extract_helpers import (
     fake_ctx,
     fe_reply,
     llm_result,
+    make_taxon,
     survey_world,
 )
 
@@ -308,6 +310,298 @@ class TestMeasureAcceptDispatch:
         monkeypatch.setattr(job, "route", lambda req: llm_result("unreadable output"))
         done, _ = drive(self._accept_meta(world), store, job.ACCEPT_SPEC)
         assert "FAILED" in done.summary
+
+
+class TestCastorTrialPrep:
+    """The fable-castor-trial-review job-side fixes: a ``measurands``
+    allow-list for the reader vocabulary, per-reason drop counters, and
+    the bibliography/non-prose skip (``include_all_sections`` restores
+    the old full walk)."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def test_measurands_allow_list_narrows_the_vocab(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        child = make_taxon(store, "nh3-faradaic-efficiency", parent=world["fe"])
+        allow = job._measurand_allow(store, ["faradaic-efficiency", world["ads"]])
+        assert allow == sorted([world["fe"], world["ads"]])
+        vocab = job._vocab(store, world["root"], allow)
+        assert set(vocab) == {world["fe"], world["ads"], child}
+        prompts: list[str] = []
+
+        def _capture(req: Any) -> Any:
+            prompts.append(req.prompt)
+            return llm_result('{"results": []}')
+
+        monkeypatch.setattr(job, "route", _capture)
+        done, _ = drive(
+            _extract_meta(world, measurands=["faradaic-efficiency"], skip_accept=True),
+            store,
+            job.SPEC,
+        )
+        assert done.success
+        assert prompts
+        assert "- faradaic-efficiency —" in prompts[0]
+        assert "- nh3-faradaic-efficiency —" in prompts[0]
+        assert "adsorption-energy" not in prompts[0]
+        assert "total-current-density" not in prompts[0]
+
+    def test_measurands_unknown_slug_refuses_up_front(self, world: dict) -> None:
+        store = world["store"]
+        with pytest.raises(BadInput, match="unknown measurand"):
+            drive(
+                _extract_meta(world, measurands=["not-a-taxon"], skip_accept=True),
+                store,
+                job.SPEC,
+            )
+        with pytest.raises(BadInput, match="must be a list"):
+            drive(
+                _extract_meta(
+                    world, measurands="faradaic-efficiency", skip_accept=True
+                ),
+                store,
+                job.SPEC,
+            )
+
+    def test_per_reason_drop_counters(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        reply = {
+            "results": [
+                {"measurand": "nh3-yield-rate", "literal": "95", "anchor": "0"},
+                {
+                    "measurand": "faradaic-efficiency",
+                    "literal": "95",
+                    "anchor": "99",
+                },
+                {
+                    "measurand": "faradaic-efficiency",
+                    "literal": "999",
+                    "anchor": "0",
+                },
+                {
+                    "measurand": "faradaic-efficiency",
+                    "literal": "95",
+                    "anchor": "0",
+                    "bogus": True,
+                },
+                {
+                    "subject": "Cu NWA",
+                    "measurand": "faradaic-efficiency",
+                    "literal": "95",
+                    "unit": "%",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                    "inputs": [
+                        {
+                            "condition": "product",
+                            "measurand": "reaction-product",
+                            "literal": "NH3",
+                        },
+                        {"condition": "product", "bogus_input_field": 1},
+                    ],
+                },
+            ]
+        }
+        replies = iter([json.dumps(reply), "not json", '{"results": []}'])
+        monkeypatch.setattr(job, "route", lambda req: llm_result(next(replies)))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["drop:unknown_measurand"] == 1
+        assert stats["drop:unresolvable_anchor"] == 1
+        assert stats["drop:literal_not_in_span"] == 1
+        assert stats["drop:bad_shape"] == 1
+        assert stats["unparseable_reply"] == 1
+        assert stats["truncated"] == 0
+        assert stats["flag:bad_shape"] == 1
+        assert stats["written"] == 1
+        assert stats["dropped"] == 5
+        esc = done.summary_meta["escalations"]
+        assert all(e.get("chunk_kind") == "paragraph" for e in esc)
+        assert "stop_reason" in next(e for e in esc if e["kind"] == "unparseable_reply")
+
+    def test_write_refused_is_counted(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+
+        def _refuse(*a: Any, **k: Any) -> Any:
+            raise BadInput("tier check: measured needs an own_work anchor")
+
+        monkeypatch.setattr(store, "insert_measure", _refuse)
+        replies = iter([json.dumps(fe_reply()), '{"results": []}', '{"results": []}'])
+        monkeypatch.setattr(job, "route", lambda req: llm_result(next(replies)))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["write_refused"] == 1
+        assert stats["written"] == 0
+        esc = done.summary_meta["escalations"]
+        assert esc[0]["kind"] == "write_refused"
+        assert esc[0]["chunk_kind"] == "paragraph"
+
+    def test_value_form_inferred_is_counted(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr503034: a value_form that is not a registered form is
+        discarded so the literal's shape infers one — the trial counts
+        how often castor invents a form, and keeps the emitted form in
+        the escalation detail."""
+        store = world["store"]
+        reply = {
+            "results": [
+                {
+                    "subject": "Cu NWA",
+                    "measurand": "faradaic-efficiency",
+                    "literal": "95",
+                    "unit": "%",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                    "value_form": "point-estimate",
+                },
+                {
+                    "subject": "Cu NWA",
+                    "measurand": "faradaic-efficiency",
+                    "literal": "-0.5",
+                    "unit": "V",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                    "value_form": "point",
+                    "inputs": [],
+                },
+            ]
+        }
+        replies = iter([json.dumps(reply), '{"results": []}', '{"results": []}'])
+        monkeypatch.setattr(job, "route", lambda req: llm_result(next(replies)))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["value_form_inferred"] == 1
+        esc = done.summary_meta["escalations"]
+        inferred = [e for e in esc if e["kind"] == "value_form_inferred"]
+        assert len(inferred) == 1
+        assert "point-estimate" in inferred[0]["detail"]
+
+    def test_summary_meta_carries_the_counts(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result("not json"))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["unparseable_reply"] == 3
+        assert stats["paused"] == 0
+        assert done.summary_meta["escalation_count"] == 3
+        assert len(done.summary_meta["escalations"]) == 3
+        assert "unparseable_reply=3" in done.summary
+
+    def test_bibliography_and_non_prose_chunks_are_skipped(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="[1] Doe et al. reported 42% FE for this step.",
+            section_path=["Results", "References"],
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text="We thank the referees for careful reading.",
+            section_path=["Body", "7. Acknowledgements"],
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=5,
+            text="Figure 3. Polarization curves at 100 mA cm-2.",
+            chunk_kind="figure",
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=6,
+            text="[2] Roe, J. Catal. 13 (2021) 1000.",
+            chunk_kind="references",
+        )
+        calls: list[Any] = []
+
+        def _record(req: Any) -> Any:
+            calls.append(req)
+            return llm_result('{"results": []}')
+
+        monkeypatch.setattr(job, "route", _record)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["skipped_section"] == 4
+        assert stats["calls"] == 3
+        assert len(calls) == 3
+        assert "skipped_section=4" in done.summary
+
+    def test_include_all_sections_disables_the_skip(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="[1] Doe et al. reported 42% FE for this step.",
+            chunk_kind="references",
+            section_path=["Body", "References"],
+        )
+        calls: list[Any] = []
+
+        def _record(req: Any) -> Any:
+            calls.append(req)
+            return llm_result('{"results": []}')
+
+        monkeypatch.setattr(job, "route", _record)
+        done, _ = drive(
+            _extract_meta(world, skip_accept=True, include_all_sections=True),
+            store,
+            job.SPEC,
+        )
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["skipped_section"] == 0
+        assert stats["calls"] == 4
+
+
+def _seed_body_chunk(
+    store: Store,
+    paper: int,
+    *,
+    ord_: int,
+    text: str,
+    chunk_kind: str = "paragraph",
+    section_path: list[str] | None = None,
+) -> int:
+    """A body chunk carrying a ``section_path`` (``seed_chunk`` sets none)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "section_path) VALUES (%s, 'system', %s, %s, %s, %s) "
+            "RETURNING chunk_id",
+            (paper, ord_, chunk_kind, text, section_path or []),
+        ).fetchone()
+        assert row is not None
+        conn.commit()
+        return int(row[0])
 
 
 # ── migration 0212 ───────────────────────────────────────────────────
