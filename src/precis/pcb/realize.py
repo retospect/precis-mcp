@@ -75,6 +75,7 @@ from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.clearance import Body
 from precis.pcb.geom import Point, dist, dist_point_to_segment
 from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
     NO_NET,
     NO_PIN,
     FootprintPad,
@@ -86,6 +87,7 @@ from precis.pcb.ir import (
     pin_point,
     plane_layers_of,
     routable_layers,
+    world_courtyard_polygons,
 )
 from precis.pcb.planes import (
     POWER_NET_CLASSES,
@@ -180,6 +182,13 @@ class RealizeConfig:
     #: Cap on JUMPERS (two vias plus a detour-layer trace,
     #: :func:`_try_plane_jumper`) placed for one net.
     max_plane_jumpers_per_net: int = 4
+    #: Extra wire-length millimetres a via inside a part's courtyard
+    #: costs the A* (:func:`vroute.Request.via_body_cost_mm`) — the board
+    #: profile's ``via_body_cost_mm`` (prototype 6.0; gr502369). A soft
+    #: cost, never a keep-out: the search pays up to this much extra
+    #: wire to keep a via out from under a body. ``0.0`` is off — prod's
+    #: default, today's behaviour exactly.
+    via_body_cost_mm: float = 0.0
 
 
 # ── the closed-form geometric primitive ──────────────────────────────────
@@ -971,6 +980,10 @@ class _RouteContext:
     #: ``(layer, polygon, owner net name)`` areas no other net's track may
     #: cross (:func:`_track_reserved_regions`).
     reserved_regions: tuple[tuple[int, Any, str], ...] = ()
+    #: The placed parts' courtyards as shapely polygons
+    #: (:func:`_via_body_zones`), handed to every ``vroute.Request`` as
+    #: ``via_body_zones``; empty when ``config.via_body_cost_mm`` is 0.
+    via_body_zones: tuple[Any, ...] = ()
 
 
 def _route_context(
@@ -1073,6 +1086,36 @@ def _route_context(
         plane_served_pins,
         net_layer_clearance,
         _track_reserved_regions(ir, config),
+        _via_body_zones(ir) if config.via_body_cost_mm > 0 else (),
+    )
+
+
+def _via_body_zones(ir: PcbIR) -> tuple[Any, ...]:
+    """Every placed part's courtyard as a shapely polygon — the regions a
+    via pays ``RealizeConfig.via_body_cost_mm`` extra to sit inside
+    (:attr:`_RouteContext.via_body_zones`).
+
+    THE same courtyard geometry :func:`precis.pcb.session.
+    placement_drc_findings` feeds its overlap checks and
+    :func:`precis.pcb.drc.vias_in_courtyard_count` measures
+    ``vias_under_part`` with — one helper, one recipe (the placement
+    clearance and the pinless fallback), so the soft cost and the count
+    cannot drift. A via under EITHER side's part is unreachable, so
+    unlike ``courtyard_overlap``'s ``bottom`` split there is none here.
+    """
+    # Local import: cost pulls the whole optimizer objective stack, which
+    # this function needs only for the pinless-fallback constant — the
+    # same lazy pattern ``session.placement_drc_findings`` uses.
+    from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
+
+    return tuple(
+        _ShapelyPolygon(poly)
+        for poly in world_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+        if poly
     )
 
 
@@ -1209,6 +1252,7 @@ def _static_space(
         ctx.rules_by_net,
         ctx.pad_geoms,
         ink_field=ctx.ink_field,
+        via_body_zones=ctx.via_body_zones,
         served_pins=ctx.plane_served_pins,
     )
     unrouted: list[int] = []
@@ -1451,6 +1495,8 @@ def _route_seg_vector(
                 bounds=bounds,
                 via=via,
                 via_layers=tuple(range(n)),
+                via_body_cost_mm=config.via_body_cost_mm,
+                via_body_zones=ctx.via_body_zones,
                 max_expansions=max(1, int(config.max_expansions) - spent[0]),
             )
             stats = {}
@@ -2579,6 +2625,7 @@ def _plane_fanout(
     rules_by_net: dict[int, NetRules],
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None = None,
+    via_body_zones: tuple[Any, ...] = (),
     served_pins: frozenset[int] = frozenset(),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
@@ -2786,6 +2833,7 @@ def _plane_fanout(
                 placed_via_sites + held_sites(),
                 pin.edge_clip,
                 ink_field=ink_field,
+                via_body_zones=via_body_zones,
                 inside=pin.region_area,
                 held_legs=held_legs(),
                 held_sites=held_sites(),
@@ -2994,6 +3042,7 @@ def _drop_via_site(
     placed_via_sites: list[tuple[float, float, float]],
     edge_clip: tuple[float, float, float, float] | None = None,
     ink_field: _InkField | None = None,
+    via_body_zones: tuple[Any, ...] = (),
     inside: Any = None,
     banned_sites: tuple[Point, ...] = (),
     held_sites: list[tuple[float, float, float]] | None = None,
@@ -3022,6 +3071,12 @@ def _drop_via_site(
     sweep tries, the first one whose via annulus does not touch drawn
     courtyard ink is returned; if none is ink-free, the first legal
     candidate found is returned instead of failing the net.
+
+    **Defers to courtyard BODIES the same soft way.** ``via_body_zones``
+    (:func:`_via_body_zones`, the profile's ``via_body_cost_mm`` zones —
+    gr502369): a legal candidate under a part's courtyard loses to a
+    later legal one in the clear. Same fallback — a site under a body is
+    never refused, only priced behind the free ones.
 
     The via asks :meth:`vroute.Space.clears` with ``via_site=True`` on
     every layer its barrel spans — which is what makes it clear its OWN
@@ -3103,10 +3158,19 @@ def _drop_via_site(
                 continue
             if fallback_site is None:
                 fallback_site = site
-            if ink_field is None or not ink_field.clips(
+            if ink_field is not None and ink_field.clips(
                 site[0], site[1], via_radius_mm
             ):
-                return site
+                continue
+            # The profile's via-under-body soft cost (gr502369), the same
+            # shape as the ink deference above: a legal site out from
+            # under every courtyard wins over one inside — never a
+            # keep-out, the first-legal fallback still stands.
+            if via_body_zones and any(
+                zone.covers(_ShapelyPoint(*site)) for zone in via_body_zones
+            ):
+                continue
+            return site
     return fallback_site
 
 
@@ -3551,6 +3615,7 @@ def _stitch_one_net(
     n_layers: int,
     bounds: tuple[float, float, float, float],
     floor_width_by_layer: dict[int, float] | None = None,
+    via_body_zones: tuple[Any, ...] = (),
 ) -> tuple[list[RealizedVia], list[RealizedTrack], int, int, str]:
     """One net's stitching attempt, both stages of the module docstring.
 
@@ -3703,7 +3768,21 @@ def _stitch_one_net(
         share = max(1, config.max_sprinkle_vias_per_overlap // max(1, len(parts)))
         for part in parts:
             placed = 0
-            for x, y in _spread_order(_grid_candidates(part, pitch), share):
+            cands = list(_spread_order(_grid_candidates(part, pitch), share))
+            # The profile's via-under-body soft cost (gr502369): free
+            # candidates are offered before courtyard ones — a soft
+            # preference, never a keep-out, so the share's budget is
+            # unchanged when only under-body sites exist.
+            if via_body_zones:
+                under = {
+                    (x, y)
+                    for x, y in cands
+                    if any(z.covers(_ShapelyPoint(x, y)) for z in via_body_zones)
+                }
+                cands = [c for c in cands if c not in under] + [
+                    c for c in cands if c in under
+                ]
+            for x, y in cands:
                 if placed >= share:
                     break
                 if try_via(x, y, lo, hi):
@@ -3963,6 +4042,7 @@ def _stitch_plane_fragments(
             n_layers,
             bounds,
             floor_width_by_layer,
+            ctx.via_body_zones,
         )
         extra_vias += net_vias
         extra_tracks += net_tracks
@@ -4410,6 +4490,8 @@ def _rescue_plane_pins(
                         bounds=bounds,
                         via=vroute.ViaSpec(rules.via_dia_mm, rules.via_drill_mm),
                         via_layers=tuple(range(n_layers)),
+                        via_body_cost_mm=config.via_body_cost_mm,
+                        via_body_zones=ctx.via_body_zones,
                         max_expansions=config.max_expansions,
                     ),
                 )

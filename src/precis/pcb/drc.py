@@ -2526,6 +2526,28 @@ Courtyard = tuple[str, list[tuple[float, float]]]
 HoleKeepout = tuple[str, list[tuple[float, float]], str | None]
 
 
+def vias_in_courtyard_count(
+    vias: Iterable[tuple[float, float]],
+    courtyards: Iterable[Sequence[tuple[float, float]]],
+) -> int:
+    """How many of ``vias``' (x, y) centres lie inside a part's courtyard —
+    the ``vias_under_part`` measurement (gr502369). A via under EITHER
+    side's part counts: a barrel is unreachable whichever face the body
+    is on, so there is no ``courtyard_bottom`` split here.
+
+    ``courtyards`` is the world-coordinate polygon list
+    :func:`precis.pcb.ir.world_courtyard_polygons` returns — the SAME
+    geometry :func:`precis.pcb.realize._via_body_zones` hands the
+    router's ``via_body_cost_mm`` soft cost, so the count and the cost
+    cannot drift."""
+    polys = [Polygon(ring) for ring in courtyards if len(ring) >= 4]
+    pts = [Point(float(x), float(y)) for x, y in vias]
+    if not polys or not pts:
+        return 0
+    tree = STRtree(polys)
+    return sum(any(polys[int(i)].covers(pt) for i in tree.query(pt)) for pt in pts)
+
+
 def check_courtyard_overlap(
     courtyards: list[Courtyard],
     *,
@@ -5038,4 +5060,5 @@ __all__ = [
     "run_geometric_drc",
     "run_placement_drc",
     "severity_at",
+    "vias_in_courtyard_count",
 ]

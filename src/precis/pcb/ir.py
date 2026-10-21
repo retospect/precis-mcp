@@ -2573,6 +2573,43 @@ def instance_courtyard_polygons(
     ]
 
 
+def world_courtyard_polygons(
+    ir: PcbIR, *, clearance_mm: float, fallback_half_extent_mm: float = 0.0
+) -> list[list[tuple[float, float]]]:
+    """Every placed instance's courtyard polygon in BOARD coordinates,
+    indexed by instance id — ``[]`` for an unplaced (NaN-pose) instance.
+    :func:`instance_courtyard_polygons` placed through
+    :func:`precis.pcb.landpattern.place_points`: the one recipe placement
+    DRC (:func:`precis.pcb.session.placement_drc_findings`), the router's
+    via-under-body cost zones (:func:`precis.pcb.realize._via_body_zones`)
+    and the ``via_under_part`` count
+    (:func:`precis.pcb.drc.vias_in_courtyard_count`) all share, so the
+    reserved shape, the soft cost and the measurement cannot drift.
+    ``mirrored`` stays ``False`` for bottom-side parts, the same call
+    every existing consumer makes (a soft preference, not a clearance
+    guarantee — :func:`precis.pcb.silk.world_courtyard_rings`'s docstring
+    carries the reasoning)."""
+    out: list[list[tuple[float, float]]] = []
+    for i, poly in enumerate(
+        instance_courtyard_polygons(
+            ir,
+            clearance_mm=clearance_mm,
+            fallback_half_extent_mm=fallback_half_extent_mm,
+        )
+    ):
+        x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
+        if not poly or math.isnan(x) or math.isnan(y):
+            out.append([])
+            continue
+        rot = float(ir.inst_rot[i])
+        out.append(
+            landpattern.place_points(
+                poly, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot
+            )
+        )
+    return out
+
+
 def instance_land_rects(ir: PcbIR) -> list[np.ndarray]:
     """Every instance's solder lands as ``(cx, cy, half_w, half_h)`` rows
     in its own footprint-local frame, indexed by instance id — the same

@@ -135,6 +135,67 @@ def test_a_via_never_sits_in_a_pad_of_any_net() -> None:
         assert k.gap(via, own.body) >= _CL - 1e-7
 
 
+# ── via-under-body cost (gr502369) ──────────────────────────────────────
+#
+# A part's courtyard is a soft price zone, not a keep-out: a via site
+# inside one pays ``via_body_cost_mm`` on top of ``via_cost_mm``, so the
+# search pays up to that much extra wire before it drops a via under a
+# body (Reto 2026-10-21). Both fixtures route (5, 5) → (15, 5) with the
+# terminals pinned to layer 0, a wall on layer 0 only, and the whole
+# board one body zone — so the choice is exactly "wire detour over the
+# wall end" (0 vias) vs "two layer-0 vias under a body" (~10 mm wire +
+# 2×(1 + cost)).
+
+_WALL_BODY_ZONE = Polygon([(0, 0), (20, 0), (20, 20), (0, 20)])
+
+
+def _body_cost_req(wall_top: float, cost: float) -> tuple[list[v.Obstacle], v.Request]:
+    wall = _wall("W", (10.0, 0.0), (10.0, wall_top), width=0.5, layers=(0,))
+    req = _req(
+        (5.0, 5.0),
+        (15.0, 5.0),
+        layers=(0, 1),
+        via=v.ViaSpec(0.6, 0.3),
+        terminal_layers=(0,),
+        via_body_cost_mm=cost,
+        via_body_zones=(_WALL_BODY_ZONE,),
+        # Board-wide window, so the over-the-top detour competes inside
+        # the first search window at both wall heights.
+        window_mm=16.0,
+    )
+    return [wall], req
+
+
+def test_a_short_detour_beats_two_vias_under_a_body() -> None:
+    """The detour over the wall adds less wire than the two vias' body
+    surcharge (~19 mm path vs ~24 mm), so zero vias are placed."""
+    obs, req = _body_cost_req(13.0, 6.0)
+    path = v.route(_space(obs), req)
+    assert path is not None
+    assert path.vias == []
+    assert {layer for layer, _pts in path.runs} == {0}
+
+
+def test_a_long_detour_loses_to_two_vias_under_a_body() -> None:
+    """Same geometry, taller wall: the detour now costs more wire than
+    the 2×6 mm surcharge (~31 mm vs ~24 mm), so the vias are placed —
+    inside the zone, the only via sites on offer."""
+    obs, req = _body_cost_req(19.0, 6.0)
+    path = v.route(_space(obs), req)
+    assert path is not None
+    assert len(path.vias) == 2
+    assert all(_WALL_BODY_ZONE.covers(Point(p)) for p in path.vias)
+
+
+def test_the_same_vias_are_free_without_the_body_cost() -> None:
+    """Control: the short-detour geometry with the cost off takes the
+    vias — the surcharge, not the geometry, bought the detour."""
+    obs, req = _body_cost_req(13.0, 0.0)
+    path = v.route(_space(obs), req)
+    assert path is not None
+    assert len(path.vias) == 2
+
+
 def test_the_expansion_budget_is_shared_by_both_windows() -> None:
     """Work, not the clock, bounds a search: a request that cannot reach
     its goal spends at most ``max_expansions`` over both windows."""

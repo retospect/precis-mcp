@@ -11,9 +11,10 @@ through :func:`profile_rules` only; none branches on the profile name.
 value is a floor/ceiling applied on top of the fab capability row, never
 below ``jlc_min``.
 
-The capability overlay (:func:`precis.pcb.capabilities.apply_profile`) and
-DRC strictness consume it; router cost, thermals and silk arrive in later
-slices of docs/backlog/pcb-board-profile-prototype.md.
+The capability overlay (:func:`precis.pcb.capabilities.apply_profile`),
+DRC strictness and the router's via-under-body cost
+(``RealizeConfig.via_body_cost_mm``) consume it; thermals and silk arrive
+in later slices of docs/backlog/pcb-board-profile-prototype.md.
 """
 
 from __future__ import annotations

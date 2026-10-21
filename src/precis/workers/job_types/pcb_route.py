@@ -63,6 +63,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import DANGLING_NET_NOTE, format_warm_start
+from precis.pcb import drc as pcb_drc
 from precis.pcb import feedback as pcb_feedback
 from precis.pcb import matching as pcb_matching
 from precis.pcb import pinswap as pcb_pinswap
@@ -71,14 +72,16 @@ from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
-from precis.pcb.cost import outline_bbox
+from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM, outline_bbox
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
     UNSET_LAYER,
     net_member_counts,
     pin_point,
     plane_layers_of,
     segment_points,
+    world_courtyard_polygons,
 )
 from precis.pcb.optimize import (
     LOOP_MAX_ROUNDS,
@@ -1015,9 +1018,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # one fetch, two consumers, not a second round-trip.
     footprints = _footprints(ir)
     try:
-        fab_caps = pcb_session.board_capability(
-            ir.stackup, pcb_profiles.board_profile(board.get("meta"))
-        )
+        profile = pcb_profiles.board_profile(board.get("meta"))
+        fab_caps = pcb_session.board_capability(ir.stackup, profile)
     except ValueError as exc:
         ctx.record_failure(f"pcb_route: {exc}", failure_class="infra")
         return
@@ -1145,6 +1147,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
+        # The profile's soft cost for a via under a part's courtyard
+        # (gr502369); None on prod ⇒ 0, today's behaviour exactly.
+        via_body_cost_mm=pcb_profiles.profile_rules(profile).via_body_cost_mm or 0.0,
     )
 
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
@@ -1882,6 +1887,17 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         groups_line = f"support groups: {'; '.join(result.support_groups)}\n"
     snapshot_pins = pcb_resolved.snapshot_pins(ir, declared)
     n_rebound = sum(1 for e in snapshot_pins if e["net"] != e["declared"])
+    # The profile's measured effect (docs/backlog/pcb-board-profile-
+    # prototype.md item 4): realized vias under a part's courtyard,
+    # counted on the same geometry the router's soft cost pays against.
+    vias_under_part = pcb_drc.vias_in_courtyard_count(
+        [(v.x, v.y) for v in rres.vias],
+        world_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        ),
+    )
     attempt_summary = (
         f"{placement_summary}"
         f"routed {len(rows)} net(s): {n_realized} realized, "
@@ -1892,7 +1908,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{n_placement_errors} pre-route DRC error(s), "
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
-        f"{match_summary}{pin_swap_summary}{loop_line}\n\n" + groups_line + digest_text
+        f"{match_summary}{pin_swap_summary}{loop_line}\n"
+        f"vias_under_part: {vias_under_part}\n\n" + groups_line + digest_text
     )
 
     if worse:

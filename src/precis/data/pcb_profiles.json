@@ -28,7 +28,7 @@
         },
         "via_body_cost_mm": {
           "value": 6.0,
-          "why": "soft router cost for a via under a part's courtyard, double the production 3.0; a cost, never a keep-out"
+          "why": "soft router cost for a via under a part's courtyard, in wire-length mm; a detour of up to this much extra wire beats the via; a cost, never a keep-out"
         },
         "via_density_max_per_mm2": {
           "value": 0.25,

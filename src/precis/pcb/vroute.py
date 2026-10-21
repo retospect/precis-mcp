@@ -105,7 +105,14 @@ class Request:
     ``layers`` is the hard set a TRACK may run on; a terminal may sit on
     a layer outside it (a surface pad's mount side under a layer
     assignment) — that layer then admits only pad→via-site stub legs, the
-    old grid's ``start_layer``/``goal_layer`` escape."""
+    old grid's ``start_layer``/``goal_layer`` escape.
+
+    ``via_body_zones`` are soft cost regions (part courtyards, realized as
+    shapely polygons): a via site inside one pays
+    ``via_body_cost_mm`` on top of ``via_cost_mm`` — both in wire-length
+    millimetres, so the search prefers a detour of up to that much extra
+    wire over a via under a body (gr502369; Reto 2026-10-21). A soft
+    cost, never a keep-out; ``0.0`` prices every via site the same."""
 
     net: str
     width_mm: float
@@ -116,6 +123,8 @@ class Request:
     via: ViaSpec | None = None
     via_layers: tuple[int, ...] = ()
     via_cost_mm: float = 1.0
+    via_body_cost_mm: float = 0.0
+    via_body_zones: tuple[Any, ...] = ()
     bend_cost_mm: float = 0.05
     window_mm: float = 3.0
     max_expansions: int = 6000
@@ -516,6 +525,26 @@ def _route_in_window(
             c for c, ok in zip(kept, fits.tolist(), strict=True) if ok
         ]
 
+    body_tree = (
+        STRtree(req.via_body_zones)
+        if req.via_body_cost_mm and req.via_body_zones
+        else None
+    )
+    body_memo: dict[tuple[float, float], bool] = {}
+
+    def under_body(p: Coord) -> bool:
+        """Is ``p`` inside a ``via_body_zones`` polygon — a site whose via
+        pays ``via_body_cost_mm`` on top of the flat ``via_cost_mm``?"""
+        if body_tree is None:
+            return False
+        key = (round(p[0], 9), round(p[1], 9))
+        if key not in body_memo:
+            pt = Point(p)
+            body_memo[key] = any(
+                req.via_body_zones[int(i)].covers(pt) for i in body_tree.query(pt)
+            )
+        return body_memo[key]
+
     via_ok: dict[tuple[float, float], bool] = {}
 
     def via_fits(p: Coord) -> bool:
@@ -674,6 +703,8 @@ def _route_in_window(
                     node_at[other][key] = j
                 nxt = (other, j)
                 new = cost + req.via_cost_mm
+                if under_body(here):
+                    new += req.via_body_cost_mm
                 if new < g.get(nxt, math.inf) - 1e-12:
                     g[nxt] = new
                     parent[nxt] = (state, [here], True)

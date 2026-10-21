@@ -893,8 +893,7 @@ def placement_drc_findings(
     from precis.pcb import edge_mate as pcb_edge_mate
     from precis.pcb import realize as pcb_realize
     from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
-    from precis.pcb.ir import COURTYARD_CLEARANCE_MM, instance_courtyard_polygons
-    from precis.pcb.landpattern import place_points
+    from precis.pcb.ir import COURTYARD_CLEARANCE_MM, world_courtyard_polygons
 
     layers = [str(layer.get("name")) for layer in ir.stackup]
     model = {
@@ -907,24 +906,19 @@ def placement_drc_findings(
     # Same clearance + pinless-fallback the PLACER reserved with
     # (`optimize.py`/`_render_drc` both pass exactly these), so this checks
     # the shape placement actually held space for, not a second one.
-    local = instance_courtyard_polygons(
-        ir,
-        clearance_mm=COURTYARD_CLEARANCE_MM,
-        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
-    )
     courtyards: list[tuple[str, list[tuple[float, float]]]] = []
     courtyard_bottom: dict[str, bool] = {}
-    for i in range(ir.n_instances):
-        x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
-        if x != x or y != y:  # NaN != NaN — never seeded, no place to check
-            continue
-        poly = local[i]
+    for i, poly in enumerate(
+        world_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+    ):
         if not poly:
             continue
         refdes = str(ir.instance_refdes[i])
-        courtyards.append(
-            (refdes, place_points(poly, cx=x, cy=y, rot_deg=float(ir.inst_rot[i])))
-        )
+        courtyards.append((refdes, poly))
         courtyard_bottom[refdes] = bool(ir.inst_bottom[i])
 
     return pcb_drc.run_placement_drc(
