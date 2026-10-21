@@ -186,8 +186,8 @@ Q11–Q18 approved as recommended (`precis setup`; extras only with
 `--install-extras`; `~/.config/precis/precis.env`; vault key via
 `ALTER DATABASE`; CI in a real python:3.13-slim container; generated
 passwords shown once; admin screen disables, `rm` stays CLI; Compose
-quickstart after O2). Agents never see secret values (multi-user Q5
-ruling): `precis setup` writes secrets for service code only.
+quickstart after O2). Secret values never reach model context (multi-user Q5
+ruling): `precis setup` never prints one.
 
 ## Open questions for Reto (each with a recommendation)
 

@@ -242,22 +242,22 @@ skills `precis-overview`, `precis-status`.
 
 Q1–Q10 approved as recommended, with two changes:
 
-- **Q5, changed: agents never see secret values.** Reto: "the code that
-  starts the agent needs to know, but the agents should not be able to
-  see." An *agent* here is any LLM-driven caller (`dev-agent`: Claude/Codex
-  sessions over stdio or the shared MCP, cluster quest/job agents, Devins).
-  The *launcher* is service code (workers, the MCP daemon's handlers, job
-  runners) running as `precis_system`/`precis_ingress`. Rule: secret values,
-  `svc/api/*` included, are read only by service code and used server-side;
-  no agent-facing surface (a verb's result, a skill, a log line, the env
-  of a process an agent controls) returns or exposes one. An agent gets
-  the capability (the handler makes the paid call), never the key.
-  Consequence the build must resolve: a stdio session runs handler code in
-  its own process with its own DSN, so `dev-agent` gets no vault read;
-  paid-API calls from a stdio session route through the shared daemon or a
-  worker job. Keys put in a launched agent's environment (e.g. a model API
-  key for a cluster agent) move behind a server-side proxy where feasible;
-  each remaining exception is listed in this file with its reason.
+- **Q5, changed: the LLM never sees secret values; code may read them.**
+  Reto: "the code that starts the agent needs to know, but the agents
+  should not be able to see", refined the same day: "The code can access
+  the keys, but the LLM should not see the keys; we don't want to make it
+  super weird or hard just yet." The `dev-agent` secrets column stands as
+  proposed (`svc/api/*` readable by the code, never `svc/infra/*` or
+  `user/*`); handler code in a stdio session's own process may read it, and
+  a launched agent may keep a key in its environment. Rule: no secret value
+  enters model context. No verb result, skill, error message, log line,
+  prompt or job transcript carries one; the vault editor stays write-only
+  and the probe reports status, never the value. Acceptance: a test that
+  sets a known canary secret, exercises the paid-call paths, error paths
+  and `precis doctor`, and greps every agent-facing output for the canary.
+  Accepted risk for now (same lax trust as Q2): an agent with a shell can
+  still read its own process environment or the config file; no proxy or
+  routing through the shared daemon is built for this.
 - **Q8, extended: Discord is private too.** Discord-sourced content (asa
   turns, `message`/`conv` rows from Discord) defaults private to its
   bound speaker, alongside memory, draft, conv, profile, anki and email.
