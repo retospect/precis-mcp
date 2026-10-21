@@ -25,11 +25,11 @@ from precis.workers.hub_refine import (
 from tests.workers._helpers import make_mock_bge_m3
 from tests.workers.test_hub_refine import (
     _VERIFY_NO,
-    _VERIFY_PATH,
     _VERIFY_YES,
     _hub_meta,
     _seed_hub,
     _seed_paper_chunk,
+    patch_verify,
 )
 
 _PAPER_CHUNKS_PATH = "precis.workers.hub_refine.paper_chunks"
@@ -125,7 +125,7 @@ def test_caption_with_the_missing_term_is_judged_and_attached(store: Any) -> Non
         embedder,
         [(1, "Figure 3 TEM image of the crystals along the [001] axis.")],
     )
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     calls = _gap_calls(mock_verify)
@@ -156,7 +156,7 @@ def test_rejected_chunk_is_memoed_and_never_rejudged(store: Any) -> None:
     g = _gap_hub(store, embedder, [(1, "Figure 3 TEM image of the crystals.")])
     from precis.store.types import Tag
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
         assert len(_gap_calls(mock_verify)) == 1
         # Force a second pass (the trigger pass's re-mark): nothing new to judge.
@@ -181,7 +181,7 @@ def test_per_term_cap_judges_one_of_many(store: Any) -> None:
         embedder,
         [(o, f"Figure {o} TEM micrograph number {o}.") for o in range(1, 7)],
     )
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert len(_gap_calls(mock_verify)) == method_gap.PER_TERM == 1
     assert len(_hub_meta(store, g["hub"])["reground_seen"]) == 1
@@ -196,7 +196,7 @@ def test_covered_claim_makes_no_llm_call(store: Any) -> None:
     _add_chunks(store, paper, [(1, "Figure 3 TEM image of the crystals.")])
     _attach_verified(store, hub, paper, chunk)
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         patch(_PAPER_CHUNKS_PATH, wraps=hub_refine.paper_chunks) as spy,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -229,7 +229,7 @@ def test_number_only_gap_makes_no_llm_call(store: Any) -> None:
         check_retraction=False,
     )
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         patch(_PAPER_CHUNKS_PATH, wraps=hub_refine.paper_chunks) as spy,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -254,7 +254,7 @@ def test_si_chunk_of_an_evidence_paper_is_not_searched_in_v1(store: Any) -> None
             (si.id, g["paper"]),
         )
         conn.commit()
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 0
     attached = {cid for cid, _r, _m in _links(store, g["hub"])}
@@ -272,7 +272,7 @@ def test_two_attempts_per_term_per_claim_version(store: Any) -> None:
         embedder,
         [(o, f"Figure {o} TEM micrograph number {o}.") for o in range(1, 5)],
     )
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         counts = []
         for _ in range(3):
             run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -287,7 +287,7 @@ def test_two_attempts_per_term_per_claim_version(store: Any) -> None:
 def test_persistent_none_verdict_stops_after_two_attempts(store: Any) -> None:
     embedder = make_mock_bge_m3()
     g = _gap_hub(store, embedder, [(1, "Figure 3 TEM image of the crystals.")])
-    with patch(_VERIFY_PATH, return_value=None) as mock_verify:
+    with patch_verify(return_value=None) as mock_verify:
         counts = []
         for _ in range(4):
             run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -306,7 +306,7 @@ def test_arm_failure_leaves_the_discovery_attach_committed(store: Any) -> None:
         store, embedder, cite_key="iso", text="A direct measurement statement."
     )
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES),
+        patch_verify(return_value=_VERIFY_YES),
         patch(
             "precis.workers.hub_refine.method_gap.select_candidates",
             side_effect=RuntimeError("boom"),
@@ -328,7 +328,7 @@ def test_arm_is_skipped_under_a_reground_plan(store: Any) -> None:
 
     cfg = RegroundConfig(prune=False, judge_fn=judge, deeper_topk=8)
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         patch(_ARM_PATH, wraps=hub_refine._method_gap_arm) as arm,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8, reground=cfg)
@@ -349,7 +349,7 @@ def test_same_setup_contradiction_files_disputes_and_is_memoed(store: Any) -> No
         "terminal": True,
     }
     with (
-        patch(_VERIFY_PATH, return_value=verdict),
+        patch_verify(return_value=verdict),
         patch("precis.workers.hub_refine.run_demotions", return_value=[]),
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -501,7 +501,7 @@ def test_failure_after_the_llm_call_is_charged_as_unjudged(store: Any) -> None:
     embedder = make_mock_bge_m3()
     g = _gap_hub(store, embedder, [(1, "Figure 3 TEM image of the crystals.")])
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         patch(
             "precis.workers.hub_refine.attach_evidence",
             side_effect=RuntimeError("attach failed"),
@@ -528,7 +528,7 @@ def test_no_candidate_term_is_marked_and_skips_the_chunk_load(store: Any) -> Non
     embedder = make_mock_bge_m3()
     g = _gap_hub(store, embedder, [(1, "Figure 3 a micrograph of the crystals.")])
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         patch(_PAPER_CHUNKS_PATH, wraps=hub_refine.paper_chunks) as spy,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -557,7 +557,7 @@ def test_pass_budget_caps_method_gap_calls_across_hubs(
         for n in range(3)
     ]
     monkeypatch.setattr(hub_refine, "METHOD_GAP_CALLS_PER_PASS", 2)
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert len(_gap_calls(mock_verify)) == 2
     memoed = [bool(_hub_meta(store, g["hub"]).get("reground_seen")) for g in hubs]

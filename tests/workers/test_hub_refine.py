@@ -11,6 +11,7 @@ acceptance criteria can assert call counts, not just outcomes.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -22,7 +23,7 @@ from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
 from precis.workers import hub_refine
-from precis.workers._chase_llm import is_corroborating
+from precis.workers._chase_llm import _verify_item_kwargs, is_corroborating
 from precis.workers.bib_mark import run_bib_mark_pass
 from precis.workers.hub_refine import (
     _ATTEMPT_NS,
@@ -50,6 +51,52 @@ def test_is_corroborating_gate() -> None:
 
 
 _VERIFY_PATH = "precis.workers.hub_refine._verify_support_with_caveats"
+#: The batched verify seam (gr499038) — the pass's verify calls run through
+#: ``_verify_supports_batch``; a stub must cover both.
+_VERIFY_BATCH_PATH = "precis.workers.hub_refine._verify_supports_batch"
+
+
+def patch_verify(*args: Any, **kwargs: Any) -> Any:
+    """``patch_verify(...)`` plus the batch seam fanned out per item.
+
+    The pass's verify calls go through ``_verify_supports_batch`` — a stub
+    on the single-call path alone would let a test dispatch for real. The
+    batch stub routes every item back through the patched single fn, so
+    call counts and per-call kwargs (``target_chunk_text`` & co.) read
+    exactly as they did before batching.
+    """
+    single_patch = patch(_VERIFY_PATH, *args, **kwargs)
+
+    @contextlib.contextmanager
+    def _both() -> Any:
+        single = single_patch.__enter__()
+
+        def _batch(
+            *,
+            claim: str,
+            scope: dict[str, Any],
+            items: list[Any],
+            claim_source_text: Any = None,
+            **kw: Any,
+        ) -> list[Any]:
+            return [
+                single(
+                    claim=claim,
+                    scope=scope,
+                    claim_source_text=claim_source_text,
+                    **{**kw, **_verify_item_kwargs(it)},
+                )
+                for it in items
+            ]
+
+        with patch(_VERIFY_BATCH_PATH, side_effect=_batch):
+            try:
+                yield single
+            finally:
+                single_patch.__exit__(None, None, None)
+
+    return _both()
+
 
 _VERIFY_YES = {
     "supports": "yes",
@@ -219,7 +266,7 @@ def test_fresh_hub_gains_a_verified_corroborator(store: Any) -> None:
         store, embedder, cite_key="primary", text="A direct measurement statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 1
@@ -248,7 +295,7 @@ def test_partial_support_carries_caveats_onto_the_edge(store: Any) -> None:
         store, embedder, cite_key="partial", text="A conditional measurement statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL):
+    with patch_verify(return_value=_VERIFY_PARTIAL):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     edges = _edges_from(store, paper)
@@ -277,7 +324,7 @@ def test_contradicting_partial_is_memoed_and_filed_as_disputes(
         store, embedder, cite_key="contra", text="A conflicting measurement statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
+    with patch_verify(return_value=_VERIFY_PARTIAL_CONTRADICTS):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     edges = _edges_from(store, paper)
@@ -328,7 +375,7 @@ def test_disputes_need_same_setup_and_terminal(
         return []
 
     with (
-        patch(_VERIFY_PATH, return_value=verdict),
+        patch_verify(return_value=verdict),
         patch("precis.workers.hub_refine.run_demotions", _fake_demote),
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -359,7 +406,7 @@ def test_claim_source_text_reaches_the_widen_verifier(store: Any) -> None:
         check_retraction=False,
     )
     _seed_paper_chunk(store, embedder, cite_key="cand", text="A candidate statement.")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count >= 1
     for call in mock_verify.call_args_list:
@@ -400,7 +447,7 @@ def test_widen_verifier_gets_section_neighbours_and_identity(store: Any) -> None
         store, embedder, cite_key="ctx", text="A background recitation of ref [6]."
     )
     _add_context_to_paper(store, paper, chunk_id, abstract="DFT of C60 nanobuds.")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     calls = [c for c in mock_verify.call_args_list if c.kwargs["target_chunk_ord"] == 0]
     assert calls
@@ -464,7 +511,7 @@ def test_widen_arm_stores_verifier_reasoning_on_memo_edge_and_disputes(
         return by_text.get(kw["target_chunk_text"])
 
     with (
-        patch(_VERIFY_PATH, side_effect=_fake_verify),
+        patch_verify(side_effect=_fake_verify),
         patch("precis.workers.hub_refine.run_demotions", lambda _s, _r: []),
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -496,7 +543,7 @@ def test_widen_verifier_identity_without_abstract(store: Any) -> None:
         store, embedder, cite_key="noabs", text="A background recitation of ref [6]."
     )
     _add_context_to_paper(store, paper, chunk_id, abstract=None)
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     calls = [c for c in mock_verify.call_args_list if c.kwargs["target_chunk_ord"] == 0]
     assert calls
@@ -518,7 +565,7 @@ def test_reverify_verifier_gets_section_neighbours_and_identity(store: Any) -> N
         meta={"source_handle": f"pc{chunk_id}"},
         set_by="agent",
     )
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 1
     kw = mock_verify.call_args.kwargs
@@ -537,14 +584,14 @@ def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
         store, embedder, cite_key="contra-conv", text="A conflicting statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv:
+    with patch_verify(return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mv.call_count == 1
     assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["disputes"]
 
     # Re-trigger via a fresh DUE tag; the memoed paper must not re-verify.
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv2:
+    with patch_verify(return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mv2.call_count == 0  # precheck-skipped via the memo
@@ -576,7 +623,7 @@ def test_idempotent_second_pass_over_same_corpus_attaches_nothing(store: Any) ->
         store, embedder, cite_key="idem", text="A direct measurement statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
         assert first == {"claimed": 1, "ok": 1, "failed": 0}
         assert mock_verify.call_count == 1
@@ -609,12 +656,12 @@ def test_due_tag_reclaims_a_refined_hub_and_is_popped_at_claim_time(store: Any) 
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A due-tag reclaim probe claim.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
 
     # Baseline: not due again (no tag, sha matches, within the backstop).
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify.call_count == 0
@@ -622,7 +669,7 @@ def test_due_tag_reclaims_a_refined_hub_and_is_popped_at_claim_time(store: Any) 
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
     assert store.has_tag(hub, "TAPROOT_DUE", "1") is True
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert store.has_tag(hub, "TAPROOT_DUE", "1") is False  # popped at claim time
@@ -656,7 +703,7 @@ def test_coverage_chunk_is_verified_even_when_ranked_out_of_topk(store: Any) -> 
     )
     _insert_coverage(store, hub, trigger_chunk, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
@@ -678,7 +725,7 @@ def test_coverage_row_makes_an_already_refined_hub_due(store: Any) -> None:
     hub = _seed_hub(store, sentence=sentence)
 
     # First pass: empty corpus -> hub just stamps last_refined_* and clears.
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
     assert store.has_tag(hub, "TAPROOT_DUE", "1") is False
@@ -689,7 +736,7 @@ def test_coverage_row_makes_an_already_refined_hub_due(store: Any) -> None:
     )
     _insert_coverage(store, hub, chunk_id, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     # Re-claimed purely because of the coverage row (sha + version unchanged,
     # within the backstop, no due tag) -- the has_coverage arm of _is_hub_due.
@@ -721,7 +768,7 @@ def test_coverage_row_kept_when_verifier_returns_none(store: Any) -> None:
     )
     _insert_coverage(store, hub, chunk, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=None):
+    with patch_verify(return_value=None):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert _coverage_rows(store, hub) == [chunk]
@@ -736,7 +783,7 @@ def test_coverage_row_kept_on_out_of_enum_verdict(store: Any) -> None:
     _insert_coverage(store, hub, chunk, embedder.model)
 
     bad = {**_VERIFY_YES, "supports": "maybe"}
-    with patch(_VERIFY_PATH, return_value=bad):
+    with patch_verify(return_value=bad):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert _coverage_rows(store, hub) == [chunk]
@@ -750,7 +797,7 @@ def test_coverage_row_drains_on_a_valid_no_verdict(store: Any) -> None:
     )
     _insert_coverage(store, hub, chunk, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+    with patch_verify(return_value=_VERIFY_NO):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert _coverage_rows(store, hub) == []
@@ -781,7 +828,7 @@ def test_coverage_row_drains_when_source_slot_already_taken(store: Any) -> None:
     _insert_coverage(store, hub, chunk_a, embedder.model)
     _insert_coverage(store, hub, chunk_b, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert mock_verify.call_count == 1
@@ -798,7 +845,7 @@ def test_coverage_row_kept_for_unembedded_chunk(store: Any) -> None:
     )
     _insert_coverage(store, hub, chunk, embedder.model)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert mock_verify.call_count == 0
@@ -816,7 +863,7 @@ def test_empty_claim_hub_drains_its_coverage_rows(store: Any) -> None:
     _insert_coverage(store, hub, chunk, embedder.model)
     store.update_ref(hub, title="")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         with store.pool.connection() as conn:
             _refine_one_hub(conn, store, hub, embedder=embedder, topk=8, min_sim=None)
             conn.commit()
@@ -839,14 +886,14 @@ def test_sha_reopen_reclaims_and_clears_the_rejection_memo_before_discovery(
         store, embedder, cite_key="reopen-reject", text="An unrelated measurement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+    with patch_verify(return_value=_VERIFY_NO):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
     rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
     assert str(paper) in rejected
 
     # Baseline: not due again (sha matches, no tag, within the backstop).
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify.call_count == 0
@@ -854,7 +901,7 @@ def test_sha_reopen_reclaims_and_clears_the_rejection_memo_before_discovery(
     # The claim's wording changes -- a sha-reopen.
     store.update_ref(hub, title="A materially edited claim about the same device.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     # The memo was cleared BEFORE discovery: the previously-rejected paper
@@ -880,7 +927,7 @@ def test_refine_version_bump_reclaims_an_unsigned_hub(store: Any, monkeypatch) -
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A refine-version bump probe claim.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
     assert (
@@ -888,17 +935,17 @@ def test_refine_version_bump_reclaims_an_unsigned_hub(store: Any, monkeypatch) -
     )
 
     # Baseline: not due again under the same version.
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
 
     monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     # Re-stamped at the new version, so it drains again rather than looping.
     assert _hub_meta(store, hub).get("last_refined_version") == "test-next"
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         third = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert third == {"claimed": 0, "ok": 0, "failed": 0}
 
@@ -910,13 +957,13 @@ def test_refine_version_bump_exempts_a_signed_hub(store: Any, monkeypatch) -> No
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A signed version-exemption probe claim.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
 
     _mark_signed(store, hub)
     monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify.call_count == 0
@@ -930,7 +977,7 @@ def test_signed_hub_is_still_reclaimed_by_a_due_tag(store: Any, monkeypatch) -> 
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A signed due-tag reachability probe claim.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
 
@@ -938,7 +985,7 @@ def test_signed_hub_is_still_reclaimed_by_a_due_tag(store: Any, monkeypatch) -> 
     monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert store.has_tag(hub, "TAPROOT_DUE", "1") is False
@@ -948,13 +995,13 @@ def test_backstop_hub_not_reclaimed_within_the_window(store: Any) -> None:
     embedder = make_mock_bge_m3()
     _seed_hub(store, sentence="BN nanotubes show negative differential resistance.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
 
     # No due tag, matching sha, last_refined_at just stamped -- well within
     # the (huge, 90d-default) backstop window -- so it drains, not reclaimed.
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify.call_count == 0
@@ -967,12 +1014,12 @@ def test_backstop_elapsed_reclaims_a_hub(store: Any, monkeypatch) -> None:
     embedder = make_mock_bge_m3()
     _seed_hub(store, sentence="A backstop-elapsed reclaim probe claim.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1
 
     monkeypatch.setenv("PRECIS_TAPROOT_REFINE_BACKSTOP_H", "0")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
 
@@ -989,7 +1036,7 @@ def test_rejection_memo_verifies_a_no_candidate_exactly_once(store: Any) -> None
         store, embedder, cite_key="reject", text="An unrelated measurement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
         assert first == {"claimed": 1, "ok": 1, "failed": 0}
         assert mock_verify.call_count == 1
@@ -1044,7 +1091,7 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
         set_by="agent",
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 0
@@ -1116,7 +1163,7 @@ def test_attached_source_never_occupies_a_widening_slot(store: Any) -> None:
     )
 
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         _search_spy(store) as spy,
     ):
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
@@ -1139,7 +1186,7 @@ def test_rejected_source_never_occupies_a_widening_slot(store: Any) -> None:
         store, embedder, cite_key="judged", text=claim
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
     assert mock_verify.call_count == 1
     assert str(judged) in (_hub_meta(store, hub).get("taproot_rejected") or {})
@@ -1149,7 +1196,7 @@ def test_rejected_source_never_occupies_a_widening_slot(store: Any) -> None:
     )
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         _search_spy(store) as spy,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
@@ -1220,7 +1267,7 @@ def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
     )
 
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         _search_spy(store) as spy,
     ):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
@@ -1243,7 +1290,7 @@ def test_hub_without_evidence_excludes_nothing(store: Any) -> None:
     )
 
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch_verify(return_value=_VERIFY_YES) as mock_verify,
         _search_spy(store) as spy,
     ):
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
@@ -1267,7 +1314,7 @@ def test_verify_dispatch_error_skips_the_candidate_without_failing_the_hub(
         store, embedder, cite_key="dispatcherr", text="A direct measurement statement."
     )
 
-    with patch(_VERIFY_PATH, return_value=None):
+    with patch_verify(return_value=None):
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert _hub_meta(store, hub).get("last_refined_at") is not None
@@ -1296,7 +1343,7 @@ def test_raise_in_verify_loop_is_not_reclaimed_by_an_immediately_following_sweep
         raise RuntimeError("db error attaching evidence")
 
     with (
-        patch(_VERIFY_PATH, return_value=_VERIFY_YES),
+        patch_verify(return_value=_VERIFY_YES),
         patch("precis.workers.hub_refine.attach_evidence", side_effect=_boom),
     ):
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
@@ -1305,7 +1352,7 @@ def test_raise_in_verify_loop_is_not_reclaimed_by_an_immediately_following_sweep
     assert _hub_meta(store, hub).get("last_refined_at") is None
 
     # Immediately-following sweep: NOT re-claimed, NOT re-verified.
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify2:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify2.call_count == 0
@@ -1319,7 +1366,7 @@ def test_limit_caps_hubs_claimed_per_pass(store: Any) -> None:
     for i in range(3):
         _seed_hub(store, sentence=f"Distinct claim number {i} about a device.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         result = run_hub_refine_pass(store, limit=2, embedder=embedder, topk=8)
     assert result["claimed"] == 2
 
@@ -1330,7 +1377,7 @@ def test_verify_call_uses_a_mock_object_not_the_real_router(store: Any) -> None:
     embedder = make_mock_bge_m3()
     _seed_hub(store, sentence="A claim used only to check the mock plumbing.")
     _seed_paper_chunk(store, embedder, cite_key="mockcheck", text="Some chunk text.")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert isinstance(mock_verify, MagicMock)
     assert mock_verify.call_count == 1
@@ -1413,7 +1460,7 @@ def test_ac3_citation_reached_paper_is_discovered_and_attached(store: Any) -> No
         store, embedder, claim="The catalyst sustains high turnover.", tag="ac3yes"
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
@@ -1438,7 +1485,7 @@ def test_ac3_citation_miss_records_flag_and_renders_red(store: Any) -> None:
         store, embedder, claim="The catalyst sustains high turnover.", tag="ac3no"
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+    with patch_verify(return_value=_VERIFY_NO):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     # No corroborating edge from the cited paper.
@@ -1480,7 +1527,7 @@ def test_ac4_paper_reached_by_both_sources_is_verified_once(store: Any) -> None:
     )
     assert cited in {int(ref.id) for _b, ref, _s in sem}
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert mock_verify.call_count == 1
@@ -1497,7 +1544,7 @@ def test_ac4_citation_source_wins_the_shared_slot(store: Any) -> None:
         store, embedder, claim=claim, tag="ac4b"
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert mock_verify.call_count == 1
@@ -1516,7 +1563,7 @@ def test_ac4_second_pass_makes_no_new_verify_for_same_pair(store: Any) -> None:
         store, embedder, claim=claim, tag="ac4conv"
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
         assert mock_verify.call_count == 1
         assert len([e for e in _edges_from(store, cited) if e[0] == hub]) == 1
@@ -1541,7 +1588,7 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
         store, embedder, claim="A claim its cited source contradicts.", tag="ac3contra"
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
+    with patch_verify(return_value=_VERIFY_PARTIAL_CONTRADICTS):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     # Contradicting partial → never corroboration; a disputes link instead.
@@ -1582,7 +1629,7 @@ def test_patent_description_block_gains_a_verified_corroborator(store: Any) -> N
         block_meta={"patent_block": "description"},
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 1
@@ -1624,7 +1671,7 @@ def test_patent_claims_only_block_yields_no_candidate(store: Any) -> None:
         },
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 0
@@ -1645,7 +1692,7 @@ def test_rejected_patent_is_not_reverified_next_pass(store: Any) -> None:
         block_meta={"patent_block": "description"},
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 1
@@ -1653,7 +1700,7 @@ def test_rejected_patent_is_not_reverified_next_pass(store: Any) -> None:
     assert str(patent) in rejected
 
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mock_verify2.call_count == 0  # precheck-skipped via the memo
@@ -1692,7 +1739,7 @@ def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
         set_by="agent",
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 0
@@ -1754,7 +1801,7 @@ def test_composite_hub_is_never_claimed_end_to_end(store: Any) -> None:
     )
     _link_conjunct(store, atom=atom, composite=composite)
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
     assert result["claimed"] == 1  # the atom only
@@ -1784,7 +1831,7 @@ def test_composite_hub_reached_mid_flight_stamps_and_drains(store: Any) -> None:
         expires_at=datetime.now(UTC) + timedelta(minutes=30),
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         with store.pool.connection() as conn:
             _refine_one_hub(
                 conn, store, composite, embedder=embedder, topk=8, min_sim=None
@@ -1811,14 +1858,14 @@ def test_atom_sha_reopen_still_clears_its_own_memo_beside_a_composite(
         store, embedder, cite_key="atom-reopen", text="An unrelated measurement."
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+    with patch_verify(return_value=_VERIFY_NO):
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert first["claimed"] == 1  # only the atom — the composite is excluded
     rejected = _hub_meta(store, atom).get("taproot_rejected") or {}
     assert str(paper) in rejected
 
     # Baseline: not due again.
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
     assert mock_verify.call_count == 0
@@ -1826,7 +1873,7 @@ def test_atom_sha_reopen_still_clears_its_own_memo_beside_a_composite(
     # The atom's own wording changes -- a sha-reopen at the atom grain.
     store.update_ref(atom, title="A materially edited atomic claim wording.")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     # The memo was cleared BEFORE discovery: the previously-rejected paper
@@ -1862,7 +1909,7 @@ def test_reverify_stamps_an_attached_unverified_edge(store: Any) -> None:
         set_by="agent",
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     # Exactly the arm's call: discovery precheck-skips the attached source.
@@ -1903,7 +1950,7 @@ def test_reverify_non_corroborating_memos_and_is_not_rejudged(store: Any) -> Non
         set_by="agent",
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 1
 
@@ -1920,7 +1967,7 @@ def test_reverify_non_corroborating_memos_and_is_not_rejudged(store: Any) -> Non
 
     # Re-trigger: the memo, not a repeat verify, settles the edge.
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
-    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+    with patch_verify(return_value=_VERIFY_NO) as mock_verify2:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mock_verify2.call_count == 0
@@ -1967,7 +2014,7 @@ def test_reverify_stamps_a_keep_memoed_pinned_edge_instead_of_skipping(
         },
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     # The KEEP memo settles it directly — the verifier is never re-consulted.
@@ -1996,7 +2043,7 @@ def test_hub_under_review_drains_ahead_of_the_backlog(store: Any) -> None:
     _mark_signed(store, signed, state="published")
     _mark_signed(store, review, state="candidate")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+    with patch_verify(return_value=_VERIFY_YES):
         first = run_hub_refine_pass(store, limit=1, embedder=embedder, topk=8)
     assert first["claimed"] == 1
     assert _hub_meta(store, review).get("last_refined_at")
@@ -2035,7 +2082,7 @@ def test_reverify_does_not_resend_a_rejected_edge_to_the_verifier(
     sentence = "The anode keeps 90% capacity after 800 cycles."
     _hub, paper, _chunk = _attach_rejected(store, embedder, sentence, "rej-skip")
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 0
     _dst, _relation, meta = _edges_from(store, paper)[0]
@@ -2062,7 +2109,7 @@ def test_reverify_still_stamps_a_rejected_edge_from_a_keep_memo(store: Any) -> N
         },
     )
 
-    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+    with patch_verify(return_value=_VERIFY_YES) as mock_verify:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 0
     _dst, _relation, meta = _edges_from(store, paper)[0]

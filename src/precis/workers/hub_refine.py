@@ -250,6 +250,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -302,8 +303,11 @@ from precis.workers._chase_llm import (
     ABSTRACT_CHARS,
     NEIGHBOUR_CHARS,
     SOURCE_IDENTITY_NOTE,
+    VERIFY_BATCH_MAX_ITEMS,
     SourceIdentity,
-    _verify_support_with_caveats,
+    VerifyItem,
+    _verify_support_with_caveats,  # noqa: F401 — kept as the single-call test seam
+    _verify_supports_batch,
     is_corroborating,
     render_source_identity,
 )
@@ -3312,6 +3316,7 @@ def _reverify_pinned_edges(
     ]
     memoed = False
     spent = 0
+    pending: list[tuple[Any, str]] = []  # (edge, memo key) awaiting a verdict
     for edge in candidates:
         if spent >= _REVERIFY_PER_PASS:
             break
@@ -3344,42 +3349,66 @@ def _reverify_pinned_edges(
         if not edge.chunk_text or edge.chunk_ord is None:
             continue  # pinned chunk retired/deleted — repair-evidence territory
         spent += 1
-        verdict = _verify_support_with_caveats(
-            claim=edge.sentence,
-            scope=dict(edge.scope),
-            target_cite_key=edge.cite_key or f"ref:{edge.source_ref_id}",
-            target_chunk_ord=edge.chunk_ord,
-            target_chunk_text=edge.chunk_text,
-            source_kind=edge.source_kind,
-            claim_source_text=claim_source_text,
-            section_path=_chunk_section_path(conn, edge.chunk_id),
-            neighbours=_chunk_neighbours(conn, edge.source_ref_id, edge.chunk_ord),
-            source_identity=_source_identity(conn, edge.source_ref_id, identity_cache),
-            with_request_hash=True,
-        )
-        if verdict is None:
-            continue  # LLM failure — no memo, retried next pass
-        if is_corroborating(verdict):
-            patch = {
-                "support": verdict.get("supports"),
-                "support_reason": verdict.get("support_reason"),
-                "caveats": list(verdict.get("caveats") or []),
-                **_verified_stamp(sha),
-            }
-            conn.execute(
-                "UPDATE links SET meta = COALESCE(meta, '{}'::jsonb) || %s "
-                "WHERE link_id = %s",
-                (Jsonb(patch), edge.link_id),
+        pending.append((edge, key))
+
+    # The edges share this hub's claim context — batch the verifies so the
+    # claim block and rubric are paid once per group (gr499038). Grouped
+    # defensively by the exact claim text/scope a batch shares: a hub's
+    # edges all carry the same sentence and scope, so this is one group.
+    groups: dict[tuple[str, str], list[tuple[Any, str]]] = {}
+    for edge, key in pending:
+        groups.setdefault(
+            (edge.sentence, json.dumps(dict(edge.scope), sort_keys=True)), []
+        ).append((edge, key))
+    for (sentence, _scope_key), group in groups.items():
+        scope = dict(group[0][0].scope)
+        for part in batched(group, VERIFY_BATCH_MAX_ITEMS):
+            verdicts = _verify_supports_batch(
+                claim=sentence,
+                scope=scope,
+                items=[
+                    VerifyItem(
+                        target_cite_key=e.cite_key or f"ref:{e.source_ref_id}",
+                        target_chunk_ord=e.chunk_ord,
+                        target_chunk_text=e.chunk_text,
+                        source_kind=e.source_kind,
+                        section_path=_chunk_section_path(conn, e.chunk_id),
+                        neighbours=_chunk_neighbours(
+                            conn, e.source_ref_id, e.chunk_ord
+                        ),
+                        source_identity=_source_identity(
+                            conn, e.source_ref_id, identity_cache
+                        ),
+                    )
+                    for e, _key in part
+                ],
+                claim_source_text=claim_source_text,
+                with_request_hash=True,
             )
-            continue
-        seen[key] = {
-            "sha": sha,
-            "verdict": "NO-CORROBORATION",
-            "at": datetime.now(UTC).isoformat(),
-            "via": "reverify",
-            **_verify_fields(verdict),
-        }
-        memoed = True
+            for (edge, key), verdict in zip(part, verdicts):
+                if verdict is None:
+                    continue  # LLM failure — no memo, retried next pass
+                if is_corroborating(verdict):
+                    patch = {
+                        "support": verdict.get("supports"),
+                        "support_reason": verdict.get("support_reason"),
+                        "caveats": list(verdict.get("caveats") or []),
+                        **_verified_stamp(sha),
+                    }
+                    conn.execute(
+                        "UPDATE links SET meta = COALESCE(meta, '{}'::jsonb) || %s "
+                        "WHERE link_id = %s",
+                        (Jsonb(patch), edge.link_id),
+                    )
+                    continue
+                seen[key] = {
+                    "sha": sha,
+                    "verdict": "NO-CORROBORATION",
+                    "at": datetime.now(UTC).isoformat(),
+                    "via": "reverify",
+                    **_verify_fields(verdict),
+                }
+                memoed = True
     return memoed
 
 
@@ -3584,6 +3613,7 @@ def _method_gap_arm(
     def _memo(chunk: Any, cand: method_gap.GapCandidate, **fields: Any) -> None:
         _gap_memo(seen, sha, chunk, cand, **fields)
 
+    pending: list[tuple[Any, Any, Any]] = []  # (cand, chunk, ref)
     for cand in cands:
         chunk = cand.chunk
         ref = refs.get(chunk.ref_id)
@@ -3594,80 +3624,93 @@ def _method_gap_arm(
                 break  # pass budget spent: no memo, retried next pass
             budget.remaining -= 1
         sent.append(cand)
-        verification = _verify_support_with_caveats(
+        pending.append((cand, chunk, ref))
+
+    # All candidates share this hub's claim context — batch the verifies so
+    # the claim block and rubric are paid once per group (gr499038).
+    for part in batched(pending, VERIFY_BATCH_MAX_ITEMS):
+        verifications = _verify_supports_batch(
             claim=claim_sentence,
             scope=scope,
-            target_cite_key=ref.slug or f"ref:{chunk.ref_id}",
-            target_chunk_ord=chunk.ord,
-            target_chunk_text=chunk.text,
-            source_kind=ref.kind,
+            items=[
+                VerifyItem(
+                    target_cite_key=ref.slug or f"ref:{chunk.ref_id}",
+                    target_chunk_ord=chunk.ord,
+                    target_chunk_text=chunk.text,
+                    source_kind=ref.kind,
+                    section_path=_chunk_section_path(conn, chunk.chunk_id),
+                    neighbours=_chunk_neighbours(conn, chunk.ref_id, chunk.ord),
+                    source_identity=_source_identity(
+                        conn, chunk.ref_id, identity_cache
+                    ),
+                )
+                for _cand, chunk, ref in part
+            ],
             claim_source_text=claim_source_text,
-            section_path=_chunk_section_path(conn, chunk.chunk_id),
-            neighbours=_chunk_neighbours(conn, chunk.ref_id, chunk.ord),
-            source_identity=_source_identity(conn, chunk.ref_id, identity_cache),
             with_request_hash=True,
         )
-        if verification is None:
-            # Transient LLM failure: spends an attempt, retried while the
-            # term is under its per-claim-version cap.
-            _memo(chunk, cand, verdict="unjudged")
-            memoed = True
-            continue
-        supports = verification.get("supports")
-        handle = handle_registry.try_format(ref.kind, chunk.chunk_id, chunk=True)
-        if is_corroborating(verification):
-            attach_evidence(
-                store,
-                hub_ref_id=hub_ref_id,
-                paper_ref_id=chunk.ref_id,
-                role=_ROLE,
-                meta=_widen_edge_meta(
-                    verification,
+        for (cand, chunk, ref), verification in zip(part, verifications):
+            if verification is None:
+                # Transient LLM failure: spends an attempt, retried while the
+                # term is under its per-claim-version cap.
+                _memo(chunk, cand, verdict="unjudged")
+                memoed = True
+                continue
+            supports = verification.get("supports")
+            handle = handle_registry.try_format(ref.kind, chunk.chunk_id, chunk=True)
+            if is_corroborating(verification):
+                attach_evidence(
+                    store,
+                    hub_ref_id=hub_ref_id,
+                    paper_ref_id=chunk.ref_id,
+                    role=_ROLE,
+                    meta=_widen_edge_meta(
+                        verification,
+                        handle=handle,
+                        sha=sha,
+                        via=method_gap.VIA,
+                        terms=list(cand.terms),
+                    ),
+                    set_by="system",
+                    conn=conn,
+                    pending_checks=pending_checks,
+                )
+                continue
+            if supports not in ("yes", "partial", "no"):
+                log.warning(
+                    "hub_refine: hub #%d method-gap chunk #%d got unexpected verify "
+                    "verdict %r -- unjudged (bounded retries)",
+                    hub_ref_id,
+                    chunk.chunk_id,
+                    supports,
+                )
+                _memo(chunk, cand, verdict="unjudged")
+                memoed = True
+                continue
+            if _disputes_allowed(verification):
+                _attach_disputes(
+                    store,
+                    conn,
+                    hub_ref_id=hub_ref_id,
+                    source_ref_id=chunk.ref_id,
                     handle=handle,
+                    reason=verification.get("support_reason"),
+                    caveats=list(verification.get("caveats") or []),
                     sha=sha,
                     via=method_gap.VIA,
-                    terms=list(cand.terms),
-                ),
-                set_by="system",
-                conn=conn,
-                pending_checks=pending_checks,
+                    pending_demotions=pending_demotions,
+                    judged=_verify_fields(verification),
+                )
+            _memo(
+                chunk,
+                cand,
+                verdict="NO-CORROBORATION",
+                supports=supports,
+                contradicts=bool(verification.get("contradicts")),
+                support_reason=verification.get("support_reason"),
+                **_verify_fields(verification),
             )
-            continue
-        if supports not in ("yes", "partial", "no"):
-            log.warning(
-                "hub_refine: hub #%d method-gap chunk #%d got unexpected verify "
-                "verdict %r -- unjudged (bounded retries)",
-                hub_ref_id,
-                chunk.chunk_id,
-                supports,
-            )
-            _memo(chunk, cand, verdict="unjudged")
             memoed = True
-            continue
-        if _disputes_allowed(verification):
-            _attach_disputes(
-                store,
-                conn,
-                hub_ref_id=hub_ref_id,
-                source_ref_id=chunk.ref_id,
-                handle=handle,
-                reason=verification.get("support_reason"),
-                caveats=list(verification.get("caveats") or []),
-                sha=sha,
-                via=method_gap.VIA,
-                pending_demotions=pending_demotions,
-                judged=_verify_fields(verification),
-            )
-        _memo(
-            chunk,
-            cand,
-            verdict="NO-CORROBORATION",
-            supports=supports,
-            contradicts=bool(verification.get("contradicts")),
-            support_reason=verification.get("support_reason"),
-            **_verify_fields(verification),
-        )
-        memoed = True
     return memoed
 
 
@@ -4024,6 +4067,11 @@ def _refine_one_hub(
         # enum): a later duplicate of that slot is not "settled", so it
         # must not drain its coverage row.
         unjudged_slots: set[str] = set()
+        # Candidates queued for a batched verify — (cand, slot, cov_id) —
+        # and dup-slot visits whose coverage resolution waits on the
+        # verdict pass (see the scan below).
+        pending_verify: list[tuple[Any, str, int]] = []
+        dup_slots: list[tuple[str, int]] = []
         for cand in [*corpus_cands, *ext_cands]:
             source_ref_id = cand.source_ref_id
             block, ref = cand.block, cand.ref
@@ -4038,8 +4086,10 @@ def _refine_one_hub(
                 else _seen_key(source_ref_id, chunk_id)
             )
             if slot in seen_slots:
-                if slot not in unjudged_slots:
-                    resolved_cov.add(cov_id)  # source already settled this pass
+                # Resolution is deferred to after the verdict pass below —
+                # ``unjudged_slots`` is only complete then, and a dup of an
+                # unjudged slot must not drain its coverage row.
+                dup_slots.append((slot, cov_id))
                 continue
             seen_slots.add(slot)
             if source_ref_id in attached_this_pass:
@@ -4095,137 +4145,159 @@ def _refine_one_hub(
                     resolved_cov.add(cov_id)  # judge returned a verdict
                     verify_judged += 1
                 continue
-            verification = _verify_support_with_caveats(
+            pending_verify.append((cand, slot, cov_id))
+
+        # All queued candidates share this hub's claim context — batch the
+        # verifies so the claim block and rubric are paid once per group of
+        # up to ``VERIFY_BATCH_MAX_ITEMS`` (gr499038). Verdicts are applied
+        # in candidate order, identical to the old per-candidate calls.
+        for part in batched(pending_verify, VERIFY_BATCH_MAX_ITEMS):
+            verifications = _verify_supports_batch(
                 claim=claim_sentence,
                 scope=scope,
-                target_cite_key=ref.slug or f"ref:{source_ref_id}",
-                target_chunk_ord=block.ord,
-                target_chunk_text=block.text,
-                source_kind=ref.kind,
+                items=[
+                    VerifyItem(
+                        target_cite_key=cand.ref.slug or f"ref:{cand.source_ref_id}",
+                        target_chunk_ord=cand.block.ord,
+                        target_chunk_text=cand.block.text,
+                        source_kind=cand.ref.kind,
+                        section_path=_chunk_section_path(conn, c_id),
+                        neighbours=_chunk_neighbours(
+                            conn, cand.source_ref_id, cand.block.ord
+                        ),
+                        source_identity=_source_identity(
+                            conn, cand.source_ref_id, identity_cache
+                        ),
+                    )
+                    for cand, _slot, c_id in part
+                ],
                 claim_source_text=claim_source_text,
-                section_path=_chunk_section_path(conn, cov_id),
-                neighbours=_chunk_neighbours(conn, source_ref_id, block.ord),
-                source_identity=_source_identity(conn, source_ref_id, identity_cache),
                 with_request_hash=True,
             )
-            if verification is None:
-                # Transient LLM/dispatch failure — no verdict recorded,
-                # so this candidate is simply retried next pass (neither
-                # attached nor memoed as rejected).
-                unjudged_slots.add(slot)
-                continue
-            supports = verification.get("supports")
-            contradicts = bool(verification.get("contradicts"))
-            if supports in ("yes", "partial", "no"):
-                resolved_cov.add(cov_id)
-                verify_judged += 1
-            # Attach only genuine corroboration (shared gate
-            # ``_chase_llm.is_corroborating``: a "yes", or a "partial" whose
-            # caveats scope the support rather than negate it). A "partial"
-            # flagged ``contradicts`` (the chunk runs counter to the claim)
-            # is treated like a "no" — memoed as judged, NOT attached, so it
-            # never dilutes the living cite and never costs a re-verify
-            # (convergence: a non-attached verdict must land in the memo,
-            # else it retries every pass forever).
-            if is_corroborating(verification):
-                attach_evidence(
-                    store,
-                    hub_ref_id=hub_ref_id,
-                    paper_ref_id=source_ref_id,
-                    role=_ROLE,
-                    # A verification just ran against this exact passage, so
-                    # the edge is born verified: reason + fingerprint ride
-                    # with the verdict (support alone is never written).
-                    meta=_widen_edge_meta(
-                        verification,
-                        handle=handle_registry.try_format(
-                            ref.kind, block.id, chunk=True
-                        ),
-                        sha=new_sha,
-                        via=cand.via,
-                    ),
-                    set_by="system",
-                    conn=conn,
-                    pending_checks=pending_checks,
-                )
-            elif supports in ("partial", "no"):
-                # "no", or a contradicting "partial" — judged once, memoed.
-                entry: dict[str, Any] = {
-                    "at": datetime.now(UTC).isoformat(),
-                    "supports": supports,
-                    "contradicts": contradicts,
-                    # Kept on record so a real contradiction found in a
-                    # background recitation / other setup stays a note.
-                    "terminal": verification.get("terminal"),
-                    "same_setup": verification.get("same_setup"),
-                    "support_reason": verification.get("support_reason"),
-                    **_verify_fields(verification),
-                }
-                # Cross-setup / recitation disputes are not filed (review
-                # item claims-and-evidence-4): only a same-setup, terminal
-                # contradiction links + queues a demotion.
-                if _disputes_allowed(verification):
-                    # A primary-against passage is information, not noise —
-                    # the same call ADR 0073 makes on the reground path
-                    # (:func:`_reground_verify_candidate`). Until 2026-08 the
-                    # enrichment arm discarded it: the verdict went into the
-                    # memo and the edge was never written, so the one
-                    # automated pass that could find contradicting evidence
-                    # threw the finding on the floor and the hub kept
-                    # ratcheting up. The memo entry above STILL lands (a
-                    # contradicting source must never re-enter discovery and
-                    # re-spend the verifier) — the edge is additional, not a
-                    # replacement.
-                    _attach_disputes(
+            for (cand, slot, cov_id), verification in zip(part, verifications):
+                source_ref_id = cand.source_ref_id
+                block, ref = cand.block, cand.ref
+                if verification is None:
+                    # Transient LLM/dispatch failure — no verdict recorded,
+                    # so this candidate is simply retried next pass (neither
+                    # attached nor memoed as rejected).
+                    unjudged_slots.add(slot)
+                    continue
+                supports = verification.get("supports")
+                contradicts = bool(verification.get("contradicts"))
+                if supports in ("yes", "partial", "no"):
+                    resolved_cov.add(cov_id)
+                    verify_judged += 1
+                # Attach only genuine corroboration (shared gate
+                # ``_chase_llm.is_corroborating``: a "yes", or a "partial" whose
+                # caveats scope the support rather than negate it). A "partial"
+                # flagged ``contradicts`` (the chunk runs counter to the claim)
+                # is treated like a "no" — memoed as judged, NOT attached, so it
+                # never dilutes the living cite and never costs a re-verify
+                # (convergence: a non-attached verdict must land in the memo,
+                # else it retries every pass forever).
+                if is_corroborating(verification):
+                    attach_evidence(
                         store,
-                        conn,
                         hub_ref_id=hub_ref_id,
-                        source_ref_id=source_ref_id,
-                        handle=handle_registry.try_format(
-                            ref.kind, block.id, chunk=True
+                        paper_ref_id=source_ref_id,
+                        role=_ROLE,
+                        # A verification just ran against this exact passage, so
+                        # the edge is born verified: reason + fingerprint ride
+                        # with the verdict (support alone is never written).
+                        meta=_widen_edge_meta(
+                            verification,
+                            handle=handle_registry.try_format(
+                                ref.kind, block.id, chunk=True
+                            ),
+                            sha=new_sha,
+                            via=cand.via,
                         ),
-                        reason=verification.get("support_reason"),
-                        caveats=list(verification.get("caveats") or []),
-                        sha=new_sha,
-                        via=cand.via,
-                        pending_demotions=pending_demotions,
-                        judged=_verify_fields(verification),
+                        set_by="system",
+                        conn=conn,
+                        pending_checks=pending_checks,
                     )
-                    # No ``attached_this_pass`` bookkeeping here: this arm
-                    # only runs with ``reground is None``, where ``slot`` is
-                    # the bare source ref id, so ``seen_slots`` already caps
-                    # a source at one visit per pass. The per-source attach
-                    # cap exists for reground's passage-level dedup.
-                # A citation-reached rejection is ALSO a citation miss: "we
-                # read the paper the claim cites and the content isn't there"
-                # — marked on the memo + recorded as a queryable red flag.
-                # DELIBERATE: this fires for BOTH a plain ``no`` AND a
-                # contradicting ``partial`` (the ``elif`` above), slightly
-                # beyond the AC's literal "supports=no" — a cited source that
-                # *contradicts* the claim is a stronger miss than a bare "no"
-                # and belongs in the same red-flag bucket, not a separate one.
-                if cand.via == "citation":
-                    entry["via"] = "citation"
-                    citation_misses.append(
-                        {
-                            "marker": cand.marker,
-                            "cited_ref": source_ref_id,
-                            "from_chunk": cand.from_chunk,
-                        }
+                elif supports in ("partial", "no"):
+                    # "no", or a contradicting "partial" — judged once, memoed.
+                    entry: dict[str, Any] = {
+                        "at": datetime.now(UTC).isoformat(),
+                        "supports": supports,
+                        "contradicts": contradicts,
+                        # Kept on record so a real contradiction found in a
+                        # background recitation / other setup stays a note.
+                        "terminal": verification.get("terminal"),
+                        "same_setup": verification.get("same_setup"),
+                        "support_reason": verification.get("support_reason"),
+                        **_verify_fields(verification),
+                    }
+                    # Cross-setup / recitation disputes are not filed (review
+                    # item claims-and-evidence-4): only a same-setup, terminal
+                    # contradiction links + queues a demotion.
+                    if _disputes_allowed(verification):
+                        # A primary-against passage is information, not noise —
+                        # the same call ADR 0073 makes on the reground path
+                        # (:func:`_reground_verify_candidate`). Until 2026-08 the
+                        # enrichment arm discarded it: the verdict went into the
+                        # memo and the edge was never written, so the one
+                        # automated pass that could find contradicting evidence
+                        # threw the finding on the floor and the hub kept
+                        # ratcheting up. The memo entry above STILL lands (a
+                        # contradicting source must never re-enter discovery and
+                        # re-spend the verifier) — the edge is additional, not a
+                        # replacement.
+                        _attach_disputes(
+                            store,
+                            conn,
+                            hub_ref_id=hub_ref_id,
+                            source_ref_id=source_ref_id,
+                            handle=handle_registry.try_format(
+                                ref.kind, block.id, chunk=True
+                            ),
+                            reason=verification.get("support_reason"),
+                            caveats=list(verification.get("caveats") or []),
+                            sha=new_sha,
+                            via=cand.via,
+                            pending_demotions=pending_demotions,
+                            judged=_verify_fields(verification),
+                        )
+                        # No ``attached_this_pass`` bookkeeping here: this arm
+                        # only runs with ``reground is None``, where ``slot`` is
+                        # the bare source ref id, so ``seen_slots`` already caps
+                        # a source at one visit per pass. The per-source attach
+                        # cap exists for reground's passage-level dedup.
+                    # A citation-reached rejection is ALSO a citation miss: "we
+                    # read the paper the claim cites and the content isn't there"
+                    # — marked on the memo + recorded as a queryable red flag.
+                    # DELIBERATE: this fires for BOTH a plain ``no`` AND a
+                    # contradicting ``partial`` (the ``elif`` above), slightly
+                    # beyond the AC's literal "supports=no" — a cited source that
+                    # *contradicts* the claim is a stronger miss than a bare "no"
+                    # and belongs in the same red-flag bucket, not a separate one.
+                    if cand.via == "citation":
+                        entry["via"] = "citation"
+                        citation_misses.append(
+                            {
+                                "marker": cand.marker,
+                                "cited_ref": source_ref_id,
+                                "from_chunk": cand.from_chunk,
+                            }
+                        )
+                    rejected[str(source_ref_id)] = entry
+                else:
+                    unjudged_slots.add(slot)
+                    # Verdict outside the {yes,partial,no} enum (missing key or
+                    # an LLM-schema regression) — neither attach nor memo, so it
+                    # retries next cadence; log so the regression isn't invisible.
+                    log.warning(
+                        "hub_refine: hub #%d candidate source ref #%d got unexpected "
+                        "verify verdict %r -- skipped (retries next cadence)",
+                        hub_ref_id,
+                        source_ref_id,
+                        supports,
                     )
-                rejected[str(source_ref_id)] = entry
-            else:
-                unjudged_slots.add(slot)
-                # Verdict outside the {yes,partial,no} enum (missing key or
-                # an LLM-schema regression) — neither attach nor memo, so it
-                # retries next cadence; log so the regression isn't invisible.
-                log.warning(
-                    "hub_refine: hub #%d candidate source ref #%d got unexpected "
-                    "verify verdict %r -- skipped (retries next cadence)",
-                    hub_ref_id,
-                    source_ref_id,
-                    supports,
-                )
+        for slot, cov_id in dup_slots:
+            if slot not in unjudged_slots:
+                resolved_cov.add(cov_id)  # source already settled this pass
 
         # Drain the coverage ledger only now — every recorded chunk has
         # been judged (verified, memoed, or policy-dropped) this pass. A

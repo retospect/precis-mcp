@@ -1763,11 +1763,15 @@ def test_additive_only_behaviour_is_unchanged_when_reground_is_off(store: Any) -
     )
     _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
 
-    with patch("precis.workers.hub_refine._verify_support_with_caveats") as mock_verify:
+    with (
+        patch("precis.workers.hub_refine._verify_support_with_caveats") as mock_verify,
+        patch("precis.workers.hub_refine._verify_supports_batch") as mock_batch,
+    ):
         result = run_hub_refine_pass(
             store, limit=10, embedder=embedder, topk=8, reground=None
         )
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     # The attached source's other passage was never even offered.
     assert mock_verify.call_count == 0
+    assert mock_batch.call_count == 0
     assert _handles(store, hub) == {EvidenceHandle(paper, chunks[0], "corroborates")}

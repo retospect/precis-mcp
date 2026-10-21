@@ -8,7 +8,12 @@ are the *only* paths in ``chase`` that issue paid LLM calls:
   the verify hook ``workers/hub_refine.py`` calls for every discover
   candidate (paper or patent) — always-on there, not ``with_llm``-gated —
   where ``source_kind="patent"`` swaps in patent-aware reading rules
-  (patent-evidence-parity).
+  (patent-evidence-parity). Its batched twin
+  :func:`_verify_supports_batch` judges several candidates of ONE claim
+  per call (gr499038): the claim context and rubric are paid once,
+  per-item verdicts come back keyed by ITEM number, and any item the
+  reply misses or malforms falls back to the single call — callers see
+  the same per-item verdicts (or ``None``) either way.
 * :func:`_disambiguate_candidates` resolves multi-cite chunks.
 * :func:`_locate_chunk_in_target` confirms the ANN's chunk pick or
   picks a better one from the shown alternates.
@@ -27,7 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.llm.router import LlmRequest, Tier, route
@@ -108,11 +113,10 @@ PATENT-SPECIFIC READING RULES (the source above is a patent):
     as weak-to-no empirical support.
 """
 
-_PROMPT_VERIFY = """\
-You are verifying whether a source {source_kind} chunk supports a specific
-empirical claim made under a specific experimental setup. Judge support
-for the claim EXACTLY AS STATED — not a looser or more general version.
-
+#: The claim-side block every candidate chunk is judged against — shared
+#: by the single and batch verify prompts (in the batch it is paid once
+#: for all items).
+_PROMPT_VERIFY_CLAIM_BLOCK = """\
 CLAIM:
 {claim}
 
@@ -120,8 +124,11 @@ SETUP (structured):
 {scope_json}
 
 CLAIM'S OWN SOURCE PASSAGE (what the claim was measured on):
-{claim_source_text}
+{claim_source_text}"""
 
+#: One candidate's source-side block — the same field layout in the
+#: single prompt and under each ``ITEM n`` marker of the batch prompt.
+_PROMPT_VERIFY_ITEM_BLOCK = """\
 SOURCE: {source_kind} {target_cite_key}, chunk ord {target_chunk_ord}, section {section_path}
 
 SOURCE IDENTITY ({identity_note}):
@@ -135,7 +142,12 @@ recitation or background sentence from the source's own result. Support is
 never judged off a neighbour alone: a CHUNK that carries none of the claim
 cannot borrow it from a neighbour.
 {neighbours}
-{patent_note}
+{patent_note}"""
+
+#: The verdict rubric shared by the single and batch prompts — the same
+#: definitions, word for word; the prompts differ only in the response
+#: contract appended after it.
+_VERIFY_RUBRIC = """\
 First decide the chunk's STANCE toward the claim as stated: does it give
 evidence FOR the claim, evidence AGAINST it (an opposite result or
 tendency), or neither (on-topic but doesn't test the claim)?
@@ -198,8 +210,11 @@ Definitions:
                           measurement itself; false if it merely
                           restates a value from elsewhere. A recitation
                           of another work's result is terminal=false.
+"""
 
-Respond with EXACTLY ONE JSON object, nothing else:
+#: The per-item verdict object — the response contract appended after the
+#: rubric in both prompts, verbatim either way.
+_VERIFY_VERDICT_SCHEMA = """\
 {{
   "supports": "yes" | "partial" | "no",
   "support_reason": "<one sentence>",
@@ -210,8 +225,120 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "contradicts": true | false,
   "cited_others": ["<token 1>", ...],
   "terminal": true | false
+}}"""
+
+_PROMPT_VERIFY = (
+    """\
+You are verifying whether a source {source_kind} chunk supports a specific
+empirical claim made under a specific experimental setup. Judge support
+for the claim EXACTLY AS STATED — not a looser or more general version.
+
+{claim_block}
+
+{item_block}
+"""
+    + _VERIFY_RUBRIC
+    + (
+        "\nRespond with EXACTLY ONE JSON object, nothing else:\n"
+        + _VERIFY_VERDICT_SCHEMA
+        + "\n"
+    )
+)
+
+#: The batch verify prompt (gr499038): the claim context is paid once,
+#: each candidate chunk rides as a labelled ITEM, and the reply carries
+#: one verdict object per item. The rubric and per-item verdict fields are
+#: byte-for-byte the single prompt's — batching changes how many items a
+#: call judges, not what a verdict means.
+_PROMPT_VERIFY_BATCH = (
+    """\
+You are verifying whether source chunks support a specific
+empirical claim made under a specific experimental setup. Judge support
+for the claim EXACTLY AS STATED — not a looser or more general version.
+
+{claim_block}
+
+{n_items} candidate sources follow, each labelled ITEM <n>. Judge EACH
+item independently against the claim — every item gets its own verdict
+under the same contract.
+
+{items_block}
+"""
+    + _VERIFY_RUBRIC
+    + """\
+
+Respond with EXACTLY ONE JSON object, nothing else — one verdict object
+per ITEM shown, exactly {n_items} entries (any order, each tagged with
+its "item" number):
+{{
+  "verdicts": [
+    {{
+      "item": <int — the ITEM number>,
+      "supports": "yes" | "partial" | "no",
+      "support_reason": "<one sentence>",
+      "caveats": ["<caveat 1>", ...],
+      "claim_setup": "<system/sample, material, method, conditions the claim is about>",
+      "passage_setup": "<the same for the result this chunk reports>",
+      "same_setup": true | false | "unclear",
+      "contradicts": true | false,
+      "cited_others": ["<token 1>", ...],
+      "terminal": true | false
+    }}
+  ]
 }}
 """
+)
+
+
+def _verify_claim_block(
+    *, claim: str, scope: dict[str, Any], claim_source_text: str | None
+) -> str:
+    """The shared claim-side block of the verify prompts (claim, structured
+    scope, the claim's own source passage)."""
+    return _PROMPT_VERIFY_CLAIM_BLOCK.format(
+        claim=claim,
+        scope_json=json.dumps(scope, sort_keys=True),
+        claim_source_text=(claim_source_text or "")[:3000] or "(not available)",
+    )
+
+
+def _verify_item_block(
+    *,
+    source_kind: str,
+    cite_key: str,
+    chunk_ord: int,
+    chunk_text: str,
+    section_path: str | None,
+    neighbours: list[str] | None,
+    source_identity: SourceIdentity | None,
+) -> str:
+    """The per-candidate source block — the same field layout and caps
+    (chunk 4000, neighbours :data:`NEIGHBOUR_CHARS`, abstract
+    :data:`ABSTRACT_CHARS`) in the single prompt and under each ``ITEM n``
+    of the batch prompt."""
+    return _PROMPT_VERIFY_ITEM_BLOCK.format(
+        source_kind=source_kind,
+        target_cite_key=cite_key,
+        target_chunk_ord=chunk_ord,
+        section_path=section_path or "(not available)",
+        identity_note=SOURCE_IDENTITY_NOTE,
+        source_identity=render_source_identity(source_identity),
+        target_chunk_text=chunk_text[:4000],  # cap context cost
+        neighbours=render_neighbours(neighbours, what="chunk"),
+        patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
+    )
+
+
+def _verify_batch_prompt(claim_block: str, item_blocks: list[str]) -> str:
+    """Compose the batch verify prompt from pre-rendered blocks — the
+    claim block once, each item under an ``ITEM <n>`` marker (1-indexed)."""
+    n = len(item_blocks)
+    joined = "\n\n".join(
+        f"ITEM {i}\n\n{block}" for i, block in enumerate(item_blocks, 1)
+    )
+    return _PROMPT_VERIFY_BATCH.format(
+        claim_block=claim_block, n_items=n, items_block=joined
+    )
 
 
 def _verify_support_with_caveats(
@@ -259,18 +386,19 @@ def _verify_support_with_caveats(
     patent-evidence-parity).
     """
     prompt = _PROMPT_VERIFY.format(
-        claim=claim,
-        scope_json=json.dumps(scope, sort_keys=True),
         source_kind=source_kind,
-        target_cite_key=target_cite_key,
-        target_chunk_ord=target_chunk_ord,
-        section_path=section_path or "(not available)",
-        identity_note=SOURCE_IDENTITY_NOTE,
-        source_identity=render_source_identity(source_identity),
-        neighbours=render_neighbours(neighbours, what="chunk"),
-        target_chunk_text=target_chunk_text[:4000],  # cap context cost
-        claim_source_text=(claim_source_text or "")[:3000] or "(not available)",
-        patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
+        claim_block=_verify_claim_block(
+            claim=claim, scope=scope, claim_source_text=claim_source_text
+        ),
+        item_block=_verify_item_block(
+            source_kind=source_kind,
+            cite_key=target_cite_key,
+            chunk_ord=target_chunk_ord,
+            chunk_text=target_chunk_text,
+            section_path=section_path,
+            neighbours=neighbours,
+            source_identity=source_identity,
+        ),
     )
     res = route(
         LlmRequest(
@@ -287,6 +415,164 @@ def _verify_support_with_caveats(
     if with_request_hash and res.data is not None and isinstance(request_hash, str):
         return {**res.data, "_llm_request_hash": request_hash}
     return res.data
+
+
+@dataclass(frozen=True)
+class VerifyItem:
+    """One candidate citation to judge against a shared claim — the
+    source-side kwargs of :func:`_verify_support_with_caveats` (field names
+    kept identical so an item dict maps straight onto a single call)."""
+
+    target_cite_key: str
+    target_chunk_ord: int
+    target_chunk_text: str
+    source_kind: str = "paper"
+    section_path: str | None = None
+    neighbours: list[str] | None = None
+    source_identity: SourceIdentity | None = None
+
+
+def _verify_item_kwargs(item: VerifyItem) -> dict[str, Any]:
+    """The item as per-item kwargs for the single verify call (shallow —
+    ``source_identity`` stays a :class:`SourceIdentity`)."""
+    return {f.name: getattr(item, f.name) for f in fields(item)}
+
+
+#: Upper bound on items per batch call. The win saturates quickly (the
+#: shared claim block is amortized) while the per-item contract grows
+#: more fragile with N — a malformed reply costs per-item fallbacks.
+VERIFY_BATCH_MAX_ITEMS = 6
+
+#: Completion budget per verdict the batch reply must hold — a single
+#: verify's ~1.5k output tokens plus headroom, so a rung-level
+#: ``max_tokens`` (e.g. a local rung's small cap) can never silently
+#: truncate the per-item verdicts. The request pins it: a caller-pinned
+#: cap is a correctness constraint the rung must not shrink.
+_VERIFY_BATCH_TOKENS_PER_ITEM = 2048
+_VERIFY_BATCH_TOKENS_BASE = 1024
+
+
+def _verify_batch_max_tokens(n_items: int) -> int:
+    return _VERIFY_BATCH_TOKENS_BASE + _VERIFY_BATCH_TOKENS_PER_ITEM * n_items
+
+
+def _parse_batch_verdicts(data: Any, n_items: int) -> list[dict[str, Any] | None]:
+    """Per-item verdict dicts from a batch reply, 0-indexed like the items.
+
+    A missing, malformed or out-of-enum item comes back ``None`` — the
+    caller falls back to a single call for it; a verdict is never guessed.
+    Accepts the documented ``{"verdicts": [{"item": n, ...}]}`` shape and,
+    leniently, a ``{"verdicts": {"<n>": {...}}}`` map.
+    """
+    out: list[dict[str, Any] | None] = [None] * n_items
+    if not isinstance(data, dict):
+        return out
+    raw = data.get("verdicts")
+    entries: list[tuple[Any, Any]]
+    if isinstance(raw, dict):
+        entries = list(raw.items())
+    elif isinstance(raw, list):
+        entries = [(v.get("item"), v) for v in raw if isinstance(v, dict)]
+    else:
+        return out
+    for key, verdict in entries:
+        try:
+            idx = int(str(key).strip()) - 1
+        except (TypeError, ValueError):
+            continue
+        if (
+            0 <= idx < n_items
+            and out[idx] is None
+            and isinstance(verdict, dict)
+            and verdict.get("supports") in ("yes", "partial", "no")
+        ):
+            out[idx] = {k: v for k, v in verdict.items() if k != "item"}
+    return out
+
+
+def _verify_supports_batch(
+    *,
+    claim: str,
+    scope: dict[str, Any],
+    items: list[VerifyItem],
+    claim_source_text: str | None = None,
+    with_request_hash: bool = False,
+    timeout_s: float | None = None,
+) -> list[dict[str, Any] | None]:
+    """Verify several candidate citations of one claim in a single call
+    (gr499038) — the claim context and the rubric are paid once instead of
+    per item. Returns one verdict (or ``None``) per item, in item order;
+    the per-item verdict dicts are the single call's shape.
+
+    Fallbacks keep the single call's contract exactly:
+
+    * a batch of 0 or 1 IS the single call;
+    * a router error behaves exactly like today — every item gets its own
+      :func:`_verify_support_with_caveats` call (each may independently
+      return a verdict or ``None``);
+    * an item missing from the reply, or whose verdict is malformed
+      (``supports`` outside the enum), falls back to a single call — a
+      verdict is never guessed.
+
+    ``with_request_hash`` attaches the dispatch's ``_llm_request_hash`` as
+    in the single call — the batch call's hash on batch verdicts, the
+    fallback call's own hash on fallback verdicts.
+    """
+
+    def _single(item: VerifyItem) -> dict[str, Any] | None:
+        return _verify_support_with_caveats(
+            claim=claim,
+            scope=scope,
+            claim_source_text=claim_source_text,
+            with_request_hash=with_request_hash,
+            timeout_s=timeout_s,
+            **_verify_item_kwargs(item),
+        )
+
+    if len(items) <= 1:
+        return [_single(it) for it in items]
+
+    prompt = _verify_batch_prompt(
+        _verify_claim_block(
+            claim=claim, scope=scope, claim_source_text=claim_source_text
+        ),
+        [
+            _verify_item_block(
+                source_kind=it.source_kind,
+                cite_key=it.target_cite_key,
+                chunk_ord=it.target_chunk_ord,
+                chunk_text=it.target_chunk_text,
+                section_path=it.section_path,
+                neighbours=it.neighbours,
+                source_identity=it.source_identity,
+            )
+            for it in items
+        ],
+    )
+    res = route(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            prompt=prompt,
+            source="chase:verify",
+            max_tokens=_verify_batch_max_tokens(len(items)),
+            timeout_s=timeout_s,
+        )
+    )
+    if res.error:
+        log.warning("chase: verify batch hook failed: %s", res.error)
+        verdicts: list[dict[str, Any] | None] = [None] * len(items)
+    else:
+        verdicts = _parse_batch_verdicts(res.data, len(items))
+    request_hash = getattr(res, "request_hash", None)
+    out: list[dict[str, Any] | None] = []
+    for item, verdict in zip(items, verdicts):
+        if verdict is None:
+            out.append(_single(item))
+        elif with_request_hash and isinstance(request_hash, str):
+            out.append({**verdict, "_llm_request_hash": request_hash})
+        else:
+            out.append(verdict)
+    return out
 
 
 def is_corroborating(verification: dict[str, Any]) -> bool:
@@ -409,9 +695,18 @@ def _locate_chunk_in_target(
 
 
 __all__ = [
+    "VERIFY_BATCH_MAX_ITEMS",
+    "VerifyItem",
     "_disambiguate_candidates",
     "_locate_chunk_in_target",
+    "_parse_batch_verdicts",
+    "_verify_batch_max_tokens",
+    "_verify_batch_prompt",
+    "_verify_claim_block",
+    "_verify_item_block",
+    "_verify_item_kwargs",
     "_verify_support_with_caveats",
+    "_verify_supports_batch",
     "is_corroborating",
     "render_neighbours",
     "render_source_identity",
