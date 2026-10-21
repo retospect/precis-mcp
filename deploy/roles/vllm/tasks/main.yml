@@ -1,7 +1,7 @@
 ---
 # vllm — run vLLM as a permanent systemd-managed container on one GB10 host.
 # See README.md. Linux only; requires docker + the nvidia container runtime
-# (no ansible role establishes the runtime; the check below catches its absence).
+# (the role itself converges the runtime below via nvidia-ctk).
 
 - name: vllm targets Linux GPU hosts only
   ansible.builtin.assert:
@@ -12,13 +12,34 @@
   ansible.builtin.command: "{{ vllm_container_cmd }} --version"
   changed_when: false
 
-- name: Ensure the nvidia container runtime is configured in docker
-  # Fix by hand: nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+- name: Check whether the nvidia container runtime is already configured in docker
   ansible.builtin.command: "{{ vllm_container_cmd }} info --format '{% raw %}{{json .Runtimes}}{% endraw %}'"
   become: true
   register: vllm_runtimes
   changed_when: false
-  failed_when: "'nvidia' not in vllm_runtimes.stdout"
+
+- name: Install-check nvidia-ctk
+  # Driver install is out of scope here; this just confirms the toolkit that
+  # wires docker to it is present before trying to configure the runtime.
+  when: "'nvidia' not in vllm_runtimes.stdout"
+  ansible.builtin.command: nvidia-ctk --version
+  changed_when: false
+
+- name: Configure the nvidia container runtime in docker
+  when: "'nvidia' not in vllm_runtimes.stdout"
+  ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+  become: true
+  notify: restart docker (vllm)
+
+- name: Apply the nvidia runtime config before the runtime check
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the nvidia container runtime is configured in docker
+  ansible.builtin.command: "{{ vllm_container_cmd }} info --format '{% raw %}{{json .Runtimes}}{% endraw %}'"
+  become: true
+  register: vllm_runtimes_checked
+  changed_when: false
+  failed_when: "'nvidia' not in vllm_runtimes_checked.stdout"
 
 - name: Check the model dir exists on the host
   ansible.builtin.stat:

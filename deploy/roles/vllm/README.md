@@ -45,8 +45,10 @@ Applying this role stops and disables the `sglang` unit
 
 ## Prerequisites on the host
 
-- docker with the nvidia runtime configured (no role does this; the role
-  fails early if `docker info` lists no `nvidia` runtime).
+- docker, with the NVIDIA driver and `nvidia-ctk` installed. The role
+  configures the docker runtime itself (`nvidia-ctk runtime configure
+  --runtime=docker` + a docker restart) when `docker info` lists no
+  `nvidia` runtime yet, then fails if it still doesn't.
 - Model weights at `vllm_model_dir`; for gpt-oss also
   `o200k_base.tiktoken` and `cl100k_base.tiktoken` in `vllm_tiktoken_dir`
   (vLLM fetches them from the internet otherwise, and the container cannot).

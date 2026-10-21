@@ -58,3 +58,17 @@ def test_multi_name_override_still_serves_one() -> None:
         sglang_served_model_names=["gpt-oss-120b", "openai/gpt-oss-120b"]
     )
     assert _served_model_names(command) == ["gpt-oss-120b"]
+
+
+def test_nvidia_runtime_is_converged_not_just_asserted() -> None:
+    tasks = yaml.safe_load((_ROLE / "tasks/main.yml").read_text(encoding="utf-8"))
+    configure = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.command")
+        == "nvidia-ctk runtime configure --runtime=docker"
+    )
+    assert configure["when"] == "'nvidia' not in sglang_runtimes.stdout"
+    assert configure["notify"] == "restart docker (sglang)"
+    handlers = yaml.safe_load((_ROLE / "handlers/main.yml").read_text(encoding="utf-8"))
+    assert any(handler["name"] == "restart docker (sglang)" for handler in handlers)

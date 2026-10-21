@@ -84,3 +84,17 @@ def test_health_probe_matches_published_address(
     ).render(**variables)
     url = _ENV.from_string(task["ansible.builtin.uri"]["url"]).render(**variables)
     assert url == f"http://{probe}:8000/health"
+
+
+def test_nvidia_runtime_is_converged_not_just_asserted() -> None:
+    tasks = yaml.safe_load((_ROLE / "tasks/main.yml").read_text(encoding="utf-8"))
+    configure = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.command")
+        == "nvidia-ctk runtime configure --runtime=docker"
+    )
+    assert configure["when"] == "'nvidia' not in vllm_runtimes.stdout"
+    assert configure["notify"] == "restart docker (vllm)"
+    handlers = yaml.safe_load((_ROLE / "handlers/main.yml").read_text(encoding="utf-8"))
+    assert any(handler["name"] == "restart docker (vllm)" for handler in handlers)

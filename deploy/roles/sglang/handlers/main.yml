@@ -1,4 +1,10 @@
 ---
+- name: restart docker (sglang)
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  become: true
+
 - name: reload systemd (sglang)
   ansible.builtin.systemd:
     daemon_reload: true
