@@ -350,11 +350,12 @@ instead of by hand. Same gate: one real result captured by precis with
 provenance, plus the actual job id, resources, runtime and allocation use.
 Needs B1–B3, image I1 (MLIP) and Reto's go for the allocation spend.
 
-Prerequisites (blocking). B4 is blocked on D1, D2 and R1; R2 must exist
+Prerequisites (blocking). B4 is blocked on R1 (D1 and D2 ruled
+2026-10-21: risk accepted for now); R2 must exist
 before the first live run but blocks nothing else.
 
-- **D1** (open decision below): who can reveal the HPC key and passphrase.
-- **D2** (open decision below): where SSH host, port, user and `host_keys`
+- **D1** (ruled: risk accepted for now): who can reveal the HPC key and passphrase.
+- **D2** (ruled: risk accepted for now): where SSH host, port, user and `host_keys`
   come from.
 - **R1. Key rotation and revocation runbook.** Rotation: mint the keypair
   offline → register the public key with the provider → `precis secret set`
@@ -477,7 +478,9 @@ preflight allocation.
   `vault.reveal`, which migration 0111 grants to PUBLIC, so every DSN holder
   (every worker, the web app, the session MCP as agent_rw) can reveal them
   today. See D1.
-- **D1 — OPEN, Reto. Who can reveal the HPC SSH key.** (a) Promote the
+- **D1 — RULED (Reto 2026-10-21): risk accepted for now; build as
+  specced (vault refs). Revisit in the multi-user overhaul
+  (`multi-user-overhaul.md`). Who can reveal the HPC SSH key.** (a) Promote the
   deferred per-name vault ACL (`precis.secrets` module docstring) so only a
   dedicated controller DB role can reveal the two HPC refs; needs a new role,
   a migration and a GRANT. (b) Keep the key and passphrase out of the DB: a
@@ -485,8 +488,9 @@ preflight allocation.
   `require_host_secret` seam that `precis.remote.credentials::vault_ssh_session`
   takes instead of the vault refs. Recommendation: (b), because it does not
   depend on the ACL being built and no DSN holder or other host can read it.
-- **D2 — OPEN, Reto. Where SSH host, port, user and host-key pins come
-  from.** They are planned for `app_settings`, which agent_rw can write
+- **D2 — RULED (Reto 2026-10-21): risk accepted for now; app_settings
+  as specced. Revisit in the multi-user overhaul. Where SSH host, port,
+  user and host-key pins come from.** They are planned for `app_settings`, which agent_rw can write
   (`precis.settings::set_setting`); a write there could point the controller
   at an attacker's server with a matching pinned key. Option: these four come
   only from the gitignored overlay, rendered at deploy time like
