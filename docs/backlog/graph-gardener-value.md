@@ -69,17 +69,16 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    and the same after a gardener/scout pass. Scores: recall@k of gold
    chunks and tokens consumed to reach them. Pilot quest: qu500066
    (kinetics). A pass stays on only if it moves recall or tokens.
-3. **Gardener v1 corrections.**
-   - Drop `relink`'s nearest-embedding `specialises` proposal for
-     taxa whose nearest start node the index already ranks first (it
-     restates RAG); keep it where the orphan reaches nothing.
-   - New `prune-redundant` detector: machine `related-to` edges whose
-     endpoints are mutual top-k neighbours in the index → propose
-     removal (the fisheye gets quieter, nothing is lost).
-   - Ledger burn-down: a reviewing model (Opus/Fable tier, sampled)
-     records `approved`/`rejected` on proposals older than 3 days; the
-     agreement rate per detector is castor's bar per
-     local-mesh-upkeep. Merge stays the only auto-apply path.
+3. **Gardener v1 corrections** — slice 3 landed (worktree
+   `gardener-s3`, commits 7a9cfe309/9d623d044/9ad06c3d3/d2ec4e443):
+   relink keeps only orphans past `RELINK_MIN_DISTANCE` (the
+   `+recall` floor) or with no card vector; the `prune` pass gained
+   `redundant_link` (machine `related-to` whose endpoints are mutual
+   top-5 inside `PRUNE_MAX_DISTANCE`); `precis garden review|stats`
+   runs the Opus sample (20/day, >3d) plus a Fable re-review of a
+   sample of the same proposals — both non-terminal — and reports
+   per-detector proposer–Opus and Opus–Fable agreement side by side.
+   Merge stays the only auto-apply path.
 4. **Per-quest scout on castor** (knowledge-mesh §4 made concrete): one
    tick per active quest reads `fisheye+2hop` around the quest, picks the
    thinnest rubric axis, and does one of: widen (paper search), read

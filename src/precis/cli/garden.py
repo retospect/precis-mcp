@@ -17,6 +17,12 @@ acts:
   carries the evidence either way.
 * ``precis garden undo <merge_id>`` — reverse an applied merge from the
   reversal record on the loser (``meta.garden_merge``).
+* ``precis garden review [--per-day N] [--min-age-days N]`` — the
+  sampled reviewer burn-down: a frontier-tier model verdict on the
+  oldest open proposals, recorded as non-terminal ``garden-reviewer``
+  rows (the proposal stays open for a human).
+* ``precis garden stats`` — the per-detector reviewer agreement rate
+  plus pending counts. Reporting only, no gate.
 
 Non-merge proposals get ``precis garden reject <review_id>`` to retire
 them from the queue without an apply.
@@ -78,6 +84,27 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             help="Actor recorded on the verdict/merge (default: $USER).",
         )
         sp.add_argument("--dsn", default=None, help="Database URL override.")
+
+    rev = gp.add_parser(
+        "review",
+        help="Sampled reviewer verdicts on the oldest open proposals.",
+    )
+    rev.add_argument("--per-day", type=int, default=20)
+    rev.add_argument("--min-age-days", type=int, default=3)
+    rev.add_argument(
+        "--fable-per-day",
+        type=int,
+        default=5,
+        help="How many of the day's sampled proposals the Fable "
+        "re-review also sees (0 disables it).",
+    )
+    rev.add_argument("--dsn", default=None, help="Database URL override.")
+
+    st = gp.add_parser(
+        "stats",
+        help="Reviewer agreement rate per detector (report only).",
+    )
+    st.add_argument("--dsn", default=None, help="Database URL override.")
     return p
 
 
@@ -168,6 +195,47 @@ def _undo(args: argparse.Namespace, store: Store) -> None:
     )
 
 
+def _review(args: argparse.Namespace, store: Store) -> None:
+    from precis.graph.garden.reviewer import review_sample
+
+    rep = review_sample(
+        store,
+        per_day=args.per_day,
+        min_age_days=args.min_age_days,
+        fable_per_day=args.fable_per_day,
+    )
+    paused = " — paused (model window)" if rep.paused else ""
+    print(
+        f"reviewed {rep.sampled} proposal(s): {rep.approvals} approve, "
+        f"{rep.rejections} reject, {rep.errors} error(s); "
+        f"fable re-reviewed {rep.fable_sampled} "
+        f"({rep.fable_errors} error(s)){paused}"
+    )
+
+
+def _stats(args: argparse.Namespace, store: Store) -> None:
+    from precis.graph.garden.proposals import pending_proposals
+    from precis.graph.garden.reviewer import agreement_stats
+
+    pending: dict[str, int] = {}
+    for p in pending_proposals(store, limit=1000):
+        pending[p.detector] = pending.get(p.detector, 0) + 1
+    stats = agreement_stats(store)
+    detectors = sorted(set(stats) | set(pending))
+    if not detectors:
+        print("no garden proposals or reviewer rows")
+        return
+    for det in detectors:
+        s = stats.get(det, {})
+        rate = f"{s['rate']:.0%}" if s.get("sampled") else "—"
+        frate = f"{s['fable_rate']:.0%}" if s.get("fable_sampled") else "—"
+        print(
+            f"{det}: pending={pending.get(det, 0)} "
+            f"sampled={s.get('sampled', 0)} approval={rate} "
+            f"fable={s.get('fable_sampled', 0)} opus-fable={frate}"
+        )
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.dsn))
     try:
@@ -176,6 +244,8 @@ def run(args: argparse.Namespace) -> None:
             "apply": _apply,
             "reject": _reject,
             "undo": _undo,
+            "review": _review,
+            "stats": _stats,
         }[args.garden_cmd](args, store)
     except (BadInput, NotFound) as exc:
         print(f"garden: {exc}", file=sys.stderr)

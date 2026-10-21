@@ -225,6 +225,46 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             'bigger (e.g. `{"tier": "big"}` for a weekly frontier pass).'
         ),
     ),
+    "graph_garden:review": OpDefault(
+        tier=Tier.FRONTIER,
+        model=None,
+        label="Graph gardener sampled reviewer",
+        description=(
+            "The sampled burn-down over open `graph_garden` proposals "
+            "(`precis garden review`) — an approve/reject verdict plus a "
+            "one-line why per sampled proposal, recorded as a "
+            "non-terminal `garden-reviewer` reviews row. The "
+            "per-detector agreement rate is the proposer's quality bar."
+        ),
+        note=(
+            "FRONTIER by default — the sample is bounded (per_day, "
+            "global, oldest-first) and its verdicts are the yardstick "
+            "the cheaper `graph_garden:propose` judge is measured "
+            "against, so a weak reviewer would poison the bar rather "
+            "than just the sample. Steer with "
+            "`llm.op.graph_garden:review` when the sample should run "
+            "cheaper or bigger."
+        ),
+    ),
+    "graph_garden:review_fable": OpDefault(
+        tier=Tier.FRONTIER,
+        model="claude-fable-5",
+        label="Graph gardener sampled reviewer (Fable)",
+        description=(
+            "The Fable re-review beside `graph_garden:review` — an "
+            "independent approve/reject verdict on a sample of the same "
+            "proposals Opus saw, recorded as non-terminal "
+            "`garden-reviewer-fable` rows. The Opus–Fable agreement "
+            "rate cross-checks the reviewer's bar."
+        ),
+        note=(
+            "Model is the point here: the op exists so the re-review "
+            "lands on a *different* model than the Opus sample — "
+            "otherwise the agreement column measures nothing. Steer "
+            "with `llm.op.graph_garden:review_fable`; pinning the same "
+            "model as `graph_garden:review` degenerates the check."
+        ),
+    ),
     "llm_summarize": OpDefault(
         tier=Tier.SMALL,
         model=None,

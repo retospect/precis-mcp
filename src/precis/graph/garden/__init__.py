@@ -21,7 +21,10 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    ``dup_pair`` (embedding + title/alias similarity, dimension-gated
    for taxa), ``orphan`` (taxon reaching no start node), ``stale``
    (untouched, unlinked, unviewed node), ``dangling_edge`` (link to a
-   retired ref) / ``cycle_edge`` (a 2-cycle in the taxon DAG),
+   retired ref) / ``cycle_edge`` (a 2-cycle in the taxon DAG) /
+   ``redundant_link`` (a machine ``related-to`` edge whose endpoints are
+   mutual top-k card neighbours inside the recall floor — the edge
+   restates the index; proposal only, apply stays merge-only),
    ``untagged`` (a ref missing a namespace its kind already uses),
    ``polysemy`` (split signals), ``sibling_confusion`` (exclusive-axis
    siblings one classification run can't tell apart).
@@ -34,6 +37,13 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 3. Persistence (:mod:`precis.graph.garden.proposals`) — accepted
    verdicts become ``reviews`` rows, deduplicated against pending
    proposals with the same proposal key.
+4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
+   ``precis garden review``) — a FRONTIER-tier burn-down over open
+   proposals older than a few days: one approve/reject verdict per
+   sampled proposal, recorded as a NON-TERMINAL ``garden-reviewer``
+   row (the proposal stays open for a human; merge remains the only
+   apply path). The per-detector agreement rate is the proposer's
+   quality bar — ``precis garden stats``, reporting only.
 
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector

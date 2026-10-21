@@ -7,6 +7,7 @@ answers:
   - what is the graph_garden job and what does it change?
   - where do gardener merge/split/relink/prune/tag proposals land?
   - how do I review or act on a gardener proposal?
+  - what do `precis garden review` and `precis garden stats` do?
   - how do I turn the gardener on?
   - what is a polysemy finding and when does it trigger a split proposal?
   - why did two sibling taxa get a merge proposal?
@@ -39,10 +40,19 @@ siblings`, default `all`):
   `si_vector`) are never candidates — different units are not dupes.
 - **relink** — a `taxon` reaching no start node gets a
   `specialises`-edge proposal naming the nearest start node by card
-  embedding as candidate parent.
+  embedding as candidate parent — but only when that parent sits past
+  the `+recall` distance floor (`RELINK_MIN_DISTANCE` = 0.6): inside
+  it the index already lists the start node, so the proposal would
+  restate what retrieval finds on demand. An orphan with no card
+  vector is always kept (the index has nothing to offer it).
 - **prune** — a link whose endpoint ref is retired; a `specialises`
   2-cycle (proposes deleting the younger edge); a node untouched,
-  unlinked and unviewed for `stale_days` (default 180).
+  unlinked and unviewed for `stale_days` (default 180); and a machine
+  `related-to` edge (`trust_origin` `generated`/`computed`) whose
+  endpoints are mutual top-5 card neighbours inside
+  `PRUNE_MAX_DISTANCE` — the edge duplicates the index, so the proposal
+  is removal. A `prune` proposal is never applied by code: apply stays
+  merge-only, the row is for human follow-through.
 - **tag-sweep** — a ref of a covered kind missing a closed namespace
   its live siblings already use (`DOMAIN:`, `TOPIC:` …). The proposal
   carries the namespace; the value is the judge's call.
@@ -80,6 +90,31 @@ loser, and records an `approved` review row. `precis garden undo
 `meta.garden_merge` carries the full reversal record. Split, prune and
 relink proposals today are for human follow-through (the apply paths are
 deliberately narrower than the proposal space).
+
+## The sampled reviewer
+
+`precis garden review` burns down the open-proposal backlog: up to
+`--per-day` (default 20) pending, still-current proposals older than
+`--min-age-days` (default 3), oldest first, global over detectors. Each
+sampled proposal gets one routed Opus verdict (`graph_garden:review`,
+steerable via `llm.op.*`) — approve/reject plus a one-line why —
+recorded as a NON-TERMINAL reviews row (`actor='garden-reviewer'`,
+payload under `note.garden_review`, never `note.garden`). The first
+`--fable-per-day` (default 5) of the day's sampled proposals also get
+an independent Fable re-review (`graph_garden:review_fable`,
+`actor='garden-reviewer-fable'`, same payload shape) so Opus's verdicts
+get a cross-check. Everything stays open for a human: a sampled merge
+proposal is never resolved or applied by either path, and a proposal
+is sampled at most once.
+
+`precis garden stats` reports the outcome per detector: the pending
+count, the sampled count, and two agreement rates side by side —
+proposer–Opus (the share of sampled proposals Opus approved) and
+Opus–Fable (the share of paired proposals where Fable matched Opus).
+They are the proposer's quality bar (a detector Opus keeps rejecting
+is noise; a systematic Opus–Fable split means the bar itself needs a
+look); reporting only, no gate. No scheduler change: `review` runs
+when an operator runs it.
 
 ## Scheduling
 

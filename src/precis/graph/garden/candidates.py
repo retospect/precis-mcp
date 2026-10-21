@@ -52,6 +52,28 @@ DUP_MAX_DISTANCE = 0.25
 #: nearest-sibling refusal's fallback bar (``SIBLING_MIN_OVERLAP``).
 DUP_MIN_LEXICAL = 0.7
 
+#: Relink-narrowing floor (graph-gardener-value §3, 2026-10-21 ruling).
+#: An orphan taxon whose nearest start node sits *inside* this card-cosine
+#: distance is dropped: within the fisheye ``+recall`` rung's distance
+#: floor (``eye_render._RECALL_MAX_DISTANCE``; re-stated like
+#: ``DUP_MAX_DISTANCE`` — this layer must not reach into render code) the
+#: index already lists that start node as a neighbour, so a
+#: ``specialises`` proposal to it restates what retrieval recomputes on
+#: demand. Past it the pair never co-retrieves, so the edge holds
+#: something RAG cannot. A taxon with no card vector keeps — the index
+#: has nothing to offer it either way.
+RELINK_MIN_DISTANCE = 0.6
+
+#: Redundant-link bars (graph-gardener-value §3, same ruling): a machine
+#: ``related-to`` edge whose endpoints are mutual top-``PRUNE_TOP_K``
+#: card-vector neighbours *and* inside ``PRUNE_MAX_DISTANCE`` duplicates
+#: the index — the ``+recall`` rung lists the pair for each other anyway
+#: — so it is a prune proposal. ``PRUNE_MAX_DISTANCE`` shares the
+#: recall-floor justification of ``RELINK_MIN_DISTANCE``, kept as its own
+#: constant so the two passes can diverge.
+PRUNE_TOP_K = 5
+PRUNE_MAX_DISTANCE = 0.6
+
 #: A live node untouched, unlinked and unviewed for this many days is a
 #: prune candidate (proposal only — retire stays a human decision).
 STALE_DAYS = 180
@@ -65,7 +87,7 @@ _DETECTOR_BY_PASS = {
     "merge": ("dup_pair",),
     "split": ("polysemy",),
     "relink": ("orphan",),
-    "prune": ("dangling_edge", "cycle_edge", "stale"),
+    "prune": ("dangling_edge", "cycle_edge", "stale", "redundant_link"),
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
 }
@@ -152,6 +174,49 @@ def _card_vectors(store: Store, ref_ids: list[int]) -> dict[int, list[float]]:
         vec = _coerce_vector(raw)
         if vec is not None:
             out[int(ref)] = vec
+    return out
+
+
+def _top_k_card_neighbours(
+    store: Store,
+    ref_ids: set[int],
+    vecs: dict[int, list[float]],
+    *,
+    k: int,
+) -> dict[int, frozenset[int]]:
+    """``{ref_id: its top-``k`` neighbour ref_ids}`` — one ANN query per
+    endpoint against the live card index, same ``card_combined`` /
+    default-embedder scope as :func:`_card_vectors`. Refs without a card
+    vector are absent from the result (no neighbours to compare)."""
+    from precis.store._chunks_ops import _prepare_filtered_ann, _vec_param
+
+    out: dict[int, frozenset[int]] = {}
+    for rid in sorted(ref_ids):
+        vec = vecs.get(rid)
+        if vec is None:
+            continue
+        with store.pool.connection() as conn:
+            # Filtered-ANN under-fill guard (see _prepare_filtered_ann):
+            # card chunks are a minority of the index, so a plain HNSW
+            # scan can return fewer than k card rows.
+            _prepare_filtered_ann(conn, k * 2)
+            rows = conn.execute(
+                "SELECT c.ref_id FROM chunks c "
+                "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+                "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+                "JOIN embedders em ON em.name = ce.embedder AND em.is_default "
+                "WHERE c.chunk_kind = 'card_combined' AND c.retired_at IS NULL "
+                "  AND c.ref_id <> %(self)s "
+                "ORDER BY ce.vector <=> %(v)s::vector LIMIT %(n)s",
+                {"self": rid, "v": _vec_param(vec), "n": k * 2},
+            ).fetchall()
+        top: list[int] = []
+        for (other,) in rows:
+            if int(other) not in top:  # a ref can hold >1 card chunk
+                top.append(int(other))
+            if len(top) >= k:
+                break
+        out[rid] = frozenset(top)
     return out
 
 
@@ -302,14 +367,22 @@ def duplicate_candidates(
 # ---------------------------------------------------------------------------
 
 
-def orphan_taxon_candidates(store: Store, *, limit: int = 50) -> list[GardenCandidate]:
-    """Live taxon refs reaching no start node (``store.taxon_unrooted``).
+def orphan_taxon_candidates(
+    store: Store, *, limit: int = 50, min_distance: float = RELINK_MIN_DISTANCE
+) -> list[GardenCandidate]:
+    """Live taxon refs reaching no start node (``store.taxon_unrooted``),
+    narrowed to the orphans a relink would actually add (the 2026-10-21
+    ruling): a candidate survives only when the nearest start node sits
+    *past* ``min_distance`` by card cosine — inside it the ``+recall``
+    rung already lists that start node, so the proposal restates RAG —
+    or when the taxon has no card vector at all.
 
-    Each candidate names a *candidate parent* for the proposer/judge: the
-    nearest start node by card-embedding distance when the orphan has an
-    embedded card, else ``None`` (evidence still lists the live starts so
-    the judge has the real choices). A store with no start nodes yields
-    nothing — there is nothing to relink toward.
+    Each kept candidate names a *candidate parent* for the
+    proposer/judge: the nearest start node by card-embedding distance
+    when the orphan has an embedded card, else ``None`` (evidence still
+    lists the live starts so the judge has the real choices). A store
+    with no start nodes yields nothing — there is nothing to relink
+    toward.
     """
     unrooted = store.taxon_unrooted()[:limit]
     if not unrooted:
@@ -332,8 +405,10 @@ def orphan_taxon_candidates(store: Store, *, limit: int = 50) -> list[GardenCand
                 key=lambda kv: _cosine(q, np.asarray(kv[1], dtype=float)),
             )
             dist = _cosine(q, np.asarray(best[1], dtype=float))
+            if dist <= min_distance:
+                continue  # retrieval already surfaces this parent
             parent = best[0]
-        ev: dict[str, Any] = {"reaches_no_start": True, "start_nodes": starts}
+        ev: dict[str, Any] = {"start_nodes": starts}
         if parent is not None and dist is not None:
             ev["candidate_parent_distance"] = round(dist, 4)
         out.append(
@@ -489,6 +564,96 @@ def cycle_edge_candidates(store: Store, *, limit: int = 50) -> list[GardenCandid
             )
         )
     return out
+
+
+def redundant_link_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    top_k: int = PRUNE_TOP_K,
+    max_distance: float = PRUNE_MAX_DISTANCE,
+) -> list[GardenCandidate]:
+    """Machine ``related-to`` edges that only restate the index.
+
+    A link qualifies when ``relation='related-to'`` and
+    ``links.trust_origin`` is ``generated`` or ``computed`` (human- and
+    legacy-authored edges are never candidates), both endpoints carry a
+    default-embedder ``card_combined`` vector, the pair are *mutual*
+    top-``top_k`` neighbours in the card index, and their cosine
+    distance is at or below ``max_distance``. Inside the recall
+    floor the fisheye already lists the endpoints for each other, so the
+    stored edge adds nothing — it only makes the render noisier.
+
+    Scans machine ``related-to`` rows oldest-first by ``link_id`` up to
+    ``scan_cap`` (deterministic across ticks; a bounded pass covers the
+    corpus over successive runs) and emits at most ``limit`` candidates.
+    Proposal rows only — apply stays merge-only, so a ``prune`` proposal
+    is never carried out by code; it queues for a human.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT link_id, src_ref_id, dst_ref_id FROM links "
+            "WHERE relation = 'related-to' "
+            "  AND trust_origin IN ('generated', 'computed') "
+            "ORDER BY link_id LIMIT %(cap)s",
+            {"cap": scan_cap},
+        ).fetchall()
+    if not rows:
+        return []
+    vecs = _card_vectors(
+        store, sorted({int(r[1]) for r in rows} | {int(r[2]) for r in rows})
+    )
+    # The distance bound is the cheap leg — filter per link first so the
+    # ANN neighbour lookups run only for endpoints that could still
+    # qualify.
+    near: list[tuple[int, int, int, float]] = []
+    for link_id, a, b in rows:
+        va, vb = vecs.get(int(a)), vecs.get(int(b))
+        if va is None or vb is None:
+            continue
+        dist = _cosine(va, vb)
+        if dist <= max_distance:
+            near.append((int(link_id), int(a), int(b), dist))
+    if not near:
+        return []
+    neighbours = _top_k_card_neighbours(
+        store,
+        {e for _, a, b, _ in near for e in (a, b)},
+        vecs,
+        k=top_k,
+    )
+
+    out: list[GardenCandidate] = []
+    for link_id, a, b, d in near:
+        if b not in neighbours.get(a, ()) or a not in neighbours.get(b, ()):
+            continue
+        out.append(
+            GardenCandidate(
+                detector="redundant_link",
+                action="prune",
+                target_kind="link",
+                target_id=link_id,
+                title=(
+                    f"machine related-to {link_id} {a}↔{b} duplicates the "
+                    f"index (mutual top-{top_k}, dist {d:.3f})"
+                ),
+                evidence={
+                    "a": a,
+                    "b": b,
+                    "distance": round(d, 4),
+                    "mutual_top_k": top_k,
+                },
+                payload={
+                    "link_id": link_id,
+                    "a": a,
+                    "b": b,
+                    "distance": round(d, 4),
+                },
+            )
+        )
+    out.sort(key=lambda c: (float(c.payload["distance"]), c.target_id))
+    return out[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +946,8 @@ def run_detectors(
             out += dangling_edge_candidates(store, limit=limit)
         elif det == "cycle_edge":
             out += cycle_edge_candidates(store, limit=limit)
+        elif det == "redundant_link":
+            out += redundant_link_candidates(store, scan_cap=scan_cap, limit=limit)
         elif det == "untagged":
             out += untagged_candidates(
                 store, namespaces=tag_namespaces, kinds=tag_kinds, limit=limit
@@ -799,6 +966,9 @@ __all__ = [
     "DUP_MIN_LEXICAL",
     "GARDEN_KINDS",
     "PASS_CHOICES",
+    "PRUNE_MAX_DISTANCE",
+    "PRUNE_TOP_K",
+    "RELINK_MIN_DISTANCE",
     "STALE_DAYS",
     "GardenCandidate",
     "cycle_edge_candidates",
@@ -807,6 +977,7 @@ __all__ = [
     "duplicate_candidates",
     "orphan_taxon_candidates",
     "polysemy_candidates",
+    "redundant_link_candidates",
     "run_detectors",
     "sibling_confusion_candidates",
     "stale_candidates",
