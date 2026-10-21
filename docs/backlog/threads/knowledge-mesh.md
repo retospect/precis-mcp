@@ -207,6 +207,12 @@ graph-health-metrics, five parked gripes, and the seam with
 4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
+4a. **backlog/graph-gardener-value.md** — Reto 2026-10-21: links only
+   where RAG cannot recompute them (stance, distant, provenance,
+   identity), machine edges on the trust contract, a per-quest retrieval
+   eval, gardener v1 corrections, the castor scout. Gardener v1 lit on
+   prod 2026-10-21 with castor gpt-oss-120b; a 6-hourly watch files
+   gripes.
 5. **backlog/graph-gardener.md** — v1 built 2026-10-14 on the
    `gardener` worktree (proposals-only, dark until lit, pending land);
    what remains is a populated mesh from Horizon 1 to garden, plus the
