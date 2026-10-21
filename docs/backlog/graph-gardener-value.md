@@ -88,6 +88,32 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    from a chunk with `establishes` + measure). All writes pass slice 1;
    findings and stance edges stay proposals until the reviewer bar is
    met.
+5. **Castor filler: extract → mesh** (Reto 2026-10-21: "we want to see
+   what the quality of castor output can be, and then fix things until it
+   is adequate"; castor stays the gardener's default model). The
+   gardener stops being a once-a-day job and becomes castor's idle-time
+   filler: a small job (one paper or one candidate set) is minted only
+   while castor runs fewer than ~8 of its 32 requests, at the lowest
+   priority, yielding to interactive calls. Work, in order: (a)
+   `survey_extract` on full-text papers serving active quests (measures
+   + findings, accepted per batch by `measure_accept`'s sampled Wilson
+   bar, never item by item); (b) deterministic numeric mesh over the new
+   measures (same measurand, reference, normalization and conditions:
+   compatible values → `corroborates`, incompatible → `disputes`; castor
+   writes only the `why`); (c) findings grouped into claim hubs; (d)
+   `explains` between claim hubs (claim-hub-only per migration 0203 and
+   `taproot.hub.link_claims`: accepted 2026-10-21, chunk-level
+   explanation is the hub's evidence, not the edge's); (e) the v1
+   detectors. Direction: the work list ranks by the active quests'
+   priority, then the rubric questions slice 2's eval cannot answer
+   (other-pass 5), then new full-text papers; a pass whose sampled
+   acceptance or eval delta falls under the bar is throttled.
+   **Trial first, before any scheduler code:** ~100 `survey_extract`
+   jobs on castor over held full-text papers of active quests, then an
+   Opus read of the output (sampled measures against their chunks,
+   failure classes: wrong number, wrong measurand, missing condition,
+   unit, hallucinated anchor, JSON), fix what it finds, repeat until the
+   acceptance bar holds; only then the idle gate and the mesh stages.
 
 ## Other passes worth having (ranked, not yet sliced)
 

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 pillar: 3d-design
 prio: medium
 model: opus
@@ -113,17 +113,60 @@ many slides" before any geometry is cut.
    dimension-free (R and h scale together), so it serves µm to 50 cm with
    no code change; only map resolution and mesh budget set the floor.
 
-## Open questions (Reto)
+## Decisions (Reto 2026-10-21)
 
-- Q1 Default pull layout: two halves (cheapest tool, undercut near the
-  parting line) or k = 4 slides (clears most knurls)? Recommended: the
-  op takes the smallest k that clears, capped at 4, and says so.
-- Q2 Undercut handling: refuse only, or offer `relief_fit: clip`
-  (modifies the pattern)? Recommended: refuse by default, clip on request.
-- Q3 Map input: PNG/array + generators enough for slice 1, or is text
-  (embossed lettering) needed early? Text needs a font outline path.
-- Q4 Mold target: SLA-printed prototype halves first (matches "right on
-  prod for prototype"), milling later?
+- Q1 No undercuts, ever. The outer surface is pulled in 2 or 3
+  directions (k ∈ {2, 3}), so the pattern adapts to the mold, not the
+  mold to the pattern. Positional constraint: a point at θ from its
+  slide's pull with flank β releases at draft α when θ + β ≤ 90° − α;
+  slide half-width is 180°/k, so the steepest allowed flank is
+  `β_max(θ) = 90° − α − θ`: up to 89° facing the pull, 29° at a k = 3
+  join, 0° at a k = 2 join (the pattern must fade out there). Bare
+  cylinder at the join is exempt (zero draft accepted). The op picks
+  k ∈ {2, 3} and the parting angle φ that remove least pattern.
+- Q2 Pull direction is modelled in both places. **Design:** shape,
+  line and text inputs get pull-aware flanks: each flank's slope is
+  chosen from `β_max(θ)` at its position, so they come out moldable.
+  **DRC:** `mold.undercut` checks every point against its own slide's
+  pull (relief maps and anything hand-made); relief maps are refused
+  with the undercut image, `relief_fit: clip` on request.
+- Q3 Text in slice 1 (matplotlib `TextPath` / fontTools are already
+  deps).
+- Q4 SLA-printed mold pieces at macro scale; milling later.
+
+## Pattern sources (Reto 2026-10-21: line art, buildings, stones)
+
+All end as `h(u, v)` and then pass the pull-aware flank / DRC step, so
+"moldable" is enforced after the art, not by the artist.
+
+1. **Line art with widths** (SVG paths or polylines + width): strokes →
+   ridges (emboss) or grooves (deboss) of a stated depth; flanks per
+   Q2. Rules the op checks: line width ≥ 2·depth·tan(flank) + a flat
+   top (else the ridge becomes a knife edge), gap ≥ the printer/mold
+   minimum, and lines that cross a join zone get shallower there.
+   Feasible now: this is the shape input of slice 1 with stroking.
+2. **Photo → edges → engraving**: Canny/structured edges → cleaned,
+   simplified polylines → source 1. Cheap, deterministic, reads as an
+   engraving; quality depends on edge cleanup (min segment length,
+   merge near-parallel edges).
+3. **Photo → depth → bas-relief**: a monocular depth model (Depth
+   Anything class, GPU) gives a depth map; bas-relief compression
+   (gradient-domain, Weyrich et al. 2007) squashes it to the relief
+   depth while keeping visible detail; then clip per pull. Gives a
+   sculpted building, not an outline. Needs a GPU depth model on a node
+   (not castor's LLM slot); slice of its own.
+4. **Procedural masonry** (medieval stones, no photo needed): a
+   Voronoi / jittered-course layout of stones, each a rounded dome with
+   noise, mortar joints as grooves; parameters: course height, stone
+   aspect, joint width/depth, weathering. Fully automatic and moldable by
+   construction (domes have gentle flanks). Combines with 2/3: segment a
+   photo's wall regions and fill them with masonry.
+
+Ångström analogue: the same `(u, v)` pattern can carry a categorical
+field (charge sign, polar/nonpolar) instead of height; slice 4's shared
+wrap map then places it on a hexfold tube as pocket patch regions
+(pocket-from-molecule's ESP bands). The "pull direction" there is the
+molecule's approach pose.
 
 ## Explicitly NOT in scope
 

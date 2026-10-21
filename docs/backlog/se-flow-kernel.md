@@ -142,7 +142,7 @@ pocket-from-molecule slice 2 to land, because that slice fixes the
 provisional `Computer` signature in `precis_se.properties.COMPUTERS`.
 Slice 2b follows slice 2.
 
-## Open question (Reto, before slice 2)
+## Decided before slice 2 (Reto 2026-10-21: "Parabolic default yes")
 
 - Q4 Vertical speed profile. cfdtest's tracker (`tracker.py::track`)
   moves every particle horizontally at the gap-averaged speed whatever
@@ -151,9 +151,10 @@ Slice 2b follows slice 2.
   dispersion). The player makes the uniform speed visible. Using the
   profile `U(z*) = 6 z*(1 − z*) · Ū` is a few lines but changes
   cfdtest's breakthrough numbers, so slice 2's reproduction test would
-  compare against the profiled tracker, not cfdtest. Recommendation:
-  adopt the profile in slice 2, behind a `profile='parabolic'|'plug'`
-  argument defaulting to parabolic, with `plug` reproducing cfdtest.
+  compare against the profiled tracker, not cfdtest. Decided:
+  slice 2 adopts the profile behind `profile='parabolic'|'plug'`,
+  default parabolic; `plug` reproduces cfdtest for the reproduction
+  test.
 
 ## Explicitly NOT in scope
 
