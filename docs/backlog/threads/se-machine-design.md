@@ -211,6 +211,9 @@ off that gap until it closes.
    2026-10-20 (Q1–Q3 decided); slice 1 landed 2026-10-20 on `flow-s1`
    (`src/precis_flow/` + tests), slice 2 waits for pocket-from-molecule
    slice 2, slice 2b (web particle player) follows 2.
+0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
+   2-D shape around a cylinder, undercut check per pull layout, mold
+   halves as the negative (Reto 2026-10-21); draft, Q1–Q4 open.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
