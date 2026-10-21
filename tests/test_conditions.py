@@ -30,6 +30,7 @@ from precis.workers.conditions import (
     _handler_service,
     _liveness_handler_names,
     _probe_dead_generation_claims,
+    _probe_limiter_bypassed,
     _probe_llm_degraded,
     _probe_pass_dead,
     _probe_pass_wedged,
@@ -1049,3 +1050,35 @@ def test_toolless_ticks_quiet_below_threshold(store: Store, monkeypatch) -> None
     _seed_toolless_event(store)
     findings = _probe_toolless_agent_spend(store)
     assert findings == []
+
+
+def test_limiter_bypassed_fires_only_with_traffic_and_stale_row(store: Store) -> None:
+    """gr503435: stale ``last_refill`` + same-window fetcher events fires;
+    stale row without traffic, or fresh row with traffic, stays green."""
+    old = datetime.now(UTC) - timedelta(days=3)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO refs (kind, title) VALUES ('paper', 'lb') RETURNING ref_id"
+        ).fetchone()
+        assert row is not None
+        ref_id = row[0]
+        conn.execute(
+            "UPDATE external_rate_limits SET last_refill = %s WHERE provider = 'unpaywall'",
+            (old,),
+        )
+        conn.execute(
+            "UPDATE external_rate_limits SET last_refill = %s WHERE provider = 'openalex'",
+            (old,),
+        )
+        conn.execute(
+            "UPDATE external_rate_limits SET last_refill = now() WHERE provider = 'arxiv'"
+        )
+    store.append_event(ref_id, source="fetcher:unpaywall", event="fetch_failed")
+    store.append_event(ref_id, source="fetcher:arxiv", event="fetch_ok")
+    # openalex: stale row but only a no-call event -> not traffic
+    store.append_event(ref_id, source="fetcher:openalex", event="no_oa_version")
+
+    keys = {f.key for f in _probe_limiter_bypassed(store)}
+    assert "limiter-bypassed:unpaywall" in keys
+    assert "limiter-bypassed:openalex" not in keys
+    assert "limiter-bypassed:arxiv" not in keys

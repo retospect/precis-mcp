@@ -168,6 +168,23 @@ def _jitter_frac() -> float:
     return (os.getpid() % 100) / 400.0
 
 
+def _resolve_dsn() -> str | None:
+    """The DSN to coordinate through: the configured ``database_url``, else
+    the one a long-lived process adopted.
+
+    ``precis worker`` / ``precis serve`` call ``secrets.adopt_process_store``,
+    which scrubs ``PRECIS_DATABASE_URL`` from ``os.environ`` after connecting.
+    ``load_config()`` then sees no DSN, and without this fallback every
+    :func:`acquire` in those processes failed open silently (gr503435: the
+    unpaywall/openalex/arxiv rows went untouched from 2026-08-11)."""
+    dsn = load_config().database_url
+    if dsn:
+        return dsn
+    from precis import secrets
+
+    return secrets.get_adopted_dsn()
+
+
 def _get_conn() -> psycopg.Connection[Any] | None:
     """The lazily-opened module-level connection, or ``None`` when no
     ``database_url`` is configured. Raises on a genuine connect failure —
@@ -178,7 +195,7 @@ def _get_conn() -> psycopg.Connection[Any] | None:
     reopen the shared connection exactly once instead of racing.
     """
     global _conn, _conn_dsn
-    dsn = load_config().database_url
+    dsn = _resolve_dsn()
     if not dsn:
         return None
     with _lock:
@@ -280,6 +297,28 @@ def _warn_fail_open(provider: str, what: str) -> None:
     )
 
 
+#: Seconds between two warnings for one provider about a *silent* fail-open
+#: (limiter off by env, no DSN, no row): these are configuration states, not
+#: transient faults, so once an hour per process is enough to be found.
+_SILENT_WARN_EVERY_S = 3600.0
+_silent_warned: dict[str, float] = {}
+
+
+def _warn_unpaced(provider: str, reason: str) -> None:
+    """WARNING naming ``provider`` and why it runs unpaced, at most once per
+    :data:`_SILENT_WARN_EVERY_S` per provider per process."""
+    now = time.monotonic()
+    last = _silent_warned.get(provider)
+    if last is not None and now - last < _SILENT_WARN_EVERY_S:
+        return
+    _silent_warned[provider] = now
+    log.warning(
+        "rate_limit: %r runs unpaced, failing open (%s)",
+        provider,
+        reason,
+    )
+
+
 def acquire(
     provider: str,
     *,
@@ -304,12 +343,14 @@ def acquire(
     first use instead of failing open for a missing row.
     """
     if not _rate_limit_enabled():
+        _warn_unpaced(provider, "disabled by PRECIS_RATE_LIMIT")
         return True
     try:
         deadline = time.monotonic() + max_wait_s
         while True:
             conn = _get_conn()
             if conn is None:
+                _warn_unpaced(provider, "no database_url configured")
                 return True
             granted = conn.execute(_CONSUME_SQL, (provider, n, n, n, n)).fetchone()
             if granted is not None:
@@ -317,6 +358,7 @@ def acquire(
             state = conn.execute(_SELECT_STATE_SQL, (provider,)).fetchone()
             if state is None:
                 if seed_row is None:
+                    _warn_unpaced(provider, "no external_rate_limits row")
                     return True  # unknown provider -> fail open
                 capacity, refill = seed_row
                 conn.execute(

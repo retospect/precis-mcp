@@ -338,6 +338,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per probe",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "limiter-bypassed:{provider}",
+        "A fetcher calls a provider but its external_rate_limits row has not "
+        "been consumed in 24h (the limiter is failing open).",
+        budget="24h",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",

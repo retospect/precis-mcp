@@ -114,7 +114,8 @@ Derived groups name their check after the thing they watch:
   ticks are spending without calling a single precis tool);
   `dead-generation-claims` → `dead-gen-claims:<host>/<process>` (claims
   held by a worker generation that is no longer alive);
-  `settings-env-shadowed`; `analysis-stale`.
+  `settings-env-shadowed`; `analysis-stale`; `limiter-bypassed` (fetcher
+  traffic but no limiter consume in 24h: it is failing open).
 
 ## See also
 

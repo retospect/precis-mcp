@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from precis import secrets as secrets_mod
 from precis.store import Store
 from precis.utils import rate_limit
 
@@ -244,7 +245,57 @@ class TestFailOpen:
             database_url = None
 
         monkeypatch.setattr(rate_limit, "load_config", lambda: _FakeConfig())
+        monkeypatch.setattr(secrets_mod, "_ADOPTED_DSN", None)
         assert rate_limit.acquire("s2") is True
+
+    def test_scrubbed_env_falls_back_to_adopted_dsn(
+        self, use_store_dsn: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr503435: ``adopt_process_store`` pops ``PRECIS_DATABASE_URL``; the
+        limiter must still reach the DB through the adopted DSN and consume."""
+        provider = "test_rl_adopted"
+        _seed(use_store_dsn, provider, capacity=2, refill_per_sec=0.0001, tokens=2)
+        try:
+            monkeypatch.delenv("PRECIS_DATABASE_URL")
+            monkeypatch.setattr(secrets_mod, "_ADOPTED_DSN", use_store_dsn.dsn)
+            assert rate_limit.acquire(provider, max_wait_s=1.0) is True
+            row = _row(use_store_dsn, provider)
+            assert row is not None
+            assert row[0] < 2  # a token was actually consumed, not failed open
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+    @pytest.mark.parametrize(
+        ("setup", "reason"),
+        [
+            ("env", "disabled by PRECIS_RATE_LIMIT"),
+            ("dsn", "no database_url"),
+            ("row", "no external_rate_limits row"),
+        ],
+    )
+    def test_silent_fail_open_warns_once_per_provider(
+        self,
+        use_store_dsn: Store,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        setup: str,
+        reason: str,
+    ) -> None:
+        monkeypatch.setattr(rate_limit, "_silent_warned", {})
+        if setup == "env":
+            monkeypatch.setenv("PRECIS_RATE_LIMIT", "0")
+        elif setup == "dsn":
+            monkeypatch.delenv("PRECIS_DATABASE_URL")
+            monkeypatch.setattr(secrets_mod, "_ADOPTED_DSN", None)
+            monkeypatch.setattr(rate_limit, "_resolve_dsn", lambda: None)
+        with caplog.at_level("WARNING", logger=rate_limit.log.name):
+            assert rate_limit.acquire("test_rl_no_such_provider", max_wait_s=1.0)
+            assert rate_limit.acquire("test_rl_no_such_provider", max_wait_s=1.0)
+            assert rate_limit.acquire("test_rl_other_provider", max_wait_s=1.0)
+        msgs = [r.getMessage() for r in caplog.records if reason in r.getMessage()]
+        assert len(msgs) == 2  # once per provider, not per call
+        assert "test_rl_no_such_provider" in msgs[0]
+        assert "test_rl_other_provider" in msgs[1]
 
 
 class TestLifecycle:

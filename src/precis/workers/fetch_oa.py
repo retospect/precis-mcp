@@ -1359,6 +1359,7 @@ def _query_openalex_credits_remaining(api_key: str) -> int | None:
     missing/malformed number — the caller treats that as "can't read a balance"
     and clears rather than raises a spurious alert.
     """
+    require_rate_limit("openalex")
     with http_client(timeout=_API_TIMEOUT_S, user_agent=None) as client:
         resp = client.get(_OPENALEX_RATE_LIMIT_URL, params={"api_key": api_key})
         resp.raise_for_status()

@@ -3219,6 +3219,25 @@ class TestMarkupRacePrintableOnly:
         assert sc.printable_only is False
 
 
+def test_openalex_credits_probe_takes_a_limiter_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr503435: the /rate-limit probe goes through the openalex limiter row,
+    and a refusal stops it before any HTTP request."""
+    taken: list[str] = []
+
+    def _refuse(provider: str) -> None:
+        taken.append(provider)
+        raise RateLimited(provider)
+
+    monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+    with patch.object(fetch_oa, "http_client") as client:
+        with pytest.raises(RateLimited):
+            fetch_oa._query_openalex_credits_remaining("k")
+    assert taken == ["openalex"]
+    client.assert_not_called()
+
+
 class TestOpenAlexBalanceAlert:
     """The low-balance nursery alert that replaced the CONTENT_AUTO gate."""
 

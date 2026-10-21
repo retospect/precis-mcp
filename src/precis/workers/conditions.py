@@ -791,7 +791,67 @@ def _probe_analysis_stale(store: Store) -> list[ConditionFinding]:
     ]
 
 
+#: ``external_rate_limits`` provider -> the ``ref_events.source`` of the
+#: fetch_oa leg that must take a token from it before every call.
+_LIMITER_FETCHERS: dict[str, str] = {
+    "unpaywall": "fetcher:unpaywall",
+    "openalex": "fetcher:openalex",
+    "arxiv": "fetcher:arxiv",
+    "crossref": "fetcher:crossref",
+    "s2": "fetcher:s2",
+    "core": "fetcher:core",
+    "europepmc": "fetcher:europepmc",
+    "openalex-content": "fetcher:openalex_content",
+}
+
+#: Events that prove the leg actually called out (``no_oa_version`` /
+#: ``circuit_open`` / ``provider_wait`` can happen without a request).
+_LIMITER_TRAFFIC_EVENTS = ("fetch_ok", "fetch_failed", "api_error")
+
+_LIMITER_BYPASS_SQL = """
+SELECT l.provider, l.last_refill, t.n
+  FROM external_rate_limits l
+  JOIN (SELECT source, count(*) AS n
+          FROM ref_events
+         WHERE ts > now() - interval '24 hours'
+           AND event = ANY(%(events)s)
+         GROUP BY source) t
+    ON t.source = (%(fetchers)s::jsonb ->> l.provider)
+ WHERE l.last_refill < now() - interval '24 hours'
+"""
+
+
+def _probe_limiter_bypassed(store: Store) -> list[ConditionFinding]:
+    """A fetcher is calling its provider but the provider's shared limiter
+    row has not been consumed in 24h: the limiter is failing open silently
+    (gr503435 — a scrubbed DSN made ``rate_limit`` see no database_url), so
+    politeness and the daily quota are not in force."""
+    import json
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            _LIMITER_BYPASS_SQL,
+            {
+                "events": list(_LIMITER_TRAFFIC_EVENTS),
+                "fetchers": json.dumps(_LIMITER_FETCHERS),
+            },
+        ).fetchall()
+    return [
+        ConditionFinding(
+            key=f"limiter-bypassed:{provider}",
+            detail=(
+                f"{n} {_LIMITER_FETCHERS[str(provider)]} call events in 24h but "
+                f"external_rate_limits[{provider}] last consumed {last_refill:%Y-%m-%d %H:%MZ} "
+                "- the limiter is failing open (check the worker's database_url "
+                "/ PRECIS_RATE_LIMIT and its 'runs unpaced' WARNING)"
+            ),
+        )
+        for provider, last_refill, n in rows
+    ]
+
+
 CONDITIONS: tuple[Condition, ...] = (
+    Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
