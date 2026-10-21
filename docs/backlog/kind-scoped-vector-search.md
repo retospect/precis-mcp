@@ -69,6 +69,11 @@ plus distance), so the exact path only stays under ~0.3 s up to ~5k rows.
 
 Fill every kind including paper, then rebuild the global HNSW.
 
+**Scheduled (Reto 2026-10-21): the weekend of 2026-10-24/25, after a
+fresh prod DB backup is verified.** Steps 1–2 are live on prod (search is
+correct, only the per-kind fast path is missing); steps 3–7 wait for that
+window.
+
 1. **Pre-build the two parent keys (mandatory)**, outside a transaction:
    `CREATE UNIQUE INDEX CONCURRENTLY refs_ref_id_kind_key ON refs (ref_id,
    kind)` and `... chunks_chunk_id_ref_id_key ON chunks (chunk_id, ref_id)`;

@@ -55,10 +55,6 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
    uncapped per-zone counts, judged after a real-rung `hexfold_relax`
    job; prod relax jobs allowed any time, Reto 2026-10-21); H3 relax
    landed 2026-10-19.
-   - **backlog/hexfold-prism-tube.md** — straight-strip prism variant
-     landed 2026-10-20 (92ea3ef4f) (`prism-k3-120-z`; flat zigzag walls,
-     signed k3 equal-120 seams, fins out or ribs in, polygon closure); a
-     coordinator `/land` or `/qgo` away from prod.
 2. **backlog/nanoreactor-no-nh3.md §T3** — track designer; spec once
    T1's station record exists.
 3. **backlog/nanoreactor-no-nh3.md §T4** — ring/pendant designer; spec
