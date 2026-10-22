@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 #: Rule ids with no enforcing test/lint, each with the reason it stays prose.
 #: Exact-equality checked: fixing a rule means deleting its entry here.
 _ALLOWLIST: dict[str, str] = {
+    "citable-sources/every-claim-sourced": "no test, hook or lint checks it (added 2026-10-22, 5629d585f)",
     "code-anchors/citation-surfaces-only": "no test, hook or lint checks it (audit 2026-10-16)",
     "container-ops/wide-docker-address-pool": "no test, hook or lint checks it (audit 2026-10-16)",
     "corpus-normalization/dry-run-before-ship": "no test, hook or lint checks it (audit 2026-10-16)",

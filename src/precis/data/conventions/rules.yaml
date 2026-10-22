@@ -2,6 +2,18 @@
 # enforcers: [] means nothing goes red on a violation (review / honour system).
 # path is a repo-relative file, or "ruff:<RULEID>" for a selected ruff rule.
 
+# ------------------------------------------------------------ citable-sources
+- id: citable-sources/every-claim-sourced
+  file: docs/conventions/citable-sources.md
+  section: null
+  title: "Every theorem, algorithm or prior-art claim in specs, docs and skills carries a citable source."
+  body: >-
+    Search kind='paper' first and cite the store id with its DOI and a full
+    reference; a claim without a source gets an explicit "source needed"
+    marker, never a reference written from memory. Keep a Sources section
+    per doc.
+  enforcers: []
+
 # ---------------------------------------------------------------- code-anchors
 - id: code-anchors/cite-by-symbol
   file: docs/conventions/code-anchors.md
