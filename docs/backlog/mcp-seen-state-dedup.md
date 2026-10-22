@@ -179,7 +179,7 @@ Acceptance thresholds, read after seven days of D4:
 
 ## Open questions for Reto
 
-1. **Fallback if S10.0 shows `updatedInput` does not reach MCP tools.**
+1. **Fallback if S10.0 shows `updatedInput` does not reach MCP tools.** Ruled (Reto 2026-10-22): yes, approved.
    Recommendation: ship D3 (launched agents only — where the measured
    carry is: `dream` 164.7M, `doctor_tick` 34.8M cache-read tokens in 14
    days) and leave interactive Claude Code sessions without dedup, rather
