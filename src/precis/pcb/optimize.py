@@ -776,16 +776,15 @@ class OptimizeConfig:
     #: dense board). ``False`` (the default) is bit-for-bit the run the
     #: anneal would otherwise produce.
     support_groups: bool = False
-    #: Post-anneal placement polish
+    #: Opt-in post-anneal placement polish
     #: (:func:`precis.pcb.field.polish_placement`, docs/backlog/
     #: pcb-unified-place-route.md slice 1): a gradient descent on x, y, θ
     #: over connectivity pull, courtyard clearance, board edge and
     #: decoupling rubber bands. Applied only if the energy drops, every move
-    #: is legal and :meth:`OptimizeEngine.total` does not rise. On by
-    #: default (Reto 2026-10-21: "the placer too, we switch to the new
-    #: kind and dogfood it"); the annealer-only run stays reachable as
-    #: ``field_polish=False`` for the bench's comparison column.
-    field_polish: bool = True
+    #: is legal and :meth:`OptimizeEngine.total` does not rise. ``False``
+    #: (the default) is bit-for-bit the run without it; the default flips
+    #: only after the nano 8-seed and ewod benches are measured not worse.
+    field_polish: bool = False
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:

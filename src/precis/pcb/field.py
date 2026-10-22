@@ -1,25 +1,18 @@
-"""Unified place-and-route energy field — slices 0 and 1.
+"""Unified place-and-route energy field — slice 0 skeleton.
 
 Spec: ``docs/backlog/pcb-unified-place-route.md`` (§State, §Cost, §Derivative
 route). One scalar energy ``E(z) = Σ λ_t T_t(z)`` over a packed continuous
 state ``z``; each term returns ``(value, grad)`` with a hand-written analytic
-gradient (numpy; no autodiff dependency). Landed terms:
+gradient (numpy; no autodiff dependency). This slice ships only the plumbing
+and two terms:
 
 * **T1** connectivity pull — weighted-average (WA) wirelength per net on
   rotated pad centres, so every pad carries ``∂/∂θ``.
 * **T4** courtyard clearance — ``Σ softplus_β(c − sd(poly_i, poly_j))²`` on
-  shapely polygon distance (the vector clearance kernel replaces it later),
-  with the JLCPCB pairwise SMD spacing table raising per-pair targets.
-* **T5** board edge — softplus pull on part centres, inside the same
-  per-part box ``OptimizeEngine.bounds_for`` gives the legality gate.
-* **T6** rubber bands — decoupling-cap pad to served pin, ``d₀`` slack.
+  shapely polygon distance (the vector clearance kernel replaces it later).
 
-:func:`polish_placement` is the slice-1 consumer: a post-anneal descent on
-the engine's own board, gated on energy gain + the engine's legality
-predicate + the engine's cost — repair over refuse where the legality
-gate can still be satisfied (``OptimizeConfig.field_polish``).
-:func:`check_gradient` is the harness every later term's test reuses
-(dot-product, Taylor, central FD).
+Nothing here is wired into ``optimize()``; :func:`check_gradient` is the
+harness every later term's test reuses (dot-product, Taylor, central FD).
 
 Frames. ``Part.pads`` / ``Part.court`` are in the part's rotating frame:
 the world point of local ``p`` is ``R(θ)·p + (x, y)``. Mirroring for
@@ -470,26 +463,20 @@ def check_gradient(
 
 
 class BoardEdge(Term):
-    """T5 (slice 1): ``Σ_i softplus_β(lo_i − c_i)² + softplus_β(c_i − hi_i)²``
-    on part CENTRES against a PER-PART box — the same box
-    ``OptimizeEngine.bounds_for`` gives the legality gate (the placement
-    domain shrunk by the part's own keep-out radius, intersected with its
-    soft-pin box). A uniform ``(2,)`` box broadcasts to every part. The
-    exact outline test stays in the legality gate; this term only pulls
-    strays inward. Smooth; no ∂/∂θ."""
+    """T5 (slice 1): ``Σ_i softplus_β(lo − c_i)² + softplus_β(c_i − hi)²`` on
+    part CENTRES against the engine's placement rectangle — the same box
+    ``_placement_is_legal`` clamps centres to. The exact outline test stays in
+    the legality gate; this term only pulls strays inward. Smooth; no ∂/∂θ."""
 
     def __init__(
         self,
         layout: Layout,
-        lo: tuple[float, float] | np.ndarray,
-        hi: tuple[float, float] | np.ndarray,
+        lo: tuple[float, float],
+        hi: tuple[float, float],
         beta: float = 8.0,
     ):
         super().__init__(layout)
-        n = len(layout.board.parts)
-        self.lo = np.broadcast_to(np.asarray(lo, dtype=float), (n, 2)).copy()
-        self.hi = np.broadcast_to(np.asarray(hi, dtype=float), (n, 2)).copy()
-        self.beta = float(beta)
+        self.lo, self.hi, self.beta = lo, hi, float(beta)
 
     def value_grad(self, z: _Z) -> tuple[float, _Z]:
         lay = self.layout
@@ -497,8 +484,8 @@ class BoardEdge(Term):
         gx, gy = np.zeros_like(x), np.zeros_like(y)
         total = 0.0
         for c, g, lo, hi in (
-            (x, gx, self.lo[:, 0], self.hi[:, 0]),
-            (y, gy, self.lo[:, 1], self.hi[:, 1]),
+            (x, gx, self.lo[0], self.hi[0]),
+            (y, gy, self.lo[1], self.hi[1]),
         ):
             for u, sgn in ((lo - c, -1.0), (c - hi, 1.0)):
                 sp = np.logaddexp(0.0, self.beta * u) / self.beta
@@ -678,10 +665,6 @@ _RAIL_RE = re.compile(
 SUPPORT_D0_MM = 1.5
 #: λ_T4 ramp: start loose so wirelength can pull, end firm so overlaps resolve.
 LAMBDA_T4_RAMP = (0.25, 1.0, 4.0, 16.0)
-#: λ_T4 for the post-snap repair descent — hard enough to re-open the gaps
-#: the 90° snap or an under-resolved ramp stage closed, short of a second
-#: full ramp.
-REPAIR_LAMBDA_T4 = 64.0
 
 
 @dataclass(frozen=True)
@@ -691,16 +674,12 @@ class PolishResult:
     e_before: float
     e_after: float
     moved: tuple[int, ...]
-    #: Diagnostics: which candidate applied (``descent``/``repaired``/
-    #: ``continuous``), or the violated rules and parts when refused.
-    detail: str = ""
 
     def summary(self) -> str:
-        out = (
+        return (
             f"field_polish {self.reason}: E {self.e_before:.4f} -> "
             f"{self.e_after:.4f}, {len(self.moved)} parts moved"
         )
-        return f"{out} ({self.detail})" if self.detail else out
 
 
 def board_from_engine(
@@ -798,105 +777,18 @@ def board_from_engine(
     return board, springs
 
 
-def _legality_violations(
-    engine: Any,
-    proposals: Sequence[tuple[int, float, float]],
-    rotations: dict[int, float],
-    *,
-    limit: int = 8,
-) -> list[str]:
-    """The rules a proposal set breaks, ``"rule: parts"`` per violation —
-    a reason-returning mirror of ``OptimizeEngine._placement_is_legal``
-    (which short-circuits on the first). Only the polish's refuse path
-    calls it; divergence from the gate is a bug, so keep the checks in the
-    gate's order: bounds box, soft-pin travel, courtyard (rest, then
-    moved-vs-moved), mounting holes, authored-via gap."""
-    from precis.pcb.geom import convex_polygons_overlap
-    from precis.pcb.optimize import _FIXED_VIA_CLEARANCE_MM, _hole_owned_by
-
-    ir = engine.ir
-    keepout = engine._keepout_r
-    moving = [inst for inst, _, _ in proposals]
-    proposed_poly = {
-        inst: engine._world_courtyard(inst, x, y, rotations.get(inst))
-        for inst, x, y in proposals
-    }
-    proposed_pose = {
-        inst: (x, y, float(rotations.get(inst, ir.inst_rot[inst])))
-        for inst, x, y in proposals
-    }
-    out: list[str] = []
-    for i, (inst, x, y) in enumerate(proposals):
-        ref = str(ir.instance_refdes[inst])
-        x0, y0, x1, y1 = engine.bounds_for(inst)
-        if not (x0 <= x <= x1 and y0 <= y <= y1):
-            out.append(f"bounds: {ref}")
-        t = float(engine._soft_pin_mm[inst])
-        if math.isfinite(t):
-            ax = float(engine._soft_pin_anchor[inst, 0])
-            ay = float(engine._soft_pin_anchor[inst, 1])
-            if (
-                math.isfinite(ax)
-                and math.isfinite(ay)
-                and math.hypot(x - ax, y - ay) > t + 1e-9
-            ):
-                out.append(f"soft_pin: {ref}")
-        dx, dy = ir.inst_x - x, ir.inst_y - y
-        d2 = dx * dx + dy * dy
-        d2[moving] = math.inf
-        for other in np.nonzero(d2 < (keepout + keepout[inst]) ** 2)[0]:
-            if engine._sides_clear(inst, int(other)):
-                continue
-            if convex_polygons_overlap(
-                proposed_poly[inst], engine._world_courtyard(int(other))
-            ):
-                out.append(f"courtyard: {ref}<>{ir.instance_refdes[int(other)]}")
-        for hole_idx in range(len(engine._hole_polys)):
-            if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
-                continue
-            hx, hy, hole_poly = engine._hole_at(hole_idx, proposed_pose)
-            sep_h = keepout[inst] + engine._hole_radius[hole_idx]
-            if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
-                continue
-            if convex_polygons_overlap(proposed_poly[inst], hole_poly):
-                out.append(f"hole: {ref}")
-        if engine._fixed_via_gap(inst, x, y, rotations.get(inst)) < (
-            _FIXED_VIA_CLEARANCE_MM
-        ):
-            out.append(f"via_gap: {ref}")
-        for other, ox, oy in proposals[i + 1 :]:
-            if engine._sides_clear(inst, other):
-                continue
-            sep_ij = keepout[inst] + keepout[other]
-            if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
-                continue
-            if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
-                out.append(f"courtyard: {ref}<>{ir.instance_refdes[other]} (moved)")
-        if len(out) >= limit:
-            return out
-    return out
-
-
 def polish_placement(
     engine: Any,
     *,
     max_iter: int = 60,
-    repair_iter: int = 200,
     lambda_t4: Sequence[float] = LAMBDA_T4_RAMP,
     gamma: float = 0.5,
 ) -> PolishResult:
     """Descend x, y, θ on T1 + T4 + T5 + T6 with a λ_T4 ramp, snap the moved
-    rotations to 90°, and accept ONLY if a pose has lower E at the final
-    weights, passes ``_placement_is_legal`` on every move at once, and the
-    engine's own ``total()`` does not rise. Otherwise the board is left
-    exactly as it was.
-
-    Candidates, in order: the snapped pose; a repair descent that holds θ
-    at the snapped wells and re-descends x, y at :data:`REPAIR_LAMBDA_T4`
-    (the 90° snap swings courtyard corners into neighbours, and a ramp
-    stage can stop short of opening them — repair, not refuse); then the
-    descended continuous θ itself (θ is a real variable; the wells only
-    join in slice 2). A refusal names the broken rules and parts."""
+    rotations to 90°, and accept ONLY if (a) the snapped pose has lower E at
+    the final weights, (b) ``_placement_is_legal`` accepts every move at once,
+    and (c) the engine's own ``total()`` does not rise. Otherwise the board is
+    left exactly as it was."""
     from precis.pcb.ir import COURTYARD_CLEARANCE_MM
     from precis.pcb.optimize import Move, MoveKind
 
@@ -908,6 +800,7 @@ def polish_placement(
     lay = Layout(board)
     if lay.size == 0:
         return PolishResult(False, "no_free_vars", 0.0, 0.0, ())
+    x0, y0, x1, y1 = engine._placement_bounds
     t1 = ConnectivityPull(lay, gamma=gamma)
     # The courtyards are the engine's, already inflated by its 0.40 mm reserve
     # on each side. Unclassed pairs keep slice 1's soft 0.40 mm on top of
@@ -921,13 +814,7 @@ def polish_placement(
             reserve=2.0 * COURTYARD_CLEARANCE_MM,
         ),
     )
-    # T5's box is the gate's own per-part box (bounds_for shrinks the
-    # placement domain by each part's keep-out radius), not the unshrunk
-    # _placement_bounds: measured 2026-10-21, the uniform box let parts
-    # park up to a keep-out radius outside the gate's domain (7 of 24
-    # seeded boards refused on `bounds` alone).
-    bound = np.array([engine.bounds_for(i) for i in range(ir.n_instances)])
-    t5 = BoardEdge(lay, bound[:, :2], bound[:, 2:])
+    t5 = BoardEdge(lay, (x0, y0), (x1, y1))
     t6 = PadSpring(lay, springs)
 
     def energy(l4: float) -> Energy:
@@ -963,98 +850,39 @@ def polish_placement(
             method="L-BFGS-B",
             options={"maxiter": max_iter},
         ).x
-    x, y, th_ct, _ = lay.unpack(z)
-    rot = -np.degrees(th_ct)
+    x, y, th, _ = lay.unpack(z)
+    rot = -np.degrees(th)
     for k in np.flatnonzero(lay.free_rot):
-        if abs(th_ct[k] - board.th0[k]) > 1e-6:
+        if abs(th[k] - board.th0[k]) > 1e-6:
             rot[k] = (round(rot[k] / 90.0) * 90.0) % 360.0
         else:
             rot[k] = -math.degrees(board.th0[k])
-    th_snap = -np.radians(rot)
-
-    @dataclass(frozen=True)
-    class _Cand:
-        stage: str  # descent | repaired | continuous
-        moved: tuple[int, ...]
-        old: tuple[tuple[float, float, float], ...]
-        new: tuple[tuple[float, float, float], ...]
-        proposals: tuple[tuple[int, float, float], ...]
-        rotations: dict[int, float]
-        legal: bool
-        e1: float
-
-    def candidate(stage: str, cx: np.ndarray, cy: np.ndarray, cth: np.ndarray) -> _Cand:
-        """One proposed pose: moved parts, the gate's verdict, E at final λ."""
-        crot = -np.degrees(cth)
-        moved: list[int] = []
-        old: list[tuple[float, float, float]] = []
-        new: list[tuple[float, float, float]] = []
-        for i in range(ir.n_instances):
-            r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
-            r_new = float(crot[i]) if lay.free_rot[i] else r_old
-            pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
-            pose_new = (float(cx[i]), float(cy[i]), r_new)
-            if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > (
-                1e-6
-            ):
-                moved.append(i)
-                old.append(pose_old)
-                new.append(pose_new)
-        proposals = tuple((i, p[0], p[1]) for i, p in zip(moved, new, strict=True))
-        rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
-        legal = engine._placement_is_legal(proposals, rotations=rotations)
-        e1 = final.value_grad(lay.pack_from(cx, cy, cth))[0]
-        return _Cand(
-            stage, tuple(moved), tuple(old), tuple(new), proposals, rotations, legal, e1
-        )
-
-    candidates = [candidate("descent", x, y, th_snap)]
-    if not candidates[0].legal and candidates[0].moved:
-        # Repair: θ held at the snapped wells, x/y re-descend at a hard
-        # λ_T4 to re-open the gaps the snap (or an early-stopped ramp
-        # stage) closed.
-        rep = energy(REPAIR_LAMBDA_T4)
-        free = lay.free_xy
-        w0 = np.concatenate([x[free], y[free]])
-
-        def rep_fg(w: _Z) -> tuple[float, _Z]:
-            xx, yy = x.copy(), y.copy()
-            xx[free] = w[: w.size // 2]
-            yy[free] = w[w.size // 2 :]
-            v, g = rep.value_grad(lay.pack_from(xx, yy, th_snap.copy()))
-            return v, g[:n_xy]
-
-        w = minimize(
-            rep_fg, w0, jac=True, method="L-BFGS-B", options={"maxiter": repair_iter}
-        ).x
-        xr, yr = x.copy(), y.copy()
-        xr[free] = w[: w.size // 2]
-        yr[free] = w[w.size // 2 :]
-        candidates.append(candidate("repaired", xr, yr, th_snap))
-        candidates.append(candidate("continuous", x, y, th_ct))
-    win = next((c for c in candidates if c.legal and c.e1 < e0 and c.moved), None)
-    if win is None:
-        # A legal pose with no gain is a no_gain refuse, not an illegal
-        # one — report on the best candidate the descent produced.
-        legal_c = next((c for c in candidates if c.legal), candidates[-1])
-        if legal_c.legal:
-            return PolishResult(False, "no_gain", e0, legal_c.e1, legal_c.moved)
-        detail = "; ".join(
-            _legality_violations(engine, legal_c.proposals, legal_c.rotations, limit=4)
-        )
-        _LOG.warning("field_polish refused: illegal (%s)", detail)
-        return PolishResult(False, "illegal", e0, legal_c.e1, legal_c.moved, detail)
+        th[k] = -math.radians(rot[k])
+    e1 = final.value_grad(lay.pack_from(x, y, th))[0]
+    if not e1 < e0:
+        return PolishResult(False, "no_gain", e0, e1, ())
+    old: list[tuple[float, float, float]] = []
+    new: list[tuple[float, float, float]] = []
+    moved: list[int] = []
+    for i in range(ir.n_instances):
+        r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
+        r_new = float(rot[i]) if lay.free_rot[i] else r_old
+        pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
+        pose_new = (float(x[i]), float(y[i]), r_new)
+        if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > 1e-6:
+            moved.append(i)
+            old.append(pose_old)
+            new.append(pose_new)
+    if not moved:
+        return PolishResult(False, "no_gain", e0, e1, ())
+    proposals = [(i, p[0], p[1]) for i, p in zip(moved, new, strict=True)]
+    rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
+    if not engine._placement_is_legal(proposals, rotations=rotations):
+        return PolishResult(False, "illegal", e0, e1, tuple(moved))
     before = engine.total()
-    move = Move(MoveKind.TRANSLATE, win.moved, win.old, win.new)
+    move = Move(MoveKind.TRANSLATE, tuple(moved), tuple(old), tuple(new))
     engine.apply_move(move)
     if engine.total() > before + 1e-9:
         engine.undo_move(move)
-        return PolishResult(False, "cost_worse", e0, win.e1, win.moved)
-    return PolishResult(
-        True,
-        "applied",
-        e0,
-        win.e1,
-        win.moved,
-        "" if win.stage == "descent" else win.stage,
-    )
+        return PolishResult(False, "cost_worse", e0, e1, tuple(moved))
+    return PolishResult(True, "applied", e0, e1, tuple(moved))

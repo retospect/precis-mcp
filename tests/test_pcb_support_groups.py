@@ -323,9 +323,7 @@ def test_optimize_groups_keeps_frozen_poses_exact() -> None:
 def test_groups_param_defaults_off_and_is_opt_in() -> None:
     g = _graph()
     ir = from_graph(g, stackup=g["board"]["stackup"])
-    # field_polish off: its summary line rides the same channel as the
-    # groups lines and is orthogonal to what this test pins.
-    res = optimize(ir, OptimizeConfig(iters=100, seed=1, field_polish=False))
+    res = optimize(ir, OptimizeConfig(iters=100, seed=1))
     assert res.support_groups == ()
 
     ir2 = from_graph(g, stackup=g["board"]["stackup"])

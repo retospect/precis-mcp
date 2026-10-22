@@ -166,10 +166,6 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "cleanup": {"type": "boolean"},
         # Route-only (gr495397): false = no anneal, poses and sketch kept.
         "place": {"type": "boolean"},
-        # Annealer-only joint anneal: the field polish is the default
-        # placer; False opts out — the route bench's `anneal` comparison
-        # column runs this way.
-        "field_polish": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -1147,9 +1143,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # single path's schedule never draws them anyway.
         expansion=expansion_caps,
         support_groups=groups,
-        # Default follows OptimizeConfig's (field polish on); the param
-        # only ever turns it off for an annealer-only comparison run.
-        field_polish=bool(params.get("field_polish", True)),
     )
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
