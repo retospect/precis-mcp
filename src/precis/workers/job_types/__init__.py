@@ -149,6 +149,11 @@ class JobTypeSpec:
     #: terminal ``STATUS:failed`` write; the hook deletes only once it sees
     #: the stamp.
     reap: Callable[..., Any] | None = None
+    #: Optional job-type runtime cap for ``ssh_node``'s legacy blocking
+    #: dispatch. Read on the claiming host (the same process that runs
+    #: ``dispatch``) so a type's configured internal timeout cannot exceed
+    #: the outer runner's bound or the initial lease.
+    wall_seconds: Callable[[], float] | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".

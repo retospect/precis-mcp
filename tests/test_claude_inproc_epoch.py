@@ -180,11 +180,10 @@ def test_expiry_reclaim_bumps_attempts(
     assert _meta(store, rid)["reclaims"][-1]["why"] == "expiry"
 
 
-def test_epoch_reclaim_does_not_bump_attempts(
+def test_epoch_reclaim_bumps_attempts(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A redeploy-mid-run (epoch) reclaim must NOT burn the poison guard —
-    the master's "redeploy mid-run does not burn the poison guard"."""
+    """An epoch mismatch alone cannot rule out a worker crash-loop."""
     _succeeds(monkeypatch)
     store.record_heartbeat(
         "melchior-epoch-3", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
@@ -201,7 +200,7 @@ def test_epoch_reclaim_does_not_bump_attempts(
     result = claude_inproc.run_claude_inproc_pass(store, limit=2)
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
-    assert _meta(store, rid)["attempts"] == 1  # unchanged
+    assert _meta(store, rid)["attempts"] == 2
     assert _meta(store, rid)["reclaims"][-1]["why"] == "epoch"
 
 
@@ -231,15 +230,47 @@ def test_poison_guard_fails_past_max_attempts(
     assert _meta(store, rid)["failure_class"] == "infra"
 
 
-def test_reclaim_churn_cap_poisons_despite_zero_attempts(
+def test_epoch_reclaim_at_attempt_cap_fails_before_dispatch(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Review Finding 4 (poison-guard evasion via host-reboot-loop): a job
-    whose HOST reboots every run is reclaimed via the epoch arm every
-    time — epoch reclaims never bump ``meta.attempts`` by design (a
-    redeploy isn't a crash-loop) — so the attempt cap alone never trips.
-    Once ``meta.reclaims`` (already capped at 10, forensic-only) hits that
-    cap, ``poison_guard`` trips regardless of ``attempts``."""
+    """Three lost runs, even when the last is an epoch, do not start a fourth."""
+    from precis.workers.executors._common import MAX_ATTEMPTS
+
+    dispatched: list[int] = []
+    monkeypatch.setattr(
+        claude_inproc,
+        "get_job_type",
+        lambda name: _spec(dispatch=lambda ctx, _s: dispatched.append(ctx.ref_id)),
+    )
+    store.record_heartbeat(
+        "worker-epoch-cap", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=MAX_ATTEMPTS - 1,
+        lease_boot_id="dead-gen",
+        lease_process="precis-worker-agent",
+        lease_host="worker-epoch-cap",
+    )
+
+    result = claude_inproc.run_claude_inproc_pass(store, limit=1)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert dispatched == []
+    assert _status(store, rid) == "failed"
+    meta = _meta(store, rid)
+    assert meta["attempts"] == MAX_ATTEMPTS
+    assert meta["reclaims"][-1]["why"] == "epoch"
+    assert meta["failure_class"] == "infra"
+    assert "attempts" in meta["error"]
+    assert "worker restart" in meta["error"]
+
+
+def test_legacy_reclaim_churn_cap_poisons_despite_low_attempts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Old uncounted epoch reclaims still trip the forensic backstop."""
     from precis.workers.executors._common import _RECLAIMS_CAP, set_meta
 
     dispatched = {"n": 0}
@@ -276,6 +307,6 @@ def test_reclaim_churn_cap_poisons_despite_zero_attempts(
     assert _status(store, rid) == "failed"
     assert dispatched["n"] == 0  # never dispatched — poisoned before running
     meta = _meta(store, rid)
-    assert meta["attempts"] == 0  # never bumped — every reclaim was epoch
+    assert meta["attempts"] == 1  # old reclaims were uncounted, new one counts
     assert len(meta["reclaims"]) == _RECLAIMS_CAP
     assert meta["failure_class"] == "infra"

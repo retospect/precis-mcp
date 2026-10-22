@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -109,6 +110,41 @@ def test_lease_seconds_from_wall_seconds() -> None:
     assert ssh_node._lease_seconds({}) == ssh_node._LEASE_FLOOR_S
     big = {"params": {"resources": {"wall_seconds": 100_000}}}
     assert ssh_node._lease_seconds(big) == 100_000 + ssh_node._LEASE_MARGIN_S
+
+
+def test_type_cap_bounds_dispatch_and_initial_lease() -> None:
+    spec = replace(_spec(dispatch=lambda _ctx, _spec: None), wall_seconds=lambda: 14400)
+    assert ssh_node._wall_bound_seconds({}, spec) == 14400 + ssh_node._LEASE_MARGIN_S
+    assert ssh_node._lease_seconds({}, spec) == ssh_node._wall_bound_seconds({}, spec)
+    with_resources = {"params": {"resources": {"wall_seconds": 20_000}}}
+    assert ssh_node._wall_bound_seconds(with_resources, spec) == (
+        20_000 + ssh_node._LEASE_MARGIN_S
+    )
+
+
+def test_claim_uses_type_cap_for_lease(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = replace(
+        _spec(dispatch=lambda ctx, _spec: ctx.set_status("succeeded")),
+        wall_seconds=lambda: 14400,
+    )
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda _name: spec)
+    rid = _mk_job(store)
+
+    assert ssh_node.run_ssh_node_pass(store, limit=1) == {
+        "claimed": 1,
+        "ok": 1,
+        "failed": 0,
+    }
+    with store.pool.connection() as conn:
+        remaining = conn.execute(
+            "SELECT (meta->>'lease_until')::timestamptz - now() "
+            "FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+    assert remaining is not None
+    assert remaining[0].total_seconds() > 14400 + ssh_node._LEASE_MARGIN_S - 30
 
 
 def test_claims_and_dispatches_success(
@@ -564,12 +600,10 @@ def test_unadvertised_worker_claim_not_epoch_stealable_while_lease_live(
 # ── §H piece 3: generalized attempt cap ────────────────────────────
 
 
-def test_epoch_reclaim_does_not_bump_attempts(
+def test_epoch_reclaim_counts_attempt_and_keeps_reason(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The master's "redeploy mid-run does not burn the poison guard" —
-    an epoch reclaim leaves meta.attempts untouched, only the forensic
-    reclaims list grows."""
+    """A replaced worker may have died because of the job, not a redeploy."""
     _succeeds(ssh_node, monkeypatch)
     store.record_heartbeat(
         "spark-epoch-4", meta={"boot_ids": {"ssh_node": "new-generation"}}
@@ -587,16 +621,42 @@ def test_epoch_reclaim_does_not_bump_attempts(
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     meta = _meta(store, rid)
-    assert meta["attempts"] == 1  # unchanged — this was an epoch reclaim
+    assert meta["attempts"] == 2
     assert meta["reclaims"][-1]["why"] == "epoch"
 
 
-def test_interleaved_epoch_reclaims_never_advance_attempts(
+def test_expired_epoch_reclaim_counts_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two SUCCESSIVE epoch reclaims (two different worker generations, each
-    a redeploy — never a crash-loop) never bump meta.attempts, no matter how
-    many times the row changes hands this way."""
+    """Both eligibility arms may match, but this is only one lost run."""
+    _succeeds(ssh_node, monkeypatch)
+    store.record_heartbeat(
+        "worker-both-arms", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=-60,
+        attempts=1,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="worker-both-arms",
+    )
+
+    assert ssh_node.run_ssh_node_pass(store, limit=1) == {
+        "claimed": 1,
+        "ok": 1,
+        "failed": 0,
+    }
+    meta = _meta(store, rid)
+    assert meta["attempts"] == 2
+    assert len(meta["reclaims"]) == 1
+    assert meta["reclaims"][0]["why"] == "epoch"
+
+
+def test_interleaved_epoch_reclaims_advance_attempts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two successor generations both charge the run-attempt budget."""
     from precis.workers import heartbeat as _heartbeat_mod
 
     def _idle_dispatch(ctx: Any, _s: Any) -> None:
@@ -610,7 +670,7 @@ def test_interleaved_epoch_reclaims_never_advance_attempts(
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
-        attempts=1,
+        attempts=0,
         lease_boot_id="gen-minus-1",
         lease_process="ssh_node",
         lease_host="spark-interleave",
@@ -645,7 +705,7 @@ def test_interleaved_epoch_reclaims_never_advance_attempts(
     result = ssh_node.run_ssh_node_pass(store, limit=2)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     meta = _meta(store, rid)
-    assert meta["attempts"] == 1  # STILL unchanged — two epoch reclaims, zero bumps
+    assert meta["attempts"] == 2
     assert [r["why"] for r in meta["reclaims"][-2:]] == ["epoch", "epoch"]
 
 
@@ -981,7 +1041,7 @@ def test_hung_legacy_dispatch_is_cut_off_at_bound(
         "get_job_type",
         lambda name: _spec(dispatch=lambda c, s: release.wait()),
     )
-    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta: 1)
+    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta, spec=None: 1)
     rid = _mk_job(store)
 
     t0 = time.time()
@@ -1021,7 +1081,7 @@ def test_abandoned_dispatch_thread_cannot_write_job_state(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _spec(dispatch=_dispatch)
     )
-    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta: 1)
+    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta, spec=None: 1)
     rid = _mk_job(store)
 
     with caplog.at_level("WARNING", logger="precis.workers.executors.ssh_node"):

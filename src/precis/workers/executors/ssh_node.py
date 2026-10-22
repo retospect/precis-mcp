@@ -51,8 +51,8 @@ Each pass:
    ``meta.executor == 'ssh_node'``, ``STATUS:queued``, lease expired
    or absent, not terminal — ``FOR UPDATE … SKIP LOCKED``.
 2. Lease + ``STATUS:running`` under the claim tx. The lease must
-   outlive the remote job (GPAW relaxes run for hours), so it's sized
-   from the job's ``resources.wall_seconds`` plus margin.
+   outlive the compute (GPAW relaxes run for hours), so it's sized from
+   ``resources.wall_seconds`` or a declared job-type cap, plus margin.
 3. Per claimed job: resolve the job_type, cancel-poll, then either
    ``spec.submit(ctx, spec)`` (detached — returns immediately, the
    handle is persisted to ``meta.compute_handle`` for the next pass's
@@ -67,6 +67,7 @@ every known consumer has migrated.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -114,7 +115,7 @@ from precis.workers.executors._common import (
 # from claude_inproc (it's executor-agnostic — closures over the
 # store handle + ref_id).
 from precis.workers.executors.claude_inproc import _build_dispatch_context
-from precis.workers.job_types import get_job_type, known_job_types
+from precis.workers.job_types import JobTypeSpec, get_job_type, known_job_types
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -125,9 +126,9 @@ log = logging.getLogger(__name__)
 _EXECUTOR_NAME = "ssh_node"
 
 #: Lease floor + margin (seconds). The lease is
-#: ``max(_LEASE_FLOOR_S, resources.wall_seconds + _LEASE_MARGIN_S)``
-#: so a slow GPAW relax can't expire its own lease and get
-#: double-claimed mid-run.
+#: ``max(_LEASE_FLOOR_S, max(resources.wall_seconds, type cap) +
+#: _LEASE_MARGIN_S)`` when either budget exists, so a slow relax
+#: cannot expire its own lease and get double-claimed mid-run.
 _LEASE_FLOOR_S = 7200
 _LEASE_MARGIN_S = 3600
 
@@ -137,19 +138,17 @@ _LEASE_MARGIN_S = 3600
 #: the historical name so existing call sites / tests are unaffected).
 #: Crash recovery (``reclaim_stale_running``) re-runs a job whose worker
 #: died mid-dispatch, but a job that crashes the worker *every* time would
-#: steal itself forever — past this many EXPIRY reclaims it's failed +
-#: bubbled instead (an ``epoch`` reclaim — redeploy churn — never counts
-#: toward this cap; see ``_common.claim_executor_jobs``).
+#: steal itself forever — epoch and expiry reclaims both exhaust the
+#: budget; the reason remains visible in meta.reclaims.
 _MAX_ATTEMPTS = MAX_ATTEMPTS
 
 
-def _lease_seconds(meta: dict[str, Any]) -> int:
-    resources = (meta.get("params") or {}).get("resources") or {}
-    wall = int(resources.get("wall_seconds", 0) or 0)
-    return max(_LEASE_FLOOR_S, wall + _LEASE_MARGIN_S)
+def _lease_seconds(meta: dict[str, Any], spec: JobTypeSpec | None = None) -> int:
+    """Size the first lease from the same wall bound as blocking dispatch."""
+    return max(_LEASE_FLOOR_S, _wall_bound_seconds(meta, spec))
 
 
-def _deadline_epoch(meta: dict[str, Any]) -> float:
+def _deadline_epoch(meta: dict[str, Any], spec: JobTypeSpec | None = None) -> float:
     """Wall-clock kill deadline (unix epoch seconds) for a detached
     submit (§H piece 2) — stamped once at submit time so ``_poll_one``
     has a termination bound even though a never-completing ``poll`` would
@@ -164,20 +163,26 @@ def _deadline_epoch(meta: dict[str, Any]) -> float:
     at all — so an undeclared-budget job still gets SOME bound rather than
     an unbounded poll.
     """
-    return time.time() + _wall_bound_seconds(meta)
+    return time.time() + _wall_bound_seconds(meta, spec)
 
 
-def _wall_bound_seconds(meta: dict[str, Any]) -> int:
+def _wall_bound_seconds(meta: dict[str, Any], spec: JobTypeSpec | None = None) -> int:
     """Wall-clock bound (seconds) for one job: declared
-    ``resources.wall_seconds`` plus :data:`_LEASE_MARGIN_S`, or the lease
-    horizon when the job declares none. Shared by the detached deadline
-    (:func:`_deadline_epoch`) and the legacy blocking-dispatch cutoff
-    (:func:`_dispatch_bounded`)."""
+    ``resources.wall_seconds`` or the job type's own cap, whichever is
+    longer, plus :data:`_LEASE_MARGIN_S`; the lease floor when neither is
+    declared. Shared by the initial lease, detached deadline and legacy
+    blocking-dispatch cutoff, so a type's compute cannot outlive the lease
+    before it reaches its own configured timeout."""
     resources = (meta.get("params") or {}).get("resources") or {}
     wall = int(resources.get("wall_seconds", 0) or 0)
-    if wall:
-        return wall + _LEASE_MARGIN_S
-    return _lease_seconds(meta)
+    type_cap = (
+        math.ceil(spec.wall_seconds())
+        if spec is not None and spec.wall_seconds is not None
+        else 0
+    )
+    if wall or type_cap:
+        return max(wall, type_cap) + _LEASE_MARGIN_S
+    return _LEASE_FLOOR_S
 
 
 #: Job_type names already warned-about this process (§H piece 4): the
@@ -248,7 +253,7 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             conn.commit()
             return {"claimed": 0, "ok": ok, "failed": failed}
         for ref_id, title, meta in rows:
-            # The bump (expiry-only) + reclaim classification already
+            # The bump (epoch or expiry) + reclaim classification already
             # happened inside claim_executor_jobs (§H piece 3);
             # poison_guard just applies the cap's consequence — an INFRA
             # failure (the worker/executor died mid-dispatch, not the
@@ -258,11 +263,12 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             if _poison_guard(store, conn, ref_id, meta):
                 poisoned += 1
                 continue
+            spec = get_job_type(str(meta.get("job_type") or ""))
             conn.execute(
                 "UPDATE refs SET meta = meta || jsonb_build_object("
                 "  'lease_until', (now() + make_interval(secs => %s))::text"
                 ") WHERE ref_id = %s",
-                (_lease_seconds(meta), ref_id),
+                (_lease_seconds(meta, spec), ref_id),
             )
             _set_status(store, ref_id, _RUNNING, conn=conn)
             to_run.append((ref_id, title, meta))
@@ -613,7 +619,7 @@ def _run_one(ctx: DispatchContext) -> bool:
                 conn,
                 ref_id,
                 compute_handle=handle,
-                deadline=_deadline_epoch(meta),
+                deadline=_deadline_epoch(meta, spec),
                 submit_started_at=None,
             )
             conn.commit()
@@ -661,7 +667,7 @@ def _dispatch_bounded(ctx: DispatchContext, spec: Any) -> bool:
     import dataclasses
     import threading
 
-    bound = _wall_bound_seconds(ctx.meta)
+    bound = _wall_bound_seconds(ctx.meta, spec)
     outcome: dict[str, BaseException] = {}
     abandoned = threading.Event()
 

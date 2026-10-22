@@ -179,7 +179,7 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
         for ref_id, title, meta in rows:
-            # The bump (expiry-only) + reclaim classification already
+            # The bump (epoch or expiry) + reclaim classification already
             # happened inside claim_executor_jobs (§H piece 3); this just
             # applies the cap's consequence, same as every other
             # reclaim_stale_running executor.

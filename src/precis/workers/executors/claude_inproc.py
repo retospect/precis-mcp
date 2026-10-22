@@ -248,7 +248,7 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
         for ref_id, title, meta in rows:
-            # Crash-loop guard (§H piece 3): the bump (expiry-only) + the
+            # Crash-loop guard (§H piece 3): the bump (epoch or expiry) + the
             # reclaim classification already happened inside
             # claim_executor_jobs; this just applies the cap the way
             # ssh_node's original guard did. Was a known interim gap

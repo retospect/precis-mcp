@@ -25,6 +25,12 @@ compute lane's owner). ``params.target_node`` pins the claim the same
 way ``struct_relax`` does; unset, any ``ssh_node`` worker may claim it —
 a node missing tblite (the fragment rung's backend) fails the job
 ``infra``, naming the extra.
+
+The runner's outer dispatch bound and initial lease read the type's
+``wall_seconds`` callable: ``_relax_timeout_s`` is configured on the
+claiming host, not stamped into the job's ``params.resources``. Without
+that declaration the runner could fail at 7200s while the relaxer's
+internal cap was still 14400s, abandoning a live in-process compute.
 """
 
 from __future__ import annotations
@@ -325,6 +331,7 @@ SPEC = JobTypeSpec(
     description=DESCRIPTION,
     dispatch=_dispatch,
     validate_submit=_validate_submit,
+    wall_seconds=_relax_timeout_s,
 )
 
 

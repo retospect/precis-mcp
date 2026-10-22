@@ -756,8 +756,7 @@ def _claim(
         for ref_id, title, meta in rows:
             # Crash-loop guard (§H piece 3): a container-relaunch job that
             # keeps dying its worker every generation eventually stops
-            # stealing itself forever — a redeploy-only (``epoch``-reason)
-            # reclaim never reaches this cap on its own.
+            # stealing itself forever, including epoch-only reclaims.
             if _poison_guard(store, conn, ref_id, meta):
                 poisoned += 1
                 continue

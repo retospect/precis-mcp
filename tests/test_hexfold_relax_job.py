@@ -19,9 +19,24 @@ import numpy as np
 import pytest
 
 from precis.dispatch import Hub
+from precis.workers.executors import ssh_node
 from precis.workers.executors._context import DispatchContext
 from precis_se import hexfold_relax_job as hexfold_relax
 from precis_se.handler import SeHandler
+
+
+def test_runner_honours_hexfold_relax_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The type's host-local cap, not an absent resources field, sizes both."""
+    monkeypatch.delenv("PRECIS_DFT_RELAX_TIMEOUT_S", raising=False)
+    meta: dict[str, Any] = {"params": {}, "job_type": "hexfold_relax"}
+    spec = hexfold_relax.SPEC
+    assert ssh_node._wall_bound_seconds(meta) == ssh_node._LEASE_FLOOR_S
+    assert ssh_node._wall_bound_seconds(meta, spec) == 14400 + ssh_node._LEASE_MARGIN_S
+    assert ssh_node._lease_seconds(meta, spec) == ssh_node._wall_bound_seconds(
+        meta, spec
+    )
+    monkeypatch.setenv("PRECIS_DFT_RELAX_TIMEOUT_S", "18000")
+    assert ssh_node._wall_bound_seconds(meta, spec) == 18000 + ssh_node._LEASE_MARGIN_S
 
 
 def _tunnel_ops() -> dict[str, Any]:

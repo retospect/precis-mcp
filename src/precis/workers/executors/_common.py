@@ -149,9 +149,8 @@ _CLAIM_OVERFETCH = 3
 _NO_ADVERTISED_BOOT_ID = NO_ADVERTISED_BOOT_ID
 
 # ── Attempt cap (§H piece 3, generalized from ssh_node's original guard) ──
-# RECLAIM_WHY_EPOCH does NOT burn the poison guard; RECLAIM_WHY_EXPIRY DOES
-# count toward ``meta.attempts``. See :func:`claim_executor_jobs`'s docstring
-# (both re-exported from precis.liveness).
+# Both epoch and expiry reclaims count toward ``meta.attempts``; the reason
+# remains in ``meta.reclaims`` (both re-exported from precis.liveness).
 
 #: Cap on ``meta.reclaims`` length — forensics, not an unbounded log.
 _RECLAIMS_CAP = 10
@@ -160,11 +159,9 @@ _RECLAIMS_CAP = 10
 def max_job_attempts() -> int:
     """Max run-attempts before a re-claimed job is treated as poison.
 
-    Default 3, ``PRECIS_MAX_JOB_ATTEMPTS``-overridable, floor 1. Only
-    lease-EXPIRY reclaims bump ``meta.attempts`` (see
-    :func:`claim_executor_jobs`) — a job crash-looping its worker every
-    generation eventually poison-fails; a job merely caught by redeploy
-    churn does not burn this budget.
+    Default 3, ``PRECIS_MAX_JOB_ATTEMPTS``-overridable, floor 1.
+    Both lease-expiry and boot-epoch reclaims bump ``meta.attempts``:
+    worker restarts can be caused by the job itself, not only redeploys.
     """
     raw = os.environ.get("PRECIS_MAX_JOB_ATTEMPTS")
     if raw is None:
@@ -595,13 +592,12 @@ def claim_executor_jobs(
 
     **Attempt cap (§H piece 3, generalized from ssh_node's original
     guard).** Every RE-claim of a ``STATUS:running`` row (``reclaim_
-    stale_running=True`` only) bumps ``meta.attempts`` — EXCEPT an
-    ``epoch``-reason reclaim (the holder was provably replaced by a
-    redeploy/bounce, not a crash-loop) does NOT bump it; only ``expiry``-
-    reason reclaims (a hang, or no successor info) count. Either way the
-    reclaim is appended to a capped ``meta.reclaims: [{at, why}]``
+    stale_running=True`` only) bumps ``meta.attempts``. An epoch mismatch
+    proves only that the holder was replaced, not *why* it died: a worker
+    repeatedly killed by its own job must also exhaust the budget. The
+    reason remains in a capped ``meta.reclaims: [{at, why}]``
     forensic list. This function only does the bookkeeping — the actual
-    cap enforcement (fail + bubble past :data:`MAX_ATTEMPTS`) is
+    cap enforcement (fail + bubble at :data:`MAX_ATTEMPTS`) is
     :func:`poison_guard`, which every ``reclaim_stale_running`` caller
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
@@ -767,29 +763,16 @@ def claim_executor_jobs(
         ``reclaim_stale_running``. A RE-claim additionally: classifies WHY
         (:func:`_reclaim_reason`) using the row's OLD ``lease_boot_id``
         (still in ``meta`` at this point — not yet overwritten below);
-        bumps ``meta.attempts`` only for an ``expiry`` reclaim (an
-        ``epoch`` reclaim — the holder was provably replaced by a
-        redeploy/bounce — must NOT burn the poison guard); and appends a
+        bumps ``meta.attempts`` for either reason and appends a
         capped forensic entry to ``meta.reclaims``. The caller (each
         executor's own claim wrapper) is responsible for checking
         ``meta['attempts']`` against :data:`MAX_ATTEMPTS` and poison-
         failing — this function only does the bookkeeping, mirroring
         ssh_node's original split of "compute the count" vs "act on it".
 
-        Note (Finding 6): the classification above reads ``advertised_
-        boot_ids`` — a Python snapshot of ``host_heartbeat`` taken once,
-        up front, by :func:`_advertised_boot_ids` — while the SQL epoch
-        arm that decided this row was even claimable read the SAME table
-        via its own correlated subquery, at a slightly earlier instant (a
-        separate statement in the same transaction). A heartbeat landing
-        in the gap between those two reads can only ever make this
-        classification WRONG about *why* (e.g. call an actually-epoch
-        reclaim an ``expiry`` one, bumping ``attempts`` one extra time it
-        "shouldn't" have) — it can never cause a THEFT: the candidate set
-        was already ``FOR UPDATE … SKIP LOCKED`` row-locked by the SQL
-        query before either read, so no other worker can claim the same
-        row concurrently regardless of which side of the heartbeat gap
-        either read landed on.
+        The SQL candidate and the heartbeat snapshot used for the forensic
+        reason may see different epochs. This cannot change the attempt
+        count or steal a live row: the candidate was already row-locked.
         """
         # Lazy: handlers.skill is the build-info owner (precis-status);
         # workers import it at call time only (workers→handlers layering).
@@ -825,8 +808,7 @@ def claim_executor_jobs(
         if reclaim_stale_running and status_value == RUNNING:
             why = _reclaim_reason(meta, advertised_boot_ids)
             attempts = int(meta.get("attempts") or 0)
-            if why == RECLAIM_WHY_EXPIRY:
-                attempts += 1
+            attempts += 1
             reclaims = list(meta.get("reclaims") or [])
             reclaims.append({"at": datetime.now(UTC).isoformat(), "why": why})
             reclaims = reclaims[-_RECLAIMS_CAP:]
@@ -1524,13 +1506,11 @@ def poison_guard(
     executor that opts into ``reclaim_stale_running``.
 
     ``claim_executor_jobs`` already computed ``meta['attempts']``
-    (bumped only for ``expiry`` reclaims — an ``epoch`` reclaim never
-    reaches this cap on its own). This just applies the cap's
+    (bumped for either epoch or expiry reclaims). This applies the cap's
     consequence, generalized from ssh_node's original inline guard:
-    past the cap, the row is INFRA-failed + bubbled instead of run again
+    at the cap, the row is INFRA-failed + bubbled instead of run again
     — a job that crash-loops its worker every generation eventually
-    stops stealing itself forever, but a job merely caught by redeploy
-    churn (all-``epoch`` reclaims) never trips this.
+    stops stealing itself forever, even when every reclaim is an epoch.
 
     Returns True (and fails the job, in ``conn``'s transaction) when
     poisoned; False when the caller should proceed to run it normally.
@@ -1538,35 +1518,36 @@ def poison_guard(
     own cap (defaults to the shared one — no known caller needs a
     different value today, but the hook costs nothing).
 
-    **Reclaim-churn backstop (Finding 4).** ``epoch`` reclaims never bump
-    ``meta.attempts`` by design (a redeploy isn't a crash-loop), which
-    leaves a gap: a job whose HOST reboots (or otherwise bounces its
-    worker generation) every single run is reclaimed via the epoch arm
-    every time, ``attempts`` stays at 0 forever, and the attempt cap above
-    never trips — the job "poison"-loops in a way the attempt cap was
-    built to catch, just via a different door. ``meta.reclaims`` (capped
-    at :data:`_RECLAIMS_CAP`, forensic list of every reclaim regardless of
-    reason) already bounds this either way, so once its length hits the
-    cap this guard trips too, REGARDLESS of ``attempts`` — a churn-only
-    poison job still eventually fails + bubbles instead of reclaiming
-    forever.
+    **Legacy backstop.** Old epoch reclaims did not increment attempts.
+    A job carrying that history still fails when its capped forensic
+    ``meta.reclaims`` list fills, even if its new attempt count is low.
     """
     cap = MAX_ATTEMPTS if max_attempts is None else max_attempts
     attempts = int(meta.get("attempts") or 0)
     reclaims = meta.get("reclaims") or []
     reclaim_churn = len(reclaims) >= _RECLAIMS_CAP
-    if attempts <= cap and not reclaim_churn:
+    if attempts < cap and not reclaim_churn:
         return False
-    if reclaim_churn and attempts <= cap:
+    if reclaim_churn and attempts < cap:
         reason = (
             f"runner: {len(reclaims)} reclaims recorded (reclaim-churn cap "
             f"{_RECLAIMS_CAP} reached) while only {attempts} run attempt(s) "
-            "were counted — an epoch-reclaim-only crash-loop (e.g. a host "
-            "that reboots every run) evades the attempt cap by never "
-            "bumping it; failing as a poison-guard backstop"
+            "were counted — legacy uncounted epoch reclaims; failing as "
+            "a poison-guard backstop"
         )
     else:
-        reason = f"runner: exceeded {cap} run attempts (crash-loop guard) — failing"
+        last_why = reclaims[-1].get("why") if reclaims else None
+        cause = (
+            "worker restart (epoch)"
+            if last_why == RECLAIM_WHY_EPOCH
+            else "lease expiry"
+            if last_why == RECLAIM_WHY_EXPIRY
+            else "unknown"
+        )
+        reason = (
+            f"runner: reached {cap} run attempts (crash-loop guard; "
+            f"last reclaim: {cause}) — failing"
+        )
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
     set_meta(conn, ref_id, failure_class="infra", error=reason[:_ERROR_META_CAP])
     set_status(store, ref_id, FAILED, conn=conn)

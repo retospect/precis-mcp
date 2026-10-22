@@ -69,9 +69,9 @@ Claim substrate (``_common.py``)
   ``claude_docker``) a ``STATUS:running`` row is reclaimable on lease
   **expiry** or on **epoch** mismatch (the holder was provably replaced,
   e.g. a deploy bounce) — a live holder is never stolen. ``poison_guard``
-  bumps ``meta.attempts`` on *expiry* reclaims only (a redeploy can't
-  burn the crash-loop budget) and fails the job
-  (``failure_class='infra'``) past ``PRECIS_MAX_JOB_ATTEMPTS`` (3).
+  counts epoch and expiry reclaims alike: an epoch mismatch cannot
+  distinguish a deploy from a job killing its worker. At the cap the job
+  fails (``failure_class='infra'``); ``meta.reclaims[].why`` keeps the reason.
   These three lanes are excluded from the sweeper's wall-clock backstop
   (racing it would strand results as ``failed``); ``coordinator`` has no
   reclaim path and deliberately keeps the sweeper.
