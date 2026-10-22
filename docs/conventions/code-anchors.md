@@ -60,3 +60,12 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
 - Line numbers are fine in throwaway chat and terminal output (they're clickable
   there and die with the message). This convention governs what gets *written
   down* to be read later.
+
+## No git shas in tracked files
+
+Never write a commit sha into `docs/`, backlog items, docstrings or
+`src/precis/data/skills/` (Reto: "git knows the hash, blame shows, this is just
+churny"). State status qualitatively ("shipped", "landed", "shipped (dark)");
+`git blame`/`git log` carry provenance. A sha rots when the line moves or the
+item is squash-merged. Dependencies that move fast resolve live at build time,
+no sha pins.

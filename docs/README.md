@@ -14,7 +14,7 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Subsystem architecture + why | the owning package's `__init__.py` **module docstring** |
 | Single-machine install/run | `docs/setup-single-machine.md` |
 | Cluster topology / what runs where / cluster setup | `deploy/README.md` |
-| Cross-cutting invariants | `docs/conventions/` |
+| Cross-cutting invariants | `docs/conventions/` (citing sources: `citable-sources.md`) |
 | Controlled vocabulary | `docs/glossary.md` (hand-written) |
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
 | Pillars, active threads, retirement rules | `docs/roadmap.md` — the layer above `docs/backlog/threads/` (pointers and intent only) |

@@ -69,6 +69,10 @@ it, then let it shape the whole handoff:
 
 ## Procedure
 
+0. **Stamp the time.** Run `date -u` first and lead the output with a line like
+   `Generated at 22:31 UTC`, above the compact argument. Reto reads it on a stale
+   tab to choose `/compact` (cache warm) over `/clear` plus the recovery block.
+
 1. **Establish the next logical steps.** From the work this session, name what
    comes next concretely — the in-progress edit to finish, the next item on a
    tracked list, the test to make green, the thing to verify. If `$ARGUMENTS`

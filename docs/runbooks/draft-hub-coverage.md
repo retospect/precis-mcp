@@ -46,3 +46,34 @@ hand-minting: under load from concurrent minters a hand mint degraded from
 40 s to 20 min, and backfill spends cluster tokens rather than session
 context. Mint mechanics and the per-claim loop: skills `precis-finding-help`
 and `precis-taproot-mint-help`.
+
+## Working loop per claim
+
+The dedup search (step 3) is a hard gate.
+
+1. `search(kind='paper', q='<distinctive phrasing>', scope='pa<id>')`; pick a hit.
+2. `get(id='pc<id>')` and read it before attaching: excerpts are clipped and
+   reference-list chunks look like real hits.
+3. `search(kind='finding', q='<claim>', status='*')`: converge onto an
+   existing hub, else mint. `status='*'` is required or the default filter
+   hides most hubs. Keep the default hybrid mode; `mode='semantic'` hung 30
+   minutes under congestion and died at the 1800 s idle timeout.
+4. `put(kind='finding', title=, body=, scope=, supporters=[{'paper':'pa<id>','source_handle':'pc<id>'}])`,
+   then cite `[fi<id>]` with
+   `put(kind='draft', chunk_kind='paragraph', at={'into':'dc<id>','last':True})`.
+
+Mint lint: `scope=` keys are enumerated (material, method, quantity, regime,
+substrate, system, temperature); values are short tokens ("Fe-TCNQ"), not
+prose (`scope-free-text`). `two-denominator-solidus` on `graphene/Ir(111)` is
+a false positive. Not mintable: method exposition, "we believe" hedges,
+outlook paragraphs, bibliography entries. Define abbreviations as
+`chunk_kind='term'` with `meta={'short':'X'}`.
+
+Draft structure: reading order is DFS by `pos`, not `ord`, so a root-level
+chunk with a low `pos` renders before the title. `'last': True` appends to
+whatever parent is current. After any regroup re-run the root-orphan and
+paragraphs-per-heading checks. Move sections with
+`move={'into':'<heading>','last':True}`, never `move={'parent':...}`.
+
+DOIs live in `ref_identifiers` (`id_kind='doi'`), not `refs.meta->>'doi'`;
+measuring from meta gives a false zero.
