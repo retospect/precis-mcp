@@ -729,9 +729,12 @@ def test_check_silk_missing_does_not_flag_a_deliberately_unmarked_passive():
 def test_pin1_tick_is_skipped_when_its_own_courtyard_is_dropped():
     """A tick is a corner-cut of the courtyard outline -- meaningless, and
     unreadable as stray ink, without it (module docstring's "A pin-1 tick
-    never survives alone" decision). A pad placed exactly on the part's
-    courtyard forces the courtyard to drop; the tick must not survive it,
-    and the suppression must be reported."""
+    never survives alone" decision). A pad blanketing the whole part
+    forces the courtyard to drop AND blocks every dot candidate; the tick
+    must not survive it, and the suppression must be reported. Narrowed
+    by gr503436: the DOT is still attempted on a dropped courtyard (the
+    test below), so this fixture asserts the mark is gone only because no
+    dot was clear either -- the tick path itself stays unreachable."""
     ir = from_graph(_graph("U1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     # A big pad blanketing the whole courtyard (but not necessarily the
     # relocated refdes candidates further out).
@@ -739,8 +742,60 @@ def test_pin1_tick_is_skipped_when_its_own_courtyard_is_dropped():
     result = build_silk(ir, pads=pads)
     roles = {d["role"] for d in result.draws["top"] if d["refdes"] == "U1"}
     assert "outline" not in roles  # sanity: the courtyard really did drop
-    assert "pin1" not in roles  # and the tick did not survive it
-    assert any("U1" in msg and "pin-1 marker skipped" in msg for msg in result.dropped)
+    assert "pin1" not in roles  # and neither mark survived it
+    assert any("U1" in msg and "unanchored ink" in msg for msg in result.dropped)
+
+
+def test_the_pin1_dot_survives_its_own_courtyard_being_dropped():
+    """gr503436 (Reto 2026-10-22): the pin-1 dot is a polarity marker, not
+    decoration -- it sits beside pin 1's own land, outside the courtyard,
+    so it still points at real geometry when the outline drops and must
+    NOT be suppressed with it. A foreign pad that buries most of the
+    courtyard ring (but not pin 1's side) forces exactly that: the
+    courtyard drops whole (< the kept-fraction floor) while the dot
+    still prints, clear of every pad's mask opening as always."""
+    ir = from_graph(_graph("U1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    ir.pin_dx[0], ir.pin_dy[0] = -1.0, 0.0
+    ir.pin_dx[1], ir.pin_dy[1] = 1.0, 0.0
+    for p in (0, 1):
+        ir.pin_w[p], ir.pin_h[p] = 0.4, 0.4
+    own = [
+        {"shape": "rect", "x": -1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "A"},
+        {"shape": "rect", "x": 1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "B"},
+    ]
+    # Covers the courtyard everywhere EXCEPT the side pin 1's dot ring
+    # reaches -- the dot search (outward through pin 1 first) still has
+    # somewhere legal to go.
+    foreign = {
+        "shape": "rect",
+        "x": 1.0,
+        "y": 0.0,
+        "w": 4.0,
+        "h": 3.0,
+        "net": "FOREIGN",
+    }
+    result = build_silk(ir, pads=[*own, foreign])
+
+    courtyard_row = next(
+        c for c in result.census if c.refdes == "U1" and c.kind == "courtyard"
+    )
+    assert courtyard_row.outcome == "dropped", (
+        f"fixture is wrong: the courtyard was meant to drop ({courtyard_row})"
+    )
+    pin1_row = next(c for c in result.census if c.refdes == "U1" and c.kind == "pin1")
+    assert pin1_row.outcome == "placed"
+    marks = [d for d in result.draws["top"] if d["role"] == "pin1"]
+    assert len(marks) == 1
+    dot = marks[0]
+    assert len(dot["segments"]) == 1
+    assert dot["segments"][0]["start"] == dot["segments"][0]["end"]
+
+    # Clear of pads at the level the builder itself enforces: no draw's
+    # centreline enters any pad's mask OPENING (copper + expansion), let
+    # alone the pad.
+    assert not _draws_hit_any_pad(
+        result.draws["top"], _mask_openings([*own, foreign], None)
+    )
 
 
 # ── courtyard margin: the boundary must clear the pad edge, not touch it ──

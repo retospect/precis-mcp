@@ -203,11 +203,17 @@ a prerequisite for even attempting its own tick, reported in ``dropped``
 same as any other suppression, never silently paired with a courtyard
 that isn't there.
 
-That reasoning is about the TICK, and it now also suppresses the dot,
-which may be too strong: a dot sits outside the courtyard beside pin 1's
-own land, so it still points at something real when the outline is gone.
-Left as-is rather than widened on a hunch — the decision is open in
-gr503436.
+That reasoning is about the TICK only — the DOT survives (gr503436,
+Reto 2026-10-22: "keep the pin-1 dot when the courtyard is dropped;
+assemblers rely on it"). A dot sits outside the courtyard beside pin 1's
+own land, so it still points at real geometry when the outline is gone,
+and it is a polarity marker, not decoration. So a dropped courtyard now
+means: still attempt the dot (against the same pads, vias, silk and
+other parts' outlines as always, and still outside the part's own body
+region), and only the corner-tick fallback is withheld — the tick is the
+mark that is meaningless without the outline it is a cut of. A part
+whose courtyard drops AND whose every dot candidate is blocked still
+gets no mark, reported in ``dropped`` as before.
 
 **Provenance, for a future ingested-silk merge.** Every draw this module
 emits carries ``"source": "synthesized"`` (an extra key both
@@ -814,7 +820,9 @@ def _clip_polyline(
     fab would have trimmed to anyway. Dropping the whole ring instead
     threw away the other 95% of a part's outline — and, via
     :func:`build_silk`'s "a pin-1 tick never survives alone" rule, its
-    pin-1 marker with it. On the ESP32-C3 reference board that single
+    pin-1 marker with it (now the tick alone — gr503436 keeps the dot
+    regardless; the module docstring carries the ruling). On the
+    ESP32-C3 reference board that single
     policy accounted for most of the ``silk_missing`` population once
     courtyards became tight enough to pass NEAR a part's own vias instead
     of enclosing them.
@@ -4234,16 +4242,19 @@ def _build_silk_pass(
                     )
                 )
 
-        # 2) pin-1 marker -- only attempted when this instance's OWN
-        # courtyard actually survived (module docstring's "A pin-1 tick
-        # never survives alone" decision): the tick is a corner-cut of the
-        # courtyard outline, meaningless -- and unreadable as stray ink --
-        # without it. Checked against the SAME pre-courtyard obstacle
-        # snapshot as the courtyard itself (external silk only) -- a tick
-        # touching its own courtyard's corner is the intended shape, not a
-        # collision.
+        # 2) pin-1 marker -- the DOT is attempted whether or not this
+        # instance's own courtyard survived (module docstring's "A pin-1
+        # tick never survives alone" decision, narrowed by gr503436: the
+        # dot is a polarity marker beside pin 1's own land, not an
+        # annotation on the outline, so it still points at real geometry
+        # with the outline gone). Only the corner-TICK fallback is tied
+        # to the courtyard: a tick is a corner-cut of that outline,
+        # meaningless -- and unreadable as stray ink -- without it.
+        # Checked against the shared obstacle list -- a dot touching its
+        # own courtyard is rejected by the body-region test below, not by
+        # obstacle membership.
         tick_obstacle: dict[str, Any] | None = None
-        # Policy check FIRST, ahead of the courtyard-dropped fallback below:
+        # Policy check FIRST, ahead of the dot search below:
         # an unpolarized R/C/L/FB gets no pin-1 attempt regardless of
         # whether its courtyard survived -- there is no mark to have lost,
         # so "the courtyard was dropped" would be the wrong reason to give.
@@ -4263,20 +4274,6 @@ def _build_silk_pass(
                     reason=(
                         f"no polarity -- pin-1 mark not applicable ({family} "
                         "parts are unpolarized unless declared polarized)"
-                    ),
-                    stroke_width_mm=stroke_width_mm,
-                )
-            )
-        elif pins and box_local and not courtyard_kept:
-            census.append(
-                SilkPlacement(
-                    refdes=refdes,
-                    kind="pin1",
-                    side=side_name,
-                    outcome="dropped",
-                    reason=(
-                        "pin-1 marker skipped -- its courtyard was dropped, "
-                        "so a lone tick would read as unanchored ink"
                     ),
                     stroke_width_mm=stroke_width_mm,
                 )
@@ -4328,9 +4325,12 @@ def _build_silk_pass(
                 # `_polygon_overlaps_circle` already covers both shapes of
                 # failure (fully inside, or merely touching the boundary)
                 # in one exact (non-sampled) test.
-                if courtyard_kept and _polygon_overlaps_circle(
-                    box_pts, (dcx, dcy), dia / 2.0
-                ):
+                #
+                # Keyed on `box_pts`, not `courtyard_kept` (gr503436): the
+                # ring still describes the part's body even when the
+                # outline itself was dropped, and a dot inside it prints
+                # under the assembled part -- invisible ink.
+                if box_pts and _polygon_overlaps_circle(box_pts, (dcx, dcy), dia / 2.0):
                     continue
                 # Yield to every OTHER part's body outline on this side,
                 # whether or not that part has been processed yet (see
@@ -4371,11 +4371,13 @@ def _build_silk_pass(
                         stroke_width_mm=dot_dia,
                     )
                 )
-            else:
+            elif courtyard_kept:
                 # Nowhere clear beside pin 1. The corner tick is a weak
                 # mark for the reasons above, but it still says WHICH
                 # corner to a reader who knows to look for it, and that
-                # beats dropping the marker entirely.
+                # beats dropping the marker entirely. Only reachable with
+                # the courtyard drawn: a lone tick reads as unanchored
+                # ink (module docstring).
                 pin1_xy = _place(
                     [(float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1]))],
                     cx=cx,
@@ -4429,6 +4431,26 @@ def _build_silk_pass(
                             stroke_width_mm=stroke_width_mm,
                         )
                     )
+            else:
+                # The courtyard is gone, so the corner-tick fallback has
+                # nothing to cut -- but the dot was still attempted above
+                # (gr503436: a polarity marker, not decoration). Reaching
+                # here means every dot candidate was blocked too, so the
+                # part goes unmarked -- reported, never silently absent.
+                census.append(
+                    SilkPlacement(
+                        refdes=refdes,
+                        kind="pin1",
+                        side=side_name,
+                        outcome="dropped",
+                        reason=(
+                            "no dot beside pin 1 is clear, and the "
+                            "courtyard it would annotate was dropped -- "
+                            "a lone corner tick reads as unanchored ink"
+                        ),
+                        stroke_width_mm=stroke_width_mm,
+                    )
+                )
 
         # Fold this instance's own surviving pin-1 tick into the shared
         # obstacle list now, ahead of the refdes-label search below: the

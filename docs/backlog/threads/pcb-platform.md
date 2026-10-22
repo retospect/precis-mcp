@@ -71,9 +71,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 6. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
    blocks = a `@pcb.module`; `op='instantiate_block'` stays unbuilt);
    level 2 (pre-routed bundles) is pcb-workspace-code slice 3.
-7. **gr503436** — courtyard/silk residuals (pin-1 dot decision, silk
-   broad phase, two JLCPCB capability figures); the courtyard item closed
-   2026-10-21.
+7. **gr503436** — courtyard/silk residuals (silk broad phase, two JLCPCB
+   capability figures); the courtyard item closed 2026-10-21, the pin-1
+   dot ruling (keep the dot when the courtyard drops) shipped
+   2026-10-22.
 8. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
    2026-10-21), independent of 3's split.
