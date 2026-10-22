@@ -13,10 +13,10 @@ Reto, 2026-10-17. First concrete driver of the intent-to-realize loop
 (slice 4) and the delivery of the region property layer's slices B and C
 (slices 1–2 below); both former specs are folded in here. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 
-**Status (2026-10-17):** slice 1 is built (its section below says
-what); its surface settings are provisional until open question 4 is
-answered. Questions 8 and 9 are decided (Reto, 2026-10-18); next is
-slice 2, split into 2a and 2b below. Slices 3–5 wait on 2.
+**Status (2026-10-21):** slices 1–3 are built (slices 1 and 3 say
+what below; slice 2 under What exists); slice 1's surface settings are
+provisional until open question 4 is answered, slice 3's spin default
+until question 12 is. Next is slice 4.
 
 ## Use case — the nanoreactor tunnel
 
@@ -156,25 +156,35 @@ orbitals carry the same total density either way. Spin-polarised GFN2
 turn spin polarisation on for doublets is open question 12; where the
 read can run in prod is open question 13.
 
-### 3. Constrained-shape spec (case b)
+### 3. Constrained-shape spec (case b) — built 2026-10-21
 
-**Owning code:** `src/precis_se/properties/pocket_spec.py` (a held-shape
-mode of `pocket_from_molecule`).
+What it does is in the docstrings of
+`src/precis_se/properties/pocket_spec.py` (`held_shape`,
+`held_shape_regions`, the op's held-shape mode), the `mcone:` and
+`<block>!<label>` grammar in `src/precis_se/datums.py`, DRC's
+`pocket_keep_open` (`src/precis_se/drc.py::_cone_count_findings`), and
+skill `precis-se-regions-help` §pocket_from_molecule. In short:
+`pocket_from_molecule` with `remove=<label>` writes a pocket for the
+fragment frozen at the parent geometry, with the GFN2 strain and the
+vacancy direction in its echo, the fragment's patch regions, keep-open /
+hold / H-bond-partner `mcone:` regions, and a `binding energy` ≤
+−strain placeholder on `mol:<fragment>`. Spin polarisation is an
+explicit `spin_polarization` arg, default off (Q12 unruled).
 
-**Input:** the parent molecule (NH3), the label of the removed atom,
-charge and multiplicity of the fragment (NH2: 0 and 2), the wall block,
-station window and clearance.
+Still open from this slice: the Q11 requirement (below) replaces the
+binding-energy placeholder once its form is settled; the cone sizes
+(`KEEP_OPEN_*`, `HOLD_*`, `HBOND_*` in `pocket_spec.py`) are builder
+picks; nothing stops a hold cone on the anchor atom from overlapping the
+keep-open cone (not the case for NH2).
 
-**Output:**
-
-- strain energy at GFN2: E(NH2 frozen at the NH3 geometry) minus
-  E(NH2 relaxed with `_relax_xtb`), both doublets;
-- the vacancy direction: the unit vector from N along the removed N–H;
-- a pocket like slice 2's, plus steric wall regions that hold the
-  frozen geometry, H-bond partner positions, a keep-open cone along the
-  vacancy direction (no wall atom inside it), and a `binding energy`
-  measure whose band requires at least the strain energy as
-  stabilisation.
+Measured 2026-10-21 (tblite on macOS): GFN2 relaxes NH3 to N–H 1.013 Å,
+H–N–H 107.7°; NH2 frozen there relaxes free to H–N–H 111.2° (GFN2's NH2
+angle runs wide of the ~103° reference) in 4 FIRE steps, strain 0.0063
+eV plain doublet, 0.0057 eV spin-polarised (spin polarisation lowers
+both energies by ~0.40 eV). Atoms move 0.016–0.019 Å, so all three get
+hold cones. The strain sits near what the 0.05 eV/Å force floor of
+`_relax_xtb` resolves: for NH2 at GFN2 the held shape is barely strained;
+a meaningful number needs the DFT rung.
 
 **Requirement (Reto 2026-10-17, question 11):** the band is on the
 H-addition step, not plain binding: NH2 + H in the pocket must be
@@ -182,12 +192,6 @@ downhill and low-barrier versus free (reaction energy and barrier, both
 compared with the free case). Exact form open pending literature
 (papers queued 2026-10-17); the binding-energy measure above is a
 placeholder until then.
-
-test: `tests/test_se_held_shape_pocket.py` (new) — NH3 minus one H
-gives a positive GFN2 strain energy; the vacancy direction is within 1°
-of the removed N–H; the pocket carries the keep-open region and the
-binding-energy requirement; a wall atom placed inside the cone is a DRC
-error naming the region.
 
 ### 4. The realize loop
 
@@ -425,6 +429,12 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     spin-polarised GFN2 gives a spin density and different energies.
     Turn it on for NO and NH2 in slices 3–5's strain and binding
     energies, or leave open-shell energetics to the DFT rung?
+    **Default taken (builder, 2026-10-21, not Reto's answer):** off.
+    Slice 3 makes it the explicit `spin_polarization` arg of the
+    held-shape op (`relax.py::_xtb_calculator` passes tblite
+    `spin_polarization=1.0` only when on). Recommendation: keep it off by
+    default and leave open-shell energetics to the DFT rung; on NH2 it
+    moves the strain by 0.0006 eV.
 13. **Where the surface read runs in prod.** The MCP container is
     linux-aarch64 and has no tblite (no PyPI wheel; only the compute
     hosts install the wheelhouse build), so `view='surface'` answers

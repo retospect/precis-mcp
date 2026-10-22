@@ -35,7 +35,7 @@ regions plus a shape on a block (``add_pocket``/``set_pocket``/
 ``remove_pocket``, table ``se_pockets``, ``view='pockets'``); a region's
 measures are derived from their ``datum``. Until slice B fills
 :data:`COMPUTERS`, DRC's ``measurand_unchecked`` names every measure nothing
-computes. Block names may not contain ``/ @ [ ]``
+computes. Block names may not contain ``/ @ [ ] !``
 (:data:`precis_se.ops.BLOCK_NAME_RESERVED`).
 
 **The molecule painter** (:mod:`precis_se.properties.surface`,

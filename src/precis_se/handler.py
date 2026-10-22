@@ -5403,7 +5403,10 @@ def _render_datums(tree: SeTree) -> str:
 def _region_measure_line(m: Any, tree: SeTree | None = None) -> str:
     """One region measure as one line: measurand, unit, band/value,
     strength, and whether anything computes it (slice B's computers) — and
-    a pinned ``atoms:``/``sites:`` region that has gone stale."""
+    a pinned ``atoms:``/``sites:`` region that has gone stale. A count on
+    an ``mcone:`` region reads its wall atoms inside the cone."""
+    from precis_se.properties.computers import cone_atom_count
+
     if m.measurand is not None:
         what = f"measurand {measurand_name(m)} (tn{m.measurand_ref})"
     else:
@@ -5431,6 +5434,13 @@ def _region_measure_line(m: Any, tree: SeTree | None = None) -> str:
                 parts.append(f"realised: — ({reason})")
             else:
                 parts.append(f"realised: {_fmt_in_unit(realised, m.unit)}")
+    elif tree is not None and (cone := cone_atom_count(tree, m)) is not None:
+        count, reason = cone
+        parts.append(
+            f"realised: {count:g} wall atom(s) in cone"
+            if count is not None
+            else f"realised: — ({reason or 'no value'})"
+        )
     else:
         parts.append("realised: —")
     if tree is not None and se_datums.stale_pin_note(tree, m) is not None:

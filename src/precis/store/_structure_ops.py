@@ -366,7 +366,9 @@ class StructureMixin:
         row, then inserts one ``struct_runs`` row (``provenance='external'``,
         §5). A **re-import** of the same ``(dataset, config_id)`` reuses that
         ref — the Scene is rewritten, not duplicated — and *updates* its one
-        external run row in place rather than inserting a second one.
+        external run row in place rather than inserting a second one. All
+        three writes (design, identifier, run) commit in one transaction,
+        so a mid-import failure leaves nothing half-persisted behind.
 
         External and computed rows for one design coexist as distinct rows:
         migration 0084 narrows ``struct_runs_cache_idx`` to
@@ -399,15 +401,23 @@ class StructureMixin:
             f"{''.join(f'{el}{n}' for el, n in sorted(scene.composition().items()))}; "
             f"source: {dataset} {config_id}."
         )
-        ref, created = self.structure_save(
-            slug=slug,
-            title=title,
-            scene=scene,
-            version=version,
-            card_text=card_text,
-            description=f"imported from {dataset} (config {config_id})",
-        )
+        # One transaction for design + identifier + external run. They used
+        # to split across two (structure_save committed its own, then this
+        # block ran a second): a failure between them left a ref whose
+        # (dataset, config_id) identifier was never written — and since a
+        # retry finds the orphan by slug (created=False), the guarded
+        # identifier insert never fired again, so the collapse lookup missed
+        # permanently.
         with self.tx() as conn:
+            ref, created = self.structure_save(
+                slug=slug,
+                title=title,
+                scene=scene,
+                version=version,
+                card_text=card_text,
+                description=f"imported from {dataset} (config {config_id})",
+                conn=conn,
+            )
             if created:
                 self.insert_ref_identifiers(
                     ref.id, [(dataset, config_id, "import")], conn=conn

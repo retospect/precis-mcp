@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from precis.structure.importers import ExternalId, ExternalRun, get_adapter
-from precis.structure.importers.catalysis_hub import adapter
+from precis.structure.importers.catalysis_hub import _reactions_query, adapter
 from precis.structure.scene import FIX_ALL, Scene
 
 FIXTURE = Path(__file__).parent / "fixtures" / "catalysis" / "pd111_no.json"
@@ -71,3 +71,23 @@ def test_adapter_external_id_uses_system_unique_id() -> None:
 
 def test_catalysis_hub_adapter_is_registered() -> None:
     assert get_adapter("catalysis-hub") is adapter
+
+
+def test_reactions_query_escapes_filter_values_as_graphql_strings() -> None:
+    """A caller-supplied filter is a *value*, never query text — embedded
+    via ``json.dumps``, so a quote inside it cannot break out of the string
+    literal and smuggle a second filter clause into the query (the raw
+    f-string interpolation let it)."""
+    q = _reactions_query(first=5, surface_composition='Pd", facet: "111', facet=None)
+
+    # one escaped literal, not two clauses — the whole hostile value stays
+    # inside its quotes.
+    assert 'surfaceComposition: "Pd\\", facet: \\"111"' in q
+    assert q.count("facet:") == 1
+
+
+def test_reactions_query_plain_filters_render_as_before() -> None:
+    q = _reactions_query(first=5, surface_composition="Pd", facet="111")
+    assert 'surfaceComposition: "Pd"' in q
+    assert 'facet: "111"' in q
+    assert "reactions(first: 5," in q

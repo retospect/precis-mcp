@@ -45,6 +45,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any
 
 import numpy as np
 
@@ -558,7 +559,12 @@ def check_charge_multiplicity(
     return electrons
 
 
-def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
+def _xtb_calculator(
+    *,
+    charge: int = 0,
+    multiplicity: int | None = None,
+    spin_polarization: bool = False,
+):
     """The GFN2-xTB ASE calculator (tblite), or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
@@ -581,7 +587,11 @@ def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
     half-filled in each spin channel. Parity against the atoms is
     the caller's check (:func:`check_charge_multiplicity`), since this
     function never sees them. The calculator is not spin-polarised, so
-    multiplicity changes the occupations, not a spin density."""
+    multiplicity changes the occupations, not a spin density — unless
+    ``spin_polarization=True``, which hands tblite ``spin_polarization=1.0``
+    (spin-polarised GFN2: a spin density, and for NO a 0.196 eV lower
+    energy than the plain doublet). Off by default: pocket-from-molecule
+    open question 12 is unruled."""
     _vet_charge_multiplicity(charge, multiplicity)
     # gr495146: a larger OpenMP worker stack than macOS's ~512 KB default,
     # set before the first TBLite instantiation; setdefault keeps operator
@@ -591,13 +601,22 @@ def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
     if _xtb_needs_isolation():
         from ._xtb_isolated import IsolatedTBLite
 
-        return IsolatedTBLite(charge=charge, multiplicity=multiplicity)
-    return _native_tblite(charge=charge, multiplicity=multiplicity)
+        return IsolatedTBLite(
+            charge=charge,
+            multiplicity=multiplicity,
+            spin_polarization=spin_polarization,
+        )
+    return _native_tblite(
+        charge=charge, multiplicity=multiplicity, spin_polarization=spin_polarization
+    )
 
 
-def _native_tblite(*, charge: int, multiplicity: int | None):
+def _native_tblite(
+    *, charge: int, multiplicity: int | None, spin_polarization: bool = False
+):
     """The in-process tblite ASE calculator (GFN2-xTB, 1000 K electronic
-    temperature)."""
+    temperature). ``spin_polarization`` is passed only when on, so the
+    default call is the one every earlier run made."""
     try:
         from tblite.ase import TBLite
     except ImportError as exc:
@@ -606,12 +625,14 @@ def _native_tblite(*, charge: int, multiplicity: int | None):
             "'precis-mcp[estimate]'; PyPI has no linux-aarch64 wheel, so "
             "those hosts install the wheelhouse build (scripts/build-tblite-wheel)"
         ) from exc
+    extra: dict[str, Any] = {"spin_polarization": 1.0} if spin_polarization else {}
     return TBLite(
         method="GFN2-xTB",
         charge=charge,
         multiplicity=multiplicity,
         electronic_temperature=1000.0,
         verbosity=0,
+        **extra,
     )
 
 
@@ -646,6 +667,7 @@ def _relax_xtb(
     tol: float,
     charge: int = 0,
     multiplicity: int | None = None,
+    spin_polarization: bool = False,
 ) -> RelaxResult:
     """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
 
@@ -668,7 +690,9 @@ def _relax_xtb(
     ``charge``/``multiplicity`` reach the calculator unchanged
     (:func:`_xtb_calculator`); a declared multiplicity is first checked
     against the atoms' electron count (:func:`check_charge_multiplicity`,
-    ``ValueError`` on a parity mismatch).
+    ``ValueError`` on a parity mismatch). ``spin_polarization`` turns on
+    spin-polarised GFN2 (:func:`_xtb_calculator`); only the
+    pocket-from-molecule held-shape strain passes it.
     """
     if not export.ase_available():
         raise RelaxUnsupported(
@@ -687,7 +711,9 @@ def _relax_xtb(
     pinned = [idx for idx, la in enumerate(labels) if scene.atoms[la].fixed]
     if pinned:
         atoms.set_constraint(FixAtoms(indices=pinned))
-    atoms.calc = _xtb_calculator(charge=charge, multiplicity=multiplicity)
+    atoms.calc = _xtb_calculator(
+        charge=charge, multiplicity=multiplicity, spin_polarization=spin_polarization
+    )
 
     curve: list[float] = []
 

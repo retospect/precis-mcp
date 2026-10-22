@@ -254,6 +254,75 @@ def test_dispatch_failure_records_no_cache_row(structure, tmp_path, monkeypatch)
     assert structure.store.structure_find_cached_run(params["cache_key"]) is None
 
 
+def test_step_capped_relax_records_unconverged(structure, tmp_path, monkeypatch):
+    """gr503339: a relax that ran to the step cap (``converged: false`` in
+    ``result.json``) records ``converged=False`` — the run-cube still fills
+    (the cube caches the *verdict*: a repeat request is a zero-compute hit
+    that carries the honest non-convergence rather than recomputing into
+    the same cap)."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+
+    def _capped_runner(**kw):
+        return {
+            "ok": True,
+            "scalars": {
+                "E_tot": -3.05,
+                "max_force": 0.31,
+                "max_disp": 1.4,
+                "n_steps": 200,  # ran the full cap — never converged
+                "converged": False,
+            },
+            "relaxed_poscar": _relaxed_poscar(structure, "pd_pair", 0.25),
+            "curve": [0.9] * 200,
+        }
+
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _capped_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    runs = structure.store.structure_runs(params["structure_ref_id"])
+    assert len(runs) == 1
+    assert runs[0]["converged"] is False
+    assert runs[0]["energy"] == pytest.approx(-3.05)
+    # the cube hit carries the verdict, not a convergence claim.
+    hit = structure.store.structure_find_cached_run(params["cache_key"])
+    assert hit is not None and hit["converged"] is False
+    summaries = [t for k, t in events if k == "job_summary"]
+    assert summaries and "did NOT converge" in summaries[0]
+
+
+def test_result_without_a_converged_flag_records_unconverged(
+    structure, tmp_path, monkeypatch
+):
+    """gr503339: ``scalars`` carrying no ``converged`` key at all (an older
+    container build, a hand-assembled result) must record *unconverged* —
+    the old ``get(…, True)`` default laundered silence into a convergence
+    claim."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+
+    def _silent_runner(**kw):
+        return {
+            "ok": True,
+            "scalars": {"E_tot": -3.05, "max_force": 0.31, "n_steps": 7},
+            "relaxed_poscar": _relaxed_poscar(structure, "pd_pair", 0.25),
+            "curve": [0.5, 0.3],
+        }
+
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _silent_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    runs = structure.store.structure_runs(params["structure_ref_id"])
+    assert len(runs) == 1
+    assert runs[0]["converged"] is False
+    hit = structure.store.structure_find_cached_run(params["cache_key"])
+    assert hit is not None and hit["converged"] is False
+
+
 def test_dispatch_self_aborts_on_wall_clock_timeout(structure, tmp_path, monkeypatch):
     """A GPU-driver-wedged relax must self-abort on the wall-clock cap rather
     than hang forever — kill the container, attempt a GPU reset, and record

@@ -277,16 +277,20 @@ def gfn2_single_point(
     *,
     charge: int,
     multiplicity: int,
+    spin_polarization: bool = False,
 ) -> Gfn2SinglePoint:
     """GFN2-xTB energy and Mulliken charges of an isolated molecule.
     Raises :class:`~precis.structure.relax.RelaxUnsupported` without
     tblite, ``ValueError`` on a charge/multiplicity that does not fit the
     atoms. ``spin_population`` is tblite's ``magmoms`` result when it sets
-    one; the non-spin-polarised GFN2 here does not."""
+    one; the default non-spin-polarised GFN2 does not
+    (``spin_polarization=True`` turns it on — open question 12)."""
     from ase import Atoms
 
     check_charge_multiplicity(elements, charge, multiplicity)
-    calc = _xtb_calculator(charge=charge, multiplicity=multiplicity)
+    calc = _xtb_calculator(
+        charge=charge, multiplicity=multiplicity, spin_polarization=spin_polarization
+    )
     atoms = Atoms(symbols=elements, positions=coords)
     atoms.calc = calc
     energy = float(atoms.get_potential_energy())

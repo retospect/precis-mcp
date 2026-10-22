@@ -99,6 +99,40 @@ def test_computed_run_after_import_leaves_external_row_intact(store):
     assert provenance_by_energy == {-12.3: "external", -11.9: "computed"}
 
 
+def test_import_is_atomic_a_failure_after_the_first_write_leaves_nothing(
+    store, monkeypatch
+):
+    """The import used to commit the design in one transaction and write the
+    identifier + external run in a second: a failure between them left a ref
+    whose ``(dataset, config_id)`` identifier was never written — and a retry
+    collapsed onto the orphan (created=False), so the ``if created``-guarded
+    identifier insert never fired again and the lookup missed permanently.
+    One transaction now: the crash rolls everything back."""
+
+    def _boom(conn, **kw):
+        raise RuntimeError("simulated crash after the design write")
+
+    monkeypatch.setattr(store, "_import_run_upsert", _boom)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.structure_import(_pd_scene(), _run(), _eid())
+
+    # Nothing persisted — no design, no identifier row, no external run.
+    assert (
+        store.find_ref_by_identifier("catalysis-hub", "cfg-1", kind="structure") is None
+    )
+    assert store.get_ref(kind="structure", id="catalysis-hub-cfg-1") is None
+
+    # A retry then imports cleanly — no orphan left to collapse onto.
+    monkeypatch.undo()
+    ref_id = store.structure_import(_pd_scene(), _run(), _eid())
+    assert (
+        store.find_ref_by_identifier("catalysis-hub", "cfg-1", kind="structure")
+        == ref_id
+    )
+    runs = store.structure_runs(ref_id)
+    assert len(runs) == 1 and runs[0]["fidelity"] == "external"
+
+
 def test_compute_cache_never_hits_an_external_row(store):
     """The 0084 partial index excludes provenance='external' — a compute-cache
     probe by ``cache_key`` must never surface an imported row as a hit."""

@@ -51,6 +51,14 @@ selectors (the closed se-region-property-layer spec slice A):
   sites ``i`` to ``j`` inclusive.
 - ``atoms:<block>[<indices>]`` — atom ordinals in the block's bound
   structure, ``0,3,5-9`` (ranges inclusive).
+- Molecule-facing regions (docs/backlog/pocket-from-molecule.md), each
+  naming the wall-block atoms opposite a posed molecule ``<mol>`` —
+  ``<block>``, or ``<block>!<label>`` for its structure minus atom
+  ``<label>`` (slice 3's held fragment): ``mpatch:<mol>:<id>`` (one
+  painted patch), ``mol:<mol>@<clearance Å>`` (the whole surface; also
+  the pocket-shape token) and ``mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+
+  <length Å>`` (wall atom centres inside a cone on one molecule atom,
+  axis in the molecule structure's frame).
 
 ``sites:``/``atoms:`` parse strictly but never resolve here: their
 coordinates live in the bound ``structure`` design, which this pure
@@ -124,7 +132,9 @@ VOCABULARY = (
     "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly | "
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
     "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>] | "
-    "mpatch:<block>:<id> | mol:<block>@<clearance Å>"
+    "mpatch:<mol>:<id> | mol:<mol>@<clearance Å> | "
+    "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> "
+    "(<mol> = <block> or <block>!<removed atom label>)"
 )
 
 #: A face whose normal is within this many degrees of ±x takes block-local
@@ -141,6 +151,9 @@ _PATCH_RE = re.compile(rf"^(?P<u>{_NUM}),(?P<v>{_NUM})\+(?P<w>{_NUM})x(?P<h>{_NU
 _SITES_RE = re.compile(r"^s(?P<lo>\d+)\.\.s(?P<hi>\d+)$")
 _ATOMS_RE = re.compile(r"^(?P<block>[^\[\]]+)\[(?P<idx>[^\[\]]*)\]$")
 _INDEX_ITEM_RE = re.compile(r"^(?P<lo>\d+)(?:-(?P<hi>\d+))?$")
+_MCONE_RE = re.compile(
+    rf"^(?P<dx>{_NUM}),(?P<dy>{_NUM}),(?P<dz>{_NUM})/(?P<half>{_NUM})\+(?P<len>{_NUM})$"
+)
 #: Ceiling on the atoms one ``atoms:`` selector expands to.
 _MAX_ATOMS = 100_000
 
@@ -169,7 +182,7 @@ class Selector:
     lo: int | None = None
     hi: int | None = None
     indices: tuple[int, ...] = ()
-    #: ``mpatch:<block>:<id>`` — the molecule-surface patch ordinal
+    #: ``mpatch:<mol>:<id>`` — the molecule-surface patch ordinal
     #: (ranked by ``(z, θ)`` of the patch centroid in the wall frame,
     #: :func:`precis_se.properties.pocket_spec.cluster_patches`).
     patch_id: int | None = None
@@ -177,6 +190,17 @@ class Selector:
     #: written in Å in the token text, stored in metres like every se
     #: length.
     clearance: float | None = None
+    #: ``<block>!<label>`` in a ``mol:``/``mpatch:``/``mcone:`` selector —
+    #: the molecule block's bound structure with atom ``<label>`` removed
+    #: (pocket-from-molecule slice 3's held fragment: NH3 minus one H).
+    without: str | None = None
+    #: ``mcone:`` — the apex atom's label, the axis in the molecule
+    #: structure's own frame (as written, not normalised), the half-angle
+    #: in degrees and the length (written in Å, stored in metres).
+    anchor: str | None = None
+    axis: tuple[float, float, float] | None = None
+    half_angle_deg: float | None = None
+    length: float | None = None
 
 
 @dataclass(frozen=True)
@@ -295,6 +319,8 @@ def parse_selector(text: Any) -> Selector:
         return _parse_mol(s, body)
     if head == "mpatch":
         return _parse_mpatch(s, body)
+    if head == "mcone":
+        return _parse_mcone(s, body)
     raise MeasureError(
         f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
     )
@@ -312,6 +338,7 @@ def _parse_mol(s: str, body: str) -> Selector:
     block, at, clear_text = body.partition("@")
     if not at or not block.strip() or not clear_text.strip():
         raise MeasureError(shape_msg)
+    instance, without = _split_fragment(s, block)
     try:
         clearance_A = float(clear_text.strip())
     except ValueError:
@@ -323,7 +350,22 @@ def _parse_mol(s: str, body: str) -> Selector:
             f"mol clearance must be ≥ 0 Å (the pocket surface offsets "
             f"outward), got {clearance_A:g} Å in {s!r}"
         )
-    return Selector(kind="mol", instance=block.strip(), clearance=clearance_A * 1e-10)
+    return Selector(
+        kind="mol", instance=instance, without=without, clearance=clearance_A * 1e-10
+    )
+
+
+def _split_fragment(s: str, text: str) -> tuple[str, str | None]:
+    """``<block>`` or ``<block>!<label>`` (the block's structure minus
+    atom ``<label>``) → ``(block, label or None)``. ``!`` is reserved in
+    block names (:data:`precis_se.ops.BLOCK_NAME_RESERVED`)."""
+    block, bang, label = text.strip().partition("!")
+    if not block.strip() or (bang and (not label.strip() or "!" in label)):
+        raise MeasureError(
+            f"molecule reference is '<block>' or '<block>!<removed atom "
+            f"label>', got {text.strip()!r} in {s!r}"
+        )
+    return block.strip(), (label.strip() if bang else None)
 
 
 def _parse_mpatch(s: str, body: str) -> Selector:
@@ -340,7 +382,52 @@ def _parse_mpatch(s: str, body: str) -> Selector:
         raise MeasureError(shape_msg)
     if not pid.strip().isdigit():
         raise MeasureError(f"mpatch id must be a nonneg integer, got {s!r}")
-    return Selector(kind="mpatch", instance=block.strip(), patch_id=int(pid.strip()))
+    instance, without = _split_fragment(s, block)
+    return Selector(
+        kind="mpatch", instance=instance, without=without, patch_id=int(pid.strip())
+    )
+
+
+def _parse_mcone(s: str, body: str) -> Selector:
+    """``mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å>`` — the
+    cone with its apex on atom ``<atom>`` of the molecule, axis
+    ``(dx, dy, dz)`` in the molecule structure's own frame (posed with
+    the block), half-angle in (0, 90] degrees and a positive length. It
+    names the wall atoms whose centres sit inside it (slice 3's
+    keep-open, hold and H-bond-partner regions)."""
+    shape_msg = (
+        f"mcone selector is 'mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+"
+        f"<length Å>' (a cone on that atom of the molecule, axis in the "
+        f"molecule's frame), got {s!r} — vocabulary: {VOCABULARY}"
+    )
+    head, at, geom = body.partition("@")
+    mol, colon, anchor = head.rpartition(":")
+    if not at or not colon or not mol.strip() or not anchor.strip():
+        raise MeasureError(shape_msg)
+    m = _MCONE_RE.match(geom.strip())
+    if m is None:
+        raise MeasureError(shape_msg)
+    dx, dy, dz, half, length_A = (
+        float(m[k]) for k in ("dx", "dy", "dz", "half", "len")
+    )
+    if not all(math.isfinite(x) for x in (dx, dy, dz, half, length_A)):
+        raise MeasureError(f"mcone numbers must be finite, got {s!r}")
+    if math.hypot(dx, dy, dz) < 1e-9:
+        raise MeasureError(f"mcone axis must be nonzero, got {s!r}")
+    if not 0.0 < half <= 90.0:
+        raise MeasureError(f"mcone half-angle must be in (0, 90] degrees, got {s!r}")
+    if length_A <= 0.0:
+        raise MeasureError(f"mcone length must be positive (Å), got {s!r}")
+    instance, without = _split_fragment(s, mol)
+    return Selector(
+        kind="mcone",
+        instance=instance,
+        without=without,
+        anchor=anchor.strip(),
+        axis=(dx, dy, dz),
+        half_angle_deg=half,
+        length=length_A * 1e-10,
+    )
 
 
 def _parse_patch(s: str, body: str) -> Selector:
@@ -646,15 +733,9 @@ def resolve(
     if sel.kind == "mpatch":
         return _resolve_mpatch(tree, node, sel, text)
     if sel.kind == "mol":
-        return ResolvedDatum(
-            selector=text,
-            kind="mol",
-            error=(
-                "mol: names a pocket shape (the molecule's offset "
-                "surface), not a datum — it has no feature geometry to "
-                "measure against"
-            ),
-        )
+        return _resolve_mol(tree, node, sel, text)
+    if sel.kind == "mcone":
+        return _resolve_mcone(tree, node, sel, text)
     if sel.kind in ("patch", "ring"):
         target = sel.instance or node.name
         placed = _placed(tree, target, env_override)
@@ -1078,6 +1159,162 @@ def posed_structure_atoms(
     return labels, elements, coords_A, formal, bound.meta
 
 
+def posed_fragment_atoms(
+    tree: SeTree, name: str, without: str | None
+) -> tuple[list[str], list[str], Any, list[int], Any] | str | None:
+    """:func:`posed_structure_atoms` with atom ``without`` (a label)
+    dropped — the held fragment of a ``<block>!<label>`` reference.
+    ``None`` when the structure is not loadable, an error string when the
+    label names no atom."""
+    got = posed_structure_atoms(tree, name)
+    if got is None or without is None:
+        return got
+    labels, elements, coords_A, formal, meta = got
+    if without not in labels:
+        more = ", …" if len(labels) > 12 else ""
+        return (
+            f"{name!r} has no atom {without!r} to remove (labels: "
+            f"{', '.join(labels[:12])}{more})"
+        )
+    keep = [i for i, la in enumerate(labels) if la != without]
+    return (
+        [labels[i] for i in keep],
+        [elements[i] for i in keep],
+        np.asarray(coords_A, dtype=float)[keep],
+        [formal[i] for i in keep],
+        meta,
+    )
+
+
+def _mol_ref(sel: Selector) -> str:
+    """The ``<block>`` / ``<block>!<label>`` text of a molecule selector."""
+    return f"{sel.instance}!{sel.without}" if sel.without else str(sel.instance)
+
+
+def _molecule_or_error(
+    tree: SeTree, sel: Selector, text: str
+) -> tuple[list[str], list[str], Any, list[int], Any] | ResolvedDatum:
+    """The (fragment) atoms a ``mol:``/``mcone:`` selector names, or the
+    ResolvedDatum error: a missing block or label is a broken reference,
+    an unloadable structure the lenient ``expected`` kind."""
+    if tree.blocks.get(sel.instance or "") is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"no block {sel.instance!r} — {sel.kind}: names the molecule block",
+        )
+    got = posed_fragment_atoms(tree, sel.instance or "", sel.without)
+    if isinstance(got, tuple):
+        return got
+    return ResolvedDatum(
+        selector=text,
+        kind=sel.kind,
+        error=got or f"block {sel.instance!r} binds no loadable structure",
+        expected=got is None,
+    )
+
+
+def _wall_atoms_or_error(
+    tree: SeTree, node: SeBlock, text: str, kind: str
+) -> Any | ResolvedDatum:
+    wall = posed_structure_atoms(tree, node.name)
+    if wall is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=kind,
+            error=(
+                f"block {node.name!r} binds no loadable structure — the wall "
+                f"region of {kind}: cannot resolve"
+            ),
+            expected=True,
+        )
+    return np.asarray(wall[2], dtype=float).reshape(-1, 3)
+
+
+def _resolve_mol(
+    tree: SeTree, node: SeBlock, sel: Selector, text: str
+) -> ResolvedDatum:
+    """``mol:<mol>@<clearance>`` as a region — the wall-block atoms
+    within ``clearance + 3 Å`` of the molecule's (or fragment's) whole vdW
+    surface: what a whole-pocket measure (slice 3's binding-energy
+    requirement) names. Same lenient posture as ``mpatch:``."""
+    from precis_se.properties import surface as se_surface
+
+    got = _molecule_or_error(tree, sel, text)
+    if isinstance(got, ResolvedDatum):
+        return got
+    _labels, elements, mol_A, _formal, _meta = got
+    settings = se_surface.PROVISIONAL_SETTINGS
+    points_A, _normals, _owner = se_surface.sample_surface(
+        np.asarray(mol_A, dtype=float),
+        se_surface.vdw_radii(list(elements), settings.scale),
+        settings.density_per_A2,
+    )
+    wall_A = _wall_atoms_or_error(tree, node, text, "mol")
+    if isinstance(wall_A, ResolvedDatum):
+        return wall_A
+    cut_A = float(sel.clearance or 0.0) * 1e10 + 3.0
+    ordinals: tuple[int, ...] = ()
+    if len(points_A) and len(wall_A):
+        dist = np.linalg.norm(wall_A[:, None, :] - points_A[None, :, :], axis=2)
+        ordinals = tuple(int(i) for i in np.nonzero(dist.min(axis=1) <= cut_A)[0])
+    return ResolvedDatum(
+        selector=text,
+        kind="mol",
+        resolved=_selector_text(sel),
+        point=np.asarray(mol_A, dtype=float).mean(axis=0) * 1e-10,
+        atoms=ordinals,
+    )
+
+
+def _resolve_mcone(
+    tree: SeTree, node: SeBlock, sel: Selector, text: str
+) -> ResolvedDatum:
+    """``mcone:`` — the wall-block (``node``) atoms whose centres sit
+    inside the cone: apex on the anchor atom as posed, axis the written
+    direction rotated by the molecule block's pose, ``0 < t ≤ length``
+    along it and within the half-angle. ``point``/``normal`` are the apex
+    and the world axis."""
+    got = _molecule_or_error(tree, sel, text)
+    if isinstance(got, ResolvedDatum):
+        return got
+    labels, _elements, mol_A, _formal, _meta = got
+    if sel.anchor not in labels:
+        return ResolvedDatum(
+            selector=text,
+            kind="mcone",
+            error=f"mcone: {_mol_ref(sel)!r} has no atom {sel.anchor!r}",
+        )
+    mol_node = tree.blocks[sel.instance or ""]
+    apex = np.asarray(mol_A, dtype=float)[labels.index(sel.anchor)]
+    rot = np.asarray(cad_pose(as_vec3(mol_node.pose), as_vec3(mol_node.rot)).R)
+    axis = rot @ np.asarray(sel.axis, dtype=float)
+    axis = axis / float(np.linalg.norm(axis))
+    wall_A = _wall_atoms_or_error(tree, node, text, "mcone")
+    if isinstance(wall_A, ResolvedDatum):
+        return wall_A
+    ordinals: tuple[int, ...] = ()
+    if len(wall_A):
+        rel = wall_A - apex[None, :]
+        t = rel @ axis
+        r = np.linalg.norm(rel, axis=1)
+        cos_half = math.cos(math.radians(float(sel.half_angle_deg or 0.0)))
+        inside = (
+            (t > 0.0)
+            & (t <= float(sel.length or 0.0) * 1e10)
+            & (t >= cos_half * r - 1e-12)
+        )
+        ordinals = tuple(int(i) for i in np.nonzero(inside)[0])
+    return ResolvedDatum(
+        selector=text,
+        kind="mcone",
+        resolved=_selector_text(sel),
+        point=apex * 1e-10,
+        normal=axis,
+        atoms=ordinals,
+    )
+
+
 def _resolve_atomic(
     tree: SeTree, sel: Selector, pin: str | None, text: str
 ) -> ResolvedDatum:
@@ -1254,9 +1491,16 @@ def _selector_text(sel: Selector) -> str:
     if sel.kind == "atoms":
         return f"atoms:{sel.instance}[{_index_text(sel.indices)}]"
     if sel.kind == "mpatch":
-        return f"mpatch:{sel.instance}:{sel.patch_id}"
+        return f"mpatch:{_mol_ref(sel)}:{sel.patch_id}"
     if sel.kind == "mol":
-        return f"mol:{sel.instance}@{float(sel.clearance or 0.0) * 1e10!r}"
+        return f"mol:{_mol_ref(sel)}@{float(sel.clearance or 0.0) * 1e10!r}"
+    if sel.kind == "mcone":
+        dx, dy, dz = (repr(float(c)) for c in (sel.axis or (0.0, 0.0, 0.0)))
+        return (
+            f"mcone:{_mol_ref(sel)}:{sel.anchor}@{dx},{dy},{dz}/"
+            f"{float(sel.half_angle_deg or 0.0)!r}+"
+            f"{float(sel.length or 0.0) * 1e10!r}"
+        )
     if sel.pred == "largest":
         return "face:largest"
     if sel.pred == "normal":
@@ -1320,7 +1564,7 @@ def rank_datums(
     return out
 
 
-_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms", "mpatch"})
+_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms", "mpatch", "mol", "mcone"})
 
 
 def region_datum_notes(

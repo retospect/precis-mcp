@@ -1257,11 +1257,18 @@ def _record_run(
                 "energy envelope without geometry write-back",
             )
 
+    # ``converged`` is a claim, not a default: a missing flag means the
+    # optimizer never reported convergence (gr503339 — an absent key used
+    # to read as converged). The run-cube row still fills either way: the
+    # cube caches the *verdict*, so a repeat of the same request is a
+    # zero-compute hit that carries ``converged=False`` honestly rather
+    # than recomputing into the same step cap.
+    converged = bool(scalars.get("converged", False))
     run_id = ctx.store.structure_record_run(
         structure_ref_id,
         fidelity=fidelity,
         on_version=on_version,
-        converged=bool(scalars.get("converged", True)),
+        converged=converged,
         n_steps=n_steps,
         max_disp=float(scalars.get("max_disp", 0.0) or 0.0),
         energy=float(scalars["E_tot"]),
@@ -1275,12 +1282,20 @@ def _record_run(
     ctx.set_meta(
         struct_run_id=run_id, cache_key=cache_key, energy=float(scalars["E_tot"])
     )
-    ctx.append_chunk(
-        "job_summary",
-        f"relax[{fidelity}] converged: E_tot={scalars['E_tot']:.4f} eV in "
-        f"{n_steps} steps → run-cube #{run_id} (cache_key {cache_key[:12]}…). "
-        f"The next identical relax is a zero-compute cache hit.",
-    )
+    if converged:
+        ctx.append_chunk(
+            "job_summary",
+            f"relax[{fidelity}] converged: E_tot={scalars['E_tot']:.4f} eV in "
+            f"{n_steps} steps → run-cube #{run_id} (cache_key {cache_key[:12]}…). "
+            f"The next identical relax is a zero-compute cache hit.",
+        )
+    else:
+        ctx.append_chunk(
+            "job_summary",
+            f"relax[{fidelity}] did NOT converge: E_tot={scalars['E_tot']:.4f} "
+            f"eV after {n_steps} steps → run-cube #{run_id} — a repeat of the "
+            "same request is a cache hit carrying that verdict.",
+        )
     ctx.set_status("succeeded")
 
 

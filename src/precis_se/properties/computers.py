@@ -46,6 +46,9 @@ from precis_se.measures import MeasureError, MeasureSpec
 #: painted cluster.
 _REGION_CUT_A = 3.0
 
+#: Datum kinds whose resolve yields wall atoms the painter can score.
+_ATOM_REGION_KINDS = ("atoms", "sites", "mpatch", "mol", "mcone")
+
 
 class _Computer:
     """Adapt a ``(tree, measure) -> (value, reason)`` worker to the
@@ -94,19 +97,20 @@ def _painted_wall(
 
     For ``atoms:``/``sites:`` the painter's cluster is the owner block's
     atoms within ``clearance + 3 Å`` of the *selected* atoms; the region's
-    atoms are the selected ones. For ``mpatch:`` the resolve already cut
-    the wall atoms facing the molecule patch — cluster and region are the
-    same set.
+    atoms are the selected ones (an ``mcone:`` region likewise: its wall
+    atoms inside the cone, the cluster around them). For ``mpatch:`` and
+    ``mol:`` the resolve already cut the wall atoms facing the molecule —
+    cluster and region are the same set.
     """
     datum = measure.datum or ""
     try:
         sel = se_datums.parse_selector(datum)
     except MeasureError:
         return None, f"datum {datum!r} does not parse"
-    if sel.kind not in ("atoms", "sites", "mpatch"):
+    if sel.kind not in _ATOM_REGION_KINDS:
         return None, (
-            f"datum {datum!r} is not an atom region (atoms:/sites:/mpatch:) "
-            "— nothing to paint"
+            f"datum {datum!r} is not an atom region (atoms:/sites:/mpatch:/"
+            "mol:/mcone:) — nothing to paint"
         )
     block = tree.blocks.get(measure.block)
     if block is None:
@@ -126,7 +130,7 @@ def _painted_wall(
         return None, f"the bound structure of {owner_name!r} cannot be loaded here"
     labels, elements, coords_A, formal, _meta = got
     cut_A = pocket_clearance_A(tree, measure.block, datum) + _REGION_CUT_A
-    if sel.kind == "mpatch":
+    if sel.kind in ("mpatch", "mol"):
         cluster = list(region_ordinals)
     else:
         anchor = coords_A[list(region_ordinals)]
@@ -164,6 +168,46 @@ def _painted_wall(
     return painted, region_idx
 
 
+def _empty_cone(tree: Any, measure: MeasureSpec) -> bool:
+    """Does the measure's ``mcone:`` region resolve cleanly to no wall
+    atoms? Then a count over it is a real 0, not an uncomputable value."""
+    try:
+        sel = se_datums.parse_selector(measure.datum or "")
+    except MeasureError:
+        return False
+    block = tree.blocks.get(measure.block)
+    if sel.kind != "mcone" or block is None:
+        return False
+    rdat = se_datums.resolve(tree, block, sel)
+    return rdat.error is None and not rdat.atoms
+
+
+def cone_atom_count(
+    tree: Any, measure: MeasureSpec
+) -> tuple[float | None, str | None] | None:
+    """The realised value of a ``count`` measure on an ``mcone:`` region —
+    the number of wall atoms inside the cone (slice 3's keep-open ``max
+    0`` and hold ``min 1`` requirements) — as ``(value, reason)``.
+    ``None`` when the measure is not a count on a cone, so callers fall
+    through to their usual path. DRC (``pocket_keep_open``,
+    ``measure_unmet``) and ``view='pockets'`` read it."""
+    if measure.unit != "count" or measure.measurand not in (None, "count"):
+        return None
+    try:
+        sel = se_datums.parse_selector(measure.datum or "")
+    except MeasureError:
+        return None
+    if sel.kind != "mcone":
+        return None
+    block = tree.blocks.get(measure.block)
+    if block is None:
+        return None, f"measure names missing block {measure.block!r}"
+    rdat = se_datums.resolve(tree, block, sel)
+    if rdat.error is not None:
+        return None, rdat.error
+    return float(len(rdat.atoms)), None
+
+
 def _net_partial_charge(tree: Any, measure: Any) -> tuple[float | None, str | None]:
     """Σ GFN2 Mulliken charges (e) over the region's atoms."""
     painted, region_idx = _painted_wall(tree, measure)
@@ -173,6 +217,8 @@ def _net_partial_charge(tree: Any, measure: Any) -> tuple[float | None, str | No
 
 
 def _hbond_count(tree: Any, measure: Any, want: str) -> tuple[float | None, str | None]:
+    if _empty_cone(tree, measure):
+        return 0.0, None
     painted, region_idx = _painted_wall(tree, measure)
     if painted is None:
         return None, str(region_idx)

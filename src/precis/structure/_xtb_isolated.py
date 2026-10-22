@@ -14,13 +14,19 @@ from ase.calculators.calculator import Calculator, all_changes
 from .relax import RelaxUnsupported, _native_tblite
 
 
-def serve(conn, charge: int, multiplicity: int | None) -> None:
+def serve(
+    conn, charge: int, multiplicity: int | None, spin_polarization: bool = False
+) -> None:
     """Child-process loop behind :class:`IsolatedTBLite`: build the native
     calculator once, then answer ``(atoms, properties)`` requests with the
     calculator's results dict until the pipe closes. Torch is never imported
     here — that is the point of the process."""
     try:
-        calc = _native_tblite(charge=charge, multiplicity=multiplicity)
+        calc = _native_tblite(
+            charge=charge,
+            multiplicity=multiplicity,
+            spin_polarization=spin_polarization,
+        )
     except RelaxUnsupported as exc:
         conn.send(("unsupported", str(exc)))
         return
@@ -62,12 +68,21 @@ class IsolatedTBLite(Calculator):
         "stress",
     ]
 
-    def __init__(self, *, charge: int, multiplicity: int | None, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        charge: int,
+        multiplicity: int | None,
+        spin_polarization: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         ctx = multiprocessing.get_context("spawn")
         self._conn, child_conn = ctx.Pipe()
         self._proc = ctx.Process(
-            target=serve, args=(child_conn, charge, multiplicity), daemon=True
+            target=serve,
+            args=(child_conn, charge, multiplicity, spin_polarization),
+            daemon=True,
         )
         self._proc.start()
         child_conn.close()

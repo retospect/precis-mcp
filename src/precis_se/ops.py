@@ -411,11 +411,12 @@ StructureSceneResolver = Callable[[str], "BoundScene | None"]
 
 #: Characters a block name may not contain: the region selectors
 #: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
-#: ``[``/``]`` (``atoms:``) as delimiters, and a block name carrying one
-#: would parse as a different selector. ``.`` is NOT here — selectors split
-#: a block from its face/measure on the LAST dot, so dotted names (the
-#: layout_chain segments ``helix.s0``) stay legal.
-BLOCK_NAME_RESERVED = "/@[]"
+#: ``[``/``]`` (``atoms:``) and ``!`` (``<block>!<label>``, a molecule
+#: block minus one atom — pocket-from-molecule slice 3) as delimiters, and
+#: a block name carrying one would parse as a different selector. ``.`` is
+#: NOT here — selectors split a block from its face/measure on the LAST
+#: dot, so dotted names (the layout_chain segments ``helix.s0``) stay legal.
+BLOCK_NAME_RESERVED = "/@[]!"
 
 
 def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
@@ -428,7 +429,8 @@ def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
         raise OpError(
             f"{opname} 'name' must not contain {' '.join(repr(c) for c in bad)}: "
             f"{name!r} — region selectors (patch:b.top@u,v+wxh, "
-            "sites:b/seam/s0..s3, atoms:b[0,3]) use / @ [ ] as delimiters, "
+            "sites:b/seam/s0..s3, atoms:b[0,3], mpatch:b!H3:0) use / @ [ ] ! "
+            "as delimiters, "
             "so a block named with one would be read as a different selector "
             "(dots are fine)"
         )

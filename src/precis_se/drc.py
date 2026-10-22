@@ -309,6 +309,68 @@ def _mode_binding_findings(
     ]
 
 
+def _cone_count_findings(tree: SeTree) -> list[ValidationIssue]:
+    """``pocket_keep_open`` / ``measure_unmet`` / ``measure_uncomputable``
+    for every ``count`` measure on an ``mcone:`` region (drc §5a''')."""
+    from precis_se.properties.computers import cone_atom_count
+
+    out: list[ValidationIssue] = []
+    for m in tree.measures:
+        if not m.datum or m.block not in tree.blocks:
+            continue
+        got = cone_atom_count(tree, m)
+        if got is None:
+            continue
+        realised, reason = got
+        subject = f"{m.block}.{m.name}"
+        if realised is None:
+            out.append(
+                ValidationIssue(
+                    rule="measure_uncomputable",
+                    subject=subject,
+                    detail=f"cone count on {m.datum}: {reason or 'no value'}",
+                    severity="warn",
+                )
+            )
+            continue
+        band = declared_band(m)
+        if band is None or band[0] <= realised <= band[1]:
+            continue
+        pockets = sorted(
+            name
+            for name, p in tree.blocks[m.block].pockets.items()
+            if any(se_datums.same_region(r, m.datum) for r in p.regions)
+        )
+        where = f" (pocket {', '.join(pockets)})" if pockets else ""
+        if band[1] == 0:
+            out.append(
+                ValidationIssue(
+                    rule="pocket_keep_open",
+                    subject=subject,
+                    detail=(
+                        f"keep-open region {m.datum}{where}: {realised:g} wall "
+                        "atom(s) inside the cone, required none — the "
+                        "vacancy must stay open toward the H source"
+                    ),
+                    severity="error",
+                )
+            )
+            continue
+        out.append(
+            ValidationIssue(
+                rule="measure_unmet",
+                subject=subject,
+                detail=(
+                    f"cone count on {m.datum}{where}: realised {realised:g} "
+                    f"wall atom(s) outside required band [{band[0]:g}, "
+                    f"{band[1]:g}]"
+                ),
+                severity="warn",
+            )
+        )
+    return out
+
+
 def drc(
     tree: SeTree, *, load_cases: list[se_stability.LoadCase] | None = None
 ) -> DrcReport:
@@ -733,6 +795,14 @@ def drc(
                     severity="warn",
                 )
             )
+
+    # 5a'''. cone counts (pocket-from-molecule slice 3): a ``count``
+    # measure on an ``mcone:`` region is checked against the wall atoms
+    # inside the cone. A keep-open cone (band max 0) with a wall atom in
+    # it is an ERROR naming the region and its pocket — the vacancy the
+    # held fragment needs open is blocked; any other miss (a hold cone
+    # with no wall atom) is ``measure_unmet``.
+    findings.extend(_cone_count_findings(tree))
 
     # 5a'. region datums (se_datums.resolve, store-free): a datum that
     # resolves to an error is a reference that points at nothing

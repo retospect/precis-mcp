@@ -38,6 +38,7 @@ Catalysis-Hub's own DFT convention; energies are never converted to SI here.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -235,8 +236,6 @@ def _flatten(node: dict[str, Any]) -> list[dict[str, Any]]:
     GraphQL as a JSON-encoded *string* (a String-typed scalar) — decoded
     here via stdlib ``json``, no ASE needed (see the module docstring).
     """
-    import json
-
     reaction_fields = {
         "Equation": node.get("Equation"),
         "chemicalComposition": node.get("chemicalComposition"),
@@ -299,6 +298,24 @@ _REACTIONS_QUERY = """
 """.strip()
 
 
+def _reactions_query(
+    *, first: int, surface_composition: str | None, facet: str | None
+) -> str:
+    """Build the ``reactions`` query with the filter values embedded as
+    GraphQL string literals. ``json.dumps`` produces exactly the escaping
+    GraphQL's string grammar uses (``\\"``, ``\\\\``, ``\\uXXXX`` for
+    control characters), so a caller-supplied value stays inside its
+    quotes — the raw f-string interpolation let a value containing ``"``
+    break out and inject a second filter clause.
+    """
+    clauses = []
+    if surface_composition is not None:
+        clauses.append(f"surfaceComposition: {json.dumps(surface_composition)}")
+    if facet is not None:
+        clauses.append(f"facet: {json.dumps(facet)}")
+    return _REACTIONS_QUERY.format(first=int(first), filter_expr=", ".join(clauses))
+
+
 def fetch_config(
     *,
     surface_composition: str | None = None,
@@ -343,13 +360,9 @@ def fetch_config(
     api_key = (_secrets.get_secret(CATHUB_KEY_SECRET) or "").strip()
     headers = {"X-API-Key": api_key} if api_key else {}
 
-    clauses = []
-    if surface_composition is not None:
-        clauses.append(f'surfaceComposition: "{surface_composition}"')
-    if facet is not None:
-        clauses.append(f'facet: "{facet}"')
-    filter_expr = ", ".join(clauses)
-    query = _REACTIONS_QUERY.format(first=int(first), filter_expr=filter_expr)
+    query = _reactions_query(
+        first=first, surface_composition=surface_composition, facet=facet
+    )
 
     with http_client(timeout=30.0, user_agent=polite_user_agent()) as client:
         # Read-only GraphQL query (idempotent): politeness core on the

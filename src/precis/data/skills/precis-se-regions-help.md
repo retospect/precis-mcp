@@ -69,9 +69,14 @@ search(kind='taxon', under='measurand', q='charge')
 | `ring:<block>.<face>` | the boundary loop of a face (a rim, an edge loop) | loop centre + face normal as axis |
 | `sites:<block>/<seam>/s<i>..s<j>` | seam sites i to j of a hexfold block | the sites' atom ordinals on the bound structure (when the scene resolver is wired) |
 | `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | the atoms' ordinals + centroid |
-| `mpatch:<block>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
+| `mpatch:<mol>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
+| `mol:<mol>@<clearance Å>` | the molecule's whole surface — the wall region around it | the wall atoms within clearance + 3 Å of any surface point |
+| `mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å>` | a cone with its apex on one molecule atom, axis in the molecule structure's own frame (it turns with the block's `rot`) | the wall atoms whose centres sit inside the cone |
 
-A pocket's `shape` also accepts `mol:<block>@<clearance Å>` — the
+`<mol>` is a block (`nh3`) or a block minus one atom of its structure
+(`nh3!aH3`, the held fragment of pocket_from_molecule's `remove=`).
+
+A pocket's `shape` also accepts `mol:<mol>@<clearance Å>` — the
 molecule's surface offset outward by the clearance (provisional 0;
 clearance < 0 is refused, 0 allowed).
 
@@ -87,7 +92,7 @@ clearance < 0 is refused, 0 allowed).
 - The face check uses its bounding rectangle. A face that is not a
   rectangle (area off by more than 1 %, or a disc or other curved face)
   gets "bounds approximate" in the note.
-- Block names may not contain `/`, `@`, `[` or `]` (selector delimiters;
+- Block names may not contain `/`, `@`, `[`, `]` or `!` (selector delimiters;
   `add_block`, `instance_block` and `array_block` refuse them). Dots are
   fine.
 - The shape is checked when you write, existence when you read. A
@@ -151,7 +156,14 @@ are pinned the same way, because a regeneration may renumber them.
 
 ## Region findings in view='drc'
 
-All warn, one per measure (subject `<block>.<measure>`):
+All warn except `pocket_keep_open`, one per measure (subject
+`<block>.<measure>`):
+
+- `pocket_keep_open` (**error**) — a `count` measure with `max: 0` on an
+  `mcone:` region (a held-shape pocket's keep-open cone) has a wall atom
+  inside the cone. The detail names the region and its pocket. Any other
+  `count` band on an `mcone:` region that is missed (a hold cone with no
+  wall atom) is `measure_unmet`.
 
 - `datum_unresolved` — the datum names a missing block, face or envelope,
   or a patch centre off its face. The detail has the selector and the
@@ -189,6 +201,33 @@ acceptor patch, and hydrophobicity index `hydrophobic` opposite each
 nonpolar patch. The pocket's `class_hash` (sha256 over the canonical
 region list, derived and never authored) identifies the spec class —
 same pose, same hash.
+
+**Held shape** — add `'remove': '<atom label>'` (e.g. `'aH3'` of an NH3
+block) and the pocket is for the fragment `<molecule>!<label>` frozen at
+the parent geometry (an entatic, transition-state-like shape). Optional
+`charge` (must equal the fragment's formal-charge sum), `multiplicity`
+(default: the lowest the electrons allow — 2 for NH2) and
+`spin_polarization` (default `false`; spin-polarised GFN2 when `true`).
+The op computes, at GFN2, the strain E(frozen) − E(relaxed free) and
+says it in its echo with the vacancy direction (from the removed atom's
+neighbour toward it, world frame). The pocket is named for the fragment
+(`wall-nh3!aH3@z…`), its shape is `mol:nh3!aH3@<clearance>`, and on top
+of the fragment's patch regions it carries:
+
+- a keep-open `mcone:` on the neighbour along the vacancy (30°, 3 Å +
+  clearance) with `count` max 0 — a wall atom inside is DRC's
+  `pocket_keep_open` error;
+- a hold `mcone:` on each atom that moves ≥ 0.01 Å when the fragment
+  relaxes free, along that motion (45°, 3.5 Å + clearance), `count` min 1
+  — a wall atom must block it;
+- an H-bond partner `mcone:` on each donor H along X→H (30°, 2.5 Å +
+  clearance), `H-bond acceptor count` min 1;
+- `binding energy` on `mol:<fragment>@<clearance>` with max −strain (eV):
+  a placeholder until the H-addition requirement's form is settled; its
+  reason says so. Nothing computes it yet (measurand_unchecked).
+
+Cone sizes are provisional. GFN2 is a screen: on NH2 frozen at GFN2's
+own NH3 geometry the strain is 0.006 eV.
 
 ## Read regions back
 
