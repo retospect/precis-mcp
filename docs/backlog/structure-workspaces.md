@@ -734,109 +734,127 @@ colour the eye's data: halo on the focus, hop 1 solid, hops 2–3 fading,
 the π system tinted, relax level as per-atom colour with frozen atoms
 hatched — pointer only, the eye text is the contract.
 
-### Observation rays — what happens along a line
+### Observation rays — `cast_ray` at atomic scale
 
 Reto, 2026-10-22: an observation ray is a point with a direction; it is
 bookmarked and explains what happens along its length — "3 Å:
 perpendicular to atom C32423 (angle, distance), local charge; 5 Å:
 charge is now −a; 10 Å: entered the π orbital of a benzene ring; 11 Å:
-left that ring." Every event carries handles, so the agent navigates
-from it; a stored set of rays is re-observed after an edit or relax and
-diffed; scripts generate rays (down a tunnel axis, along a pore).
+left that ring." Rays are scale-independent.
 
-**The object.** `{name, origin, direction, length, step, reach, frame}`
-— `origin` and `direction` in the frame named by `frame`: a block
-(`frame: 'p'`, block-local, the default — the ray moves with
-`set_pose` and rides a `tile`/`instance`), a port (`frame: 'port:rim+'`
-— origin at the port, direction its axis, so a ray follows the port's
-measured `rot`), or `world`. Lengths in metres as every se number; `step`
-(sampling, default 0.5 Å) and `reach` (how far off the line an atom is
-still "passed", default 4 Å) in Å because they are atomic. Storage: an
-se **block child** beside measures and pockets (`precis_se/pockets.py`
-shape; `add_ray`/`set_ray`/`remove_ray` ops, template blocks only,
-exported in `view='ops'`, replayed, `persist.save_tree` row), handle
-`<slug>~ray:<name>`. A bare `structure` design stores the same object as
-a persisted eye of kind `ray` (`structure/scene.py::Measure`, re-evaluated
-on read), handle `st7~ray:<name>`. No new ref kind: a ray is a bookmark
-on the thing it observes and dies with it.
+**Already specced; this is the atomic leg.** Observation rays *are*
+[multiscale-design-system-spec](multiscale-design-system-spec.md) §5.4
+`cast_ray(design, origin, direction, fields[]) -> Hit[]` (one textual
+ray, missing fields silently omitted, molecular-scale boundaries as
+Bader basin transitions) and §5.5 bookmarks (a stored query, not an
+answer, re-evaluated against any branch; rays stay valid as pure
+coordinates). The π isosurface a ray intersects is §4's "delocalised π
+systems are first-class" paragraph; the cavity measurements in
+[nm-face-codes-and-scale](nm-face-codes-and-scale.md) §Ray probes are
+the macro use. One verb at every scale: an se design dispatches a ray
+by block binding — cad blocks through `precis/cad/probe.py::probe_ray`,
+structure-bound blocks through the atomic evaluator below — and
+concatenates the hits along one world-frame ray. Nothing here
+re-derives §5.4; it names the atomic fields and the storage.
 
-**Events.** Observation is pure over (scene, `structure_pi`, the trace
-`maker` column, pockets, stored charges), walked at `step` from `s=0`,
-coalesced so one event per (type, subject):
+**`probe.py` today vs missing.** Exists: `probe_ray(design, o, d,
+component=)` — full-DOF, material/void spans attributed to the node
+that removed them (`Design.ray` → `fold.ray_spans`), returned as
+`RaySegment{t_in, t_out, length, state, feature}`; the cad `view='ray'`
+(`args={'o','d'}`, `handlers/cad.py`) renders it; `precis_se/fasten.py`
+and `geometry_plausibility.py` already fire it per member. Missing:
+`fields[]` and the §5.4 `Hit` shape (`block_id, material, entry/exit,
+strain_profile, basin_transitions, density_profile` — segments are not
+yet hits), a `length` cap (rays are infinite), a frame of reference
+(design world coordinates only), the atomic evaluator, se-level
+dispatch across blocks, bookmark storage, snapshot + diff. On the
+structure side `structure/probe.py::line` (atoms within `radius` of a
+line, ordered along it) is the `pass` kernel; `bonds_in_sphere` and
+`view='pov'` cover the rest of the geometry. The slice extends these;
+it forks none.
 
-| type | fires when | carries |
+**The ray object** (the §5.5 bookmark, made concrete). `{name, origin,
+direction, length, fields, step, reach, frame}`. `frame` is the delta
+Reto asked for: a block (`'p'`, block-local, default — the ray rides
+`set_pose`, `tile`, `instance`), a port (`'port:rim+'`: origin at the
+port, direction its measured axis) or `'world'`; the coordinates are
+still pure, so §5.5's validity rule holds (a deleted block reports
+`unavailable`). `step` (sampling, default 0.5 Å) and `reach` (how far
+off the line an atom still counts as passed, default 4 Å) are atomic
+and in Å; `origin`/`length` in metres. Storage: an se **block child**
+beside measures and pockets (`add_ray`/`set_ray`/`remove_ray`, template
+blocks only, in `view='ops'`, replayed; `precis_se/pockets.py` shape),
+handle `<slug>~ray:<name>`; on a bare `structure` design the same
+object as a persisted eye of kind `ray` (`structure/scene.py::Measure`,
+re-evaluated on read), `st7~ray:<name>`. No new ref kind.
+
+**Atomic fields** — the `fields[]` a structure-bound block answers, each
+hit carrying handles for navigation. Macro hits keep §5.4's shape.
+
+| field | hit | carries |
 |---|---|---|
-| `pass` | an atom's perpendicular foot lies on the ray within `reach` | `s`, atom handle, perpendicular distance Å, angle between the ray and the atom's local normal (POAV normal for sp2 via `geometry_stats.poav_theta`, the single bond for sp, `—` otherwise), the atom's partial charge when stored (method, level) |
-| `vdw.enter` / `vdw.leave` | the point enters/leaves an atom's Bondi sphere (the `view='clearance'` radii) | atom handle; a run of overlapping spheres is one `inside <block>` span |
-| `pi.enter` / `pi.leave` | the point enters/leaves a π region — an aromatic ring's cylinder (ring plane ± 1.7 Å, radius = circumradius + 0.5 Å) or the vdW union of a conjugated system's atoms | ring id + size, or system id + size, the `pi:` selector; `aromatic` flag |
-| `esp` | the sampled ESP changes sign, passes an extremum, or moves ≥ 0.05 V since the last `esp` event | `s`, value V, nearest charged atom + its charge; the method and relax level the charges came from |
-| `pocket.enter` / `pocket.leave` | the point crosses a pocket's shape (the CSG distance field `precis/cad/relate.py` evaluates) | pocket name, the regions it holds |
-| `frame` | the nearest atom's creator frame changes | `frame:<key>` + the nearest user frame (`main.py:30 bundle`) — which code placed what you are passing |
-| `block.enter` / `block.leave` | the point crosses a block envelope | block handle |
-| `end` | no atom within `reach` for the rest of the length | `s` |
+| `pass` | an atom's perpendicular foot on the ray within `reach` (`probe.line`) | `s`, atom handle, perpendicular distance Å, angle between the ray and the atom's local normal (POAV normal for sp2, `geometry_stats.poav_theta`; the bond axis for sp; `—` else) |
+| `charge` | at each `pass`, and an `esp` hit where the sampled ESP changes sign, passes an extremum or moves ≥ 0.05 V | the atom's stored partial charge; ESP V as a Coulomb point-charge sum (the `view='surface'` rule) — the §5.4 `basin_transitions` form arrives with the density field (`density_at`, §4 fidelity rungs); until then the header names the charge method, level and run (§Relaxation awareness) |
+| `pi` | enter/leave a π region: an aromatic ring's cylinder (plane ± 1.7 Å, radius circumradius + 0.5 Å) or the vdW union of a conjugated system — the §4 isosurface at template fidelity | ring id + size or system id + size, aromatic flag, the `pi:` selector (§Shared π electrons) |
+| `frame` | the nearest atom's creator frame changes | `frame:<key>` and its nearest user frame (`main.py:30 bundle`): which code placed what you are passing |
+| `relax` | the nearest atom's relax level or method changes | level, method, frozen/free, unit id (§Relaxation awareness) — a mixed-method stretch reads on the ray as in the eye |
+| `region` | a pocket's shape (the CSG distance field, `cad/relate.py`) or a block envelope is crossed | pocket or block handle |
 
-ESP = Coulomb point-charge sum over stored partial charges (the
-`view='surface'` rule; no screening, no DFT cube in v1), sampled at
-each step; absent charges, the ray still renders every other event and
-one line `esp: no charges stored — relax at xtb or higher`.
+Hits coalesce to one per (field, subject); `end` marks the last `s`
+with any atom within `reach`.
 
-**Render** (`get(kind='se', id='<slug>', view='ray', args={'name':
-'axis'})`, or the `~ray:<name>` eye at `verbatim`):
+**Render** (`get(kind='se', id=…, view='ray', args={'name': 'axis'})`,
+or the `~ray:<name>` eye at `verbatim`):
 
 ```
-ray axis · block p · origin [0 0 −2] nm · dir +z · 12 nm · step 0.5 Å · 14 events · charges xtb (run 17)
+ray axis · block p · [0 0 −2] nm +z · 12 nm · fields pass,charge,pi,frame · charges xtb run 17 · 14 hits
    3.0 Å  pass p#aC32  d 1.4  ∠ 88°  q −0.12 e
    5.0 Å  esp −0.31 V (min)  near p#aN4 −0.41 e
   10.0 Å  pi.enter ring r7 (6, aromatic) · pi:3
   11.0 Å  pi.leave ring r7
   11.5 Å  frame junction#7 (frame:ab12cd34 · main.py:30 bundle)
-  …
 ```
 
-Budget ≤ 12 tokens per event, ≤ 40 events per read (overflow `… +N
-more — args={'from': <s>}`), so a full read ≤ 600 tokens; `kwd` is the
-header line; `summary` adds one count per event type. `view='rays'`
-lists every ray on the design, one line each: name, block, length,
-event count, and `Δ` since its last observation.
+≤ 12 tokens per hit, ≤ 40 hits per read (`… +N more — args={'from':
+<s>}`), ≤ 600 tokens per ray; `kwd` is the header, `summary` adds one
+count per field; a field with no data is absent from the header's
+`fields` list, never a per-hit gap (§5.4). `view='rays'`: one line per
+ray — name, block, length, hit count, `Δ` since the last observation.
 
-**Re-observe and diff.** `observe_ray` (op; `name`, or all) stores a
-snapshot `{version, pi_key, charges_run, events}` on the ray (last 5
-kept); a read is always live. `view='ray', args={'name', 'against':
-'last' | <snapshot index> | 'v<n>'}` diffs by (type, subject): events
-added, removed, moved (`Δs`, `Δd`), charges and ESP changed (`Δq`,
-`ΔV`); unchanged events fold to one count line. The relax service
-re-observes every ray on the blocks it touched and writes the snapshot
-beside the relax `service` frame, so "what did the relax change along
-the pore" is one diff.
+**Re-observe and diff.** `observe_ray` (`name` or all) stores a
+snapshot `{version, pi_key, charges_run, hits}` on the ray (last 5);
+reads stay live. `args={'against': 'last' | <index> | 'v<n>'}` diffs by
+(field, subject): hits added, removed, moved (`Δs`, `Δd`), `Δq`, `ΔV`;
+unchanged hits fold to one count. The relax service re-observes every
+ray on the blocks it touched and stores the snapshot beside its
+`service` frame, so "what did the relax change along the pore" is one
+diff. A ray set on a fork (`target:'fork'`) is the §5.5 branch
+re-evaluation.
 
-**Code generation.** `pga.ray(name, origin, direction, length, step=,
-reach=, frame=)` and `pga.ray.along(port, length)` / `pga.ray.axis(block)`
-mint rays; the manifest gains `rays: [{block, name, origin, direction,
-length, step?, reach?, frame?}]` (`out.ray(...)`), the importer writes
-them as block children with the `pga.ray` frame as maker, so a ray's
-`made-by:` reads like a block's. A workspace that scans a tunnel emits
-`out.ray(f"axis{k}", ...)` per period; rays absent from the next
-manifest retire with the replace rule.
+**Code-generated rays.** `pga.ray(name, origin, direction, length,
+fields=, step=, reach=, frame=)`, `pga.ray.along(port, length)`,
+`pga.ray.axis(block)`; the manifest gains `rays: [...]` (`out.ray`),
+imported as block children with the `pga.ray` frame as maker
+(`made-by:` as on a block); rays absent from the next manifest retire
+by the replace rule. A tunnel scan is `out.ray(f"axis{k}", …)` per
+period.
 
-**Fisheye link.** An atom's `fisheye` rung adds `Rays:` — every ray
-with an event naming the atom or passing within `reach` of it: `axis ·
-s=3.0 Å · d 1.4 · ~ray:axis`. The ray's own eye: `kwd`/`summary`/
-`verbatim` as above; `fisheye` adds the blocks, pockets and π systems
-it crosses as handles; `+1hop` the findings and measures on those.
-`/eye/<slug>~ray:<name>` renders it with every handle a link.
+**Fisheye link.** An atom's `fisheye` rung adds `Rays:` — rays with a
+hit naming the atom or passing within `reach`: `axis · s=3.0 Å · d 1.4
+· ~ray:axis`. The ray's own eye: `fisheye` adds the blocks, pockets and
+π systems it crosses as handles; `+1hop` their findings and measures.
+`/eye/<slug>~ray:<name>` links every handle; the 3D viewers draw a ray
+as a line with one tick per hit, hovering a tick halos the subject
+(`?ray=<name>`) — pointer only.
 
-**Viewer** (pointer only): the 3D viewers draw a ray as a line from
-origin with a tick per event, ticks coloured by type; hovering a tick
-halos the subject atom; `?ray=<name>` focuses one.
-
-**Must exist first.** Partial charges stored per run — today
-`view='surface'` computes GFN2 Mulliken charges on every read (tblite,
-≤ 200 atoms, one isolated molecule) and nothing stores them; the
-relax service (slice 4) writes a `charges` payload on `struct_runs`
-beside `forces` (`structure/cache.py::serialize_forces` pattern) for
-`xtb` and `dft-*` runs, with method and level, and the ray quotes
-that run. π regions need 2e's `structure_pi`; `frame` events need 2t's
-`maker` column; pockets and Bondi radii exist today.
+**Must exist first.** Per-run stored partial charges — `view='surface'`
+recomputes GFN2 Mulliken charges on every read (tblite, ≤ 200 atoms,
+one isolated molecule) and nothing stores them; slice 4's relax
+service writes a `charges` payload on `struct_runs` beside `forces`
+(`structure/cache.py::serialize_forces` pattern) for `xtb`/`dft-*`
+runs, with method and level. Until then the `charge` field is omitted.
+`pi` needs 2e's `structure_pi`; `frame` needs 2t's `maker` column;
+`relax` levels need 4a; pockets, Bondi radii and `probe.line` exist.
 
 ## Packaging
 
@@ -928,7 +946,7 @@ fisheye).
 | 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
 | 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector; the **Placed** group in the python eye's ring 1 and the **made-by** line on block eyes (§Structure fisheye) | `handlers/python.py` roots, `_python_render.py`, `_python_eye.py::_ring1_symbol`, `view='trace'`, the se `view='block'` render | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root; `extent='fisheye+1hop'` on that id shows `Placed:` with the same three numbers and the `frame:qual=` selector, and on `main::…` shows none; the block eye's `made-by:` id resolves with `get(kind='python')` | S–M, 1 build; after 2t |
 | 2e | **Structure fisheye: navigating atoms** (§Structure fisheye). `~<focus>` handles (atom, `frame:`, any selector) on `se` and `structure` eyes; rungs kwd→+2hop; the bonded shell (BFS, seam-crossing, graduated 1 / 2–3 / 4–6 / beyond); the `Up:`/`Down:` ladder; `structure_pi` migration + perception at save + `pi:` selector + `pi.perception_differs`; the relax block and `relax mix:` line (level/frozen rows fill in after 4a); `+1hop` block ring; `/eye/` handle forms; viewer `?focus=` pointer | `_eye.py::eye_handle` (`~` focus past the digit-only chunk selector), `eye_render.py`, the se handler `eye` override and `handlers/structure.py`, `datums.py::parse_selector` (`pi:`), `structure/probe.py`, `persist.save_tree`/structure save path, `routes/eye.py::linkify_handles` | On the (4, 6) A2 block: `~p#aC12` at `fisheye` lists 3 hop-1 bonds with order and Å, hop-2/3 groups and counts to hop 6, an `Up:` ladder ending in `junction#k ← … main.py:<line>`, rings `6,6,6` and one π system whose selector resolves to the system's atom count; a seam atom two bonds from a frozen unit atom renders the `relax mix:` line and the WARN; `~frame:<key>` at `fisheye` shows children and the boundary shell, never an atom list; a `from_smiles` benzene block reports one aromatic 6-ring and RDKit cross-check agrees (no finding); a pyrrole block records `pi.perception_differs` or agrees, either way stated; `pi_key` changes when a bond order changes with geometry fixed and `structure_sha` does not; every rung's token count ≤ its budget on the A2 atom, measured as 2t's; `/eye/hcol-array-1~p#aC12` links every neighbour handle; `+recall` refuses with `next=` | M, 1–2 builds; after 2t and 2p; relax rows complete after 4a |
-| 2r | **Observation rays** (§Observation rays). `add_ray`/`set_ray`/`remove_ray`/`observe_ray` ops, the block-child row and the structure `ray` eye; the evaluator (`pass`, vdW, π, `esp`, pocket, `frame`, block, `end` events; coalescing; `step`/`reach`); `view='ray'`/`view='rays'`, the diff against a snapshot; `~ray:<name>` eye rungs and the atom eye's `Rays:` lines; manifest `rays:` + `pga.ray`; relax service re-observe; `/eye/` handle form; viewer `?ray=` pointer | `precis_se/pockets.py` pattern, `persist.save_tree`, `ops_export.py`, `structure/scene.py::Measure` eyes, `cad/relate.py` distance field, `workspace_import.py`, `hexfold_relax_job.py` write-back, `routes/eye.py` | A ray down the (4, 6) A2 axis renders ≤ 600 tokens with `pass` events whose `d`/`∠` match `view='line'` and `pov`; a ray through a `from_smiles` benzene fires `pi.enter`/`pi.leave` once each with the ring's selector; a ray across a `join` seam fires one `frame` event naming `junction#k`; without stored charges the `esp:` absence line shows and every other event still renders; a ray on a block that is then `set_pose`d reports the same events (block frame); `observe_ray` then a relax: `against='last'` lists moved `pass` events with `Δd` and folds the unchanged; `out.ray` in a manifest imports as a block child with `made-by:`; the A2 atom's eye lists the axis ray | M, 1–2 builds; after 2e; `esp` events complete after slice 4 stores charges |
+| 2r | **Observation rays = multiscale §5.4 `cast_ray` + §5.5 bookmarks, atomic leg** (§Observation rays). `probe_ray` segments wrapped into the §5.4 `Hit` shape with `fields[]`, `length` and `frame`; the atomic evaluator (`structure/probe.py::ray_hits` over `line`: `pass`, `charge`, `pi`, `frame`, `relax`, `region`; coalescing; `step`/`reach`); se dispatch by block binding along one world ray; `add_ray`/`set_ray`/`remove_ray`/`observe_ray` ops, the block-child row and the structure `ray` eye; `view='ray'`/`view='rays'`, diff against a snapshot; `~ray:<name>` eye rungs and the atom eye's `Rays:` lines; manifest `rays:` + `pga.ray`; relax-service re-observe; `/eye/` handle form; viewer `?ray=` pointer | `cad/probe.py::probe_ray` + `handlers/cad.py` `view='ray'` (extended, not forked), `structure/probe.py::line`, `precis_se/pockets.py` pattern, `persist.save_tree`, `ops_export.py`, `structure/scene.py::Measure` eyes, `cad/relate.py`, `workspace_import.py`, `hexfold_relax_job.py` write-back, `routes/eye.py` | The cad `view='ray'` output is unchanged for existing callers (`fasten.py` golden); a ray down the (4, 6) A2 axis renders ≤ 600 tokens with `pass` hits whose `d`/`∠` match `view='line'`; a ray through a `from_smiles` benzene fires `pi` enter/leave once each with the ring's selector; a ray across a `join` seam fires one `frame` hit naming `junction#k` and, after 4a, one `relax` hit; without stored charges `charge` is absent from the header and every other hit renders; a mixed cad+structure design concatenates macro segments and atomic hits in `s` order; a ray on a block then `set_pose`d reports the same hits (block frame); `observe_ray` then a relax: `against='last'` lists moved `pass` hits with `Δd` and folds the unchanged; `out.ray` imports as a block child with `made-by:`; the A2 atom's eye lists the axis ray | M, 1–2 builds; after 2e; `charge` complete after slice 4 stores charges; `basin_transitions` with the density field (multiscale §4) |
 | 2a | **Assembly API.** `precis_geom.assembly`: `tile` (packed, fused), `mirror`, `translate`/`rotate`/`transform`, `place` (port-to-port), `assembly`/`instance`; `array_block`, `instance_block`, `set_pose`, `connect` rewired onto it; frames per call; `op` frames on the op path | `precis_se/ops.py`, `blocktree/ops.py`, `cad/vec.py` (improper transforms), `sheetnet.junction` | `array_block` and `tile(fused=False)` on one template give byte-identical trees; `tile(fused=True, n=3)` of a 2-period prism equals the 6-period prism's SHA; `mirror` of a chiral tube flips the chiral index and emits the INFO; a nested `assembly` places through its parent's port and `frame:` on it selects every child atom | M–L, 2 builds; after 2, before 6 |
 | 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks (the `generate` leg runs at the pre-slice-1 sha or through the core wheel directly, since the op is gone by then) | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
 | 4 | **Relax interface, atomic + cache.** Manifest `relax:` incl. `periodic`/`kspacing`/`supercell`, `relaxed_units` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types, vacuum padding and `relax.period_mismatch` | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal`, `structure/cache.py` key | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params and differs by `cell`/`supercell`/`kspacing`; relaxed atoms keep their creator frames and the trace gains one `service` frame whose `touched` equals the displaced set; a 1D-periodic manifest relaxes a `pbc` unit, not the capped block | M, 1 build; GFN2 route is the known dependency |
