@@ -807,7 +807,7 @@ def search(
     # it here only when the kind is draft, else it stays an unknown mode.
     # gr178511: the draft handler implemented regex find but this validator
     # rejected it for every kind before dispatch could reach the handler.
-    _allowed_modes = {"hybrid", "lexical", "semantic", "verbatim"}
+    _allowed_modes = {"hybrid", "lexical", "semantic", "verbatim", "literal"}
     if (kind or "").strip().lower() == "draft":
         _allowed_modes.add("regex")
     # ``pattern`` is python-only (structural predicates over the AST index).
@@ -819,7 +819,7 @@ def search(
             runtime.render_error(
                 BadInput(
                     f"unknown search mode {mode!r}",
-                    next="mode='hybrid' (default) | 'lexical' | 'semantic' | 'verbatim'",
+                    next="mode='hybrid' (default) | 'lexical' | 'semantic' | 'verbatim' | 'literal'",
                 )
             )
         )
@@ -1866,6 +1866,9 @@ def delete(
     # python line-range ids (…~L<a>-<b>): the sha= of the read's ``range:``
     # line; the delete lands on the lines that hash to it or refuses.
     base_sha: str | None = None,
+    # numeric-ref kinds: why it goes — a 'deleted' ref_events row so a
+    # later get()'s Gone names the survivor ('merged into meNNN').
+    reason: str | None = None,
     # gripe/todo: args={'comment': K} hides comment K (add 'restore': True to
     # undo); see precis-delete-help.
     args: dict[str, Any] | None = None,
@@ -1895,6 +1898,7 @@ def delete(
         "id": id,
         "mode": mode,
         "base_sha": base_sha,
+        "reason": reason,
     }
     if args:
         reserved_err = _check_reserved_args(args, reserved=("kind", "id", "mode"))

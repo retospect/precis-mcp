@@ -1190,6 +1190,104 @@ class ChunkStore:
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
+    def search_chunks_literal(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        kinds: list[str] | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        exclude_tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
+        card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
+    ) -> list[tuple[ChunkRow, Ref, float]]:
+        """Exact substring search — chunks whose ``text`` contains ``q``
+        literally (``ILIKE '%' || q || '%'`` with ``%``/``_``/``\\``
+        escaped, gr503537). The ``search(mode='literal')`` leg: the "is
+        this exact string still anywhere" hunt — a filename, a flag
+        spelling, a sha — that neither stemmed FTS nor the
+        ``mode='verbatim'`` keyword-containment leg answers. Shares every
+        filter with the other legs (kind/date/scope/tags/fences/year/
+        chunk-scope/exclude). No relevance gradient: newest chunk first,
+        score constant ``0.0``. A blank ``q`` returns nothing — ``%%``
+        would otherwise match every row.
+        """
+        needle = q.strip()
+        if not needle:
+            return []
+        pattern = (
+            "%"
+            + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            + "%"
+        )
+        clauses = [
+            "r.retired_at IS NULL",
+            "c.retired_at IS NULL",
+            _ord_card_clause(card_kinds),
+            "c.text ILIKE %s ESCAPE '\\'",
+            *_chunk_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [pattern]
+        kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
+        clauses.extend(kd_clauses)
+        params.extend(kd_params)
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
+        if self._fence_speculative(tags, include_speculative):
+            clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            clauses.append(refuted_fence("r"))
+        clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if has_body is not None:
+            from precis.store._body_predicate import has_body_sql
+
+            frag = has_body_sql("r")
+            clauses.append(frag if has_body else f"NOT {frag}")
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
+        params.append(limit)
+        params.append(offset)
+
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, 0.0::float AS rank "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY c.chunk_id DESC LIMIT %s OFFSET %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_unpack_search_row(r) for r in rows]
+
     def search_chunks_semantic(
         self,
         *,
@@ -1630,6 +1728,30 @@ class ChunkStore:
         if ref_counts_out is not None:
             ref_counts_out.clear()
         m = (mode or "hybrid").strip().lower()
+        if m == "literal":
+            # Same early-return shape as verbatim: nothing to fuse.
+            primary = next((qt for qt in q_texts if qt and qt.strip()), "")
+            return self.search_chunks_literal(
+                q=primary,
+                kind=kind,
+                kinds=kinds,
+                created_from=created_from,
+                created_to=created_to,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                exclude_tags=exclude_tags,
+                limit=limit,
+                offset=offset,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
+                has_body=has_body,
+            )
         if m == "verbatim":
             # Verbatim keyword match has no relevance gradient to fuse across
             # reformulations — run it once on the primary query and return.
@@ -1919,6 +2041,25 @@ class ChunkStore:
                 card_kinds=card_kinds,
                 has_body=has_body,
             )
+        if m == "literal":
+            return self.search_chunks_literal(
+                q=q,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                offset=offset,
+                exclude_tags=exclude_tags,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
+                card_kinds=card_kinds,
+                has_body=has_body,
+            )
         if m == "semantic" and query_vec is not None:
             return self.search_chunks_semantic(
                 query_vec=query_vec,
@@ -2168,12 +2309,16 @@ class ChunkStore:
         chunk_kind: str,
         source: str = "agent",
         reason: str | None = None,
+        op: str | None = None,
         conn: Connection | None = None,
     ) -> str | None:
         """Replace the single body chunk of ``chunk_kind`` for a ref.
 
         ``reason`` (the edit verb's ``reason=``) lands first in the event
-        payload, so the ``view='log'`` one-liner shows it.
+        payload, so the ``view='log'`` one-liner shows it. ``op`` names
+        the edit's op kind when it isn't a plain rewrite — today
+        ``'delete-span'`` (``edit(mode='delete')``, gr503460) — so the
+        audit row distinguishes a span deletion from a replace.
         Delete + re-insert, never an in-place UPDATE: a non-draft chunk's
         ``content_sha`` is NULL, so an UPDATE would leave old
         ``chunk_embeddings``/``chunk_summaries`` stale (the embed worker
@@ -2233,6 +2378,7 @@ class ChunkStore:
                     "body_replaced",
                     Jsonb(
                         {
+                            **({"op": op} if op else {}),
                             **({"reason": reason} if reason else {}),
                             "old_text": old_text,
                             "new_text": new_text,

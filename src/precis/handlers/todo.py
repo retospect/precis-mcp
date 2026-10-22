@@ -300,7 +300,7 @@ class TodoHandler(NumericRefHandler):
         # 'find-replace' (the file-kind default), so a caller that omits
         # mode= still arrives here with it; require_mode() reads this
         # declaration (gr292913).
-        edit_modes=("replace", "find-replace", "insert"),
+        edit_modes=("replace", "find-replace", "insert", "delete"),
     )
 
     kind: ClassVar[str] = "todo"
@@ -937,6 +937,26 @@ class TodoHandler(NumericRefHandler):
                 "edit(kind='todo') requires id=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
+        delete_span = mode == "delete"
+        if delete_span:
+            # gr503460: clients mangle an empty ``text=''`` before the
+            # call reaches the server — explicit span-delete mode,
+            # an alias of find-replace with text=''.
+            if text is not None and text != "":
+                raise BadInput(
+                    "mode='delete' takes find= only",
+                    next=(
+                        "edit(kind='todo', id=N, mode='delete', "
+                        "find='exact span to remove') — or mode='find-replace' "
+                        "with text='' where the client passes it through"
+                    ),
+                )
+            if not find:
+                raise BadInput(
+                    "mode='delete' requires find= (the exact span to remove)",
+                    next="edit(kind='todo', id=N, mode='delete', find='exact text')",
+                )
+            mode, text = "find-replace", ""
         if mode == "insert" or (mode == "find-replace" and find is not None):
             if meta is not None or (body is not None and body.strip()):
                 raise BadInput(
@@ -955,6 +975,7 @@ class TodoHandler(NumericRefHandler):
                 match=match,
                 nth=nth,
                 dry_run=dry_run,
+                delete_span=delete_span,
             )
         # A meta-only patch rewrites no text, so mode= has nothing to select
         # and is not required. It cannot simply be validated either: the
@@ -1083,6 +1104,7 @@ class TodoHandler(NumericRefHandler):
         match: str,
         nth: int | None,
         dry_run: bool | str | None,
+        delete_span: bool = False,
     ) -> Response:
         """``mode='find-replace'`` / ``'insert'`` on the ``todo_body`` chunk.
 
@@ -1094,7 +1116,13 @@ class TodoHandler(NumericRefHandler):
         """
         text = mask_secrets(text)
         dry_mode = normalize_dry_run(dry_run)
-        op_kind = "edit" if mode == "find-replace" else "insert"
+        op_kind = (
+            "delete-span"
+            if delete_span
+            else "edit"
+            if mode == "find-replace"
+            else "insert"
+        )
         _require_find_and_text(
             op_kind=op_kind,
             kind=self.kind,
@@ -1121,7 +1149,7 @@ class TodoHandler(NumericRefHandler):
             )
         label = f"{self.kind} {ref.id}"
         op = EditOp(
-            op="edit" if op_kind == "edit" else "insert",
+            op="insert" if op_kind == "insert" else "edit",
             find=find,
             text=text,
             before=before,
@@ -1158,9 +1186,16 @@ class TodoHandler(NumericRefHandler):
                 new_body,
                 chunk_kind=_BODY_KIND,
                 source=guards._caller_source(),
+                op=op_kind if op_kind == "delete-span" else None,
                 conn=conn,
             )
-        verb = "edited" if op_kind == "edit" else "inserted into"
+        verb = (
+            "edited"
+            if op_kind == "edit"
+            else "deleted from"
+            if op_kind == "delete-span"
+            else "inserted into"
+        )
         n_spans = len(result.edited_spans)
         return Response(
             body=(
@@ -1495,6 +1530,7 @@ class TodoHandler(NumericRefHandler):
         *,
         id: str | int | None = None,
         args: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -1526,6 +1562,16 @@ class TodoHandler(NumericRefHandler):
         # subtree goes with its root. Jobs/findings parented here keep
         # their own lifecycles and stay.
         n_desc = self.store.retire_todo_subtree(ref_id)
+        if reason and reason.strip():
+            # The ``deleted`` audit row the Gone tombstone read looks
+            # for (gr503546); retire_todo_subtree runs its own tx, so
+            # this lands right after it.
+            self.store.append_event(
+                ref_id,
+                source="agent",
+                event="deleted",
+                payload={"reason": reason.strip()},
+            )
         suffix = f" (+{n_desc} descendant todos)" if n_desc else ""
         return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}")
 

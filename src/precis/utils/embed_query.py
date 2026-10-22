@@ -135,7 +135,7 @@ def query_vec_for(
     hits the caller will misread as "no matches in the corpus".
     """
     m = mode.strip().lower() if mode is not None else None
-    if m in ("lexical", "verbatim"):
+    if m in ("lexical", "verbatim", "literal"):
         return None
     if m == "semantic" and embedder is not None:
         try:

@@ -210,7 +210,12 @@ def test_find_replace_requires_body_and_find(todo: TodoHandler) -> None:
 
 
 def test_todo_spec_edit_modes() -> None:
-    assert TodoHandler.spec.edit_modes == ("replace", "find-replace", "insert")
+    assert TodoHandler.spec.edit_modes == (
+        "replace",
+        "find-replace",
+        "insert",
+        "delete",
+    )
 
 
 def test_hidden_comments_ignores_non_int_and_bool() -> None:

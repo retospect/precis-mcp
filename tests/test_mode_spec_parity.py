@@ -87,8 +87,8 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("tex", "edit"): ("find-replace", "append", "insert", "replace"),
     ("python", "edit"): ("find-replace", "append", "insert", "replace"),
     # -- edit: numeric-ref kinds that only accept a full-body rewrite ---
-    ("todo", "edit"): ("replace", "find-replace", "insert"),
-    ("memory", "edit"): ("replace", "find-replace", "insert", "append"),
+    ("todo", "edit"): ("replace", "find-replace", "insert", "delete"),
+    ("memory", "edit"): ("replace", "find-replace", "insert", "append", "delete"),
     ("quest", "edit"): ("replace",),
     # checklist's edit() selector is op=, a distinct kwarg from mode=
     # (edit() has no mode= parameter at all) — no entry here, expect
@@ -154,8 +154,14 @@ def test_todo_memory_edit_replace_only_and_gripe_put_create_comment(
     todo = full_hub.handlers["todo"].spec
     memory = full_hub.handlers["memory"].spec
     gripe = full_hub.handlers["gripe"].spec
-    assert todo.edit_modes == ("replace", "find-replace", "insert")
-    assert memory.edit_modes == ("replace", "find-replace", "insert", "append")
+    assert todo.edit_modes == ("replace", "find-replace", "insert", "delete")
+    assert memory.edit_modes == (
+        "replace",
+        "find-replace",
+        "insert",
+        "append",
+        "delete",
+    )
     assert gripe.modes == ("create", "comment")
     # gripe's edit verb is title-only (Reto ruling 2026-10-19) — it takes
     # no mode=, so edit_modes stays the None ("no concept") default, not

@@ -14,7 +14,14 @@ from psycopg.errors import LockNotAvailable
 
 from precis.cli import memory as cli_memory
 from precis.dispatch import Hub
-from precis.errors import BadInput, Gone, Internal, NotFound, Upstream
+from precis.errors import (
+    BadInput,
+    Gone,
+    Internal,
+    NotFound,
+    Unsupported,
+    Upstream,
+)
 from precis.handlers.memory import MemoryHandler
 from precis.response import Response
 from precis.runtime import PrecisRuntime
@@ -159,6 +166,102 @@ def test_delete(handler: MemoryHandler) -> None:
 def test_delete_missing_raises(handler: MemoryHandler) -> None:
     with pytest.raises(NotFound):
         handler.delete(id=99999)
+
+
+# ── gr503547: get(view='full'|'meta'|'body'|'index') aliases ──────────
+
+
+def test_get_view_full_reads_as_default(handler: MemoryHandler) -> None:
+    """``view='full'`` is the plain read under another name — run it and
+    say so with the ``interpreted:`` line rather than refusing."""
+    new_id = id_of(handler.put(text="a complete node").body)
+    plain = handler.get(id=new_id)
+    full = handler.get(id=new_id, view="full")
+    assert (
+        full.body == f"interpreted: view='full' read as the default view\n{plain.body}"
+    )
+    assert "a complete node" in full.body
+
+
+def test_get_view_meta_and_body_alias_default(handler: MemoryHandler) -> None:
+    new_id = id_of(handler.put(text="meta means the node").body)
+    for alias in ("meta", "body"):
+        r = handler.get(id=new_id, view=alias)
+        assert r.body.startswith(
+            f"interpreted: view={alias!r} read as the default view"
+        )
+        assert "meta means the node" in r.body
+
+
+def test_get_view_index_reads_as_links(handler: MemoryHandler) -> None:
+    """``view='index'`` is the hub index — the links view."""
+    victim = id_of(handler.put(text="indexed node").body)
+    other = id_of(handler.put(text="neighbour").body)
+    handler.link(id=victim, target=f"memory:{other}", rel="related-to")
+    r = handler.get(id=victim, view="index")
+    assert r.body.startswith("interpreted: view='index' read as view='links'")
+    assert f"memory {victim} - links" in r.body
+
+
+def test_get_view_bogus_still_refused(handler: MemoryHandler) -> None:
+    new_id = id_of(handler.put(text="x").body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=new_id, view="bogus")
+    assert "links" in (exc.value.options or [])
+
+
+# ── gr503546: the Gone tombstone names the live successor ────────────
+
+
+def test_gone_after_delete_with_reason_points_at_successor(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """``delete(reason='merged into meNNN')`` leaves the audit row the
+    Gone reads: the error names the survivor and ``next`` is a get on it."""
+    hub = id_of(handler.put(text="the hub everything merged into").body)
+    victim = id_of(handler.put(text="a node merged away").body)
+
+    handler.delete(id=victim, reason=f"merged into me{hub}")
+
+    with pytest.raises(Gone) as exc:
+        handler.get(id=victim)
+    assert f"superseded by me{hub}" in str(exc.value)
+    assert isinstance(exc.value.next, str) and f"id={hub}" in exc.value.next
+    assert "get(" in exc.value.next.splitlines()[0]
+
+
+def test_gone_after_delete_via_supersedes_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The link-then-delete idiom: an inbound ``supersedes`` edge is the
+    trail even without a reason= or meta stamp."""
+    survivor = id_of(handler.put(text="the consolidated node").body)
+    victim = id_of(handler.put(text="the absorbed node").body)
+    handler.link(id=survivor, target=f"memory:{victim}", rel="supersedes")
+
+    handler.delete(id=victim)
+
+    with pytest.raises(Gone) as exc:
+        handler.get(id=victim)
+    assert f"superseded by me{survivor}" in str(exc.value)
+
+
+def test_gone_after_bare_delete_next_is_search(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """No trail at all → ``next`` is a search on the tombstone's title
+    words (scoped by its SPACE tag), not only the SQL-layer sentence."""
+    victim = id_of(handler.put(text="orbit decay notes for kepler station").body)
+
+    handler.delete(id=victim)
+
+    with pytest.raises(Gone) as exc:
+        handler.get(id=victim)
+    nxt = exc.value.next or ""
+    assert isinstance(nxt, str)
+    assert nxt.startswith("search(kind='memory'")
+    assert "orbit decay notes" in nxt
+    assert "retired_at=NULL" in nxt
 
 
 def _link_count(store: Store, ref_id: int) -> int:

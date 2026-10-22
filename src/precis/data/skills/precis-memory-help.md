@@ -125,7 +125,9 @@ id=42, mode='find-replace', find='/old/path', text='/new/path')`, or
 `mode='insert'` with `where='before'|'after'`. Same grammar as the file
 kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
 `find=` is refused with the candidate lines) `|'first'|'all'|'nth'` + `nth=`,
-`text=''` deletes the span, `dry_run=True` returns the diff and writes
+`mode='delete', find=...` deletes the span (`text=''` also works where
+the client passes it through; some clients mangle an empty string),
+`dry_run=True` returns the diff and writes
 nothing. `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
 in `args=`) are `mode='replace'` only. An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is

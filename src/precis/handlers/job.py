@@ -1785,7 +1785,7 @@ class JobHandler(NumericRefHandler):
 
     # ── retry: re-run a failed job via the parent todo ─────────────
 
-    def _delete(self, id: str | int | None) -> Response:
+    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
         """Refuse to retire a live job: its worker keeps the reservation
         and executor, so the row would vanish while work still runs.
 
@@ -1797,16 +1797,17 @@ class JobHandler(NumericRefHandler):
         can't see a status the retire then makes stale (gr496191).
         """
         if id is None:
-            return super()._delete(id)
+            return super()._delete(id, reason=reason)
         job_id = self._coerce_id(id)
         # a missing / other-kind id falls through to the base refusal
         if self.store.get_ref(kind=self.kind, id=job_id) is None:
-            return super()._delete(id)
+            return super()._delete(id, reason=reason)
         with self.store.tx() as conn:
             conn.execute(
                 "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE",
                 (job_id,),
             )
+            self._record_delete_reason(job_id, reason, conn=conn)
             status = _status_of(self.store.tags_for(job_id, conn=conn))
             if status is not None and status not in _TERMINAL_STATUSES:
                 raise BadInput(

@@ -72,6 +72,7 @@ refuses with ``Upstream`` + a ``next=`` naming the re-read.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from collections.abc import Callable
@@ -100,6 +101,7 @@ from precis.handlers._attribution import (
     ungrounded_cited_numbers,
 )
 from precis.handlers._eye import EYE_LADDER, is_eye_view
+from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -168,6 +170,21 @@ def _refuse_system_dream(tags: list[str] | None, *, verb: str) -> None:
 #: moved off ``refs.title`` — the header is a short title, the body a chunk
 #: (embedded + keyworded like ``gripe_body``).
 _BODY_KIND = "memory_body"
+
+#: ``view=`` spellings agents reach for on a concrete ``get`` that mean
+#: "just read the node" or the link neighbourhood (gr503547 — 7 refusals
+#: across 3 gardening sessions). The plain read already is the complete
+#: node (body + meta + hook), so ``'full'``/``'meta'``/``'body'`` fold to
+#: the default view; ``'index'`` reads as the links view (the hub index).
+#: Each alias runs the canonical call and returns with the
+#: ``interpreted:`` reading line (gr494831's shape, via
+#: :mod:`precis.handlers._interpret`).
+_VIEW_ALIASES: dict[str, str | None] = {
+    "full": None,
+    "meta": None,
+    "body": None,
+    "index": "links",
+}
 
 #: Longest auto-derived title (first line, capped) when a writer doesn't
 #: pass an explicit ``title=``. Matches the migration-0050 backfill rule.
@@ -262,7 +279,7 @@ class MemoryHandler(NumericRefHandler):
         # the word agents reach for when updating a thread/resume node;
         # gr484228). See todo.py's annotation (gr292913) for why an
         # omitted mode= still needs this declaration.
-        edit_modes=("replace", "find-replace", "insert", "append"),
+        edit_modes=("replace", "find-replace", "insert", "append", "delete"),
     )
 
     kind: ClassVar[str] = "memory"
@@ -377,12 +394,20 @@ class MemoryHandler(NumericRefHandler):
             return render_argument_view(self.store, ref)
         if concrete and is_eye_view(view):
             return self.eye(id=id, extent=view, q=q)
+        if concrete and q is None and view in _VIEW_ALIASES:
+            canon = _VIEW_ALIASES[view]
+            shown = f"view={canon!r}" if canon is not None else "the default view"
+            resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
+            return interpreted(resp, [f"view={view!r} read as {shown}"])
         if concrete and view is not None and view not in _BASE_VIEWS:
+            legal = ["argument", *EYE_LADDER, *_BASE_VIEWS]
+            close = difflib.get_close_matches(view, legal, n=1)
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
-                options=["argument", *EYE_LADDER, *_BASE_VIEWS],
+                options=legal,
                 next=(
-                    "view='argument' (kind:lemma/kind:inference proof tree) "
+                    (f"did you mean {close[0]!r}? " if close else "")
+                    + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
                     "· links, log, raw (generic)"
                 ),
@@ -866,6 +891,27 @@ class MemoryHandler(NumericRefHandler):
                 next="edit(kind='memory', id=N, mode='replace', text='new body')",
             )
         require_mode(spec=self.spec, verb="edit", mode=mode)
+        delete_span = mode == "delete"
+        if delete_span:
+            # Explicit span deletion (gr503460): several MCP clients
+            # mangle an empty ``text=''`` argument before the call ever
+            # reaches the server, so the delete-by-empty-text shape got
+            # a first-class mode. Alias of find-replace with text=''.
+            if text is not None and text != "":
+                raise BadInput(
+                    "mode='delete' takes find= only",
+                    next=(
+                        "edit(kind='memory', id=N, mode='delete', "
+                        "find='exact span to remove') — or mode='find-replace' "
+                        "with text='' where the client passes it through"
+                    ),
+                )
+            if not find:
+                raise BadInput(
+                    "mode='delete' requires find= (the exact span to remove)",
+                    next="edit(kind='memory', id=N, mode='delete', find='exact text')",
+                )
+            mode, text = "find-replace", ""
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
         reason = mask_secrets(reason)
@@ -917,6 +963,7 @@ class MemoryHandler(NumericRefHandler):
                 dry_mode=dry_mode,
                 meta_patch=meta_clean,
                 reason=reason,
+                delete_span=delete_span,
             )
         if dry_mode is not None:
             raise BadInput(
@@ -1082,6 +1129,7 @@ class MemoryHandler(NumericRefHandler):
         expected_body: str | None = None,
         misses: list[UngroundedNumber] | None = None,
         reason: str | None = None,
+        op: str | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -1121,6 +1169,7 @@ class MemoryHandler(NumericRefHandler):
                     chunk_kind=_BODY_KIND,
                     source="agent",
                     reason=reason.strip() if reason and reason.strip() else None,
+                    op=op,
                     conn=conn,
                 )
                 previous = old_body if old_body is not None else (row[0] or "")
@@ -1190,6 +1239,7 @@ class MemoryHandler(NumericRefHandler):
         dry_mode: str | None,
         meta_patch: dict[str, Any],
         reason: str | None = None,
+        delete_span: bool = False,
     ) -> Response:
         """``mode='find-replace'`` / ``'insert'`` / ``'append'`` on the body prose.
 
@@ -1232,7 +1282,13 @@ class MemoryHandler(NumericRefHandler):
                     "text='new body')"
                 ),
             )
-        op_kind = "edit" if mode == "find-replace" else "insert"
+        op_kind = (
+            "delete-span"
+            if delete_span
+            else "edit"
+            if mode == "find-replace"
+            else "insert"
+        )
         _require_find_and_text(
             op_kind=op_kind,
             kind=self.kind,
@@ -1252,7 +1308,7 @@ class MemoryHandler(NumericRefHandler):
         # __post_init__ validates both against the exact Literal sets and
         # raises BadInput on a bad value, so the casts are sound at runtime.
         op = EditOp(
-            op="edit" if op_kind == "edit" else "insert",
+            op="insert" if op_kind == "insert" else "edit",
             find=find,
             text=text,
             before=before,
@@ -1296,8 +1352,15 @@ class MemoryHandler(NumericRefHandler):
             expected_body=old_body,
             misses=misses,
             reason=reason,
+            op=op_kind if op_kind == "delete-span" else None,
         )
-        verb = "edited" if op_kind == "edit" else "inserted into"
+        verb = (
+            "edited"
+            if op_kind == "edit"
+            else "deleted from"
+            if op_kind == "delete-span"
+            else "inserted into"
+        )
         n_spans = len(result.edited_spans)
         ack = (
             f"{verb} body of {self._sense()} id={ref.id} "
@@ -1710,7 +1773,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
 
-    def _delete(self, id: str | int | None) -> Response:
+    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
         """Soft-delete a memory and drop its link edges in one transaction.
 
         The base ``retire_ref`` leaves the ref's inbound and outbound
@@ -1740,18 +1803,50 @@ class MemoryHandler(NumericRefHandler):
                 and self.store.get_ref(kind="memory", id=cand) is not None
             ):
                 successor = cand
+        if successor is None and reason:
+            # The gardening idiom ``delete(reason='merged into meNNN')``:
+            # the named handle IS the survivor — stamp the canonical
+            # ``meta.superseded_by`` so edges migrate and the tombstone's
+            # Gone points at it (gr503546).
+            named = self._reason_named_ref({"reason": reason})
+            if (
+                named is not None
+                and named != ref_id
+                and self.store.get_ref(kind="memory", id=named) is not None
+            ):
+                successor = named
         with self.store.tx() as conn:
+            if successor is not None and raw_sup is None:
+                self.store.stamp_ref_meta(
+                    ref_id, {"superseded_by": successor}, conn=conn
+                )
             counts = conn.execute(
-                "SELECT count(*) FILTER (WHERE dst_ref_id = %s)::int AS inbound,"
-                "       count(*) FILTER (WHERE src_ref_id = %s)::int AS outbound"
+                "SELECT count(*) FILTER (WHERE dst_ref_id = %s"
+                "   AND relation <> 'supersedes')::int,"
+                "       count(*) FILTER (WHERE src_ref_id = %s)::int,"
+                "       count(*) FILTER (WHERE dst_ref_id = %s"
+                "   AND relation = 'supersedes')::int"
                 "  FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
-                (ref_id, ref_id, ref_id, ref_id),
+                (ref_id, ref_id, ref_id, ref_id, ref_id),
             ).fetchone()
-            n_in, n_out = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+            n_in, n_out, n_sup = (
+                (int(counts[0]), int(counts[1]), int(counts[2]))
+                if counts
+                else (0, 0, 0)
+            )
             if successor is not None:
                 moved = self.store.migrate_links(ref_id, successor, conn=conn)
             else:
-                removed = self.store.unlink_ref(ref_id, conn=conn)
+                # Inbound ``supersedes`` edges stay: "new supersedes old"
+                # IS the tombstone trail (dangling_links skips them by
+                # design); the Gone reads it back (gr503546).
+                cur = conn.execute(
+                    "DELETE FROM links WHERE (src_ref_id = %s OR dst_ref_id = %s)"
+                    " AND NOT (dst_ref_id = %s AND relation = 'supersedes')",
+                    (ref_id, ref_id, ref_id),
+                )
+                removed = int(cur.rowcount or 0)
+            self._record_delete_reason(ref_id, reason, conn=conn)
             self.store.retire_ref(ref_id, conn=conn)
         if successor is not None:
             detail = (
@@ -1759,9 +1854,10 @@ class MemoryHandler(NumericRefHandler):
                 f"(meta.superseded_by)"
             )
         else:
+            kept = f"; {n_sup} supersedes edge(s) kept" if n_sup else ""
             detail = (
-                f"{n_in} inbound + {n_out} outbound link(s) removed"
-                if (n_in or n_out or removed)
+                f"{n_in} inbound + {n_out} outbound link(s) removed{kept}"
+                if (n_in or n_out or removed or n_sup)
                 else "no links to remove"
             )
         return Response(body=f"deleted {self._sense()} id={ref_id} — {detail}")

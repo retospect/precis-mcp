@@ -49,6 +49,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from psycopg import Connection
+
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
@@ -122,6 +124,11 @@ _COUNT_MAX_FACETS = 3
 #: Facet rows rendered per group_by — past this the answer is a dump, not
 #: a count. The store caps the GROUP BY at the same bound.
 _COUNT_GROUP_LIMIT = 200
+
+#: A universal handle token (``me474312``, ``td12``) inside free text —
+#: the delete ``reason='merged into me474312'`` breadcrumb the Gone
+#: tombstone read follows (gr503546).
+_HANDLE_TOKEN = re.compile(r"\b([a-z]{2}\d+)\b")
 
 
 def _parse_window_bound(value: Any, field: str) -> datetime | None:
@@ -476,19 +483,112 @@ class NumericRefHandler(Handler):
         # Second probe: does the row exist but is soft-deleted?
         tombstone = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
         if tombstone is not None:
+            # Point at what's actionable, not only at the SQL-layer
+            # post-mortem: agents kept retrying the same get() when the
+            # answer was "no MCP undo" (gr503546). The gardening idiom
+            # leaves a trail — ``meta.superseded_by``, an inbound
+            # ``supersedes`` edge, or the delete's ``reason=`` naming the
+            # survivor — so follow it before falling back to a search on
+            # the tombstone's title.
+            sql_note = (
+                "post-mortem only - soft-deleted refs are "
+                "recoverable at the SQL layer by setting "
+                "retired_at=NULL on the row"
+            )
+            successor = self._successor_ref(tombstone)
+            if successor is not None:
+                sid, skind = successor
+                handle = handle_registry.try_format(skind, sid) or f"{skind}:{sid}"
+                raise Gone(
+                    f"{self._sense()} id={ref_id} was soft-deleted "
+                    f"(superseded by {handle}; row retained for audit, "
+                    "no MCP undo)",
+                    next=f"get(kind={skind!r}, id={sid})\n{sql_note}",
+                )
+            words = " ".join((tombstone.title or "").split()[:6]) or "..."
+            space = next(
+                (
+                    f"{t.prefix}:{t.value}" if t.prefix else t.value
+                    for t in self.store.tags_for(ref_id)
+                    if (t.prefix or "").upper() == "SPACE"
+                    or t.value.upper().startswith("SPACE:")
+                ),
+                None,
+            )
+            tags_bit = f", tags=[{space!r}]" if space else ""
             raise Gone(
                 f"{self._sense()} id={ref_id} was soft-deleted "
                 "(row retained for audit; no MCP undo)",
-                next=(
-                    "post-mortem only - soft-deleted refs are "
-                    "recoverable at the SQL layer by setting "
-                    "retired_at=NULL on the row"
-                ),
+                next=(f"search(kind={self.kind!r}, q={words!r}{tags_bit})\n{sql_note}"),
             )
         raise NotFound(
             f"{self._sense()} id={ref_id} not found",
             next=f"search(kind={self.kind!r}, q='...') to find existing",
         )
+
+    def _live_kind_of(self, ref_id: int) -> str | None:
+        """The kind of a live ref, or ``None`` when it is gone/missing."""
+        found = self.store.fetch_refs_by_ids([ref_id])
+        ref = found.get(ref_id)
+        return ref.kind if ref is not None else None
+
+    def _successor_ref(self, tombstone: Ref) -> tuple[int, str] | None:
+        """The live ref a tombstone points at as its replacement, if any.
+
+        Three breadcrumbs, in the order a gardening session leaves them
+        (gr503546): ``meta.superseded_by`` chains (dedup merge, memory
+        ``supersede``, the thread sweep's stamp), then the newest
+        ``ref_events`` row's ``reason`` naming a handle
+        (``delete(reason='merged into meNNN')``), then an inbound
+        ``supersedes`` edge — the link-new-to-old-then-delete idiom.
+        Every candidate must resolve to a *live* ref before it is named.
+        """
+        tid = tombstone.id
+        if (sid := self.store.follow_supersede(tid)) is not None:
+            if (k := self._live_kind_of(sid)) is not None:
+                return sid, k
+        for ev in self.store.events_for(tid, limit=3):
+            cand = self._reason_named_ref(ev.payload)
+            if cand is None:
+                continue
+            if (k := self._live_kind_of(cand)) is not None:
+                return cand, k
+            # The named node may itself be retired — follow its own trail.
+            if (sid := self.store.follow_supersede(cand)) is not None and (
+                k := self._live_kind_of(sid)
+            ) is not None:
+                return sid, k
+        seen = {tid}
+        frontier = [tid]
+        for _ in range(4):
+            nxt: list[int] = []
+            for fid in frontier:
+                for link in self.store.links_for(
+                    fid, direction="in", relation="supersedes"
+                ):
+                    src = link.src_ref_id
+                    if src in seen:
+                        continue
+                    seen.add(src)
+                    if (k := self._live_kind_of(src)) is not None:
+                        return src, k
+                    nxt.append(src)
+            if not nxt:
+                return None
+            frontier = nxt
+        return None
+
+    @staticmethod
+    def _reason_named_ref(payload: dict[str, Any]) -> int | None:
+        """First refs-backed handle in an event payload's ``reason``/text."""
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        if not isinstance(reason, str):
+            return None
+        for tok in _HANDLE_TOKEN.findall(reason):
+            parsed = handle_registry.parse(tok)
+            if parsed is not None and not parsed[1]:
+                return parsed[2]
+        return None
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -1985,7 +2085,13 @@ class NumericRefHandler(Handler):
 
     # ── seven-verb surface (delegates to the same private helpers) ─
 
-    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
+    def delete(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        reason: str | None = None,
+        **_kw: Any,
+    ) -> Response:
         """Soft-delete a numeric ref by id.
 
         Mirrors the legacy ``put(id=N, mode='delete')`` shape one-
@@ -1993,8 +2099,13 @@ class NumericRefHandler(Handler):
         seven-verb surface promotes deletion to a first-class verb
         so agents don't have to rummage through ``put`` modes to
         find it.
+
+        ``reason=`` (the gardening idiom ``'merged into meNNN'``) lands
+        as a ``deleted`` ``ref_events`` row — the tombstone trail a
+        later ``get``'s ``Gone`` reads to point at the survivor
+        (gr503546).
         """
-        return self._delete(id)
+        return self._delete(id, reason=reason)
 
     def tag(  # type: ignore[override]
         self,
@@ -2542,7 +2653,7 @@ class NumericRefHandler(Handler):
                 ) from None
             raise
 
-    def _delete(self, id: str | int | None) -> Response:
+    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
         if id is None:
             raise BadInput(
                 "delete requires id=",
@@ -2550,8 +2661,26 @@ class NumericRefHandler(Handler):
             )
         ref_id = self._coerce_id(id)
         self._resolve_ref_for_delete(ref_id)
-        self.store.retire_ref(ref_id)
+        with self.store.tx() as conn:
+            self._record_delete_reason(ref_id, reason, conn=conn)
+            self.store.retire_ref(ref_id, conn=conn)
         return Response(body=f"deleted {self._sense()} id={ref_id}")
+
+    def _record_delete_reason(
+        self, ref_id: int, reason: str | None, *, conn: Connection
+    ) -> None:
+        """The ``reason=`` audit row — one ``deleted`` event naming why,
+        in the same transaction as the retire so the tombstone's event
+        log always shows its own cause (gr503546)."""
+        r = (reason or "").strip()
+        if r:
+            self.store.append_event(
+                ref_id,
+                source="agent",
+                event="deleted",
+                payload={"reason": r},
+                conn=conn,
+            )
 
     # ── coercion ────────────────────────────────────────────────────
 
