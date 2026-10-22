@@ -25,7 +25,7 @@ from precis.structure.elements import covalent_radius_A
 from precis.viz3d.primitives import Ball, Point3, Primitive, Scene3, Stick
 from precis.viz3d.render import ScalebarSpec
 
-__all__ = ["Style", "stick_scene"]
+__all__ = ["Style", "cpk_color", "stick_scene"]
 
 #: CPK colours (hex), following the Jmol CPK convention exactly. Own small
 #: table — see the module docstring on why this isn't imported from
@@ -91,10 +91,16 @@ def _colormap(t: float) -> str:
     return "#ffffff"  # unreachable given clamped t and stops spanning [0, 1]
 
 
+def cpk_color(element: str) -> str:
+    """The CPK colour a ``cpk`` stick figure draws ``element`` in — for a
+    legend that must match the picture."""
+    return _CPK.get(element, _CPK_DEFAULT)
+
+
 def _element_color(element: str, style: Style) -> str:
     if style.color == "mono":
         return _MONO_COLOR
-    return _CPK.get(element, _CPK_DEFAULT)
+    return cpk_color(element)
 
 
 def _atom_colors(elements: list[str], style: Style) -> list[str]:

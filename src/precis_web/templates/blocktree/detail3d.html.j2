@@ -59,6 +59,12 @@
           {% if s.href %}<a class="text-info hover:underline" href="{{ s.href }}">{{ s.slug }}</a>{% else %}<span class="text-fg-subtle">{{ s.slug }}</span>{% endif %}
           {% if s.handle %}<span class="text-fg-faint"> · {{ s.handle }}</span>{% endif %}
           {% if s.version %}<span class="text-fg-faint"> · v{{ s.version }}</span>{% endif %}
+          {# gr504830: the shareable image (picture + legend + caption, the
+             caption also in the file's metadata). #}
+          {% if s.href %}<br><a class="text-info hover:underline" data-role="package"
+             href="/{{ kind }}/{{ slug | urlencode }}/package/{{ s.block | urlencode }}.png" target="_blank"
+             title="an image of this structure with a legend and a caption (refs, relax state, intent) to paste into chat; crop the caption off below the dashed line — the same text is in the image's metadata">package image</a>
+          <a class="text-fg-faint hover:underline" href="/{{ kind }}/{{ slug | urlencode }}/package/{{ s.block | urlencode }}.svg" target="_blank">svg</a>{% endif %}
         </td>
         <td class="px-3 py-2">
           <span class="inline-block rounded border px-1.5 py-0.5 {{ tone_cls[s.relax.tone] }}">{{ s.relax.headline }}</span>
