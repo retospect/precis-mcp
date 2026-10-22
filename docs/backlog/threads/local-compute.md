@@ -92,6 +92,11 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    filed 2026-10-12 from Reto's credits ask: proxy castor's gpt-oss 120B as
    an Anthropic endpoint for Sonnet-class fleet roles, measure against
    Sonnet on a gripe batch, then decide on a cheap cloud fallback plan.
+   Successor: **[castor-agent-lane](../castor-agent-lane.md)** (draft,
+   2026-10-22) — answers the proxy question (`scripts/claude-local` +
+   shim, no LiteLLM/CCR), splits agent lane vs batch lane, slice 0 is a
+   10-gripe pilot with a measured pass rate; ranked here because it is
+   the Claude-quota relief Reto asked for and reuses the lit castor route.
 
 1. **Local share is measurable**: `get(kind='llm', id='/placement')`
    (routed vs landed, per tier and day). `placement_routed` (migration 0179)
