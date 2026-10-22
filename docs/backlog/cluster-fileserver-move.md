@@ -45,6 +45,8 @@ roles off the Macs.
 ## Acceptance criteria
 
 - Every node mounts the share from finnmaccool; no Mac or Spark exports NFS.
+- A file `deploy` writes on one node shows `deploy` as its owner on every
+  node. A write to `dbbackup` from any node but the DB node fails.
 - A launchd service on a Mac reads and writes the share with no TCC prompt.
 - A DFT relax on pollux stages scratch on the new share end to end.
 - `tests/test_deploy_tree_no_secrets.py` green: the server address lives
@@ -73,9 +75,8 @@ go to the orchestrator as a branch; overlay edits go to Reto.
   - The Linux nodes resolve the server only by its mDNS `.local` name.
 - Gaps the plan must close:
   - A new export (or tree) for the cluster share, created in TOS.
-  - The identity mapping: `all_squash` to a single root-equivalent
-    identity defeats per-user ownership. Squash to a dedicated
-    non-privileged identity, or map real uids.
+  - The identity mapping: **closed 2026-10-22** (ruling 6). Real uids
+    pass through and root is squashed; Phase 0 step 1.
   - `soft` mounts for scratch that jobs write: soft returns EIO on a
     timeout and can truncate writes silently.
   - Name resolution that does not depend on avahi.
@@ -91,6 +92,9 @@ go to the orchestrator as a branch; overlay edits go to Reto.
   290 MB/s, and negotiated NFS 4.2. So the Linux clients and the LAN are
   fine, and the hang is specific to the DB node's macOS nfsd. That moves
   this item ahead of repairing the DB node's export.
+- 2026-10-22, read-only probe after that day's TOS update (nothing
+  changed): what TOS supports is in Phase 0 step 1. `botshome`'s one NFS
+  rule admits any client (`*`) and maps every user to root.
 
 - 2026-10-02 22:42Z, Reto (local-compute-8) **held all NFS changes**,
   including the caspar nfsd restart approved under local-compute-6, until
@@ -146,16 +150,75 @@ no Full Disk Access grant has to be redone.
 
 ### Phase 0: prepare (no client sees a change)
 
-1. **NAS export.** Create a folder `cluster` with a `shared/` subfolder.
-   Add an NFS rule for the LAN subnet only: `rw`, `sync`, `all_squash`,
-   `secure`, NFS v3 and v4. TOS 7.0.0601 cannot squash to a named user;
-   its choices are root or all users mapped to `admin` or `guest`. So the
-   rule maps all users to the built-in `guest` (least privilege), with
-   `guest` read/write on the folder, and no `cluster` user is created
-   (2026-10-03, read from the NAS language files; local-compute-12).
-   - Touches: the NAS's TOS configuration only.
-   - Rollback: delete the folder and the rule.
-   - Who creates it is open question 1.
+1. **NAS shares.** Two shared folders on finnmaccool, both passing real
+   uids through with root squashed (design: "Shares" below):
+   - `cluster`: read-write for every node in `nfs_clients`.
+   - `dbbackup`: read-write for the DB node, read-only for the rest.
+
+   **What TOS 7 supports** (read 2026-10-22, after that day's update):
+   - **Uid pass-through with root squashed: yes.** The NFS rule's
+     Mapping field offers "No mapping", "Map superuser to guest", "Map
+     all users to superuser" and "Map all users to guest" (the create-
+     and edit-rule dialogs under `/usr/www/tos/js/`, labels in
+     `/etc/tos/i18n/en-us/tos.lang`). "Map superuser to guest" is
+     `root_squash`. "No mapping" is `no_root_squash` and is never used
+     here. `botshome` today is "Map all users to superuser"
+     (`all_squash,anonuid=0`). The 2026-10-03 read predates the update.
+   - **Per-host rules: yes.** A rule names one client ("IP address, IP
+     segment, domain name, or wildcard"), with its own Read only or
+     Read/Write and its own Mapping, and a share takes several rules.
+     Rules are rows of `acl_host` in the NAS's `tos` database
+     (`service='nfs'`, options as JSON). `/usr/sbin/allconf` writes one
+     `client(rw|ro,options)` entry per row into `/etc/exports`. When two
+     entries match a client, a single host beats an IP segment whatever
+     their order (exports(5)), so the DB node's rw rule wins.
+   - **Owners are numeric.** NFSv4 idmapping is off on the server
+     (`nfs4_disable_idmapping=Y`) and the Macs mount v3, so a file
+     carries the uid the client sent. `deploy` has the same uid and gid on
+     caspar, melchior, balthazar, spark, castor and pollux (checked
+     2026-10-22). The NAS has no account for that uid. mountd runs
+     `manage-gids=y`, so the NAS looks up supplementary groups itself and
+     finds none for `deploy`: access by owner or primary group works,
+     access by a secondary group does not.
+   - **Root on any node writes as the NAS's `guest`.** It cannot write
+     into `deploy`-owned folders.
+   - **Not confirmed:** the server code that turns a Mapping choice into
+     export options is unreadable (`TOSDaemon` has no strings). After the
+     clicks, `/etc/exports` must show `root_squash` on both shares and
+     neither `no_root_squash` nor `all_squash`.
+   - **Fallback** if it does not: "Map all users to guest" on `cluster`
+     (`all_squash` to `guest`). Every file is then `guest`'s, so owners
+     are lost and any user on any node can delete anything in `cluster`.
+     `dbbackup` keeps its protection, which rests on the per-host rule,
+     not on uids.
+
+   **Reto clicks, in the TOS web UI** (Control Panel → Shared Folder; the
+   addresses come from the overlay, not this file):
+   1. Create shared folder `cluster` on Volume1. Every other field at its
+      default; NFS ignores TOS user privileges.
+   2. Edit `cluster` → NFS → Create NFS Rule:
+      - Client: the LAN segment of `nfs_clients`, in CIDR form;
+      - Permissions: Read/Write;
+      - Mapping: Map superuser to guest;
+      - Security: Auth_sys (the only choice);
+      - Enable asynchronous: off;
+      - Allow users to access mounted subfolders: off;
+      - Allow connections from non-privileged ports: off.
+   3. Create shared folder `dbbackup` on Volume1, defaults as in step 1.
+   4. Edit `dbbackup` → NFS → Create NFS Rule: Client is the DB node's
+      address; Permissions Read/Write; the rest as in step 2. This needs
+      a DHCP reservation for the DB node first, so the address holds.
+   5. Edit `dbbackup` → NFS → Create NFS Rule: Client is the LAN segment
+      of `nfs_clients`; Permissions Read only; the rest as in step 2.
+
+   **Then an agent, with Reto's go:** reads `/etc/exports` for the check
+   above, and runs one `chown` on the NAS that gives both share roots to
+   the `deploy` uid and gid. TOS creates a share root as root-owned `755`
+   (as `botshome` is), so until then no client can write into it. This is
+   the only write an agent makes on the NAS. Repeat the check after any
+   later TOS edit of either share.
+   - Touches: the NAS's TOS configuration and two directory owners.
+   - Rollback: delete the rules and the folders.
 2. **Name resolution.** An overlay-driven `/etc/hosts` line for the NAS on
    every node, so the Linux nodes no longer depend on mDNS (`.local`).
    - Touches: `/etc/hosts` on six nodes.
@@ -167,7 +230,19 @@ no Full Disk Access grant has to be redone.
    - `nfs_client` removes the old server's fstab line when the server
      changes (today it leaves a second static mount on the Macs);
    - the DB node leaves `nfs_servers`, and the NAS is not managed by
-     `roles/nfs_server`.
+     `roles/nfs_server`;
+   - no script that root runs lives on NFS (ruling 8): `backups`,
+     `config_pull` and `api_monitors` install theirs to local disk. One
+     uid serves `deploy` fleet-wide, so otherwise `deploy` on any node
+     could rewrite a script root runs on another;
+   - root-run jobs that write the share (`config_pull`, `api_monitors`)
+     run as `deploy` or write host-local, since root writes as `guest`;
+   - science containers that write scratch on the share run with
+     `--user` set to `deploy`'s uid and gid, or their files land as
+     `guest` and `deploy` cannot clean them up (`struct_relax`'s
+     `docker run` passes no `--user` today);
+   - the DB node mounts `dbbackup` read-write. `pg_backup`'s archive
+     root and the B2 postgres leg point there in phase 6.
 
 ### Phase 1: take the DB node off the share (revised; Reto on local-compute-9)
 
@@ -197,8 +272,9 @@ live on the file server exclusively."
       verified"; the free-space guard stays.
     - Rollback: the 2-day value.
 4b. **B2 reads the off-box copies.**
-    - The postgres leg syncs the NAS archives instead of the DB node's
-      local dumps. The other legs read the moved trees on the NAS.
+    - The postgres leg syncs the NAS archives (on `dbbackup` from phase
+      6) instead of the DB node's local dumps. The other legs read the
+      moved trees on the NAS.
     - It stays where the B2 credentials live (the DB node), now as a NAS
       client.
     - Add a success log line and a check that last night's upload exists.
@@ -226,10 +302,13 @@ live on the file server exclusively."
 
 ### Phase 2: copy (no client sees a change)
 
-5. **Copy.** Mount the new export on the DB node at a temporary path.
-   rsync the share, excluding `backups/` and the moved trees. That is
-   about 114 GB, roughly 7 minutes at the measured 290 MB/s. A delta pass
-   runs again at cutover.
+5. **Copy.** Mount `cluster` on the DB node at a temporary path. As
+   `deploy`, rsync the share without `-o`/`-g`, excluding `backups/` and
+   the moved trees: root is squashed, so no client can set owners, and
+   the copies become `deploy`'s. Files `deploy` cannot read show in
+   rsync's errors and are fixed by hand. That is about 114 GB, roughly
+   7 minutes at the measured 290 MB/s. A delta pass runs again at
+   cutover.
    - Touches: the NAS's disk.
    - Rollback: delete the copy.
 
@@ -252,6 +331,8 @@ live on the file server exclusively."
    - one dft job runs on pollux with scratch on the new share;
    - the precis web service serves a held PDF;
    - the openclaw agents write their logs;
+   - a file `deploy` writes on spark shows `deploy` as owner on melchior;
+   - a write to `dbbackup` from spark fails as read-only;
    - unpause the lanes.
 
 ### Phase 4: Full Disk Access (TCC) check
@@ -273,40 +354,36 @@ live on the file server exclusively."
 **Rollback overall:** until step 11, set `nfs_server` back to the DB node
 and re-run steps 7–8. The old export and data stay untouched until then.
 
-### Proposed: role shares instead of one share (2026-10-03, awaiting Reto on local-compute-12)
+### Shares (rulings 5–8, 2026-10-22; replace the 2026-10-03 role-share proposal)
 
-The share is not only scratch. It holds the DB dumps, every node's config
-copies (sudoers, LaunchDaemon plists), and the scripts that 9 cron jobs
-execute from NFS, 6 of them as root (backups, config_pull and api_monitors
-roles). With a squash-to-root export, any client can replace a script that
-root runs on another node. TOS cannot map clients to separate users, so
-roles are separate shares, each with per-host rules and read-only or
-read-write per host, squashed to `guest`:
+Two shares, both passing real uids through with root squashed. Narrower
+access, when needed, is per user or at the container mount, not per share.
 
-- **`dbbackup`**: DB dumps plus botshome's archive. Read-write for the DB
-  node only.
-- **No scripts on NFS:** the roles install them to local disk.
-- **Config copies:** fetched by the deploying machine, not pushed through
-  a share.
-- **`models`:** one writer, every other node read-only.
-- **`library`:** the corpus, podcast, `precis_root` and the B2-synced
-  trees. Read-write for the hosts that ingest or serve them.
-- **`logs`:** read-write for all nodes.
-- **`scratch`:** read-write for all nodes.
+- **`cluster`** at `/mnt/cluster`: read-write for every node, real
+  owners. Models, the library (corpus, podcast, `precis_root`, the
+  B2-synced trees), logs and scratch are folders in it.
+- **`dbbackup`**: the DB dumps and botshome's archive of them.
+  Read-write for the DB node, whose `deploy` writes the backups;
+  read-only for every other node. The per-host rule is the gate, not the
+  uid: `deploy` has one uid fleet-wide, so on another node it can read a
+  backup but the export refuses its writes. On the DB node itself, any
+  process running as `deploy` can still delete one.
+- Kept from the proposal as a role change, not a share (Phase 0 step 3):
+  no script that root runs lives on NFS.
 
-The per-host table with sizes and writers is in the review item; it feeds
-the fleet-wide security audit. A prerequisite is fixed node addresses
-(DHCP reservations).
-
-### Phase 6: retire botshome (after the role shares run clean)
+### Phase 6: retire botshome (after both shares run clean)
 
 12. Identify botshome's unknown owners: the rest of `backups/`, stray
-    tarballs, and the numeric uids.
-13. Copy each class into its role share with checksums, and verify file
-    counts and checksums.
+    tarballs, and the numeric uids. Everything there is root-owned on
+    the NAS today, because the rule maps every user to root.
+13. Copy each class into a folder of `cluster`, and the DB archive (about
+    1.2 TB, roughly 70 minutes at 290 MB/s) into `dbbackup` from the DB
+    node, the only host that can write it. Copies run as `deploy` on a
+    client, so they arrive `deploy`-owned. Verify file counts and
+    checksums.
 14. Repoint the overlay paths in one round deploy: corpus, inbox, podcast,
-    `PRECIS_ROOT`, the pg_backup archive root, the autofs map, and
-    `PRECIS_NAS_PROBE_PATH`. The heartbeat probe defaults to
+    `PRECIS_ROOT`, the pg_backup archive root (to `dbbackup`), the
+    autofs map, and `PRECIS_NAS_PROBE_PATH`. The heartbeat probe defaults to
     `/opt/nas/botshome` (`workers/heartbeat.py`), and so does the
     `nas-denied` message (`workers/nursery.py::_detect_nas_denied`).
 15. Soak for 7 days with botshome's NFS rule set to read-only. A forgotten

@@ -82,7 +82,9 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 **Allocation decision (historical):** yes (2026-10-01, Reto: "Bring it back we will").
 **Resume (2026-10-03, after round 3 deployed 929107f3):**
 - Waiting on:
-  - Reto, for local-compute-12. The NAS role shares are proposed in `cluster-fileserver-move.md`.
+  - Reto, for the TOS clicks in `cluster-fileserver-move.md` Phase 0
+    step 1. He ruled local-compute-12 on 2026-10-22: two shares, real
+    owners, root squashed.
   - knowledge-mesh, for its km-8 task set (model pick and the vllm Slice 1 branch).
 - Next build: a summarise-only local chain.
 
