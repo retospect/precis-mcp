@@ -233,7 +233,7 @@ relative to parent ports/anchors); each records a trace frame.
 | nested instance, own frame | `instance_block` (`blocktree/ops.py::op_instance_block`, cross-design templates via `parse_template_ref`; blocks nest under `parent`) | `pga.assembly(name, children=[...], pose=)` / `pga.instance(template, pose=)` | `instance` |
 | packed tile (copies at a pitch) | `array_block` (`precis_se/ops.py`, pitch × count) | `pga.tile(block, n, pitch=, fused=False)` | `tile#k` per copy |
 | fused tile (one body, bonded across the seam) | atomic: hexfold `periods` + k2 fuse; macro: `cad.graph.Design.merge` | `pga.tile(block, n, period=, fused=True)` — atomic: translational copies + `junction(k=2)` across each boundary; macro: union | `tile` (one frame, `made` = seam bonds) |
-| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only); no in-place cad move (`Design.instance` copies) | `pga.translate(v)`, `pga.rotate(axis, deg)`, `pga.transform(T)` — macro: over the new `Design.transform` (§Construction traces) | `pose` (modifier) |
+| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only) | `pga.translate(v)`, `pga.rotate(axis, deg)`, `pga.transform(T)` — each returns a **new** object with its own creator frame (macro: `Design.instance` under the transform); built geometry is never moved in place | `pose` |
 | mirror | none | `pga.mirror(plane)` — improper transform; atomic emits `chirality.flipped` INFO, macro flips face normals | `mirror` |
 | port-to-port placement | `connect` (ports; `clearance`, kinematic words) | `pga.place(child, at=parent.port('rim+'), align=child.port('rim-'))` — the same solve `connect` runs | `place` |
 | fuse two blocks' atoms | `join` (`atomic/join.py`) | `junction(rims, k)` (multicell slice 1) | `junction` |
@@ -439,6 +439,46 @@ cache above becomes a catalogue of reusable **relaxed units**.
   `view='units'` on the library design: one row per unit — `fn`,
   params digest, method/cell, periods, energy/atom, converged, stale.
 
+### Frozen units/modules, both scales
+
+Reto, 2026-10-22 (chat-99): scaling comes from a memoised hierarchy,
+not one monolithic script. The relaxed-unit catalogue above is the
+atomic case of one rule; the same rule holds for macro modules.
+
+- **Key.** A frozen unit/module is identified by `(fn, wheel version +
+  sha, params_sha, script_sha)`; the relaxed atomic variant adds
+  `(method, cell, supercell, kspacing)` as today. `relaxed_units` is
+  widened to `frozen_units` with a nullable relax half and a `scale`
+  column (`atomic` | `macro`); the macro row's `ref` is a cad design
+  (`blocks/<name>.cad.json` at that `script_sha`), the atomic row's a
+  `pbc` structure ref.
+- **Module = its own workspace/design.** A module is built by its own
+  workspace (an agent module or a core example, §Packaging), frozen
+  at a run, and catalogued as a block in the library design with
+  `generated = {generator: 'unit', fn, version, params, trace: {run_job,
+  root}}` — macro blocks exactly as atomic units are.
+- **Fetch.** `blocks.unit(fn, params, *, method=None, cell=None)` on
+  the read MCP (the existing `blocks.relaxed` is the relaxed atomic
+  spelling of it): a hit returns the frozen geometry and its trace
+  root; a miss returns the seed, queues the build (and relax, when
+  asked) and the echo says the next run will hit. The assembly then
+  `tile`s and `place`s it; co-optimisation covers only what the
+  assembly script owns (placement, interface params) unless the author
+  re-opens the module's workspace.
+- **Trace.** The consuming run's trace gets one `unit` frame per
+  fetched module whose children are the module's own trace, linked not
+  copied — both scales. A change rebuilds only the changed module; the
+  assembly's other `unit` frames keep their keys.
+- **Stale.** The golden-diff rule applies unchanged: a wheel bump that
+  changes the module's `fn` golden flags it `stale` (`unit.stale`,
+  `next=` names `regenerate`); a no-op bump re-stamps it current.
+- **Contact points carry frames.** Ports and connects are made by
+  `out.block(ports=)`/`pga.place`/`out.connect` frames (or an `op`
+  frame for `add_port`/`connect`), so `view='trace'` with
+  `{'port': 'p/rim+'}` or `{'connect': 'c3'}` resolves contact →
+  the two blocks' objects → the code line that placed each; a
+  connect's frame lists the two ports in `touched`.
+
 ## Construction traces — who made this atom
 
 Reto, 2026-10-22: "Any object in 3D space should have an origin — who
@@ -455,12 +495,8 @@ qual, file, line, occ, kind, args, made, touched}`. `kind` is `user`
 (a function in `/work/**.py` — `main.py` and the agent's helpers),
 `core` (a public `precis-geom` function: `sheetnet.strip|pore|place|
 junction|assemble|decorate`, the layouts `prism|cells|...`,
-`precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance|transform`
-— `transform` is new (Reto, 2026-10-22): a traced in-place move
-`Design.transform(expr, T)` that recomposes the leaves' placements and
-records a **modifier** frame with the moved instances in `touched`
-(`instance` copies, `transform` moves; `pga.translate|rotate|transform`
-call it) —, `precis_ws.out.block|instance|connect`), `module` (a promoted agent
+`precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance`,
+`precis_ws.out.block|instance|connect`), `module` (a promoted agent
 module's public functions) or `service` (relax, §Relax). Library
 internals (`join._seam_k3`, `_block_from_net`) never appear — they
 collapse into the public frame that called them. `occ` is the
@@ -537,9 +573,20 @@ findings (`drc`, `clearance`, `freedom`) subject blocks and ports; the
 same column resolves through the manifest entry's frame. A set of
 findings → LCA gives "the one call that made all the clashing atoms".
 
+**Built geometry is immutable** (Reto, 2026-10-22, chat-99). A build
+is a pure function of its recipe (the script + params, or the
+optimisation kit's feature graph — se-flow-kernel slice 4b), so every
+atom, cad instance and face has exactly one creator frame; a move is a
+recipe edit plus a rebuild, and a transform helper returns a new
+object with its own creator frame. Modifier frames exist only for
+services that change geometry in place by design (relax, §Relax) and
+for the surviving small ops' `op` frames; an optimiser's per-move
+history lives in the trace's `search` section, never on objects.
+
 **Both scales.** Atomic: atoms, bonds. Macro: cad instances and the
 named components, faces/edges by derivation, se blocks/ports/connects by
-their `out.*` call. Surviving small ops (`add_block`, `set_pose`,
+their `out.*` call (so a contact point resolves to the code that made
+each side — §Frozen units/modules). Surviving small ops (`add_block`, `set_pose`,
 `connect`) write an `op` frame (parent root, the `tool_ledger` call id as
 `line`) so "who made it" has one answer at both paths (§Guardrails, one
 way).
@@ -992,7 +1039,7 @@ fisheye).
 | 4p | **Infinite-relax ladder gaps.** `cell='axis'` mask; supercell rule for Γ-only rungs; `kspacing` → `kpts` on the `dft-*` request path and in the GPAW container; `gfnff` rung (xtb-python extra); `tile` + `terminate` + tethered end relax as the unit→finite path | `structure/relax.py` (`CELL_MODES`, `_CELL_MASKS`), `workers/job_types/struct_relax.py`, `sheetnet`, `hexfold-tethered-relax-op` | A 1D unit relaxed `axis` at `xtb` reports the period change; the same unit at `dft-fast` records `kpts` from 0.2 Å⁻¹; `tile(unit, 6)` + H caps gives the census of the (4, 6) A2 target with interior coordinates equal to the unit's; `gfnff` on a periodic cell runs or refuses with the install hint | M, 1–2 builds; DFT part needs `PRECIS_DFT_NODE` |
 | 4m | **Motif templates.** `relaxed_motifs` migration, extraction from relaxed units through their frames, `motif=` on `junction`/`decorate`/`_block_from_net`, `seed` fallback, versioning | `sheetnet.py`, `hexfold_relax_job.py` write-back, `relaxed_units` | Motif-seeded A2 and tri-tube seeds: RMSD vs GFN2 minimum and step counts recorded before/after; slice-0 goldens unchanged under `method: 'seed'` | M, 1 build; after 4u |
 | 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched`, `fixed` ranges and pass number on each `interfaces` frame (the eye's `frozen|free` row, §Structure fisheye) | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'`, the 2e relax block | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level; a frozen unit atom's eye reads `frozen (pass 2)` and a shell atom's `free` | M, 1 build; after 4u, 2t |
-| 4u | **Relaxed-unit catalogue.** Units as library-design blocks with `generated.generator='unit'`, `blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
+| 4u | **Frozen-unit catalogue, both scales** (§Frozen units/modules). Units and macro modules as library-design blocks with `generated.generator='unit'`, `frozen_units` (the widened `relaxed_units`), `blocks.unit()`/`blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search, port/connect frames resolvable in `view='trace'` | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
 | 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) and the alias convention (`pg`, `pga`; every example uses them) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
 | 7 | **CI goldens for core scripts.** Each core generator gets an `examples/` script whose output goldens (counts, SHA, findings) run in `scripts/test` without a container — the multicell slice-0 goldens become this | `tests/workspaces/`, `scripts/impacted-tests` | A change to `sheetnet` that alters a golden fails the selected test naming the script | S per generator, with each slice |
@@ -1069,6 +1116,11 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   `assembly.strain` reports what remains.
 - Decided in the text: loop collapse past 64 same-site siblings; `op`
   frames for surviving ops.
+- **Immutable products, memoised hierarchy (2026-10-22, chat-99):**
+  the recipe is mutable, built geometry is not — one creator frame per
+  object, no per-move traces, no in-place cad transform; modules are
+  frozen units at both scales, fetched by key and trace-linked
+  (§Frozen units/modules); evaluation, not rebuild, is what scales.
 - **Structure fisheye and rays (2026-10-22):** π perception from our own
   bond graph (a better structure-aware source is welcome later); rays are
   stored as block children ("an excellent idea"); the `charges` payload on

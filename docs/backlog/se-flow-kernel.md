@@ -244,15 +244,28 @@ commit carrying this line; `git log` has the sha.*
      material, a manufacturing spec: add small supports where the
      remaining need is highest, anneal, then remove the least-stressed
      ones, ESO/BESO-like). "It's the coder's choice." Recommended:
-     1. **`precis_geom.design`** — a mutable working design: a feature
-        graph whose features have stable ids (`add`/`remove`/`modify`
-        by id, never "the third hole"). The primary interface, because
+     0. **Recipe vs product.** The design *recipe* (feature graph +
+        params) is the editable, snapshot-able thing the optimiser
+        changes. Built geometry (atoms, cad instances, faces) is
+        **immutable**: every build is a pure function of the recipe,
+        so each object has exactly one creator frame and no per-move
+        traces exist (Reto: "if we want the traceability … the objects
+        kind of better be immutable (otherwise we have stack traces for
+        each movement)"). A move is a recipe edit plus a rebuild; any
+        transform helper returns a new object with its own creator
+        frame, never a modifier frame on the old one. The search
+        history (which iteration, which proposal changed which feature)
+        lives in the trace's `search` section, linked from the root,
+        not stamped on objects.
+     1. **`precis_geom.design`** — the mutable recipe: a feature graph
+        whose features have stable ids (`add`/`remove`/`modify` by id,
+        never "the third hole"). The primary interface, because
         topology changes (growing and pruning features) are awkward as
         fixed-length parameter vectors. `build(design) -> Design` (cad
-        graph) is pure; `precis.cad.graph.Design` itself is mutable
-        (its `instances`/`components` dicts grow under `prim`/`pattern`/
-        `instance`; the nodes are frozen) and is treated as a build
-        product, never edited in place by the kit. A stable feature id
+        graph) is pure; `precis.cad.graph.Design` is a build product —
+        its `instances`/`components` dicts grow only during the build
+        (the nodes are frozen) and the kit never edits a built one in
+        place. A stable feature id
         is not a stable face: booleans split and merge faces, so BCs and
         ports reference semantic regions and datums — the existing
         `patch:` selector (`precis_se/datums.py`, moving to
@@ -297,6 +310,21 @@ commit carrying this line; `git log` has the sha.*
         warm=prev)` passes restart data; the kernel decides what is
         still valid) is a performance requirement, measured in the
         bracket example.
+     6. **Scale by memoised hierarchy, not one monolithic script.** A
+        module is its own workspace/design, frozen at `(fn, wheel
+        version, params_sha, script_sha)`; an assembly fetches it from
+        the content-addressed cache and links its trace (the `unit`
+        frame, "linked not copied" — structure-workspaces §Frozen
+        units/modules, both scales). A change rebuilds only the changed
+        module; co-optimisation covers only what the assembly script
+        owns (placement, interface params) unless the author re-opens a
+        module. Rebuild cost is negligible next to evaluation (CSG
+        µs–ms per feature, atoms ms–s), so evaluation is what scales:
+        the cache, `evaluate_many`, warm start, coarse-to-fine (`cells`
+        low for the search, the final candidates re-evaluated fine, the
+        trace recording both); module-level reduced models (a frozen
+        module's response surface standing in for its solve) are a
+        named later item.
      Prior art: the cached survey `perplexity-research:506346`
      (ESO/BESO, SIMP, level-set, SA over features; OpenMDAO, Optuna,
      Nevergrad, pymoo interfaces; representation and solver-output
@@ -449,6 +477,10 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
 - The design representation (feature graph with stable ids + snapshot
   + params layer + ask/tell + rich `evaluate` outputs) is the
   recommended design, **proposed, under discussion** — not ruled.
+  Ruled within it: the recipe is mutable, built geometry immutable
+  (one creator frame per object; no in-place transform, no per-move
+  traces); modules are frozen units at both scales; scale evaluation,
+  not rebuild.
 - Kit-facing names are general (`GapDomain`); the skill is
   `precis-workspace-optimize-help`, CFD its first physics section.
 - Scripts build, evaluate and optimise with no DB and no se — the wheel
