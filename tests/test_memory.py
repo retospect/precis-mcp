@@ -60,6 +60,24 @@ def test_create_then_get(handler: MemoryHandler) -> None:
     assert f"memory {new_id}" in got.body
 
 
+def test_get_strips_leading_body_line_that_repeats_title(
+    handler: MemoryHandler,
+) -> None:
+    """gr504805: digest-style bodies (``# Heading`` opener) don't print
+    the title twice — the header carries it, the body skips the echo."""
+    rid = id_of(handler.put(text="# Digest heading\n\nDigest body text").body)
+    got = handler.get(id=rid).body
+    assert got.count("Digest heading") == 1
+    assert "Digest body text" in got
+
+
+def test_get_single_line_memory_renders_text_once(handler: MemoryHandler) -> None:
+    """gr504805: ``title == body`` (a one-line memory) renders once."""
+    rid = id_of(handler.put(text="one liner body").body)
+    got = handler.get(id=rid).body
+    assert got.count("one liner body") == 1
+
+
 def test_get_unknown_raises(handler: MemoryHandler) -> None:
     with pytest.raises(NotFound):
         handler.get(id=99999)

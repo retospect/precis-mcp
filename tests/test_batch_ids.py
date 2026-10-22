@@ -133,6 +133,18 @@ def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
     assert f"get(kind='memory', id={second}, view='fisheye+1hop')" in body
 
 
+def test_get_batch_memory_dedupes_title_echo(hub: Hub) -> None:
+    """gr504805: bodies whose first line repeats the title (digests,
+    one-liners) must not print that text twice per batch block."""
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="# Digest heading\n\nDigest body text").body)
+    second = id_of(handler.put(text="one liner body").body)
+    body = handler.get(id=_batch(first, second)).body
+    assert body.count("Digest heading") == 1
+    assert "Digest body text" in body
+    assert body.count("one liner body") == 1
+
+
 def test_tag_batch_memory_is_one_transaction(hub: Hub) -> None:
     handler = MemoryHandler(hub=hub)
     ids: list[str | int] = [

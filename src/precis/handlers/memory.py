@@ -1524,13 +1524,37 @@ class MemoryHandler(NumericRefHandler):
             return self._body_text(ref)
         return str(block.text or "")
 
+    def _strip_title_echo(self, body: str, title: str) -> str:
+        """Drop the body's leading line when it only repeats ``refs.title``.
+
+        ``_derive_title`` copies the first non-empty body line into the
+        title, so digest-style bodies (``# Heading`` opener) and
+        single-line memories would otherwise print the same text twice —
+        once in the ``# memory <id>: <title>`` header, once as the body's
+        first line (gr504805). The stored chunks are untouched; this is
+        display-only.
+        """
+        if not title:
+            return body
+        lines = body.split("\n")
+        first = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+        if first is None or lines[first].strip() != title.strip():
+            return body
+        rest = lines[first + 1 :]
+        if rest and not rest[0].strip():
+            rest = rest[1:]
+        return "\n".join(rest)
+
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Single-ref view: ``# memory <id>: <title>`` + body + tag line."""
         title = ref.title or ""
         header = f"# {self._sense()} {ref.id}"
         if title:
             header += f": {title}"
-        out = [header, "", self._body_text(ref)]
+        out = [header]
+        body = self._strip_title_echo(self._body_text(ref), title)
+        if body:
+            out += ["", body]
         # meta.rule / meta.warrant — a kind:inference memory's
         # reasoning-step label + free-text justification, rendered right
         # after the body so a proof-tree reader sees the operator + the
