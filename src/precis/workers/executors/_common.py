@@ -1568,7 +1568,7 @@ def poison_guard(
     else:
         reason = f"runner: exceeded {cap} run attempts (crash-loop guard) — failing"
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
-    set_meta(conn, ref_id, failure_class="infra")
+    set_meta(conn, ref_id, failure_class="infra", error=reason[:_ERROR_META_CAP])
     set_status(store, ref_id, FAILED, conn=conn)
     from precis.utils.job_bubble import bubble_job_failure
 

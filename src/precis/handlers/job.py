@@ -302,6 +302,99 @@ def _is_logs_path(id: str) -> bool:
     return path == "logs" or path.startswith("logs?")
 
 
+#: Cap on the final-report text ``view='transcript'`` appends — the whole
+#: point of the view is staying small (gr504491).
+_TRANSCRIPT_FINAL_CAP = 2000
+
+
+def _tool_call_digest(name: str, args: dict[str, Any]) -> str:
+    """One-line arg digest for a ``view='transcript'`` row.
+
+    ``mcp__precis__<verb>`` calls render ``verb kind='K' id='I'`` — the
+    fields a forensics read actually wants — other tools render their
+    compact input JSON, capped so a fat payload can't blow up the line.
+    """
+    verb = name.removeprefix("mcp__precis__")
+    parts = [verb]
+    for key in ("kind", "id"):
+        if args.get(key) is not None:
+            parts.append(f"{key}={args[key]!r}")
+    if len(parts) > 1:
+        return " ".join(parts)
+    import json as _json
+
+    try:
+        blob = _json.dumps(args, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        blob = str(args)
+    return blob[:120]
+
+
+def _stream_tool_lines(stream: str) -> tuple[list[str], str | None]:
+    """``(lines, final_text)`` for a ``stream-json`` transcript.
+
+    One line per *completed* tool call — ``name <arg digest> → <result
+    bytes>B [ERROR]`` — correlated ``tool_use`` → ``tool_result`` by id.
+    ``final_text`` is the trailing ``result`` event's answer (``None``
+    when absent or the input isn't a stream at all).
+    """
+    import json as _json
+
+    calls: dict[str, tuple[str, dict[str, Any]]] = {}
+    lines: list[str] = []
+    final: str | None = None
+    saw_event = False
+    for raw in (stream or "").splitlines():
+        s = raw.strip()
+        if not s.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(s)
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        t = ev.get("type")
+        if t == "result":
+            saw_event = True
+            if isinstance(ev.get("result"), str):
+                final = ev["result"]
+            continue
+        msg = ev.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        saw_event = True
+        if t == "assistant":
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    args = b.get("input")
+                    calls[str(b["id"])] = (
+                        str(b.get("name") or "?"),
+                        args if isinstance(args, dict) else {},
+                    )
+        elif t == "user":
+            for b in content:
+                if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                    continue
+                tid = str(b.get("tool_use_id") or "")
+                name, args = calls.get(tid) or ("?", {})
+                payload = b.get("content")
+                size = (
+                    len(_json.dumps(payload, ensure_ascii=False, default=str))
+                    if payload is not None
+                    else 0
+                )
+                err = " ERROR" if b.get("is_error") else ""
+                lines.append(
+                    f"[{len(lines) + 1}] {name} "
+                    f"{_tool_call_digest(name, args)} → {size}B{err}"
+                )
+    if not saw_event:
+        return [], None
+    return lines, final
+
+
 class JobHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="job",
@@ -396,6 +489,9 @@ class JobHandler(NumericRefHandler):
             _kw = {k: v for k, v in _kw.items() if k not in _LOGS_ARG_KEYS}
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        if view == "transcript":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return self._render_transcript_view(ref)
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
@@ -433,6 +529,36 @@ class JobHandler(NumericRefHandler):
             _, _, query_string = view.partition("?")
             return self._render_delta_view(query_string)
         return super()._list_view(view)
+
+    def _render_transcript_view(self, ref: Any) -> Response:
+        """``view='transcript'`` — the compact forensic read (gr504491).
+
+        One line per completed tool call plus the final report, instead
+        of the ~200 kB ``meta.transcript`` stream-json blob ``view='raw'``
+        dumps (paged, ~50k tokens). Reads ``meta.transcript_raw`` first
+        when it holds the raw stream (quest_tick's convention — its
+        ``transcript`` key is the already-compact digest log, which is
+        printed verbatim), else ``meta.transcript`` itself. A transcript
+        that isn't stream-json (digest log, text path) is rendered as-is.
+        """
+        meta = ref.meta or {}
+        raw_stream = meta.get("transcript_raw") or ""
+        transcript = meta.get("transcript") or ""
+        lines, final = _stream_tool_lines(raw_stream)
+        if not lines and not final:
+            lines, final = _stream_tool_lines(transcript)
+        if lines or final:
+            body = [
+                f"# job {ref.id} transcript — {len(lines)} tool call(s)",
+                "",
+                *lines,
+            ]
+            if final:
+                body += ["", "## final", "", final[:_TRANSCRIPT_FINAL_CAP]]
+            return Response(body="\n".join(body), result_count=1)
+        if transcript:
+            return Response(body=transcript, result_count=1)
+        return Response(body=f"job {ref.id} has no recorded transcript", result_count=0)
 
     def _render_cadence_view(self, name: str | None) -> Response:
         """``id='/cadence[/<name>]'`` — the ``scheduler_leases`` lease

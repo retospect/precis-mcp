@@ -26,6 +26,7 @@ from precis.utils.claude_agent import (
     InertDenyListError,
     call_claude_agent,
     call_claude_agent_async,
+    compact_stream_transcript,
 )
 
 
@@ -1890,3 +1891,52 @@ def test_not_logged_in_banner_with_result_event_but_no_tool_calls_raises(
     _write_stream_stub(stub_bin, stdout=stdout)
     with pytest.raises(ClaudeAgentError, match="not logged in"):
         call_claude_agent("do")
+
+
+def test_compact_stream_transcript_strips_duplicates() -> None:
+    """gr504491: the persisted stream drops ``tool_use_result`` duplicate
+    fields and ``control_response`` lines; everything else survives."""
+    import json
+
+    events = [
+        {"type": "system", "subtype": "init", "tools": ["Read"]},
+        {
+            "type": "control_response",
+            "response": {"subtype": "success", "request_id": "mcp-status-1"},
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "big result",
+                    }
+                ],
+            },
+            "tool_use_result": {"dup": "of the result above"},
+        },
+        {"type": "result", "subtype": "success", "result": "done"},
+    ]
+    stream = "\n".join(json.dumps(e) for e in events)
+    out = compact_stream_transcript(stream)
+    assert "control_response" not in out
+    assert "tool_use_result" not in out
+    # The result-of-record inside message.content survives.
+    parsed = [json.loads(l) for l in out.splitlines() if l.strip()]
+    assert len(parsed) == 4
+    user = parsed[2]
+    assert user["message"]["content"][0]["content"] == "big result"
+    # Non-stream (text/stub) input passes through verbatim.
+    assert compact_stream_transcript("plain text\nnot json") == ("plain text\nnot json")
+    assert compact_stream_transcript("") == ""

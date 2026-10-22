@@ -134,6 +134,17 @@ def _cap_partial(text: str, cap: int = _PARTIAL_RESULT_CAP) -> str:
 _JOB_TRANSCRIPT_RAW_CAP = 1_000_000
 
 
+#: ``--tools ""`` — disable the advertised built-in tool set entirely on
+#: whichever rung carries a tick call (gr504492). The tick's calls are
+#: one-shot text completions — the payload *is* the work — but the prod
+#: ``llm.chain.big``/``frontier`` fallback rung is ``claude_agent``, where
+#: the CLI defers built-ins behind ``ToolSearch``: every slice opened with
+#: two dead ``select:none`` probes ("No matching deferred tools found"),
+#: two billed model turns of pure waste. The same flag on the ``claude_p``
+#: rung is a no-op (its own ``--disallowedTools "*"`` already denies all).
+_NO_TOOLS_ARGS: tuple[str, ...] = ("--tools", "")
+
+
 def _cap_transcript_raw(text: str, cap: int = _JOB_TRANSCRIPT_RAW_CAP) -> str:
     if len(text) <= cap:
         return text
@@ -222,7 +233,11 @@ def _persist_job_transcript(
         text = (getattr(res, "text", "") or "") if res is not None else ""
         raw = raw_text or text
         if raw:
-            fields["transcript_raw"] = _cap_transcript_raw(raw)
+            from precis.utils.claude_agent import compact_stream_transcript
+
+            fields["transcript_raw"] = _cap_transcript_raw(
+                compact_stream_transcript(raw)
+            )
     try:
         with store.tx() as conn:
             row = conn.execute(
@@ -2364,6 +2379,7 @@ def _commit_rung(
             ref_id=quest_id,
             timeout_s=_tick_llm_timeout_s(),
             max_usd=_tick_llm_max_usd(attempt_tier),
+            extra_args=_NO_TOOLS_ARGS,
         )
     )
     if getattr(res, "error", None) or getattr(res, "paused", False):
@@ -2470,6 +2486,7 @@ def _reprompt_narrative_compress(
                 ref_id=quest_id,
                 timeout_s=_tick_llm_timeout_s(),
                 max_usd=_tick_llm_max_usd(tier),
+                extra_args=_NO_TOOLS_ARGS,
             )
         )
     except Exception:
@@ -2963,6 +2980,7 @@ class _TickRun:
                 prompt=prompt,
                 source="quest_review" if is_review else "quest_tick",
                 ref_id=quest_id,
+                extra_args=_NO_TOOLS_ARGS,
                 # The transport-default 600s wall cap cut big-tier reasoning off
                 # mid-thought (see _TICK_LLM_TIMEOUT_S); streaming makes the cap a
                 # hard ceiling with an idle timeout underneath, and preserves the

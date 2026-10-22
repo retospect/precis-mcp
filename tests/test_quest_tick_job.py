@@ -1352,6 +1352,28 @@ class TestDryRestEscalation:
             == "warn"
         )
 
+    def test_dry_rest_threshold_parks_quest_dormant(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr504492: at the escalation threshold the quest parks to
+        ``STATUS:dormant`` — ``active_quest_ids`` drops it, so reconcile
+        mints no more loop and the stalled-quest spend stops until a
+        human or agent resumes it by re-tagging ``STATUS:active``."""
+        from precis.quest.allocator import active_quest_ids
+        from precis.store import Tag
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._mk_quest(store)
+        store.add_tag(
+            q, Tag.closed("STATUS", "active"), set_by="system", replace_prefix=True
+        )
+        assert qt._quest_status(store, q) == "active"
+        assert q in set(active_quest_ids(store))
+        for _ in range(3):
+            qt._register_dry_rest(store, q)
+        assert qt._quest_status(store, q) == "dormant"
+        assert q not in set(active_quest_ids(store))
+
     def test_escalation_gate_reads_the_same_counter(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1607,3 +1629,16 @@ class TestRoadmapArm:
         out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
         assert isinstance(out, Yield)
         assert seen["calls"] == 1
+
+
+def test_tick_llm_requests_disable_builtin_tools() -> None:
+    """gr504492: every tick ``LlmRequest`` carries ``--tools ""`` so a
+    ``claude_agent`` chain rung advertises no deferred tools and the model
+    can't burn two turns on ``ToolSearch`` ``select:none`` probes."""
+    import inspect
+
+    from precis.quest import tick as tick_mod
+
+    assert tick_mod._NO_TOOLS_ARGS == ("--tools", "")
+    src = inspect.getsource(tick_mod)
+    assert src.count("extra_args=_NO_TOOLS_ARGS") >= 3

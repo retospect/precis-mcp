@@ -588,6 +588,8 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
         try:
             from precis.alerts import raise_alert
             from precis.quest import needs as needs_mod
+            from precis.quest.logbook import append_entry
+            from precis.store import Tag
 
             title = (getattr(ref, "title", None) or "").strip() or f"quest {quest_id}"
             # gr485483: when the loop has already told us WHAT is missing
@@ -614,27 +616,53 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
                 source=_DRY_REST_ALERT_SOURCE,
                 fingerprint=f"quest:dry-rest/{quest_id}",
                 title=(
-                    f"quest {quest_id} ({title}) appears blocked on missing "
-                    "input — needs a human"
+                    f"quest {quest_id} ({title}) parked — stalled on missing "
+                    "input, needs a human"
                 ),
                 detail=(
                     f"{n} consecutive dry rests (each after "
                     f"{_max_dry_ticks()} consecutive engaged-but-nothing-new "
-                    "ticks) — the loop keeps waking, finding the same missing "
-                    "input, and resting again. Re-minting now backs off to a "
-                    "long cooldown (~daily) instead of every worker pass, and "
-                    "self-heals the moment a tick sees frontier improvement "
-                    "or a non-dry rest — no manual nudge required, though a "
-                    "fresh acquisition or setting the quest dormant still "
-                    "resolves it sooner." + cited
+                    "ticks) — the loop kept waking, finding the same missing "
+                    "input, and resting again, burning spend on dry ticks "
+                    "every cycle (gr504492). The quest is now STATUS:dormant: "
+                    "no loop re-mints, no spend. Resume it by re-tagging "
+                    "STATUS:active once the missing input exists (a fresh "
+                    "acquisition, a landed capability) — the first tick that "
+                    "sees frontier improvement or a non-dry rest resets this "
+                    "counter and the loop runs normally again." + cited
                 ),
                 severity="warn",
                 subject_ref_id=quest_id,
             )
-        except Exception:
-            log.exception(
-                "_register_dry_rest: failed to raise alert for quest %s", quest_id
+            # Park, don't rest-and-retry (gr504492): the escalated quest is
+            # declared stuck on missing input, so re-minting at ANY cadence
+            # just re-buys the same dry slices. ``STATUS:dormant`` drops it
+            # from ``active_quest_ids`` — reconcile stops minting its loop,
+            # spend goes to zero — and the resume path is the human/agent
+            # ``STATUS:active`` re-tag ``cool_stalled`` already documents.
+            # A resumed quest that ticks dry again re-parks on its next dry
+            # rest (the counter stays armed); one that makes progress resets
+            # the counter via ``_reset_dry_rest_counter``.
+            store.add_tag(
+                quest_id,
+                Tag.closed("STATUS", "dormant"),
+                set_by="system",
+                replace_prefix=True,
             )
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"parked to dormant after {n} consecutive dry rests — "
+                    "loop kept spending on engaged-but-nothing-new ticks "
+                    "with no progress; resume by re-tagging STATUS:active "
+                    "when the missing input exists"
+                ),
+                entry_type="reflection",
+                by="agent",
+            )
+        except Exception:
+            log.exception("_register_dry_rest: failed to park quest %s", quest_id)
     return n
 
 

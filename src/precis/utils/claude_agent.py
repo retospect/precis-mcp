@@ -1242,6 +1242,51 @@ def _extract_turns_used(stderr: str) -> int | None:
         return None
 
 
+def compact_stream_transcript(stdout: str) -> str:
+    """Strip the two dead-weight artifacts from a ``stream-json`` stdout
+    before it is persisted as a job ``meta.transcript`` (gr504491).
+
+    * Every ``user`` event carries each tool result twice — once as the
+      ``tool_result`` block inside ``message.content`` (which stays: it is
+      the result of record) and again as the event's top-level
+      ``tool_use_result`` field, which is dropped. On real doctor_tick
+      transcripts that duplicate is ~70% of the blob.
+    * ``control_response`` events (the ``mcp_status`` control-request
+      replies the ``require_mcp`` gate polls — server names, config and
+      the full tool list, ~3.7 kB and identical per run) are dropped
+      whole; the run's MCP status is preserved by the ``system``/``init``
+      event and :func:`stream_mcp_server_status`.
+
+    Lines that aren't a parseable JSON object — text-path output, test
+    stubs, the ``\\n…(truncated)`` cap marker — pass through verbatim, so
+    a non-stream transcript comes back unchanged.
+    """
+    import json as _json
+
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            out.append(line)
+            continue
+        try:
+            ev = _json.loads(stripped)
+        except _json.JSONDecodeError:
+            out.append(line)
+            continue
+        if not isinstance(ev, dict):
+            out.append(line)
+            continue
+        if ev.get("type") == "control_response":
+            continue
+        if "tool_use_result" in ev:
+            ev = {k: v for k, v in ev.items() if k != "tool_use_result"}
+            out.append(_json.dumps(ev, ensure_ascii=False))
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def stream_final_text(stdout: str) -> str:
     """The assistant's final text from a ``stream-json`` stdout (the
     trailing ``result`` event's ``result`` field).
@@ -1631,6 +1676,7 @@ __all__ = [
     "InertDenyListError",
     "call_claude_agent",
     "call_claude_agent_async",
+    "compact_stream_transcript",
     "stream_final_text",
     "stream_terminal_reason",
 ]

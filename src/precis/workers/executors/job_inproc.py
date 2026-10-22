@@ -44,6 +44,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
+    _ERROR_META_CAP,
+    claim_executor_jobs,
+)
+from precis.workers.executors._common import (
     FAILED as _FAILED,
 )
 from precis.workers.executors._common import (
@@ -54,9 +58,6 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
-)
-from precis.workers.executors._common import (
-    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
     current_status as _current_status,
@@ -217,7 +218,12 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                         f"runner: uncaught exception: {exc!r}",
                         conn=conn,
                     )
-                    _set_meta(conn, ref_id, failure_class="infra")
+                    _set_meta(
+                        conn,
+                        ref_id,
+                        failure_class="infra",
+                        error=repr(exc)[:_ERROR_META_CAP],
+                    )
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()
             except Exception:  # pragma: no cover

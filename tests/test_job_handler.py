@@ -724,3 +724,53 @@ def test_logs_top_level_q_merges_and_id_query_wins(
     wins = jobs.get(id="/logs?q=beta", q="alpha")
     assert "beta dispatch" in wins.body
     assert "alpha dispatch" not in wins.body
+
+
+def test_transcript_view_compact(jobs: JobHandler) -> None:
+    """gr504491: ``view='transcript'`` renders one line per tool call plus
+    the final report — not the raw 200 kB stream-json blob."""
+    import types
+
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "mcp__precis__get",
+                                "input": {"kind": "paper", "id": 7},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": "x" * 10,
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "final report"}),
+        ]
+    )
+    ref = types.SimpleNamespace(id=1, meta={"transcript": stream})
+    resp = jobs._render_transcript_view(ref)
+    assert "1 tool call(s)" in resp.body
+    assert "get kind='paper' id=7" in resp.body
+    assert "→ 12B" in resp.body
+    assert "final report" in resp.body
+    # The verbatim fallback: a non-stream transcript renders as-is.
+    ref2 = types.SimpleNamespace(id=2, meta={"transcript": "digest line"})
+    assert jobs._render_transcript_view(ref2).body == "digest line"

@@ -645,8 +645,11 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
         # so a runaway tick can't bloat refs.meta; stored on the job ref
         # (not a chunk → never embedded, no migration).
         _TRANSCRIPT_CAP = 1_000_000
-        transcript = raw_stream[:_TRANSCRIPT_CAP]
-        if len(raw_stream) > _TRANSCRIPT_CAP:
+        from precis.utils.claude_agent import compact_stream_transcript
+
+        compacted = compact_stream_transcript(raw_stream)
+        transcript = compacted[:_TRANSCRIPT_CAP]
+        if len(compacted) > _TRANSCRIPT_CAP:
             transcript += "\n…(truncated)"
         if transcript:
             _set_meta(conn, ref_id, transcript=transcript)
@@ -1597,8 +1600,11 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
         # and idiom as plan_tick's — stored on the job ref (never a
         # chunk, so never embedded, no migration).
         _TRANSCRIPT_CAP = 1_000_000
-        transcript = outcome.raw_text[:_TRANSCRIPT_CAP]
-        if len(outcome.raw_text) > _TRANSCRIPT_CAP:
+        from precis.utils.claude_agent import compact_stream_transcript
+
+        compacted = compact_stream_transcript(outcome.raw_text)
+        transcript = compacted[:_TRANSCRIPT_CAP]
+        if len(compacted) > _TRANSCRIPT_CAP:
             transcript += "\n…(truncated)"
         if transcript:
             _set_meta(conn, ref_id, transcript=transcript)

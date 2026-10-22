@@ -72,6 +72,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
+    _ERROR_META_CAP,
+    MAX_ATTEMPTS,
+    claim_executor_jobs,
+)
+from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
 )
 from precis.workers.executors._common import (
@@ -79,10 +84,6 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     JOB_EVENT_KIND as _JOB_EVENT_KIND,
-)
-from precis.workers.executors._common import (
-    MAX_ATTEMPTS,
-    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
     RUNNING as _RUNNING,
@@ -342,7 +343,12 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                     # An uncaught exception in the dispatcher is the executor
                     # itself dying, not a physical verdict — INFRA (see
                     # ``_MAX_ATTEMPTS`` guard above for the same reasoning).
-                    _set_meta(conn, ref_id, failure_class="infra")
+                    _set_meta(
+                        conn,
+                        ref_id,
+                        failure_class="infra",
+                        error=repr(exc)[:_ERROR_META_CAP],
+                    )
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()
             except Exception:  # pragma: no cover
