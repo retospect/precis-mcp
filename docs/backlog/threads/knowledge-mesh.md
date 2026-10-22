@@ -222,6 +222,14 @@ graph-health-metrics, five parked gripes, and the seam with
    — waits on gardener-promoted axes; link filters by axis. This is
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
+2a. **backlog/ontology-v2.md** — approved by Reto 2026-10-22: measurand
+   groups on named axes, a `method` start node, material/reaction under
+   `subject`, campaign tag vocabularies promoted to taxa with
+   `instance-of` (today 0 such edges, so `under=` answers nothing),
+   tags-that-are-links to links, the OPEN folksonomy teardown (absorbed
+   `open-namespace-teardown`). Slice 0 (guards, ancestor paths, axis
+   registry) has no data change and can start now; slices 1–3 before
+   Horizon 2's validated axes land. 4b's signal 1 reads its facets.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
    universal row) — waits on Do-next 7; its ladder item moved to Do-next 6.
 4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
@@ -235,6 +243,13 @@ graph-health-metrics, five parked gripes, and the seam with
    gripes. Also carries the v1 spec's open `agentlog_id` stamping (folded
    2026-10-21); the sibling-disjointness pass reads confusion from the
    taxonomy-bootstrap probe runs, so it can start before Horizon 1.
+4b. **backlog/kg-mesh-loop.md** — approved by Reto 2026-10-22 from the
+   Pd-hydride pilot (me504790: 23 writes, 19 wins over RAG): cheap tier
+   proposes per quest cluster, strong tier writes pinned hubs and stance
+   edges, each write passes a before/after retrieval test, 2-h cadence
+   under budget caps and kill criteria. Waits on gr504789 (`link meta=`,
+   tree `g5-handlers`), the review stamps and the quest-edge direction
+   fix; slice 1 (selector + stats, SQL only) can start now.
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it
