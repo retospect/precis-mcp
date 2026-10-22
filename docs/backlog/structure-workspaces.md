@@ -40,8 +40,9 @@ read MCP over a socket) and [agent-workspace-containers](agent-workspace-contain
 2. **The agent edits and runs; the container runs the script.** The agent
    never enters the container (v1; agent-in-container is the
    `mode:build` lane, gr329258 closed but the socket bridge is unbuilt).
-   `run` = `sandbox_run mode:script` with `workspace:<slug>` on castor or
-   pollux — never a Mac, never melchior (`sandbox_run.py::_sandbox_hosts`).
+   `run` = `sandbox_run mode:script` with `workspace:<slug>` on pollux or
+   spark (W1: castor stays LLM-only) — never a Mac, never melchior
+   (`sandbox_run.py::_sandbox_hosts`).
    No DB creds, `--network none`, cgroup caps, PyPI wheels only
    (`_sandbox_script.py::stage_deps`). The script reads existing blocks
    through the per-run read-only MCP socket (`_sandbox_read_mcp.py::spawn_read_mcp`).
@@ -252,6 +253,62 @@ method}})`; a hit gives the relaxed coordinates through the existing
 `extxyz` view, a miss returns the seed and the importer queues the relax.
 `fn` and `version` come from the core wheel (qualname + package version),
 so an agent module's function is cacheable only once promoted.
+
+### Relax hierarchy — motifs, modules, interfaces, full
+
+Reto, 2026-10-22: "we like the atomic assembly but pre-relaxed modules
+are nice too — for compute? Or can we build them closer to relaxed
+state?" Both: seeds land near the minimum, and assembly relaxes only
+what assembly changed. Four levels; each atom's coordinates say which
+level and method last moved them.
+
+- **(a) Motif templates.** A motif is a local geometry the generators
+  mint: fold `c`/`r`/`C`/`R`, k3 `sp3-z` and `sp3-a` seam, k4 seam,
+  notch, cap rim (H termination), decorated column. `relaxed_motifs`
+  stores, once per `(motif, method)`, the mean internal coordinates
+  (bond lengths, angles, dihedrals over the motif column and its first
+  neighbour shell) measured from relaxed units — the service finds each
+  motif instance through the unit's trace (`frame:` of its `junction`/
+  `decorate`/`terminate` frame) and averages. `sheetnet.junction`,
+  `decorate` and `_block_from_net` take `motif=` and place atoms with
+  those values before the stick/tether pass (the cheap geometric step);
+  the hard-coded constants (`DIMER_A` 1.60 Å, 1.09 Å C–H) become the
+  fallback template `method: 'seed'`. A frame records `args.motif`; a
+  template is versioned and replaced when a new relax at the same
+  method differs by > 0.02 Å / 2°.
+- **(b) Module cache.** §Relaxed units: whole periodic units relaxed as
+  infinite, reused by `(fn, params, method, cell)`.
+- **(c) Assembly: interfaces only.** `relax.scope: 'interfaces'`: the
+  free region is every atom within `r` (default 6 Å) of the `made ∪
+  touched` set of the run's `junction`/`place`/`tile(fused)`/`terminate`
+  frames — frames, not geometry heuristics, say where assembly changed
+  things; module interiors are `fixed` (the `relax_block.py` fragment
+  machinery with `fixed` masks, generalised from `generated.junctions`
+  to frames). After convergence a single point measures forces on the
+  frozen atoms; `max|F| > relax.residual_fmax` (0.1 eV/Å) widens the
+  shell by 2 Å and repeats, at most three times; what remains is the
+  finding `assembly.strain` with the force, the atom and its frame — so
+  assembly strain is never hidden by freezing. Each pass is a `service`
+  frame `relax(scope=interfaces, method, shell=r)` touching the free
+  atoms; frozen atoms keep their unit's relax event.
+- **(d) Full relax.** `relax.scope: 'full'` on request, for final
+  numbers and validation; same frame record, `scope=full`.
+
+Rules: never mix methods across modules in one relaxed assembly — the
+importer refuses `relax.method_mix` naming the units and `next=` the
+one-method fetch (a ladder *within* one module, `ml` pre-relax then
+`xtb`, is fine and records both events). Coordinate provenance per atom
+= its last `relax` modifier frame (`level ∈ motif|unit|interfaces|full`
++ method), read by `view='trace'` `touched: true`. MACE (`ml`,
+`route_ml_model`) is the cheap pre-relax rung whenever
+`PRECIS_MLIP_NODES` is set; `uff` stays finite-only preview.
+
+Acceptance (numbers written into this item): for `cccRcccRcccR` (4, 6)
+and the tri-tube, RMSD of motif-seeded vs fully GFN2-relaxed geometry
+and GFN2 step count before/after templates (target: steps halve); an
+interfaces-only relax of the tri-tube from three cached cell units vs
+its full relax: RMSD < 0.05 Å and residual force under threshold, or
+`assembly.strain` names where not.
 
 ### Periodic ("infinite") relax
 
@@ -515,11 +572,15 @@ string (a one-line macro edit is not a script).
 Ops that **move to Python** (construction): `generate` (every
 `hexfold_scene` feature type, `typed_features._BUILDERS`), `join`
 (`precis_se/atomic/join.py`), `terminate`, and the never-built `stamp`,
-`cap`, `decorate` ops of the modules spec. Timeline: callable both ways
-from slice 1; once `tool_ledger` shows 30 days without a `generate`/`join`
-call outside tests, the op refuses with `next=` naming the workspace path
-(the `seam.sp2_retired` pattern); stored blocks keep their coordinates and
-`regenerate` keeps working through the core wheel (same functions).
+`cap`, `decorate` ops of the modules spec. Ruled W5 (Reto, 2026-10-22):
+they are legacy — "revision, uv and code will displace it; no real users,
+all is dev for now". No 30-day clock, no thin-wrapper phase: the slice
+that makes workspace `run` usable (slice 1) removes them in the same
+change — the op refuses with `next=` naming the workspace path (the
+`seam.sp2_retired` pattern) and their skill text goes with them; stored
+blocks keep their coordinates and `regenerate` keeps working through the
+core wheel (same functions). Until slice 1 lands they stay as-is (nothing
+else to build with). Pose, connect and the small edits stay.
 
 Inspection stays and grows in MCP: `validate`, `drc`, `clearance`, `sites`,
 `catalogue`, `mold`, `stability`, `freedom`, renders, `view='block'` now
@@ -533,8 +594,8 @@ traces).
   one import path; definitions are functions, examples are tests.
 - Tools, not black boxes: every block is a script sha + params anyone can
   re-run; the echo names the reproducing call.
-- Retire broken things: `prism-k3-120-z` refusal stands; `generate`/`join`
-  retire on the ledger evidence above.
+- Retire broken things: `prism-k3-120-z` refusal stands; `generate`/`join`/
+  `terminate` retire with slice 1 (W5).
 - Secrets: the container has none; the read MCP token rides the child's
   env (`_sandbox_read_mcp.py::build_serve_env`); the agent sees a job id.
 - One way: a structure is made by a script or by a surviving small op,
@@ -547,14 +608,16 @@ traces).
 | # | delivers | extends | acceptance | size |
 |---|---|---|---|---|
 | 0 | **Importer + goldens, no container.** `precis_se/workspace_import.py`, manifest schema, extXYZ reader (with the `maker` per-atom column), cad graph import (`frame` on instances), `trace.json` reader stored once on the run, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/hexfold/data/goldens`, findings, trace key set) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated` (incl. `trace`); a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; a 25k-frame trace imports with `trace.truncated`; goldens pass on main | M, 1 build |
-| 1 | **Workspace kind + `run`.** `folder`-backed workspace ref linked `part-of` its design, with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s`; fork copies the folder; `tree_to_json` embeds files + lock + wheel | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path, `persist.tree_to_json`/`tree_from_json` | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease); an exported design restores with its folder and `uv run main.py` rebuilds the block byte-identical on a laptop | L, 2–3 builds; needs sandbox slice 4 (lane live) |
+| 1 | **Workspace kind + `run`.** `folder`-backed workspace ref linked `part-of` its design, with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s`; fork copies the folder; `tree_to_json` embeds files + lock + wheel; **removes `generate`, `join`, `terminate` (refusal naming the workspace path) and their skill sections (W5)** | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path, `persist.tree_to_json`/`tree_from_json` | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease); an exported design restores with its folder and `uv run main.py` rebuilds the block byte-identical on a laptop; `generate` refuses with the workspace `next=` and no skill names it | L, 2–3 builds; needs sandbox slice 4 (lane live) |
 | 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item, trace overhead < 5 % of build); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
 | 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
 | 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector | `handlers/python.py` roots, `_python_render.py`, `view='trace'` | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root | S–M, 1 build; after 2t |
 | 2a | **Assembly API.** `precis_geom.assembly`: `tile` (packed, fused), `mirror`, `translate`/`rotate`/`transform`, `place` (port-to-port), `assembly`/`instance`; `array_block`, `instance_block`, `set_pose`, `connect` rewired onto it; frames per call; `op` frames on the op path | `precis_se/ops.py`, `blocktree/ops.py`, `cad/vec.py` (improper transforms), `sheetnet.junction` | `array_block` and `tile(fused=False)` on one template give byte-identical trees; `tile(fused=True, n=3)` of a 2-period prism equals the 6-period prism's SHA; `mirror` of a chiral tube flips the chiral index and emits the INFO; a nested `assembly` places through its parent's port and `frame:` on it selects every child atom | M–L, 2 builds; after 2, before 6 |
-| 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks; then the retirement clock starts | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
+| 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks (the `generate` leg runs at the pre-slice-1 sha or through the core wheel directly, since the op is gone by then) | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
 | 4 | **Relax interface, atomic + cache.** Manifest `relax:` incl. `periodic`/`kspacing`/`supercell`, `relaxed_units` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types, vacuum padding and `relax.period_mismatch` | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal`, `structure/cache.py` key | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params and differs by `cell`/`supercell`/`kspacing`; relaxed atoms keep their creator frames and the trace gains one `service` frame whose `touched` equals the displaced set; a 1D-periodic manifest relaxes a `pbc` unit, not the capped block | M, 1 build; GFN2 route is the known dependency |
 | 4p | **Infinite-relax ladder gaps.** `cell='axis'` mask; supercell rule for Γ-only rungs; `kspacing` → `kpts` on the `dft-*` request path and in the GPAW container; `gfnff` rung (xtb-python extra); `tile` + `terminate` + tethered end relax as the unit→finite path | `structure/relax.py` (`CELL_MODES`, `_CELL_MASKS`), `workers/job_types/struct_relax.py`, `sheetnet`, `hexfold-tethered-relax-op` | A 1D unit relaxed `axis` at `xtb` reports the period change; the same unit at `dft-fast` records `kpts` from 0.2 Å⁻¹; `tile(unit, 6)` + H caps gives the census of the (4, 6) A2 target with interior coordinates equal to the unit's; `gfnff` on a periodic cell runs or refuses with the install hint | M, 1–2 builds; DFT part needs `PRECIS_DFT_NODE` |
+| 4m | **Motif templates.** `relaxed_motifs` migration, extraction from relaxed units through their frames, `motif=` on `junction`/`decorate`/`_block_from_net`, `seed` fallback, versioning | `sheetnet.py`, `hexfold_relax_job.py` write-back, `relaxed_units` | Motif-seeded A2 and tri-tube seeds: RMSD vs GFN2 minimum and step counts recorded before/after; slice-0 goldens unchanged under `method: 'seed'` | M, 1 build; after 4u |
+| 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched` | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'` | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level | M, 1 build; after 4u, 2t |
 | 4u | **Relaxed-unit catalogue.** Units as library-design blocks with `generated.generator='unit'`, `blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
 | 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
@@ -584,8 +647,9 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Two sources of truth for files** (DB folder vs host git). The DB is
   truth; git is a run log. A host repo that diverges (manual edits on the
   host) is reset to the staged tree at the next run, and the echo says so.
-  Decided (2026-10-22, §Code inside the design): the folder is
-  `part-of` the design; host-git-only storage is dropped.
+  §Code inside the design assumes the DB folder (W3, still open with
+  Reto); under host-git-only the `part-of` link points at a folder ref
+  mirrored from the host repo at each run, and edits are jobs.
 - **Export size.** Embedding the `precis-geom` wheel per design export
   is a few MB each; a design with many promoted modules grows. The
   export lists wheel shas and skips a wheel already present in the
@@ -593,9 +657,6 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Latency misses 10 s** if the lane polls slowly or the venv is cold.
   Measured in slice 2; the fallback is a dedicated `ws` lane with a 1 s
   poll.
-- **Host lane conflict.** This item and the sandbox spec say castor +
-  pollux (2026-10-18); `threads/local-compute.md` 2026-10-15 made castor
-  vLLM-only and moved `job_claude_docker` to spark. Open question 1.
 - **Import caps vs real structures.** A 7k-atom tunnel scene is normal;
   caps are per-block atoms and bytes, set from the largest stored block
   plus margin, not a guess.
@@ -605,36 +666,42 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Agent modules as a dumping ground.** Promotion needs review; an
   unpromoted module is not importable elsewhere and not cacheable.
 
+## Rulings (Reto, 2026-10-22)
+
+- **W1 hosts:** pollux + spark; castor stays LLM-only; never the operator
+  Mac, never melchior.
+- **W2 private packages:** a `--find-links` wheel folder on the sandbox
+  hosts, no index server.
+- **W4 macro relax v1:** check-and-report + existing formfind; mate
+  solver, settle and FEA later.
+- **W5 construction ops:** legacy; retired in the slice that makes `run`
+  usable, no clock, no wrapper phase (§MCP surface).
+- **W6 agent-in-container:** stays outside until a case needs it.
+- Decided in the text: loop collapse past 64 same-site siblings; `op`
+  frames for surviving ops.
+
 ## Open questions for Reto
 
-1. **Hosts.** castor + pollux (the brief) vs the 2026-10-15 lane ruling
-   (castor = vLLM only; sandbox on spark). Recommendation: pollux + spark
-   for `ws` runs; castor only if the vLLM exclusivity is lifted.
-2. **Where the private index lives.** Recommendation: a `--find-links`
-   directory on the sandbox hosts' shared dir, no server; revisit only if a
-   non-sandbox consumer needs it.
-3. **Macro relax scope.** v1 check-and-report plus formfind (recommended),
-   or build a mate solver now. A solver is a 2–3 build item with no
-   current consumer; the findings are what fail today.
-4. **Retirement clock for `generate`/`join`.** 30 days of zero ledger
-   calls (recommended) vs retire at the proof slice's landing.
-5. **Trace granularity.** Maker as a per-atom column and every
+1. **W3 workspace file storage.** DB folder ref `part-of` the design +
+   host git as a run log (recommended: editable from the session MCP, no
+   cross-host write path, the export path in §Code inside the design) vs
+   host-git-only with edits as jobs (simpler trust story, slower loop).
+2. **Trace granularity.** Maker as a per-atom column and every
    `/work/**.py` frame as a user frame (recommended: rides extXYZ and
    relax versions; the agent's helpers are what it edits) vs a side
    table `(structure, ordinal) → frame` and `main.py` top level only.
-6. **What the relax cache holds.** The periodic unit, tiled and capped
+3. **What the relax cache holds.** The periodic unit, tiled and capped
    per consumer (recommended: one relax serves every length; caps are a
    cheap tethered end relax) vs one cached relax per `(unit, periods,
    cap)`.
-7. **Stale policy on a wheel bump.** Golden-diff re-stamp (recommended:
+4. **Stale policy on a wheel bump.** Golden-diff re-stamp (recommended:
    a unit goes stale only when its generator's output changed) vs
    version-equality (every bump stales every unit — a recompute storm
    on no-op releases).
-8. **Self-contained export.** Embed the `precis-geom` and promoted-module
+5. **Self-contained export.** Embed the `precis-geom` and promoted-module
    wheels in the design export (recommended: `uv run` works offline
    except PyPI) vs publish wheels to GitHub releases and pin by version
    (smaller exports, needs the network and a release step per wheel).
-
-Decided in the text, not open: loop collapse past 64 same-site siblings;
-`op` frames for surviving ops; workspace files `part-of` the design;
-agent-in-container stays in "Later, named".
+6. **Interface-relax threshold.** Residual force on frozen atoms 0.1 eV/Å
+   with a 6 Å free shell widened by 2 Å up to three times (recommended,
+   from the tethered-relax defaults) vs a per-method table.
