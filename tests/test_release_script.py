@@ -462,6 +462,28 @@ def test_stale_verdict_reruns_ci_on_the_same_sha_and_deploys(rig: Rig) -> None:
     assert rig.deploy_log() == [f"{s} --pinned"]
 
 
+def test_partial_deploy_resumes_after_fresh_same_sha_verdict(rig: Rig) -> None:
+    s = rig.shas["c3"]
+    failed = _release(rig, "--sha", s, *FAST, **_verdict(s), DEPLOY_STUB_RC="9")
+    assert failed.returncode == 9, failed.stdout + failed.stderr
+    journal = _round_json(rig)["release"]["deployment"]
+    assert journal["sha"] == s and "rollout_at" not in journal
+    _verdict_file(rig, "v-stale", s, 9.0)
+    _verdict_file(rig, "v-fresh", s, 0.1)
+    (rig.gh_dir / "run-id").write_text("4242\n", encoding="utf-8")
+    stale = rig.round("deploy", LGM_EXACT_HOOK=_FLIP_HOOK)
+    assert stale.returncode == 1 and "re-gate the same release head" in stale.stderr
+    assert rig.deploy_log() == [f"{s} --pinned"]
+    resumed = _release(
+        rig, "--sha", s, *FAST, LGM_EXACT_HOOK=_FLIP_HOOK, DEPLOY_STUB_VERIFY="1"
+    )
+    assert resumed.returncode == 3, resumed.stdout + resumed.stderr
+    assert "re-ran check.yml run 4242" in resumed.stdout
+    assert _round_json(rig)["release"]["deployment"]["sha"] == s
+    assert rig.deploy_log() == [f"{s} --pinned", f"{s} --pinned"]
+    assert rig.origin_ref("release/r1") == s
+
+
 def test_stale_verdict_rerun_going_red_still_refuses(rig: Rig) -> None:
     s = rig.shas["c3"]
     _verdict_file(rig, "v-stale", s, 9.0)

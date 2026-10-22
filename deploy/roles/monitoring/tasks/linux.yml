@@ -3,6 +3,43 @@
 # main.yml), Alertmanager, and the precis webhook receiver. node_exporter on
 # every node is playbooks/18-node-exporter.yml, not this role.
 
+- name: Ensure NAS restic metric directory
+  ansible.builtin.file:
+    path: "{{ nas_restic_textfile_dir }}"
+    state: directory
+    owner: root
+    mode: "0755"
+  become: true
+
+- name: Ensure local monitoring script directory
+  ansible.builtin.file:
+    path: "{{ ops_script_dir }}"
+    state: directory
+    owner: root
+    mode: "0755"
+  become: true
+
+- name: Deploy NAS restic heartbeat probe
+  ansible.builtin.template:
+    src: nas-restic-heartbeat-metrics.sh.j2
+    dest: "{{ ops_script_dir }}/nas-restic-heartbeat-metrics.sh"
+    owner: root
+    mode: "0755"
+  become: true
+
+- name: Seed NAS restic heartbeat metric
+  ansible.builtin.command: "{{ ops_script_dir }}/nas-restic-heartbeat-metrics.sh"
+  become: true
+  changed_when: false
+
+- name: Schedule NAS restic heartbeat probe
+  ansible.builtin.cron:
+    name: "NAS restic heartbeat metric"
+    minute: "11"
+    job: "{{ ops_script_dir }}/nas-restic-heartbeat-metrics.sh"
+    user: root
+  become: true
+
 - name: Install Prometheus and Alertmanager (Linux)
   ansible.builtin.apt:
     name:

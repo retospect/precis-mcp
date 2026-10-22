@@ -59,3 +59,6 @@ precis_autocatpath_seed_cpuset: "0-4,10-14"
 # fleet, so on NFS any node's deploy could rewrite a script root runs on
 # another (cluster-fileserver-move ruling 8). Override per host in host_vars.
 ops_script_dir: /usr/local/libexec/precis-ops
+# The monitoring node reads the NAS restic success marker into its Linux
+# node_exporter textfile collector (the NAS itself has no exporter).
+nas_restic_textfile_dir: /var/lib/prometheus/node-exporter

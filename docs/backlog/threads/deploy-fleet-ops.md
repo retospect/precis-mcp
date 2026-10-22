@@ -17,6 +17,10 @@ effort: medium
 
 ## Thread context
 
+Host play owed: after the colima launchd retry template lands, builder-ce or
+Reto applies `precis_worker_agent` to the affected worker group and verifies
+a failed status force-stops stale lima state before restart.
+
 Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when a deploy is verifiable, concurrent-safe and leaves no

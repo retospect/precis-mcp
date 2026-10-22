@@ -17,6 +17,10 @@ effort: medium
 
 ## Thread context
 
+Host play owed: after the restic heartbeat probe/rule lands, the deployment
+owner applies playbook 18 to the monitoring group before 08, checks
+`nas_restic.prom` is scraped, and verifies the eight-day alert evaluates.
+
 **Status:** ends when main always has a verdict and every fleet alert is
 addressable by failure id and host identity, so silence means healthy. Four
 things landed 2026-09-30: main-ci-status no longer announces either conclusion

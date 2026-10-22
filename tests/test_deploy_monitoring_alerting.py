@@ -8,9 +8,13 @@ binary is assumed: the rules file is parsed as YAML and its shape checked.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import jinja2
+import pytest
 import yaml
 
 _ROLE = Path(__file__).resolve().parent.parent / "deploy" / "roles" / "monitoring"
@@ -19,6 +23,9 @@ _DEPLOY = _ROLE.parent.parent
 _VARS = {
     "ansible_managed": "x",
     "os_family": "linux",
+    "group_names": ["monitoring"],
+    "ansible_host": "203.0.113.11",
+    "nas_restic_textfile_dir": "/var/lib/prometheus/node-exporter",
     "postgres_host": "pg",
     "groups": {"all": ["pg", "n1"]},
     "hostvars": {
@@ -89,6 +96,79 @@ def test_rules_template_parses_into_nonempty_valid_rules() -> None:
         assert r["labels"]["severity"] in {"critical", "warning"}
 
 
+def test_restic_alert_uses_eight_day_success_marker_and_detects_probe_loss() -> None:
+    rules = {
+        r["alert"]: r
+        for g in yaml.safe_load(_render("alert_rules.yml.j2"))["groups"]
+        for r in g["rules"]
+    }
+    assert (
+        rules["NASResticHeartbeatOld"]["expr"]
+        == "time() - precis_nas_restic_last_ok_timestamp_seconds > 691200"
+    )
+    assert rules["NASResticHeartbeatOld"]["for"] == "5m"
+    assert (
+        "node_textfile_mtime_seconds" in rules["NASResticHeartbeatMetricStale"]["expr"]
+    )
+    assert "> 7200" in rules["NASResticHeartbeatMetricStale"]["expr"]
+    assert (
+        'instance="203.0.113.11:9100"'
+        in rules["NASResticHeartbeatMetricAbsent"]["expr"]
+    )
+    assert (
+        "precis_nas_restic_last_ok_timestamp_seconds"
+        in rules["NASResticHeartbeatMetricAbsent"]["expr"]
+    )
+    assert "NASResticHeartbeatOld" not in _render("alert_rules.yml.j2", group_names=[])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell probe")
+def test_restic_probe_reports_marker_mtime_or_zero_when_missing(
+    tmp_path: Path,
+) -> None:
+    heartbeat = tmp_path / "restic-last-ok"
+    metric = tmp_path / "nas_restic.prom"
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        _render(
+            "nas-restic-heartbeat-metrics.sh.j2",
+            nas_restic_textfile_dir=str(tmp_path),
+            monitoring_restic_heartbeat_file=str(heartbeat),
+        ),
+        encoding="utf-8",
+    )
+    for expected in (0, 1_700_000_000, 0):
+        if expected:
+            heartbeat.write_text("ok", encoding="utf-8")
+            os.utime(heartbeat, (expected, expected))
+        else:
+            heartbeat.unlink(missing_ok=True)
+        subprocess.run(["sh", str(script)], check=True)
+        assert metric.read_text(encoding="utf-8") == (
+            f"precis_nas_restic_last_ok_timestamp_seconds {expected}\n"
+        )
+    assert list(tmp_path.glob("nas_restic.prom.*")) == []
+
+
+def test_node_exporter_collects_restic_metric_on_monitoring_host_only() -> None:
+    template = (
+        _ROLE.parent / "node_exporter/templates/prometheus-node-exporter.default.j2"
+    ).read_text(encoding="utf-8")
+    env = jinja2.Environment()
+    settings = {
+        "node_exporter_extra_args": [],
+        "node_exporter_fs_mount_exclude": "^/(dev|proc)($|/)",
+        "nas_restic_textfile_dir": _VARS["nas_restic_textfile_dir"],
+    }
+    rendered = env.from_string(template)
+    assert "--collector.textfile.directory=/var/lib/prometheus/node-exporter" in (
+        rendered.render(**settings, group_names=["monitoring"])
+    )
+    assert "--collector.textfile.directory" not in rendered.render(
+        **settings, group_names=[]
+    )
+
+
 def test_receiver_unit_is_loopback_and_carries_the_ops_target() -> None:
     text = _render("precis-alertmanager-receiver.service.j2")
     assert "alertmanager-receiver \\\n  --host 127.0.0.1 --port 9095" in text
@@ -109,6 +189,9 @@ def test_linux_tasks_deploy_every_piece_and_verify() -> None:
     assert "src: alertmanager.yml.j2" in linux
     assert "validate: amtool check-config %s" in linux
     assert "precis-alertmanager-receiver.service.j2" in linux
+    assert "nas-restic-heartbeat-metrics.sh.j2" in linux
+    assert "Seed NAS restic heartbeat metric" in linux
+    assert "Schedule NAS restic heartbeat probe" in linux
     assert "/api/v1/alertmanagers" in verify and "/api/v1/rules" in verify
     # WAL replay makes Prometheus 503 (no JSON) after a restart: wait on
     # /-/ready first, and never dereference .json unconditionally (gr495696).

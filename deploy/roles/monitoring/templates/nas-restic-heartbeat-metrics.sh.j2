@@ -1,0 +1,13 @@
+#!/bin/sh
+# The last successful backup, not the probe run, determines freshness.
+# A missing/unreadable marker or hung NAS mount emits zero and alerts.
+set -eu
+out="{{ nas_restic_textfile_dir }}/nas_restic.prom"
+tmp="${out}.$$"
+trap 'rm -f "$tmp"' EXIT
+stamp=$(timeout 10 stat -c %Y "{{ monitoring_restic_heartbeat_file }}" 2>/dev/null) || stamp=0
+case "$stamp" in
+  ''|*[!0-9]*) stamp=0 ;;
+esac
+printf 'precis_nas_restic_last_ok_timestamp_seconds %s\n' "$stamp" > "$tmp"
+mv -f "$tmp" "$out"

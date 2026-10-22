@@ -11,6 +11,7 @@
 # channel). thread monitors-that-go-quiet, Do-next 1 (gr465126).
 
 monitoring_config_dir: "{{ '/etc/prometheus' if os_family == 'linux' else '/usr/local/etc/prometheus' }}"
+monitoring_restic_heartbeat_file: "{{ nas_root }}/backups/restic-last-ok"
 
 # Scrape the DB node's postgres_exporter (:9187) and pgbouncer_exporter
 # (:9127) and load the rules only their metrics feed (PostgresDown). Off by

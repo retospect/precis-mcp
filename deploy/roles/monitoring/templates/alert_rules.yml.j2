@@ -62,6 +62,33 @@ groups:
           severity: warning
         annotations:
           summary: "{% raw %}colima docker-fs metric file not refreshed for 15m on {{ $labels.instance }}{% endraw %}"
+{% if 'monitoring' in (group_names | default([])) %}
+      # The Linux monitoring node probes the NAS marker hourly; a failed
+      # backup, missing marker, dead probe, or missing collector all alert.
+      - alert: NASResticHeartbeatOld
+        expr: time() - precis_nas_restic_last_ok_timestamp_seconds > 691200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}NAS restic backup last succeeded over 8 days ago on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NASResticHeartbeatMetricStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*nas_restic.prom"} > 7200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}NAS restic heartbeat probe has stopped on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NASResticHeartbeatMetricAbsent
+        expr: up{job="node", instance="{{ ansible_host }}:9100"} == 1 unless on(instance) precis_nas_restic_last_ok_timestamp_seconds
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NAS restic heartbeat metric is missing on the monitoring node"
+{% endif %}
 {% if monitoring_db_exporters | bool %}
       - alert: PostgresDown
         expr: pg_up == 0

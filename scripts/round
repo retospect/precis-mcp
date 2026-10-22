@@ -54,6 +54,10 @@ check.yml run/attempt with distinct required jobs: no earlier green SHA or
 main fallback. The head need not yet be
 on main (an interrupted release fix can still need its forward merge).
 
+A partial rollout keeps its pinned SHA: when its verdict has aged past 6h,
+re-run check.yml on that exact release head (scripts/release does this),
+then resume the same deployment. An old verdict is never an exemption.
+
 A separate advisory lifecycle lock serializes round mutations and release
 fix final sections; main lands never take it. Kernel ownership avoids age
 steals during slow rollout, and the deploy child inherits ownership if the
@@ -851,10 +855,16 @@ def _refusal(root: Path, f: dict[str, Any]) -> str:
     if not math.isfinite(max_h) or max_h <= 0:
         return "PRECIS_ROUND_MAX_CANDIDATE_HOURS must be a positive finite number"
     if age > max_h:
-        return (
+        reason = (
             f"candidate {cand[:8]}'s verdict is {age:.1f}h old"
             f" (limit {max_h:g}h, PRECIS_ROUND_MAX_CANDIDATE_HOURS)"
         )
+        if f.get("release_branch"):
+            reason += (
+                f"; re-gate the same release head {cand[:8]} via check.yml"
+                " (scripts/release re-runs stale CI), then retry deploy"
+            )
+        return reason
     if not f["gated_is_ancestor"] and not (
         f.get("release_branch") and f.get("gated_is_descendant_in_main")
     ):

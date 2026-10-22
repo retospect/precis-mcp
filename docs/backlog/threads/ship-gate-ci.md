@@ -18,6 +18,10 @@ design-review: yes
 
 ## Thread context
 
+A partial release stays pinned; if its 6h verdict expires, re-gate the same
+head through `scripts/release` before retrying `scripts/round deploy`. Do not
+abandon a partial journal.
+
 Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when the ship gate, CI lanes and worktree reaper never

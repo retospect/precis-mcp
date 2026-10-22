@@ -7,8 +7,10 @@
    the gateway reboot it stayed DOWN, which would have broken every
    containerized call_claude_agent pass silently. This daemon is the fix:
    RunAtLoad starts it at boot; StartInterval re-checks every 5 min so a
-   crashed VM self-heals. `colima status` is a cheap no-op when it's already
-   up, so the steady state is one quick check per interval. Runs as deploy
+   crashed VM self-heals. A failed status can leave a stale lima hostagent
+   after a reboot; force-stop it before starting again. `colima status` is
+   a cheap no-op when it's already up, so the steady state is one quick
+   check per interval. Runs as deploy
    (owns the VM + the docker.sock the worker dials). vz backend starts fine
    from a non-GUI launchd context (verified from ssh+sudo, same shape). #}
 <plist version="1.0">
@@ -20,7 +22,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>{{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} status &gt;/dev/null 2&gt;&amp;1 || {{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} start</string>
+    <string>{{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} status &gt;/dev/null 2&gt;&amp;1 || { {{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} stop --force &gt;/dev/null 2&gt;&amp;1 || true; {{ precis_colima_bin | default('/opt/homebrew/bin/colima') }} start; }</string>
   </array>
 
   <key>UserName</key>
