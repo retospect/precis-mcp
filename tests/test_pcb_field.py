@@ -900,7 +900,8 @@ def test_wirelength_worse_basin_is_refused(monkeypatch) -> None:
         def __init__(self, xx: np.ndarray):
             self.x = xx
 
-    monkeypatch.setattr(F, "minimize", lambda fg, z, **kw: _Res(z_bad))
+    # The repair descent minimises x, y only (z_bad's leading block).
+    monkeypatch.setattr(F, "minimize", lambda fg, z, **kw: _Res(z_bad[: z.size]))
     poses0 = (ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy())
     res = F.polish_placement(engine)
     assert not res.applied, res

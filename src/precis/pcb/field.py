@@ -83,7 +83,9 @@ class FieldBoard:
     ``tree_nets`` lists the supply/ground/pour nets excluded from T1 that
     keep a spanning-tree term (``SupplyTree``, D14) at ``tree_weights``.
     ``x0/y0/th0`` are the starting poses; ``vias0`` is ``(n_vias, 2)``
-    (carried in the state, unused by T1/T4)."""
+    (carried in the state, unused by T1/T4). ``unpulled_nets`` names the
+    nets above :data:`MAX_PULLED_NET_PINS` pins that neither T1 nor the
+    tree pulls (reported on the polish result, gr504558)."""
 
     parts: tuple[Part, ...]
     nets: tuple[tuple[tuple[int, int], ...], ...]
@@ -93,6 +95,7 @@ class FieldBoard:
     vias0: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     tree_nets: tuple[tuple[tuple[int, int], ...], ...] = ()
     tree_weights: tuple[float, ...] = ()
+    unpulled_nets: tuple[str, ...] = ()
 
 
 class Layout:
@@ -1094,12 +1097,18 @@ DENSITY_BINS = 8
 #: board — legal and lower-E, but worse where it counts).
 POLISH_WIRELENGTH_WORSEN = 0.02
 
+#: A net with more pins than this gets no pull at all — neither T1 nor the
+#: D14 tree (a pull spanning most of the board clusters everything onto
+#: its centroid). Deliberate, and reported: ``FieldBoard.unpulled_nets`` /
+#: ``PolishResult.unpulled_nets`` name every net it drops (gr504558).
+MAX_PULLED_NET_PINS = 12
+
 
 @dataclass(frozen=True)
 class PolishResult:
     applied: bool
-    #: applied | unplaced | no_free_vars | no_gain | illegal |
-    #: wirelength_worse | measures_worse | bad_gradient
+    #: applied | unplaced | no_free_vars | empty_bounds | no_gain |
+    #: illegal | wirelength_worse | measures_worse | bad_gradient
     reason: str
     e_before: float
     e_after: float
@@ -1112,6 +1121,9 @@ class PolishResult:
     #: annealer's risk term prices margins the field path does not
     #: optimize, so it can rise on an accepted pose (Reto 2026-10-21).
     anneal_delta: float | None = None
+    #: Nets above :data:`MAX_PULLED_NET_PINS` pins the field did not pull
+    #: (``FieldBoard.unpulled_nets``).
+    unpulled_nets: tuple[str, ...] = ()
 
     def summary(self) -> str:
         out = (
@@ -1120,6 +1132,11 @@ class PolishResult:
         )
         if self.anneal_delta is not None:
             out += f"; anneal {self.anneal_delta:+.2f}"
+        if self.unpulled_nets:
+            out += (
+                f"; unpulled >{MAX_PULLED_NET_PINS}-pin nets: "
+                f"{', '.join(self.unpulled_nets)}"
+            )
         return f"{out} ({self.detail})" if self.detail else out
 
 
@@ -1184,10 +1201,14 @@ def board_from_engine(
     nets: list[tuple[tuple[int, int], ...]] = []
     tree_nets: list[tuple[tuple[int, int], ...]] = []
     tree_weights: list[float] = []
+    unpulled: list[str] = []
     for net, members in sorted(by_net.items()):
-        if len({i for i, _ in members}) < 2 or len(members) > 12:
+        if len({i for i, _ in members}) < 2:
             continue
         name = str(ir.net_name[net])
+        if len(members) > MAX_PULLED_NET_PINS:
+            unpulled.append(name)
+            continue
         if int(ir.net_plane_layers[net]) != 0 or _RAIL_RE.match(name):
             # D14: rails and plane nets keep a spanning-tree pull, never a
             # T1 wirelength one; ground's weight is lowest (it spans every
@@ -1226,6 +1247,7 @@ def board_from_engine(
         th0=th0,
         tree_nets=tuple(tree_nets),
         tree_weights=tuple(tree_weights),
+        unpulled_nets=tuple(unpulled),
     )
     return board, springs
 
@@ -1400,7 +1422,9 @@ def polish_placement(
     taking every move at once, and (d) the authored measures' bill
     (``_money_measures``) not rising and no satisfied hard measure
     broken — the field energy does not model measures, so the polish may
-    not trade them away (``measures_worse``) — the engine's ``total()`` delta is reported
+    not trade them away (``measures_worse``) — a part the legality gate
+    refuses is reverted to its seed and the gates re-run on the board
+    actually written — the engine's ``total()`` delta is reported
     as ``anneal_delta``, a comparison value, not the accept gate (Reto
     2026-10-21: the field path's gate is pre-route DRC legality plus the
     field's own energy). Otherwise the board is left exactly as it was.
@@ -1426,9 +1450,10 @@ def polish_placement(
     if built is None:
         return PolishResult(False, "unplaced", 0.0, 0.0, ())
     board, springs = built
+    unpulled = board.unpulled_nets
     lay = Layout(board)
     if lay.size == 0:
-        return PolishResult(False, "no_free_vars", 0.0, 0.0, ())
+        return PolishResult(False, "no_free_vars", 0.0, 0.0, (), unpulled_nets=unpulled)
     t1 = ConnectivityPull(lay, gamma=gamma)
     # The courtyards are the engine's, already inflated by its 0.40 mm reserve
     # on each side. Unclassed pairs keep slice 1's soft 0.40 mm on top of
@@ -1498,7 +1523,25 @@ def polish_placement(
     )
     if not probe.dot_rel_err < 5e-2:
         _LOG.warning("field_polish refused: gradient check failed (%s)", probe)
-        return PolishResult(False, "bad_gradient", e0, e0, ())
+        return PolishResult(False, "bad_gradient", e0, e0, (), unpulled_nets=unpulled)
+    # An authored soft pin whose travel disc misses the domain leaves an
+    # empty box (x0 > x1): L-BFGS-B raises on it, crashing the place job
+    # (gr504558). Refuse instead, naming the parts.
+    empty = [
+        str(ir.instance_refdes[k])
+        for k in np.flatnonzero(lay.free_xy)
+        if bound[k, 0] > bound[k, 2] or bound[k, 1] > bound[k, 3]
+    ]
+    if empty:
+        return PolishResult(
+            False,
+            "empty_bounds",
+            e0,
+            e0,
+            (),
+            f"no legal box: {', '.join(empty)}",
+            unpulled_nets=unpulled,
+        )
     n_rot = int(lay.free_rot.sum())
 
     # L-BFGS-B gets the legality gate's own per-part box as bounds
@@ -1620,6 +1663,7 @@ def polish_placement(
     # raster/45° snap that collides should cost the snap, not the descent.
     reason = "no_gain"
     e1 = e0
+    gate_refusals: list[tuple[str, float, tuple[int, ...], str]] = []
     refused: tuple[int, ...] = ()
     detail = ""
     lanes = {
@@ -1664,11 +1708,18 @@ def polish_placement(
         xs: np.ndarray, ys: np.ndarray, ths: np.ndarray, rot: np.ndarray, lane: str
     ) -> PolishResult | None:
         """The accept gates for one candidate pose — E gain at the final
-        weights, the never-worse wirelength guard, and the all-at-once
-        (then partial) legality gate — applying the move on success.
+        weights, the never-worse wirelength guard, the all-at-once (then
+        partial) legality gate and the measures gate — applying the move
+        on success. A part the legality gate refuses is reverted to its
+        seed pose and the rest kept (partial accept, gr503640); E and
+        wirelength are then re-measured on exactly the board that is
+        written, reverted parts at their seed (gr504558).
         ``None`` when a gate refuses; ``reason``/``refused``/``detail``
-        carry the cause as the inline cascade did."""
+        carry the cause, ``reason`` reset per call so no earlier lane's
+        refusal leaks into this one."""
         nonlocal reason, e1, refused, detail
+        reason = "no_gain"
+        refused = ()
         e1 = final.value_grad(lay.pack_from(xs, ys, ths))[0]
         if not e1 < e0:
             return None
@@ -1677,83 +1728,82 @@ def polish_placement(
         if _wirelength(xs, ys, ths) > wl0 * (1.0 + POLISH_WIRELENGTH_WORSEN):
             reason = "wirelength_worse"
             return None
-        old: list[tuple[float, float, float]] = []
-        new: list[tuple[float, float, float]] = []
-        moved: list[int] = []
-        refused = ()
+        old: dict[int, tuple[float, float, float]] = {}
+        new: dict[int, tuple[float, float, float]] = {}
         for i in range(ir.n_instances):
             r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
-            r_new = float(rot[i]) if lay.free_rot[i] else r_old
-            pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
-            pose_new = (float(xs[i]), float(ys[i]), r_new)
-            if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > 1e-6:
-                moved.append(i)
-                old.append(pose_old)
-                new.append(pose_new)
+            r_new = float(rot[i]) % 360.0 if lay.free_rot[i] else r_old
+            # θ compared on the circle: normalising an unmoved part's raw
+            # rotation into [0, 360) (-90 -> 270) is not a move (gr504558).
+            d_rot = abs((r_new - r_old + 180.0) % 360.0 - 180.0)
+            d_xy = max(
+                abs(float(xs[i]) - float(ir.inst_x[i])),
+                abs(float(ys[i]) - float(ir.inst_y[i])),
+            )
+            if max(d_xy, d_rot) > 1e-6:
+                old[i] = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
+                new[i] = (float(xs[i]), float(ys[i]), r_new)
+        moved = list(new)
         if not moved:
             return None
-        proposals = [(i, p[0], p[1]) for i, p in zip(moved, new, strict=True)]
-        rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
         in_outline = engine._outline_region is not None
-        if not engine._placement_is_legal(
-            proposals, rotations=rotations, in_outline=in_outline
-        ):
-            # Partial accept (gr503640): a gate failure refuses only the
-            # offending parts — revert them and keep the legal rest when
-            # it still lowers E. Refusal of the whole polish used to cost
-            # every good move alongside the few bad ones.
-            bad = _legality_violations(
-                engine, proposals, rotations, limit=ir.n_instances
+
+        def legal(keep: Sequence[int]) -> bool:
+            return bool(
+                engine._placement_is_legal(
+                    [(i, new[i][0], new[i][1]) for i in keep],
+                    rotations={i: new[i][2] for i in keep},
+                    in_outline=in_outline,
+                )
             )
+
+        def violations(keep: Sequence[int], limit: int) -> list[str]:
+            return _legality_violations(
+                engine,
+                [(i, new[i][0], new[i][1]) for i in keep],
+                {i: new[i][2] for i in keep},
+                limit=limit,
+            )
+
+        keep = list(moved)
+        reverted: list[int] = []
+        if not legal(keep):
+            # Partial accept (gr503640): a gate failure refuses only the
+            # offending parts — revert them and keep the legal rest.
+            bad = violations(keep, ir.n_instances)
             bad_refdes = {
                 r for v in bad for r in v.split(":", 1)[1].strip().split("<>")
             }
-            by_ref = {str(ir.instance_refdes[i]): i for i in moved}
+            by_ref = {str(ir.instance_refdes[i]): i for i in keep}
             drop = {by_ref[r] for r in bad_refdes if r in by_ref}
-            keep = [i for i in moved if i not in drop]
+            keep = [i for i in keep if i not in drop]
             if not keep or not drop:
                 reason = "illegal"
                 refused = tuple(moved)
                 detail = "; ".join(bad[:4])
                 return None
-            kept = [new[moved.index(i)] for i in keep]
-            xk, yk, thk = x.copy(), y.copy(), th.copy()
-            for i, pose in zip(keep, kept, strict=True):
-                xk[i], yk[i], thk[i] = pose[0], pose[1], -math.radians(pose[2])
-            e1 = final.value_grad(lay.pack_from(xk, yk, thk))[0]
-            if not e1 < e0:
-                return None
-            if _wirelength(xk, yk, thk) > wl0 * (1.0 + POLISH_WIRELENGTH_WORSEN):
-                reason = "wirelength_worse"
-                return None
-            proposals = [(i, p[0], p[1]) for i, p in zip(keep, kept, strict=True)]
-            rotations = {i: p[2] for i, p in zip(keep, kept, strict=True)}
-            if not engine._placement_is_legal(
-                proposals, rotations=rotations, in_outline=in_outline
-            ):
+            reverted += sorted(drop)
+            if not legal(keep):
                 reason = "illegal"
                 refused = tuple(keep)
-                detail = "; ".join(
-                    _legality_violations(engine, proposals, rotations, limit=4)
-                )
+                detail = "; ".join(violations(keep, 4))
                 return None
-            old = [old[moved.index(i)] for i in keep]
-            detail = (
+        written = lane
+        if reverted:
+            # The gates measure the board actually written: kept parts at
+            # their candidate pose, every other part at its seed pose.
+            xw, yw, thw = board.x0.copy(), board.y0.copy(), board.th0.copy()
+            for i in keep:
+                xw[i], yw[i], thw[i] = new[i][0], new[i][1], -math.radians(new[i][2])
+            e1 = final.value_grad(lay.pack_from(xw, yw, thw))[0]
+            if not e1 < e0:
+                return None
+            if _wirelength(xw, yw, thw) > wl0 * (1.0 + POLISH_WIRELENGTH_WORSEN):
+                reason = "wirelength_worse"
+                return None
+            written = (
                 f"{lane}; partial: reverted "
-                f"{sorted(str(ir.instance_refdes[i]) for i in drop)}"
-            )
-            before = engine.total()
-            move = Move(MoveKind.TRANSLATE, tuple(keep), tuple(old), tuple(kept))
-            if not _apply_honouring_measures(move):
-                return None
-            return PolishResult(
-                True,
-                "applied",
-                e0,
-                e1,
-                tuple(keep),
-                f"{detail}; off-90 {_off90()}/{ir.n_instances}",
-                anneal_delta=engine.total() - before,
+                f"{sorted(str(ir.instance_refdes[i]) for i in reverted)}"
             )
         # The accept gate above is legality + field energy only (Reto
         # 2026-10-21): the annealer's total() — its risk term prices
@@ -1762,7 +1812,12 @@ def polish_placement(
         # anneal_delta, a comparison value, never a reason to undo
         # (gr503458).
         before = engine.total()
-        move = Move(MoveKind.TRANSLATE, tuple(moved), tuple(old), tuple(new))
+        move = Move(
+            MoveKind.TRANSLATE,
+            tuple(keep),
+            tuple(old[i] for i in keep),
+            tuple(new[i] for i in keep),
+        )
         if not _apply_honouring_measures(move):
             return None
         return PolishResult(
@@ -1770,9 +1825,10 @@ def polish_placement(
             "applied",
             e0,
             e1,
-            tuple(moved),
-            detail=f"{lane}; off-90 {_off90()}/{ir.n_instances}",
+            tuple(keep),
+            f"{written}; off-90 {_off90()}/{ir.n_instances}",
             anneal_delta=engine.total() - before,
+            unpulled_nets=unpulled,
         )
 
     def _repair() -> PolishResult | None:
@@ -1837,10 +1893,19 @@ def polish_placement(
         applied = _accept(xs, ys, ths, rot, lanes[(do_xy, snap_deg)])
         if applied is not None:
             return applied
-    if reason == "illegal":
+        if reason != "no_gain":
+            gate_refusals.append((reason, e1, refused, detail))
+    # The repair runs when ANY lane met the legality gate, not only the
+    # last one (gr504558: a sticky ``reason`` made it lane-order dependent).
+    if any(r[0] == "illegal" for r in gate_refusals):
         applied = _repair()
         if applied is not None:
             return applied
+        if reason != "no_gain":
+            gate_refusals.append((reason, e1, refused, detail))
+    # Report the last gate that refused, else no_gain.
+    if gate_refusals:
+        reason, e1, refused, detail = gate_refusals[-1]
     if reason == "illegal":
         _LOG.warning("field_polish refused: illegal (%s)", detail)
-    return PolishResult(False, reason, e0, e1, refused, detail)
+    return PolishResult(False, reason, e0, e1, refused, detail, unpulled_nets=unpulled)

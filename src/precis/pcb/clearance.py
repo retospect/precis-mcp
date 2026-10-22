@@ -46,6 +46,7 @@ from shapely import STRtree, box
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
+from precis.pcb.padplace import pad_world_rot
 from precis.pcb.pose import rotate_cw as _rotate_cw
 
 Coord = tuple[float, float]
@@ -379,7 +380,9 @@ def body_of(item: dict[str, Any]) -> Body | None:
         # rotated outline (a rotated exposed pad firing a phantom
         # pad-vs-pad clearance hit against its own part's pins was the
         # seed-2 nano refusal) while its edges under-cover the true land.
-        rot = float(item.get("oblique_rot") or 0.0)
+        # Board-frame angle via `pad_world_rot` (bottom: instance - pad,
+        # gr504558), the same reader the DRC shape function uses.
+        rot = pad_world_rot(item)
 
         def _rp(px: float, py: float) -> tuple[float, float]:
             rx, ry = _rotate_cw(px, py, rot)

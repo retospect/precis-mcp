@@ -150,6 +150,27 @@ def pad_axis_aligned(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
     return r <= tol_deg or r >= 90.0 - tol_deg
 
 
+def oblique_world_rot(inst_rot_deg: float, pad_rot_deg: float, bottom: bool) -> float:
+    """A rect/obround land's board-frame angle (CW degrees, [0, 360)):
+    instance + pad rotation on top; instance - pad on the bottom, where the
+    mirror applied before the instance rotation reverses the pad's own
+    turn (:mod:`precis.pcb.pose` order: mirror, rotate, translate)."""
+    turn = (inst_rot_deg - pad_rot_deg) if bottom else (inst_rot_deg + pad_rot_deg)
+    return turn % 360.0
+
+
+def pad_world_rot(pad: dict[str, Any]) -> float:
+    """The angle a pad dict's w×h outline is rotated by (CW degrees): its
+    ``oblique_world_rot`` when :func:`place_footprint_pads` recorded one,
+    else ``oblique_rot`` (top-side, or a dict authored without the world
+    key), else 0. The one reader the DRC and clearance shape functions
+    share, so the two halves cannot disagree on sign again (gr504558)."""
+    rot = pad.get("oblique_world_rot")
+    if rot is None:
+        rot = pad.get("oblique_rot")
+    return float(rot or 0.0)
+
+
 def rect_swaps_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
     """Public wrapper on :func:`_swap_wh`, for a caller outside this
     module that needs the IDENTICAL 90°/270° swap decision
@@ -297,6 +318,14 @@ def place_footprint_pads(
             # rotation, before the bottom mirror: only "oblique or not" is
             # meaningful, and a mirror does not change that.
             base["oblique_rot"] = round(total_rot % 360.0, 4)
+            # The land's angle IN THE BOARD FRAME (CW degrees), which is
+            # what a shape function rotates the w×h outline by: on a
+            # bottom part the mirror reverses the pad's own rotation
+            # (M·R(p) = R(-p)·M, and a rect/obround is mirror-symmetric),
+            # so the world angle is inst - pad, not inst + pad (gr504558).
+            base["oblique_world_rot"] = round(
+                oblique_world_rot(inst_rot, float(pad.get("rot") or 0.0), bottom), 4
+            )
         if shape == "polygon" and pad.get("poly"):
             base["poly"] = [
                 [

@@ -149,6 +149,7 @@ from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
+from precis.pcb.padplace import pad_world_rot
 from precis.pcb.pose import rotate_cw as _rotate_cw
 from precis.pcb.profiles import ProfileRules
 from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
@@ -700,7 +701,9 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
         # exposed pad's corner poking into its neighbour's land) and a
         # false miss where it is wider. The ring-geometry half already read
         # it (:func:`_pad_boundary_edges`); the clearance half dropped it.
-        rot = float(item.get("oblique_rot") or 0.0)
+        # Read through `pad_world_rot`: on a bottom part the land's board
+        # angle is instance - pad, not the recorded total (gr504558).
+        rot = pad_world_rot(item)
 
         def _rot(px: float, py: float) -> tuple[float, float]:
             rx, ry = _rotate_cw(px, py, rot)
@@ -1675,11 +1678,8 @@ def _pad_boundary_edges(
     """The pad's land outline, board frame, as boundary segments — its
     ``poly`` ring when it carries one (a polygon pad, or the true rotated
     outline :func:`precis.pcb.realize.pads_for_ir` emits for an oblique
-    land), else the w×h rect rotated by ``oblique_rot`` when the pad
-    recorded one (``oblique_rot`` is instance+pad rotation, so for a
-    mirrored bottom pad whose pad-local ``rot`` was nonzero the rect here
-    is the nearest available outline, not the exact one — the poly path
-    above is what the DRC model actually feeds for those). An obround pad
+    land), else the w×h rect rotated clockwise by its board-frame angle
+    (:func:`~precis.pcb.padplace.pad_world_rot`). An obround pad
     is read on its bbox: the stadium's side walls ARE the bbox edges, so
     a lateral measurement is exact everywhere but right at the end arcs,
     where it errs a hair generous."""
@@ -1690,13 +1690,15 @@ def _pad_boundary_edges(
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
         hw, hh = w / 2.0, h / 2.0
-        rot = math.radians(float(pad.get("oblique_rot") or 0.0))
-        c, s = math.cos(rot), math.sin(rot)
+        # CW, the same rotation `_copper_item_polygon` applies — this half
+        # used to turn CCW, so the two disagreed on every oblique pad
+        # (gr504558).
+        rot = pad_world_rot(pad)
         cx, cy = float(pad["x"]), float(pad["y"])
-        pts = [
-            (cx + px * c - py * s, cy + px * s + py * c)
-            for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
-        ]
+        pts = []
+        for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+            rx, ry = _rotate_cw(px, py, rot)
+            pts.append((cx + rx, cy + ry))
     return [
         (
             pts[i][0],
