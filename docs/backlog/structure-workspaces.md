@@ -1030,6 +1030,12 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   `assembly.strain` reports what remains.
 - Decided in the text: loop collapse past 64 same-site siblings; `op`
   frames for surviving ops.
+- **Structure fisheye and rays (2026-10-22):** π perception from our own
+  bond graph (a better structure-aware source is welcome later); rays are
+  stored as block children ("an excellent idea"); the `charges` payload on
+  `struct_runs` (slice 4) is confirmed with slice 4's builder before 2r
+  starts; the simple aromaticity rule is enough for v1. Rays are
+  scale-independent (one `cast_ray` verb, multiscale spec §5.4–5.5).
 
 ## Open questions for Reto
 
