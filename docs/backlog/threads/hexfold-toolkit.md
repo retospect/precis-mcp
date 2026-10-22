@@ -819,12 +819,16 @@ removed as met — the transport move it waited on happened 09-29)
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
     on N equal-120 seams, each an inward rib, authored pore cells, the
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
-16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms with
-    H-columns (Reto 2026-10-22, "we want these anyways"): fold tokens with
-    an H side, `k3-sp3-z` prism seams, honeycomb cells. Ranked after 15
-    because its prism builder is the T2 cross-section's sibling and slice 2
-    lands the decoration core item 10's isolation band needs; slice 7 waits
-    on the xtb dispatch route from the session host.
+16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms over
+    shared sheet primitives (Reto 2026-10-22, "is a cell wall not just a
+    graphene sheet?"): slice 0 SHA goldens for every builder, slice 1 one
+    `sheetnet` layer (strip/pore/place/junction/assemble) with prism,
+    railtube, channel, fin120, Y and sp3 seams re-expressed as layouts
+    byte-identically, then decoration, fold tokens and `k3-sp3-z` as
+    junction parameters, honeycomb cells as a tiling layout. Ranked after
+    15 because it rewrites the T2 cross-section builder, and slice 2 lands
+    the decoration core item 10's isolation band needs; slice 5 waits on
+    the xtb dispatch route from the session host.
 17. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
     relax, fragment GFN2 and a module cache so blocks above ~1k atoms
     relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;

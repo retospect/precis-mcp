@@ -326,7 +326,7 @@ stamped definition's L3.
 |---|---|---|---|
 | 1 | `meta.role='definition'`, `params`, `$name` substitution, `stamp` (atomic + macro), `generated.definition` provenance, `def.*` findings; both worked examples as tests (the prism one at the `prism-k3-sp3-z` level until `cells` lands) | `precis_se.ops` (new op + substitution pass before `apply_ops`), `precis_se.atomic.apply` (HANDLER_LEVEL_OPS), `precis_se.persist` (role meta), `precis_se.validate` | 2 builds |
 | 2 | `examples`/`checks`/`expose`, `view='definition'`, definitions in `search(wants=)` | `precis_se.handler`, `precis_se.library` | 1 build |
-| 3 | `decorate` op over the multicell slice-2 primitive with the shared `sites` selector; `column:` selector | `precis_se.atomic.sites`, `hexfold.build`, `precis_se.atomic.generators.hexfold_spec._block_from_net` | 1 build (after multicell slice 2) |
+| 3 | `decorate` op over the multicell slice-2 primitive with the shared `sites` selector; `column:` selector | `precis_se.atomic.sites`, `hexfold.sheetnet`, `precis_se.atomic.generators.hexfold_spec._block_from_net` | 1 build (after multicell slice 2) |
 | 4 | `array_block linear.pitch: "period"`; `cap` sugar over `terminate`/`join`/`connect` with signature lookup | `precis_se.ops._parse_array_spec`, `precis_se.atomic.join`, `precis_se.library` | 1 build |
 | 5 | `precis-se-modules-help` + pointer lines; glossary entries definition / stamp / fused vs packed tile | `src/precis/data/skills/`, `docs/glossary.md` | with each slice |
 
