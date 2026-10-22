@@ -160,9 +160,10 @@ never by a migration (`agent_rw` has no `CREATEROLE`).
   argument (`vault.reveal(p_name, p_user_id)`) the ingress daemon passes
   from its authenticated principal — never read from a GUC. Unclassed →
   allow (S1) → deny (S1b). No rename, no ACL table, no compatibility view:
-  names stay as they are, only the reveal is gated. S1 as built on `db-own`
-  ships a `vault.acl(pattern, grantee)` table (`0231_vault_acl.sql`); S1b
-  replaces it with the column in a new forward-only migration.
+  names stay as they are, only the reveal is gated. Ruled (Reto
+  2026-10-22): `0231` builds the `vault.secrets.class` column directly;
+  the `vault.acl(pattern, grantee)` table is removed before it lands, so
+  S1b is only the default-deny flip.
 - **Ingress-asserted human actor.** `reviews` rows with `model IS NULL` and
   any `revisions.actor LIKE 'user:%'` are accepted by a BEFORE trigger only
   when `pg_has_role(session_user, 'precis_ingress', 'MEMBER')`; otherwise
@@ -219,8 +220,8 @@ Cost = builder days (Sonnet/Opus) excluding Reto's windows.
 
 | Slice | Delivers | Cost | Blast radius | Closes |
 |---|---|---|---|---|
-| **S1** vault ACL + `precis_system` — building on `db-own` | migration `0231_vault_acl.sql` (`vault.acl` pattern table, `vault.reveal` gate, default allow); deploy: `precis_system`, workers + migrate switch DSN; `pool.py` `SET LOCAL ROLE`; review containers bind a real `agent_ro` login; gated now: HPC key+passphrase, Claude OAuth token, anki password, mailbox → `precis_system` | 3 d + one agent_rw pause window (ride `rotate-credentials.md`) | every `get_secret` path; `/secrets` probe becomes presence-only for `svc/infra/*`; worker DSN rotation | HPC D1 (full: add a controller-only class once a second worker host exists), #16–#22, #24 |
-| **S1b** class column + default-deny | new migration: `vault.secrets.class`, backfill by prefix + legacy list, `vault.reveal(p_name, p_user_id)` reads the column, drop `vault.acl`; flip unclassed → deny once `vault.list()` shows every name classed | 1 d | any unclassed name stops resolving (loud, named) | #20 |
+| **S1** vault ACL + `precis_system` — building on `db-own` | migration `0231` (`vault.secrets.class` column backfilled by prefix + legacy list, `vault.reveal` gate, default allow; no `vault.acl` table); deploy: `precis_system`, workers + migrate switch DSN; `pool.py` `SET LOCAL ROLE`; review containers bind a real `agent_ro` login; gated now: HPC key+passphrase, Claude OAuth token, anki password, mailbox → `precis_system` | 3 d + one agent_rw pause window (ride `rotate-credentials.md`) | every `get_secret` path; `/secrets` probe becomes presence-only for `svc/infra/*`; worker DSN rotation | HPC D1 (full: add a controller-only class once a second worker host exists), #16–#22, #24 |
+| **S1b** default-deny | new migration: flip unclassed → deny once `vault.list()` shows every name classed | 1 d | any unclassed name stops resolving (loud, named) | #20 |
 | **S2** settings scopes | registry `scope`, `set_operator_setting()`, trigger refusing operator keys from plain `agent_rw`; `/settings`, `/budget`, `/factory` writes gated on admin (needs S3) | 2 d | every `set_setting` caller (37 sites; state keys unchanged) | HPC D2, #3, #25 |
 | **S3** roster role + web gate | migration `web_users.role` (backfill admin; empty-roster add → admin); `precis users add --role`, `precis users role`; `auth.py` route classes (admin prefixes, reader GET-only); admin POSTs verify the request's own Basic header password; `/console` read-only verbs for `user`/`reader` | 2.5 d | every web route; CLI roster | #1, #2, #4, #5, #7, #32; unblocks `out-of-box-setup.md` O6 |
 | **S4** `precis_ingress` + human actor | deploy: `precis_ingress` login for web + shared MCP server (role itself from db-own); migration: BEFORE triggers on `reviews`/`revisions` checking `pg_has_role(session_user, 'precis_ingress', 'MEMBER')`, rewriting a non-ingress human claim to `agent` | 1.5 d | trust 2b admit gate (human approvals must come via web or a per-user S10a credential); `revisions.actor` semantics | trust Q2, #26, #27 |
@@ -367,7 +368,7 @@ order above.
   connection under `SET LOCAL ROLE agent_ro` is still refused as
   `agent_rw`, not passed as a reader (S1).
 - After S1b `vault.secrets.class` is NOT NULL for every row, `vault.acl`
-  is gone, and `vault.reveal('user/<id>/feed', p_user_id => <other id>)`
+  never existed, and `vault.reveal('user/<id>/feed', p_user_id => <other id>)`
   from `precis_ingress` refuses (S1b).
 - `set_setting` on an operator key from `agent_rw` refuses with the admin
   route named; from `/settings` as admin with a valid Basic header
@@ -449,8 +450,8 @@ it → reconnect (`out-of-box-setup.md` O2). Findings 1 and 3 (ownership
 split) → §DB ownership, built by db-own.
 
 Cuts: `assert_human_actor` (dropped); the `vault.acl` table, name rename
-and compatibility view (one `class` column; S1's landed table is replaced
-in S1b); the sudo window (Q4 → Basic header verified on every admin POST);
+and compatibility view (one `class` column, built directly in 0231;
+Reto 2026-10-22); the sudo window (Q4 → Basic header verified on every admin POST);
 S5 as a slice (folded into S10a's `agent_credentials`); S10b (deferred
 until `mcp-seen-state-dedup.md` is scheduled); `precis setup --roles`
 creating four roles (two: `precis_ingress`, `agent_rw`).
