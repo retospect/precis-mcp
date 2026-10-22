@@ -70,7 +70,8 @@ wrong substrate. Full plan, sources and costs:
    - Bare-Pd results stay as the reference. The level joins the network
      basis, so bare and hydride margins never rank against each other. The
      frontier ranks the level that matches the operating point.
-5. **precis fixes:**
+5. **precis fixes** (landed 2026-10-21, `c9c52c95b` on the pd-hydride-s3
+   tree):
    - `struct_relax` keeps the relaxed lattice and allows a tight fmax;
    - preflight passes H-loaded slabs.
 6. **The stage "substrate state at (U, pH)"** sits next to the Pourbaix

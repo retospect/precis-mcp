@@ -218,6 +218,45 @@ class TestElementAgnostic:
         assert all(isinstance(r, pf.PreflightReason) for r in verdict.reasons)
 
 
+class TestHydrideSlab:
+    """pd-hydride-substrate §5: preflight passes H-loaded slabs — the β-PdH
+    twins are ordinary materials structures for the MLIP (H interstitials are
+    in mace_mp's distribution), not an organic straddle and not a geometry
+    failure. gr462730 fixed the caveat half; this pins the whole gate."""
+
+    @staticmethod
+    def _pdh_slab() -> Scene:
+        """A Pd(111) slab with octahedral interstitial H in every interlayer
+        gap (x≈0.75) — the shape of a β-hydride twin."""
+        scene = _pd_slab()
+        carts = np.array(
+            [scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()]
+        )
+        layers = sorted(set(np.round(carts[:, 2], 3)))
+        gap = layers[1] - layers[0]
+        a_vec, b_vec = scene.cell.lattice[0], scene.cell.lattice[1]
+        for k in range(len(layers) - 1):
+            z = layers[k] + gap / 2
+            for fx, fy in (
+                (1 / 3, 1 / 3),
+                (5 / 6, 1 / 3),
+                (1 / 3, 5 / 6),
+                (5 / 6, 5 / 6),
+            ):
+                cart = fx * a_vec + fy * b_vec + np.array([0.0, 0.0, z])
+                label = scene.next_label("H")
+                scene.atoms[label] = Atom(
+                    label=label, element="H", frac=scene.cell.cart_to_frac(cart)
+                )
+        return scene
+
+    def test_octahedral_hydride_slab_passes_end_to_end(self) -> None:
+        verdict = pf.preflight(self._pdh_slab())
+        assert verdict.ok is True, verdict.reasons
+        assert verdict.reasons == []
+        assert not any(c.code == "domain_straddle" for c in verdict.caveats)
+
+
 class TestDomainCaveats:
     """gripe 285774: advisory-only chemistry-domain signals a plain element
     check can't catch — a metal-organic straddle, a declared net charge.

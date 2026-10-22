@@ -87,6 +87,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from precis.utils.container_limits import container_limit_flags
 from precis.workers.job_types import JobTypeSpec
 
@@ -104,6 +106,11 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "fidelity": {"type": "string"},
         "model": {"type": ["string", "null"]},
         "steps": {"type": "integer"},
+        # Optional explicit force-convergence target (eV/Å) — the minter
+        # folds it into the cache_key's params, so a tight-fmax run never
+        # collides with a default one. Absent ⇒ the rung's own default
+        # (_ML_FMAX in-process; the container's 0.03 for gpaw).
+        "fmax": {"type": "number"},
         # The §23.16 content address + the relaxed-geometry write-back ordering.
         "cache_key": {"type": "string"},
         "structure_sha": {"type": "string"},
@@ -784,18 +791,55 @@ def _parse_poscar_frac(poscar: str) -> list[list[float]]:
     return coords
 
 
+def _parse_poscar_lattice(poscar: str) -> list[list[float]] | None:
+    """The cell vectors from a VASP POSCAR header (comment, scale, 3 rows).
+
+    The scale factor multiplies every vector; a NEGATIVE scale is VASP's
+    target-volume convention — the vectors are rescaled so the cell volume
+    equals ``|scale|``. Returns ``None`` on a malformed or degenerate header
+    rather than raising: an unreadable lattice must not cost the frac
+    write-back, and ``cache.apply_geometry`` treats ``lattice=None`` as
+    "cell unchanged" anyway.
+    """
+    lines = poscar.splitlines()
+    if len(lines) < 5:
+        return None
+    try:
+        scale = float(lines[1].split()[0])
+        lattice = np.array(
+            [[float(x) for x in lines[i].split()[:3]] for i in (2, 3, 4)],
+            dtype=float,
+        )
+    except (ValueError, IndexError):
+        return None
+    if lattice.shape != (3, 3):
+        return None
+    if scale < 0:
+        raw_volume = abs(float(np.linalg.det(lattice)))
+        if raw_volume <= 0.0:
+            return None
+        scale = (-scale / raw_volume) ** (1.0 / 3.0)
+    return (lattice * scale).tolist()
+
+
 def _final_geometry(
     relaxed_poscar: str, poscar_labels: list[str], order: list[str]
 ) -> dict[str, Any] | None:
     """Map the relaxed POSCAR's rows (element-grouped ``poscar_labels`` order)
-    onto the canonical ``order`` the run-cube stores frac by. Returns None on a
-    count mismatch (geometry not applied; the scalar envelope still caches) —
-    mirroring ``cache.apply_geometry``'s count-guard."""
+    onto the canonical ``order`` the run-cube stores frac by — and carry the
+    relaxed lattice too, so a variable-cell run's expanded/strained cell is
+    what a cache hit writes back (:func:`cache.apply_geometry` swaps the
+    scene's cell only when the stored lattice actually differs). Returns None
+    on a count mismatch (geometry not applied; the scalar envelope still
+    caches) — mirroring ``cache.apply_geometry``'s count-guard."""
     coords = _parse_poscar_frac(relaxed_poscar)
     if len(coords) != len(poscar_labels) or len(poscar_labels) != len(order):
         return None
     by_label = {lbl: coords[i] for i, lbl in enumerate(poscar_labels)}
-    return {"frac": [by_label[lbl] for lbl in order], "lattice": None}
+    return {
+        "frac": [by_label[lbl] for lbl in order],
+        "lattice": _parse_poscar_lattice(relaxed_poscar),
+    }
 
 
 class _RelaxDeadline(RuntimeError):
@@ -810,6 +854,7 @@ def _default_ml_runner(
     steps: int,
     cell: str | None,
     timeout: float,
+    fmax: float = _ML_FMAX,
 ) -> dict[str, Any]:
     """Relax an :data:`_INPROC_FIDELITIES` rung **in this process**, returning
     the container contract's ``result.json`` shape (gr346449).
@@ -823,7 +868,9 @@ def _default_ml_runner(
     seam on tblite's ASE calculator — the GFN2-xTB relaxer of record for
     hexfold blocks — with its own optimiser recipe (ASE FIRE,
     ``maxstep=0.1`` Å, the settings the 2026-10-11 neck re-runs used) rather
-    than the ML rung's BFGS.
+    than the ML rung's BFGS. ``fmax`` is the caller's force-convergence
+    target — defaulting to :data:`_ML_FMAX` so a job that doesn't name one
+    converges exactly as before.
 
     The calculator comes from
     :func:`precis.structure.relax._ml_calculator` /
@@ -871,7 +918,7 @@ def _default_ml_runner(
         else BFGS(target, logfile=None)
     )
     opt.attach(_record, interval=1)
-    converged = bool(opt.run(fmax=_ML_FMAX, steps=steps))
+    converged = bool(opt.run(fmax=fmax, steps=steps))
 
     forces = atoms.get_forces()
     max_force = float((forces**2).sum(axis=1).max() ** 0.5)
@@ -904,6 +951,7 @@ def _dispatch_inproc(
     model: str,
     steps: int,
     cell: str | None,
+    fmax: float | None,
     poscar: str,
     structure_ref_id: int,
     on_version: int,
@@ -940,11 +988,12 @@ def _dispatch_inproc(
         return
 
     timeout = _relax_timeout_s()
+    eff_fmax = fmax if fmax is not None else _ML_FMAX
     ctx.append_chunk(
         "job_event",
         f"relax[{fidelity}] in-process on "
         f"{os.environ.get('PRECIS_NODE') or socket.gethostname()}: "
-        f"model={model} steps={steps} fmax={_ML_FMAX} cap={timeout:.0f}s",
+        f"model={model} steps={steps} fmax={eff_fmax} cap={timeout:.0f}s",
     )
     try:
         result = ML_RUNNER(
@@ -954,6 +1003,7 @@ def _dispatch_inproc(
             steps=steps,
             cell=cell,
             timeout=timeout,
+            fmax=eff_fmax,
         )
     except RelaxUnsupported as exc:
         ctx.record_failure(
@@ -999,6 +1049,8 @@ def _dispatch_inproc(
         structure_sha=structure_sha,
         order=order,
         poscar_labels=poscar_labels,
+        cell=cell,
+        fmax=fmax,
     )
 
 
@@ -1025,6 +1077,20 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = params.get("model") or "mace_mp"
     steps = int(params.get("steps", 200))
     cell = params.get("cell") or None
+    # Optional tight force target (eV/Å) — absent ⇒ each rung's own default.
+    fmax: float | None = None
+    if params.get("fmax") is not None:
+        try:
+            fmax = float(params["fmax"])
+        except (TypeError, ValueError):
+            fmax = -1.0
+        if not (fmax > 0.0):  # covers NaN and non-positive
+            ctx.record_failure(
+                f"struct_relax: malformed fmax {params['fmax']!r} — a force "
+                "target must be a positive number (eV/Å)",
+                failure_class="infra",
+            )
+            return
 
     # Fidelity routing (gr346449). The precis-dft image exposes exactly one
     # subcommand -- ``precis-dft-run gpaw-relax`` -- so a container run can only
@@ -1041,6 +1107,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             model=model,
             steps=steps,
             cell=cell,
+            fmax=fmax,
             poscar=poscar,
             structure_ref_id=structure_ref_id,
             on_version=on_version,
@@ -1118,6 +1185,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # ⇒ atoms-only, the historical default the container already assumes).
     if cell:
         run_params["cell"] = cell
+    # Same convention for an explicit force target: absent ⇒ the container's
+    # own fmax_ev_per_angstrom default; present ⇒ the name it actually reads.
+    if fmax is not None:
+        run_params["fmax_ev_per_angstrom"] = fmax
     Path(in_dir, "params.json").write_text(
         json.dumps(run_params, sort_keys=True), encoding="utf-8"
     )
@@ -1218,6 +1289,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         structure_sha=structure_sha,
         order=order,
         poscar_labels=poscar_labels,
+        cell=cell,
+        fmax=fmax,
     )
 
 
@@ -1233,6 +1306,8 @@ def _record_run(
     structure_sha: str,
     order: list[str],
     poscar_labels: list[str],
+    cell: str | None = None,
+    fmax: float | None = None,
 ) -> None:
     """Sink a finished relax into the run-cube — the one write-back both
     backends (container and in-process MLIP) land on, so a rung cannot acquire
@@ -1264,6 +1339,16 @@ def _record_run(
     # zero-compute hit that carries ``converged=False`` honestly rather
     # than recomputing into the same step cap.
     converged = bool(scalars.get("converged", False))
+
+    # Calculator identity that lives outside the typed columns — the cell
+    # mode and an explicit fmax are part of what the run computed (the
+    # ``calc:`` digest surfaces both), so they audit onto the row.
+    run_params: dict[str, Any] = {}
+    if cell is not None:
+        run_params["cell"] = cell
+    if fmax is not None:
+        run_params["fmax"] = fmax
+
     run_id = ctx.store.structure_record_run(
         structure_ref_id,
         fidelity=fidelity,
@@ -1278,6 +1363,7 @@ def _record_run(
         cache_key=cache_key,
         structure_sha=structure_sha,
         final_geometry=final_geometry,
+        params=run_params or None,
     )
     ctx.set_meta(
         struct_run_id=run_id, cache_key=cache_key, energy=float(scalars["E_tot"])

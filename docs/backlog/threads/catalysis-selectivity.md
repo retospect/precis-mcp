@@ -72,6 +72,11 @@ spin-paired energy (§22i), so the table stands. Catpath
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
 **Resume (2026-10-04, round 6):** nothing is half-done or on the branch
 only; everything this thread built is on main and was live by round 4.
+**Resume (2026-10-21, pd-hydride-s3):** the spec's stage-3 precis fixes
+landed (`c9c52c95b`): `struct_relax` keeps the relaxed lattice and takes
+an explicit `fmax`; an H-loaded-slab preflight pass is test-pinned (the
+straddle caveat itself was gr462730's fix). Stages 1–2 and the top-10
+re-run are unbuilt; the NEB pilot stays held.
 - Live, not yet seen working:
   - the diagram arrows (item 22): pw455722 drawn from prod shows 12 angled
     H⁺+e⁻ arrows and no dashed overlay, but Reto has not looked at it in

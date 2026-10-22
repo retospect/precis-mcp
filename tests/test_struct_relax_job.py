@@ -134,7 +134,7 @@ def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
     """An ML_RUNNER that returns the container contract's result shape."""
     calls: list[dict[str, Any]] = []
 
-    def runner(*, poscar, fidelity, model, steps, cell, timeout):
+    def runner(*, poscar, fidelity, model, steps, cell, timeout, fmax):
         calls.append(
             {
                 "poscar": poscar,
@@ -143,6 +143,7 @@ def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
                 "steps": steps,
                 "cell": cell,
                 "timeout": timeout,
+                "fmax": fmax,
             }
         )
         return {
@@ -1262,6 +1263,146 @@ class TestNodePin:
         monkeypatch.delenv("PRECIS_DFT_NODE", raising=False)
         assert struct_relax.target_node_for("ml", key="k") is None
         assert struct_relax.target_node_for("gpaw", key="k") is None
+
+
+class TestFmax:
+    """An explicit force target rides the whole contract — job params →
+    optimiser (in-process) or params.json (container) — and audits onto the
+    recorded run. The β-PdH re-runs converge tighter than the 0.05 floor."""
+
+    def test_inproc_runner_gets_the_requested_fmax(
+        self, structure, tmp_path, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+        params["fmax"] = 0.01
+        ml = _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24))
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", ml)
+        ctx, _ = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        assert ml.calls and ml.calls[0]["fmax"] == 0.01
+        hit = structure.store.structure_find_cached_run(params["cache_key"])
+        assert hit is not None
+        with structure.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT params FROM struct_runs WHERE cache_key = %s",
+                (params["cache_key"],),
+            ).fetchone()
+        assert row[0]["fmax"] == 0.01
+
+    def test_default_fmax_when_the_job_names_none(
+        self, structure, tmp_path, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+        ml = _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24))
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", ml)
+        ctx, _ = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        assert ml.calls[0]["fmax"] == struct_relax._ML_FMAX
+
+    def test_fmax_reaches_the_container_under_the_name_it_reads(
+        self, structure, tmp_path, monkeypatch
+    ):
+        """The container's relax driver reads ``fmax_ev_per_angstrom`` —
+        absent the job would silently run its own 0.03 default."""
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="gpaw")
+        params["fmax"] = 0.01
+        params["target_node"] = "spark"
+        monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+        monkeypatch.setattr(
+            struct_relax,
+            "RUNNER",
+            _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
+        )
+        _no_stale_container(monkeypatch)
+        ctx, _ = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        in_dir, _ = _stage(tmp_path, params["structure_ref_id"])
+        staged = json.loads(Path(in_dir, "params.json").read_text(encoding="utf-8"))
+        assert staged["fmax_ev_per_angstrom"] == 0.01
+
+    def test_malformed_fmax_fails_infra_running_nothing(
+        self, structure, tmp_path, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+        params["fmax"] = -0.5
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        fails = [e for e in events if e[0] == "fail"]
+        assert len(fails) == 1 and fails[0][1]["failure_class"] == "infra"
+        assert "fmax" in fails[0][1]["reason"]
+
+
+class TestLatticeWriteback:
+    """``final_geometry`` keeps the relaxed cell, not just the frac — a
+    variable-cell run's expanded lattice is what a cache hit writes back."""
+
+    def test_final_geometry_carries_the_relaxed_lattice(self, structure):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure)
+        geom = struct_relax._final_geometry(
+            _relaxed_poscar(structure, "pd_pair", 0.24),
+            params["poscar_labels"],
+            params["order"],
+        )
+        assert geom is not None
+        assert np.allclose(
+            geom["lattice"], [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+        )
+
+    def test_a_relaxed_cell_writes_back_on_a_cache_hit(
+        self, structure, tmp_path, monkeypatch
+    ):
+        """The variable-cell case the write-back exists for: the stubbed run
+        relaxes the box 10.0 → 11.0; the next identical relax must apply the
+        NEW cell, not the input one."""
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+        poscar = _relaxed_poscar(structure, "pd_pair", 0.24)
+        lines = poscar.splitlines()
+        lines[2:5] = ["11.0 0.0 0.0", "0.0 11.0 0.0", "0.0 0.0 11.0"]
+        monkeypatch.setattr(
+            struct_relax, "ML_RUNNER", _stub_ml_runner("\n".join(lines))
+        )
+        ctx, _ = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        hit = structure.store.structure_find_cached_run(params["cache_key"])
+        assert hit["final_geometry"]["lattice"] == [
+            [11.0, 0.0, 0.0],
+            [0.0, 11.0, 0.0],
+            [0.0, 0.0, 11.0],
+        ]
+        scene, _ = structure.store.structure_load(params["structure_ref_id"])
+        relax_cache.apply_geometry(scene, hit["final_geometry"])
+        assert float(np.linalg.norm(scene.cell.lattice[0])) == pytest.approx(11.0)
+
+    def test_poscar_lattice_honours_the_scale_factor(self):
+        """A non-1.0 positive scale multiplies the vectors; VASP's negative
+        scale is a target volume."""
+        poscar = "c\n2.0\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nX\n1\nDirect\n0 0 0\n"
+        assert struct_relax._parse_poscar_lattice(poscar) == [
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ]
+        poscar_neg = (
+            "c\n-8.0\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nX\n1\nDirect\n0 0 0\n"
+        )
+        assert struct_relax._parse_poscar_lattice(poscar_neg) == [
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ]
+        assert struct_relax._parse_poscar_lattice("c\nx\n1 0 0\n") is None
 
 
 def _stage(tmp_path, ref_id: int) -> tuple[str, str]:

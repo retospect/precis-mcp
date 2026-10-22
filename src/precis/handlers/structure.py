@@ -219,6 +219,9 @@ class _NeedsDispatch:
     requester_id: int | None
     #: Variable-cell relax mode ('inplane'/'full') or None for atoms-only.
     cell: str | None = None
+    #: Explicit force-convergence target (eV/Å) — the job's ``fmax`` param;
+    #: None ⇒ each rung's own default.
+    fmax: float | None = None
     preflight_result: RelaxResult | None = None
     preflight_note: str | None = None
 
@@ -314,6 +317,7 @@ def _relax_cache_address(
     steps: int,
     cell_mode: str | None,
     dispersion: bool = False,
+    fmax: float | None = None,
 ) -> tuple[str, str, list[str]]:
     """The ``(cache_key, structure_sha, canonical_order)`` triple addressing a
     relax of ``scene`` at this fidelity/model/params.
@@ -326,6 +330,12 @@ def _relax_cache_address(
     params: dict[str, Any] = {"steps": steps}
     if cell_mode is not None:
         params["cell"] = cell_mode
+    # Same convention as ``cell``: an explicit fmax changes the convergence
+    # contract, so it folds into the key only when asked for — a tight-fmax
+    # run never collides with a default one, and every pre-existing row stays
+    # a hit.
+    if fmax is not None:
+        params["fmax"] = fmax
     # Dispersion is part of the calculator's identity, not a display flag: the
     # same model with D3 on and off returns different energies for the same
     # geometry. Keyed in only when ON, so every pre-existing (dispersion-free)
@@ -350,6 +360,8 @@ def _run_params(res: RelaxResult) -> dict[str, Any] | None:
         params["cached"] = True
     if res.dispersion:
         params["dispersion"] = True
+    if res.fmax is not None:
+        params["fmax"] = res.fmax
     return params or None
 
 
@@ -2384,6 +2396,29 @@ class StructureHandler(Handler):
                 "relaxes atoms only",
                 next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
             )
+        # Optional explicit force target (eV/Å) — the way to ask for a tighter
+        # relax than the rung's max(tol, 0.05) floor (the β-PdH re-runs). It
+        # applies only to an energy rung: a geometry repair has no forces to
+        # converge, so fmax there is refused up front like cell=.
+        fmax_raw = ro.get("fmax")
+        fmax: float | None = None
+        if fmax_raw is not None:
+            try:
+                fmax = float(fmax_raw)
+            except (TypeError, ValueError):
+                fmax = -1.0
+            if not (fmax > 0.0):  # also catches NaN
+                raise BadInput(
+                    f"relax fmax must be a positive force target (eV/Å), "
+                    f"got {fmax_raw!r}",
+                    next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
+                )
+            if fidelity in ("clean", "0", "geo"):
+                raise BadInput(
+                    f"relax fmax is a force target — rung {fidelity!r} is a "
+                    "geometry repair with no forces to converge",
+                    next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
+                )
         # Optional DFT-D3 on top of the MLIP. Off by default (the historical
         # behaviour), but load-bearing for anything held together by van der
         # Waals contact — a host-guest complex or an interlocked ring reads as
@@ -2417,6 +2452,7 @@ class StructureHandler(Handler):
                 steps=steps,
                 cell_mode=cell_mode,
                 dispersion=dispersion,
+                fmax=fmax,
             )
             hit_result = self._cache_hit_result(
                 scene,
@@ -2445,6 +2481,7 @@ class StructureHandler(Handler):
                 cell_mode=cell_mode,
                 dispersion=dispersion,
                 cache_key=cache_key,
+                fmax=fmax,
             )
 
         try:
@@ -2455,6 +2492,7 @@ class StructureHandler(Handler):
                 model=model,
                 cell=cell_mode,
                 dispersion=dispersion,
+                fmax=fmax,
             )
             # Per-atom forces (gripe 161576), label-paired for storage (FIX 1
             # — never canonical-rank-indexed, see serialize_forces) —
@@ -2479,6 +2517,7 @@ class StructureHandler(Handler):
                 cell_mode=cell_mode,
                 dispersion=dispersion,
                 cache_key=cache_key,
+                fmax=fmax,
                 cause=exc,
             )
 
@@ -2502,6 +2541,7 @@ class StructureHandler(Handler):
         cell_mode: str | None,
         dispersion: bool,
         cache_key: str | None,
+        fmax: float | None = None,
         cause: RelaxUnsupported | None = None,
     ) -> RelaxResult | _NeedsDispatch:
         """Stage a ``struct_relax`` dispatch for a rung that must not compute
@@ -2592,6 +2632,7 @@ class StructureHandler(Handler):
             steps=steps,
             cell_mode=cell_mode,
             dispersion=dispersion,
+            fmax=fmax,
         )
         hit_result = self._cache_hit_result(
             scene,
@@ -2607,6 +2648,7 @@ class StructureHandler(Handler):
             model=model,
             steps=steps,
             cell=cell_mode,
+            fmax=fmax,
             cache_key=cache_key,
             structure_sha=structure_sha or "",
             order=order,
@@ -2796,6 +2838,9 @@ class StructureHandler(Handler):
             # Variable-cell relax mode (present only when asked for) — the GPU
             # container honours it; absent ⇒ atoms-only, the historical default.
             **({"cell": nd.cell} if nd.cell is not None else {}),
+            # Explicit force target, same convention: present only when asked
+            # for; absent ⇒ each backend's own fmax default.
+            **({"fmax": nd.fmax} if nd.fmax is not None else {}),
             "cache_key": nd.cache_key,
             "structure_sha": nd.structure_sha,
             "order": nd.order,

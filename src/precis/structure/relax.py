@@ -139,6 +139,11 @@ class RelaxResult:
     energy: float | None = None  # eV (None = undefined: clean rung / failure)
     max_force: float | None = None  # eV/Å (None for the geometry rung)
     model: str | None = None  # the backend that produced it (MLIP name)
+    # The force-convergence target the caller explicitly asked for (eV/Å),
+    # ``None`` when the rung's usual ``max(tol, 0.05)`` convention ran — the
+    # handler folds an explicit fmax into the run-cube key and the recorded
+    # params, so it is part of the run's identity, not bookkeeping.
+    fmax: float | None = None
     # ── per-atom forces (gripe 161576) — a *qualitative* "which atoms are
     # doing the work" signal for the modeling LLM, not physics-grade truth (a
     # real MLIP/DFT relax runs later). ``forces`` is keyed by design label
@@ -193,6 +198,7 @@ def relax(
     dispersion: bool = False,
     charge: int = 0,
     multiplicity: int | None = None,
+    fmax: float | None = None,
 ) -> RelaxResult:
     """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
 
@@ -201,6 +207,13 @@ def relax(
     c-axis / vacuum pinned), ``"full"`` relaxes all six strain components. It is
     only meaningful for an energy rung — the ``clean`` geometry repair has no
     stress, so requesting a cell relax there raises.
+
+    ``fmax`` is an explicit force-convergence target (eV/Å) for an energy
+    rung, overriding the usual ``max(tol, 0.05)`` convention — the way to ask
+    for a *tighter* relax than the rung's floor. It is part of the run's
+    identity (the handler folds it into the run-cube key and the recorded
+    params), not a display knob. On a geometry rung there are no forces, so
+    it raises rather than being ignored.
 
     ``dispersion`` adds an explicit DFT-D3 correction on top of the MLIP. It
     defaults **off**, matching the historical behaviour, but any design held
@@ -232,6 +245,16 @@ def relax(
             f"variable-cell relax isn't supported at rung {fidelity!r} — "
             "use fidelity='ml'"
         )
+    if fmax is not None:
+        if fmax <= 0:
+            raise RelaxUnsupported(
+                f"fmax must be a positive force target (eV/Å), got {fmax!r}"
+            )
+        if fidelity in ("clean", "0", "geo"):
+            raise RelaxUnsupported(
+                f"fmax is a force target — rung {fidelity!r} is a geometry "
+                "repair with no forces to converge"
+            )
     if dispersion and fidelity not in ("ml",):
         raise RelaxUnsupported(
             f"dispersion=True needs an MLIP rung (fidelity='ml'); rung "
@@ -247,10 +270,15 @@ def relax(
     if fidelity == "geo":
         return _relax_geo(scene, steps=steps, tol=tol)
     if fidelity == "emt":
-        return _relax_emt(scene, steps=steps, tol=tol)
+        return _relax_emt(scene, steps=steps, tol=tol, fmax=fmax)
     if fidelity == "xtb":
         return _relax_xtb(
-            scene, steps=steps, tol=tol, charge=charge, multiplicity=multiplicity
+            scene,
+            steps=steps,
+            tol=tol,
+            charge=charge,
+            multiplicity=multiplicity,
+            fmax=fmax,
         )
     if fidelity == "ml":
         return _relax_ml(
@@ -260,6 +288,7 @@ def relax(
             model=model,
             cell=cell_mode,
             dispersion=dispersion,
+            fmax=fmax,
         )
     if fidelity in _RENTED_RUNGS:
         raise RelaxUnsupported(
@@ -428,7 +457,9 @@ def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     )
 
 
-def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+def _relax_emt(
+    scene: Scene, *, steps: int, tol: float, fmax: float | None = None
+) -> RelaxResult:
     """Rung 1: relax on ASE's built-in Effective Medium Theory potential.
 
     Torch-free — ``numpy + ASE`` only (the light ``[dft]`` extra), no MLIP to
@@ -479,7 +510,8 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
 
     opt = _Optimizer(atoms, logfile=None)
     opt.attach(_record, interval=1)
-    converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
+    force_tol = fmax if fmax is not None else max(tol, 0.05)
+    converged = bool(opt.run(fmax=force_tol, steps=steps))
 
     scaled = atoms.get_scaled_positions()
     for idx, la in enumerate(labels):
@@ -500,6 +532,7 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
         model="emt",
+        fmax=fmax,
         forces=per_atom_forces,
         forces_approx=False,
         forces_source="emt",
@@ -668,6 +701,7 @@ def _relax_xtb(
     charge: int = 0,
     multiplicity: int | None = None,
     spin_polarization: bool = False,
+    fmax: float | None = None,
 ) -> RelaxResult:
     """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
 
@@ -723,7 +757,8 @@ def _relax_xtb(
 
     opt = FIRE(atoms, maxstep=0.1, logfile=None)
     opt.attach(_record, interval=1)
-    converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
+    force_tol = fmax if fmax is not None else max(tol, 0.05)
+    converged = bool(opt.run(fmax=force_tol, steps=steps))
 
     scaled = atoms.get_scaled_positions()
     for idx, la in enumerate(labels):
@@ -744,6 +779,7 @@ def _relax_xtb(
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
         model="gfn2-xtb",
+        fmax=fmax,
         forces=per_atom_forces,
         forces_approx=False,
         forces_source="gfn2-xtb",
@@ -950,6 +986,7 @@ def _relax_ml(
     model: str,
     cell: str | None = None,
     dispersion: bool = False,
+    fmax: float | None = None,
 ) -> RelaxResult:
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 
@@ -1002,7 +1039,8 @@ def _relax_ml(
 
     opt = BFGS(opt_target, logfile=None)
     opt.attach(_record, interval=1)
-    converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
+    force_tol = fmax if fmax is not None else max(tol, 0.05)
+    converged = bool(opt.run(fmax=force_tol, steps=steps))
 
     if cell is not None:
         from .cell import Cell
@@ -1027,6 +1065,7 @@ def _relax_ml(
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
         model=model,
+        fmax=fmax,
         forces=per_atom_forces,
         forces_approx=False,
         forces_source=model,

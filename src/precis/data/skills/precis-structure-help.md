@@ -142,7 +142,7 @@ record as a read-only design. Caps, refusals and provenance:
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
 | `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; each atom's declared formal charge carries in from rdkit (`[N+](C)(C)(C)C` mints a `charge:+1` N); a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry + formal charge only — no stereo beyond what ETKDG encodes |
-| `relax` | `fidelity?`, `steps?`, `model?`, `dispersion?` | terminal op — see the ladder below |
+| `relax` | `fidelity?`, `steps?`, `model?`, `cell?`, `fmax?`, `dispersion?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
 geometry gets fixed by `relax`, and DFT consumes positions + cell (bonds are

@@ -1072,6 +1072,72 @@ def test_relax_unknown_cell_mode_is_bad_input(structure):
         )
 
 
+def test_relax_fmax_rides_the_dispatch_and_keys(structure, store, no_local_mlip):
+    """An explicit fmax reaches the struct_relax job params (the worker's
+    optimiser honours it) and folds into the run-cube key — a tight-fmax run
+    never collides with a default one; omitting it keeps the historical key."""
+    structure.put(id="slab_a", text=_PD)
+    ref_a = structure.store.get_ref(kind="structure", id="slab_a")
+    structure.edit(id="slab_a", ops=[{"op": "relax", "fidelity": "ml", "fmax": 0.01}])
+    params = _child_jobs(store, ref_a.id)[0]["params"]
+    assert params["fmax"] == 0.01
+    key_tight = params["cache_key"]
+
+    structure.put(id="slab_b", text=_PD)  # same geometry, default relax
+    ref_b = structure.store.get_ref(kind="structure", id="slab_b")
+    structure.edit(id="slab_b", ops=[{"op": "relax", "fidelity": "ml"}])
+    params_b = _child_jobs(store, ref_b.id)[0]["params"]
+    assert "fmax" not in params_b  # historical param shape preserved
+    assert key_tight != params_b["cache_key"]  # fmax folds into the address
+
+
+def test_relax_fmax_requires_an_energy_rung(structure):
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput):
+        structure.edit(
+            id="pd_pair", ops=[{"op": "relax", "fidelity": "clean", "fmax": 0.01}]
+        )
+
+
+def test_relax_bad_fmax_is_bad_input(structure):
+    structure.put(id="pd_pair", text=_PD)
+    for bad in (-0.1, 0, "tight"):
+        with pytest.raises(BadInput):
+            structure.edit(
+                id="pd_pair", ops=[{"op": "relax", "fidelity": "ml", "fmax": bad}]
+            )
+
+
+def test_relax_fmax_runs_the_local_rung_and_audits(structure, store):
+    """fmax= on a locally-computed rung actually reaches the optimiser and is
+    recorded on the run row (calc identity), not silently floored at 0.05."""
+    pytest.importorskip("ase.calculators.emt")
+    structure.put(id="pd_pair", text=_PD)
+    structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "emt", "fmax": 0.01}])
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT params FROM struct_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row[0]["fmax"] == 0.01
+
+
+def test_relax_fmax_refused_on_a_geometry_rung() -> None:
+    """The same guard at the relax() layer — a fmax on 'clean'/'geo' or a
+    non-positive target raises rather than being silently dropped."""
+    from precis.structure import Scene
+    from precis.structure.cell import Cell
+    from precis.structure.ops import apply_ops
+    from precis.structure.relax import RelaxUnsupported
+    from precis.structure.relax import relax as run_relax_fn
+
+    scene = Scene(cell=Cell(np.diag([10.0, 10.0, 10.0]), pbc=(True,) * 3))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]}])
+    with pytest.raises(RelaxUnsupported):
+        run_relax_fn(scene, fidelity="clean", fmax=0.01)
+    with pytest.raises(RelaxUnsupported):
+        run_relax_fn(scene, fidelity="emt", fmax=-1.0)
+
+
 def test_relax_dispersion_folds_into_the_cache_key(structure):
     """The subtle one: D3 changes the energy, so a dispersion-corrected relax
     must NOT collide with a bare-MLIP run of the same geometry. Keyed in only
