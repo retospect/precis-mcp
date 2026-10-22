@@ -333,3 +333,54 @@ def test_main_emits_rule_d(monkeypatch, capsys) -> None:
     assert main() == 0
     out = json.loads(capsys.readouterr().out)
     assert "[read]" in out["hookSpecificOutput"]["additionalContext"]
+
+
+# ── read-dedup delegation (whole-file Bash serves) ──────────────────────────
+
+
+def _bash_payload(command: str, session: str = "s-del", tu: str = "tu-1") -> dict:
+    return {
+        "session_id": session,
+        "tool_name": "Bash",
+        "tool_use_id": tu,
+        "tool_input": {"command": command},
+    }
+
+
+def test_main_delegates_cat_repeat_deny(monkeypatch, capsys, tmp_path) -> None:
+    """A repeat unchanged `cat f` is DENIED via read-dedup.hook_output —
+    the whole point of the delegation (gr499044's Bash dodge)."""
+    assert _mod._READ_DEDUP is not None
+    monkeypatch.setenv("PRECIS_READ_DEDUP_DIR", str(tmp_path))
+    f = tmp_path / "a.txt"
+    f.write_text("hello\n", encoding="utf-8")
+    rc, out = _run_main(monkeypatch, _bash_payload(f"cat {f}"), capsys)
+    assert rc == 0 and out is None  # first serve: allowed and recorded
+    rc, out = _run_main(monkeypatch, _bash_payload(f"cat {f}", tu="tu-2"), capsys)
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert "unchanged since it was served" in hso["permissionDecisionReason"]
+
+
+def test_main_big_cat_deny_beats_rules(monkeypatch, capsys, tmp_path) -> None:
+    """A first unbounded serve over WARN_BYTES is the redirect deny."""
+    monkeypatch.setenv("PRECIS_READ_DEDUP_DIR", str(tmp_path))
+    f = tmp_path / "big.md"
+    f.write_text("x" * (_mod._READ_DEDUP.WARN_BYTES + 1), encoding="utf-8")
+    rc, out = _run_main(monkeypatch, _bash_payload(f"cat {f}", session="s-big"), capsys)
+    assert rc == 0
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert "Read" in hso["permissionDecisionReason"]
+
+
+def test_main_dedup_silent_falls_through_to_rules(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    """A first-time small cat is allowed silently and recorded — then rule
+    order still applies (no rule fires here, so the call is silent)."""
+    monkeypatch.setenv("PRECIS_READ_DEDUP_DIR", str(tmp_path))
+    f = tmp_path / "a.txt"
+    f.write_text("hello\n", encoding="utf-8")
+    rc, out = _run_main(monkeypatch, _bash_payload(f"cat {f}", session="s-ft"), capsys)
+    assert rc == 0 and out is None

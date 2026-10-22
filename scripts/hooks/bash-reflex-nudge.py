@@ -32,11 +32,21 @@ ambiguous, both rules stay silent rather than guess.
   compression/nudge path. Nudges toward ``Read``. Silent on pipelines (sed
   filtering another command's output) and on stdin reads.
 
+- **Dedup delegate.** Before its own rules run, this hook hands the
+  payload to ``read-dedup.py``'s ``hook_output`` — the same script the
+  Read matcher runs. That is how whole-file Bash serves (``cat``,
+  ``sed -n`` slices, ``head``/``tail``, ``git show``) are deduped and
+  >20 KB serves are redirected to Read *without a second settings entry*:
+  matchers can't be extended from the tree. A dedup verdict (a deny, the
+  only kind it emits on the Bash side) is printed instead of a nudge; a
+  delegation/import failure falls through to the rules unchanged.
+
 Wired in .claude/settings.json (PreToolUse, matcher "Bash").
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -46,6 +56,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _symbol_heuristic import is_symbol_candidate
+
+
+def _load_read_dedup():
+    """Sibling ``read-dedup.py`` as a module; None when missing/broken."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "read_dedup_hook",
+            Path(__file__).resolve().with_name("read-dedup.py"),
+        )
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+_READ_DEDUP = _load_read_dedup()
 
 # A single leading `cd <path> && ` prefix (the one case the spec calls out;
 # deeper segment-walking is deliberately out of scope — stay silent instead).
@@ -209,24 +238,24 @@ def main() -> int:
         return 0
     cwd = payload.get("cwd") or ""
 
-    note = (
-        _rule_a(command)
-        or _rule_b(command)
-        or _rule_c(command, cwd)
-        or _rule_d(command)
-    )
-    if note is None:
-        return 0
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": note,
-                }
-            }
+    out = None
+    if _READ_DEDUP is not None:
+        try:
+            out = _READ_DEDUP.hook_output(payload)
+        except Exception:
+            out = None
+    if out is None:
+        note = (
+            _rule_a(command)
+            or _rule_b(command)
+            or _rule_c(command, cwd)
+            or _rule_d(command)
         )
-    )
+        if note is not None:
+            out = {"additionalContext": note}
+    if out is None:
+        return 0
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", **out}}))
     return 0
 
 
