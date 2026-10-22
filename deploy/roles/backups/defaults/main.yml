@@ -12,7 +12,7 @@
 # docs/runbooks/migration-deploy-window.md.
 #
 # The nightly 03:00 UTC macOS reboot (daily-update-reboot root cron) is
-# optional per host (hardening_macos_nightly_reboot; off on the DB node). The
+# optional per host (hardening_macos_nightly_reboot; off by default). The
 # 03:30 dump time stays as-is either way. It starts 30 min after that slot and runs ~48 min (03:30 → ~04:18 UTC, very stable), so
 # the window closes at 04:20 UTC. tests/test_deploy_backup_window.py asserts
 # the cron slot falls inside the window.

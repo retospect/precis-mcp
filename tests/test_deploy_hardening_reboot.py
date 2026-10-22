@@ -1,5 +1,5 @@
 """The macOS nightly update + reboot cron is optional per host: its state must
-follow ``hardening_macos_nightly_reboot`` (default true, so other Macs keep it)."""
+follow ``hardening_macos_nightly_reboot`` (default false fleet-wide)."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ def test_cron_state_depends_on_nightly_reboot_flag() -> None:
     assert "'absent'" in state
 
 
-def test_nightly_reboot_defaults_on() -> None:
+def test_nightly_reboot_defaults_off() -> None:
     defaults = yaml.safe_load(
         (_ROLE / "defaults" / "main.yml").read_text(encoding="utf-8")
     )
-    assert defaults["hardening_macos_nightly_reboot"] is True
+    assert defaults["hardening_macos_nightly_reboot"] is False

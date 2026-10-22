@@ -189,7 +189,7 @@ memsnap_enabled: false
 memsnap_interval_min: 10
 
 # ── macOS nightly update + reboot ──
-# Off = the 03:00 cron is removed (script still deployed). Off on the DB node:
+# Off = the 03:00 cron is removed (script still deployed). Off fleet-wide:
 # softwareupdate cannot install unattended on Apple silicon, so the reboot is
 # all cost.
-hardening_macos_nightly_reboot: true
+hardening_macos_nightly_reboot: false
