@@ -627,6 +627,7 @@ def run_search_step(
                 ),
                 entry_type="result",
                 by=by,
+                extra_meta={"signal": "lit-search"},
             )
             notes.append(f"{query[:40]}: +{len(linked)}")
         else:
@@ -639,6 +640,7 @@ def run_search_step(
                 ),
                 entry_type="observation",
                 by=by,
+                extra_meta={"signal": "lit-search"},
             )
             notes.append(f"{query[:40]}: 0")
 

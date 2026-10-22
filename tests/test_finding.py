@@ -2171,6 +2171,156 @@ class TestPickCandidate:
         assert "picked candidate a" in out.body
 
 
+# ── edit(pick_candidate='self') — dead_chain close-out on a held paper ──
+
+
+class TestPickCandidateSelf:
+    """``pick_candidate='self'`` closes out a ``STATUS:dead_chain``
+    finding whose frontier paper is fetched and held — the audit's
+    fi43710/fi43706/fi262716/fi262829/fi192879 shape: the chase parked
+    them dead (``meta.dead_reason``) while the frontier paper's own
+    chunks were already in the corpus. The verb links the finding
+    ``derived-from`` that paper, records the caller's ``reason=``, runs
+    the chase's chain-snapshot pass (``primary_cite_key`` /
+    ``via_cite_keys`` / ``caveats`` / ``card_combined`` re-emit), and
+    flips ``dead_chain -> established``."""
+
+    def _seed_dead_chain(self, store, *, held: bool = True) -> tuple[int, int]:
+        """A finding parked ``STATUS:dead_chain`` whose chain frontier is
+        a paper ref — ``held`` controls whether that paper carries body
+        chunks (the fi43710 shape) or is still a bare stub. Returns
+        ``(finding_ref_id, paper_ref_id)``."""
+        from precis.store.types import Tag
+
+        paper_id = _seed_paper(store, cite_key="heldpaper")
+        if not held:
+            with store.pool.connection() as conn:
+                conn.execute("DELETE FROM chunks WHERE ref_id = %s", (paper_id,))
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in="heldpaper")
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        store.add_tag(
+            finding_id,
+            Tag.closed("STATUS", "dead_chain"),
+            set_by="chase",
+            replace_prefix=True,
+        )
+        store.update_ref(finding_id, meta_patch={"dead_reason": "no_resolvable_cite"})
+        return finding_id, paper_id
+
+    def _status_value(self, store, ref_id: int) -> str | None:
+        for t in store.tags_for(ref_id):
+            if getattr(t, "namespace", None) == "closed" and t.prefix == "STATUS":
+                return t.value
+        return None
+
+    def _meta(self, store, ref_id: int) -> dict:
+        ref = store.get_ref(kind="finding", id=ref_id)
+        assert ref is not None
+        return dict(ref.meta or {})
+
+    def test_close_out_establishes_against_held_paper(self, store) -> None:
+        fid, paper_id = self._seed_dead_chain(store)
+        h = _make_handler(store)
+        out = h.edit(
+            id=fid,
+            pick_candidate="self",
+            reason="held paper chunk supports the claim; dead_chain stale",
+        )
+        assert "closed out" in out.body
+        assert self._status_value(store, fid) == "established"
+
+        meta = self._meta(store, fid)
+        assert meta["close_out"] == "self"
+        assert meta["close_out_reason"] == (
+            "held paper chunk supports the claim; dead_chain stale"
+        )
+        # The chain-snapshot pass stamped the primary cite key.
+        assert meta["primary_cite_key"] == "heldpaper"
+        assert meta["via_cite_keys"] == []
+        # The dead-chain marker stays as history.
+        assert meta["dead_reason"] == "no_resolvable_cite"
+
+        # Terminal derived-from edge to the held paper.
+        derived = [
+            l
+            for l in store.links_for(fid, direction="out", relation="derived-from")
+            if l.dst_ref_id == paper_id
+        ]
+        assert derived
+        assert (derived[0].meta or {}).get("candidate") is None
+
+        # card_combined re-emitted with the primary marker.
+        with store.pool.connection() as conn:
+            card = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = -1", (fid,)
+            ).fetchone()
+        assert card is not None
+        assert "primary=heldpaper" in card[0]
+
+    def test_close_out_without_reason_still_works(self, store) -> None:
+        fid, _ = self._seed_dead_chain(store)
+        h = _make_handler(store)
+        out = h.edit(id=fid, pick_candidate="self")
+        assert "closed out" in out.body
+        meta = self._meta(store, fid)
+        assert meta["close_out"] == "self"
+        assert "close_out_reason" not in meta
+
+    def test_drops_lingering_candidate_links(self, store) -> None:
+        fid, paper_id = self._seed_dead_chain(store)
+        other = _seed_paper(store, cite_key="straycandidate")
+        store.add_link(
+            src_ref_id=fid,
+            dst_ref_id=other,
+            dst_pos=None,
+            relation="derived-from",
+            meta={"candidate": True},
+        )
+        h = _make_handler(store)
+        h.edit(id=fid, pick_candidate="self", reason="held paper settles it")
+        links = store.links_for(fid, direction="out", relation="derived-from")
+        assert all((l.meta or {}).get("candidate") is not True for l in links)
+        assert other not in {l.dst_ref_id for l in links}
+        assert paper_id in {l.dst_ref_id for l in links}
+
+    def test_refuses_when_not_dead_chain(self, store) -> None:
+        _seed_paper(store, cite_key="heldpaper")
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in="heldpaper")
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        with pytest.raises(BadInput, match="not STATUS:dead_chain"):
+            h.edit(id=fid, pick_candidate="self", reason="x")
+
+    def test_refuses_when_frontier_paper_not_held(self, store) -> None:
+        fid, _ = self._seed_dead_chain(store, held=False)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="no .*body chunks"):
+            h.edit(id=fid, pick_candidate="self", reason="x")
+        assert self._status_value(store, fid) == "dead_chain"
+
+    def test_refuses_on_empty_chain(self, store) -> None:
+        fid, _ = self._seed_dead_chain(store)
+        store.update_ref(fid, meta_patch={"chain": []})
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="empty meta.chain"):
+            h.edit(id=fid, pick_candidate="self", reason="x")
+
+    def test_reason_rejected_without_self_pick(self, store) -> None:
+        fid, _ = self._seed_dead_chain(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="only applies to pick_candidate='self'"):
+            h.edit(id=fid, pick_candidate="miller23a", reason="x")
+        with pytest.raises(BadInput, match="only applies to pick_candidate='self'"):
+            h.edit(id=fid, reason="x")
+
+    def test_blank_reason_rejected(self, store) -> None:
+        fid, _ = self._seed_dead_chain(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="must be non-empty"):
+            h.edit(id=fid, pick_candidate="self", reason="   ")
+
+
 # ── edit(title=...) — retitle a TAPROOT:claim hub ────────────────────
 
 

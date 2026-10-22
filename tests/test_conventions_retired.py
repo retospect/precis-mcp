@@ -115,7 +115,7 @@ def test_unenforced_rules_equal_allowlist(store: Store) -> None:
     with store.tx() as conn:
         rows = conn.execute(
             "SELECT r.meta->>'convention_rule' FROM refs r "
-            "WHERE r.kind='finding' AND r.retired_at IS NULL "
+            "WHERE r.kind='memory' AND r.retired_at IS NULL "
             "AND r.meta->>'source'='conventions-import' "
             "AND r.meta ? 'convention_rule' AND NOT EXISTS ("
             " SELECT 1 FROM links l WHERE l.dst_ref_id=r.ref_id "

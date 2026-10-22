@@ -622,6 +622,21 @@ def _machine_edge_admission(
     return None
 
 
+#: Stance relations a quest endpoint refuses outright — a quest relates to
+#: a finding by ``serves`` (finding → quest) alone.
+_QUEST_STANCE_FORBIDDEN: frozenset[str] = frozenset({"supports", "supported-by"})
+
+
+def _touches_quest(c: Connection, src_ref_id: int, dst_ref_id: int) -> bool:
+    """True iff either endpoint is a ``quest`` ref (kind lookup, live or
+    retired — a retired endpoint is the caller's problem, not this rule's)."""
+    rows = c.execute(
+        "SELECT kind FROM refs WHERE ref_id = ANY(%s)",
+        ([src_ref_id, dst_ref_id],),
+    ).fetchall()
+    return any(str(r[0]) == "quest" for r in rows)
+
+
 def _both_claim_hubs(c: Connection, src_ref_id: int, dst_ref_id: int) -> bool:
     """True iff both endpoints are live ``TAPROOT:claim`` findings — the
     ``explains`` contract (lazy import: ``taproot.hub`` sits above the
@@ -898,6 +913,27 @@ class LinksMixin:
                     next=(
                         "use different src_pos/dst_pos if linking chunks "
                         "within one ref, or pick a different target"
+                    ),
+                )
+
+            # A quest endpoint takes `serves` only — never a stance edge.
+            # The 2026-09 norr-her agent writer filed ~960 backwards
+            # quest→finding `supports` rows before this door existed
+            # (re-pointed by scripts/_quest_supports_to_serves.py); the
+            # check runs for every writer, not just machine edges, so a
+            # hand/agent link gets the same refusal + pointer.
+            if relation in _QUEST_STANCE_FORBIDDEN and _touches_quest(
+                c, src_ref_id, dst_ref_id
+            ):
+                raise BadInput(
+                    f"quest-supports-edge: '{relation}' never touches a "
+                    f"quest ({src_ref_id} → {dst_ref_id}) — a quest is a "
+                    "container, not evidence",
+                    next=(
+                        "a finding in a quest's service links with "
+                        "rel='serves', finding → quest: "
+                        "link(kind='finding', id='fi<N>', target='qu<M>', "
+                        "rel='serves')"
                     ),
                 )
 

@@ -198,7 +198,7 @@ def test_established_finding_mints_hub_and_attaches_evidence_with_mapped_meta(
     paper = _seed_paper(
         store,
         cite_key="primary",
-        blocks=["A direct measurement statement with no citations."],
+        blocks=["A direct measurement statement with no citations anywhere in it."],
     )
     finding = _seed_finding(store, cite_key="primary")
 
@@ -253,7 +253,9 @@ def _hub_meta(store: Any, hub: int) -> dict[str, Any]:
 
 def test_bridge_memo_records_blocking_codes_on_fresh_mint(store: Any) -> None:
     paper = _seed_paper(
-        store, cite_key="lintmemo", blocks=["A direct measurement statement."]
+        store,
+        cite_key="lintmemo",
+        blocks=["A direct measurement statement with no citations at all."],
     )
     # The default seed title fires no-evidence-verb + no-epistemic-mode.
     finding = _seed_finding(store, cite_key="lintmemo")
@@ -277,7 +279,9 @@ def test_bridge_memo_records_blocking_codes_on_fresh_mint(store: Any) -> None:
 
 def test_bridge_memo_quiet_for_clean_sentence(store: Any) -> None:
     paper = _seed_paper(
-        store, cite_key="lintclean", blocks=["A direct measurement statement."]
+        store,
+        cite_key="lintclean",
+        blocks=["A direct measurement statement with no citations at all."],
     )
     finding = _seed_finding(
         store,
@@ -310,7 +314,9 @@ def test_bridge_memo_not_written_on_attach(store: Any) -> None:
 
     embedder = make_mock_bge_m3()
     paper = _seed_paper(
-        store, cite_key="lintattach", blocks=["A direct measurement statement."]
+        store,
+        cite_key="lintattach",
+        blocks=["A direct measurement statement with no citations at all."],
     )
     title = "The device sustains 2.4 kV without breakdown."
     hub = mint_hub(store, CanonicalClaim(sentence=title, scope={"electrode": "Cu"}))
@@ -346,7 +352,9 @@ def test_bridge_memo_not_written_on_attach(store: Any) -> None:
 
 def test_no_support_verdict_skips_the_bridge(store: Any) -> None:
     paper = _seed_paper(
-        store, cite_key="nosupport", blocks=["An unrelated measurement."]
+        store,
+        cite_key="nosupport",
+        blocks=["An unrelated measurement with no bearing on the claim at all."],
     )
     finding = _seed_finding(store, cite_key="nosupport")
 
@@ -358,9 +366,10 @@ def test_no_support_verdict_skips_the_bridge(store: Any) -> None:
             taproot_enabled=True,
             taproot_embedder=make_mock_bge_m3(),
         )
-    # The deterministic chase outcome is untouched by the taproot skip.
-    assert outcome == "terminated"
-    assert _status(store, finding.ref_id) == "established"
+    # The stance gate (>= partial to establish) walks a 'no' verdict on —
+    # with no resolvable cites left the chain dead-ends, never the bridge.
+    assert outcome == "dead"
+    assert _status(store, finding.ref_id) == "dead_chain"
 
     assert _hub_ref_ids(store) == []
     assert _edges_from(store, paper) == []
@@ -369,7 +378,11 @@ def test_no_support_verdict_skips_the_bridge(store: Any) -> None:
 def test_empty_claim_title_skips_the_bridge(store: Any) -> None:
     """The NO-CLAIM equivalent here: an (unrealistic, defensive) blank
     finding title has nothing to canonicalize into a claim sentence."""
-    paper = _seed_paper(store, cite_key="blanktitle", blocks=["A measurement."])
+    paper = _seed_paper(
+        store,
+        cite_key="blanktitle",
+        blocks=["A measurement result with no citations at all in it."],
+    )
     finding = _seed_finding(store, cite_key="blanktitle")
     store.update_ref(finding.ref_id, title="")
     finding = FindingRow(ref_id=finding.ref_id, title="", meta=finding.meta)
@@ -393,7 +406,11 @@ def test_empty_claim_title_skips_the_bridge(store: Any) -> None:
 
 
 def test_flag_off_writes_nothing_even_with_a_verdict_present(store: Any) -> None:
-    paper = _seed_paper(store, cite_key="flagoff", blocks=["A measurement."])
+    paper = _seed_paper(
+        store,
+        cite_key="flagoff",
+        blocks=["A measurement result with no citations at all in it."],
+    )
     finding = _seed_finding(store, cite_key="flagoff")
 
     with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
@@ -415,7 +432,11 @@ def test_flag_on_without_llm_verdict_writes_nothing(store: Any) -> None:
     """``taproot_enabled=True`` alone is not enough — the bridge also
     needs the chase LLM verdict (``with_llm=True``); deterministic chase
     runs (no ``verification``) never reach it."""
-    paper = _seed_paper(store, cite_key="nollm", blocks=["A direct statement."])
+    paper = _seed_paper(
+        store,
+        cite_key="nollm",
+        blocks=["A direct statement with no citations at all in it."],
+    )
     finding = _seed_finding(store, cite_key="nollm")
 
     outcome, _ev = _advance(
@@ -433,7 +454,11 @@ def test_flag_on_without_llm_verdict_writes_nothing(store: Any) -> None:
 
 
 def test_no_embedder_degrades_to_a_no_op_instead_of_crashing(store: Any) -> None:
-    paper = _seed_paper(store, cite_key="noembedder", blocks=["A measurement."])
+    paper = _seed_paper(
+        store,
+        cite_key="noembedder",
+        blocks=["A measurement result with no citations at all in it."],
+    )
     finding = _seed_finding(store, cite_key="noembedder")
 
     with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
@@ -456,7 +481,9 @@ def test_no_embedder_degrades_to_a_no_op_instead_of_crashing(store: Any) -> None
 def test_reestablished_finding_does_not_duplicate_hub_or_edge(store: Any) -> None:
     embedder = make_mock_bge_m3()
     paper = _seed_paper(
-        store, cite_key="reestablish", blocks=["A direct measurement statement."]
+        store,
+        cite_key="reestablish",
+        blocks=["A direct measurement statement with no citations at all."],
     )
     finding = _seed_finding(store, cite_key="reestablish")
 
@@ -550,8 +577,16 @@ def test_two_findings_same_claim_without_pre_embedding_converge_to_one_hub(
     papers end up attached as evidence on the SAME single hub.
     """
     same_title = "Pd/C catalyzes Suzuki coupling at room temperature."
-    paper_a = _seed_paper(store, cite_key="racea", blocks=["A direct statement."])
-    paper_b = _seed_paper(store, cite_key="raceb", blocks=["Another direct statement."])
+    paper_a = _seed_paper(
+        store,
+        cite_key="racea",
+        blocks=["A direct statement with no citations at all in it."],
+    )
+    paper_b = _seed_paper(
+        store,
+        cite_key="raceb",
+        blocks=["Another direct statement with no citations at all in it."],
+    )
     finding_a = _seed_finding(store, cite_key="racea", title=same_title)
     finding_b = _seed_finding(store, cite_key="raceb", title=same_title)
 
@@ -602,9 +637,15 @@ def test_intermediate_hop_attached_as_corroborator_multi_supporter_split(
     terminal onto the intermediate paper makes the intermediate one the
     derived originator (``establishes``); the terminal, cited by nobody,
     stays a corroborator."""
-    mid = _seed_paper(store, cite_key="mid", blocks=["Earlier context statement."])
+    mid = _seed_paper(
+        store,
+        cite_key="mid",
+        blocks=["An earlier context statement with no citations at all in it."],
+    )
     term = _seed_paper(
-        store, cite_key="term", blocks=["A direct measurement statement."]
+        store,
+        cite_key="term",
+        blocks=["A direct measurement statement with no citations at all."],
     )
     # The terminal cites the intermediate -- makes "mid" the originator.
     store.add_link(src_ref_id=term, dst_ref_id=mid, relation="cites")
@@ -681,8 +722,16 @@ def test_intermediate_hop_with_no_support_verdict_is_skipped(store: Any) -> None
     """An intermediate hop whose OWN verification says ``supports: no``
     is never recorded as evidence, mirroring the terminal's NO-SUPPORT
     skip -- only the terminal ends up attached."""
-    mid = _seed_paper(store, cite_key="midno", blocks=["Unrelated context."])
-    term = _seed_paper(store, cite_key="termno", blocks=["A direct statement."])
+    mid = _seed_paper(
+        store,
+        cite_key="midno",
+        blocks=["An unrelated context statement with no citations in it."],
+    )
+    term = _seed_paper(
+        store,
+        cite_key="termno",
+        blocks=["A direct statement with no citations at all in it."],
+    )
 
     finding = _seed_finding_with_chain(
         store,
@@ -722,7 +771,11 @@ def test_intermediate_hop_that_is_not_a_live_paper_is_skipped(store: Any) -> Non
     """A chain hop pointing at a non-paper ref (defensive -- the chain
     should only ever hold papers) is never attached as evidence."""
     not_a_paper = insert_gripe(store, "stray ref", meta={})
-    term = _seed_paper(store, cite_key="termnp", blocks=["A direct statement."])
+    term = _seed_paper(
+        store,
+        cite_key="termnp",
+        blocks=["A direct statement with no citations at all in it."],
+    )
 
     finding = _seed_finding_with_chain(
         store,
@@ -752,8 +805,16 @@ def test_intermediate_hop_with_no_verification_attached_as_bare_corroborator(
     all -- e.g. the initial ``cited_in`` hop, or a hop the chain grew
     past deterministically) still becomes a corroborator: supporter
     *membership* is the point, not a fabricated support verdict."""
-    mid = _seed_paper(store, cite_key="midbare", blocks=["Context, unverified."])
-    term = _seed_paper(store, cite_key="termbare", blocks=["A direct statement."])
+    mid = _seed_paper(
+        store,
+        cite_key="midbare",
+        blocks=["A context statement, unverified, with no citations at all."],
+    )
+    term = _seed_paper(
+        store,
+        cite_key="termbare",
+        blocks=["A direct statement with no citations at all in it."],
+    )
 
     finding = _seed_finding_with_chain(
         store,
@@ -798,9 +859,15 @@ def test_reestablished_finding_does_not_duplicate_intermediate_edges(
     must not double-attach the intermediate hop either (mirrors the W1
     terminal idempotency test)."""
     embedder = make_mock_bge_m3()
-    mid = _seed_paper(store, cite_key="midreest", blocks=["Context statement."])
+    mid = _seed_paper(
+        store,
+        cite_key="midreest",
+        blocks=["A context statement with no citations at all in it."],
+    )
     term = _seed_paper(
-        store, cite_key="termreest", blocks=["A direct measurement statement."]
+        store,
+        cite_key="termreest",
+        blocks=["A direct measurement statement with no citations at all."],
     )
 
     finding = _seed_finding_with_chain(

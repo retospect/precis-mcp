@@ -92,6 +92,13 @@ _DEAD_CHAIN = "dead_chain"
 _CYCLE = "cycle"
 _MULTI_CANDIDATE = "multi_candidate"
 
+
+class _NoPinnableChunk(Exception):
+    """The paper holds no chunk a claim may pin on (all title-page /
+    reference-list / prose-less) — an honest refusal, never a vacuous
+    grounding."""
+
+
 _DERIVED_FROM = "derived-from"
 _AWAITS_EVIDENCE = "awaits-evidence"
 
@@ -521,8 +528,19 @@ def advance_finding(
                 "cited_others_n": len(verification.get("cited_others") or []),
             }
 
-    is_terminal = (
+    terminal_flag = (
         not inline_cites if verification is None else bool(verification.get("terminal"))
+    )
+    # A chain establishes only on a STANCE verdict of at least "partial":
+    # the terminal chunk must actually support the claim, not merely be
+    # where the inline cites ran out. A "no" verdict is not terminal — the
+    # walk continues on this chunk's cited_others like any non-terminal
+    # hop (and dies honestly on no_resolvable_cite when it can't). The
+    # deterministic path (verification is None) has no verdict to read and
+    # keeps the inline-cites rule.
+    is_terminal = terminal_flag and (
+        verification is None
+        or str(verification.get("supports") or "") in ("yes", "partial")
     )
 
     if is_terminal:
@@ -688,7 +706,14 @@ def _select_grounding_chunk(
     uses for the ordinary chase when there's no embedder, or when the
     search errors — never a hard failure (mirrors the taproot forward
     bridge's own embedder-unavailable degrade).
+
+    Candidates are restricted to pinnable chunks
+    (:func:`_pinnable_chunks`): a grounding pin on a title page or a
+    reference list is refused the same way the tracing arm refuses it.
     """
+    chunks = _pinnable_chunks(chunks)
+    if not chunks:
+        raise _NoPinnableChunk
     if embedder is not None and claim_text.strip():
         try:
             query_vec = embedder.embed_one(claim_text)
@@ -728,17 +753,30 @@ def _ground_on_stub(
     chunks: list[tuple[int, int, str]],
     with_llm: bool,
     embedder: Any,
-) -> tuple[str, _Event]:
+) -> tuple[str, _Event] | None:
     """Seed the finding's chain at the grounded stub and flip
     ``acquiring`` → ``tracing`` so the normal lifecycle proceeds on the
     next pass (one hop per call, matching the tracing arm's own
-    discipline)."""
+    discipline).
+
+    Returns ``None`` when the stub is *rejected* instead of grounded:
+    its best pinnable chunk's STANCE verdict is ``no`` (the
+    acquiring→established path requires at least ``partial`` — the same
+    gate the tracing arm applies before ``_snapshot_chain``), or the
+    stub holds no pinnable chunk at all (:class:`_NoPinnableChunk` —
+    title-page / reference-list only). The caller records the rejection
+    so a rejected stub is not re-verified every pass."""
     from precis.store.types import Tag
 
     claim_text = _claim_body(conn, finding.ref_id)
-    chunk_id, chunk_ord, chunk_text = _select_grounding_chunk(
-        store, embedder, claim_text, stub_ref_id, chunks
-    )
+    try:
+        chunk_id, chunk_ord, chunk_text = _select_grounding_chunk(
+            store, embedder, claim_text, stub_ref_id, chunks
+        )
+    except _NoPinnableChunk:
+        ev.reason = "no_pinnable_chunk"
+        ev.frontier = {"ref_id": stub_ref_id, "rejected": "no_pinnable_chunk"}
+        return None
     ev.frontier = {"ref_id": stub_ref_id, "ord": chunk_ord, "chunk_id": chunk_id}
 
     hop: dict[str, Any] = {
@@ -763,6 +801,12 @@ def _ground_on_stub(
                 "caveats_n": len(verification.get("caveats") or []),
                 "cited_others_n": len(verification.get("cited_others") or []),
             }
+            # STANCE gate: a stub whose best chunk does NOT support the
+            # claim (verdict "no") must not ground it — the same "at least
+            # partial" rule the tracing arm applies before establishing.
+            # The stub is rejected; other linked stubs may still ground.
+            if str(verification.get("supports") or "") not in ("yes", "partial"):
+                return None
 
     store.add_link(
         src_ref_id=finding.ref_id,
@@ -822,12 +866,14 @@ def _advance_acquiring(
     all_exhausted = True
     for stub_link in stub_links:
         stub_ref_id = stub_link.dst_ref_id
+        if stub_ref_id in set(finding.meta.get("rejected_stubs") or []):
+            continue  # stance-"no" / unpinnable verdict already paid for
         stub = _fetch_ref(conn, stub_ref_id)
         if stub is None:
             continue  # soft-deleted stub -- neither blocks nor grounds
         chunks = _fetch_chunks(conn, stub_ref_id)
         if chunks:
-            return _ground_on_stub(
+            out = _ground_on_stub(
                 conn,
                 store,
                 finding,
@@ -837,6 +883,20 @@ def _advance_acquiring(
                 with_llm=with_llm,
                 embedder=embedder,
             )
+            if out is not None:
+                return out
+            # Stub rejected (stance "no", or nothing pinnable) — record it
+            # so a later pass doesn't re-verify the same paid call. A
+            # rejected stub counts as exhausted for the give-up check.
+            rejected = list(finding.meta.get("rejected_stubs") or [])
+            if stub_ref_id not in rejected:
+                rejected.append(stub_ref_id)
+                store.update_ref(
+                    finding.ref_id,
+                    meta_patch={"rejected_stubs": rejected},
+                    conn=conn,
+                )
+            continue
         if not _stub_exhausted(conn, stub_ref_id):
             all_exhausted = False
 
@@ -1109,6 +1169,26 @@ def _claim_body(conn: Connection, ref_id: int) -> str:
     return str(row[0]) if row is not None else ""
 
 
+def _pinnable_chunks(
+    chunks: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """The pool a chain may pin on — chunks that carry grounding prose.
+
+    A reference-list run or a title/author front-matter block says "this
+    paper exists", never "this passage supports the claim" — pinning
+    either mints a vacuous edge. The two read-only predicates are the
+    same ones the taproot backfill / term-coverage sweeps use:
+    :func:`precis.taproot.grounding.has_grounding_prose` (prose, not
+    ord — an abstract grounds fine, a numeric table grounds a numeric
+    claim) and :func:`precis.nanopub.term_coverage.is_bib_text` (a
+    bibliography item or a run of them the reader did not tag
+    ``references``)."""
+    from precis.nanopub.term_coverage import is_bib_text
+    from precis.taproot.grounding import has_grounding_prose
+
+    return [c for c in chunks if has_grounding_prose(c[2]) and not is_bib_text(c[2])]
+
+
 def _select_target_chunk(
     chunks: list[tuple[int, int, str]],
     frontier_ord: int | None,
@@ -1125,7 +1205,15 @@ def _select_target_chunk(
 
     With ``--with-llm``, the LLM verifier confirms the pick or
     proposes an alternate ord.
+
+    Candidates are restricted to pinnable chunks
+    (:func:`_pinnable_chunks`): a pinned frontier ord that lands on a
+    title page or reference list is refused and falls through to the
+    lexical pick over the prose pool rather than pinning there.
     """
+    chunks = _pinnable_chunks(chunks)
+    if not chunks:
+        return None
     if frontier_ord is not None:
         match = next((c for c in chunks if c[1] == frontier_ord), None)
         if match is not None:

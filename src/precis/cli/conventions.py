@@ -1,19 +1,19 @@
-"""``precis conventions import`` — repo conventions as ``SPACE:repo-dev`` findings.
+"""``precis conventions import`` — repo conventions as ``SPACE:repo-dev`` memory.
 
 Reads the packaged manifest ``precis/data/conventions/rules.yaml`` (or
 ``--manifest PATH``) and mints, in ONE transaction:
 
-- one *rule finding* per manifest entry (tags ``SPACE:repo-dev``,
+- one *rule memory* per manifest entry (tags ``SPACE:repo-dev``,
   ``convention``; ``meta.convention_rule`` = the entry id);
-- one *enforcer finding* per DISTINCT enforcer path (tags ``SPACE:repo-dev``,
+- one *enforcer memory* per DISTINCT enforcer path (tags ``SPACE:repo-dev``,
   ``enforcer``; ``meta.convention_enforcer`` = the path);
 - one ``tests`` edge per (enforcer, rule) pair, direction **enforcer -> rule**:
   the ``tests`` relation means "source tests target" (``store/types.py``,
   migration 0142).
 
 Idempotence keys: ``meta.convention_rule`` / ``meta.convention_enforcer``
-among finding refs that carry ``meta.source='conventions-import'`` (a
-hand-made finding with the same key is invisible to the importer and never
+among memory refs that carry ``meta.source='conventions-import'`` (a
+hand-made memory with the same key is invisible to the importer and never
 clobbered); edges by the unique ``(src, dst, relation)`` tuple. RETIRED
 importer refs still block re-minting: a human retirement is respected, so the
 key is reported ``skipped-retired`` and nothing is created, updated or linked
@@ -49,7 +49,7 @@ from precis.store import ChunkInsert, Store, Tag
 
 SOURCE = "conventions-import"
 SPACE_TAG = "SPACE:repo-dev"
-_BODY_KIND = "finding_body"
+_BODY_KIND = "memory_body"
 _REQUIRED = ("id", "file", "title", "body")
 
 
@@ -158,7 +158,7 @@ def _refs(conn: Connection, key: str) -> dict[str, list[_Row]]:
         "SELECT r.ref_id, r.title, r.meta->>%s, r.retired_at IS NOT NULL, "
         "(SELECT c.text FROM chunks c WHERE c.ref_id=r.ref_id "
         " AND c.chunk_kind=%s ORDER BY c.ord LIMIT 1) "
-        "FROM refs r WHERE r.kind='finding' "
+        "FROM refs r WHERE r.kind='memory' "
         "AND r.meta->>'source'=%s AND r.meta ? %s ORDER BY r.ref_id",
         (key, _BODY_KIND, SOURCE, key),
     ).fetchall()
@@ -228,13 +228,13 @@ def _converge(
             report.duplicates += 1
             skipped.update(r[0] for r in live)
             report.lines.append(
-                f"duplicate {value}: " + ", ".join(f"fi{r[0]}" for r in live)
+                f"duplicate {value}: " + ", ".join(f"me{r[0]}" for r in live)
             )
             return
         if not live and rows:
             report.skipped_retired += 1
             skipped.update(r[0] for r in rows)
-            report.lines.append(f"skipped-retired fi{rows[-1][0]} {value}")
+            report.lines.append(f"skipped-retired me{rows[-1][0]} {value}")
             return
         if live:
             rid, old_title, old_body, _ = live[0]
@@ -249,10 +249,10 @@ def _converge(
             if old_title != title:
                 store.chunks.set_ref_title(rid, title, source=SOURCE, conn=conn)
             report.updated += 1
-            report.lines.append(f"updated fi{rid} {value}")
+            report.lines.append(f"updated me{rid} {value}")
             return
         ref = store.insert_ref(
-            kind="finding",
+            kind="memory",
             slug=None,
             title=title,
             meta={"source": SOURCE, key: value, **meta},
@@ -266,13 +266,13 @@ def _converge(
         for tag in tags:
             store.add_tag(
                 ref.id,
-                Tag.parse_strict(tag, kind="finding"),
+                Tag.parse_strict(tag, kind="memory"),
                 set_by="system",
                 conn=conn,
             )
         ids[idx] = int(ref.id)
         report.created += 1
-        report.lines.append(f"created fi{ref.id} {value}")
+        report.lines.append(f"created me{ref.id} {value}")
 
     live_rules = _refs(conn, "convention_rule")
     live_enf = _refs(conn, "convention_enforcer")
@@ -301,14 +301,14 @@ def _converge(
         )
     report.orphaned = [
         *(
-            f"fi{r[0]} {k}"
+            f"me{r[0]} {k}"
             for k, v in live_rules.items()
             if k not in rules
             for r in v
             if not r[3]
         ),
         *(
-            f"fi{r[0]} {k}"
+            f"me{r[0]} {k}"
             for k, v in live_enf.items()
             if k not in enforcers
             for r in v
@@ -338,7 +338,7 @@ def _converge(
             conn=conn,
         )
         report.edges_added += 1
-        report.lines.append(f"edge fi{src} -tests-> fi{dst}")
+        report.lines.append(f"edge me{src} -tests-> me{dst}")
     if sync:
         for (src, dst), meta in sorted(have.items()):
             if (
@@ -351,7 +351,7 @@ def _converge(
                     src_ref_id=src, dst_ref_id=dst, relation="tests", conn=conn
                 )
                 report.edges_removed += 1
-                report.lines.append(f"edge-removed fi{src} -tests-> fi{dst}")
+                report.lines.append(f"edge-removed me{src} -tests-> me{dst}")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:

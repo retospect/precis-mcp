@@ -39,8 +39,10 @@ from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.chase import (
+    FindingRow,
     _fetch_ref,
     _waiting_run_stats,
+    advance_finding,
     claim_tracing_findings,
     run_finding_chase_pass,
 )
@@ -145,7 +147,7 @@ def test_terminal_no_inline_cites_establishes_chain(store) -> None:
     _seed_paper(
         store,
         cite_key="primary",
-        blocks=["A direct measurement statement with no citations."],
+        blocks=["A direct measurement statement with no citations anywhere in it."],
     )
     fid = _seed_finding(store, cite_key="primary")
 
@@ -455,7 +457,7 @@ def test_hop_advances_chain_by_one_and_adds_link(store) -> None:
     _seed_paper(
         store,
         cite_key="frontier",
-        blocks=["The device was held at 2.4 kV [1]."],
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
         identifiers=[("doi", "10.1/frontier")],
     )
     fid = _seed_finding(store, cite_key="frontier")
@@ -499,7 +501,7 @@ def test_hop_mint_carries_s2_meta_when_reference_dict_has_it(store) -> None:
     _seed_paper(
         store,
         cite_key="frontier2",
-        blocks=["The device was held at 2.4 kV [1]."],
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
         identifiers=[("doi", "10.1/frontier2")],
     )
     fid = _seed_finding(store, cite_key="frontier2")
@@ -548,7 +550,7 @@ def test_cycle_protection_flags_status(store) -> None:
     cycle_paper = _seed_paper(
         store,
         cite_key="frontier",
-        blocks=["Held at 2.4 kV [1]."],
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
         identifiers=[("doi", "10.1/frontier")],
     )
     # The finding's initial chain is [frontier]. We mock S2 so the
@@ -583,7 +585,7 @@ def test_dead_chain_releases_waiting_todo(store) -> None:
     _seed_paper(
         store,
         cite_key="frontier",
-        blocks=["Some claim [42]."],
+        blocks=["Some claim about the device held at high voltage [42]."],
         identifiers=[("doi", "10.1/frontier")],
     )
     fid = _seed_finding(store, cite_key="frontier")
@@ -609,7 +611,7 @@ def test_dead_chain_when_no_resolvable_cite(store) -> None:
     _seed_paper(
         store,
         cite_key="frontier",
-        blocks=["Some claim [42]."],
+        blocks=["Some claim about the device held at high voltage [42]."],
         identifiers=[("doi", "10.1/frontier")],
     )
     fid = _seed_finding(store, cite_key="frontier")
@@ -662,7 +664,7 @@ def test_multi_candidate_tags_status_and_records_candidates(store) -> None:
     _seed_paper(
         store,
         cite_key="frontier",
-        blocks=["Held at 2.4 kV [1, 2]."],
+        blocks=["The device was held at 2.4 kV throughout the entire run [1, 2]."],
         identifiers=[("doi", "10.1/frontier")],
     )
     fid = _seed_finding(store, cite_key="frontier")
@@ -696,7 +698,7 @@ def test_card_combined_reemits_at_chain_termination(store) -> None:
     _seed_paper(
         store,
         cite_key="primary",
-        blocks=["A direct measurement."],
+        blocks=["A direct measurement statement with no citations at all."],
     )
     fid = _seed_finding(store, cite_key="primary")
 
@@ -740,7 +742,7 @@ def _seed_acquiring_finding(
     store,
     *,
     wants: list[dict[str, Any]],
-    body: str = "a claim awaiting corpus evidence",
+    body: str = "a claim awaiting corpus evidence anywhere in the literature",
 ) -> tuple[int, int]:
     """Mint an acquisition-mode finding; returns ``(finding_ref_id,
     stub_ref_id)`` — the single linked stub (every test here uses one
@@ -780,7 +782,7 @@ def test_acquiring_finding_grounds_once_stub_gains_chunks(store) -> None:
     derived-from link set, status flips to tracing -- and the pre-existing
     lifecycle proceeds unchanged from there (a further pass on the now-
     tracing, no-inline-cite frontier establishes it)."""
-    claim_text = "a claim awaiting corpus evidence"
+    claim_text = "a claim awaiting corpus evidence anywhere in the literature"
     fid, stub_id = _seed_acquiring_finding(
         store, wants=[{"doi": "10.1/acq-b"}], body=claim_text
     )
@@ -902,7 +904,7 @@ def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
     ``_stub_exhausted``, give-up could fire the instant before evidence
     actually arrives (reviewer-flagged bug). Once chunks land on a later
     pass, the finding grounds normally."""
-    claim_text = "a claim awaiting corpus evidence"
+    claim_text = "a claim awaiting corpus evidence anywhere in the literature"
     fid, stub_id = _seed_acquiring_finding(
         store, wants=[{"doi": "10.1/acq-e"}], body=claim_text
     )
@@ -954,3 +956,165 @@ def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
     chain = _chain(store, fid)
     assert len(chain) == 1
     assert int(chain[0]["ref_id"]) == stub_id
+
+
+# ── furniture pins refused (_pinnable_chunks) ──────────────────────────
+
+#: Title/author front matter — no terminated sentence, so
+#: ``has_grounding_prose`` refuses it.
+_TITLE_PAGE = (
+    "Degree of Rate Control: Energies of Intermediates and Transition States\n"
+    "J. A. Dumesic, G. W. Huber and B. F. Soudani\n"
+    "Department of Chemical Engineering, University of Wisconsin"
+)
+
+#: A reference-list run — ``is_bib_text`` catches the ``[n]`` items.
+_REF_LIST = (
+    "[1] G. W. Huber and A. Corma, Angew. Chem. Int. Ed. 2007\n"
+    "[2] J. N. Chheda, G. W. Huber and J. A. Dumesic, Angew. Chem. 2007"
+)
+
+
+def _finding_row(store, ref_id: int) -> FindingRow:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title, meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return FindingRow(ref_id=ref_id, title=row[0], meta=dict(row[1] or {}))
+
+
+def test_title_page_only_chunk_dead_chains(store) -> None:
+    """A paper whose only chunk is title/author front matter carries no
+    assertion — pinning it would mint a vacuous 'this paper exists'
+    edge, so the chase dead-chains (``no_target_chunk``) instead of
+    establishing on furniture."""
+    _seed_paper(store, cite_key="frontpage", blocks=[_TITLE_PAGE])
+    fid = _seed_finding(store, cite_key="frontpage")
+
+    result = run_finding_chase_pass(store, limit=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'dead_reason' FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    assert row[0] == "no_target_chunk"
+
+
+def test_reference_list_only_chunk_dead_chains(store) -> None:
+    """A frontier paper whose only chunk is a reference list is refused
+    the same way — ``is_bib_text`` drops it from the pinnable pool."""
+    _seed_paper(store, cite_key="reflist", blocks=[_REF_LIST])
+    fid = _seed_finding(store, cite_key="reflist")
+
+    result = run_finding_chase_pass(store, limit=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+
+
+def test_pinned_furniture_ord_falls_through_to_prose(store) -> None:
+    """A frontier ord pinned ON a title-page chunk is refused — the
+    selector falls through to the lexical pick over the pinnable pool,
+    landing on the real prose chunk instead of dead-chaining."""
+    _seed_paper(
+        store,
+        cite_key="mixpage",
+        blocks=[
+            _TITLE_PAGE,
+            "A direct measurement statement of the rate with no citations at all.",
+        ],
+    )
+    h = _make_handler(store)
+    resp = h.put(
+        title="A direct measurement claim",
+        body="claim body",
+        scope={"electrode": "Cu"},
+        cited_in="mixpage~0",  # pin ord 0 — the title page
+    )
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None
+    fid = int(id_m.group(1))
+
+    with store.pool.connection() as conn:
+        outcome, ev = advance_finding(
+            conn, store, _finding_row(store, fid), with_llm=False
+        )
+        conn.commit()
+
+    assert outcome == "terminated"
+    assert ev.frontier["resolved_ord"] == 1  # the prose chunk, not the pin
+    assert _status_tag(store, fid) == "established"
+
+
+# ── stance gate: establish needs >= partial ────────────────────────────
+
+_VERIFY_PATH = "precis.workers.chase._verify_support_with_caveats"
+
+
+def test_stance_no_verdict_never_establishes(store) -> None:
+    """A terminal-flagged chunk whose STANCE verdict is ``'no'`` is not
+    established — the >=partial gate walks the chain on, and with no
+    resolvable cites left it dead-ends honestly."""
+    _seed_paper(
+        store,
+        cite_key="primary",
+        blocks=["A statement that does not support the claim at all, in any way."],
+    )
+    h = _make_handler(store)
+    resp = h.put(
+        title="t", body="claim body", scope={"electrode": "Cu"}, cited_in="primary~0"
+    )
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None
+    fid = int(id_m.group(1))
+    verdict = {
+        "supports": "no",
+        "support_reason": "chunk does not corroborate the claim",
+        "caveats": [],
+        "cited_others": [],
+        "terminal": True,
+    }
+    with patch(_VERIFY_PATH, return_value=verdict):
+        with store.pool.connection() as conn:
+            outcome, _ev = advance_finding(
+                conn, store, _finding_row(store, fid), with_llm=True
+            )
+            conn.commit()
+
+    assert outcome == "dead"
+    assert _status_tag(store, fid) == "dead_chain"
+
+
+def test_stance_partial_verdict_establishes(store) -> None:
+    """``supports='partial'`` clears the >=partial gate — a hedged but
+    supporting verdict still terminates the chain as established."""
+    _seed_paper(
+        store,
+        cite_key="primary",
+        blocks=["A partly supporting statement with some caveats noted in passing."],
+    )
+    h = _make_handler(store)
+    resp = h.put(
+        title="t", body="claim body", scope={"electrode": "Cu"}, cited_in="primary~0"
+    )
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None
+    fid = int(id_m.group(1))
+    verdict = {
+        "supports": "partial",
+        "support_reason": "supports with caveats",
+        "caveats": ["only at room temperature"],
+        "cited_others": [],
+        "terminal": True,
+    }
+    with patch(_VERIFY_PATH, return_value=verdict):
+        with store.pool.connection() as conn:
+            outcome, _ev = advance_finding(
+                conn, store, _finding_row(store, fid), with_llm=True
+            )
+            conn.commit()
+
+    assert outcome == "terminated"
+    assert _status_tag(store, fid) == "established"

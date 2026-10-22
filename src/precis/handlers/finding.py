@@ -1581,6 +1581,7 @@ class FindingHandler(NumericRefHandler):
         unacquirable_mode: str | None = None,
         testable_by: str | None = None,
         motivation: str | None = None,
+        reason: str | None = None,
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         refine: str | None = None,
@@ -1597,7 +1598,9 @@ class FindingHandler(NumericRefHandler):
         by every other op (no faithful preview). See
         :func:`precis.handlers._finding_edit.edit` for the full contract
         (pick_candidate promotes a chase candidate + flips status back to
-        tracing; title retitles a TAPROOT:claim hub via
+        tracing — pick_candidate='self' instead closes out a
+        ``STATUS:dead_chain`` finding whose frontier paper is held, and
+        ``reason=`` records why; title retitles a TAPROOT:claim hub via
         ``taproot/hub.py::refine_claim_sentence``; meta={'scope': …} replaces
         the hub's scope through the same door (scope is part of the
         content-derived pub_id, so it is an identity edit); unacquirable_note writes
@@ -1621,6 +1624,7 @@ class FindingHandler(NumericRefHandler):
                     unacquirable_mode,
                     testable_by,
                     motivation,
+                    reason,
                     meta,
                 )
             ):
@@ -1640,6 +1644,7 @@ class FindingHandler(NumericRefHandler):
             unacquirable_mode=unacquirable_mode,
             testable_by=testable_by,
             motivation=motivation,
+            reason=reason,
             meta=meta,
             dry_run=dry_run,
         )

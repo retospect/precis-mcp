@@ -89,6 +89,13 @@ from precis.taproot.canon import (
     place,
 )
 from precis.taproot.grounding import has_grounding_prose
+from precis.taproot.reground import (
+    PaperChunk,
+    RegroundingUnavailable,
+    VerifyBatchFn,
+    _fold_quote_text,
+    verify_atoms_batch,
+)
 from precis.utils.draft_markup import strip_markers
 from precis.utils.mentions import DRAFT_MARKUP_PATTERN
 from precis.utils.sentences import split_sentences
@@ -195,6 +202,15 @@ class GroupPlan:
     #: ``"ungroundable"`` — every ``[pc]`` supporter names a chunk with no
     #: groundable prose (a title/author front-matter block), so there is no
     #: passage to attach evidence to (no write, prose left ``[pc…]``);
+    #: ``"bad-claim"`` — every extracted claim failed the shape check
+    #: (verbatim copy of its chunk sentence, lowercase start, or leading
+    #: "and" — an extraction fragment, not a claim);
+    #: ``"unverified"`` — a split extraction produced an atom no cited
+    #: supporter's own grounding passage asserts; the whole group is
+    #: refused (no write, prose left) rather than silently dropping a
+    #: conjunct of the composite the prose collapses to;
+    #: ``"verify-unavailable"`` — the atom-verification dispatch itself
+    #: failed (infra); retryable, prose left as-is;
     #: ``"extract-unavailable"`` — the extraction LLM dispatch failed (infra,
     #: :class:`~precis.taproot.canon.ExtractionUnavailable`), so nothing was
     #: decided: no write, prose left as-is, retryable — unlike ``no-claim``,
@@ -269,6 +285,16 @@ class GroupPlan:
     #: persists it as a ``citation`` audit record so the intermediate ``[pc]``
     #: carries *what* is claimed, not just a bare pointer. Empty otherwise.
     reground_grounds: list[tuple[int, int, str]] = field(default_factory=list)
+    #: Per-atom verified-supporter indices for a split extraction:
+    #: ``atom_supporters[i]`` is the ordered list of indices into
+    #: :attr:`supporters` whose own grounding passage verified atom ``i``
+    #: (aligned with :attr:`atom_plans`). ``None`` when per-atom
+    #: verification did not run: the extraction did not decompose (a lone
+    #: atom's claim text IS the cited span, which the cite already
+    #: grounds), or the arm carries no passage at all (a ref-level
+    #: ``[pa]`` promote is ``ungrounded`` by construction). Drives
+    #: :func:`apply_chunk`'s per-atom evidence scoping.
+    atom_supporters: list[list[int]] | None = None
     note: str = ""
     #: For ``"extract-unavailable"``: the router's failure class and the
     #: horizon it named (``None`` when unclassified) — the job that
@@ -581,6 +607,125 @@ def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int, str]:
 # ── planning (read-only, the dry-run core) ─────────────────────────────────
 
 
+def _bad_claim_shape(sentence: str, *, span: str) -> bool:
+    """Extraction-fragment check: a claim that repeats its own chunk
+    sentence verbatim, opens lowercase, or opens with "and" is a sliver of
+    the source text, not a claim — the harvest refuses it before any mint."""
+    s = " ".join(sentence.split())
+    if not s:
+        return True
+    if s == " ".join(span.split()):
+        return True
+    if s[0].islower():
+        return True
+    return bool(s[:4].lower() == "and ")
+
+
+def _supporter_passages(
+    store: Store, supporters: list[tuple[str, int]]
+) -> list[PaperChunk | None]:
+    """Each supporter's grounding passage, aligned with ``supporters`` —
+    the ``pc<chunk_id>`` handle's live chunk as a :class:`PaperChunk`;
+    ``None`` for a ``pa`` handle (whole-paper: no single passage to argue
+    an atom against) or a handle that no longer resolves to a live chunk.
+    Read-only."""
+    pc_ids = [int(h[2:]) for h, _rid in supporters if _PC_HANDLE_RE.match(h)]
+    by_chunk: dict[int, tuple[int, str | None, str]] = {}
+    if pc_ids:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ord, array_to_string(section_path, ' > '), "
+                "text FROM chunks WHERE chunk_id = ANY(%s) "
+                "AND retired_at IS NULL",
+                (pc_ids,),
+            ).fetchall()
+        by_chunk = {
+            int(cid): (int(ordv), str(sp) if sp else None, str(txt or ""))
+            for cid, ordv, sp, txt in rows
+        }
+    passages: list[PaperChunk | None] = []
+    for h, _rid in supporters:
+        chunk_id = int(h[2:]) if _PC_HANDLE_RE.match(h) else None
+        row = by_chunk.get(chunk_id) if chunk_id is not None else None
+        passages.append(
+            PaperChunk(
+                chunk_id=chunk_id,
+                chunk_ord=row[0],
+                section_path=row[1],
+                text=row[2],
+            )
+            if row is not None and chunk_id is not None
+            else None
+        )
+    return passages
+
+
+def _verify_atoms_against_supporters(
+    atoms: list[CanonicalClaim],
+    passages: list[PaperChunk | None],
+    *,
+    verify_batch_fn: VerifyBatchFn,
+) -> list[list[int]]:
+    """Per-atom verified supporters: ``out[i]`` is the ordered list of
+    supporter indices whose own grounding passage asserts atom ``i`` —
+    one :func:`verify_atoms_batch` call per supporter (all atoms × that
+    supporter's passage). A returned ``supported`` verdict counts only
+    when its ``quote`` also survives the verbatim-in-passage check (the
+    anti-hallucination backstop — the substring leg of
+    :func:`precis.taproot.reground._validate_quote`; the uniqueness leg
+    is moot here: one cited passage, not a paper's chunk set)."""
+    out: list[list[int]] = [[] for _ in atoms]
+    for s_idx, passage in enumerate(passages):
+        if passage is None:
+            continue
+        for r in verify_batch_fn(atoms, [passage]):
+            if not (0 <= r.atom_index < len(atoms)) or not r.supported:
+                continue
+            if r.quote is None or (
+                _fold_quote_text(r.quote) not in _fold_quote_text(passage.text)
+            ):
+                continue
+            out[r.atom_index].append(s_idx)
+    return out
+
+
+def _campaign_candidates(
+    store: Store,
+    claim: CanonicalClaim,
+    campaign: str,
+    *,
+    seen: set[int],
+    k: int = 10,
+) -> list[MergeCandidate]:
+    """Lexical recall over the campaign's existing claim hubs — the
+    ``campaign:<slug>``-tagged hubs' ``finding_body`` chunks — returned
+    as extra :class:`MergeCandidate`\\ s for the judge. The ANN in
+    :func:`~precis.taproot.canon.block` only recalls what the embedding
+    puts near the claim; a harvest must not mint a hub the campaign
+    already carries under different wording, so a tag-scoped lexical
+    pass catches what the ANN misses. ``distance`` is not meaningful for
+    a lexical hit — ``inf`` keeps it honest (``place`` picks the first
+    confirmed candidate by input order, never by distance).
+    ``seen``/``exclude_ref_ids`` keeps an already-ANN-returned hub from
+    being judged twice."""
+    rows = store.chunks.search_chunks_lexical(
+        q=claim.sentence,
+        kind="finding",
+        tags=[f"campaign:{campaign}", "TAPROOT:claim", "STATUS:canonical"],
+        chunk_kinds=["finding_body"],
+        exclude_ref_ids=sorted(seen),
+        limit=k,
+    )
+    return [
+        MergeCandidate(
+            hub_ref_id=ref.id,
+            claim=str(chunk.text or ref.title or ""),
+            distance=float("inf"),
+        )
+        for chunk, ref, _rank in rows
+    ]
+
+
 def _run_cascade(
     store: Store,
     embedder: Any,
@@ -592,6 +737,8 @@ def _run_cascade(
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
     ungrounded: bool = False,
+    campaign: str | None = None,
+    verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> GroupPlan:
     """The shared extract → block → judge → place tail, once supporters are
     resolved. Runs the block/judge/place cascade once per atom **and**, when
@@ -630,12 +777,91 @@ def _run_cascade(
             note="span asserts nothing groundable",
         )
 
+    # Claim-shape refusal: an atom/composite that just repeats its own
+    # chunk sentence verbatim, opens lowercase, or opens with "and" is an
+    # extraction fragment, not a claim — refusing at the door keeps the
+    # harvest from minting restatements and conjunction slivers.
+    kept = [
+        i
+        for i, a in enumerate(extraction.atoms)
+        if not _bad_claim_shape(a.sentence, span=group.span_text)
+    ]
+    atoms = [extraction.atoms[i] for i in kept]
+    if not atoms:
+        return GroupPlan(
+            group=group,
+            action="bad-claim",
+            supporters=supporters,
+            note=(
+                "every extracted claim failed the shape check (verbatim copy "
+                "of its chunk sentence, lowercase start, or leading 'and')"
+            ),
+        )
+    # ``explains`` pairs index the ORIGINAL atom list — re-map them through
+    # the shape filter so a dropped atom can't shift a surviving pair onto
+    # the wrong (or a refused) endpoint. A pair touching a refused atom is
+    # dropped outright; a pair already out of the original range is passed
+    # through raw — apply_extraction's own sentinel check owns that case.
+    explains = tuple(
+        (kept.index(i), kept.index(j)) if i in kept and j in kept else (i, j)
+        for i, j in extraction.explains
+        if (
+            (i in kept or not (0 <= i < len(extraction.atoms)))
+            and (j in kept or not (0 <= j < len(extraction.atoms)))
+        )
+    )
+
+    # Per-atom verification, split extractions only: a conjunct the cited
+    # passage never asserts is an extraction artefact — minting it would
+    # attach the wrong evidence edge. Every split atom must verify against
+    # at least one supporter's own passage or the whole group is refused
+    # (a partial mint would silently drop a conjunct of the composite the
+    # prose collapse targets). A lone-atom extraction skips this: its
+    # claim text IS the cited span, which the cite already grounds; and a
+    # ref-level [pa] promote carries no passage to verify against at all.
+    atom_supporters: list[list[int]] | None = None
+    if len(atoms) > 1 or extraction.composite is not None:
+        passages = _supporter_passages(store, supporters)
+        if any(p is not None for p in passages):
+            try:
+                atom_supporters = _verify_atoms_against_supporters(
+                    atoms, passages, verify_batch_fn=verify_batch_fn
+                )
+            except RegroundingUnavailable as exc:
+                return GroupPlan(
+                    group=group,
+                    action="verify-unavailable",
+                    supporters=supporters,
+                    note=(
+                        f"atom verification dispatch failed (infra, retryable): {exc}"
+                    ),
+                )
+            unverified = [i for i, v in enumerate(atom_supporters) if not v]
+            if unverified:
+                bad = "; ".join(
+                    f"atom {i}: {atoms[i].sentence[:80]!r}" for i in unverified
+                )
+                return GroupPlan(
+                    group=group,
+                    action="unverified",
+                    supporters=supporters,
+                    atom_supporters=atom_supporters,
+                    note=(
+                        "split atom(s) not asserted by any cited passage — "
+                        f"group refused, prose left as-is: {bad}"
+                    ),
+                )
+
     def _place_one(claim: CanonicalClaim) -> tuple[CanonicalClaim, Placement]:
         candidates = block_fn(claim, store, embedder)
+        if campaign is not None:
+            candidates = candidates + _campaign_candidates(
+                store, claim, campaign, seen={c.hub_ref_id for c in candidates}
+            )
         judged = [(cand, judge_fn(claim.sentence, cand.claim)) for cand in candidates]
         return claim, place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 
-    atom_plans = [_place_one(atom) for atom in extraction.atoms]
+    atom_plans = [_place_one(atom) for atom in atoms]
     composite_plan = _place_one(extraction.composite) if extraction.composite else None
 
     # Prose/reporting target: the composite when the extraction decomposed,
@@ -652,8 +878,9 @@ def _run_cascade(
         composite_plan=composite_plan,
         composite_source=extraction.composite_source,
         not_claims=extraction.not_claims,
-        explains=extraction.explains,
+        explains=explains,
         supporters=supporters,
+        atom_supporters=atom_supporters,
         hub_ref_id=target_placement.hub_ref_id,
         ungrounded=ungrounded,
         note=target_placement.reason,
@@ -717,6 +944,8 @@ def _plan_pa_group(
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
     locate_fn: LocateFn,
+    campaign: str | None = None,
+    verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> GroupPlan:
     """Route a whole-paper ``[pa]`` cite-group by its cited paper(s)' state.
 
@@ -773,6 +1002,8 @@ def _plan_pa_group(
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
         ungrounded=True,
+        campaign=campaign,
+        verify_batch_fn=verify_batch_fn,
     )
 
 
@@ -788,6 +1019,8 @@ def _plan_group(
     locate_fn: LocateFn = _default_locate,
     ref_level: bool = False,
     chunk_kind: str | None = None,
+    campaign: str | None = None,
+    verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> GroupPlan:
     """Resolve → route for ONE cite-group (read-only).
 
@@ -863,6 +1096,8 @@ def _plan_group(
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
             locate_fn=locate_fn,
+            campaign=campaign,
+            verify_batch_fn=verify_batch_fn,
         )
 
     # [pc] arm: the handle names its grounding chunk outright, so a title/
@@ -896,6 +1131,8 @@ def _plan_group(
         block_fn=block_fn,
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
+        campaign=campaign,
+        verify_batch_fn=verify_batch_fn,
     )
 
 
@@ -910,6 +1147,8 @@ def plan_chunk(
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
     locate_fn: LocateFn = _default_locate,
+    campaign: str | None = None,
+    verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> ChunkBackfill:
     """Plan the backfill of one draft chunk — writes **nothing**.
 
@@ -938,6 +1177,8 @@ def plan_chunk(
             merge_confirm_fn=merge_confirm_fn,
             locate_fn=locate_fn,
             chunk_kind=chunk_kind,
+            campaign=campaign,
+            verify_batch_fn=verify_batch_fn,
         )
         for group in segment_cite_groups(text)
     ]
@@ -1048,6 +1289,8 @@ def apply_chunk(
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
     locate_fn: LocateFn = _default_locate,
     mint_cap: MintCap | None = None,
+    campaign: str | None = None,
+    verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
@@ -1126,6 +1369,8 @@ def apply_chunk(
             merge_confirm_fn=merge_confirm_fn,
             locate_fn=locate_fn,
             chunk_kind=chunk_kind,
+            campaign=campaign,
+            verify_batch_fn=verify_batch_fn,
         )
         plans.append(plan)
         if plan.action == "reground":
@@ -1190,6 +1435,24 @@ def apply_chunk(
         # whose evidence edge never landed this call — silent draft
         # corruption. ``hub_landed`` only flips True once ``apply_extraction``
         # has actually returned with a target hub id.
+        # Per-atom evidence scoping for a verified split extraction
+        # (plan.atom_supporters set): atom i's primary edge goes to the
+        # FIRST supporter whose own passage verified it, and each other
+        # verified supporter corroborates that atom only — an atom never
+        # gets an edge from a passage that doesn't assert it. The
+        # unverified path (lone atom, ref-level [pa]) keeps the blanket
+        # primary + corroborates-everything behaviour.
+        atom_papers: list[tuple[int, dict[str, Any] | None] | None] | None = (
+            [
+                (
+                    plan.supporters[v[0]][1],
+                    _edge_meta(plan.supporters[v[0]][0]),
+                )
+                for v in plan.atom_supporters
+            ]
+            if plan.atom_supporters is not None
+            else None
+        )
         hub_landed = False
         try:
             outcome = apply_extraction(
@@ -1204,6 +1467,7 @@ def apply_chunk(
                 meta=_edge_meta(plan.supporters[0][0]),
                 set_by=set_by,
                 todo_fn=_todo_fn,
+                atom_papers=atom_papers,
             )
             target_hub_id = (
                 outcome.composite_hub_id
@@ -1218,11 +1482,19 @@ def apply_chunk(
             plan.hub_ref_id = target_hub_id
             plan.explains_skipped = outcome.explains_skipped
             hub_landed = True
-            # Remaining supporter papers → corroborating evidence on EVERY
-            # atom hub (the cited passage asserts all conjuncts; never the
+            # Remaining supporters → corroborating evidence. Verified
+            # path: only the supporters whose own passage verified that
+            # atom (the first already carried its primary edge). Default
+            # path: every remaining supporter corroborates every atom hub
+            # (the cited passage asserts all conjuncts; never the
             # composite, step 3).
-            for handle, paper_ref_id in plan.supporters[1:]:
-                for atom_hub_id in outcome.atom_hub_ids:
+            for atom_idx, atom_hub_id in outcome.atom_hub_index.items():
+                extra = (
+                    [plan.supporters[j] for j in plan.atom_supporters[atom_idx][1:]]
+                    if plan.atom_supporters is not None
+                    else plan.supporters[1:]
+                )
+                for handle, paper_ref_id in extra:
                     attach_evidence(
                         store,
                         hub_ref_id=atom_hub_id,

@@ -2095,6 +2095,20 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
         store.drafts.patch_chunk_meta(
             block.handle, {"settled": text, "settled_ruling": ruling}
         )
+        # A settled hypothesis is a deed: the tick stamps a `milestone`
+        # (system-authored — the settle op landed, which is a fact of the
+        # ledger even though the settle text is the model's). Momentum and
+        # the deed ledger both read it. Lazy import: logbook sits at the
+        # same layer, kept out of the module header.
+        from precis.quest.logbook import MEASURED_BY, append_entry
+
+        append_entry(
+            store,
+            owner_id,
+            text=f"hypothesis [fi{hid}] settled — {text.splitlines()[0][:200]}",
+            entry_type="milestone",
+            by=MEASURED_BY,
+        )
         return True
 
     if kind == "experiment":

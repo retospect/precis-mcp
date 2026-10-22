@@ -2973,6 +2973,12 @@ class ExtractionOutcome:
     #: re-run counts an already-present edge as neither.
     explains_written: int = 0
     explains_skipped: int = 0
+    #: Atom index (position in the ``atoms`` arg) -> the hub ref_id it
+    #: landed on, for callers that scope per-atom follow-up writes (e.g.
+    #: corroborating evidence edges) to the atoms that actually placed —
+    #: a ``needs_review`` atom simply has no entry, so index alignment is
+    #: never lost to a skipped middle atom.
+    atom_hub_index: dict[int, int] = field(default_factory=dict)
 
 
 def apply_extraction(
@@ -2991,6 +2997,7 @@ def apply_extraction(
     conn: Any = None,
     pending_checks: list[int] | None = None,
     composite_source: str | None = None,
+    atom_papers: list[tuple[int, dict[str, Any] | None] | None] | None = None,
 ) -> ExtractionOutcome:
     """Persist a full :class:`~precis.taproot.canon.ClaimExtraction` through
     the write door — the decomposition-aware orchestrator on top of
@@ -3021,20 +3028,37 @@ def apply_extraction(
        source span, e.g. ``"dc123"``) and is counted in
        :attr:`ExtractionOutcome.explains_skipped`.
 
+    ``atom_papers`` (optional, aligned with ``atoms``) overrides the
+    default ``(paper_ref_id, meta)`` evidence write per atom — entry
+    ``(paper_ref_id, meta)`` for that atom's primary edge, or ``None`` to
+    keep the default. The draft-backfill harvest uses it to give each
+    verified split atom the edge of the supporter whose own passage
+    asserted it, rather than the run's first supporter uniformly. A
+    length mismatch refuses at the door (:class:`BadInput`).
+
     Idempotency falls out of the primitives: :func:`mint_hub`'s pub_id
     converges re-runs, :func:`link_claims` no-ops on an existing edge, and
     :func:`_merge_not_claims_memo` is sha-keyed and existing-wins.
     """
+    if atom_papers is not None and len(atom_papers) != len(atoms):
+        raise BadInput(
+            f"atom_papers has {len(atom_papers)} entries for {len(atoms)} atoms",
+            next="pass one (paper_ref_id, meta) entry (or None) per atom",
+        )
     atom_hub_ids: list[int] = []
     hub_by_atom_index: dict[int, int] = {}
     for atom_index, (atom_claim, atom_placement) in enumerate(atoms):
+        override = atom_papers[atom_index] if atom_papers is not None else None
+        atom_paper_ref_id, atom_meta = (
+            override if override is not None else (paper_ref_id, meta)
+        )
         hub_id = apply_placement(
             store,
             atom_claim,
             atom_placement,
-            paper_ref_id=paper_ref_id,
+            paper_ref_id=atom_paper_ref_id,
             role=role,
-            meta=meta,
+            meta=atom_meta,
             todo_fn=todo_fn,
             set_by=set_by,
             conn=conn,
@@ -3114,6 +3138,7 @@ def apply_extraction(
         composite_hub_id=composite_hub_id,
         explains_written=explains_written,
         explains_skipped=explains_skipped,
+        atom_hub_index=hub_by_atom_index,
     )
 
 

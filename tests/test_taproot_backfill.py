@@ -32,6 +32,7 @@ from precis.taproot.canon import (
     NotClaim,
     Verdict,
 )
+from precis.taproot.reground import AtomVerifyResult
 from precis.taproot.seniority import is_claim_hub
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -119,6 +120,58 @@ def _block_map(mapping: dict[str, tuple[int, str]]):
 
 def _never_called(*_a: Any, **_k: Any) -> Any:  # judge/merge_confirm not reached
     raise AssertionError("cascade fn should not have been called")
+
+
+def _verify_all(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+    """Fake ``VerifyBatchFn``: every atom verified by the offered passage —
+    the quote IS the passage text, so the verbatim-in-passage check holds."""
+    p = passages[0]
+    return [
+        AtomVerifyResult(i, True, p.chunk_ord, p.text, None)
+        for i, _ in enumerate(atoms)
+    ]
+
+
+def _verify_only(supported: set[str]):
+    """Fake ``VerifyBatchFn``: only atoms whose sentence is in ``supported``
+    verify (against every offered passage) — for the unverified-atom
+    refusal and per-atom supporter scoping tests."""
+
+    def _v(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+        p = passages[0]
+        return [
+            AtomVerifyResult(
+                i,
+                a.sentence in supported,
+                p.chunk_ord if a.sentence in supported else None,
+                p.text if a.sentence in supported else None,
+                None,
+            )
+            for i, a in enumerate(atoms)
+        ]
+
+    return _v
+
+
+def _verify_by_passage(mapping: dict[str, set[str]]):
+    """Fake ``VerifyBatchFn``: ``mapping[passage_text]`` is the set of atom
+    sentences THAT passage supports — the per-supporter scoping case."""
+
+    def _v(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+        p = passages[0]
+        ok = mapping.get(p.text, set())
+        return [
+            AtomVerifyResult(
+                i,
+                a.sentence in ok,
+                p.chunk_ord if a.sentence in ok else None,
+                p.text if a.sentence in ok else None,
+                None,
+            )
+            for i, a in enumerate(atoms)
+        ]
+
+    return _v
 
 
 # ── segmentation (pure) ──────────────────────────────────────────────────
@@ -1680,6 +1733,7 @@ def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     plan = result.plans[0]
@@ -1740,6 +1794,7 @@ def test_apply_needs_review_atom_contributes_no_conjunct_link(
         block_fn=_block_map({"Atom one.": (existing_hub, "Atom one.")}),
         judge_fn=lambda a, b: _verdict("same", 0.40),  # low-confidence same
         merge_confirm_fn=lambda a, b: _verdict("different", 0.9),  # not confirmed
+        verify_batch_fn=_verify_all,
     )
 
     plan = result.plans[0]
@@ -1780,6 +1835,7 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     plan = result.plans[0]
@@ -1815,6 +1871,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
     composite_hub = first.plans[0].hub_ref_id
     assert composite_hub is not None
@@ -1842,6 +1899,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         block_fn=_block_map(mapping),
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     plan2 = second.plans[0]
@@ -1881,6 +1939,7 @@ def test_apply_not_claims_memo_lands_on_composite_hub_meta(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     composite_hub = result.plans[0].hub_ref_id
@@ -1917,6 +1976,7 @@ def test_apply_composite_source_lands_on_composite_hub_meta(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     composite_hub = result.plans[0].hub_ref_id
@@ -2208,6 +2268,7 @@ def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
     )
 
     plan = result.plans[0]
@@ -2231,3 +2292,246 @@ def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
             "JOIN refs d ON d.ref_id = l.dst_ref_id WHERE l.relation = 'explains'"
         ).fetchall()
     assert rows == [("Mechanism atom.", "Effect atom.")]
+
+
+# ── split-atom verification + campaign dedup (Q12 (a)) ──────────────────
+
+
+def test_split_atom_unverified_by_any_passage_refuses_the_group(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A conjunct the cited passage never asserts is an extraction artefact —
+    # the WHOLE group is refused (no mint, prose left), never a partial mint
+    # that silently drops a conjunct of the composite the prose collapses to.
+    paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Made-up atom."], "Bundle claim."),
+        # The refusal happens before the cascade: block/judge never run.
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_only({"Atom one."}),
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "unverified"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_lone_atom_skips_verification(draft: DraftHandler, hub: Hub) -> None:
+    # "each split atom" — a lone atom's claim text IS the cited span, so
+    # verify_batch_fn is never dispatched for it.
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "new"
+
+
+def test_split_atom_verification_scopes_evidence_to_its_own_passage(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Atom two is asserted only by paper2's passage: its primary edge comes
+    # from paper2, and paper1 corroborates only the atom it verifies —
+    # never an edge from a passage that doesn't assert the claim.
+    paper1 = seed_ref(hub.live_store, title="p1", kind="paper")
+    t1 = "Atom one is asserted by this first passage only."
+    c1 = seed_chunk(hub.live_store, ref_id=paper1, ord=0, text=t1)
+    paper2 = seed_ref(hub.live_store, title="p2", kind="paper")
+    t2 = "Atom two finds support in this second passage alone."
+    c2 = seed_chunk(hub.live_store, ref_id=paper2, ord=0, text=t2)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [pc{c1}][pc{c2}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_by_passage({t1: {"Atom one."}, t2: {"Atom two."}}),
+    )
+
+    plan = result.plans[0]
+    composite_hub = plan.hub_ref_id
+    assert composite_hub is not None
+    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
+    assert len(atom_hub_ids) == 2
+
+    # paper1 edges only the atom its passage verified; paper2 the other.
+    p1_edges = _edges_from(hub.live_store, paper1)
+    p2_edges = _edges_from(hub.live_store, paper2)
+    assert len(p1_edges) == 1
+    assert len(p2_edges) == 1
+    assert p1_edges != p2_edges
+    assert p1_edges | p2_edges == set(atom_hub_ids)
+    assert composite_hub not in p1_edges | p2_edges
+
+
+def test_verify_dispatch_failure_is_retryable_not_a_verdict(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Infra failure (RegroundingUnavailable) is never silently "nothing
+    # verified" — the group is a retryable verify-unavailable, prose left.
+    from precis.taproot.reground import RegroundingUnavailable
+
+    def _boom(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+        raise RegroundingUnavailable("dispatch dead")
+
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_boom,
+    )
+
+    assert result.plans[0].action == "verify-unavailable"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_campaign_search_converges_where_ann_missed(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # campaign= dedup: the ANN returns no candidates, but a campaign-tagged
+    # hub already carries the claim — lexical recall lands it as a merge
+    # candidate and the group attaches instead of minting a duplicate.
+    from precis.store.types import Tag
+    from precis.taproot.authoring import seed_claim_hub
+
+    paper = seed_ref(hub.live_store, title="paper A", kind="paper")
+    existing = seed_claim_hub(
+        hub.live_store,
+        sentence="Ribbons are semiconducting.",
+        scope={},
+        supporters=[{"paper": paper}],
+    )
+    hub.live_store.add_tag(
+        int(existing["hub_ref_id"]),
+        Tag.open("campaign:test-camp"),
+        set_by="system",
+    )
+    _paper2, pc = _pc_of(hub.live_store, paper_title="paper B")
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+
+    planned = plan_chunk(
+        hub.live_store,
+        embedder=None,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,  # the ANN misses it
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+        merge_confirm_fn=_never_called,
+        campaign="test-camp",
+    )
+    assert planned.plans[0].action == "attach"
+    assert planned.plans[0].hub_ref_id == int(existing["hub_ref_id"])
+
+    # And without campaign= the same group would mint a duplicate.
+    plain = plan_chunk(
+        hub.live_store,
+        embedder=None,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+    assert plain.plans[0].action == "new"
+
+
+# ── fragment-claim refusal (_bad_claim_shape) ───────────────────────────
+
+
+def test_apply_refuses_extraction_fragments(draft: DraftHandler, hub: Hub) -> None:
+    """Every extracted 'claim' that is a verbatim copy of its own chunk
+    sentence, opens lowercase, or opens with 'and' is a sliver of the
+    source text — the group plans 'bad-claim' and mints nothing."""
+    paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+    before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        # A verbatim copy of the group's own span text — the classic
+        # harvest fragment.
+        extract_fn=_extract_const("Ribbons are semiconducting"),
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "bad-claim"
+    assert "shape check" in (result.plans[0].note or "")
+    assert _finding_count(hub.live_store) == before
+
+
+def test_apply_bad_atoms_dropped_good_atoms_still_mint(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A mixed extraction drops only the fragment atoms — the surviving
+    atom still verifies and mints, and an ``explains`` pair touching a
+    refused atom is dropped rather than re-pointed."""
+    paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"The bundle holds with two conjuncts [{pc}].")
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(
+            ["and a dangling sliver", "Atom two survives."],
+            "The bundle holds.",
+            explains=((0, 1),),
+        ),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "new"
+    assert plan.hub_ref_id is not None
+    # No hub carries the refused sliver's sentence.
+    with hub.live_store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT title FROM refs WHERE kind='finding' AND retired_at IS NULL"
+        ).fetchall()
+    titles = {str(r[0]) for r in rows}
+    assert "and a dangling sliver" not in titles
+    assert "Atom two survives." in titles

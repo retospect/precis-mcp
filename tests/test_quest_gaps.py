@@ -210,10 +210,21 @@ class TestMomentum:
         h = _handler(store)
         qid = _created_id(h.put(text="A busy striving"))
         for i in range(3):
-            h.put(id=qid, text=f"observation {i}", entry="observation")
+            h.put(id=qid, text=f"result {i}", entry="result")
         m = quest_momentum(store, qid)
         assert m.recent_entries == 3
         assert m.label == "active"
+
+    def test_bookkeeping_entries_do_not_warm_momentum(self, store: Any) -> None:
+        """Only ``result``/``milestone`` entries are progress; observations,
+        costs, dead-ends and lit-search lines are the tick's own activity."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A spinning striving"))
+        h.put(id=qid, text="observation 0", entry="observation")
+        h.put(id=qid, text="cost 0", entry="cost")
+        h.put(id=qid, text="dead-end 0", entry="dead-end")
+        h.put(id=qid, text="lit-search: q -> 0 hits", entry="result")
+        assert quest_momentum(store, qid).recent_entries == 0
 
     def test_entries_short_circuit_matches_default(self, store: Any) -> None:
         """Passing precomputed ``entries=`` (the quest-hub route's own
@@ -226,7 +237,7 @@ class TestMomentum:
         h = _handler(store)
         qid = _created_id(h.put(text="A busy striving"))
         for i in range(3):
-            h.put(id=qid, text=f"observation {i}", entry="observation")
+            h.put(id=qid, text=f"result {i}", entry="result")
         log_entries = [
             b for b in store.chunks.list_chunks_for_ref(qid) if b.chunk_kind == LOG_KIND
         ]

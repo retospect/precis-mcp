@@ -68,7 +68,7 @@ class TestSelector:
         small = _quest(store, "thin quest", prio=1)
         for i in range(4):
             f = _finding(store, f"thin hub {i}")
-            store.add_link(src_ref_id=f.id, dst_ref_id=small.id, relation="supports")
+            store.add_link(src_ref_id=f.id, dst_ref_id=small.id, relation="serves")
         dense = _quest(store, "fully meshed quest", prio=2)
         dh = [_finding(store, f"dense hub {i}") for i in range(9)]
         for i in range(9):
@@ -77,9 +77,7 @@ class TestSelector:
                 dst_ref_id=dh[(i + 1) % 9].id,
                 relation="disputes",
             )
-            store.add_link(
-                src_ref_id=dh[i].id, dst_ref_id=dense.id, relation="supports"
-            )
+            store.add_link(src_ref_id=dh[i].id, dst_ref_id=dense.id, relation="serves")
         store.insert_ref(kind="quest", slug=None, title="no STATUS")
         dormant = store.insert_ref(kind="quest", slug=None, title="dormant")
         store.add_tag(dormant.id, Tag.closed("STATUS", "dormant"), set_by="system")
@@ -101,7 +99,7 @@ class TestSelector:
             q = _quest(store, name, prio=prio)
             hs = [_finding(store, f"{name} hub {i}") for i in range(8)]
             for h in hs:
-                store.add_link(src_ref_id=h.id, dst_ref_id=q.id, relation="supports")
+                store.add_link(src_ref_id=h.id, dst_ref_id=q.id, relation="serves")
             for a, b in stance_pairs:
                 store.add_link(
                     src_ref_id=hs[a].id,
@@ -135,9 +133,18 @@ class TestSelector:
 
     def test_membership_doors(self, store: Any) -> None:
         q = _quest(store, "membership quest")
-        # door 1a: quest -> finding (the pre-fix supports shape)
+        # door 1a: quest -> finding (the pre-fix supports shape). add_link
+        # now refuses a supports edge on a quest endpoint, but the 2026-09
+        # agent writer's legacy rows stay in prod until
+        # scripts/_quest_supports_to_serves.py re-points them — seed one
+        # with a raw INSERT so door 1 keeps reading them.
         direct_out = _finding(store, "direct out")
-        store.add_link(src_ref_id=q.id, dst_ref_id=direct_out.id, relation="supports")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+                "VALUES (%s, %s, 'supports', 'agent')",
+                (q.id, direct_out.id),
+            )
         # door 1b: finding -> quest serves (the post-fix direction)
         direct_in = _finding(store, "direct in")
         store.add_link(src_ref_id=direct_in.id, dst_ref_id=q.id, relation="serves")
@@ -157,7 +164,7 @@ class TestSelector:
         store.add_link(src_ref_id=p.id, dst_ref_id=weak.id, relation="related-to")
         # NOT a member: retired hub
         retired = _finding(store, "retired")
-        store.add_link(src_ref_id=retired.id, dst_ref_id=q.id, relation="supports")
+        store.add_link(src_ref_id=retired.id, dst_ref_id=q.id, relation="serves")
         with store.pool.connection() as conn:
             conn.execute(
                 "UPDATE refs SET retired_at = now() WHERE ref_id = %s",

@@ -22,6 +22,7 @@ from precis.store.types import Tag
 from precis.taproot import authoring, hub
 from precis.taproot.consumer_review import render_users
 from precis.taproot.sentence_lint import lint_scope
+from precis.utils.secret_scan import mask_secrets
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -48,6 +49,7 @@ def edit(
     unacquirable_mode: str | None = None,
     testable_by: str | None = None,
     motivation: str | None = None,
+    reason: str | None = None,
     meta: dict[str, Any] | None = None,
     dry_run: bool | str | None = None,
 ) -> Response:
@@ -79,6 +81,25 @@ def edit(
 
     Idempotent — picking the same candidate twice is fine (re-flips to
     tracing, no-op on links).
+
+    ``pick_candidate='self'`` is the **dead_chain close-out**, not a
+    candidate pick: a ``STATUS:dead_chain`` finding whose frontier paper
+    is fetched and held (live body chunks) is resolved against that held
+    paper — the finding links ``derived-from`` it, any lingering
+    candidate links drop, ``meta.close_out='self'`` stamps the manual
+    resolution, and the chase's own chain-snapshot pass
+    (:func:`precis.workers.chase._snapshot_chain`) records
+    ``primary_cite_key``/``via_cite_keys``/``caveats``, re-emits
+    ``card_combined``, and flips ``STATUS:dead_chain`` ->
+    ``STATUS:established``. ``reason=`` (only accepted on this call) is
+    recorded as ``meta.close_out_reason`` — the audit trail for a chain
+    resolved by hand. Refuses when the finding isn't dead_chain, its
+    ``meta.chain`` has no frontier, the frontier ref is gone, or the
+    paper has no live body chunks (a stub the fetch never filled is
+    still dead):
+
+        edit(kind='finding', id=42, pick_candidate='self',
+             reason='held paper chunk states the figure; dead_chain stale')
 
     ``title=`` is a **different** operation, only valid on a
     ``TAPROOT:claim`` hub (``id`` must resolve to one — see
@@ -213,6 +234,27 @@ def edit(
                 "edit(kind='finding', id='fi<N>', meta={'scope': {...}})"
             ),
         )
+    is_self_pick = (
+        isinstance(pick_candidate, str) and pick_candidate.strip().lower() == "self"
+    )
+    if reason is not None and not is_self_pick:
+        raise BadInput(
+            "edit(kind='finding') reason= only applies to "
+            "pick_candidate='self' — the dead_chain close-out",
+            next=(
+                "edit(kind='finding', id=<N>, pick_candidate='self', "
+                "reason='<why the held paper settles it>')"
+            ),
+        )
+    if is_self_pick and reason is not None and not reason.strip():
+        raise BadInput(
+            "edit(kind='finding') reason= must be non-empty — it is the "
+            "audit trail for a manual close-out",
+            next=(
+                "edit(kind='finding', id=<N>, pick_candidate='self', "
+                "reason='<why the held paper settles it>')"
+            ),
+        )
     if unacquirable_mode is not None and unacquirable_note is None:
         raise BadInput(
             "edit(kind='finding') requires unacquirable_note when "
@@ -295,6 +337,11 @@ def edit(
         )
 
     finding_ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=id)
+
+    if is_self_pick:
+        return _close_out_self(
+            store, kind=kind, finding_ref_id=finding_ref_id, reason=reason
+        )
 
     # Pull all candidate links (outbound derived-from with
     # meta.candidate=true). The chase worker writes these as a
@@ -737,6 +784,129 @@ def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> in
             "finding — address it by its ref_id",
         )
     return int(row[0])
+
+
+def _close_out_self(
+    store: Store, *, kind: str, finding_ref_id: int, reason: str | None
+) -> Response:
+    """``pick_candidate='self'`` — the dead_chain close-out for a finding
+    that already HOLDS its terminal paper.
+
+    The chase gives up (``STATUS:dead_chain``) when it can't pin a
+    grounding passage, even when the frontier paper itself is fetched and
+    held. The human close-out says "the held paper IS the evidence — stop
+    chasing": link the finding ``derived-from`` its frontier paper
+    (terminal, non-candidate), stamp ``meta.close_out='self'`` (plus
+    ``meta.close_out_reason`` when the caller passes ``reason=`` — the
+    audit trail for a chain resolved by hand), then run the chase's own
+    chain-snapshot pass (:func:`precis.workers.chase._snapshot_chain`) so
+    ``primary_cite_key``/``via_cite_keys``/``caveats``, the
+    ``card_combined`` re-emit, and the ``STATUS:dead_chain`` ->
+    ``STATUS:established`` flip read exactly like a chase-resolved chain.
+
+    Refuses (never a partial write) when the finding is not
+    ``STATUS:dead_chain``, its ``meta.chain`` has no frontier, the
+    frontier ref is gone, or it has no live body chunks (not actually
+    held — a stub the fetch never filled is still a dead end).
+    """
+    from precis.workers.chase import _snapshot_chain
+
+    ref = store.get_ref(kind=kind, id=finding_ref_id)
+    assert ref is not None
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = %s AND t.value = %s",
+            (finding_ref_id, _STATUS_NAMESPACE, "dead_chain"),
+        ).fetchone()
+    if row is None:
+        raise BadInput(
+            f"finding id={finding_ref_id} is not STATUS:dead_chain — "
+            "pick_candidate='self' only closes out a dead chain that is "
+            "holding its terminal paper",
+            next="get(kind='finding', id=<N>) for its live status",
+        )
+
+    meta = dict(ref.meta or {})
+    chain = list(meta.get("chain") or [])
+    frontier = chain[-1] if chain else None
+    frontier_ref_id = int(frontier["ref_id"]) if frontier else None
+    if frontier_ref_id is None:
+        raise BadInput(
+            f"finding id={finding_ref_id} has an empty meta.chain — no "
+            "frontier paper to close out against",
+            next="get(kind='finding', id=<N>) to inspect the chain",
+        )
+
+    with store.pool.connection() as conn:
+        held = conn.execute(
+            "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "AND retired_at IS NULL LIMIT 1",
+            (frontier_ref_id,),
+        ).fetchone()
+    held_ref = fetch_ref_any_kind(store, frontier_ref_id)
+    if held_ref is None:
+        raise BadInput(
+            f"the frontier ref (id={frontier_ref_id}) of finding "
+            f"id={finding_ref_id} is gone — nothing held to close out on",
+            next=(
+                f"get(kind='finding', id='fi{finding_ref_id}') to inspect "
+                "meta.chain, then re-chase or retire the finding"
+            ),
+        )
+    if held is None:
+        raise BadInput(
+            f"the frontier paper of finding id={finding_ref_id} has no "
+            "body chunks — it is not held yet, so there is no evidence "
+            "to close out on",
+            next="fetch the paper first, then pick_candidate='self'",
+        )
+
+    with store.tx() as conn:
+        # Terminal derived-from edge finding -> held paper. Same manual
+        # row write as the pick path: promote-or-create means drop any
+        # lingering candidate flags on this pair, insert if absent.
+        conn.execute(
+            "UPDATE links SET meta = meta - 'candidate' "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'derived-from'",
+            (finding_ref_id, frontier_ref_id),
+        )
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by, meta) "
+            "SELECT %s, %s, 'derived-from', 'user', '{}'::jsonb "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "  AND relation = 'derived-from')",
+            (finding_ref_id, frontier_ref_id, finding_ref_id, frontier_ref_id),
+        )
+        # Any remaining candidate links are now wrong — drop them.
+        conn.execute(
+            "DELETE FROM links WHERE src_ref_id = %s "
+            "AND relation = 'derived-from' AND meta->>'candidate' = 'true'",
+            (finding_ref_id,),
+        )
+        close_meta: dict[str, Any] = {"close_out": "self"}
+        if reason is not None:
+            close_meta["close_out_reason"] = mask_secrets(reason.strip())
+        store.update_ref(finding_ref_id, meta_patch=close_meta, conn=conn)
+        # The chain snapshot is the chase's own termination pass —
+        # primary/via cite keys, aggregated caveats, the card_combined
+        # re-emit and the STATUS:established flip all land here, in the
+        # same transaction as the edge writes.
+        _snapshot_chain(conn, store, finding_ref_id, chain)
+
+    settled = store.get_ref(kind=kind, id=finding_ref_id)
+    primary = (settled.meta or {}).get("primary_cite_key") if settled else None
+    handle = held_ref.slug or f"ref:{frontier_ref_id}"
+    return Response(
+        body=(
+            f"closed out finding id={finding_ref_id} against its held "
+            f"paper {handle}\nstatus flipped STATUS:dead_chain -> "
+            f"STATUS:established; primary_cite_key={primary}"
+        )
+    )
 
 
 def _match_candidate(

@@ -152,6 +152,15 @@ def add_parser(subparsers: Any) -> None:
         "stub [pa] cites are always skipped either way.",
     )
     b.add_argument(
+        "--campaign",
+        default=None,
+        metavar="SLUG",
+        help="Dedup against this campaign's existing hubs before minting: "
+        "hubs tagged campaign:SLUG get a lexical merge-candidate pass on "
+        "top of the ANN, so a harvest converges onto a hub the campaign "
+        "already carries instead of minting a duplicate.",
+    )
+    b.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -1075,6 +1084,7 @@ def _run_backfill(args: argparse.Namespace) -> None:
         chunk_ids = _resolve_backfill_chunks(store, args)
         draft_handler = runtime.hub.handler_for("draft") if args.apply else None
         ref_level = getattr(args, "ref_level", False)
+        campaign = getattr(args, "campaign", None)
         mint_cap = MintCap()  # one per run: per-chunk hub cap spans all chunks
         for cid in chunk_ids:
             if args.apply:
@@ -1087,10 +1097,15 @@ def _run_backfill(args: argparse.Namespace) -> None:
                         set_by=args.set_by,
                         ref_level=ref_level,
                         mint_cap=mint_cap,
+                        campaign=campaign,
                     )
                 )
             else:
-                results.append(plan_chunk(store, embedder, cid, ref_level=ref_level))
+                results.append(
+                    plan_chunk(
+                        store, embedder, cid, ref_level=ref_level, campaign=campaign
+                    )
+                )
     except BadInput as exc:
         print(f"taproot backfill: error: {exc.cause}", file=sys.stderr)
         if results:

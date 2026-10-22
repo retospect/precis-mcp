@@ -381,10 +381,21 @@ def quest_momentum(
         if entries is None
         else entries
     )
+    # Progress entries only: a `result` or `milestone` is evidence the quest
+    # moved; the tick's own bookkeeping (`cost`, `dead-end`, lit-search
+    # lines, narrative notes) is activity, not progress, and must not warm
+    # the momentum label (the old all-entries count rated a spinning tick
+    # "active"). `lit-search` lines are excluded two ways — the
+    # ``meta.signal`` stamp on new rows and the ``lit-search:`` text prefix
+    # on rows written before the stamp existed.
     recent_entries = sum(
         1
         for b in log_blocks
-        if b.created_at is not None and _aware(b.created_at) >= since
+        if b.created_at is not None
+        and _aware(b.created_at) >= since
+        and (b.meta or {}).get("entry_type") in ("result", "milestone")
+        and (b.meta or {}).get("signal") != "lit-search"
+        and not (b.text or "").lstrip().startswith("lit-search:")
     )
 
     # Recent activity on the servers (ref_events in the window).

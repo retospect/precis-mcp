@@ -69,7 +69,7 @@ def _body(store: Store, ref_id: int) -> str:
         rows = conn.execute(
             "SELECT ord, chunk_kind, text FROM chunks WHERE ref_id=%s", (ref_id,)
         ).fetchall()
-    assert [(r[0], r[1]) for r in rows] == [(0, "finding_body")]
+    assert [(r[0], r[1]) for r in rows] == [(0, "memory_body")]
     return str(rows[0][2])
 
 
@@ -113,8 +113,8 @@ def test_creates_refs_tags_edges(store: Store) -> None:
             (ids["ruff:PLW1514"], rule),
         ]
     )
-    assert f"edge fi{enf} -tests-> fi{rule}" in rep.lines
-    assert f"created fi{rule} invariants/forward-only-migrations" in rep.lines
+    assert f"edge me{enf} -tests-> me{rule}" in rep.lines
+    assert f"created me{rule} invariants/forward-only-migrations" in rep.lines
 
 
 def test_second_run_creates_nothing(store: Store) -> None:
@@ -213,7 +213,7 @@ def test_retired_ref_not_reminted_and_duplicates_untouched(store: Store) -> None
     rep = import_conventions(store, FIXTURE, sync=True)
     assert (rep.created, rep.edges_added, rep.edges_removed) == (0, 0, 0)
     assert rep.skipped_retired == 1
-    assert f"skipped-retired fi{rule} invariants/forward-only-migrations" in rep.lines
+    assert f"skipped-retired me{rule} invariants/forward-only-migrations" in rep.lines
     assert len(_importer_refs(store)) == 5
     assert _edges(store) == edges_before
 
@@ -229,6 +229,6 @@ def test_retired_ref_not_reminted_and_duplicates_untouched(store: Store) -> None
     before = _snapshot(store)
     rep = import_conventions(store, FIXTURE, sync=True)
     assert rep.duplicates == 1
-    assert f"duplicate invariants/no-enforcer: fi{other}, fi{dup[0]}" in rep.lines
+    assert f"duplicate invariants/no-enforcer: me{other}, me{dup[0]}" in rep.lines
     assert rep.created == 0
     assert _snapshot(store) == before

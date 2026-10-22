@@ -229,7 +229,7 @@ surfaces instead as the `open-questions:<n>` flag below.
 ```python
 search(kind="finding", q="amine CO2 capacity", trust="verified")  # lean-on-able
 search(kind="finding", q="amine CO2 capacity", trust="disputed")  # what's opposed?
-search(kind="finding", q="amine CO2 capacity", trust="signed")    # rare: 4 hubs
+search(kind="finding", q="amine CO2 capacity", trust="signed")  # rare: 4 hubs
 ```
 
 An ordinary chase finding has no publish posture and never will, so it
@@ -404,13 +404,28 @@ multi-cites the chase can't disambiguate. Pick the right one:
 
 ```python
 edit(kind="finding", id=42, pick_candidate="miller23a")
-edit(kind="finding", id=42, pick_candidate="self")  # mark terminal
+edit(kind="finding", id=42, pick_candidate=42)  # or by ref_id
 ```
 
 If the chase stalls with `STATUS:dead_chain`, the frontier chunk had
-no resolvable inline citation. Mark it terminal with
-`pick_candidate='self'`, or — if a fetch never ran — ask the user to
-run `precis worker --only fetch`.
+no resolvable inline citation. When the frontier paper itself is
+fetched and held — the dead_chain is stale, not real — close it out
+with `pick_candidate='self'`: the finding links `derived-from` the
+held paper and flips to `STATUS:established`. Pass `reason=` to record
+why (stored as `meta.close_out_reason`):
+
+```python
+edit(
+    kind="finding",
+    id=42,
+    pick_candidate="self",
+    reason="held paper chunk states the figure; dead_chain stale",
+)
+```
+
+`'self'` refuses when the frontier paper isn't held (a stub the fetch
+never filled is still a dead end) — if a fetch never ran, ask the user
+to run `precis worker --only fetch` first.
 
 **`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
 (above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` |
