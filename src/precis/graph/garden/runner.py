@@ -5,6 +5,12 @@ collect candidates (bounded), skip keys already pending, ask the
 proposer, emit accepted proposals. It never touches the graph — the only
 writes are ``reviews`` rows.
 
+The ``max_proposals`` budget is shared round-robin across the detectors
+that produced candidates (gr504843): each gets ``max_proposals // n``
+first, and whatever a detector leaves unspent goes to the others. A
+high-volume detector (dangling_edge) can no longer take the whole tick
+because it sorts first.
+
 ``propose=`` is the test seam: a callable ``(store, candidate) ->
 Verdict``. Default :func:`propose_llm` (one routed call per candidate).
 """
@@ -12,6 +18,7 @@ Verdict``. Default :func:`propose_llm` (one routed call per candidate).
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,7 +30,7 @@ from precis.graph.garden.candidates import (
     GardenCandidate,
     run_detectors,
 )
-from precis.graph.garden.proposals import emit_proposal, proposal_key_pending
+from precis.graph.garden.proposals import emit_proposal, key_block
 from precis.graph.garden.proposer import Verdict, propose_llm
 
 if TYPE_CHECKING:
@@ -47,6 +54,9 @@ class GardenOutcome:
     candidates: int = 0
     proposals: int = 0
     skipped_pending: int = 0
+    #: Candidates whose key was rejected and whose target is unchanged
+    #: since — not re-asked (gr504843).
+    skipped_rejected: int = 0
     rejected: int = 0
     llm_errors: int = 0
     paused: bool = False
@@ -54,6 +64,10 @@ class GardenOutcome:
     #: Detectors skipped on their timeout/budget this tick (gr503580) —
     #: the job summary names them so a partial tick is visible.
     skipped_detectors: list[str] = field(default_factory=list)
+    #: Proposals written per detector — the round-robin budget's spend.
+    proposals_by_detector: dict[str, int] = field(default_factory=dict)
+    #: Scan positions for the next run (:attr:`DetectorRun.cursors`).
+    cursors: dict[str, int] = field(default_factory=dict)
 
 
 def run_garden_tick(
@@ -69,6 +83,7 @@ def run_garden_tick(
     exclusive_axes: tuple[str, ...] = (),
     max_proposals: int = DEFAULT_MAX_PROPOSALS,
     detector_deadline_s: float = DETECTOR_DEADLINE_S,
+    cursors: dict[str, int] | None = None,
     propose: ProposerFn | None = None,
 ) -> GardenOutcome:
     """One bounded tick. Returns the outcome; writes only reviews rows.
@@ -90,32 +105,42 @@ def run_garden_tick(
         tag_kinds=tag_kinds,
         exclusive_axes=exclusive_axes,
         detector_deadline_s=detector_deadline_s,
+        cursors=cursors,
     )
     candidates = run.candidates
-    out = GardenOutcome(candidates=len(candidates), skipped_detectors=list(run.skipped))
-    for cand in candidates:
-        if out.proposals >= max_proposals:
-            break
-        if proposal_key_pending(store, cand):
+    out = GardenOutcome(
+        candidates=len(candidates),
+        skipped_detectors=list(run.skipped),
+        cursors=dict(run.cursors),
+    )
+
+    def _one(cand: GardenCandidate) -> bool:
+        """Propose one candidate; True when a proposal row was written.
+        Sets ``out.paused`` on a window-scoped pause."""
+        block = key_block(store, cand.target_kind, cand.target_id, cand.key)
+        if block == "rejected":
+            out.skipped_rejected += 1
+            return False
+        if block is not None:
             out.skipped_pending += 1
-            continue
+            return False
         try:
             verdict = propose(store, cand)
         except Exception as exc:
             log.warning("garden: proposer raised on %s: %s", cand.key, exc)
             out.llm_errors += 1
-            continue
+            return False
         if verdict is None:
-            continue
+            return False
         if verdict.paused:
             out.paused = True
-            break
+            return False
         if verdict.error is not None:
             out.llm_errors += 1
-            continue
+            return False
         if not verdict.accept:
             out.rejected += 1
-            continue
+            return False
         # The proposer may refine the action/payload; the dedup key stays
         # the deterministic candidate key.
         effective = cand
@@ -132,11 +157,46 @@ def run_garden_tick(
             model=verdict.model,
             key=cand.key,
         )
-        if emitted is not None:
-            out.proposals += 1
-        else:
+        if emitted is None:
             out.skipped_pending += 1
+            return False
+        out.proposals += 1
+        out.proposals_by_detector[cand.detector] = (
+            out.proposals_by_detector.get(cand.detector, 0) + 1
+        )
+        return True
+
+    queues = _by_detector(candidates)
+    share = max(1, max_proposals // len(queues)) if queues else 0
+    # Round-robin, one candidate per detector per turn. First pass: each
+    # detector stops at its equal share of the budget. Second pass: the
+    # share a quiet detector left unspent goes to the rest, same rotation.
+    for cap in (share, None):
+        while out.proposals < max_proposals and not out.paused:
+            turned = False
+            for det, queue in queues.items():
+                if out.proposals >= max_proposals or out.paused:
+                    break
+                if not queue:
+                    continue
+                if cap is not None and out.proposals_by_detector.get(det, 0) >= cap:
+                    continue
+                turned = True
+                _one(queue.popleft())
+            if not turned:
+                break
     return out
+
+
+def _by_detector(
+    candidates: list[GardenCandidate],
+) -> dict[str, deque[GardenCandidate]]:
+    """Candidates queued per detector, detectors in first-seen order and
+    each queue in the detector's own (best-first) order."""
+    queues: dict[str, deque[GardenCandidate]] = {}
+    for cand in candidates:
+        queues.setdefault(cand.detector, deque()).append(cand)
+    return queues
 
 
 def _replace(cand: GardenCandidate, **kw: Any) -> GardenCandidate:

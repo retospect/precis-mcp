@@ -18,10 +18,13 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 
 1. Detectors (:mod:`precis.graph.garden.candidates`) — deterministic
    SQL/Python over the live graph. No LLM, no writes:
-   ``dup_pair`` (embedding + title/alias similarity, dimension-gated
-   for taxa), ``orphan`` (taxon reaching no start node), ``stale``
-   (untouched, unlinked, unviewed node), ``dangling_edge`` (link to a
-   retired ref) / ``cycle_edge`` (a 2-cycle in the taxon DAG) /
+   ``dup_pair`` (card embedding + name/alias similarity, dimension-gated
+   for taxa; memories compare body embedding + body hash),
+   ``paper_identity`` (live papers sharing a normalized title, gated on
+   DOI/year/first author), ``orphan`` (taxon reaching no start node),
+   ``stale`` (untouched, unlinked, unviewed node), ``dangling_edge``
+   (a live ref's non-provenance link to a retired one) / ``cycle_edge``
+   (a 2-cycle in the taxon DAG) /
    ``redundant_link`` (a machine ``related-to`` edge whose endpoints are
    mutual top-k card neighbours inside the recall floor — the edge
    restates the index; proposal only, apply stays merge-only),
@@ -36,7 +39,9 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    host or model name in code.
 3. Persistence (:mod:`precis.graph.garden.proposals`) — accepted
    verdicts become ``reviews`` rows, deduplicated against pending
-   proposals with the same proposal key.
+   proposals with the same proposal key and against a rejection of the
+   target's unchanged content. The tick's ``max_proposals`` is shared
+   round-robin across the detectors that produced candidates.
 4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
    ``precis garden review``) — a FRONTIER-tier burn-down over open
    proposals older than a few days: one approve/reject verdict per
@@ -47,10 +52,13 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector
-subset (``merge|split|relink|prune|tag-sweep|siblings|all``), ``limit``
-bounds candidates scanned, ``max_proposals`` bounds writes, and each
-detector runs under a wall-clock deadline that skips it rather than
-zeroing the tick (gr503580). The cadence is an operator-seeded
+subset (``merge|split|relink|prune|tag-sweep|siblings|paper-identity|all``,
+or a list), ``limit`` bounds candidates scanned, ``max_proposals``
+bounds writes, and each detector runs under a wall-clock deadline that
+skips it rather than zeroing the tick (gr503580). The wide scans walk
+each kind from a cursor saved on the job's ``meta.garden.cursors``
+(:func:`precis.graph.garden.service.saved_cursors`), so successive runs
+cover the corpus. The cadence is an operator-seeded
 **recurring todo** under Watches — ``meta.schedule`` +
 ``meta.executor='job_inproc'`` + ``meta.job_type='graph_garden'`` (the
 job-mode automation shape, ``precis-recurring-help``): each due tick

@@ -18,10 +18,11 @@ the target makes the proposal non-current without touching the row,
 which is the review surface's "stale" signal.
 
 **Dedup** is by ``key``: a candidate whose key already has a pending
-(``proposed``, still-current) garden row is not re-proposed. A
-superseded row (non-current sha, or later approved/rejected for the
-same key) does not block a fresh proposal — the graph moved on, so the
-question is legitimately open again.
+(``proposed``) garden row is not re-proposed, and neither is a key whose
+newest verdict is ``rejected`` while the target's sha is unchanged. An
+``approved`` verdict, or an edit to the target after a rejection,
+re-opens the key — the graph moved on, so the question is legitimately
+open again.
 """
 
 from __future__ import annotations
@@ -80,23 +81,38 @@ def _parse_note(note: str | None) -> dict[str, Any] | None:
     return g if isinstance(g, dict) else None
 
 
-def _key_pending(store: Store, target_kind: str, target_id: int, key: str) -> bool:
-    # reviews_for is newest-first: the FIRST row carrying this garden key
-    # decides — a later approved/rejected verdict (via resolve_proposal,
-    # which echoes the key under the decider's own actor) re-opens the
-    # slot for a fresh proposal. No actor filter: the terminal verdict
-    # belongs to whoever resolved it, not to graph-garden.
+def key_block(store: Store, target_kind: str, target_id: int, key: str) -> str | None:
+    """Why ``key`` may not be proposed now: ``'pending'``, ``'rejected'``,
+    or ``None`` when the slot is open.
+
+    reviews_for is newest-first: the FIRST row carrying this garden key
+    decides. A pending (``proposed``) row blocks. A ``rejected`` row blocks
+    while the target is unchanged — its ``content_sha`` still matches the
+    target's sha now (gr504843: the same unchanged candidate came back
+    every tick). An edit to the target, or an ``approved`` verdict,
+    re-opens the slot. No actor filter: the terminal verdict belongs to
+    whoever resolved it, not to graph-garden."""
     for rev in store.reviews_for(target_kind, target_id):
         g = _parse_note(rev.note)
-        if g is not None and g.get("key") == key:
-            return rev.verdict == "proposed"
-    return False
+        if g is None or g.get("key") != key:
+            continue
+        if rev.verdict == "proposed":
+            return "pending"
+        if rev.verdict == "rejected" and rev.current:
+            return "rejected"
+        return None
+    return None
+
+
+def _key_pending(store: Store, target_kind: str, target_id: int, key: str) -> bool:
+    return key_block(store, target_kind, target_id, key) is not None
 
 
 def proposal_key_pending(store: Store, candidate: GardenCandidate) -> bool:
-    """True when the target already carries a pending garden row with
-    this candidate's key (dedup — re-minting must not pile up identical
-    proposals)."""
+    """True when this candidate's key may not be proposed: a pending
+    garden row carries it, or its newest verdict is a rejection of the
+    target's current content (dedup — re-minting must not pile up
+    identical proposals or re-ask a decided question)."""
     return _key_pending(
         store, candidate.target_kind, candidate.target_id, candidate.key
     )
@@ -273,6 +289,7 @@ __all__ = [
     "GARDEN_VERSION",
     "GardenProposal",
     "emit_proposal",
+    "key_block",
     "pending_proposals",
     "proposal_key_pending",
     "resolve_proposal",

@@ -94,6 +94,15 @@ graph-health-metrics, five parked gripes, and the seam with
   run (jo503579, 0 proposals); counts are a one-shot CTE now (75 ms on
   prod, was 120 s+), each detector runs under a 60 s deadline with
   skip-and-continue, and the job summary names skipped detectors.
+- **gr504843 built (2026-10-22, worktree `garden-fix`):** gardener yield
+  fixes — the proposal budget is shared round-robin across detectors, a
+  rejected key stays closed while its target is unchanged, `dangling_edge`
+  skips both-retired, provenance and history edges, memory `dup_pair`
+  compares body embedding + body hash and the proposer reads 600-char
+  excerpts, scans advance per kind on a cursor saved in
+  `meta.garden.cursors`, `redundant_link` probes neighbours batched under
+  a 40 s budget, and a `paper-identity` merge detector proposes (no
+  auto-apply).
 
 ## Do next
 

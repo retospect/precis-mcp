@@ -6,9 +6,11 @@ into review-ledger proposals (or drops). No LLM calls, no writes — a
 candidate is evidence, never a verdict.
 
 Bounds: each detector takes ``limit`` (max candidates emitted) and the
-wide scans also take ``scan_cap`` (max refs inspected, oldest-first by
-``ref_id`` — deterministic across ticks, so a bounded pass eventually
-covers the corpus over successive runs). :func:`run_detectors` adds a
+wide scans also take ``scan_cap`` (max refs inspected per kind per run).
+The wide scans are windowed per kind past a saved cursor
+(:attr:`DetectorRun.cursors`, persisted on the job's ``meta.garden``)
+and wrap at the end, so successive runs walk every kind instead of
+re-reading the oldest refs (gr504843). :func:`run_detectors` adds a
 per-detector wall-clock deadline plus skip-and-continue on a Postgres
 statement timeout, so one slow detector cannot zero the tick
 (gr503580 — ``untagged`` did exactly that on the first prod run).
@@ -56,6 +58,11 @@ GARDEN_KINDS: tuple[str, ...] = ("taxon", "concept", "memory")
 #: because this layer must not reach into handlers).
 DUP_MAX_DISTANCE = 0.25
 
+#: Which chunk's vector the dup embedding leg compares, per kind (default
+#: ``card_combined``). A memory's card is its title cut to 80 chars and
+#: dream memories open alike, so memories compare their body (gr504843).
+DUP_VECTOR_CHUNK: dict[str, str] = {"memory": "memory_body"}
+
 #: Content-word Jaccard on card text for the lexical leg — the
 #: nearest-sibling refusal's fallback bar (``SIBLING_MIN_OVERLAP``).
 DUP_MIN_LEXICAL = 0.7
@@ -82,9 +89,46 @@ RELINK_MIN_DISTANCE = 0.6
 PRUNE_TOP_K = 5
 PRUNE_MAX_DISTANCE = 0.6
 
+#: redundant_link probes neighbours for this many pairs per statement,
+#: closest pairs first, and stops probing past ``PRUNE_PROBE_BUDGET_S`` —
+#: under :data:`DETECTOR_DEADLINE_S` so a slow index returns the
+#: candidates found so far instead of none (gr504843).
+PRUNE_PROBE_BATCH = 32
+PRUNE_PROBE_BUDGET_S = 40.0
+
 #: A live node untouched, unlinked and unviewed for this many days is a
 #: prune candidate (proposal only — retire stays a human decision).
 STALE_DAYS = 180
+
+#: Relations that record provenance — where a node came from, what
+#: replaced or corrected it. The edge stays true after either end
+#: retires, so a retired endpoint never makes it a dangling-edge
+#: candidate (gr504843: ``supersedes`` → retired paper is by design).
+PROVENANCE_RELATIONS: frozenset[str] = frozenset(
+    {
+        "supersedes",
+        "superseded-by",
+        "superseded-in",
+        "derived-from",
+        "derived-into",
+        "fixes",
+        "fixed-by",
+        "retracts",
+        "retracted-by",
+        "corrects",
+        "corrected-by",
+        "cites",
+        "cited-by",
+    }
+)
+
+#: Kinds whose retired refs are history, not dead nodes: a done todo or a
+#: retired agentlog/job is the record of how its live neighbour was made.
+HISTORY_KINDS: frozenset[str] = frozenset({"agentlog", "todo", "job"})
+
+#: Normalized titles shorter than this never pair two papers — equal
+#: short titles ("Editorial", "Introduction") say nothing about identity.
+PAPER_MIN_TITLE_CHARS = 20
 
 #: Per-detector wall-clock budget inside :func:`run_detectors`
 #: (gr503580). Past it the detector is *abandoned* — the daemon thread
@@ -107,6 +151,7 @@ _DETECTOR_BY_PASS = {
     "prune": ("dangling_edge", "cycle_edge", "stale", "redundant_link"),
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
+    "paper-identity": ("paper_identity",),
 }
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything.
@@ -201,40 +246,50 @@ def _top_k_card_neighbours(
     *,
     k: int,
 ) -> dict[int, frozenset[int]]:
-    """``{ref_id: its top-``k`` neighbour ref_ids}`` — one ANN query per
-    endpoint against the live card index, same ``card_combined`` /
-    default-embedder scope as :func:`_card_vectors`. Refs without a card
-    vector are absent from the result (no neighbours to compare)."""
-    from precis.store._chunks_ops import _prepare_filtered_ann, _vec_param
+    """``{ref_id: its top-``k`` neighbour ref_ids}`` against the live card
+    index, same ``card_combined`` / default-embedder scope as
+    :func:`_card_vectors`. Refs without a card vector are absent from the
+    result (no neighbours to compare).
 
-    out: dict[int, frozenset[int]] = {}
-    for rid in sorted(ref_ids):
-        vec = vecs.get(rid)
-        if vec is None:
-            continue
-        with store.pool.connection() as conn:
-            # Filtered-ANN under-fill guard (see _prepare_filtered_ann):
-            # card chunks are a minority of the index, so a plain HNSW
-            # scan can return fewer than k card rows.
-            _prepare_filtered_ann(conn, k * 2)
-            rows = conn.execute(
-                "SELECT c.ref_id FROM chunks c "
-                "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
-                "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
-                "JOIN embedders em ON em.name = ce.embedder AND em.is_default "
-                "WHERE c.chunk_kind = 'card_combined' AND c.retired_at IS NULL "
-                "  AND c.ref_id <> %(self)s "
-                "ORDER BY ce.vector <=> %(v)s::vector LIMIT %(n)s",
-                {"self": rid, "v": _vec_param(vec), "n": k * 2},
-            ).fetchall()
-        top: list[int] = []
-        for (other,) in rows:
-            if int(other) not in top:  # a ref can hold >1 card chunk
-                top.append(int(other))
-            if len(top) >= k:
-                break
-        out[rid] = frozenset(top)
-    return out
+    One statement for the whole batch: a LATERAL ANN probe per endpoint
+    on one connection with the filtered-ANN settings applied once — the
+    per-endpoint round trip and connection checkout was what pushed
+    redundant_link past its 60 s deadline (gr504843)."""
+    from precis.store._chunks_ops import _prepare_filtered_ann
+
+    ids = [rid for rid in sorted(ref_ids) if vecs.get(rid) is not None]
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        # Filtered-ANN under-fill guard (see _prepare_filtered_ann): card
+        # chunks are a minority of the index, so a plain HNSW scan can
+        # return fewer than k card rows.
+        _prepare_filtered_ann(conn, k * 2)
+        rows = conn.execute(
+            "SELECT q.rid, n.ref_id FROM unnest(%(ids)s::bigint[], "
+            "  %(vs)s::text[]) WITH ORDINALITY AS q(rid, v, o) "
+            "CROSS JOIN LATERAL ("
+            "  SELECT c.ref_id, ce.vector <=> q.v::vector AS d FROM chunks c "
+            "  JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+            "    AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+            "  JOIN embedders em ON em.name = ce.embedder AND em.is_default "
+            "  WHERE c.chunk_kind = 'card_combined' AND c.retired_at IS NULL "
+            "    AND c.ref_id <> q.rid "
+            "  ORDER BY ce.vector <=> q.v::vector LIMIT %(n)s) n "
+            "ORDER BY q.o, n.d",
+            {
+                "ids": ids,
+                # pgvector text form — one text[] binds the whole batch.
+                "vs": ["[" + ",".join(map(str, vecs[rid])) + "]" for rid in ids],
+                "n": k * 2,
+            },
+        ).fetchall()
+    tops: dict[int, list[int]] = {rid: [] for rid in ids}
+    for rid, other in rows:
+        top = tops[int(rid)]
+        if int(other) not in top and len(top) < k:  # >1 card chunk per ref
+            top.append(int(other))
+    return {rid: frozenset(top) for rid, top in tops.items()}
 
 
 def _start_node_ids(store: Store) -> list[int]:
@@ -254,6 +309,148 @@ def _start_node_ids(store: Store) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
+def _scan_window(
+    store: Store, kind: str, *, after: int, size: int
+) -> tuple[list[int], int]:
+    """The next ``size`` live ``kind`` ref ids past ``after`` (ascending)
+    and the cursor to save: the window's last id, or ``0`` when the window
+    reached the end of the kind — the next run wraps to the start."""
+    with store.pool.connection() as conn:
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE retired_at IS NULL AND kind = %s "
+                "AND ref_id > %s ORDER BY ref_id LIMIT %s",
+                (kind, after, size),
+            ).fetchall()
+        ]
+    return ids, (ids[-1] if len(ids) >= size else 0)
+
+
+def _kind_count(store: Store, kind: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE retired_at IS NULL AND kind = %s",
+            (kind,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def dup_window_size(n_live: int, scan_cap: int) -> int:
+    """Refs per run the dup scan takes from one kind: each window ref is
+    compared with every live ref of its kind, so the window shrinks as
+    the kind grows to keep the comparisons at ``scan_cap**2`` — the
+    cost of the old 2000-by-2000 window. Never below 1 or above
+    ``scan_cap``."""
+    if n_live <= 0:
+        return scan_cap
+    return max(1, min(scan_cap, (scan_cap * scan_cap) // n_live))
+
+
+def _dup_embedding_pairs(
+    store: Store,
+    kind: str,
+    window: list[int],
+    *,
+    max_distance: float,
+    limit: int,
+) -> list[tuple[int, int, float]]:
+    """``(a, b, distance)`` for window refs ``a`` whose nearest same-kind
+    neighbour ``b`` (any live ref of the kind) sits inside
+    ``max_distance``. Vectors: :data:`DUP_VECTOR_CHUNK` for the kind —
+    the body for memory, the card elsewhere. The neighbour set is a
+    MATERIALIZED CTE, so each lookup is an exact scan of the kind, not a
+    filtered HNSW probe that under-fills."""
+    chunk_kind = DUP_VECTOR_CHUNK.get(kind, "card_combined")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH kind_vecs AS MATERIALIZED (
+              SELECT DISTINCT ON (r.ref_id) r.ref_id, ce.vector
+                FROM refs r
+                JOIN chunks c ON c.ref_id = r.ref_id
+                             AND c.chunk_kind = %(ck)s
+                             AND c.retired_at IS NULL
+                JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
+                                        AND ce.status = 'ok'
+                                        AND ce.vector IS NOT NULL
+                JOIN embedders em ON em.name = ce.embedder AND em.is_default
+               WHERE r.retired_at IS NULL AND r.kind = %(kind)s
+               ORDER BY r.ref_id, c.ord
+            )
+            SELECT a.ref_id, b.ref_id, a.vector <=> b.vector AS dist
+              FROM kind_vecs a
+              JOIN LATERAL (
+                SELECT b.ref_id, b.vector
+                  FROM kind_vecs b
+                 WHERE b.ref_id <> a.ref_id
+                 ORDER BY b.vector <=> a.vector
+                 LIMIT 5
+              ) b ON TRUE
+             WHERE a.ref_id = ANY(%(win)s)
+               AND a.vector <=> b.vector < %(max_d)s
+             ORDER BY dist
+             LIMIT %(n)s
+            """,
+            {
+                "ck": chunk_kind,
+                "kind": kind,
+                "win": window,
+                "max_d": max_distance,
+                "n": limit * 2,  # each pair can surface from both ends
+            },
+        ).fetchall()
+    return [(int(a), int(b), float(d)) for a, b, d in rows]
+
+
+def _memory_body_twins(store: Store, window: list[int]) -> list[tuple[int, int]]:
+    """``(a, b)`` live memory pairs, ``a`` in the window, whose
+    ``memory_body`` text is byte-identical (md5 over the body chunks in
+    ``ord`` order) — the body-hash leg."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "WITH h AS ("
+            "  SELECT c.ref_id, md5(string_agg(c.text, E'\\n' ORDER BY c.ord)) AS sha"
+            "    FROM chunks c JOIN refs r ON r.ref_id = c.ref_id"
+            "   WHERE r.kind = 'memory' AND r.retired_at IS NULL"
+            "     AND c.chunk_kind = 'memory_body' AND c.retired_at IS NULL"
+            "     AND c.ord >= 0"
+            "   GROUP BY c.ref_id) "
+            "SELECT a.ref_id, b.ref_id FROM h a "
+            "JOIN h b ON b.sha = a.sha AND b.ref_id <> a.ref_id "
+            "WHERE a.ref_id = ANY(%(win)s) ORDER BY a.ref_id, b.ref_id",
+            {"win": window},
+        ).fetchall()
+    return [(int(a), int(b)) for a, b in rows]
+
+
+def _lexical_pairs(
+    store: Store, kind: str, window: list[int]
+) -> dict[tuple[int, int], list[str]]:
+    """``{(lo, hi): shared normalized terms}`` for same-kind pairs sharing
+    a name/alias term, at least one of them in the window."""
+    with store.pool.connection() as conn:
+        ref_rows = conn.execute(
+            "SELECT ref_id, title, meta FROM refs "
+            "WHERE retired_at IS NULL AND kind = %s ORDER BY ref_id",
+            (kind,),
+        ).fetchall()
+    in_window = set(window)
+    term_index: dict[str, list[int]] = {}
+    for rid, title, meta in ref_rows:
+        for term in _ref_terms(meta or {}, str(title or "")):
+            term_index.setdefault(term, []).append(int(rid))
+    out: dict[tuple[int, int], list[str]] = {}
+    for term, rids in term_index.items():
+        if len(rids) < 2:
+            continue
+        for i, a in enumerate(rids):
+            for b in rids[i + 1 :]:
+                if a in in_window or b in in_window:
+                    out.setdefault((a, b), []).append(term)
+    return out
+
+
 def duplicate_candidates(
     store: Store,
     *,
@@ -261,17 +458,29 @@ def duplicate_candidates(
     limit: int = 50,
     scan_cap: int = 2000,
     max_distance: float = DUP_MAX_DISTANCE,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
 ) -> list[GardenCandidate]:
     """Same-kind node pairs that look like one term minted twice.
 
-    Two legs, either suffices (the pair is then judged by the proposer):
+    Scanned per kind, one window per run: the next
+    :func:`dup_window_size` live refs past the kind's saved cursor
+    (``cursors['dup_pair:<kind>']``), each compared with every live ref of
+    its kind. The cursor to save lands in ``next_cursors`` — successive
+    runs walk the kind and wrap at its end (gr504843: the oldest 2,000
+    refs, all memories, were the only ones ever read).
 
-    - *embedding*: default-embedder ``card_combined`` vectors within
-      ``max_distance`` cosine of each other, found via a LATERAL
-      nearest-neighbour scan so the HNSW index serves each lookup.
-    - *lexical*: a shared normalized name/alias term.
+    Legs, any suffices (the pair is then judged by the proposer):
 
-    Hard gate (both legs): a ``taxon`` pair whose metas
+    - *embedding*: default-embedder vectors within ``max_distance``
+      cosine. taxon/concept compare their ``card_combined`` card; memory
+      compares its ``memory_body`` — a memory card is its title cut to
+      80 chars, and dream memories share an opening line, so the card
+      put distinct memories at distance 0 (gr504843).
+    - *body hash* (memory only): byte-identical body text.
+    - *lexical* (not memory): a shared normalized name/alias term.
+
+    Hard gate (all legs): a ``taxon`` pair whose metas
     :func:`~precis.taxonomy.nodes.dimension_clash` never qualifies —
     "band gap" in eV and in K are not duplicates however similar the
     embeddings say they are.
@@ -280,88 +489,52 @@ def duplicate_candidates(
     established node) is the proposed *winner*; ``target_id`` is the
     proposed loser the reviews row anchors on.
     """
+    cursors = cursors or {}
     pairs: dict[tuple[int, int], dict[str, Any]] = {}
-
-    # -- embedding leg -------------------------------------------------
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            WITH mine AS (
-              SELECT r.ref_id, r.kind, ce.vector
-                FROM refs r
-                JOIN chunks c ON c.ref_id = r.ref_id
-                             AND c.chunk_kind = 'card_combined'
-                             AND c.retired_at IS NULL
-                JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
-                                        AND ce.status = 'ok'
-                                        AND ce.vector IS NOT NULL
-                JOIN embedders em ON em.name = ce.embedder AND em.is_default
-               WHERE r.retired_at IS NULL AND r.kind = ANY(%(kinds)s)
-               ORDER BY r.ref_id
-               LIMIT %(cap)s
-            )
-            SELECT a.ref_id AS a_id, a.kind, b.ref_id AS b_id,
-                   a.vector <=> b.vector AS dist
-              FROM mine a
-              JOIN LATERAL (
-                SELECT b.ref_id, b.vector
-                  FROM mine b
-                 WHERE b.ref_id <> a.ref_id AND b.kind = a.kind
-                 ORDER BY b.vector <=> a.vector
-                 LIMIT 5
-              ) b ON TRUE
-             WHERE a.vector <=> b.vector < %(max_d)s
-               AND a.ref_id < b.ref_id
-             ORDER BY dist
-             LIMIT %(n)s
-            """,
-            {
-                "kinds": list(kinds),
-                "cap": scan_cap,
-                "max_d": max_distance,
-                "n": limit,
-            },
-        ).fetchall()
-    for a_id, kind, b_id, dist in rows:
-        pairs.setdefault((int(a_id), int(b_id)), {"kind": str(kind)})["distance"] = (
-            round(float(dist), 4)
-        )
-
-    # -- lexical leg ----------------------------------------------------
-    with store.pool.connection() as conn:
-        ref_rows = conn.execute(
-            "SELECT ref_id, kind, title, meta FROM refs "
-            "WHERE retired_at IS NULL AND kind = ANY(%(kinds)s) "
-            "ORDER BY ref_id LIMIT %(cap)s",
-            {"kinds": list(kinds), "cap": scan_cap},
-        ).fetchall()
-    nodes: dict[int, tuple[str, str, dict[str, Any]]] = {
-        int(rid): (str(kind), str(title or ""), meta or {})
-        for rid, kind, title, meta in ref_rows
-    }
-    term_index: dict[str, list[int]] = {}
-    for rid, (_kind, title, meta) in nodes.items():
-        for term in _ref_terms(meta, title):
-            term_index.setdefault(term, []).append(rid)
-    for term, rids in term_index.items():
-        if len(rids) < 2:
+    for kind in kinds:
+        ckey = f"dup_pair:{kind}"
+        size = dup_window_size(_kind_count(store, kind), scan_cap)
+        window, nxt = _scan_window(store, kind, after=cursors.get(ckey, 0), size=size)
+        if next_cursors is not None:
+            next_cursors[ckey] = nxt
+        if not window:
             continue
-        for i, a in enumerate(sorted(rids)):
-            for b in sorted(rids)[i + 1 :]:
-                if nodes[a][0] != nodes[b][0]:
-                    continue  # cross-kind near-names are not merges
-                ev = pairs.setdefault((a, b), {"kind": nodes[a][0]})
-                ev.setdefault("shared_terms", []).append(term)
+        for a, b, dist in _dup_embedding_pairs(
+            store, kind, window, max_distance=max_distance, limit=limit
+        ):
+            ev = pairs.setdefault((min(a, b), max(a, b)), {"kind": kind})
+            ev["distance"] = round(dist, 4)
+            ev["vector"] = DUP_VECTOR_CHUNK.get(kind, "card_combined")
+        if kind == "memory":
+            for a, b in _memory_body_twins(store, window):
+                ev = pairs.setdefault((min(a, b), max(a, b)), {"kind": kind})
+                ev["body_identical"] = True
+        else:
+            for pair, terms in _lexical_pairs(store, kind, window).items():
+                ev = pairs.setdefault(pair, {"kind": kind})
+                ev["shared_terms"] = terms
 
+    if not pairs:
+        return []
+    ids = sorted({i for pair in pairs for i in pair})
+    with store.pool.connection() as conn:
+        nodes: dict[int, tuple[str, dict[str, Any]]] = {
+            int(rid): (str(title or ""), meta or {})
+            for rid, title, meta in conn.execute(
+                "SELECT ref_id, title, meta FROM refs WHERE ref_id = ANY(%s)",
+                (ids,),
+            ).fetchall()
+        }
     out: list[GardenCandidate] = []
     for (a, b), ev in pairs.items():
-        ka = nodes.get(a, (ev["kind"], "", {}))
-        kb = nodes.get(b, (ev["kind"], "", {}))
-        ev.setdefault("titles", [ka[1], kb[1]])
-        overlap = lexical_overlap(_card_text(ka[2], ka[1]), _card_text(kb[2], kb[1]))
-        if overlap:
-            ev["lexical_overlap"] = round(overlap, 3)
-        if ev["kind"] == "taxon" and dimension_clash(ka[2], kb[2]):
+        ta, ma = nodes.get(a, ("", {}))
+        tb, mb = nodes.get(b, ("", {}))
+        ev.setdefault("titles", [ta, tb])
+        if ev["kind"] != "memory":
+            overlap = lexical_overlap(_card_text(ma, ta), _card_text(mb, tb))
+            if overlap:
+                ev["lexical_overlap"] = round(overlap, 3)
+        if ev["kind"] == "taxon" and dimension_clash(ma, mb):
             continue  # hard gate — never a candidate
         out.append(
             GardenCandidate(
@@ -375,7 +548,155 @@ def duplicate_candidates(
                 payload={"loser": b, "winner": a, "kind": ev["kind"]},
             )
         )
-    out.sort(key=lambda c: (c.evidence.get("distance", 9.9), c.target_id))
+    out.sort(
+        key=lambda c: (
+            0 if c.evidence.get("body_identical") else 1,
+            c.evidence.get("distance", 9.9),
+            c.target_id,
+        )
+    )
+    return out[:limit]
+
+
+# ---------------------------------------------------------------------------
+# paper-identity pass — one work ingested as two paper refs
+# ---------------------------------------------------------------------------
+
+
+def _norm_title_sql(col: str) -> str:
+    """SQL for the normalized-title key: lowercase, every run of
+    non-alphanumerics collapsed to one space, trimmed."""
+    return f"btrim(regexp_replace(lower({col}), '[^[:alnum:]]+', ' ', 'g'))"
+
+
+def _first_surname(authors: Any) -> str:
+    """Lowercased first-author surname from a ``refs.authors`` value
+    (``[{"family": …}]``, ``["Last, First"]`` or ``["First Last"]``), or
+    ``""``."""
+    if not isinstance(authors, list) or not authors:
+        return ""
+    first = authors[0]
+    if isinstance(first, dict):
+        name = str(first.get("family") or first.get("last") or first.get("name") or "")
+    else:
+        name = str(first)
+    if "," in name:
+        name = name.split(",", 1)[0]
+    elif name.split():
+        name = name.split()[-1]
+    return "".join(ch for ch in name.lower() if ch.isalpha())
+
+
+def paper_identity_candidates(
+    store: Store,
+    *,
+    limit: int = 50,
+    min_title_chars: int = PAPER_MIN_TITLE_CHARS,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Live main-text papers sharing a normalized title — the same work
+    ingested twice (gr504843: 197 groups / 431 live papers on prod).
+
+    Each extra member of a group pairs with the group's lowest ref_id
+    (the established record, proposed *winner*). Evidence names what
+    agrees and what is missing: DOI, publication year, first-author
+    surname, PDF hash. Hard gates — never a candidate:
+
+    - both papers carry a DOI and the DOIs differ (a preprint and its
+      journal version, or an erratum, are distinct records);
+    - both carry a year and the years differ by more than one;
+    - both carry a first author and the surnames differ.
+
+    Titles shorter than ``min_title_chars`` after normalization
+    ("Editorial", "Introduction") are skipped: equal short titles say
+    nothing. Supplements, appendices and front/back matter (``pdf_role``)
+    are skipped: they share their parent's title by design.
+
+    Groups are walked by lowest ref_id past ``cursors['paper_identity']``;
+    the cursor to save lands in ``next_cursors`` (wrapping at the end).
+    Proposals only — merging two papers is a human decision.
+    """
+    after = (cursors or {}).get("paper_identity", 0)
+    norm = _norm_title_sql("r.title")
+    with store.pool.connection() as conn:
+        groups = conn.execute(
+            f"SELECT min(r.ref_id) AS lo, array_agg(r.ref_id ORDER BY r.ref_id) "
+            f"FROM refs r "
+            f"WHERE r.kind = 'paper' AND r.retired_at IS NULL "
+            f"  AND COALESCE(r.pdf_role, 'main') = 'main' "
+            f"  AND length({norm}) >= %(min_chars)s "
+            f"GROUP BY {norm} HAVING count(*) > 1 AND min(r.ref_id) > %(after)s "
+            f"ORDER BY lo LIMIT %(n)s",
+            {"min_chars": min_title_chars, "after": after, "n": limit},
+        ).fetchall()
+        if next_cursors is not None:
+            next_cursors["paper_identity"] = (
+                int(groups[-1][0]) if len(groups) >= limit else 0
+            )
+        ids = sorted({int(i) for _lo, members in groups for i in members})
+        if not ids:
+            return []
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, r.year, r.authors, r.pdf_sha256, "
+            "  (SELECT array_agg(i.id_value ORDER BY i.id_value) "
+            "     FROM ref_identifiers i "
+            "    WHERE i.ref_id = r.ref_id AND i.id_kind = 'doi') "
+            "FROM refs r WHERE r.ref_id = ANY(%s)",
+            (ids,),
+        ).fetchall()
+    info = {
+        int(rid): {
+            "title": str(title or ""),
+            "year": None if year is None else int(year),
+            "author": _first_surname(authors),
+            "pdf": pdf,
+            "dois": sorted({str(d).lower() for d in dois or []}),
+        }
+        for rid, title, year, authors, pdf, dois in rows
+    }
+    out: list[GardenCandidate] = []
+    for _lo, members in groups:
+        winner, *losers = (int(m) for m in members)
+        w = info[winner]
+        for loser in losers:
+            x = info[loser]
+            if w["dois"] and x["dois"] and not set(w["dois"]) & set(x["dois"]):
+                continue
+            if w["year"] and x["year"] and abs(w["year"] - x["year"]) > 1:
+                continue
+            if w["author"] and x["author"] and w["author"] != x["author"]:
+                continue
+            ev: dict[str, Any] = {
+                "titles": [w["title"], x["title"]],
+                "doi": "same"
+                if set(w["dois"]) & set(x["dois"])
+                else ("missing" if not (w["dois"] and x["dois"]) else "differs"),
+                "dois": [w["dois"], x["dois"]],
+                "years": [w["year"], x["year"]],
+                "first_authors": [w["author"], x["author"]],
+                "same_pdf": bool(w["pdf"]) and w["pdf"] == x["pdf"],
+            }
+            out.append(
+                GardenCandidate(
+                    detector="paper_identity",
+                    action="merge",
+                    target_kind="ref",
+                    target_id=loser,
+                    other_id=winner,
+                    title=f"paper identity {winner}↔{loser}: {w['title'][:80]!r}",
+                    evidence=ev,
+                    payload={"loser": loser, "winner": winner, "kind": "paper"},
+                )
+            )
+    # Strongest evidence first: a shared DOI or PDF, then the rest.
+    out.sort(
+        key=lambda c: (
+            0 if c.evidence["doi"] == "same" or c.evidence["same_pdf"] else 1,
+            c.other_id or 0,
+            c.target_id,
+        )
+    )
     return out[:limit]
 
 
@@ -495,9 +816,19 @@ def stale_candidates(
 
 
 def dangling_edge_candidates(store: Store, *, limit: int = 50) -> list[GardenCandidate]:
-    """Link rows whose src or dst ref is retired — edges to a dead node.
-    (A *missing* endpoint is impossible under the FK; retired is the real
-    case — ``retire_ref`` does not cascade links.)"""
+    """Link rows where exactly one endpoint is retired — a live node
+    pointing at a dead one. (A *missing* endpoint is impossible under the
+    FK; retired is the real case — ``retire_ref`` does not cascade links.)
+
+    Not candidates (gr504843 — 20/20 of the first prod tick were these):
+
+    - both endpoints retired: live reads never see the edge, and deleting
+      it only loses unretire history;
+    - a :data:`PROVENANCE_RELATIONS` edge: it records where something came
+      from, which stays true after the source retires;
+    - a retired endpoint of a :data:`HISTORY_KINDS` kind: a done todo or
+      a retired agentlog is the record of how the live node was made.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation, "
@@ -506,9 +837,16 @@ def dangling_edge_candidates(store: Store, *, limit: int = 50) -> list[GardenCan
             "FROM links l "
             "JOIN refs src ON src.ref_id = l.src_ref_id "
             "JOIN refs dst ON dst.ref_id = l.dst_ref_id "
-            "WHERE src.retired_at IS NOT NULL OR dst.retired_at IS NOT NULL "
+            "WHERE (src.retired_at IS NULL) <> (dst.retired_at IS NULL) "
+            "  AND l.relation <> ALL(%(prov)s) "
+            "  AND NOT (src.retired_at IS NOT NULL AND src.kind = ANY(%(hist)s)) "
+            "  AND NOT (dst.retired_at IS NOT NULL AND dst.kind = ANY(%(hist)s)) "
             "ORDER BY l.link_id LIMIT %(n)s",
-            {"n": limit},
+            {
+                "n": limit,
+                "prov": sorted(PROVENANCE_RELATIONS),
+                "hist": sorted(HISTORY_KINDS),
+            },
         ).fetchall()
     return [
         GardenCandidate(
@@ -590,6 +928,9 @@ def redundant_link_candidates(
     limit: int = 50,
     top_k: int = PRUNE_TOP_K,
     max_distance: float = PRUNE_MAX_DISTANCE,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+    probe_budget_s: float = PRUNE_PROBE_BUDGET_S,
 ) -> list[GardenCandidate]:
     """Machine ``related-to`` edges that only restate the index.
 
@@ -602,20 +943,28 @@ def redundant_link_candidates(
     floor the fisheye already lists the endpoints for each other, so the
     stored edge adds nothing — it only makes the render noisier.
 
-    Scans machine ``related-to`` rows oldest-first by ``link_id`` up to
-    ``scan_cap`` (deterministic across ticks; a bounded pass covers the
-    corpus over successive runs) and emits at most ``limit`` candidates.
-    Proposal rows only — apply stays merge-only, so a ``prune`` proposal
-    is never carried out by code; it queues for a human.
+    Scans the next ``scan_cap`` machine ``related-to`` rows by
+    ``link_id`` past the saved cursor (``cursors['redundant_link']``;
+    the cursor to save lands in ``next_cursors`` and wraps at the end,
+    so successive runs cover every link) and emits at most ``limit``
+    candidates. Proposal rows only — apply stays merge-only, so a
+    ``prune`` proposal is never carried out by code; it queues for a
+    human.
     """
+    after = (cursors or {}).get("redundant_link", 0)
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT link_id, src_ref_id, dst_ref_id FROM links "
             "WHERE relation = 'related-to' "
             "  AND trust_origin IN ('generated', 'computed') "
+            "  AND link_id > %(after)s "
             "ORDER BY link_id LIMIT %(cap)s",
-            {"cap": scan_cap},
+            {"cap": scan_cap, "after": after},
         ).fetchall()
+    if next_cursors is not None:
+        next_cursors["redundant_link"] = (
+            int(rows[-1][0]) if len(rows) >= scan_cap else 0
+        )
     if not rows:
         return []
     vecs = _card_vectors(
@@ -634,15 +983,31 @@ def redundant_link_candidates(
             near.append((int(link_id), int(a), int(b), dist))
     if not near:
         return []
-    neighbours = _top_k_card_neighbours(
-        store,
-        {e for _, a, b, _ in near for e in (a, b)},
-        vecs,
-        k=top_k,
-    )
-
+    # Closest pairs first, probed in batches: stop once ``limit``
+    # candidates are found or the probe budget is spent, and return what
+    # was found rather than being abandoned at the detector deadline.
+    near.sort(key=lambda t: (t[3], t[0]))
+    started = time.monotonic()
+    neighbours: dict[int, frozenset[int]] = {}
     out: list[GardenCandidate] = []
-    for link_id, a, b, d in near:
+    for i, (link_id, a, b, d) in enumerate(near):
+        if len(out) >= limit:
+            break
+        if a not in neighbours or b not in neighbours:
+            if time.monotonic() - started > probe_budget_s:
+                log.info(
+                    "garden: redundant_link probe budget spent after %d of %d pairs",
+                    i,
+                    len(near),
+                )
+                break
+            batch = {
+                e
+                for _, x, y, _ in near[i : i + PRUNE_PROBE_BATCH]
+                for e in (x, y)
+                if e not in neighbours
+            }
+            neighbours.update(_top_k_card_neighbours(store, batch, vecs, k=top_k))
         if b not in neighbours.get(a, ()) or a not in neighbours.get(b, ()):
             continue
         out.append(
@@ -686,19 +1051,35 @@ def untagged_candidates(
     min_seeded: int = TAG_SWEEP_MIN_SEEDED,
     scan_cap: int = 2000,
     limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
 ) -> list[GardenCandidate]:
     """Live refs of ``kinds`` carrying no tag in ``namespaces`` while at
     least ``min_seeded`` same-kind live refs do — the namespace is in use
     for the kind and this ref was skipped. The proposed *value* is the
     proposer's job; the candidate only carries the gap.
 
-    Bounded like the other wide scans: at most ``scan_cap`` live refs of
-    ``kinds`` are inspected per namespace, oldest-first by ``ref_id``
-    (deterministic across ticks). The per-kind seeded counts are computed
-    ONCE in the ``seeded`` CTE — the original shape ran one
-    ``ref_tags``×``tags``×``refs`` count per scanned row, an
-    O(refs × ref_tags) nest that hit the statement timeout on the first
-    prod run before any candidate was emitted (gr503580)."""
+    Bounded like the other wide scans: per kind, the next ``scan_cap``
+    live refs past the saved cursor (``cursors['untagged:<kind>']``) are
+    inspected; the cursor to save lands in ``next_cursors`` and wraps at
+    the kind's end, so successive runs walk the whole kind (gr504843).
+    The per-kind seeded counts are computed ONCE in the ``seeded`` CTE —
+    the original shape ran one ``ref_tags``×``tags``×``refs`` count per
+    scanned row, an O(refs × ref_tags) nest that hit the statement
+    timeout on the first prod run before any candidate was emitted
+    (gr503580)."""
+    cursors = cursors or {}
+    windows: list[int] = []
+    for kind in kinds:
+        ckey = f"untagged:{kind}"
+        window, nxt = _scan_window(
+            store, kind, after=cursors.get(ckey, 0), size=scan_cap
+        )
+        if next_cursors is not None:
+            next_cursors[ckey] = nxt
+        windows += window
+    if not windows:
+        return []
     out: list[GardenCandidate] = []
     for ns in namespaces:
         with store.pool.connection() as conn:
@@ -708,14 +1089,10 @@ def untagged_candidates(
                 "   JOIN tags t ON t.tag_id = rt.tag_id "
                 "   JOIN refs r2 ON r2.ref_id = rt.ref_id "
                 "  WHERE t.namespace = %(ns)s AND r2.retired_at IS NULL "
-                "    AND r2.kind = ANY(%(kinds)s) GROUP BY r2.kind), "
-                "scan AS ("
-                "  SELECT r.ref_id, r.kind, r.title FROM refs r "
-                "  WHERE r.retired_at IS NULL AND r.kind = ANY(%(kinds)s) "
-                "  ORDER BY r.ref_id LIMIT %(cap)s) "
-                "SELECT s.ref_id, s.kind, s.title FROM scan s "
+                "    AND r2.kind = ANY(%(kinds)s) GROUP BY r2.kind) "
+                "SELECT s.ref_id, s.kind, s.title FROM refs s "
                 "JOIN seeded d ON d.kind = s.kind AND d.n >= %(min_seed)s "
-                "WHERE NOT EXISTS ("
+                "WHERE s.ref_id = ANY(%(win)s) AND NOT EXISTS ("
                 "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
                 "   WHERE rt.ref_id = s.ref_id AND t.namespace = %(ns)s) "
                 "ORDER BY s.ref_id LIMIT %(n)s",
@@ -723,7 +1100,7 @@ def untagged_candidates(
                     "kinds": list(kinds),
                     "ns": ns,
                     "min_seed": min_seeded,
-                    "cap": scan_cap,
+                    "win": windows,
                     "n": limit,
                 },
             ).fetchall()
@@ -957,10 +1334,13 @@ def detectors_for(passes: tuple[str, ...]) -> list[str]:
 class DetectorRun:
     """One :func:`run_detectors` pass: the concatenated candidates plus
     ``skipped`` — the names of detectors that hit their statement timeout
-    or wall-clock budget and were skipped so the rest could still run."""
+    or wall-clock budget and were skipped so the rest could still run —
+    and ``cursors``, the scan positions to save for the next run (only
+    from detectors that finished)."""
 
     candidates: list[GardenCandidate] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    cursors: dict[str, int] = field(default_factory=dict)
 
 
 def run_detectors(
@@ -975,9 +1355,16 @@ def run_detectors(
     tag_kinds: tuple[str, ...] = ("finding", "paper", "concept", "memory"),
     exclusive_axes: tuple[str, ...] = (),
     detector_deadline_s: float = DETECTOR_DEADLINE_S,
+    cursors: dict[str, int] | None = None,
 ) -> DetectorRun:
     """Run the detectors selected by ``passes`` and concatenate their
     candidates (each detector already bounded by ``limit``).
+
+    ``cursors`` are the scan positions the last run saved
+    (``dup_pair:<kind>``, ``untagged:<kind>``, ``redundant_link``); the
+    windowed detectors start past them and report where the next run
+    should start in ``DetectorRun.cursors``. A skipped detector reports
+    nothing, so its window is retried.
 
     Each detector runs under ``detector_deadline_s`` wall-clock via
     :func:`call_with_deadline` (``<= 0`` disables) — an over-budget
@@ -989,11 +1376,21 @@ def run_detectors(
     zero the tick (gr503580).
     """
     out = DetectorRun()
+    saved = dict(cursors or {})
     for det in detectors_for(passes):
         fn: Callable[[], list[GardenCandidate]] | None = None
+        # Each detector writes its own dict: an abandoned (timed-out)
+        # detector's late writes land in a dict nobody reads.
+        nxt: dict[str, int] = {}
         if det == "dup_pair":
             fn = partial(
-                duplicate_candidates, store, kinds=kinds, limit=limit, scan_cap=scan_cap
+                duplicate_candidates,
+                store,
+                kinds=kinds,
+                limit=limit,
+                scan_cap=scan_cap,
+                cursors=saved,
+                next_cursors=nxt,
             )
         elif det == "orphan":
             fn = partial(orphan_taxon_candidates, store, limit=limit)
@@ -1007,7 +1404,12 @@ def run_detectors(
             fn = partial(cycle_edge_candidates, store, limit=limit)
         elif det == "redundant_link":
             fn = partial(
-                redundant_link_candidates, store, scan_cap=scan_cap, limit=limit
+                redundant_link_candidates,
+                store,
+                scan_cap=scan_cap,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
             )
         elif det == "untagged":
             fn = partial(
@@ -1017,6 +1419,16 @@ def run_detectors(
                 kinds=tag_kinds,
                 scan_cap=scan_cap,
                 limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
+            )
+        elif det == "paper_identity":
+            fn = partial(
+                paper_identity_candidates,
+                store,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
             )
         elif det == "polysemy":
             fn = partial(polysemy_candidates, store, limit=limit)
@@ -1048,6 +1460,7 @@ def run_detectors(
             out.skipped.append(det)
             continue
         out.candidates += found
+        out.cursors.update(nxt)
     return out
 
 
@@ -1055,8 +1468,12 @@ __all__ = [
     "DETECTOR_DEADLINE_S",
     "DUP_MAX_DISTANCE",
     "DUP_MIN_LEXICAL",
+    "DUP_VECTOR_CHUNK",
     "GARDEN_KINDS",
+    "HISTORY_KINDS",
+    "PAPER_MIN_TITLE_CHARS",
     "PASS_CHOICES",
+    "PROVENANCE_RELATIONS",
     "PRUNE_MAX_DISTANCE",
     "PRUNE_TOP_K",
     "RELINK_MIN_DISTANCE",
@@ -1066,8 +1483,10 @@ __all__ = [
     "cycle_edge_candidates",
     "dangling_edge_candidates",
     "detectors_for",
+    "dup_window_size",
     "duplicate_candidates",
     "orphan_taxon_candidates",
+    "paper_identity_candidates",
     "polysemy_candidates",
     "redundant_link_candidates",
     "run_detectors",

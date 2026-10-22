@@ -119,7 +119,9 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    token score.
 3. **Paper identity**: duplicate paper refs (preprint vs journal, stub vs
    held) merged through the gardener's merge path; directly cuts
-   retrieval noise.
+   retrieval noise. *Detector landed (gr504843, pass `paper-identity`):
+   proposals only; applying a paper merge via `precis garden apply` is
+   not vetted yet.*
 4. **Fisheye ranking, not more edges**: render evidential and reviewed
    edges first, collapse unreviewed generated ones to a count. Cheaper
    than pruning and immediately visible.

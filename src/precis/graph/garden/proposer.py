@@ -31,6 +31,11 @@ log = logging.getLogger(__name__)
 #: ``llm.op.graph_garden:propose`` row steers tier/model/chain at runtime.
 OP_SOURCE = "graph_garden:propose"
 
+#: Per-ref excerpt bound in the proposer prompt — enough body to tell two
+#: same-titled memories apart, small enough that a pair stays well under
+#: the prompt budget.
+EXCERPT_CHARS = 600
+
 _PROMPT_HEAD = """You are the graph gardener's proposal judge for a knowledge graph
 (refs = typed nodes, links = typed edges, tags = closed namespaces).
 
@@ -49,7 +54,9 @@ Respond with a single JSON object:
 
 Rules: never invent a rationale that cites nothing in evidence; when the
 signal is a hint (evidence.hint=true), accept only if the node's own
-shape supports it; when unsure, accept=false.
+shape supports it; when unsure, accept=false. "excerpts" holds each
+named ref's own text: a merge needs the excerpts to say the same thing,
+not only similar titles or shared opening words.
 """
 
 
@@ -66,24 +73,72 @@ class Verdict:
     error: str | None = None
 
 
-def _prompt_for(candidate: GardenCandidate) -> str:
+def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
+    """The refs the proposer should read: target and other for a ref
+    target; the endpoints for a link target."""
+    ids: list[int] = []
+    if candidate.target_kind == "ref":
+        ids.append(candidate.target_id)
+        if candidate.other_id:
+            ids.append(int(candidate.other_id))
+    else:
+        for key in ("src", "dst", "a", "b"):
+            val = candidate.evidence.get(key)
+            if isinstance(val, int):
+                ids.append(val)
+    return list(dict.fromkeys(ids))
+
+
+def ref_excerpts(
+    store: Store, ref_ids: list[int], *, chars: int = EXCERPT_CHARS
+) -> dict[str, str]:
+    """``{"<kind>:<id>": excerpt}`` — each ref's own text, bounded to
+    ``chars``: the memory body, else the card (``title\\nhook``), else the
+    title; a ``meta.definition`` missing from that text is prepended.
+    Read-only; an unknown id is simply absent."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.kind, r.title, r.meta->>'definition', "
+            "  (SELECT string_agg(c.text, E'\\n' ORDER BY c.ord) FROM chunks c "
+            "    WHERE c.ref_id = r.ref_id AND c.chunk_kind = 'memory_body' "
+            "      AND c.retired_at IS NULL AND c.ord >= 0), "
+            "  (SELECT c.text FROM chunks c WHERE c.ref_id = r.ref_id "
+            "    AND c.chunk_kind = 'card_combined' AND c.retired_at IS NULL "
+            "    ORDER BY c.chunk_id LIMIT 1) "
+            "FROM refs r WHERE r.ref_id = ANY(%s)",
+            (list(ref_ids),),
+        ).fetchall()
+    out: dict[str, str] = {}
+    for rid, kind, title, definition, body, card in rows:
+        text = str(body or card or title or "")
+        if definition and str(definition) not in text:
+            text = f"definition: {definition}\n{text}"
+        if len(text) > chars:
+            text = text[:chars].rstrip() + "…"
+        out[f"{kind}:{rid}"] = text
+    return out
+
+
+def _prompt_for(
+    candidate: GardenCandidate, excerpts: dict[str, str] | None = None
+) -> str:
+    body: dict[str, Any] = {
+        "detector": candidate.detector,
+        "action": candidate.action,
+        "target": f"{candidate.target_kind}:{candidate.target_id}",
+        "other": candidate.other_id,
+        "title": candidate.title,
+        "evidence": candidate.evidence,
+        "payload": candidate.payload,
+    }
+    if excerpts:
+        body["excerpts"] = excerpts
     return (
         _PROMPT_HEAD
         + "\nCandidate:\n"
-        + json.dumps(
-            {
-                "detector": candidate.detector,
-                "action": candidate.action,
-                "target": f"{candidate.target_kind}:{candidate.target_id}",
-                "other": candidate.other_id,
-                "title": candidate.title,
-                "evidence": candidate.evidence,
-                "payload": candidate.payload,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
+        + json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
         + "\n"
     )
 
@@ -102,16 +157,16 @@ def _parse_verdict(text: str) -> dict[str, Any] | None:
 
 
 def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
-    """The default proposer — one routed LLM call. Deliberately takes
-    ``store`` it never uses: the runner's ``propose=`` seam lets tests
-    inject a deterministic verdict without standing up a model."""
-    del store
+    """The default proposer — one routed LLM call. ``store`` reads the
+    excerpts of the refs the candidate names, so the judge sees their
+    text, not only titles (gr504843: with titles alone it accepted 35/35
+    noise proposals)."""
     from precis.utils.llm.router import LlmRequest, Tier, route
 
     result = route(
         LlmRequest(
             tier=Tier.MEDIUM,
-            prompt=_prompt_for(candidate),
+            prompt=_prompt_for(candidate, ref_excerpts(store, _excerpt_ids(candidate))),
             source=OP_SOURCE,
             ref_id=candidate.target_id if candidate.target_kind == "ref" else None,
             max_tokens=400,
@@ -139,4 +194,4 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
     )
 
 
-__all__ = ["OP_SOURCE", "Verdict", "propose_llm"]
+__all__ = ["EXCERPT_CHARS", "OP_SOURCE", "Verdict", "propose_llm", "ref_excerpts"]

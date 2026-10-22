@@ -23,7 +23,8 @@ run it.
 
 Outcome contract (the cooling streak reads this): ``meta.garden`` on the
 job row carries ``{candidates, proposals, skipped_pending, rejected,
-llm_errors, skipped_detectors}`` — plus ``skipped`` on a gate-skipped
+llm_errors, skipped_detectors, proposals_by_detector}`` — plus
+``skipped`` on a gate-skipped
 run; a tick that proposes nothing writes no chunks — "zero proposals
 and zero log entries" for a clean graph. A tick that skipped a detector
 on its deadline writes one summary naming it.
@@ -38,7 +39,16 @@ from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
 
-_PASS_CHOICES = ("merge", "split", "relink", "prune", "tag-sweep", "siblings", "all")
+_PASS_CHOICES = (
+    "merge",
+    "split",
+    "relink",
+    "prune",
+    "tag-sweep",
+    "siblings",
+    "paper-identity",
+    "all",
+)
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -86,9 +96,11 @@ def _gate_skip(ctx: Any, reason: str) -> None:
             "candidates": 0,
             "proposals": 0,
             "skipped_pending": 0,
+            "skipped_rejected": 0,
             "rejected": 0,
             "llm_errors": 0,
             "skipped_detectors": [],
+            "proposals_by_detector": {},
         }
     )
     log.info("graph_garden: run skipped (%s)", reason)
@@ -140,7 +152,9 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         return tuple(str(x) for x in raw)
 
     from precis.graph.garden.proposer import propose_llm
+    from precis.graph.garden.service import saved_cursors
 
+    prev_cursors = saved_cursors(ctx.store)
     outcome = run_garden_tick(
         ctx.store,
         passes=passes,
@@ -153,6 +167,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         exclusive_axes=_strs("exclusive_axes", ()),
         max_proposals=_ints("max_proposals", DEFAULT_MAX_PROPOSALS),
         detector_deadline_s=_ints("detector_deadline_s", int(DETECTOR_DEADLINE_S)),
+        cursors=prev_cursors,
         propose=propose_llm,
     )
     ctx.set_meta(
@@ -160,9 +175,14 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
             "candidates": outcome.candidates,
             "proposals": outcome.proposals,
             "skipped_pending": outcome.skipped_pending,
+            "skipped_rejected": outcome.skipped_rejected,
             "rejected": outcome.rejected,
             "llm_errors": outcome.llm_errors,
             "skipped_detectors": list(outcome.skipped_detectors),
+            "proposals_by_detector": dict(outcome.proposals_by_detector),
+            # Carried forward: a run over a subset of kinds/passes keeps
+            # the other windows where the last run left them.
+            "cursors": {**prev_cursors, **outcome.cursors},
         }
     )
     if outcome.paused:

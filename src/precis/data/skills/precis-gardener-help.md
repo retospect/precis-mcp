@@ -32,12 +32,18 @@ proposal stale by itself.
 
 One bounded tick per minted job (`job_inproc` executor), `params.pass`
 selects the detector subset (`merge|split|relink|prune|tag-sweep|
-siblings`, default `all`):
+siblings|paper-identity`, one name or a list, default `all`):
 
-- **merge** — same-kind node pairs whose `card_combined` embeddings or
-  normalized names collide. Taxon pairs with a dimension clash (both
-  `dimension_kind` set and different, or both `si` with different
-  `si_vector`) are never candidates — different units are not dupes.
+- **merge** — same-kind node pairs that look like one term minted
+  twice. taxon/concept compare their `card_combined` embeddings and
+  normalized names/aliases. A memory compares its `memory_body`
+  embedding plus a body hash (byte-identical bodies), never its title:
+  memory cards are the title cut to 80 chars and dream memories share
+  an opening line, so titles put distinct memories at distance 0. Taxon
+  pairs with a dimension clash (both `dimension_kind` set and different,
+  or both `si` with different `si_vector`) are never candidates —
+  different units are not dupes.
+- **paper-identity** — duplicate papers; see *Paper identity* below.
 - **relink** — a `taxon` reaching no start node gets a
   `specialises`-edge proposal naming the nearest start node by card
   embedding as candidate parent — but only when that parent sits past
@@ -45,14 +51,21 @@ siblings`, default `all`):
   it the index already lists the start node, so the proposal would
   restate what retrieval finds on demand. An orphan with no card
   vector is always kept (the index has nothing to offer it).
-- **prune** — a link whose endpoint ref is retired; a `specialises`
-  2-cycle (proposes deleting the younger edge); a node untouched,
-  unlinked and unviewed for `stale_days` (default 180); and a machine
-  `related-to` edge (`trust_origin` `generated`/`computed`) whose
-  endpoints are mutual top-5 card neighbours inside
+- **prune** — a link from a live ref to a retired one (`dangling_edge`);
+  a `specialises` 2-cycle (proposes deleting the younger edge); a node
+  untouched, unlinked and unviewed for `stale_days` (default 180); and a
+  machine `related-to` edge (`trust_origin` `generated`/`computed`)
+  whose endpoints are mutual top-5 card neighbours inside
   `PRUNE_MAX_DISTANCE` — the edge duplicates the index, so the proposal
-  is removal. A `prune` proposal is never applied by code: apply stays
-  merge-only, the row is for human follow-through.
+  is removal. `dangling_edge` skips an edge whose both endpoints are
+  retired (invisible to live reads), a provenance relation
+  (`PROVENANCE_RELATIONS`: supersedes, derived-from, fixes, retracts,
+  corrects, cites and their inverses — still true after a retire), and
+  a retired `todo`/`agentlog`/`job` endpoint (history of how the live
+  node was made). `redundant_link` probes neighbours in batches,
+  closest pairs first, and stops at `limit` candidates or a 40 s probe
+  budget, returning what it found. A `prune` proposal is never applied
+  by code: apply stays merge-only, the row is for human follow-through.
 - **tag-sweep** — a ref of a covered kind missing a closed namespace
   its live siblings already use (`DOMAIN:`, `TOPIC:` …). The proposal
   carries the namespace; the value is the judge's call.
@@ -69,15 +82,49 @@ siblings`, default `all`):
   candidate — disjoint siblings are legitimate.
 
 Every proposal names its evidence (distances, shared terms, instance
-ids, run ids) so a judge can verify it without trusting the model.
+ids, run ids) so a judge can verify it without trusting the model. The
+proposer's prompt also carries an excerpt of each named ref's own text
+(memory body, else card, else title; up to 600 chars each), so it
+judges content, not titles.
+
+## Paper identity
+
+The `paper-identity` detector pairs live main-text papers whose
+normalized titles are equal (lowercase, punctuation collapsed; titles
+under 20 chars such as "Editorial" are skipped; supplements and
+front/back matter are skipped). The higher ref_id is the proposed loser.
+Never a candidate when both papers carry different DOIs, years more
+than one apart, or different first-author surnames. Evidence lists
+DOIs, years, first authors and whether the PDF hash matches. Proposal
+only: a paper merge is a human decision.
+
+## Scan windows and budget
+
+**Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
+paper-identity) read one window per kind per run, starting past a
+cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
+`untagged:<kind>`, `redundant_link`, `paper_identity`). The next run
+starts where the last stopped and wraps at the end, so successive runs
+cover every kind; a run over fewer kinds carries the other cursors
+forward. The merge window shrinks as a kind grows (each window ref is
+compared with every live ref of its kind, about `scan_cap`² comparisons
+per kind). A detector skipped on its deadline keeps its old cursor.
+
+**Budget.** `max_proposals` is shared round-robin across the detectors
+that found candidates: each gets `max_proposals // n` first, and a
+share a detector leaves unspent goes to the others.
+`meta.garden.proposals_by_detector` records the split.
 
 ## The ledger row
 
 Pending proposals are readable by operator CLI (`precis garden
 proposals`) and by SQL on `reviews` — filter `actor='graph-garden'`,
 `verdict='proposed'`. A later `approved`/`rejected` row with the same
-`garden.key` resolves it; the same key is never re-proposed while
-pending, and a stale key (target edited since) may be re-proposed.
+`garden.key` resolves it. The same key is never re-proposed while
+pending, nor after a `rejected` verdict while the target is unchanged
+(its sha still matches the rejected row; counted in
+`meta.garden.skipped_rejected`). Editing the target, or an `approved`
+verdict, re-opens the key.
 
 ## Applying a proposal
 
@@ -148,9 +195,11 @@ The proposer's model is steerable via the operation row
 `llm.op.graph_garden:propose` — a tier or chain override flips where
 judging runs without a redeploy.
 
-Job params: `pass`, `limit` (candidates per detector, default 50),
-`scan_cap`, `max_proposals` (writes per tick, default 20), `stale_days`,
-`kinds`, `tag_namespaces`, `tag_kinds`, `exclusive_axes`.
+Job params: `pass` (a name or a list), `limit` (candidates per
+detector, default 50), `scan_cap` (refs per kind per window, default
+2000), `max_proposals` (writes per tick, default 20, shared across
+detectors), `stale_days`, `kinds`, `tag_namespaces`, `tag_kinds`,
+`exclusive_axes`.
 
 ## The machine-edge write rule
 

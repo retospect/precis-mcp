@@ -520,13 +520,24 @@ class TestProposalsOnly:
         )
         assert resolved is not None
         assert pending_proposals(store) == []
-        # The decided key re-opens: the next tick re-proposes it.
-        assert run_garden_tick(store, passes=("prune",), propose=_accept).proposals == 1
-        # A target edit (title is always sha-covered) makes the pending
-        # row non-current, not pending-less.
+        # A rejected key stays closed while the target is unchanged
+        # (gr504843) ...
+        again = run_garden_tick(store, passes=("prune",), propose=_accept)
+        assert again.proposals == 0 and again.skipped_rejected == 1
+        # ... and re-opens once the target is edited (title is always
+        # sha-covered): the next tick re-proposes it.
         with store.pool.connection() as conn:
             conn.execute(
-                "UPDATE refs SET title = title || ' x' WHERE ref_id = %s",
+                "UPDATE refs SET title = title || ' x', "
+                "updated_at = now() - interval '400 days' WHERE ref_id = %s",
+                (stale,),
+            )
+        assert run_garden_tick(store, passes=("prune",), propose=_accept).proposals == 1
+        # A further edit makes the pending row non-current, not
+        # pending-less.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = title || ' y' WHERE ref_id = %s",
                 (stale,),
             )
         (prop2,) = pending_proposals(store)

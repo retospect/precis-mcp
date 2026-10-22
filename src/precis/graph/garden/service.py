@@ -137,6 +137,33 @@ def cooling_active(
     return dry >= escalate_after and skipped_head < cool_runs
 
 
+def saved_cursors(store: Store) -> dict[str, int]:
+    """The scan cursors the newest ``graph_garden`` run saved on
+    ``meta.garden.cursors`` — the same job-history-as-state pattern as the
+    cooling streak, no extra state row. ``{}`` (start every window at the
+    beginning) when no run saved any, or on a read failure."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.meta->'garden'->'cursors' FROM refs r "
+                "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+                "  AND r.meta->>'job_type' = %s "
+                "  AND jsonb_typeof(r.meta->'garden'->'cursors') = 'object' "
+                "ORDER BY r.ref_id DESC LIMIT 1",
+                (JOB_TYPE,),
+            ).fetchone()
+    except Exception:
+        log.warning("garden: cursor read failed", exc_info=True)
+        return {}
+    out: dict[str, int] = {}
+    for key, val in dict(row[0] if row else {}).items():
+        try:
+            out[str(key)] = int(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 __all__ = [
     "COOL_RUNS",
     "DRY_RUNS_ESCALATE",
@@ -145,4 +172,5 @@ __all__ = [
     "SERVICE_NAME",
     "cooling_active",
     "graph_garden_enabled",
+    "saved_cursors",
 ]
