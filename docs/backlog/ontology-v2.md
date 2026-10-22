@@ -206,8 +206,35 @@ acceptance queries above, run on prod read-only.
 
 ## Open questions / decisions log
 
-**Ruled (Reto 2026-10-22): 1–7 approved as recommended. 8: the group
-table is with Reto; slice 0 may start.**
+**Ruled (Reto 2026-10-22): 1–7 approved as recommended. 8 approved:** 13
+quantity-class groups — geometry; component form; mechanical; thermal;
+electrical and dielectric; bulk and structure (+BET, ECSA); molecular and
+surface (kept separate); energetics (renamed from "DFT energetics": +band
+gap); electrochemical performance (+overpotential, Tafel slope, onset
+potential, TOF); reaction conditions; reaction outcome; cost; generic
+(count, ratio, angle, PCB routed-net count; kept). Revisit after slice 1
+lands and gripes come in (todo filed). Member mapping:
+
+| group | members (taxon titles) |
+|---|---|
+| geometry | across flats, bore diameter, drive size, head diameter, head height, height, inner diameter, length→overall length, outer diameter, minimum bend radius, thickness, wall thickness, width, thread pitch, head angle |
+| component form | drive code, drive type, head form, point type, thread size, grade, surface finish, is reinforced |
+| mechanical | Young's modulus, shear modulus, Poisson's ratio, ultimate tensile strength, tensile yield strength, elongation at break, Vickers hardness, dynamic load rating, maximum working pressure |
+| thermal | melting point, maximum service temperature, specific heat capacity, thermal conductivity, coefficient of thermal expansion |
+| electrical and dielectric | electrical resistivity, dielectric strength, relative permittivity, is magnetic, electric field magnitude, electrostatic potential |
+| bulk and structure | density, mass, crystal structure; new: BET surface area, ECSA |
+| molecular and surface | dipole moment, net partial charge, surface charge density, H-bond donor count, H-bond acceptor count, hydrophobicity index, contact angle, absorption maximum wavelength |
+| energetics | adsorption energy, binding energy, reaction step free energy, activation barrier; new: band gap |
+| electrochemical performance | faradaic efficiency, partial current density, total current density, product yield rate per geometric area, product yield rate per catalyst mass, limiting potential, stability duration; new: overpotential, Tafel slope, onset potential, TOF |
+| reaction conditions | temperature, pressure, reaction time, solvent, scale, catalyst loading, applied electrode potential, NO partial pressure, NO feed fraction, electrolyte concentration |
+| reaction outcome | yield, product selectivity, reactant conversion, reaction product, atom economy, enantiomeric excess |
+| cost | unit cost, cost per unit mass (price per gram merged in) |
+| generic | count, ratio, angle, PCB routed-net count |
+
+Merged/retired before slice 1: duplicate bore diameter and maximum service
+temperature, length→overall length, price per gram→cost per unit mass;
+retired delta length, unit length, persistence length, thermal half life,
+PSS short fraction.
 
 1. **`method` start node vs v1.5's `axis/method`.** Recommend separate
    nodes: `axis/*` names edge angles (a label vocabulary), `method/*`
