@@ -43,6 +43,34 @@ and exits 0. It never fails the ship or the deploy. Off switch:
 refuses writes from a tree behind `origin/prod`, so a stale tree prints a
 failed post and posts nothing.
 
+## Red main, and "did it land"
+
+`check.yml` runs on every push to main, so a red main's failures usually
+already sit on GitHub. Run `scripts/main-ci-status` first (run id, failing
+jobs, UNCLAIMED or not), then `gh run view <id> --log-failed`; read the
+whole summary line ("1 failed, 2 errors" is three problems). A full local
+gate validates, never diagnoses. Claim the fix in `.claude/purpose`, fix every
+named cause in one branch, un-red with `--remote`; it skips the local ruff
+autofix, so run `ruff check` and `ruff format --check` before pushing.
+
+Squash-landing mints a new sha, so ancestry checks lie:
+`git merge-base --is-ancestor <sha> origin/main` is permanently false for a
+landed commit, and `rev-list main..branch` / 3-dot `git diff` over-report.
+Feature landed? `git cat-file -e origin/main:<path the commit added>`.
+Branch holds unmerged work? `git log --cherry-pick --right-only --no-merges
+--oneline main...<branch>`; non-zero is a candidate (a multi-commit branch
+squashed to one commit still shows), confirm against files on main. For a
+superseded stale branch, `git diff --stat origin/main <branch> -- <files it
+touched>` showing main newer on every file is proof. Bulk triage: one
+worker per branch; merge the unsuperseded with `git merge -X ours`; the
+branch's tree cannot be entered from another session.
+
+`scripts/ship` squashes with `git commit-tree` plumbing and CAS-pushes
+(`git push origin <new>:main`) because all worktrees share one `.git/index`;
+a hand-rolled `merge --squash` from two sessions co-mingles staged files.
+While ship runs the tree is not yours: it resets the branch to shipped main
+at the end, destroying edits made meanwhile.
+
 ## /land — gate on GitHub
 
 `scripts/ship --remote`: refuse uncommitted edits outside `.claude/`

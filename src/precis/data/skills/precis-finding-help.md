@@ -53,7 +53,10 @@ put(
 
 Required: `title`, `body`, `cited_in`. Recommended: `scope` (dict —
 filters search and dedups identical `(body, scope, cited_in)`
-re-submissions so two agents writing the same claim collapse).
+re-submissions so two agents writing the same claim collapse). A
+stale `scope` is part of that key: re-submitting or retitling with a
+different scope mints a second hub, and nothing merges them. Copy the
+existing finding's scope exactly.
 
 **`cited_in=` is the SOURCE you read the claim in — a paper/patent
 chunk handle — never the plan/deck/project you're writing into.**

@@ -50,6 +50,18 @@ review, the full gate for any `safe_fetch.py` change (`scripts/qgo-guard`),
 and `tests/test_safe_fetch.py` / `tests/test_safe_fetch_fallback.py`. There
 is no static ban on raw `httpx.Client` in new code; reviewers check for it.
 
+## SQL and layering gotchas
+
+- **Double `%` in psycopg SQL.** A literal `%` in a parameterised query is a
+  placeholder (`ProgrammingError: only '%s','%b','%t' are allowed`): write
+  `LIKE 'ask-user:%%'` or pass the pattern as a param. Web-route tests use a
+  `FakeStore` that never hands SQL to psycopg, so this passes green and 500s
+  in prod; raw SQL needs a real-Postgres test
+  (`docs/conventions/testing.md` §Raw SQL).
+- **Workers never import handlers.** A worker that needs another kind's
+  behaviour calls `Hub.sibling('<kind>')` (e.g. `Hub.sibling('conv')`), not
+  `from precis.handlers…`.
+
 ## Outbound calls are polite
 
 Every outbound HTTP call to a third party goes through the politeness core in

@@ -406,7 +406,9 @@ hits diminishing returns; the storage cost grows linearly.
 Per decision 5, one H2 = one chunk = one embedding. If a section's
 body overruns the embedder's chunk budget, ingest hard-fails — split
 into multiple H2s. Cut prose before splitting; usually the prose
-needed cutting anyway.
+needed cutting anyway. Keep each H2 section at or under 4000 characters: a
+skill is served chunked by H2 and an oversize section breaks the chunk
+budget.
 
 ## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
 

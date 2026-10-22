@@ -230,6 +230,28 @@ See also the `test_leak_hardfail` / `docker_wedge_test_creds` /
 `test_db_shared_singleton` gotchas for specific failure modes this harness
 guards against or can trip on.
 
+## Adding a kind (or changing its `placement`): the ratchet checklist
+
+The pinning tests live in files the change never touches, so `--impacted`
+misses some. Before shipping run
+`scripts/test ./tests/test_kind_totality.py ./tests/precis_web/test_item_view.py`.
+
+1. `tests/test_kind_totality.py::test_artifact_kind_fallback_matches_live_role_derivation`
+   needs `precis_web/item_view.py::_ARTIFACT_KIND_FALLBACK` updated; then
+2. `tests/precis_web/test_item_view.py::test_artifact_kinds_falls_back_*`
+   (two tests) hardcode that list alphabetically. Fix both or each reds the
+   other.
+3. `tests/test_handle_registry.py` (`EXPECTED_PERSISTENT_KINDS`) and
+   `tests/test_mcp_verb_kwarg_parity.py` (`_EXEMPT`).
+4. A new `json`/`jsonb` column goes in
+   `tests/test_schema_design.py::JSONB_COLUMNS` with a justification.
+5. A migration-seeded registry table needs `tests/conftest.py`
+   `_PRESERVE_TABLES` membership and an `_ensure_<kind>_seed` helper next to
+   `_ensure_material_seed`. Missing the first is a silent false-green: the
+   per-test TRUNCATE wipes the seed and writes mint "proposed" rows instead
+   of resolving `core`. Pin it with a test that a known seeded row is still
+   `status='core'`.
+
 ## Coverage posture: diff-gated, never %-tracked
 
 A repo-wide coverage percentage is still not a merge criterion — a big

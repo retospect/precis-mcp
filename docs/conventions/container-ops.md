@@ -56,6 +56,35 @@ That is 1024 networks. Pick a `10.x/16` base instead if your LAN uses
 172.20–172.23. Existing networks keep their old subnets; only new ones draw
 from the pool. Applied on Reto's Mac 2026-10-10.
 
+### Docker VM prune (standing rule, Reto 2026-10-16/17)
+
+The coordinator may prune the Colima VM when free space is under 30 GB
+(`docker run --rm alpine df -h /`; the gate's `docker_free_gb` probe can
+misread) or a ship fails with "No space left on device", in order, stopping
+once over 30 GB:
+
+1. `docker builder prune -f --filter until=24h`
+2. `docker image prune -f` (dangling only)
+3. `docker builder prune -f`, then `docker rmi <tag>` on one-off
+   `*-verify` / `*test*` / `*-ci-*` images no container uses
+   (`docker ps -a --format '{{.Image}}'`).
+
+Never rmi `precis-dev:latest`, `precis-mcp:dev`, `precis-mcp:premodels` or
+an image a container uses. Never `-a`, `docker volume prune`,
+`docker system prune`, or stop/remove containers. Growing the disk
+(`colima stop && colima start --disk N`) stops every container: Reto's call.
+Keep concurrent local `--checked` ships to 3 or fewer.
+
+### Scripted `psql` over ssh needs `-X`
+
+`psql` sources the remote user's `~/.psqlrc` unless given `-X`; on the data
+host `\timing` writes `Time: …` to stdout and `\pset null` rewrites NULLs, so
+`-tAc "SELECT count(*)"` returns `0\nTime: 0.4 ms`. Anything that ssh's to a
+host and parses psql stdout passes `-X` (`scripts/prod-psql` scripted
+branches, `scripts/gen-schema`, ansible `shell:` psql tasks); pinned by
+`tests/test_scripted_psql_skips_psqlrc.py`. When a comparison never
+matches, look at the bytes (`| od -c`) before theorising.
+
 ## Never `cd` into your own worktree
 
 The Bash shell already runs in the worktree root, and the harness
