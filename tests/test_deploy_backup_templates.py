@@ -40,11 +40,20 @@ def test_pg_backup_default_keeps_local_dump() -> None:
 
 def test_pg_backup_verified_only_deletes_after_zstd_test() -> None:
     out = _render("pg_backup.sh.j2", pg_backup_local_keep_verified_only=True)
-    assert 'if zstd -tq "${NAS_ARCHIVE}"; then' in out
+    assert 'if zstd -tq < "${NAS_ARCHIVE}"; then' in out
     assert 'rm -rf "${LOCAL_DUMP_DIR}"' in out
     assert "Keeping local dump" not in out
     # existing safeguards untouched
     assert "trap on_exit EXIT" in out and "MIN_FREE_GB" in out
+
+
+def test_pg_backup_zstd_never_opens_nas_paths() -> None:
+    # gr496659: TCC denies Homebrew zstd on the network volume; the shell
+    # (Full Disk Access) must do every NAS open via redirection.
+    out = _render("pg_backup.sh.j2")
+    assert '| zstd -T0 -q > "${NAS_TMP}"' in out
+    assert 'zstd -tq < "${NAS_TMP}"' in out
+    assert "--use-compress-program" not in out
 
 
 def test_pg_backup_uses_host_local_root_when_set() -> None:

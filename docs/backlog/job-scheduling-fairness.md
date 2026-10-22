@@ -122,6 +122,13 @@ count by class (extends the existing "N ahead" hint in
 
 ## Slices
 
+Ruled (Reto 2026-10-22): laissez-faire and monitor; adjust only if it
+goes sideways. Keep one channel open for interactive work. Build slices
+1, 4 and 6 (origin stamp, reserved interactive slot + wake, queue-wait
+visibility by origin). Slices 2, 3 and 5 and the open questions below are
+parked until the slice-6 numbers show a problem the open channel does not
+solve; the runtime caps of D4 are not set now.
+
 1. **Origin stamp (D1)** — handler + `mint_background_job()` + recurring
    spawn; backfill none. Pure data, no claim change. Ships first so the
    metrics in acceptance can be measured by class.

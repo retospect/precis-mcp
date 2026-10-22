@@ -126,10 +126,15 @@ echo "[$(date -u)] Archiving to NAS (tar+zstd)..."
 NAS_TMP="${NAS_ARCHIVE}.partial.$$"
 rm -f "${NAS_BACKUP_DIR}"/precis_prod_*.tar.zst.partial.* 2>/dev/null || true
 trap 'rm -f "${NAS_TMP}" 2>/dev/null || true; on_exit' EXIT
-tar --use-compress-program='zstd -T0' -cf "${NAS_TMP}" \
-  -C "${LOCAL_BACKUP_DIR}" "precis_prod_${TIMESTAMP}"
-zstd -tq "${NAS_TMP}"
-tar --use-compress-program='zstd -d' -tf "${NAS_TMP}" >/dev/null
+# zstd only ever sees stdin/stdout: the shell opens the NAS file. Since the
+# 2026-10-12 brew upgrade, macOS TCC denies the ad-hoc-signed Homebrew zstd
+# access to the network volume ("Operation not permitted" on the .partial,
+# gripe 496659), while cron and /bin/sh hold Full Disk Access. A grant on the
+# zstd binary would break on every brew upgrade; redirection does not.
+tar -cf - -C "${LOCAL_BACKUP_DIR}" "precis_prod_${TIMESTAMP}" \
+  | zstd -T0 -q > "${NAS_TMP}"
+zstd -tq < "${NAS_TMP}"
+zstd -dcq < "${NAS_TMP}" | tar -tf - >/dev/null
 mv -f "${NAS_TMP}" "${NAS_ARCHIVE}"
 
 NAS_SIZE=$(du -h "${NAS_ARCHIVE}" | cut -f1)
@@ -139,7 +144,7 @@ echo "[$(date -u)] NAS archive complete and verified: ${NAS_ARCHIVE} (${NAS_SIZE
 # Local dump is only a staging copy: once the NAS archive passes `zstd -t`,
 # drop tonight's local dir. On a failed test the dir is KEPT (and the script
 # aborts under `set -e`), so a bad archive never costs the only good copy.
-if zstd -tq "${NAS_ARCHIVE}"; then
+if zstd -tq < "${NAS_ARCHIVE}"; then
   rm -rf "${LOCAL_DUMP_DIR}"
   echo "[$(date -u)] NAS archive verified (zstd -t); removed local dump ${LOCAL_DUMP_DIR}"
 else

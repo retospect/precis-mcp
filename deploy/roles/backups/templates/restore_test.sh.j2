@@ -73,7 +73,9 @@ if [ -z "${LATEST_ARCHIVE}" ]; then
 fi
 
 echo "[$(date -u)] Extracting ${LATEST_ARCHIVE} to ${SCRATCH_DIR}"
-tar --use-compress-program='zstd -d -T0' -xf "${LATEST_ARCHIVE}" -C "${SCRATCH_DIR}"
+# The shell opens the NAS archive, not zstd (TCC denies Homebrew zstd on the
+# network volume — see pg_backup.sh, gripe 496659).
+zstd -dcq -T0 < "${LATEST_ARCHIVE}" | tar -xf - -C "${SCRATCH_DIR}"
 LATEST_DUMP=$(find "${SCRATCH_DIR}" -maxdepth 1 -name 'precis_prod_*' 2>/dev/null | sort -r | head -1)
 {% else %}
 LATEST_DUMP=""
