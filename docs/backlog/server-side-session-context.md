@@ -42,5 +42,6 @@ test: two concurrent sessions with different `SPACE:`/thread context get
 measurably different search bias or skill-serve behavior from the same
 server process, without either client passing extra parameters.
 
-Closest existing items: `context-memory-hierarchy.md`, `session-mcp-http-server.md`,
+Closest existing items: `mcp-seen-state-dedup.md` (per-agent dedup keyed
+on the S10b stamp, never cross-session), `context-memory-hierarchy.md`, `session-mcp-http-server.md`,
 `session-mcp-http-server.md` §Single uvicorn worker.

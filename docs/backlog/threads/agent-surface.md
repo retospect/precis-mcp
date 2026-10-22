@@ -51,13 +51,17 @@ budgets, then Drive.
 
 ## Horizon
 
-1. **backlog/drive-filter-hierarchy.md** — Return and Showcase remain;
+1. **backlog/mcp-seen-state-dedup.md** — the server answers a repeat
+   read with a `^^` back-reference; first in Horizon because tool-result
+   carry is the largest agent token cost, after the M3 error contract
+   because it waits on `multi-user-overhaul.md` S10.0 + S10b.
+2. **backlog/drive-filter-hierarchy.md** — Return and Showcase remain;
    Return needs personal viewing history.
-2. **backlog/drive-my-vs-agent-stuff.md** — separate a user's refs from
+3. **backlog/drive-my-vs-agent-stuff.md** — separate a user's refs from
    their agent's; follows the Drive ruling that accepted agent writes.
-3. **backlog/drive-presenter-completeness.md** — presenter contract
+4. **backlog/drive-presenter-completeness.md** — presenter contract
    totality and the kind-taxonomy audit; makes every kind render in Drive.
-4. **backlog/drive-characteristic-scale.md** — a derived scale value for
+5. **backlog/drive-characteristic-scale.md** — a derived scale value for
    design refs as a sort key; blocked on a ruling (moved from
    multiscale-design-core 2026-10-17).
 

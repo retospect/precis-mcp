@@ -52,8 +52,8 @@ residual items.
    (td461205).
 4. **backlog/multi-user-overhaul.md** — four-role model, per-name vault
    ACL, settings scopes, authenticated human actor; its S1/S2/S4 close the
-   HPC D1/D2 and trust Q2 risks accepted 2026-10-21. Draft; Reto's open
-   questions first. `backlog/out-of-box-setup.md` (admin users screen)
+   HPC D1/D2 and trust Q2 risks accepted 2026-10-21; S10 (2026-10-22)
+   gives agents a plumbing identity. Draft; Reto's open questions first. `backlog/out-of-box-setup.md` (admin users screen)
    waits on its S3.
 
 ## Parked

@@ -24,7 +24,8 @@ identity, RLS phase 2 — decided design, reused here),
 (S1), `rotate-credentials.md` (the agent_rw pause window S1 rides),
 `graph-node-trust-state.md` §2b rulings Q2 (S4), `slullama-hpc-placement.md`
 D1/D2 (S1, S2), thread `threads/security-hardening.md`,
-`out-of-box-setup.md` (the admin users screen needs S3).
+`out-of-box-setup.md` (the admin users screen needs S3),
+`mcp-seen-state-dedup.md` (needs S10.0 + S10b's per-agent key).
 
 ## Motivation / why
 
@@ -170,8 +171,10 @@ created by deploy (`deploy/roles/postgres`) and by `precis setup --roles`
 
 ## Migration path — independently shippable slices
 
-Order: S1 → S3 → S2 → S4 → S5 → S6 → S7 → S9 → S8. S1 and S2 close the
-accepted HPC risks, S4 closes trust Q2; S3 unblocks the admin screen.
+Order: S1 → S3 → S2 → S4 → S5 → S10 → S6 → S7 → S9 → S8. S1 and S2 close
+the accepted HPC risks, S4 closes trust Q2; S3 unblocks the admin screen.
+S10.0 (an experiment, no code) can run any time; `mcp-seen-state-dedup.md`
+needs only S10.0 and S10b, not the rest of this spec.
 Cost = builder days (Sonnet/Opus) excluding Reto's windows.
 
 | Slice | Delivers | Cost | Blast radius | Closes |
@@ -185,12 +188,96 @@ Cost = builder days (Sonnet/Opus) excluding Reto's windows.
 | **S6** verb authorisation + ownership | `identity-and-access.md` phase 1 + `multiuser-separation.md` gaps; `_dispatch` role gate (reader read-only); `owner_id` migration; delete unlinks inbound edges (gr503031) first; `todo/guards.py` reads the principal | 8 d | search/get family, every mutate verb, worker claim loop, synthesis passes | #11–#15, #28, #29, #31 |
 | **S7** per-user secrets | `user/<id>/*` class live; `email-per-user-credentials.md`, `per-user-library-link.md` | 3 d | email handler + mail workers, `/secrets`, `/account` | #22, #23 |
 | **S8** RLS backstop | `identity-and-access.md` phase 2 | 3 d | every table with `owner_id` | DB-level `user` enforcement |
+| **S10** agent caller identity | see [§S10](#s10--agent-caller-identity-from-the-plumbing): S10.0 experiment, S10a launcher credentials, S10b subagent stamp, S10c no-identity → `reader` | 0.1 + 2 + 1 + 0.5 d | every launcher's MCP config, `server.py` auth, `_dispatch` | #9 for launched agents; per-agent attribution in `tool_ledger` |
 | **S9** Discord binding | link confirmed from the Discord side (asa DM challenge) or by an admin; unmapped speakers → `reader` | 1 d | `asa_bot` turn attribution | #6, #30 |
 
 Each slice ships with its tests, its skill/docstring update
 (`precis_web/auth.py`, `precis.secrets`, `precis.settings`,
 `precis-overview` refusal hints) and deletes the backlog items it closes.
 Migrations go through `/go` (migration rule), never `/qgo`.
+
+## S10 — agent caller identity from the plumbing
+
+Reto 2026-10-22: identity of an agent caller comes from the code that
+launches or hosts it, never from the model. This replaces the earlier idea
+of an "agent cookie" the model passes in each call (not built, see below).
+Same rule as Q5: the code knows, the LLM does not.
+
+### Problem
+
+S5 identifies a *human* behind a connection. It says nothing about which
+*agent* is calling: every Claude Code session, each of its subagents, every
+`claude -p` worker, every Devin and every Agent SDK loop on the shared HTTP
+server presents the same install bearer token
+(`server.py::_install_token_auth`). Two consequences: `tool_ledger` cannot
+attribute a call to an agent (`session_id` there is one row per MCP
+connection, and a subagent shares its parent's connection), and the server
+cannot keep per-agent state. That second gap is why the per-session skill
+serve ledger was removed (gr477798, `serve_ledger.py` docstring): a subagent
+on the parent's connection got stubs for skills only its parent had seen.
+`mcp-seen-state-dedup.md` needs the per-agent key this slice supplies.
+
+### Design
+
+**Two sources of identity, both plumbing:**
+
+1. **Launched agents get their own credential.** The launcher mints a
+   credential per agent and writes it into that agent's MCP connection
+   config: the `--mcp-config` file `utils/claude_agent.py` passes, Agent SDK
+   `mcpServers` per `query()`, the fleet tree's MCP config written by
+   `scripts/devin-tree` / `scripts/fleet-wave`, and the job envelope for
+   cluster quest/job agents. It travels as the bearer token in the HTTP
+   `Authorization` header. The model never sees it in its prompt, tool
+   results or errors. Accepted risk (Reto): an agent with a shell can read
+   its own env or config file.
+2. **Claude Code subagents are stamped by a hook.** A subagent shares its
+   parent's MCP connection, so it cannot have its own header. A PreToolUse
+   hook on `mcp__precis__.*` reads the hook input's `session_id`,
+   `agent_id` and `agent_type`, and writes them into the call as
+   `args._caller` via `hookSpecificOutput.updatedInput`. The hook overwrites
+   any `_caller` the model wrote. `_dispatch` strips `_caller` before
+   handlers run and binds a `caller()` ContextVar (`session_id`, `agent_id`
+   or `main`, `agent_type`). A forged stamp (hook not installed, model
+   wrote `_caller`) can only narrow rights or split seen-state, never widen
+   (rule below), so it is harmless.
+
+**Credential store.** Table `agent_credentials`: `handle_sha256` (the
+handle itself is 128 random bits, shown once to the launcher, stored as a
+digest), `parent_id`, `principal_user_id` (NULL = service), `role`
+(`reader | user | dev-agent`; never `admin`), `label` (launcher + job id),
+`expires_at`, `revoked_at`. A handle is opaque: it decodes to nothing and
+is useless without the server row. Mint API is in-process code
+(`precis.agent_identity.mint(parent=, role=, ttl=, label=)`), not a verb.
+
+**Rights rule.**
+
+- No identity → `reader` (least privilege by absence). Enforced by S10c,
+  once every launcher mints.
+- A child's role is `min(parent role, requested role)`. Rights never widen:
+  `mint` refuses a role above the parent's; a stamped subagent carries the
+  connection's principal and role.
+- Subagents share the parent's identity for now (Reto, Q3 ruling relayed
+  2026-10-22: "pin and close for now"). `agent_id` is recorded for
+  attribution and seen-state only; narrowing a subagent by its definition's
+  tool list is open question 11.
+
+### Slices
+
+| Step | Delivers | Acceptance |
+|---|---|---|
+| **S10.0** experiment (15 min, no code shipped) | In a scratch Claude Code session with a logging PreToolUse hook on `mcp__precis__.*` and one subagent dispatch, record: (a) main-session payloads omit `agent_id`, subagent payloads carry it (`edit-delegation-nudge.py` already assumes this, unverified for MCP tools); (b) `updatedInput` on an MCP tool call reaches the server (see `_caller` in `tool_ledger.arg_sample`); (c) a subagent whose definition has an inline `mcpServers` entry opens its own connection (distinct `tool_ledger.session_id`) with its own headers; (d) whether SessionStart `source=compact` or PreCompact fire for a *subagent's* compaction, and with which `agent_id`. Write the four answers into this section. | Four recorded answers with Claude Code version. Fallback if (b) fails: subagents that need their own key get an inline `mcpServers` entry in `.claude/agents/*.md` (only if (c) holds); built-in subagents (Explore, general-purpose, fork) stay unkeyed and are treated as the parent. |
+| **S10a** launcher credentials | migration `agent_credentials`; `precis.agent_identity` (`mint`, `resolve`, `revoke`); `_install_token_auth` accepts a handle as bearer and binds the principal + role; the install token keeps working as `dev-agent`; `claude_agent.py`, the worker envelope and the fleet launch scripts mint one handle per agent with `ttl` = job budget; `tool_ledger` gains `agent_credential_id` | Two concurrent launched agents show distinct `agent_credential_id` on every ledger row; a revoked handle gets 401 on its next request; a canary handle never appears in any prompt, transcript, tool result or log (reuse the Q5 canary test); `mint` above the parent's role refuses. |
+| **S10b** subagent stamp | `scripts/hooks/mcp-caller-stamp.py` (stdlib, every doubt passes the call unchanged), wired PreToolUse in `.claude/settings.json` and the global copy; `_dispatch` strips `_caller`, binds `caller()`; `tool_ledger` gains `caller_session_id`, `agent_id`, `agent_type` | A main-loop call logs `agent_id=main`; a subagent call logs its `agent_id`; a handler never receives `_caller`; a call whose model-written `_caller` names a wider role runs at the connection's role. |
+| **S10c** no-identity → `reader` | the install token maps to `reader`; interactive Claude Code sessions get a per-machine `dev-agent` handle from `scripts/mcp-http-install`; stdio keeps its env identity | A request with the bare install token can `get`/`search`/`more` and is refused on `put` with a hint naming `scripts/mcp-http-install`; trigger in open question 12. |
+
+### Not built
+
+- **In-call agent cookies** (the model passes a token in each call's args):
+  the model would see and could copy the credential, and every prompt would
+  need to carry it. Replaced by S10a/S10b.
+- A proxy that hides launched agents' credentials from their own shell
+  (accepted risk, as in Q5).
+- Per-subagent rights narrowing (open question 11).
 
 ## In scope
 
@@ -206,6 +293,7 @@ order above.
 - Rewriting worker SQL sites for visibility (workers stay system authority).
 - Budget per user (`budget-guardrails.md`), spend attribution per user.
 - The admin users screen itself (`out-of-box-setup.md` O6).
+- In-call agent cookies (replaced by S10's plumbing identity).
 
 ## Acceptance criteria
 
@@ -224,6 +312,9 @@ order above.
 - A `user` principal: `get` by id of another user's private ref is absent,
   `edit`/`delete`/`tag` refused; a job the user dispatched reads and writes
   as that user; deleting a memory removes its inbound edges (S6).
+- Two launched agents and two subagents of one session each show their own
+  identity on every `tool_ledger` row; no credential handle reaches model
+  context; a bare install token cannot write after S10c (S10).
 - Fresh single-user install: one admin row, everything behaves as today.
 - `tests/test_deploy_tree_no_secrets.py` green; migrations forward-only.
 
@@ -301,3 +392,15 @@ Q1–Q10 approved as recommended, with two changes:
 10. **`owner_login` → `owner_id`.** Migrate in S6 (first slice touching it)
     per the 2026-10-06 ruling? Recommendation: yes, with a one-release
     compatibility column.
+
+### S10 (2026-10-22)
+
+11. **Subagent rights.** Keep subagents at the parent's identity (Q3 pin),
+    or narrow each subagent to `reader` when its `.claude/agents/*.md`
+    definition lists no write verb? Recommendation: keep the pin until a
+    second human user exists; the stamp already records `agent_type`, so
+    narrowing later is a lookup table, not a redesign.
+12. **When S10c flips the bare install token to `reader`.** Recommendation:
+    after S10a ships and `tool_ledger` shows seven days with no write call
+    from a bare-install-token connection, except the interactive sessions
+    S10c re-issues handles to.
