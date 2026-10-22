@@ -44,6 +44,8 @@ boot, each with its extra name; worker heartbeat age (`precis heartbeat`
 data); web port bound; tiered roles present when `--roles` was used.
 Secrets are never printed; `--probe` runs `precis.secret_status` provider
 probes (default presence-only). `/status` shows the same table for admins.
+Checks other slices add: bare install-token write count + cutover date
+(`multi-user-overhaul.md` S10a); roster has at least one `admin` (S3).
 
 ### O2 `precis setup`
 
@@ -63,19 +65,28 @@ acting; re-running on a finished machine prints "ok" per step), flags
    DATABASE` if missing; `CREATE EXTENSION IF NOT EXISTS vector` (the
    migrate bootstrap adds `pg_trgm`, `btree_gist`); `ALTER DATABASE ... SET
    app.secret_key` from a generated 32-byte value when unset (the vault's
-   key; `precis.secrets` docstring) — the only step needing the DB owner.
-4. `--roles`: create `agent_ro`, `agent_rw`, `precis_ingress`,
-   `precis_system` (`multi-user-overhaul.md`) with generated passwords
-   written to the env file (0600), never printed. Default off: the
-   single-machine install uses the invoking DB login as the app role, as
-   today.
-5. `precis migrate` in-process (`precis.cli.migrate`).
+   key; `precis.secrets` docstring), then **reconnect**: a database-level
+   setting applies to new sessions only, so the session that ran the
+   `ALTER` still sees it unset and every later step (migrate, first admin,
+   doctor) would report a dark vault. Steps 3–8 run on the owner DSN (the
+   invoking login is `precis_owner`; `multi-user-overhaul.md` §DB
+   ownership).
+4. `--roles`: create two login roles, `precis_ingress` (web + HTTP MCP
+   server; may assert a human actor, reads `user/*` secrets, writes
+   `web_users`) and `agent_rw` (stdio serve, workers, scripts), with
+   generated passwords written to the env file (0600), never printed.
+   `agent_ro` and `precis_system` are cluster roles (`deploy/roles/
+   postgres`); a single machine has no reader tier and its workers share
+   the operator's trust. Default off: the single-machine install uses the
+   invoking DB login for everything, as today.
+5. `precis migrate` in-process (`precis.cli.migrate`), on the owner DSN.
 6. Embedder: write `PRECIS_EMBEDDER` to the env file; `bge-m3` warns about
    the ~2 GB first-use download and does not fetch it.
 7. First admin: if `web_users` is empty, prompt login + abbrev, password
    on a no-echo prompt or `--password-stdin` (`cli/users.py::_read_password`,
-   same floor as the web form); `ensure_pepper`; role `admin` once S3
-   exists (fully authorised before). `--yes` never skips the password.
+   same floor as the web form); `ensure_pepper`; role `admin` — the
+   empty-roster default `precis users add` applies once S3 exists (fully
+   authorised before). `--yes` never skips the password.
 8. Write the env file (`~/.config/precis/precis.env`, 0600: DSN, embedder,
    role DSNs) and print the `export`/`source` line; print next steps:
    `precis worker`, `precis serve` + the `mcp.json` block from README §Run,
@@ -122,9 +133,10 @@ green for a week.
 
 ### O6 Admin users screen (blocked-by `multi-user-overhaul.md` S3)
 
-`src/precis_web/routes/users.py`, prefix `/admin/users`, admin role +
-re-auth (sudo window from S3) on every POST; `check_same_origin` CSRF
-already covers it. List (login, abbrev, name, role, state, last login);
+`src/precis_web/routes/users.py`, prefix `/admin/users`, admin role; every
+POST verifies the password from its own Basic header (S3's rule — no sudo
+window, no cookie); `check_same_origin` CSRF already covers it. List
+(login, abbrev, name, role, state, last login);
 add (login, abbrev, name, email, role; password generated server-side,
 shown once, user changes it at `/account`); set role; disable/enable;
 reset password (generated, shown once). No delete (`precis users rm` stays
@@ -154,8 +166,12 @@ becomes "behind the admin role".
 - Empty roster: every web page is a 503 HTML page with the three commands;
   no form accepts input.
 - O5 green on the nightly for a week before it joins the gate.
-- O6: a `user` login gets 403 on `/admin/users`; an admin without a fresh
-  re-auth is redirected to re-auth; the last admin cannot be disabled.
+- O6: a `user` login gets 403 on `/admin/users`; an admin POST whose Basic
+  header does not verify gets 401 and changes nothing; the last admin
+  cannot be disabled.
+- `precis setup --roles` leaves exactly two new login roles
+  (`precis_ingress`, `agent_rw`) and the vault reads its key on the first
+  connection after step 3 (no dark-vault FAIL from `precis doctor`).
 - `docs/getting-started.md` is the path a new reader lands on from README
   §Install.
 
@@ -178,7 +194,7 @@ New `src/precis/cli/setup.py`, `cli/doctor.py`, `precis_web/routes/users.py`,
 | O4 first-run page + guide | 1 d | `auth.py` 503 body, README, setup doc | O2 (commands it names) |
 | O5 CI job | 1 d + ~6 CI min/run | `check.yml` nightly | O2 |
 | O6 admin users screen | 2 d | new admin route; `cli/users.py` docstring | `multi-user-overhaul.md` S3 |
-| O7 `setup --roles` | 0.5 d | role creation + env file | `multi-user-overhaul.md` S1, S4 |
+| O7 `setup --roles` (two roles) | 0.5 d | role creation + env file | `multi-user-overhaul.md` §DB ownership (db-own), S4 |
 
 ## Decisions (Reto 2026-10-21, batch 11)
 
@@ -188,6 +204,12 @@ Q11–Q18 approved as recommended (`precis setup`; extras only with
 passwords shown once; admin screen disables, `rm` stays CLI; Compose
 quickstart after O2). Secret values never reach model context (multi-user Q5
 ruling): `precis setup` never prints one.
+
+Fable review (2026-10-22, Reto approved the same day): reconnect after
+`ALTER DATABASE SET app.secret_key` (step 3); first roster row defaults to
+`admin` (step 7, `cli/users.py`); `--roles` creates two roles, not four
+(step 4); O6 re-auth is the Basic header on every POST, the sudo window is
+cut (`multi-user-overhaul.md` Q4).
 
 ## Open questions for Reto (each with a recommendation)
 
@@ -207,7 +229,8 @@ ruling): `precis setup` never prints one.
    DATABASE ... SET`) rather than the server (`ALTER SYSTEM`)? Recommendation:
    database-level — needs the DB owner, not a superuser, and the key
    still never appears in a logical dump. Confirm `vault._key()` reads it
-   (it reads `current_setting`, so yes).
+   (it reads `current_setting`, so yes — on a session opened after the
+   `ALTER`; setup reconnects, step 3).
 5. **CI container.** Honest `python:3.13-slim` container with
    `--network host`, or a fresh venv on the runner? Recommendation:
    container; a venv on the runner inherits system packages and the
