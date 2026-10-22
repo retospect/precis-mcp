@@ -4,6 +4,16 @@
 unreachable and you need the text. Three sources, cheapest first: undelete in
 place, the SessionStart node cache, the nightly dump.
 
+## 0. Outage (MCP down): outage-memory.md
+
+Emergency measure (Reto 2026-10-22). Read the node copies under
+`~/.cache/precis/memory-nodes*` as stale scratch; they are overwritten. To keep
+a fact, append `## <UTC timestamp> <session name>` plus the fact to
+`<harness memory dir>/outage-memory.md` (nothing else in that file). When the
+graph is back the SessionStart hook prints `outage-memory.md has N entries`;
+integrate them (remember skill), then empty the file. A per-node restore tool
+was considered and not built (Reto 2026-10-22).
+
 ## 1. Undelete a soft-deleted node (prod, in place)
 
 `delete(kind='memory', id=...)` only sets `refs.retired_at = now()`

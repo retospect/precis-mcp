@@ -45,6 +45,12 @@
 # names matching $nodes.2* are pruned; the CLI's .old.<pid>/.tmp.<pid> debris
 # is left alone. Restore: docs/runbooks/memory-restore.md.
 #
+# Outage file: when the graph is reachable and <memory dir>/outage-memory.md
+# (beside MEMORY.md) holds entries (`## <UTC stamp> <session>` headings,
+# written during an outage), one extra line asks the session to integrate them
+# and empty the file. Print only; not part of the cached copy. Flow:
+# docs/runbooks/memory-restore.md.
+#
 # Never blocks a session: any failure exits 0, printing the cached copy and
 # one line, or just the one line when no copy exists.
 set -uo pipefail
@@ -136,6 +142,13 @@ case "$gripes" in
 "gripes: "*) out="$out"$'\n'"$gripes" ;;
 esac
 printf '%s\n' "$out"
+outage_md="$(dirname "$memory_md")/outage-memory.md"
+if [ -s "$outage_md" ]; then
+    n="$(grep -c '^## ' "$outage_md" 2>/dev/null)"
+    if [ "${n:-0}" -gt 0 ]; then
+        echo "outage-memory.md has $n entries — integrate them into the graph (remember skill), then empty the file"
+    fi
+fi
 # A successful render can still carry the CLI's one-line export failure.
 grep -F 'memory index: node export' "$errf" | tail -n 1 | cut -c1-300 >&2
 # Save the last-good copy; per-process temp + rename, so sessions starting

@@ -328,3 +328,31 @@ def test_hook_prints_once_memory_md_carries_the_graph_marker(
     proc = _run_hook(tmp_path, _active_dsn(), memory_md=memory_md)
     assert proc.returncode == 0, proc.stderr
     assert SUMMARY_RE.fullmatch(proc.stdout.splitlines()[0])
+
+
+def test_hook_flags_a_non_empty_outage_memory_file(
+    store: Store, tmp_path: Path
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    memory_md = tmp_path / "mem" / "MEMORY.md"
+    memory_md.parent.mkdir()
+    memory_md.write_text("<!-- memory-index: graph -->\n", encoding="utf-8")
+    want = (
+        "outage-memory.md has 2 entries — integrate them into the graph "
+        "(remember skill), then empty the file"
+    )
+    outage = memory_md.parent / "outage-memory.md"
+
+    outage.write_text("", encoding="utf-8")
+    quiet = _run_hook(tmp_path, _active_dsn(), memory_md=memory_md)
+    assert quiet.returncode == 0, quiet.stderr
+    assert "outage-memory" not in quiet.stdout
+
+    outage.write_text(
+        "## 2026-10-22T01:00Z s1\nfact one\n\n## 2026-10-22T02:00Z s2\nfact two\n",
+        encoding="utf-8",
+    )
+    proc = _run_hook(tmp_path, _active_dsn(), memory_md=memory_md)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.rstrip("\n").splitlines()[-1] == want
+    assert want not in _cache(tmp_path).read_text(encoding="utf-8")
