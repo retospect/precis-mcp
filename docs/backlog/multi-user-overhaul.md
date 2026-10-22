@@ -395,12 +395,12 @@ Q1–Q10 approved as recommended, with two changes:
 
 ### S10 (2026-10-22)
 
-11. **Subagent rights.** Keep subagents at the parent's identity (Q3 pin),
-    or narrow each subagent to `reader` when its `.claude/agents/*.md`
-    definition lists no write verb? Recommendation: keep the pin until a
-    second human user exists; the stamp already records `agent_type`, so
-    narrowing later is a lookup table, not a redesign.
-12. **When S10c flips the bare install token to `reader`.** Recommendation:
-    after S10a ships and `tool_ledger` shows seven days with no write call
-    from a bare-install-token connection, except the interactive sessions
+11. **Subagent rights.** Ruled (Reto 2026-10-22): a subagent keeps its
+    parent's identity unless the parent asks for a narrower one (stretch
+    goal: parent-requested narrowing via a child credential, rights never
+    widen).
+12. **When S10c flips the bare install token to `reader`.** Ruled (Reto
+    2026-10-22): after seven days with no write call from a connection
+    carrying only the shared install token (the one bearer token every
+    client on a machine presents today), except the interactive sessions
     S10c re-issues handles to.

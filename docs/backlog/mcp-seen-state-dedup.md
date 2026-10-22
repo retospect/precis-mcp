@@ -159,7 +159,7 @@ Acceptance thresholds, read after seven days of D4:
 - **Dedup of non-MCP tools** (`Read` has its own hook, gr499044; Bash
   output is gr499039's fold).
 
-## Reto 2026-10-22 review (his ideas; the last bullet is a recommendation awaiting his call)
+## Reto 2026-10-22 review
 
 - **A hash is enough.** The map stays `body_sha → entry` plus a second
   `handle → last body_sha`; the repeat check is one set lookup.
@@ -170,7 +170,7 @@ Acceptance thresholds, read after seven days of D4:
   or suspected tool-result clear, `args={'fresh': True}` on any call, or an
   explicit `seen reset`) drops every entry sent before that moment, not just
   one entry. The rolling window is the same rule applied continuously.
-- **Recommended: self-describing marker, no mnemonic.** The marker always states what it
+- **Self-describing marker, no mnemonic** (Reto agreed 2026-10-22). The marker always states what it
   is in plain words (as above), and names the skill once per window
   (`skill:precis-seen-help`). Reto floated: a verbose first
   explanation then a short tag, and a rare-token mnemonic such as `緩存` found
@@ -184,5 +184,5 @@ Acceptance thresholds, read after seven days of D4:
    carry is: `dream` 164.7M, `doctor_tick` 34.8M cache-read tokens in 14
    days) and leave interactive Claude Code sessions without dedup, rather
    than guess subagent boundaries from timing.
-2. **Window.** 30 minutes or 40 calls per agent, whichever first?
+2. **Window.** Ruled (Reto 2026-10-22): yes. 30 minutes or 40 calls per agent, whichever first?
    Recommendation: yes for D4; tune from the fresh-call rate, not before.
