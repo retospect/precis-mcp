@@ -87,6 +87,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   vertices and vias (money out), basin hopping with discrete topology
   moves, insertion that shoves by descent; consumes vector-router slices
   1–2, slot beside slices 3–5; ten open questions for Reto in the file.
+  2026-10-21: Reto switched the default placer to it — `field_polish` on
+  by default with a repair-first legality gate (placer-a); the annealer
+  lives on as the bench's `anneal` column; slice 2 (θ, wells) is placer-b.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
   cross-probing, shared zoom/pan module with se. **Slices 1–3 shipped**

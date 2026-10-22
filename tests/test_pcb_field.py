@@ -186,12 +186,12 @@ def test_polish_accept_path_lowers_cost_and_stays_legal(n: int, seed: int) -> No
     assert engine._placement_is_legal(proposals, rotations=rotations)
 
 
-def test_field_polish_flag_is_off_by_default_and_runs_when_on() -> None:
+def test_field_polish_flag_is_on_by_default_and_runs() -> None:
     from tests.test_pcb_optimize import _seeded_ir
 
-    assert OptimizeConfig().field_polish is False
+    assert OptimizeConfig().field_polish is True
     ir = _seeded_ir(6, graph_seed=2, seed_rng_seed=2)
-    res = optimize(ir, OptimizeConfig(seed=2, field_polish=True))
+    res = optimize(ir, OptimizeConfig(seed=2))
     assert any(line.startswith("field_polish ") for line in res.support_groups)
 
 
@@ -205,11 +205,50 @@ def test_flag_off_never_calls_polish_and_is_deterministic(monkeypatch) -> None:
     poses = []
     for _ in range(2):
         ir = _seeded_ir(6, graph_seed=2, seed_rng_seed=2)
-        res = optimize(ir, OptimizeConfig(seed=2))
+        res = optimize(ir, OptimizeConfig(seed=2, field_polish=False))
         assert not any(s.startswith("field_polish ") for s in res.support_groups)
         poses.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
     for a, b in zip(poses[0], poses[1], strict=True):
         assert np.array_equal(a, b)
+
+
+def test_polish_is_deterministic() -> None:
+    from tests.test_pcb_optimize import _seeded_ir
+
+    poses = []
+    for _ in range(2):
+        ir = _seeded_ir(6, graph_seed=2, seed_rng_seed=2)
+        optimize(ir, OptimizeConfig(seed=2))
+        poses.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
+    for a, b in zip(poses[0], poses[1], strict=True):
+        assert np.array_equal(a, b)
+
+
+def test_polish_repairs_a_snap_illegal_pose() -> None:
+    """n=6 seed=2 descended into a pose the 90° snap made illegal (U0 out of
+    its bounds box, U1<>U4 courtyard overlap) — the repair descent must
+    satisfy the gate rather than refuse."""
+    engine = _engine(2, 6)
+    res = F.polish_placement(engine)
+    assert res.applied, res
+    ir = engine.ir
+    proposals = [(i, float(ir.inst_x[i]), float(ir.inst_y[i])) for i in res.moved]
+    rotations = {i: float(ir.inst_rot[i]) for i in res.moved}
+    assert engine._placement_is_legal(proposals, rotations=rotations)
+
+
+def test_legality_violations_names_rule_and_part() -> None:
+    engine = _engine(1, 8)
+    ir = engine.ir
+    # Overlap U0 onto U1's pose (same side) and park U2 outside its box.
+    x1, y1 = float(ir.inst_x[1]), float(ir.inst_y[1])
+    x0, y0, x1b, y1b = engine.bounds_for(2)
+    proposals = [(0, x1, y1), (2, x0 - 1.0, (y0 + y1b) / 2.0)]
+    violations = F._legality_violations(engine, proposals, {})
+    kinds = {v.split(":")[0] for v in violations}
+    assert "courtyard" in kinds
+    assert "bounds" in kinds
+    assert any("U1" in v for v in violations)
 
 
 # ── slice 2: JLCPCB pairwise spacing ─────────────────────────────────────
