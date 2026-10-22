@@ -81,6 +81,11 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Horizon
 
+- **backlog/pcb-workspace-code.md** — `draft/high`; the workspace model
+  applied to boards: netlists and modules built by code in the sandbox,
+  place/route as cached service requests, DRC in MCP, boards as CI goldens.
+  Blocked by `structure-workspaces` slices 1–2; subsumes meta-blocks
+  level 1 (schematic blocks = `@pcb.module`).
 - **backlog/pcb-unified-place-route.md** — `draft/high`, Reto 2026-10-18
   ("anneal the totality of placement (including labels) routing and so on
   in one smooth space"): one smooth cost over poses, labels, track
