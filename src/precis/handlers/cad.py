@@ -181,6 +181,7 @@ _PROBE_VIEWS = (
     "dof",
     "volume",
     "mass",
+    "mold",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
 _OTHER_VIEWS = ("links", "sweep", "bom", "printability")
@@ -2364,6 +2365,8 @@ class CadHandler(Handler):
             )
         if view == "mass":
             return self._render_mass(design, spec)
+        if view == "mold":
+            return self._render_mold(design, spec, args)
         # volume
         vol = cad_volume(design, component=comp)
         return Response(
@@ -2375,6 +2378,133 @@ class CadHandler(Handler):
                 f"{self._payload_contribution(spec, comp, vol.volume)}"
             )
         )
+
+    def _render_mold(self, design: Any, spec: Any, args: dict[str, Any]) -> Response:
+        """``view='mold'`` — mold release against a slide layout (spec
+        se-cylinder-wrap-mold slice 2). Relief leaves are checked in map
+        space, analytic faces against the same pulls; the undercut image
+        is written as a PNG per checked leaf. ``args``:
+        ``layout`` = ``'k2' | 'k3'`` (default each leaf's recorded pull),
+        ``alpha`` = draft angle (``'2deg'`` style), ``phi`` = parting
+        angle, ``relief_fit = 'clip'`` lowers only the overhung relief,
+        ``path`` overrides the PNG location."""
+        from precis.cad.mold import (
+            SlideLayout,
+            pull_check,
+            render_undercut_png,
+        )
+        from precis.cad.primitives import CylRelief
+
+        lay = args.get("layout")
+        layout = None
+        if lay is not None:
+            k = int(str(lay).lstrip("k"))
+            if k not in (2, 3):
+                raise BadInput(
+                    f"mold layout must be 'k2' | 'k3', got {lay!r}",
+                    next="args={'layout': 'k3'}",
+                )
+            layout = SlideLayout(
+                k=k,
+                phi=float(
+                    parse_quantity(args.get("phi", 0.0), "angle", arg_name="args.phi")
+                )
+                if args.get("phi") is not None
+                else 0.0,
+            )
+        alpha = (
+            float(parse_quantity(args["alpha"], "angle", arg_name="args.alpha"))
+            if args.get("alpha") is not None
+            else None
+        )
+        report = pull_check(
+            design,
+            layout,
+            alpha,
+            relief_fit=args.get("relief_fit"),
+        )
+        lines = [
+            f"mold check — draft {report.alpha * 180.0 / math.pi:.3g} deg, "
+            f"{len(report.leaves)} relief leaf(s), "
+            f"{len([f for f in report.faces if not f.ok])} failing analytic "
+            f"face(s)"
+        ]
+        leaf_by_label = {
+            name: inst.placed.prim
+            for name, inst in design.instances.items()
+            if isinstance(inst.placed.prim, CylRelief)
+        }
+        rows: list[dict[str, Any]] = []
+        for c in report.leaves:
+            png = ""
+            if not c.ok or args.get("path"):
+                raw = args.get("path")
+                leaf = leaf_by_label.get(c.label)
+                out = (
+                    Path(str(raw)).expanduser()
+                    if raw and len(report.leaves) == 1
+                    else Path(tempfile.gettempdir())
+                    / f"{getattr(spec, 'name', 'design') or 'design'}"
+                    f".mold.{c.label.replace('/', '_')}.png"
+                )
+                if leaf is not None:
+                    render_undercut_png(leaf, c, str(out))
+                    png = str(out)
+            clears = (
+                (f"k={c.min_k} clears" if c.min_k else "no k clears")
+                if not c.ok
+                else ""
+            )
+            clipped = ""
+            if c.clipped is not None:
+                clipped = (
+                    f" — clip removed "
+                    f"{format_quantity(c.clip_removed_max, 'length')} max / "
+                    f"{format_quantity(c.clip_removed_mean, 'length')} mean"
+                )
+            rows.append(
+                {
+                    "leaf": c.label,
+                    "layout": f"k{c.layout.k} phi {c.layout.phi:.3g}",
+                    "undercut": f"{c.undercut_fraction * 100:.1f}%"
+                    f" ({c.undercut_area * 1e6:.3g} mm²)",
+                    "min margin": f"{c.min_margin:.4f}",
+                    "verdict": ("FAIL " + clears + clipped).strip()
+                    if not c.ok
+                    else "ok",
+                    "png": png,
+                }
+            )
+        if rows:
+            lines.append(
+                render_agent_table(
+                    rows,
+                    schema=[
+                        "leaf",
+                        "layout",
+                        "undercut",
+                        "min margin",
+                        "verdict",
+                        "png",
+                    ],
+                )
+            )
+        if report.faces:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "face": f"{f.label}.{f.tag}",
+                            "draft": f"{f.draft_deg} deg",
+                            "verdict": "ok" if f.ok else "FAIL",
+                        }
+                        for f in report.faces
+                    ],
+                    schema=["face", "draft", "verdict"],
+                )
+            )
+        lines.append("release: " + ("ok" if report.ok else "UNDERCUT"))
+        return Response(body="\n".join(lines))
 
     def _render_mass(self, design: Any, spec: Any) -> Response:
         """Mass / CoM from per-component `material` assignments — every

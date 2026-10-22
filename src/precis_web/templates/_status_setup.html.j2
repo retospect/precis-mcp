@@ -1,0 +1,47 @@
+{# Setup sub-tab — the `precis doctor` check table (same engine,
+   precis.doctor.run_checks, as the CLI). Each row: status pill, check
+   name, detail, and the remediation command on failure. Read-only —
+   the page re-runs the sweep on every load, so it always reflects the
+   current process/DB rather than a cached boot-time answer. #}
+
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Install checks</h2>
+  <p class="text-xs text-fg-subtle mb-3">
+    The same report <span class="font-mono">precis doctor</span> prints —
+    read-only; re-runs on every page load.
+  </p>
+  {% if not doctor_checks %}
+  <p class="text-xs text-fg-subtle rounded-lg border border-line bg-surface px-4 py-3">
+    The check sweep failed to run — see the server log.
+  </p>
+  {% else %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-xs uppercase tracking-wide text-fg-faint border-b border-line">
+        <th class="py-1.5 pr-3 w-16">status</th>
+        <th class="py-1.5 pr-3 w-32">check</th>
+        <th class="py-1.5 pr-3">detail</th>
+        <th class="py-1.5">next</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in doctor_checks %}
+      <tr class="border-b border-line/60 align-top">
+        <td class="py-1.5 pr-3">
+          {% if c.level == 'ok' %}
+          <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-success-muted text-success-strong">ok</span>
+          {% elif c.level == 'warn' %}
+          <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-warning-muted text-warning-strong">warn</span>
+          {% else %}
+          <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-danger-muted text-danger-strong">fail</span>
+          {% endif %}
+        </td>
+        <td class="py-1.5 pr-3 font-mono text-fg-secondary">{{ c.name }}</td>
+        <td class="py-1.5 pr-3 text-fg-secondary break-words">{{ c.detail }}</td>
+        <td class="py-1.5 font-mono text-xs text-fg-secondary">{{ c.next }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>

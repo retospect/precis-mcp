@@ -17,6 +17,7 @@ drilled bore read as a bore.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -332,30 +333,73 @@ class DraftFace:
     tag: str
     draft_deg: float
     ok: bool
+    pull_index: int = -1
+    ndotp: float = 0.0
+    normal_unit: Vec3 | None = None
 
 
-def probe_draft(design: Design, pull: Vec3, *, min_deg: float = 1.0) -> list[DraftFace]:
-    """Per-face draft against a pull direction.
+def probe_draft(
+    design: Design, pull: Vec3 | Sequence[Vec3], *, min_deg: float = 1.0
+) -> list[DraftFace]:
+    """Per-face draft against a pull direction — or a set of them.
 
     ``draft_deg`` is the angle between the face and the pull-perpendicular
     plane: a vertical wall (normal ⟂ pull) is 0° draft — a release
     failure. Curved frustum laterals report their slant; caps/box-faces
     report 90° (parallel) or 0° (perpendicular) as the geometry dictates.
+
+    With a *sequence* of pulls (a k-slide mold layout) each face is
+    checked against its best slide: ``draft_deg`` is the signed draft
+    toward the most releasing pull — negative means the face leans out
+    of every slide (an overhang, not just under-drafted). ``pull_index``
+    names that pull; ``ndotp`` is the best signed ``n̂·p`` so callers can
+    tell a true witness face (≈0, a candidate parting surface) from an
+    under-drafted one. A single ``Vec3`` keeps the original unsigned
+    behaviour for compatibility.
     """
     from precis.cad.primitives import CircularFrustum
 
-    pull = normalize(pull)
+    arr = np.asarray(pull, dtype=np.float64)
+    single = arr.ndim == 1
+    pulls = [arr] if single else [normalize(p) for p in pull]
+    pull = normalize(pulls[0])
     out: list[DraftFace] = []
     for inst in design.instances.values():
         for f in inst.placed.faces():
-            cos_a = abs(float(normalize(f.normal) @ pull))
-            draft = math.degrees(math.asin(min(1.0, cos_a)))
-            out.append(DraftFace(inst.label, f.tag, round(draft, 3), draft >= min_deg))
+            n = normalize(f.normal)
+            if single:
+                cos_a = abs(float(n @ pull))
+                draft = math.degrees(math.asin(min(1.0, cos_a)))
+                out.append(
+                    DraftFace(inst.label, f.tag, round(draft, 3), draft >= min_deg)
+                )
+                continue
+            dots = [float(n @ p) for p in pulls]
+            j = max(range(len(pulls)), key=lambda i: dots[i])
+            draft = math.degrees(math.asin(max(-1.0, min(1.0, dots[j]))))
+            out.append(
+                DraftFace(
+                    inst.label,
+                    f.tag,
+                    round(draft, 3),
+                    draft >= min_deg,
+                    j,
+                    dots[j],
+                    n,
+                )
+            )
         # circular frustum lateral slant (curved face not enumerated above)
         if isinstance(inst.placed.prim, CircularFrustum):
             cf = inst.placed.prim
             slant = math.degrees(math.atan2(abs(cf.rt - cf.rb), cf.h))
             out.append(
-                DraftFace(inst.label, "lateral", round(slant, 3), slant >= min_deg)
+                DraftFace(
+                    inst.label,
+                    "lateral",
+                    round(slant, 3),
+                    slant >= min_deg,
+                    0 if single else -1,
+                    0.0 if single else -1.0,
+                )
             )
     return out

@@ -171,7 +171,8 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    deleted after collect. **Specced 2026-10-21** in
    `backlog/slullama-hpc-placement.md` § Batch runner (B1 runner gaps, B2
    `hpc_batch` job type on `ssh_node`, B3 collect into records, B4 live
-   pilot) and § Apptainer image (I1–I5 = SIF-1..5). Next: B1, then I1 for
+   pilot) and § Apptainer image (I1–I5 = SIF-1..5). B1 (runner gaps) landed
+   73334fe8a. Next: B2 (`hpc_batch` job type), then I1 for
    the ML-potential image; the GPAW image waits on the pollux completion
    in (b).
    **Storage answer for Reto (2026-10-12, from td471801's 2026-10-05 quota

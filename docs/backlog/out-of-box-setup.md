@@ -30,7 +30,7 @@ its docstring refuses a web create-user screen; roles come first.
 
 ## In scope
 
-### O1 `precis doctor`
+### O1 `precis doctor` — landed (oobe-o1)
 
 New command `src/precis/cli/doctor.py`, read-only, exit non-zero on any
 FAIL, one line per check with the next command on failure. Checks: Python

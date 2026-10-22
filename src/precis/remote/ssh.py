@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
 import re
 import selectors
@@ -65,15 +66,30 @@ def bounded_process(
     scratch: Path,
     timeout_s: float,
     input_data: bytes = b"",
+    input_path: Path | None = None,
+    chunk_bytes: int = 65536,
     max_output: int = 16 * 1024 * 1024,
     sensitive_input: bool = False,
 ) -> CommandResult:
-    """Drain both pipes with a combined byte cap; kill and reap on all failures."""
-    if timeout_s <= 0 or max_output < 1:
+    """Drain both pipes with a combined byte cap; kill and reap on all failures.
+
+    ``input_path`` streams a local file through the child's stdin in
+    ``chunk_bytes`` reads, so one ssh process can carry a multi-GiB image
+    without spooling it to scratch or memory.
+    """
+    if timeout_s <= 0 or max_output < 1 or chunk_bytes < 1:
         raise RemoteError("limits_invalid")
     with ExitStack() as stack:
+        source: BinaryIO | None = None
+        if input_path is not None:
+            try:
+                source = stack.enter_context(open(input_path, "rb"))
+            except OSError:
+                raise RemoteError("transport_unavailable") from None
+        elif sensitive_input:
+            source = io.BytesIO(input_data)
         incoming: int | BinaryIO
-        if sensitive_input:
+        if source is not None:
             incoming = subprocess.PIPE
         else:
             input_file = stack.enter_context(tempfile.TemporaryFile(dir=scratch))
@@ -98,31 +114,35 @@ def bounded_process(
                 assert proc.stdout is not None and proc.stderr is not None
                 selector.register(proc.stdout, selectors.EVENT_READ, 0)
                 selector.register(proc.stderr, selectors.EVENT_READ, 1)
-                offset = 0
-                if sensitive_input:
+                pending = bytearray()
+                eof = False
+                if source is not None:
                     assert proc.stdin is not None
                     os.set_blocking(proc.stdin.fileno(), False)
-                    if input_data:
-                        selector.register(proc.stdin, selectors.EVENT_WRITE, 2)
-                    else:
-                        proc.stdin.close()
+                    selector.register(proc.stdin, selectors.EVENT_WRITE, 2)
                 while selector.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise RemoteError("transport_timeout")
                     for key, _ in selector.select(min(remaining, 0.1)):
                         if key.data == 2:
-                            try:
-                                offset += os.write(
-                                    key.fd, input_data[offset : offset + 65536]
-                                )
-                            except BlockingIOError:
-                                continue
-                            except BrokenPipeError:
-                                offset = len(input_data)
-                            if offset == len(input_data):
+                            assert source is not None and proc.stdin is not None
+                            if not pending and not eof:
+                                data = source.read(chunk_bytes)
+                                if data:
+                                    pending += data
+                                else:
+                                    eof = True
+                            if pending:
+                                try:
+                                    del pending[: os.write(key.fd, pending)]
+                                except BlockingIOError:
+                                    continue
+                                except BrokenPipeError:
+                                    pending.clear()
+                                    eof = True
+                            if eof and not pending:
                                 selector.unregister(key.fileobj)
-                                assert proc.stdin is not None
                                 proc.stdin.close()
                             continue
                         data = os.read(key.fd, 65536)
@@ -237,6 +257,29 @@ class SshSession:
             scratch=self.scratch,
             timeout_s=timeout_s,
             input_data=input_data,
+            max_output=max_output,
+        )
+
+    def stream(
+        self,
+        remote_argv: Sequence[str],
+        *,
+        input_path: Path,
+        chunk_bytes: int = 1048576,
+        timeout_s: float = 3600,
+        max_output: int = 16777216,
+    ) -> CommandResult:
+        import shlex
+
+        if not remote_argv or any("\x00" in part for part in remote_argv):
+            raise RemoteError("command_invalid")
+        return bounded_process(
+            [*self._argv, shlex.join(remote_argv)],
+            env=self._env,
+            scratch=self.scratch,
+            timeout_s=timeout_s,
+            input_path=input_path,
+            chunk_bytes=chunk_bytes,
             max_output=max_output,
         )
 

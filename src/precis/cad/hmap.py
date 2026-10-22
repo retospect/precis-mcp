@@ -82,9 +82,21 @@ class HeightMap:
     near-continuous (see :data:`SEAM_RTOL`); a discontinuous edge pair is
     refused — repair it first with ``seam="blend"`` in the array/PNG
     loaders.
+
+    ``seam`` selects the tolerance policy: ``"strict"`` (default) bounds
+    the wrap step to ``rtol`` of the map's range — a hard-edged map whose
+    edges disagree is a cliff and is refused; ``"wall"`` additionally
+    permits a wrap step up to 1.5× the map's own steepest interior column
+    step, for generators that legitimately put a feature wall on the wrap.
+    ``pull`` records the pull intent a pull-aware generator built the map
+    for — ``{"sign", "k", "alpha", "phi"}`` — carried into the wire header
+    so a ``relief:`` leaf can refuse a mismatched layout (Fable s1 review
+    item 7). ``None`` on maps with no declared intent (ribs, knurl, PNG).
     """
 
     values: NDArray[np.floating[Any]]
+    pull: dict[str, Any] | None = None
+    seam: str = "strict"
 
     def __post_init__(self) -> None:
         arr = np.asarray(self.values)
@@ -95,9 +107,11 @@ class HeightMap:
             )
         if not np.all(np.isfinite(arr)):
             raise ValueError("a height map must be finite everywhere")
+        if self.seam not in ("strict", "wall"):
+            raise ValueError(f"seam must be 'strict' | 'wall', got {self.seam!r}")
         arr = np.ascontiguousarray(arr, dtype=np.float32)
         err = seam_error(arr)
-        tol = seam_tolerance(arr)
+        tol = seam_tolerance(arr, wall=self.seam == "wall")
         if err > tol:
             raise ValueError(
                 f"height map is not periodic in u: edge columns differ by "
@@ -119,24 +133,27 @@ def seam_error(values: NDArray[np.floating[Any]]) -> float:
     return float(np.max(np.abs(m[0, :] - m[-1, :])))
 
 
-def seam_tolerance(values: NDArray[np.floating[Any]], rtol: float = SEAM_RTOL) -> float:
+def seam_tolerance(
+    values: NDArray[np.floating[Any]],
+    rtol: float = SEAM_RTOL,
+    *,
+    wall: bool = False,
+) -> float:
     """The allowed seam error for ``values``.
 
-    Samples sit at cell centres ``u = (i + 0.5)/nu``, so columns ``0`` and
-    ``nu - 1`` are *neighbours* one pixel apart, not two copies of one
-    ``u``: a feature wall that happens to fall on the wrap is a legitimate
-    neighbour step there. The wrap step is therefore judged like any
-    other: it may reach the map's own steepest interior column step
-    (×1.5 headroom), or ``rtol`` of the range for a smooth map. A
-    non-periodic image (a ramp across ``u``) still jumps far past both
-    and is refused."""
+    Default (strict): ``rtol`` of the range plus a small absolute floor —
+    any harder wrap step is a cliff (Fable s1 review item 5: the interior-
+    step allowance was vacuous for hard-edged maps, passing a full-range
+    mismatch whenever one interior wall existed). ``wall=True`` opts back
+    into the interior-step allowance — 1.5× the map's own steepest column
+    step — for generators that legitimately land a feature wall on the
+    wrap; callers must know the map is periodic by construction."""
     m = np.asarray(values, dtype=np.float64)
-    u_step = float(np.max(np.abs(np.diff(m, axis=0))))
-    return max(
-        _SEAM_ATOL,
-        rtol * float(m.max() - m.min()),
-        1.5 * u_step + _SEAM_ATOL,
-    )
+    tol = max(_SEAM_ATOL, rtol * float(m.max() - m.min()))
+    if wall:
+        u_step = float(np.max(np.abs(np.diff(m, axis=0))))
+        tol = max(tol, 1.5 * u_step + _SEAM_ATOL)
+    return tol
 
 
 def check_seam(values: NDArray[np.floating[Any]], rtol: float = SEAM_RTOL) -> None:
@@ -177,7 +194,7 @@ def hmap_header(
 ) -> dict[str, Any]:
     """The JSON header :func:`encode_hmap` writes ahead of the samples."""
     nu, nv = hm.shape
-    return {
+    header: dict[str, Any] = {
         "shape": [nu, nv],
         "axes": "u,v",
         "u_periodic": True,
@@ -185,6 +202,11 @@ def hmap_header(
         "byteorder": "<",
         "provenance": dict(provenance or {}),
     }
+    if hm.pull is not None:
+        header["pull"] = dict(hm.pull)
+    if hm.seam != "strict":
+        header["seam"] = hm.seam
+    return header
 
 
 def encode_hmap(hm: HeightMap, provenance: dict[str, Any] | None = None) -> bytes:
@@ -214,7 +236,12 @@ def decode_hmap(payload: bytes) -> tuple[dict[str, Any], HeightMap]:
             f"{expected} (shape {shape})"
         )
     values = np.frombuffer(payload, dtype="<f4", offset=8 + hlen).reshape(shape)
-    return header, HeightMap(values.astype(np.float32))
+    pull = header.get("pull")
+    return header, HeightMap(
+        values.astype(np.float32),
+        pull=dict(pull) if isinstance(pull, dict) else None,
+        seam="wall" if header.get("seam") == "wall" else "strict",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +257,10 @@ def hmap_array(
 ) -> HeightMap:
     """A float ``(nu, nv)`` array → :class:`HeightMap`.
 
-    ``seam="check"`` (default) refuses a non-periodic map;
+    ``seam="check"`` (default) refuses a non-periodic map under the
+    strict tolerance; ``seam="wall"`` additionally permits a wrap step
+    within 1.5× the map's steepest interior column step (a legitimately
+    periodic hard-edged map whose feature wall lands on the wrap);
     ``seam="blend"`` cross-fades ``blend_width`` columns at each u-edge
     first (default a 32nd of ``nu``); ``seam="raw"`` stores whatever it is
     given — the *leaf* still refuses a jumping edge, so raw is only for
@@ -244,10 +274,16 @@ def hmap_array(
         raise ValueError("a height map must be finite everywhere")
     if seam == "blend":
         m = blend_seam(m, blend_width or max(2, m.shape[0] // 32))
-    elif seam == "check":
+        return HeightMap(m)
+    if seam == "check":
         check_seam(m)
-    elif seam != "raw":
-        raise ValueError(f"seam must be 'check' | 'blend' | 'raw', got {seam!r}")
+        return HeightMap(m)
+    if seam == "wall":
+        return HeightMap(m, seam="wall")
+    if seam != "raw":
+        raise ValueError(
+            f"seam must be 'check' | 'wall' | 'blend' | 'raw', got {seam!r}"
+        )
     return HeightMap(m)
 
 
@@ -437,6 +473,7 @@ def _flank_raster(
     k: int,
     alpha: float,
     phi: float,
+    relax: bool = True,
 ) -> NDArray[np.float64]:
     """The upper envelope ``h(u, v)`` for plateau contours and stroked
     centre-lines under the pull-aware flank bound — the core the
@@ -534,60 +571,236 @@ def _flank_raster(
                 s_lx = np.where(deeper & (dc > 0.0), px - cx, s_lx)
         _accumulate(out, s_in, s_d, s_lx, delta, toward_join, sign, alpha, depth, hcap)
 
-    _relax_flanks(out, delta, toward_join, alpha, sign, period / nu, height / (nv - 1))
+    if relax:
+        _relax_flanks(
+            out,
+            r=period * repeat / (2.0 * math.pi),
+            height=height,
+            depth=depth,
+            sign=sign,
+            repeat=repeat,
+            twist=twist,
+            k=k,
+            alpha=alpha,
+            phi=phi,
+        )
     return out
+
+
+def _pull_grids(
+    nu: int, nv: int, repeat: int, twist: float, k: int, phi: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Signed pull angle ``δ`` at every pixel's u-edge midpoint (``(nu,
+    nv)``, edge ``i`` joins pixels ``i`` and ``i+1`` periodic) and v-edge
+    midpoint (``(nu, nv-1)``). Edges are the surface samples the slope
+    bound acts on — evaluating ``δ`` at the midpoint, not at a pixel
+    endpoint, is what makes the discrete bound honest (Fable s1 review
+    item 3)."""
+    iu = (np.arange(nu) + 0.5) / nu
+    jv = np.arange(nv) / (nv - 1)
+    theta = (2.0 * math.pi * iu[:, None] - twist * jv[None, :]) / repeat
+    # u-edge midpoint: exactly half a u-step past pixel i's centre —
+    # valid across the seam too since θ is linear in u within a v row
+    d_u = slide_delta(theta + math.pi / (nu * repeat), k, phi)
+    # v-edge midpoint between rows j and j+1 (θ falls with v under twist)
+    d_v = slide_delta(theta[:, :-1] - twist / (2.0 * (nv - 1) * repeat), k, phi)
+    return theta, d_u, d_v
+
+
+def _central_slopes(
+    h: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per-unit-``u`` / per-unit-``v`` central differences at pixel
+    centres — ``u`` periodic, ``v`` one-sided at the caps."""
+    nu, nv = h.shape
+    h_u = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * 0.5 * nu
+    h_v = np.empty_like(h)
+    if nv > 2:
+        h_v[:, 1:-1] = (h[:, 2:] - h[:, :-2]) * 0.5 * (nv - 1)
+    h_v[:, 0] = (h[:, 1] - h[:, 0]) * (nv - 1)
+    h_v[:, -1] = (h[:, -1] - h[:, -2]) * (nv - 1)
+    return h_u, h_v
 
 
 def _relax_flanks(
     out: NDArray[np.float64],
-    delta: NDArray[np.float64],
-    toward_join: NDArray[np.float64],
+    *,
+    r: float,
+    height: float,
+    depth: float,
+    sign: float,
+    repeat: int,
+    twist: float,
+    k: int,
     alpha: float,
-    s: float,
-    du_phys: float,
-    dv_phys: float,
+    phi: float,
+    iters: int = 96,
+    margin: float = 1e-3,
 ) -> None:
-    """Discrete slope-bound relaxation, in place.
+    """Discrete slope-bound relaxation, in place (Fable s1 review items
+    1–3, rewritten).
 
     The cone envelope ``tan β·d`` overstates reachable height wherever
     ``tan β`` drops fast (near the join pole its derivative diverges), so
-    a wall built from it can exceed ``β_max(θ)`` between samples. This
-    sweep enforces the bound *between* pixels: a wall whose normalized
-    height falls toward ``+u`` has its surface normal leaning ``s·(+u)``
-    (emboss leans downhill in ``h``, deboss uphill — the pit floor is
-    ``h = 1``), so ``cos ψ = sign(δ)·s·dir``; a ``v`` wall is axial
-    (``cos ψ = 0``). Repeated forward/backward sweeps (the fast-sweeping
-    iteration for ``|∇h| ≤ bound``) shrink ``out`` toward the largest map
-    whose discrete gradients satisfy ``n·p ≥ sin α`` — a few passes
-    suffice since violations only travel inward from boundaries.
+    a wall built from it can exceed the pull bound *between* samples —
+    the relax is load-bearing, not cosmetic. Each map edge is bound to
+    the **combined-normal** condition it actually has to satisfy:
+    ``n̂·p = (cos δ + g_t sin δ)/√(1+g_t²+g_z²) ≥ sin α`` at the edge
+    midpoint's own ``δ``, with ``g_t`` the edge's tangential surface
+    slope and ``g_z`` the axial one. That is the total-tilt bound
+    ``g_t² + g_z² ≤ tan²β(δ, ψ)`` of :func:`flank_tan_beta` in the edge's
+    current lean direction ``ψ`` (lagged one sweep so it converges with
+    the map), with the twist coupling folded in exactly:
+    ``g_z = m·g_t + c`` where ``m = r·twist/(repeat·height)`` and ``c``
+    is the lagged axial slope — a clean quadratic interval for ``g_t``,
+    no separable u/v approximation and no missing ``/depth`` (the slice-1
+    bug: it bounded the *normalized* map by *physical* steps, crushing
+    plateaus to a fraction of depth; this version solves in physical
+    slope and converts).
+
+    Alternating forward/backward fast-sweeps propagate the caps inward;
+    a few dozen passes converge since the updates only ever *lower* the
+    map. ``margin`` (in ``n̂·p`` units) is added to ``sin α`` inside the
+    bound so the lagged-``ψ`` iteration lands comfortably on the safe
+    side. An edge whose orthogonal slope alone already breaks the bound
+    (``D < 0`` — the other axis's sweep owns that fix) is flattened to
+    ``Δh = 0`` rather than left violating.
     """
     nu, nv = out.shape
-    sd = s * toward_join
-    t_right = flank_tan_beta(delta, sd, alpha) * du_phys
-    t_left = flank_tan_beta(delta, -sd, alpha) * du_phys
-    t_ax = flank_tan_beta(delta, np.zeros_like(delta), alpha) * dv_phys
-    h = out
-    for _ in range(8):
+    sa_eff = math.sin(alpha) + margin
+    a_eff = math.asin(min(1.0, sa_eff))
+    _theta, d_u, d_v = _pull_grids(nu, nv, repeat, twist, k, phi)
+    # g_t = a1·Δh on a u-edge; g_z = m·g_t + c (twist feedback) there;
+    # g_z = a2·Δv + c2 on a v-edge with c2 the lagged twist part.
+    a1 = sign * depth * nu * repeat / (2.0 * math.pi * r)
+    m = r * twist / (repeat * height)
+    a2 = sign * depth * (nv - 1) / height
+    c_tw = sign * depth * twist / (2.0 * math.pi * height)
+    sign_du = np.sign(d_u)
+    sign_dv = np.sign(d_v)
+    for _ in range(iters):
+        prev = out.copy()
+        h_u, h_v = _central_slopes(out)
+        # ---- u-edges: edge i joins pixel i and i+1 (periodic) ----
+        dh = np.roll(out, -1, axis=0) - out
+        g_t = a1 * dh
+        c = sign * depth * 0.5 * (h_v + np.roll(h_v, -1, axis=0)) / height
+        g_z = m * g_t + c
+        gabs = np.maximum(np.hypot(g_t, g_z), 1e-300)
+        cos_psi = np.clip(-g_t * sign_du / gabs, -1.0, 1.0)
+        t = flank_tan_beta(d_u, cos_psi, a_eff)
+        # (1+m²)g² + 2mc·g + c² − t² ≤ 0 → g interval between the roots;
+        # t = +inf (centre-facing, free) means no bound; t finite with a
+        # negative discriminant means the edge is infeasible at any slope
+        # (the other axis's sweep owns the fix) → flatten it.
+        aa = 1.0 + m * m
+        with np.errstate(invalid="ignore", over="ignore"):
+            disc = aa * t * t - c * c
+        bounded = np.isfinite(t)
+        infeasible = bounded & (disc < 0.0)
+        root = np.sqrt(np.maximum(disc, 0.0))
+        lo_g = (-m * c - root) / aa
+        hi_g = (-m * c + root) / aa
+        if a1 > 0:
+            lo_dh, hi_dh = lo_g / a1, hi_g / a1
+        else:
+            lo_dh, hi_dh = hi_g / a1, lo_g / a1
+        lo_dh = np.where(bounded, lo_dh, -np.inf)
+        hi_dh = np.where(bounded, hi_dh, np.inf)
+        lo_dh = np.where(infeasible, 0.0, lo_dh)
+        hi_dh = np.where(infeasible, 0.0, hi_dh)
         for i in range(nu):
             ir = (i + 1) % nu
-            il = (i - 1) % nu
-            cap_r = h[ir] + t_right[i]
-            cap_l = h[il] + t_left[i]
-            h[i] = np.minimum(h[i], np.minimum(cap_r, cap_l))
-        for j in range(1, nv):
-            h[:, j] = np.minimum(h[:, j], h[:, j - 1] + t_ax[:, j])
-        for j in range(nv - 2, -1, -1):
-            h[:, j] = np.minimum(h[:, j], h[:, j + 1] + t_ax[:, j])
+            np.minimum(out[ir], out[i] + hi_dh[i], out=out[ir])
         for i in range(nu - 1, -1, -1):
             ir = (i + 1) % nu
-            il = (i - 1) % nu
-            cap_r = h[ir] + t_right[i]
-            cap_l = h[il] + t_left[i]
-            h[i] = np.minimum(h[i], np.minimum(cap_r, cap_l))
-        for j in range(1, nv):
-            h[:, j] = np.minimum(h[:, j], h[:, j - 1] + t_ax[:, j])
+            np.minimum(out[i], out[ir] - lo_dh[i], out=out[i])
+        # ---- v-edges: edge j joins rows j and j+1 ----
+        dv = out[:, 1:] - out[:, :-1]
+        h_u_e = 0.5 * (h_u[:, :-1] + h_u[:, 1:])
+        w_t = sign * depth * h_u_e * repeat / (2.0 * math.pi * r)
+        c2 = c_tw * h_u_e
+        g_zv = a2 * dv + c2
+        gabsv = np.maximum(np.hypot(w_t, g_zv), 1e-300)
+        cos_psi_v = np.clip(-w_t * sign_dv / gabsv, -1.0, 1.0)
+        tv = flank_tan_beta(d_v, cos_psi_v, a_eff)
+        # w_t² + (a2·dv + c2)² ≤ tv² → dv ∈ [(-c2 ± √(tv²−w_t²))/a2];
+        # tv = +inf means no bound, tv² < w_t² means the tangential slope
+        # alone already breaks it → flatten and let the u-sweep fix w_t.
+        disc_v = tv * tv - w_t * w_t
+        bounded_v = np.isfinite(tv)
+        infeasible_v = bounded_v & (disc_v < 0.0)
+        rv = np.sqrt(np.maximum(disc_v, 0.0))
+        lo_dv = (-c2 - rv) / a2
+        hi_dv = (-c2 + rv) / a2
+        if a2 > 0:
+            vlo, vhi = lo_dv, hi_dv
+        else:
+            vlo, vhi = hi_dv, lo_dv
+        vlo = np.where(bounded_v, vlo, -np.inf)
+        vhi = np.where(bounded_v, vhi, np.inf)
+        vlo = np.where(infeasible_v, 0.0, vlo)
+        vhi = np.where(infeasible_v, 0.0, vhi)
+        for j in range(nv - 1):
+            np.minimum(out[:, j + 1], out[:, j] + vhi[:, j], out=out[:, j + 1])
         for j in range(nv - 2, -1, -1):
-            h[:, j] = np.minimum(h[:, j], h[:, j + 1] + t_ax[:, j])
+            np.minimum(out[:, j], out[:, j + 1] - vlo[:, j], out=out[:, j])
+        if float(np.max(np.abs(out - prev))) < 1e-12:
+            break
+
+
+def pull_edge_margins(
+    h: NDArray[np.floating[Any]],
+    *,
+    r: float,
+    height: float,
+    depth: float,
+    sign: float,
+    repeat: int,
+    twist: float,
+    k: int,
+    phi: float,
+    alpha: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``n̂·p − sin α`` on every map edge — the production form of slice
+    1's ``_surface_np`` test helper (the Q1 corrected check, evaluated on
+    cell edges with forward differences).
+
+    Returns ``(margin_u, margin_v)``: ``margin_u[i, j]`` on the u-edge
+    between pixels ``i`` and ``i+1`` (periodic), ``margin_v[i, j]`` on
+    the v-edge between rows ``j`` and ``j+1``. Negative means undercut —
+    the surface there leans out of its slide's release cone. The
+    tangential surface slope is ``g_t = s·depth·h_u·repeat/(2πr)`` on the
+    nominal radius (conservative: the true ``ρ`` is larger on emboss
+    features, so real slopes are gentler) and the axial
+    ``g_z = s·depth·(h_u·twist/(2π) + h_v)/height``.
+    """
+    m = np.asarray(h, dtype=np.float64)
+    nu, nv = m.shape
+    _theta, d_u, d_v = _pull_grids(nu, nv, repeat, twist, k, phi)
+    sa = math.sin(alpha)
+    a1 = sign * depth * nu * repeat / (2.0 * math.pi * r)
+    mm = r * twist / (repeat * height)
+    a2 = sign * depth * (nv - 1) / height
+    c_tw = sign * depth * twist / (2.0 * math.pi * height)
+    _h_u, h_v = _central_slopes(m)
+    # u-edges (forward difference in u, the edge's own slope)
+    dh = np.roll(m, -1, axis=0) - m
+    g_t = a1 * dh
+    c = sign * depth * 0.5 * (h_v + np.roll(h_v, -1, axis=0)) / height
+    g_z = mm * g_t + c
+    margin_u = (
+        np.cos(d_u) + g_t * np.sin(d_u) - sa * np.sqrt(1.0 + g_t * g_t + g_z * g_z)
+    )
+    # v-edges (forward difference in v)
+    dvv = m[:, 1:] - m[:, :-1]
+    h_u_e = 0.5 * (_h_u[:, :-1] + _h_u[:, 1:])
+    w_t = sign * depth * h_u_e * repeat / (2.0 * math.pi * r)
+    g_zv = a2 * dvv + c_tw * h_u_e
+    margin_v = (
+        np.cos(d_v) + w_t * np.sin(d_v) - sa * np.sqrt(1.0 + w_t * w_t + g_zv * g_zv)
+    )
+    return margin_u, margin_v
 
 
 def _accumulate(
@@ -654,6 +867,7 @@ def hmap_sketch(
     alpha: float = math.radians(1.0),
     phi: float = 0.0,
     strokes: Sequence[tuple[Sequence[Sequence[float]], float]] | None = None,
+    relax: bool = True,
 ) -> HeightMap:
     """Sketch polygons / stroked lines in ``(u, v)`` → a plateau map with
     pull-aware flanks (spec §Model row 3 + §Decisions Q2).
@@ -699,8 +913,13 @@ def hmap_sketch(
         k=k,
         alpha=alpha,
         phi=phi,
+        relax=relax,
     )
-    return HeightMap(m)
+    return HeightMap(
+        m,
+        pull={"sign": sign, "k": k, "alpha": alpha, "phi": phi},
+        seam="wall",
+    )
 
 
 def hmap_text(
@@ -771,4 +990,8 @@ def hmap_text(
         alpha=alpha,
         phi=phi,
     )
-    return HeightMap(m)
+    return HeightMap(
+        m,
+        pull={"sign": sign, "k": k, "alpha": alpha, "phi": phi},
+        seam="wall",
+    )

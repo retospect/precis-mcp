@@ -11,7 +11,7 @@
 
 {# ── sub-tab nav ──────────────────────────────────────────────── #}
 <div class="mb-5 flex gap-1 text-sm border-b border-line">
-  {% for key, label in [('health', 'Health'), ('services', 'Services'), ('models', 'Models'), ('budget', 'Budget'), ('now', 'Now')] %}
+  {% for key, label in [('health', 'Health'), ('services', 'Services'), ('models', 'Models'), ('budget', 'Budget'), ('now', 'Now'), ('setup', 'Setup')] %}
   <a href="/status?tab={{ key }}"
      class="px-3 py-1.5 -mb-px border-b-2 font-medium transition
        {% if tab == key %}border-success-solid text-success-strong{% else %}border-transparent text-fg-subtle hover:text-fg-secondary hover:border-line-strong{% endif %}">
@@ -37,6 +37,8 @@
     loading…
   </div>
 </div>
+{% elif tab == 'setup' %}
+{% include "_status_setup.html.j2" %}
 {% else %}
 {% include "_status_budget.html.j2" %}
 {% endif %}

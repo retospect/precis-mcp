@@ -47,10 +47,13 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from precis.cad.hmap import HeightMap
 
 from precis.cad.interval import (
     POS_INF,
@@ -1234,8 +1237,16 @@ class CylRelief(Primitive):
     stay correct; the bound is exact on the zero set and loose near rim
     corners, the same contract the CSG fold already states. Below
     ``ρ_min`` (the relief's innermost radius) the radial term saturates
-    and the residual is extended inward as ``ρ − ρ_min`` — still inside
-    and still conservative (the surface is unreachable there).
+    and the residual is extended inward as ``(ρ − ρ_min)/L`` — the
+    nearest surface point may lie off the radial line, so an unscaled
+    extension overestimates depth by up to a map cell (Fable s1 item 6).
+
+    ``hmap`` accepts the raw ``(nu, nv)`` array or a
+    :class:`~precis.cad.hmap.HeightMap`, which also carries the map's
+    pull intent (``sign``/``k``/``alpha``/``phi``) and seam policy: a
+    leaf parameter that contradicts the map's recorded pull is refused
+    (a sign/k mix-up puts the tight side on the wrong wall), an unset one
+    inherits from the map.
 
     The map must be periodic in ``u`` — the seam rule is enforced at
     construction (see :func:`precis.cad.hmap.check_seam`).
@@ -1247,7 +1258,7 @@ class CylRelief(Primitive):
 
     r: float
     h: float
-    hmap: NDArray[np.floating[Any]]
+    hmap: NDArray[np.floating[Any]] | HeightMap
     depth: float
     s: float = 1.0
     repeat: int = 1
@@ -1256,6 +1267,7 @@ class CylRelief(Primitive):
     alpha: float | None = None
     phi: float | None = None
     seam_tol: float = 1e-3
+    seam: str = "strict"
     # derived once from the map in __post_init__
     _rho_min: float = field(init=False, repr=False)
     _rho_max: float = field(init=False, repr=False)
@@ -1263,7 +1275,47 @@ class CylRelief(Primitive):
     _cell: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        m = np.asarray(self.hmap)
+        from precis.cad.hmap import HeightMap, seam_error, seam_tolerance
+
+        # a HeightMap carries its own pull intent + seam policy (Fable s1
+        # review item 7): an explicitly-declared leaf parameter that
+        # contradicts the map's intent is refused — a sign/k mix-up puts
+        # the tight side on the wrong wall — while an unset one inherits.
+        pull: dict[str, Any] | None = None
+        seam_mode = self.seam
+        if isinstance(self.hmap, HeightMap):
+            hm_obj = self.hmap
+            pull = hm_obj.pull
+            seam_mode = hm_obj.seam
+            raw = hm_obj.values
+        else:
+            raw = self.hmap
+        if pull:
+            declared = {
+                "sign": float(self.s),
+                "k": self.k,
+                "alpha": self.alpha,
+                "phi": self.phi,
+            }
+            # sign and k are exact; angles tolerate literal round-off in
+            # the DSL (a re-typed radian differs in its last digits —
+            # 1e-4 rad ≈ 0.006°, far below any draft decision)
+            _tol = {"sign": 1e-9, "k": 0.0, "alpha": 1e-4, "phi": 1e-4}
+            for key, leaf_v in declared.items():
+                want = pull.get(key)
+                if want is None:
+                    continue
+                if leaf_v is None:
+                    object.__setattr__(self, {"sign": "s"}.get(key, key), want)
+                    continue
+                if abs(float(leaf_v) - float(want)) > _tol[key]:
+                    raise ValueError(
+                        f"relief {key}={leaf_v} contradicts the map's "
+                        f"recorded pull intent {key}={want} — the map's "
+                        f"flanks were shaped for its own layout; rebuild "
+                        "the map or match its pull"
+                    )
+        m = np.asarray(raw)
         if m.ndim != 2 or min(m.shape) < 2:
             raise ValueError(
                 f"a relief map must be (nu, nv) with both axes >= 2, got "
@@ -1286,10 +1338,8 @@ class CylRelief(Primitive):
         m = np.ascontiguousarray(m, dtype=np.float32)
         # the wrap interpolation across the u-seam must be near-continuous:
         # a jumping edge is a cliff in the relief (spec seam rule)
-        from precis.cad.hmap import seam_error, seam_tolerance
-
         err = seam_error(m)
-        tol = seam_tolerance(m, self.seam_tol)
+        tol = seam_tolerance(m, self.seam_tol, wall=seam_mode == "wall")
         if err > tol:
             raise ValueError(
                 f"relief map is not periodic in u: edge columns differ by "
@@ -1356,7 +1406,7 @@ class CylRelief(Primitive):
         self, u: NDArray[np.float64], v: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """Bilinear sample of the map — ``u`` periodic, ``v`` clamped."""
-        m = self.hmap
+        m = cast(NDArray[np.floating[Any]], self.hmap)
         nu, nv = m.shape
         xu = np.mod(u, 1.0) * nu - 0.5
         i0 = np.floor(xu)
@@ -1383,7 +1433,19 @@ class CylRelief(Primitive):
         u_map = np.mod(self.repeat * u_cyl + self.twist * v / (2.0 * math.pi), 1.0)
         hm = self._h_at(u_map, v)
         rho_c = np.maximum(rho, self._rho_min)
-        f_lat = (rho_c - self.r - self.s * self.depth * hm) / self._lip + (rho - rho_c)
+        f_lat = (rho_c - self.r - self.s * self.depth * hm) / self._lip
+        # interior extension below rho_min: the nearest surface point can
+        # lie off the radial line (the surface tilts tangentially up to
+        # the Lipschitz slope), so the radial gap overestimates depth by
+        # up to a map cell — the same 1/L keeps it a bound (Fable s1
+        # review item 6), capped at the airtight floor |d| <= rho_min-rho
+        # (every surface point sits at radius >= rho_min, so tangential
+        # approach can only make the true distance smaller)
+        f_lat = np.where(
+            rho < self._rho_min,
+            np.maximum(f_lat + (rho - rho_c) / self._lip, rho - rho_c),
+            f_lat,
+        )
         return np.maximum(np.maximum(f_lat, -z), z - self.h)
 
     def distance_local(self, p: Vec3) -> float:

@@ -449,6 +449,10 @@ POLICIES: dict[str, Policy] = {
     # a hover-card convenience, so give up fast rather than hold a request.
     "lcsc": Policy(attempts=3, base=2.0, cap=30.0, label="LCSC"),
     "discord": Policy(attempts=3, base=2.0, cap=30.0, label="Discord webhook"),
+    # precis doctor's /healthz probes (web port, remote embedder) —
+    # operator-configured endpoints: one retry on a short cap so a probe
+    # fails fast (<~2 s of backoff) yet rides over a single blip.
+    "doctor-probe": Policy(attempts=2, base=0.5, cap=2.0, label="doctor health probe"),
 }
 
 

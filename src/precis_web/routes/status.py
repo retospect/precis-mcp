@@ -28,6 +28,7 @@ from precis.store._body_predicate import has_body_sql
 from precis.workers.executors._common import QUEUED, RUNNING, STATUS_NAMESPACE, TERMINAL
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
+from precis_web.config import WebConfig
 from precis_web.deps import get_store, get_web_config, templates
 from precis_web.routes.alerts import _rows as _alert_rows
 from precis_web.routes.factory import _ALL, _CATEGORY_ORDER
@@ -60,7 +61,7 @@ router = APIRouter(prefix="/status", tags=["status"])
 #: fast as each formerly-standalone route. `/factory` and `/budget`
 #: now just redirect here (their POST endpoints stay mounted at their
 #: original paths — only the write path's redirect target moved).
-_TABS = ("health", "services", "budget", "models", "now")
+_TABS = ("health", "services", "budget", "models", "now", "setup")
 
 log = logging.getLogger(__name__)
 
@@ -1169,6 +1170,24 @@ def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
     }
 
 
+def _setup_ctx(store: Store, cfg: Any) -> dict[str, Any]:
+    """Setup sub-tab: the ``precis doctor`` check table, rendered for admins.
+
+    Same engine (``precis.doctor.run_checks``) the CLI prints — the two
+    surfaces cannot drift. Read-only: the kinds sweep runs ``boot()``
+    under ``PRECIS_MCP_READ_ONLY`` so no upsert/sync fires from a page
+    load. "Admins" today = every authenticated account (``web_users``
+    has no role column until multi-user S3 lands); the app-wide Basic
+    gate is the boundary.
+    """
+    from precis.doctor import run_checks
+
+    checks = _safe(
+        lambda: run_checks(store=store, web=cfg if isinstance(cfg, WebConfig) else None)
+    )
+    return {"doctor_checks": checks or []}
+
+
 def _services_ctx(store: Store, host: str) -> dict[str, Any]:
     """Services sub-tab: the retired ``/factory`` page's category tables +
     editable prio/model_pref + Quests, unchanged (its SQL helpers already
@@ -1741,6 +1760,8 @@ async def index(
         # below), so this route stays cheap regardless of which sub-tab a
         # deep link lands on.
         pass
+    elif tab == "setup":
+        ctx.update(_setup_ctx(store, cfg))
     else:
         ctx.update(_budget_ctx(store))
     return templates.TemplateResponse(request, "status.html.j2", ctx)

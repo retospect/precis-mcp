@@ -225,6 +225,7 @@ Gaps this spec closes (slices B1–B3):
 ### Slices
 
 **B1. Runner changes in `precis.remote.slurm` (unit tests, fake transport).**
+LANDED (hpc-b1, `6459335ef`+`73334fe8a`).
 
 - `sbatch --no-requeue`. A preempted or node-failed job then shows as a
   terminal `PREEMPTED`/`NODE_FAIL` row in `sacct`, instead of rerunning in

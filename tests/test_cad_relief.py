@@ -30,6 +30,7 @@ from precis.cad.hmap import (
     hmap_ribs,
     hmap_sketch,
     hmap_text,
+    pull_edge_margins,
 )
 from precis.cad.primitives import CircularFrustum, CylRelief
 from precis.cad.vec import vec3
@@ -108,6 +109,21 @@ def test_seam_refused_and_blended():
     _leaf(blended.values)  # now admissible
 
 
+def test_seam_strict_default_and_wall_optin():
+    """A hard-edged map whose wrap lands on a wall is refused by the
+    strict default — the old interior-step allowance was vacuous and
+    passed full-range mismatches (Fable s1 item 5). ``seam='wall'`` is
+    the explicit opt-in for legitimately periodic walls."""
+    m = np.zeros((64, 32))
+    m[:32, :] = 1.0  # two walls: one interior, one on the wrap
+    with pytest.raises(ValueError, match="not periodic"):
+        hmap_array(m)
+    with pytest.raises(ValueError, match="not periodic"):
+        _leaf(m)
+    assert hmap_array(m, seam="wall").shape == (64, 32)
+    assert _leaf(m, seam="wall").hmap.shape == (64, 32)
+
+
 def test_seam_surface_continuity():
     hm = hmap_knurl(256, 32, count=7, mode="diamond", helix=0.4)
     leaf = _leaf(hm.values)
@@ -128,6 +144,65 @@ def test_seam_surface_continuity():
     # vary smoothly (no step > a map cell's slope)
     step = np.abs(d[10, :] - d[9, :])
     assert step.max() < 5e-4
+
+
+def test_pull_record_inherit_and_refuse():
+    """The map's recorded pull intent (Fable s1 item 7): an explicitly
+    declared leaf parameter that contradicts it is refused; an unset one
+    inherits — a sign/k mix-up puts the tight side on the wrong wall."""
+    alpha = math.radians(2.0)
+    hm = hmap_sketch(
+        128,
+        32,
+        [[(0.3, 0.3), (0.5, 0.3), (0.5, 0.7), (0.3, 0.7)]],
+        radius=_R,
+        height=_H,
+        depth=_DEPTH,
+        k=3,
+        alpha=alpha,
+    )
+    leaf = _leaf(hm)  # nothing declared — inherits k/alpha/phi/sign
+    assert leaf.k == 3 and leaf.alpha == pytest.approx(alpha)
+    assert leaf.phi == pytest.approx(0.0) and leaf.s == 1.0
+    with pytest.raises(ValueError, match="contradicts"):
+        _leaf(hm, k=2)
+    with pytest.raises(ValueError, match="contradicts"):
+        _leaf(hm, s=-1.0)
+    # and through the DSL loader (the refusal surfaces as DslError)
+    from precis.cad.dsl import build, parse
+
+    spec = parse("relief:r0.05h0.1d0.002k2map:" + "ab" * 32)
+    with pytest.raises(DslError, match="contradicts"):
+        build(spec, hmap_loader={spec.ref: hm}.__getitem__)
+    spec = parse("relief:r0.05h0.1d0.002k3a0.0349066map:" + "ab" * 32)
+    leaf2 = build(spec, hmap_loader={spec.ref: hm}.__getitem__)
+    assert isinstance(leaf2, CylRelief) and leaf2.k == 3
+
+
+def test_inside_distance_bound_holds():
+    """Interior points must also keep |d| <= d_true — the unscaled
+    radial extension below rho_min overestimated by up to a map cell
+    (Fable s1 item 6)."""
+    rng = np.random.default_rng(5)
+    hm = hmap_ribs(96, 48, count=6, duty=0.4, flank=0.3)
+    leaf = _leaf(hm.values)
+    th = np.linspace(0.0, 2 * math.pi, 361)[:-1]
+    zz = np.linspace(0.0, _H, 200)
+    T, Z = np.meshgrid(th, zz, indexing="ij")
+    hs = leaf._h_at(T / (2 * math.pi), Z / _H)
+    rho_s = _R + leaf.s * _DEPTH * hs
+    surf = np.stack([rho_s * np.cos(T), rho_s * np.sin(T), Z], axis=-1).reshape(-1, 3)
+    # query points inside the relief, below the mean radius
+    q = surf[rng.integers(0, len(surf), 1500)]
+    q[:, :2] *= rng.uniform(0.4, 0.98, (len(q), 2))
+    d_leaf = leaf.distance_local_np(q)
+    inside = d_leaf < 0
+    d_true = np.empty(len(q))
+    for i in range(0, len(q), 250):
+        d_true[i : i + 250] = np.linalg.norm(
+            q[i : i + 250, None, :] - surf[None, :, :], axis=2
+        ).min(axis=1)
+    assert np.all(d_leaf[inside] >= -d_true[inside] - 1e-9)
 
 
 def test_distance_bound_never_overestimates():
@@ -289,85 +364,157 @@ def test_put_get_hmap_roundtrip(store):
 
 # ---------------------------------------------------------------------------
 # pull-aware flanks (Q1/Q2, corrected rule)
+#
+# The check is the production edge form — ``n̂·p − sin α`` per cell edge
+# (forward differences, δ at the edge midpoint), never a centre-difference
+# average, which halves a 1-px wall's measured slope. Live edges exclude
+# the bare-cylinder exemption: flat edges at the map's base level.
 # ---------------------------------------------------------------------------
 
 
-def _surface_np(m, leaf, k, phi):
-    """``n·p`` at every map pixel, from the map gradient (the DRC form).
-
-    The surface is rho = R + s·depth·h(u,v); its normal ∝ e_r − g_x e_t −
-    g_z e_z with g_x = s·depth·h_u/(P), g_z = s·depth·(h_u·twist/(2πH) +
-    h_v/H); the pull is the slide direction at the nearest of
-    phi + 2πj/k. Returns the min over the map.
-    """
-    nu, nv = m.shape
-    period = 2 * math.pi * _R / leaf.repeat
-    mf = m.astype(np.float64)
-    # SIGNED gradients — the normal's lean direction is the whole point
-    # of the check (periodic central difference in u, one-sided at v)
-    du = (np.roll(mf, -1, axis=0) - np.roll(mf, 1, axis=0)) * 0.5 * nu
-    fd = (mf[:, 1:] - mf[:, :-1]) * (nv - 1)
-    dv = np.concatenate(
-        [fd[:, :1], 0.5 * (mf[:, 2:] - mf[:, :-2]) * (nv - 1), fd[:, -1:]],
-        axis=1,
+def _edge_kw(leaf, alpha):
+    return dict(
+        r=_R,
+        height=_H,
+        depth=_DEPTH,
+        sign=float(leaf.s),
+        repeat=leaf.repeat,
+        twist=leaf.twist,
+        k=int(leaf.k),
+        phi=float(leaf.phi or 0.0),
+        alpha=alpha,
     )
-    iu = (np.arange(nu) + 0.5) / nu
-    jv = np.arange(nv) / (nv - 1)
-    theta = (2 * math.pi * iu[:, None] - leaf.twist * jv[None, :]) / leaf.repeat
-    g_x = leaf.s * _DEPTH * du / period
-    g_z = leaf.s * _DEPTH * (du * leaf.twist / (2 * math.pi) + dv) / _H
-    # only meaningful slope pixels are checked; flat base is bare cylinder
-    slope2 = g_x**2 + g_z**2
-    # dead-zone fade pixels also legitimately sit at h≈0 with a join-
-    # facing slope — include them: the check is on the actual surface
-    period_k = 2 * math.pi / k
-    delta = (theta - phi + 0.5 * period_k) % period_k - 0.5 * period_k
-    # pull at phi + 2πj/k, nearest by |delta|: pull angle = theta - delta
-    th_pull = theta - delta
-    n_r = 1.0
-    n_t = -g_x
-    n_z = -g_z
-    n_norm = np.sqrt(n_r**2 + n_t**2 + n_z**2)
-    # n·p in cartesian: n = e_r − g_x e_t − g_z e_z, p = (cos θ_pull,
-    # sin θ_pull, 0)
-    ex, ey = np.cos(theta), np.sin(theta)
-    tx, ty = -np.sin(theta), np.cos(theta)
-    nx = n_r * ex + n_t * tx
-    ny = n_r * ey + n_t * ty
-    ndotp = (nx * np.cos(th_pull) + ny * np.sin(th_pull)) / n_norm
-    return ndotp, slope2
 
 
-def _assert_moldable(m, leaf, k, phi, alpha):
-    ndotp, slope2 = _surface_np(m, leaf, k, phi)
-    live = slope2 > 1e-12  # skip flat base (bare-cylinder exemption)
-    assert live.any()
-    assert ndotp[live].min() >= math.sin(alpha) - 1e-2
+def _live_edges(m):
+    """``(live_u, live_v)`` — every edge except the flat-at-base ones.
+
+    A flat edge at the map's base level (``clip(0, min, max)`` — the
+    nominal cylinder surface, ``h = 0`` on generated maps) is the bare
+    cylinder at the join, exempt per Q1. A flat edge *above* base — a
+    plateau top or groove floor — is a feature surface and is checked.
+    """
+    mf = m.astype(np.float64)
+    base = float(np.clip(0.0, mf.min(), mf.max()))
+    tol = max(1e-6, 2e-3 * float(mf.max() - mf.min()))
+    hi, hj = mf, np.roll(mf, -1, axis=0)
+    dh_u = np.abs(hj - hi)
+    live_u = (dh_u > tol) | (hi > base + tol) | (hj > base + tol)
+    dv = np.abs(mf[:, 1:] - mf[:, :-1])
+    live_v = (dv > tol) | (mf[:, :-1] > base + tol) | (mf[:, 1:] > base + tol)
+    return live_u, live_v
 
 
+def _min_live_margin(m, leaf, alpha):
+    mu, mv = pull_edge_margins(m, **_edge_kw(leaf, alpha))
+    live_u, live_v = _live_edges(m)
+    vals = []
+    if live_u.any():
+        vals.append(mu[live_u].min())
+    if live_v.any():
+        vals.append(mv[live_v].min())
+    assert vals, "map has no live edges to check"
+    return min(vals)
+
+
+_TOL = 1e-3  # n̂·p slack — the discrete bound's honest error budget
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
 @pytest.mark.parametrize("k", [2, 3])
-def test_sketch_flanks_release(k):
+def test_sketch_flanks_release(k, sign):
+    """Binding walls on BOTH sides of each pull centre, emboss and
+    deboss: for k = 3 the tight flank sits at δ ≈ ±50°, for k = 2 at
+    δ ≈ ±80° (just inside the join dead zone at 90° − α)."""
     alpha = math.radians(2.0)
+    if k == 3:
+        # pulls at 0°, ±120°: features centred at u = 0.14 and 0.86
+        # (θ ≈ ±50°) put a join-facing wall on each side of the pull
+        contours = [
+            [(0.12, 0.3), (0.20, 0.3), (0.20, 0.7), (0.12, 0.7)],
+            [(0.80, 0.3), (0.88, 0.3), (0.88, 0.7), (0.80, 0.7)],
+        ]
+    else:
+        # pulls at 0°, 180°: features at θ ≈ ±80° (u ≈ 0.22 / 0.78),
+        # hard against the dead-zone edge — their join-facing flanks are
+        # capped at ~8°, so they legitimately stay shallow; a third
+        # feature on the pull centre (δ ≈ 0, free flanks) carries the
+        # full-height assertion
+        contours = [
+            [(0.20, 0.3), (0.28, 0.3), (0.28, 0.7), (0.20, 0.7)],
+            [(0.72, 0.3), (0.80, 0.3), (0.80, 0.7), (0.72, 0.7)],
+            [(0.45, 0.35), (0.55, 0.35), (0.55, 0.65), (0.45, 0.65)],
+        ]
     hm = hmap_sketch(
         512,
         64,
-        [
-            [(0.30, 0.3), (0.55, 0.3), (0.55, 0.7), (0.30, 0.7)],
-            [(0.62, 0.35), (0.68, 0.35), (0.68, 0.65), (0.62, 0.65)],
-        ],
+        contours,
         radius=_R,
         height=_H,
         depth=_DEPTH,
+        sign=sign,
         k=k,
         alpha=alpha,
         phi=0.0,
     )
-    leaf = _leaf(hm.values, k=k, alpha=alpha, phi=0.0)
-    _assert_moldable(hm.values, leaf, k, 0.0, alpha)
+    leaf = _leaf(hm, s=float(sign))
+    assert hm.values.max() >= 0.95, (
+        f"plateau crushed to {hm.values.max():.3f} — the relax is "
+        "shaving legal height (units check on the slope bound)"
+    )
+    assert _min_live_margin(hm.values, leaf, alpha) >= -_TOL
 
 
+@pytest.mark.parametrize("sign", [1.0, -1.0])
 @pytest.mark.parametrize("k", [2, 3])
-def test_text_flanks_release(k):
+def test_relax_is_load_bearing(k, sign):
+    """The sweep-off envelope alone is NOT moldable (Fable s1 item 2):
+    the cone envelope overstates reachable height at corners, leaving
+    join-facing cliffs the relax must grind down."""
+    alpha = math.radians(2.0)
+    # a plateau spanning a join: its corners leave join-facing cliffs the
+    # envelope alone cannot release (Fable s1 item 2 repro shape)
+    contours = [[(0.10, 0.25), (0.45, 0.25), (0.45, 0.75), (0.10, 0.75)]]
+    kw = dict(radius=_R, height=_H, depth=_DEPTH, sign=sign, k=k, alpha=alpha, phi=0.0)
+    off = hmap_sketch(256, 48, contours, relax=False, **kw)
+    on = hmap_sketch(256, 48, contours, relax=True, **kw)
+    leaf = _leaf(on, s=float(sign))
+    assert _min_live_margin(off.values, leaf, alpha) < 0.0, (
+        "the unrelaxed envelope passed its own check — the test no "
+        "longer exercises a case where the relax is needed"
+    )
+    assert _min_live_margin(on.values, leaf, alpha) >= -_TOL
+
+
+def test_wrong_sign_fails_the_check():
+    """Negative control: a map built for emboss read as deboss puts the
+    tight side on the wrong wall — the same edge margins must go
+    negative."""
+    alpha = math.radians(2.0)
+    hm = hmap_sketch(
+        512,
+        64,
+        [[(0.30, 0.3), (0.55, 0.3), (0.55, 0.7), (0.30, 0.7)]],
+        radius=_R,
+        height=_H,
+        depth=_DEPTH,
+        sign=1.0,
+        k=3,
+        alpha=alpha,
+        phi=0.0,
+    )
+    leaf = _leaf(hm, s=1.0)
+    assert _min_live_margin(hm.values, leaf, alpha) >= -_TOL
+    flipped = _leaf(
+        hmap_array(hm.values, seam="wall"), s=-1.0, k=3, alpha=alpha, phi=0.0
+    )
+    mu, mv = pull_edge_margins(hm.values, **_edge_kw(flipped, alpha))
+    assert min(mu.min(), mv.min()) < -_TOL
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+@pytest.mark.parametrize("k", [2, 3])
+def test_text_flanks_release(k, sign):
     alpha = math.radians(2.0)
     hm = hmap_text(
         "AB",
@@ -378,18 +525,21 @@ def test_text_flanks_release(k):
         radius=_R,
         height=_H,
         depth=_DEPTH,
+        sign=sign,
         k=k,
         alpha=alpha,
         phi=0.0,
     )
-    leaf = _leaf(hm.values, k=k, alpha=alpha, phi=0.0)
-    _assert_moldable(hm.values, leaf, k, 0.0, alpha)
+    leaf = _leaf(hm, s=float(sign))
+    assert _min_live_margin(hm.values, leaf, alpha) >= -_TOL
 
 
 def test_k2_join_fades_to_zero():
     alpha = math.radians(2.0)
     # a big plateau covering the whole v range centred near the k=2 join
-    # at 90°: the dead zone must pull it to ~0 there
+    # at 90°: the dead zone must pull it to ~0 there, through the fade
+    # profile −ρ·ln cos(90°−α−θ)/depth and the join-facing flank slope
+    # tan(90°−α−θ) — not just "small" (Fable s1 item 8)
     hm = hmap_sketch(
         512,
         32,
@@ -402,11 +552,28 @@ def test_k2_join_fades_to_zero():
         phi=0.0,
     )
     nu = hm.shape[0]
-    # join at u = 0.25 and u = 0.75 of the tile (pull at phi=0, k=2:
-    # joins at ±90° → u = 0.25, 0.75)
+    pole = math.pi / 2 - alpha
     for u_join in (0.25, 0.75):
         i = int(u_join * nu - 0.5) % nu
         assert hm.values[i].max() < 0.05
+    # fade profile: walking in from the legal side of the +90° join,
+    # h(θ) tracks −ρ·ln cos(pole − |θ|)/depth
+    th = 2 * math.pi * ((np.arange(nu) + 0.5) / nu)
+    delta = np.abs(th - math.pi / 2)
+    band = (delta < pole) & (delta > pole - 0.6)
+    col = hm.values[:, 16].astype(np.float64)
+    hcap = -_R * np.log(np.cos(pole - delta)) / _DEPTH
+    assert float(col[band].max()) <= float(hcap[band].max()) + 0.05
+    # and the map uses the fade: h follows hcap within a pixel of the
+    # pole-side slope — the wall it leaves tilts at tan(90°−α−θ)
+    inner = delta < pole - 0.15
+    slope = np.abs(np.diff(col, append=col[:1])) * nu * _DEPTH / (2 * math.pi * _R)
+    expected = np.tan(pole - delta)
+    sel = inner & (col > 0.05) & (col < 0.9)
+    assert sel.any()
+    # the fade wall tilts at the join-facing bound tan(90°−α−θ): the
+    # measured per-px slope tracks it within discretisation slack
+    assert float(np.median(slope[sel] / expected[sel])) <= 1.2
 
 
 # ---------------------------------------------------------------------------

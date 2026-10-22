@@ -12,6 +12,15 @@ Artifact names must be canonical and disjoint from generated/temp paths;
 the full inventory is rechecked before readiness, since per-upload checks
 alone miss later overwrites. Collection errors journal every task before
 raising, preserving scheduler evidence and the same intent for collection retry.
+
+Jobs submit with --no-requeue: a preempted or node-failed row is terminal
+evidence for a caller-decided fresh attempt, never an in-place scheduler rerun
+over a half-written run directory. One sbatch carries many tasks; the job
+script iterates a staged tasks.json and writes out/<task_id>/, and collection
+scores each task on its own verified outputs. Images stage once per content
+hash into images/ via a single long-lived stream and are garbage-collected
+only by an explicit prune; cleanup tombstones a consumed token so its run
+directory can never host a second sbatch.
 """
 
 from __future__ import annotations
@@ -43,6 +52,16 @@ class Transport(Protocol):
         max_output: int = 16777216,
     ) -> CommandResult: ...
 
+    def stream(
+        self,
+        remote_argv: Sequence[str],
+        *,
+        input_path: Path,
+        chunk_bytes: int = 1048576,
+        timeout_s: float = 3600,
+        max_output: int = 16777216,
+    ) -> CommandResult: ...
+
 
 @dataclass(frozen=True)
 class Limits:
@@ -53,6 +72,9 @@ class Limits:
     status_interval: float = 30
     max_bundle_bytes: int = 2 * 1024**3
     max_output_bytes: int = 16 * 1024**2
+    max_image_bytes: int = 3 * 1024**3
+    image_chunk_bytes: int = 1024**2
+    image_stream_seconds: float = 3600
 
 
 def _name(value: str) -> str:
@@ -117,7 +139,7 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 class SlurmRunner:
-    """Six-operation runner; every remote call uses an injected bounded transport."""
+    """Stage/submit/recover/status/cancel/collect plus image stage and cleanup."""
 
     def __init__(
         self,
@@ -147,6 +169,9 @@ class SlurmRunner:
             or limits.submission_interval < 0
             or limits.max_bundle_bytes < 1
             or limits.max_output_bytes < 1
+            or limits.max_image_bytes < 1
+            or limits.image_chunk_bytes < 1
+            or limits.image_stream_seconds < 1
         ):
             raise RemoteError("limits_invalid")
         journal_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -159,9 +184,9 @@ class SlurmRunner:
             raise RemoteError("journal_invalid")
 
     @contextmanager
-    def _lock(self) -> Iterator[None]:
+    def _lock(self, name: str = "lock") -> Iterator[None]:
         fd = os.open(
-            self.journal_root / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
+            self.journal_root / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
         )
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -288,6 +313,22 @@ class SlurmRunner:
         token = _token(token)
         stage = _token(str(job_spec["stage_id"]))
         script = _name(str(job_spec["script"]))
+        # Task ids name per-task output directories on the remote side.
+        task_ids = [str(task) for task in job_spec.get("task_ids", [token])]
+        if (
+            not task_ids
+            or len(set(task_ids)) != len(task_ids)
+            or not all(
+                re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", task)
+                for task in task_ids
+            )
+        ):
+            raise RemoteError("tasks_invalid")
+        image = job_spec.get("image_sha256")
+        if image is not None:
+            image = str(image)
+            if not re.fullmatch(r"[a-f0-9]{64}", image):
+                raise RemoteError("image_invalid")
         resources = dict(job_spec["resources"])
         flags = self._resources(resources)
         job_hash = hashlib.sha256(
@@ -304,9 +345,11 @@ class SlurmRunner:
             if not stage_path.exists():
                 raise RemoteError("stage_unverified")
             staged_manifest = json.loads(stage_path.read_text(encoding="utf-8"))
-            if staged_manifest.get(
-                "stage_id"
-            ) != stage or script not in staged_manifest.get("hashes", {}):
+            if (
+                staged_manifest.get("stage_id") != stage
+                or script not in staged_manifest.get("hashes", {})
+                or "tasks.json" not in staged_manifest.get("hashes", {})
+            ):
                 raise RemoteError("stage_unverified")
             actual_bytes, staged_cap = (
                 staged_manifest.get("bundle_bytes"),
@@ -324,13 +367,39 @@ class SlurmRunner:
                 or staged_cap > self.limits.max_bundle_bytes
             ):
                 raise RemoteError("bundle_invalid")
+            # The verified stage must carry the same task set as the intent;
+            # the job script iterates out/<task>/ from staged tasks.json.
+            listing = self.transport.run(
+                ["cat", f"{self.remote_root}/stage-{stage}/tasks.json"]
+            )
+            try:
+                staged_tasks = json.loads(listing.stdout)
+            except (json.JSONDecodeError, UnicodeError):
+                staged_tasks = None
+            if listing.returncode or not isinstance(staged_tasks, list):
+                raise RemoteError("stage_unverified")
+            if [str(task) for task in staged_tasks] != task_ids:
+                raise RemoteError("tasks_invalid")
+            if image is not None:
+                image_manifest = self.journal_root / ("image-" + image + ".manifest")
+                staged_image = (
+                    json.loads(image_manifest.read_text(encoding="utf-8"))
+                    if image_manifest.exists()
+                    else {}
+                )
+                if staged_image.get("image_sha256") != image:
+                    raise RemoteError("image_unverified")
             active = [
                 json.loads(p.read_text(encoding="utf-8"))
                 for p in self.journal_root.glob("*.json")
                 if p.name != "limits.json"
             ]
             if (
-                sum(s.get("phase") not in {"terminal", "collected"} for s in active)
+                sum(
+                    s.get("phase")
+                    not in {"terminal", "collected", "cleaned", "consumed"}
+                    for s in active
+                )
                 >= self.limits.max_inflight
             ):
                 raise RemoteError("inflight_limit")
@@ -360,21 +429,17 @@ class SlurmRunner:
                 "resources": resources,
                 "bundle_bytes": staged_manifest["bundle_bytes"],
                 "max_bundle_bytes": staged_manifest["max_bundle_bytes"],
-                "task_ids": list(job_spec.get("task_ids", [token])),
+                "task_ids": task_ids,
+                "image_sha256": image,
             }
-            if not state["task_ids"] or len(set(state["task_ids"])) != len(
-                state["task_ids"]
-            ):
-                raise RemoteError("tasks_invalid")
             self._save(state)  # FSYNC BEFORE ANY external acceptance is possible.
             _atomic_json(limits_path, {**controls, "last_submit": now})
         try:
             staged = f"{self.remote_root}/stage-{stage}/{script}"
-            self._run(["mkdir", "-p", "-m", "700", remote_dir])
-            self._run(["cp", staged, f"{remote_dir}/job.sh"])
             command = [
                 "sbatch",
                 "--parsable",
+                "--no-requeue",
                 "--export=NIL",
                 *flags,
                 f"--job-name=mpx-{token}",
@@ -385,18 +450,28 @@ class SlurmRunner:
                 f"{remote_dir}/job.sh",
                 f"{self.remote_root}/stage-{stage}",
             ]
+            if image is not None:
+                command.append(f"{self.remote_root}/images/{image}.sif")
             remote_script = (
-                'cd "$1" || exit 1; if test -s receipt; then cat receipt; exit 0; fi; '
+                # A cleanup tombstone outlives the run dir: a re-polled
+                # (job, attempt) token must never reach sbatch again.
+                'test -e "$1.done" && exit 73; '
+                'mkdir -p -m 700 "$1" && cd "$1" || exit 1; '
+                "if test -s receipt; then cat receipt; exit 0; fi; "
                 "mkdir submitted.once 2>/dev/null || exit 75; "
+                'cp "$2" job.sh || exit 76; '
                 + shlex.join(command)
                 + " > receipt.tmp; r=$?; "
                 'if test "$r" -eq 0; then mv receipt.tmp receipt; cat receipt; fi; exit "$r"'
             )
-            receipt = (
-                self._run(["sh", "-c", remote_script, "submit", remote_dir])
-                .decode()
-                .strip()
+            reply = self.transport.run(
+                ["sh", "-c", remote_script, "submit", remote_dir, staged]
             )
+            if reply.returncode == 73:
+                raise RemoteError("intent_consumed")
+            if reply.returncode:
+                raise RemoteError("remote_command_failed")
+            receipt = reply.stdout.decode().strip()
             match = re.fullmatch(r"([0-9]+)(?:;[A-Za-z0-9_-]+)?", receipt)
             if not match:
                 raise RemoteError("submission_unknown")
@@ -404,12 +479,15 @@ class SlurmRunner:
                 state = self._load(token)
                 state.update(job_id=match[1], phase="submitted", state="pending")
                 self._save(state)
-        except (RemoteError, UnicodeError):
+        except (RemoteError, UnicodeError) as error:
+            consumed = str(error) == "intent_consumed"
             with self._lock():
                 state = self._load(token)
-                state["phase"] = "submission_unknown"
-                state["state"] = "submission_unknown"
+                state["phase"] = "consumed" if consumed else "submission_unknown"
+                state["state"] = "consumed" if consumed else "submission_unknown"
                 self._save(state)
+            if consumed:
+                raise
         return state
 
     def recover(self, intent: Mapping[str, Any]) -> dict[str, Any]:
@@ -457,8 +535,12 @@ class SlurmRunner:
         start = datetime.fromtimestamp(state["submitted_at"] - 60, UTC).strftime(
             "%Y-%m-%dT%H:%M:%S"
         )
+        # The naive --starttime is computed in UTC; sacct reads it in its own
+        # TZ, so pin TZ=UTC or the search window slides with remote local time.
         history = self._run(
             [
+                "env",
+                "TZ=UTC",
                 "sacct",
                 "-n",
                 "-P",
@@ -545,6 +627,9 @@ class SlurmRunner:
                     "CANCELLED": "cancelled",
                     "PENDING": "pending",
                     "RUNNING": "running",
+                    "PREEMPTED": "preempted",
+                    "NODE_FAIL": "preempted",
+                    "BOOT_FAIL": "preempted",
                 }.get(state["scheduler_state"], "failed")
                 if state["state"] == "succeeded" and (
                     state["exit_code"] or state["signal"]
@@ -600,38 +685,64 @@ class SlurmRunner:
         return state  # A request is not proof of terminal cancellation.
 
     def collect(
-        self, handle: Mapping[str, Any], outputs: Sequence[str]
+        self,
+        handle: Mapping[str, Any],
+        outputs: Mapping[str, Sequence[str]],
+        logs: Sequence[str] = (),
     ) -> dict[str, Any]:
-        names = [_name(name) for name in outputs]
+        # One output name set per task; a missing output fails only its task.
+        requested = {
+            str(task): [_name(name) for name in names]
+            for task, names in outputs.items()
+        }
+        log_names = [_name(name) for name in logs]
         with self._lock():
             state = self._load(str(handle["token"]))
+        if set(requested) != set(state.get("task_ids", [])):
+            raise RemoteError("tasks_invalid")
         files: dict[str, bytes] = {}
         missing: list[str] = []
+        missing_tasks: set[str] = set()
+
+        def fetch(path: str) -> bytes | None:
+            result = self.transport.run(
+                ["cat", path], max_output=self.limits.max_output_bytes
+            )
+            if result.returncode == 255:
+                raise RemoteError("transport_unavailable")
+            if result.returncode:
+                return None
+            if len(result.stdout) > self.limits.max_output_bytes:
+                raise RemoteError("output_limit")
+            try:
+                checksum = _checksum(self._run(["sha256sum", path]))
+            except RemoteError as error:
+                if str(error) == "remote_command_failed":
+                    raise RemoteError("output_checksum_failed") from None
+                raise
+            if hashlib.sha256(result.stdout).hexdigest() != checksum:
+                raise RemoteError("output_hash_mismatch")
+            return result.stdout
+
         try:
             state = self.status(handle)
             if state["phase"] not in {"terminal", "collected"}:
                 raise RemoteError("job_not_terminal")
-            for name in names:
-                path = f"{state['remote_dir']}/{name}"
-                result = self.transport.run(
-                    ["cat", path], max_output=self.limits.max_output_bytes
-                )
-                if result.returncode == 255:
-                    raise RemoteError("transport_unavailable")
-                if result.returncode:
+            for task, names in requested.items():
+                for name in names:
+                    key = f"{task}/{name}"
+                    data = fetch(f"{state['remote_dir']}/out/{task}/{name}")
+                    if data is None:
+                        missing.append(key)
+                        missing_tasks.add(task)
+                    else:
+                        files[key] = data
+            for name in log_names:
+                data = fetch(f"{state['remote_dir']}/{name}")
+                if data is None:
                     missing.append(name)
-                    continue
-                if len(result.stdout) > self.limits.max_output_bytes:
-                    raise RemoteError("output_limit")
-                try:
-                    checksum = _checksum(self._run(["sha256sum", path]))
-                except RemoteError as error:
-                    if str(error) == "remote_command_failed":
-                        raise RemoteError("output_checksum_failed") from None
-                    raise
-                if hashlib.sha256(result.stdout).hexdigest() != checksum:
-                    raise RemoteError("output_hash_mismatch")
-                files[name] = result.stdout
+                else:
+                    files[name] = data
         except (RemoteError, UnicodeError) as error:
             if str(error) == "job_not_terminal":
                 raise
@@ -679,14 +790,26 @@ class SlurmRunner:
                 self._save(state)
             raise RemoteError(code) from None
         scheduler = str(state.get("scheduler_state", "unknown"))
-        classification = {"TIMEOUT": "timeout", "CANCELLED": "cancelled"}.get(
-            scheduler, "failed"
-        )
-        if scheduler == "COMPLETED" and not (
+        classification = {
+            "TIMEOUT": "timeout",
+            "CANCELLED": "cancelled",
+            "PREEMPTED": "preempted",
+            "NODE_FAIL": "preempted",
+            "BOOT_FAIL": "preempted",
+        }.get(scheduler, "failed")
+        completed = scheduler == "COMPLETED" and not (
             state.get("exit_code") or state.get("signal")
-        ):
-            classification = "missing_output" if missing else "collected"
-        outcomes = {task: classification for task in state["task_ids"]}
+        )
+        # A task with every declared output hash-verified is collected even when
+        # the job ended preempted or failed; only the remainder reruns (B2).
+        outcomes = {}
+        for task in state["task_ids"]:
+            if task in missing_tasks:
+                outcomes[task] = "missing_output" if completed else classification
+            elif requested[task] or completed:
+                outcomes[task] = "collected"
+            else:
+                outcomes[task] = classification
         with self._lock():
             state = self._load(state["token"])
             previous = state.get("collection", {})
@@ -713,3 +836,191 @@ class SlurmRunner:
             "outcomes": outcomes,
             "accounting": state.get("accounting", []),
         }
+
+    def stage_image(self, path: Path, sha256: str) -> dict[str, Any]:
+        """Stream one local image to images/<sha256>.sif; kept between jobs.
+
+        One long-lived transport process carries the file, so a ~60 s upload
+        identity only has to be alive when that process connects; chunked
+        per-call appends would re-authenticate mid-upload. The .tmp upload
+        target is removed on any failure.
+        """
+        if not re.fullmatch(r"[a-f0-9]{64}", sha256):
+            raise RemoteError("image_invalid")
+        source = Path(path)
+        try:
+            if source.is_symlink() or not source.is_file():
+                raise OSError("not a regular file")
+            size = source.stat().st_size
+        except OSError:
+            raise RemoteError("image_invalid") from None
+        if size < 1:
+            raise RemoteError("image_invalid")
+        if size > self.limits.max_image_bytes:
+            raise RemoteError("image_too_large")
+        digest = hashlib.sha256()
+        with open(source, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024**2), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != sha256:
+            raise RemoteError("image_hash_mismatch")
+        images = f"{self.remote_root}/images"
+        final = f"{images}/{sha256}.sif"
+        temporary = final + ".tmp"
+        record = {
+            "image_sha256": sha256,
+            "remote_path": final,
+            "image_bytes": size,
+            "max_image_bytes": self.limits.max_image_bytes,
+        }
+        manifest = self.journal_root / ("image-" + sha256 + ".manifest")
+        with self._lock("image-" + sha256 + ".lock"):
+            probe = self.transport.run(["sha256sum", final])
+            if probe.returncode == 0:
+                if _checksum(probe.stdout) != sha256:
+                    raise RemoteError("image_hash_mismatch")
+                self._run(["rm", "-f", "--", temporary])
+                with self._lock():
+                    _atomic_json(manifest, record)
+                return {**record, "staged": False}
+            self._run(["mkdir", "-p", "-m", "700", images])
+            try:
+                self.transport.stream(
+                    ["sh", "-c", 'umask 077; cat > "$1"', "image", temporary],
+                    input_path=source,
+                    chunk_bytes=self.limits.image_chunk_bytes,
+                    timeout_s=self.limits.image_stream_seconds,
+                )
+                if _checksum(self._run(["sha256sum", temporary])) != sha256:
+                    raise RemoteError("image_hash_mismatch")
+                self._run(["mv", "-f", "--", temporary, final])
+            except Exception:
+                try:
+                    self.transport.run(["rm", "-f", "--", temporary])
+                except RemoteError:
+                    pass
+                raise
+        with self._lock():
+            _atomic_json(manifest, record)
+        return {**record, "staged": True}
+
+    def cleanup(self, handle: Mapping[str, Any]) -> dict[str, Any]:
+        """Tombstone and remove a collected run dir; drop a shared stage last.
+
+        Removal paths are always derived from remote_root plus validated ids;
+        journaled or handle-supplied paths are never trusted for deletion.
+        """
+        token = _token(str(handle["token"]))
+        remote_dir = f"{self.remote_root}/run-{token}"
+        with self._lock():
+            state = self._load(token)
+            if state.get("collection", {}).get("status") != "complete":
+                raise RemoteError("not_collected")
+            stage_id = _token(str(state["stage_id"]))
+        # The tombstone is written before the run dir goes away: a resubmit of
+        # this token must still refuse even with the run dir and journal gone.
+        marker = json.dumps(
+            {"token": token, "job_id": state.get("job_id"), "at": self.clock()},
+            sort_keys=True,
+        ).encode()
+        self._run(
+            ["sh", "-c", 'umask 077; cat > "$1.done"', "cleanup", remote_dir],
+            input_data=marker,
+        )
+        self._run(["rm", "-rf", "--", remote_dir])
+        with self._lock():
+            keep_stage = False
+            for entry in self.journal_root.glob("*.json"):
+                if entry.name in {"limits.json", token + ".json"}:
+                    continue
+                try:
+                    other = json.loads(entry.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    keep_stage = True
+                    break
+                if (
+                    other.get("stage_id") == stage_id
+                    and other.get("collection", {}).get("status") != "complete"
+                ):
+                    keep_stage = True
+                    break
+        if not keep_stage:
+            self._run(["rm", "-rf", "--", f"{self.remote_root}/stage-{stage_id}"])
+        with self._lock():
+            state = self._load(token)
+            state["phase"] = "cleaned"
+            state["cleanup"] = {
+                "at": self.clock(),
+                "stage_removed": not keep_stage,
+            }
+            self._save(state)
+            if not keep_stage:
+                (self.journal_root / ("stage-" + stage_id + ".manifest")).unlink(
+                    missing_ok=True
+                )
+        return state
+
+    def prune_images(
+        self, keep: Sequence[str], *, older_than_days: int = 7
+    ) -> dict[str, Any]:
+        """Explicit image GC; cleanup never touches images/.
+
+        Removes only images/<sha>.sif that are absent from `keep`, older than
+        `older_than_days`, and named by no journal entry whose collection has
+        not completed; expired .sif.tmp partials go too.
+        """
+        keep_set = set()
+        for item in keep:
+            item = str(item)
+            if not re.fullmatch(r"[a-f0-9]{64}", item):
+                raise RemoteError("image_invalid")
+            keep_set.add(item)
+        if type(older_than_days) is not int or older_than_days < 0:
+            raise RemoteError("image_invalid")
+        images = f"{self.remote_root}/images"
+        with self._lock():
+            referenced = set()
+            for entry in self.journal_root.glob("*.json"):
+                if entry.name == "limits.json":
+                    continue
+                try:
+                    state = json.loads(entry.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise RemoteError("journal_invalid") from None
+                if state.get("collection", {}).get("status") == "complete":
+                    continue
+                image = state.get("image_sha256")
+                if image:
+                    referenced.add(str(image))
+        listing = self.transport.run(
+            [
+                "find",
+                images,
+                "-maxdepth",
+                "1",
+                "-type",
+                "f",
+                "-mtime",
+                f"+{older_than_days}",
+                "-printf",
+                "%f\\n",
+            ]
+        )
+        removed: list[str] = []
+        kept: list[str] = []
+        if listing.returncode == 0:
+            for name in listing.stdout.decode().splitlines():
+                match = re.fullmatch(r"([a-f0-9]{64})\.sif(\.tmp)?", name)
+                if not match:
+                    continue
+                sha, is_tmp = match[1], bool(match[2])
+                if not is_tmp and (sha in keep_set or sha in referenced):
+                    kept.append(name)
+                    continue
+                self._run(["rm", "-f", "--", f"{images}/{name}"])
+                removed.append(name)
+                if not is_tmp:
+                    (self.journal_root / ("image-" + sha + ".manifest")).unlink(
+                        missing_ok=True
+                    )
+        return {"removed": removed, "kept": kept}

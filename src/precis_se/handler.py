@@ -152,6 +152,7 @@ from precis_se import kinematics_drc as se_kinematics_drc
 from precis_se import library as se_library
 from precis_se import manufacture as se_manufacture
 from precis_se import modes as se_modes
+from precis_se import mold as se_mold
 from precis_se import notes as se_notes
 from precis_se import order as se_order
 from precis_se import pick as se_pick
@@ -5703,6 +5704,10 @@ def _render_drc(
     # after the other store-aware passes like the precedent/kinematics
     # rows above.
     report.findings.extend(se_flatpack_checks.findings(store, tree, ref_id))
+    # mold.undercut (se-cylinder-wrap-mold slice 2): relief leaves on
+    # cad-bound blocks are checked against their own slide pull — an
+    # error finding refuses the map until clipped via view='mold'.
+    report.findings.extend(se_mold.findings(store, tree, ref_id))
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"

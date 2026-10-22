@@ -87,12 +87,12 @@ many slides" before any geometry is cut.
    `cyl:` of R + c; seam continuity; enclosed volume equals
    `∫∫ ½(R + s·h)² dθ dz` within mesh tolerance; distance bound never
    overestimates against a dense brute-force sample.
-2. **Pull check.** `precis.cad.mold.pull_check(design, layout, α)` on
-   relief leaves (map-space) and analytic faces (extend `probe_draft`);
-   se DRC finding `mold.undercut` naming the layout, area and minimum k;
-   `view='mold'` returns the undercut image. Optional fix
-   `relief_fit: clip` lowers h only where needed to clear the chosen
-   layout (no new material, the op reports the depth removed).
+2. ~~**Pull check.**~~ slice 2 landed 2026-10-21:
+   `precis.cad.mold.pull_check` on relief leaves (edge margins in map
+   space) and analytic faces (`probe_draft` multi-pull), `relief_fit=
+   clip`, `view='mold'` with the undercut PNG, se `mold.undercut`; plus
+   the Fable s1 fixes (relax units + edge-midpoint combined-normal
+   bound, strict seam, pull record, interior /L).
 3. **Mold op.** se op `mold` on a block: `layout` (axial|halves|k), `α`,
    `shrink` (% per material, default from the material card), `margin`
    (block around the cavity), output: one mold block per piece =

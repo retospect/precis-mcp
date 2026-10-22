@@ -78,6 +78,11 @@ COMMANDS: tuple[Command, ...] = (
         "Sync precis anki cards to AnkiWeb + read decay stats back.",
     ),
     _c("migrate", "migrate", "Apply pending DB migrations."),
+    _c(
+        "doctor",
+        "doctor",
+        "Verify a precis install (read-only; non-zero exit on failure).",
+    ),
     _c("schema-doc", "schema_doc", "Generate a Mermaid ER diagram of the DB schema."),
     _c("secret", "secret", "Manage the DB secrets vault."),
     _c("nanopub", "nanopub", "Mint, sign, anchor and audit claim nanopubs."),

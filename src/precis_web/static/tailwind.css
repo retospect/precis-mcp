@@ -1866,6 +1866,10 @@ video {
   border-color: rgb(var(--border-line-subtle) / var(--tw-border-opacity, 1));
 }
 
+.border-line\/60 {
+  border-color: rgb(var(--border-line) / 0.6);
+}
+
 .border-success {
   --tw-border-opacity: 1;
   border-color: rgb(var(--border-success) / var(--tw-border-opacity, 1));

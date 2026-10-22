@@ -685,7 +685,7 @@ def build(
             return CylRelief(
                 r=p["r"],
                 h=p["h"],
-                hmap=hm.values,
+                hmap=hm,
                 depth=p["d"],
                 s=p.get("s", 1.0),
                 repeat=int(p.get("n", 1)),

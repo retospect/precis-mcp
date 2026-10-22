@@ -103,6 +103,7 @@ _EXEMPT_NAMES = frozenset(
         # cad/hmap: seam-check floor on NORMALIZED height-map values
         # (h ∈ ~[0, 1]; length enters only as depth·h at render time)
         "_SEAM_ATOL",
+        "EDGE_TOL",  # cad/mold: slack on n̂·p (a cosine — dimensionless), not a length
         # -- structsolve's broader dimensionless/count inventory (dossier §2) --
         "_AM_P",
         "_AM_STENCIL",

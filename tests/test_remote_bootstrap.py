@@ -23,6 +23,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _roomy_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The checker's storage probe is ``os.statvfs``; fake a roomy volume so
+    verdicts never depend on the test host's free disk or inodes (a CI
+    overlay can report ~0 available inodes)."""
+
+    class _Vfs:
+        f_frsize = 4096
+        f_bavail = 10**9  # ~4 TB
+        f_favail = 10**9
+
+    monkeypatch.setattr(checker.os, "statvfs", lambda _path: _Vfs())
+
+
 @pytest.fixture
 def fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path]:
     root = tmp_path / "owned"
