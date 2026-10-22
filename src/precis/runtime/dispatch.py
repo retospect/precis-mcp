@@ -649,6 +649,9 @@ def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> N
     """Refuse a credential in an agent's put/edit/supersede text, for every
     kind whose handler does not set ``stores_opaque_text``.
 
+    delete/tag join the scan only for ``reason=`` (gr504803) — the one
+    agent-authored string either verb takes.
+
     The MCP/CLI verb boundary is where an agent can still rephrase, so it is
     refused here (:func:`precis.utils.secret_scan.refuse_secrets`). The
     memory/todo/gripe handlers themselves *mask* (``mask_secrets``) instead,
@@ -656,7 +659,7 @@ def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> N
     that call them directly and would otherwise lose the record. A kind with
     no resolvable handler is gated (default-on).
     """
-    if verb not in ("put", "edit", "supersede"):
+    if verb not in ("put", "edit", "supersede", "delete", "tag"):
         return
     kind = args.get("kind")
     if isinstance(kind, str) and hub is not None:
@@ -2561,7 +2564,11 @@ class DispatchMixin(RuntimeShape):
         # log, not the handler — consume it before the kwargs gate. put's
         # reason= is consumed the same way unless the handler's own put
         # declares it (paper/message put: an acquisition reason, not a
-        # revision reason).
+        # revision reason). delete/tag reason= is handler-declared
+        # instead (gr503546 / gr504803: the numeric-ref handlers write
+        # their own ref_events audit row), so neither verb pops here —
+        # a kind whose handler doesn't declare it refuses reason= at the
+        # kwargs gate below.
         reason = None
         if verb == "edit" or (
             verb == "put" and "reason" not in self._accepted_kwargs(method)

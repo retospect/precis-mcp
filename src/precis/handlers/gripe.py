@@ -430,6 +430,7 @@ class GripeHandler(NumericRefHandler):
         add: list[str] | None = None,
         remove: list[str] | None = None,
         prio: int | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Near-miss PRIO spellings are read as canonical, named in the reply.
@@ -437,7 +438,10 @@ class GripeHandler(NumericRefHandler):
         readings = [*readings, *self._check_thread_tags(add, id=id)]
         if isinstance(id, list):
             return interpreted(
-                self._tag_batch(id, add=add, remove=remove, prio=prio, **_kw), readings
+                self._tag_batch(
+                    id, add=add, remove=remove, prio=prio, reason=reason, **_kw
+                ),
+                readings,
             )
         # ``PRIO:`` → the canonical prio column (which the backlog groomer
         # inherits onto the minted fix_gripe todo, so a human tagging a gripe
@@ -477,11 +481,16 @@ class GripeHandler(NumericRefHandler):
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
                 shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                # The prio write above committed on its own connection; the
+                # gr504803 audit row lands right after it.
+                self._record_tag_reason(ref_id, reason)
                 return interpreted(
                     Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
                     readings,
                 )
-        return interpreted(super().tag(id=id, add=add, remove=remove, **_kw), readings)
+        return interpreted(
+            super().tag(id=id, add=add, remove=remove, reason=reason, **_kw), readings
+        )
 
     def _check_thread_tags(
         self, tags: list[str] | None, *, id: object = "<id>", create: bool = False

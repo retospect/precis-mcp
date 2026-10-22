@@ -172,6 +172,108 @@ def test_edit_meta_rejects_shapes_other_than_llm_tier_none(
         handler.edit(id=tid, meta={"rotation_root": True})
 
 
+# ── edit: meta={'params': ...} retunes a recurring in place (gr504853) ──
+
+
+def _put_recurring(handler: TodoHandler) -> int:
+    r = handler.put(
+        text="poll the feed",
+        meta={
+            "schedule": {"every": "1h"},
+            "job_type": "news_poll",
+            "params": {"tick": 1},
+        },
+    )
+    assert r.ref_id is not None
+    return r.ref_id
+
+
+def test_edit_meta_params_replaces_and_audits(handler: TodoHandler) -> None:
+    tid = _put_recurring(handler)
+    r = handler.edit(id=tid, meta={"params": {"tick": 3}})
+    assert "meta.params (replaced)" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta.get("params") == {"tick": 3}
+    # The audit row carries old/new so view='log' shows the retune.
+    (ev,) = handler.store.events_for(tid, source="agent", event="meta_patched")
+    assert ev.payload["old"] == {"params": {"tick": 1}}
+    assert ev.payload["new"] == {"params": {"tick": 3}}
+    log = handler.get(id=tid, view="log").body
+    assert "meta_patched" in log
+
+
+def test_edit_meta_params_whole_subtree_replace(handler: TodoHandler) -> None:
+    """A key dropped from the patch is gone — no deep-merge ghosts riding
+    the next spawned tick."""
+    tid = _put_recurring(handler)
+    handler.edit(id=tid, meta={"params": {"other": 9}})
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta.get("params") == {"other": 9}
+
+
+def test_edit_meta_params_none_clears(handler: TodoHandler) -> None:
+    tid = _put_recurring(handler)
+    r = handler.edit(id=tid, meta={"params": None})
+    assert "meta.params (cleared)" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert "params" not in ref.meta
+
+
+def test_edit_meta_params_rejects_non_dict(handler: TodoHandler) -> None:
+    tid = _put_recurring(handler)
+    with pytest.raises(BadInput, match="must be a dict"):
+        handler.edit(id=tid, meta={"params": "tick: 3"})
+    with pytest.raises(BadInput, match="only accepts"):
+        handler.edit(id=tid, meta={"deliver": {"target": "conv:x"}})
+
+
+def test_edit_meta_params_dry_run_writes_nothing(handler: TodoHandler) -> None:
+    tid = _put_recurring(handler)
+    r = handler.edit(id=tid, meta={"params": {"tick": 3}}, dry_run=True)
+    assert "meta.params would be replaced" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta.get("params") == {"tick": 1}
+    assert handler.store.events_for(tid, source="agent", event="meta_patched") == []
+
+
+def test_edit_meta_params_combines_with_llm_tier_park(
+    handler: TodoHandler,
+) -> None:
+    tid = _put_recurring(handler)
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and ref.meta is not None
+    handler.store.stamp_ref_meta(tid, {"llm_tier": "opus"})
+    r = handler.edit(id=tid, meta={"llm_tier": None, "params": {"tick": 3}})
+    assert "meta.llm_tier (unset, parked)" in r.body
+    assert "meta.params (replaced)" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+    assert ref.meta.get("params") == {"tick": 3}
+
+
+def test_edit_meta_params_recurring_is_owner_only(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recurring's params are the schedule's owner-only gradient —
+    a worker retunes nothing. Plain (non-recurring) executor todos stay
+    open to workers, the same as minting params at put()."""
+    tid = _put_recurring(handler)
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="owner-only"):
+        handler.edit(id=tid, meta={"params": {"tick": 3}})
+    plain = handler.put(text="plain leaf", meta={"params": {"tick": 1}})
+    assert plain.ref_id is not None
+    handler.edit(id=plain.ref_id, meta={"params": {"tick": 2}})
+    ref = handler.store.get_ref(kind="todo", id=plain.ref_id)
+    assert ref is not None
+    assert ref.meta.get("params") == {"tick": 2}
+
+
 # ── put: status transitions ──────────────────────────────────────────
 
 

@@ -37,6 +37,14 @@ Soft-delete only. The ref disappears from list views and search;
 the row is retained for audit. Links pointing at the soft-deleted
 ref persist — resolve via the link table if you need them.
 
+Pass `reason=` to say why — it lands as an
+`agent/deleted` row on the ref's `ref_events` log, the audit line a
+mass cleanup otherwise lacks:
+
+```python
+delete(kind="memory", id=42, reason="stale duplicate, folded into me77")
+```
+
 ## Hide a stale comment on a gripe or todo
 
 ```python

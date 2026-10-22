@@ -1935,6 +1935,12 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
+    # numeric-ref kinds (gr504803): why the tag change — recorded as an
+    # ``agent/retagged`` ref_events row per affected ref (view='log'),
+    # so a mass fold/cleanup says why. Same handler-declared door as
+    # delete()'s reason= (gr503546); kinds whose tag doesn't declare it
+    # refuse reason= loudly.
+    reason: str | None = None,
     # FastMCP-injected Context — binds the MCP session for the dispatch
     # (ledger attribution on the write path, gr504485).
     ctx: Context | None = None,
@@ -1974,6 +1980,7 @@ def tag(
                 "remove": remove,
                 "meta": meta,
                 "prio": prio,
+                "reason": reason,
             },
         )
     finally:

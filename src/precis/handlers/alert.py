@@ -662,10 +662,13 @@ class AlertHandler(NumericRefHandler):
         id: str | int | list[str | int] = kw.pop("id")
         add: list[str] | None = kw.pop("add", None)
         remove: list[str] | None = kw.pop("remove", None)
+        # The gr504803 audit door: forwarded explicitly so the ack-only
+        # path below (which never reaches the base tag) can record it too.
+        reason: str | None = kw.pop("reason", None)
         acks = [s for s in add or [] if _is_ack(s)]
         unacks = [s for s in remove or [] if _is_ack(s)]
         if not acks and not unacks:
-            return super().tag(id=id, add=add, remove=remove, **kw)
+            return super().tag(id=id, add=add, remove=remove, reason=reason, **kw)
         if len(acks) > 1:
             raise BadInput(
                 f"one ack per call, got {acks}. {_ACK_FORMS}",
@@ -694,8 +697,16 @@ class AlertHandler(NumericRefHandler):
         lines: list[str] = []
         if rest_add or rest_remove:
             lines.append(
-                super().tag(id=id, add=rest_add, remove=rest_remove, **kw).body
+                super()
+                .tag(id=id, add=rest_add, remove=rest_remove, reason=reason, **kw)
+                .body
             )
+        else:
+            # Ack-only call: the base tag never ran, so record the
+            # gr504803 audit row here (one per ref, matching the base's
+            # batch shape).
+            for ref_id in ref_ids:
+                self._record_tag_reason(ref_id, reason)
         for ref_id in ref_ids:
             if ttl is None:
                 unack_alert(self.store, ref_id)

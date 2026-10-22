@@ -2113,6 +2113,7 @@ class NumericRefHandler(Handler):
         id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add and/or remove tags on an existing numeric ref.
@@ -2123,9 +2124,14 @@ class NumericRefHandler(Handler):
         specific and a silent no-op would mask the typo. ``id=[...]``
         (kinds with ``batch_ids``) applies the same edit to every id in
         one transaction — see :meth:`_tag_batch`.
+
+        ``reason=`` (gr504803) lands as a ``retagged`` ``ref_events``
+        row per affected ref — the audit line a mass tag fold (gr504803's
+        ~40-tag cleanup) otherwise leaves untracked. Same audit door as
+        ``delete``'s ``reason=`` (:meth:`_record_delete_reason`).
         """
         if isinstance(id, list):
-            return self._tag_batch(id, add=add, remove=remove, **_kw)
+            return self._tag_batch(id, add=add, remove=remove, reason=reason, **_kw)
         require_tag_ops(self.kind, add, remove)
         ref_id = self._coerce_id(id)
         # Existence/liveness guard — raises Gone/NotFound for a missing or
@@ -2187,6 +2193,7 @@ class NumericRefHandler(Handler):
                 else:
                     removed_noop.append(t)
             self._after_tag_mutation(ref_id, parsed_add, parsed_remove, conn=conn)
+            self._record_tag_reason(ref_id, reason, conn=conn)
         return Response(
             body=_tag_response_body(
                 sense=self._sense(),
@@ -2678,6 +2685,25 @@ class NumericRefHandler(Handler):
                 ref_id,
                 source="agent",
                 event="deleted",
+                payload={"reason": r},
+                conn=conn,
+            )
+
+    def _record_tag_reason(
+        self, ref_id: int, reason: str | None, *, conn: Connection | None = None
+    ) -> None:
+        """The tag verb's ``reason=`` audit row (gr504803) — one
+        ``retagged`` event naming why, in the tag edit's own transaction
+        so the fold and its cause commit together. ``conn`` optional: a
+        subclass path that writes outside the base tag tx (todo's
+        prio/meta-only early return) records the row right after its own
+        write instead."""
+        r = (reason or "").strip()
+        if r:
+            self.store.append_event(
+                ref_id,
+                source="agent",
+                event="retagged",
                 payload={"reason": r},
                 conn=conn,
             )

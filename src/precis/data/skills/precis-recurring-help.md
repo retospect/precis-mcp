@@ -188,6 +188,23 @@ strategic rotation (PRIO 3-10) but doesn't outrank an explicit chat
 ask (PRIO 1). Delivery-mode ticks never appear in `view='doable'` —
 there's no subtask to show.
 
+## Retune a recurring in place
+
+A recurring's `params` can be changed without delete + re-seed — the
+spawner copies `meta.params` onto every spawned tick, so the next tick
+picks it up:
+
+```python
+edit(kind="todo", id=td42_id, meta={"params": {"tick": 3}})   # replace params
+edit(kind="todo", id=td42_id, meta={"params": None})          # clear them
+```
+
+The write is a whole-subtree replace (deleted keys don't linger) and
+lands as an `agent/meta_patched` row on `view='log'`. Owner-only, like
+the schedule itself. Changing `executor`/`job_type`/`schedule`/`deliver`
+still means delete + re-seed (cut a new root; the old root's tick
+trail stays in `ref_events` at the SQL layer).
+
 ## Worker
 
 `precis worker --only schedule` runs the spawner alone (useful for

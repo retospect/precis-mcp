@@ -731,6 +731,7 @@ class QuestHandler(NumericRefHandler):
         add: list[str] | None = None,
         remove: list[str] | None = None,
         prio: int | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         # A quest never completes: reject any STATUS value outside the
@@ -768,8 +769,11 @@ class QuestHandler(NumericRefHandler):
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
                 shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                # The prio write above committed on its own connection; the
+                # gr504803 audit row lands right after it.
+                self._record_tag_reason(ref_id, reason)
                 return Response(body=f"set {shown} on {self._sense()} id={ref_id}")
-        return super().tag(id=id, add=add, remove=remove, **_kw)
+        return super().tag(id=id, add=add, remove=remove, reason=reason, **_kw)
 
     # ── put: create or append a logbook entry ───────────────────────
 

@@ -790,6 +790,29 @@ _TAG_TIME_OWNER_ONLY_KEYS: frozenset[str] = frozenset(
 )
 
 
+def check_recurring_params_edit(
+    touches_params: bool, target_meta: dict[str, Any] | None
+) -> None:
+    """Reject a worker ``edit(meta={'params': …})`` on a recurring todo.
+
+    A recurring root's owner-only gradient (the ``schedule`` / facet keys
+    at ``tag``, :func:`check_facets_on_tag`) covers what the root *spawns*
+    too: the schedule worker copies ``meta.params`` onto every tick's
+    child, so rewriting it is the same authority class as rewriting the
+    schedule itself. A plain (non-recurring) todo's params pass — an
+    executor leaf's job config is worker-minted config, the same as at
+    ``put()`` time.
+    """
+    if not touches_params or is_owner():
+        return
+    if (target_meta or {}).get("schedule"):
+        raise BadInput(
+            "meta.'params' on a recurring todo is owner-only; the current "
+            "source has worker authority",
+            next="run from a non-worker source (web:owner / cli)",
+        )
+
+
 def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
     """Reject any facet-gradient mutation from worker sources at ``tag``.
 
@@ -1291,6 +1314,7 @@ __all__ = [
     "check_not_builtin",
     "check_owner_only_ref",
     "check_parent_exists",
+    "check_recurring_params_edit",
     "check_reparent_depth",
     "check_schedule_in_meta",
     "check_status_done_artifact",

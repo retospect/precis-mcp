@@ -34,6 +34,14 @@ tag(kind="memory", id=42, remove=["pinned"])
 `add=` and `remove=` are both lists. Either can be omitted; both
 in one call is a single atomic update.
 
+Pass `reason=` to say why — one `agent/retagged` row per affected
+ref lands on `ref_events` (`view='log'`), the audit line a mass tag
+fold otherwise lacks:
+
+```python
+tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
+```
+
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call
 ## How do I transition state without a stale tag lingering?

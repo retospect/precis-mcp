@@ -911,14 +911,22 @@ class TodoHandler(NumericRefHandler):
         authority veto as delete / reparent. Distinct from delete + re-put,
         which would break every inbound edge and the tree position.
 
-        ``meta={'llm_tier': None}`` is the one meta write this verb
-        accepts: it unsets ``meta.llm_tier`` on the leaf, parking it —
-        dispatch (``workers/dispatch.py``) only mints a ``plan_tick`` for
-        an ``llm_tier``-set leaf, and a stored JSON ``null`` still
-        satisfies its ``meta ? 'llm_tier'`` existence check, so this
-        deletes the key outright rather than nulling it (gr439934). Every
-        other meta mutation still goes through ``tag(meta=...)``'s
-        allowlisted promotion.
+        ``meta={'llm_tier': None}`` unsets ``meta.llm_tier`` on the leaf,
+        parking it — dispatch (``workers/dispatch.py``) only mints a
+        ``plan_tick`` for an ``llm_tier``-set leaf, and a stored JSON
+        ``null`` still satisfies its ``meta ? 'llm_tier'`` existence
+        check, so this deletes the key outright rather than nulling it
+        (gr439934).
+
+        ``meta={'params': {...}}`` replaces a todo's job params (gr504853
+        — the recurring-todo edit door: the schedule worker copies
+        ``meta.params`` onto every spawned tick, so this retunes a
+        recurring in place instead of delete + re-seed); ``{'params':
+        None}`` deletes the key. A recurring's params follow the
+        schedule's owner-only gradient (:func:`check_recurring_params_edit`
+        ). The write lands as an ``agent/meta_patched`` ref_events row
+        (view='log'). Every other meta mutation still goes through
+        ``tag(meta=...)``'s allowlisted promotion.
 
         ``mode='find-replace'`` / ``'insert'`` (gr478556) edit the details
         body in place: ``find=`` locates literal text (unique unless
@@ -1004,27 +1012,63 @@ class TodoHandler(NumericRefHandler):
                     ),
                 )
         unset_llm_tier = False
+        params_value: dict[str, Any] | None = None
+        clear_params = False
         if meta is not None:
-            if set(meta) != {"llm_tier"} or meta["llm_tier"] is not None:
+            extra_keys = set(meta) - {"llm_tier", "params"}
+            if extra_keys:
                 raise BadInput(
-                    "edit(kind='todo', meta=...) only accepts "
-                    "{'llm_tier': None} (park a leaf's auto-run tier)",
+                    f"edit(kind='todo', meta=...) only accepts keys 'llm_tier' "
+                    "(None parks the leaf's auto-run tier) and 'params' (a "
+                    f"recurring / executor todo's job config), not {sorted(extra_keys)}",
                     next=(
                         f"other meta mutations: tag(kind='todo', id={id}, meta={{...}})"
                     ),
                 )
-            unset_llm_tier = True
+            if "llm_tier" in meta:
+                if meta["llm_tier"] is not None:
+                    raise BadInput(
+                        "edit(kind='todo', meta=...) only accepts 'llm_tier' as "
+                        "None (park a leaf's auto-run tier), not a value",
+                        next=(
+                            f"to set a tier instead: tag(kind='todo', id={id}, "
+                            "meta={'llm_tier': 'opus'})"
+                        ),
+                    )
+                unset_llm_tier = True
+            if "params" in meta:
+                if meta["params"] is None:
+                    clear_params = True
+                elif isinstance(meta["params"], dict):
+                    params_value = meta["params"]
+                else:
+                    raise BadInput(
+                        "meta.params must be a dict, got "
+                        f"{type(meta['params']).__name__}",
+                        next=(
+                            f"edit(kind='todo', id={id}, meta={{'params': {{...}}}})"
+                        ),
+                    )
         has_text = text is not None and text.strip()
         has_body = body is not None and body.strip()
-        if not has_text and not has_body and not unset_llm_tier:
+        if (
+            not has_text
+            and not has_body
+            and not unset_llm_tier
+            and params_value is None
+            and not clear_params
+        ):
             raise BadInput(
                 "edit(kind='todo', mode='replace') requires text= and/or "
-                "body= (or meta={'llm_tier': None} to park the leaf)",
+                "body= (or meta={'llm_tier': None} to park the leaf, or "
+                "meta={'params': {...}} to retune a recurring / executor todo)",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
+        if params_value is not None or clear_params:
+            guards.check_recurring_params_edit(True, ref.meta)
         if dry_run:
             preview: list[str] = []
             if has_text:
@@ -1038,6 +1082,10 @@ class TodoHandler(NumericRefHandler):
                 preview.append("details body would be replaced")
             if unset_llm_tier:
                 preview.append("meta.llm_tier would be unset (parked)")
+            if params_value is not None:
+                preview.append("meta.params would be replaced")
+            if clear_params:
+                preview.append("meta.params would be cleared")
             return Response(
                 body=(
                     f"dry-run (no write) — would replace {' + '.join(preview)} "
@@ -1074,6 +1122,33 @@ class TodoHandler(NumericRefHandler):
                     "updated_at = now() WHERE ref_id = %s",
                     (ref_id,),
                 )
+            if params_value is not None or clear_params:
+                old_params = (ref.meta or {}).get("params")
+                if params_value is not None:
+                    # Whole-subtree replace (jsonb ||): the spawner copies
+                    # meta.params verbatim onto each tick, so a deep-merge
+                    # would leave deleted keys haunting every future tick.
+                    self.store.stamp_ref_meta(
+                        ref_id, {"params": params_value}, conn=conn
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE refs SET meta = meta - 'params', "
+                        "updated_at = now() WHERE ref_id = %s",
+                        (ref_id,),
+                    )
+                # Same audit shape quest's meta patch carries
+                # (agent/meta_patched, view='log').
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="meta_patched",
+                    payload={
+                        "old": {"params": old_params},
+                        "new": {"params": params_value},
+                    },
+                    conn=conn,
+                )
         parts: list[str] = []
         if has_text:
             assert text is not None
@@ -1084,6 +1159,10 @@ class TodoHandler(NumericRefHandler):
             parts.append("details body")
         if unset_llm_tier:
             parts.append("meta.llm_tier (unset, parked)")
+        if params_value is not None:
+            parts.append("meta.params (replaced)")
+        if clear_params:
+            parts.append("meta.params (cleared)")
         return Response(
             body=(
                 f"replaced {' + '.join(parts)} of todo id={ref.id}. "
@@ -1226,11 +1305,12 @@ class TodoHandler(NumericRefHandler):
         remove: list[str] | None = None,
         prio: int | None = None,
         meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         if isinstance(id, list):
             return self._tag_batch(
-                id, add=add, remove=remove, prio=prio, meta=meta, **_kw
+                id, add=add, remove=remove, prio=prio, meta=meta, reason=reason, **_kw
             )
         prio = _validate_prio(prio)
         # Auto-redirect long ask-user:/halt: values into a chunk so the
@@ -1338,8 +1418,11 @@ class TodoHandler(NumericRefHandler):
                 suffix = "prio=cleared (back to the default)"
             else:
                 suffix = f"meta={meta}"
+            # The prio/meta writes above committed on their own
+            # connections; the gr504803 audit row lands right after them.
+            self._record_tag_reason(ref_id, reason)
             return Response(body=f"set {suffix} on {self._sense()} id={ref_id}")
-        resp = super().tag(id=id, add=add, remove=remove, **_kw)
+        resp = super().tag(id=id, add=add, remove=remove, reason=reason, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
         # leaf flips to STATUS:done, append a ``status:done`` event
         # with the caller's source. Tag mutations on numeric refs are
