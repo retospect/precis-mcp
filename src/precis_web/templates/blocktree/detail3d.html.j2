@@ -31,6 +31,48 @@
 </details>
 {% endif %}
 
+{% if structures %}
+{# gr504809: whether and how each bound structure was relaxed, read off the
+   relax records (precis_web/relax_provenance.py). The description column is
+   the author's free text and is labelled as such: it is never read as a
+   recorded relax. #}
+{% set tone_cls = {
+  "success": "bg-success-subtle text-success-strong border-success",
+  "info": "bg-info-subtle text-info-strong border-info",
+  "warning": "bg-warning-muted text-warning-deep border-warning",
+  "danger": "bg-danger-subtle text-danger-strong border-danger",
+} %}
+<details id="bt3d-structures" open class="mb-4 rounded-lg border border-line bg-surface text-sm">
+  <summary class="cursor-pointer px-3 py-2">
+    <span class="font-semibold text-fg-secondary">Structures &amp; relaxation</span>
+    <span class="text-xs text-fg-subtle">— {{ structures_summary }}{% if read_only %} · the structures as they are now, not at revision {{ rev }}{% endif %}</span>
+  </summary>
+  <table class="w-full text-xs border-t border-line-subtle">
+    <thead class="text-fg-faint text-left">
+      <tr><th class="px-3 py-1 font-normal">block</th><th class="px-3 py-1 font-normal">structure</th><th class="px-3 py-1 font-normal">relaxation</th></tr>
+    </thead>
+    <tbody>
+    {% for s in structures %}
+      <tr class="border-t border-line-subtle align-top" data-block="{{ s.block }}" data-relax-state="{{ s.relax.state }}">
+        <td class="px-3 py-2 font-mono text-fg-secondary">{{ s.block }}</td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          {% if s.href %}<a class="text-info hover:underline" href="{{ s.href }}">{{ s.slug }}</a>{% else %}<span class="text-fg-subtle">{{ s.slug }}</span>{% endif %}
+          {% if s.handle %}<span class="text-fg-faint"> · {{ s.handle }}</span>{% endif %}
+          {% if s.version %}<span class="text-fg-faint"> · v{{ s.version }}</span>{% endif %}
+        </td>
+        <td class="px-3 py-2">
+          <span class="inline-block rounded border px-1.5 py-0.5 {{ tone_cls[s.relax.tone] }}">{{ s.relax.headline }}</span>
+          {% if s.run_href %}<a class="ml-1 text-info hover:underline" href="{{ s.run_href }}">run r{{ s.relax.run_id }} →</a>{% endif %}
+          <p class="mt-1 text-fg-subtle">{{ s.relax.detail }}</p>
+          {% if s.description %}<p class="mt-1 text-fg-faint" title="free text typed by whoever saved the structure; precis does not check it">description (free text, not checked): <span class="text-fg-subtle">{{ s.description }}</span></p>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
+
 {# The three scene-shaping controls are NOT a form any more: changing one
    swaps the scene in place (blocktree-3d.js's live-scene seam) instead of
    reloading the page and resetting the camera. They keep their `name`

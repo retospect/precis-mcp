@@ -148,7 +148,7 @@ from precis_se.ops import effective_ports as se_effective_ports
 from precis_se.pick import atom_hover_names
 from precis_surface.relax import angle_dev_by_atom, theta_p_by_atom
 from precis_surface.revolution import revolve
-from precis_web import design_chat, design_turn
+from precis_web import design_chat, design_turn, relax_provenance
 from precis_web.blocktree_3d import (
     CHANGED_COLOUR,
     Scene3D,
@@ -1059,13 +1059,23 @@ async def _view3d_page(
             status_code=404,
         )
 
-    def _load() -> tuple[_RevisionAxis, Tree[BlockNode, Any], dict[str, Any]]:
+    def _load() -> tuple[
+        _RevisionAxis,
+        Tree[BlockNode, Any],
+        dict[str, Any],
+        list[relax_provenance.BoundStructure],
+    ]:
         axis = _revision_axis(store, ref.id, rev)
         tree = _tree_at(store, kind, ref.id, axis)
-        return axis, tree, _revision_panel(store, ref.id, axis, tree)
+        # gr504809: each bound structure's relax verdict, read off the
+        # records (relax_provenance module docstring) — se only.
+        structures = (
+            relax_provenance.bound_structures(store, tree) if kind == "se" else []
+        )
+        return axis, tree, _revision_panel(store, ref.id, axis, tree), structures
 
     try:
-        axis, tree, revision = await asyncio.to_thread(_load)
+        axis, tree, revision, structures = await asyncio.to_thread(_load)
     except _NoSuchRevision as exc:
         return templates.TemplateResponse(
             request,
@@ -1197,6 +1207,10 @@ async def _view3d_page(
             "revision": revision,
             "chat": chat,
             "print_files": printable,
+            "structures": structures,
+            "structures_summary": (
+                relax_provenance.summary_line(structures) if structures else ""
+            ),
             "show_validate": show_validate,
             "validate_panel_url": f"/se/{quote(str(ref.slug), safe='')}/validate-panel",
             "validation_url": f"/se/{quote(str(ref.slug), safe='')}/validation-targets",

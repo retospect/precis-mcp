@@ -177,6 +177,15 @@ RUNG_INFO: dict[str, dict[str, str]] = {
             "no energy at all — that is why Energy reads an em dash, not 0."
         ),
     },
+    "geo": {
+        "label": "geometry repair with angles",
+        "where": "runs here, seconds",
+        "blurb": (
+            "Geometry repair that also restores bond angles: bond springs, "
+            "non-bond repulsion and an angle term set by each atom's "
+            "hybridization. Still no physics and no energy — not a force field."
+        ),
+    },
     "emt": {
         "label": "cheap approximate physics",
         "where": "runs here, seconds",
