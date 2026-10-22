@@ -105,9 +105,11 @@ once per dependency set.
 store access only through the existing persist path):
 
 - **Manifest** `out/manifest.json`: `{schema: 1, blocks: [{name, file,
-  scale: 'atomic'|'macro', ports?, relax?, desc?}], instances: [...],
+  scale: 'atomic'|'macro', ports?, relax?, desc?, frame?}], instances: [...],
   connects: [...], notes?}`. `additionalProperties: false`; a bad manifest
-  is the run's failure with `next=` naming the key.
+  is the run's failure with `next=` naming the key. `out/trace.json`
+  beside it is the run's construction trace (§Construction traces);
+  a missing trace imports with `trace.missing` INFO, never a refusal.
 - **Geometry files.** Atomic: `blocks/<name>.extxyz` (ASE is a core dep;
   `precis.structure` already exports extXYZ, the importer adds the reader
   beside `handlers/structure.py::_put_cif`). Macro: `blocks/<name>.cad.json`
@@ -192,6 +194,123 @@ method}})`; a hit gives the relaxed coordinates through the existing
 `fn` and `version` come from the core wheel (qualname + package version),
 so an agent module's function is cacheable only once promoted.
 
+## Construction traces — who made this atom
+
+Reto, 2026-10-22: "Any object in 3D space should have an origin — who
+made it. If it was made from code, it should have a stack trace. The
+stack trace is a first-class object — token efficient and navigable in
+se. Pick an atom and ask which stack trace put it here; navigate the
+trace and ask: this frame, which atoms did it place? Conversely, for a
+set of atoms: the most specific frame that placed them, and what else
+did it place."
+
+**The object.** A run's **construction trace** is a tree of **frames**.
+A frame is one call that placed or changed geometry: `{key, parent,
+qual, file, line, occ, kind, args, made, touched}`. `kind` is `user`
+(a function in `/work/**.py` — `main.py` and the agent's helpers),
+`core` (a public `precis-geom` function: `sheetnet.strip|pore|place|
+junction|assemble|decorate`, the layouts `prism|cells|...`,
+`precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance`,
+`precis_ws.out.block|instance|connect`), `module` (a promoted agent
+module's public functions) or `service` (relax, §Relax). Library
+internals (`join._seam_k3`, `_block_from_net`) never appear — they
+collapse into the public frame that called them. `occ` is the
+occurrence counter of this `(qual, line)` under the same parent, so the
+7th `junction` call in a loop is `#7`. `args` is a bounded digest: scalars
+and short strings verbatim, arrays and blocks as `<strip 48 atoms>`
+plus a sha8. `made`/`touched` are counts per entity type (atoms, bonds,
+instances, faces, blocks, ports) for the frame alone; the subtree sum is
+derived.
+
+**Stable key.** `key = sha8(parent.key, qual, line, occ)` — the path of
+call sites from the root. It does not depend on run id, memory address or
+atom count, so an unchanged script yields identical keys on every run;
+a loop that gains an iteration changes only the new sibling's key.
+Run-local ids are small ints interned in the trace; keys are what
+findings, diffs and selectors cite.
+
+**Capture.** In the core wheel, `precis_geom.trace`: a `@traced`
+decorator on every public primitive pushes a frame onto a context-local
+stack, and on entry walks `sys._getframe()` upward to mint the *user*
+frames between the previous traced frame and this call (filtered to
+`/work/**`; `sys.setprofile` is rejected — it instruments every call,
+2–5× on the agent's loops, and sees internals it would have to filter
+out). Cost: one frame walk of ≤ 20 Python frames per primitive call;
+primitives run hundreds of times per build, not millions. Every entity
+a primitive returns is stamped with the leaf frame's id (atoms and bonds
+on the `sheetnet` block / `Net`, instances on `Design`); a primitive
+that changes existing entities — `junction` fusing two rims,
+`decorate` relabelling carbons sp3 — records them in `touched` as
+ordinal ranges, not lists. `precis_ws.out` writes `out/trace.json`
+(`{schema: 1, run, frames: [...]}`) beside the manifest. `with
+trace("name"):` is optional sugar that names a user frame; nothing
+requires it. build123d scripts get frames only from the conversion
+call (OCP internals are untraced) — a known limit, stated in the skill.
+
+**Storage.** One trace per run, stored once as a chunk on the run job
+(≤ 64 KB typical; hard cap 20k frames — past 64 same-site childless
+siblings they run-length collapse into one frame with an `occ` range,
+and past the cap the importer still imports and emits
+`trace.truncated`). Per entity: **one small int**, the creator frame
+id — atoms as a per-atom column of the structure (`maker`, beside the
+extXYZ `label` column `precis.structure.export::to_extxyz` already
+carries, so it rides relax versions), bonds in the bond table, cad
+instances on `Instance`, se blocks/ports/connects in the manifest entry.
+Faces and edges are derived from instances (`primitives.Face.tag` +
+instance), so face → instance → frame. Modifier frames are not stored
+on the entity: "which frames changed this atom" is a scan of the run's
+`touched` ranges, served from the one stored trace. Every block's
+`generated.trace = {run_job, root}`.
+
+**Queries, as se views** (`get(kind='se', id=..., view='trace', args=...)`):
+
+| ask | args | rendering (tokens) |
+|---|---|---|
+| atom → who put it here | `{'atom': 'p/w3/(2,1,A)'}` (an `AtomPath`, ordinal or `#uid:path`) | one line per frame root→leaf: `main.py:12 build → main.py:30 bundle(R=4,P=6) → cells(cells=3,fold_h={core:reflex}) → assemble → junction(k=2,fold,R)#7 · made 24 atoms 48 bonds, touched 96` (~20 tokens per frame, ≤ 8 frames) |
+| frame → what it placed | `{'frame': '<key>'}` | the frame line, `made`/`touched` counts for it and its subtree, children as one line each with counts, three sample paths, and the selector `frame:<key>` — never the atom list |
+| set → most specific frame + what else | `{'atoms': <selector or list>}` | the LCA over the frame tree of the set's creators, coverage (`covers 20/20; it also made 4 not in your set → frame:<key>/rest`), and the sibling frames the set strays into |
+| atom → who changed it | `{'atom': ..., 'touched': true}` | the creator line plus one line per modifier frame (junction fuse, decorate, relax) in event order |
+| run vs run | `{'against': <run_job>}` | by key: frames added / removed / with changed `args` or `made` counts; unchanged subtrees fold to one line |
+
+**Selector.** `frame:<key>` joins the `patch:/ring:/sites:/atoms:`
+family (`precis-se-regions-help`): the atoms the frame's subtree made
+(`frame:<key>/touched`, `/rest` as above; `frame:<key>!` the frame alone,
+not its children). Pockets, measures, `validate` scope, render highlight
+and `clearance` then take a frame like any region, so no view needs a
+trace-specific code path.
+
+**Findings close the loop.** Every atomic finding's subject is already
+an atom path (`atomic/validate.py` `subject=path_str`); the report gains
+a `frame` column rendering the nearest *user* frame of the subject's
+creator — `prism.hcol.clash  p/w3/H/(2,1,A)  main.py:30 bundle → junction#7`
+— so the agent reads a finding and knows the script line to edit. Macro
+findings (`drc`, `clearance`, `freedom`) subject blocks and ports; the
+same column resolves through the manifest entry's frame. A set of
+findings → LCA gives "the one call that made all the clashing atoms".
+
+**Both scales.** Atomic: atoms, bonds. Macro: cad instances and the
+named components, faces/edges by derivation, se blocks/ports/connects by
+their `out.*` call. Surviving small ops (`add_block`, `set_pose`,
+`connect`) write an `op` frame (parent root, the `tool_ledger` call id as
+`line`) so "who made it" has one answer at both paths (§Guardrails, one
+way).
+
+**Relax.** Relax never changes identity: relaxed atoms keep their
+creator frames (the relax job writes the scene's next version in place,
+`hexfold_relax_job.py` write-back). The importer appends a `service`
+frame `relax(gfn2, periodic)` with `touched` = atoms displaced > 0.01 Å,
+`made` = none; a cache hit copies that frame from the cached variant
+with `args.cache = hit`. So "who moved this atom" lists the relax after
+the junction that placed it.
+
+**Risks.** *Trace bloat*: a per-atom loop calling `decorate` 2k times —
+the sibling collapse and the cap above; the echo says how many frames
+collapsed. *Nondeterministic keys*: keys never include ids or addresses;
+`args` digests format floats `%.6g` and hash arrays by content. *Agent
+reads a traceback*: no view renders internals, file paths outside
+`/work`, or more than the frame line. *Cost*: measured in slice 2 beside
+the latency number; the budget is < 5 % of build time.
+
 ## Packaging
 
 - **Core packages** (maintained, golden-tested, in this repo): `hexfold`
@@ -248,7 +367,8 @@ call outside tests, the op refuses with `next=` naming the workspace path
 Inspection stays and grows in MCP: `validate`, `drc`, `clearance`, `sites`,
 `catalogue`, `mold`, `stability`, `freedom`, renders, `view='block'` now
 rendering the workspace provenance with the one `run` call that reproduces
-the block.
+the block, and `view='trace'` with the `frame:` selector (§Construction
+traces).
 
 ## Guardrails, checked
 
@@ -269,13 +389,14 @@ the block.
 
 | # | delivers | extends | acceptance | size |
 |---|---|---|---|---|
-| 0 | **Importer + goldens, no container.** `precis_se/workspace_import.py`, manifest schema, extXYZ reader, cad graph import, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/hexfold/data/goldens`, findings) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated`; a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; goldens pass on main | M, 1 build |
+| 0 | **Importer + goldens, no container.** `precis_se/workspace_import.py`, manifest schema, extXYZ reader (with the `maker` per-atom column), cad graph import (`frame` on instances), `trace.json` reader stored once on the run, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/hexfold/data/goldens`, findings, trace key set) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated` (incl. `trace`); a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; a 25k-frame trace imports with `trace.truncated`; goldens pass on main | M, 1 build |
 | 1 | **Workspace kind + `run`.** `folder`-backed workspace ref with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s` | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease) | L, 2 builds; needs sandbox slice 4 (lane live) |
-| 2 | **`precis-geom` wheel, index dir, warm venv.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item) | M, 1–2 builds |
+| 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item, trace overhead < 5 % of build); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
+| 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
 | 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks; then the retirement clock starts | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
-| 4 | **Relax interface, atomic + cache.** Manifest `relax:`, `relax_cache` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal` | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params | M, 1 build; GFN2 route is the known dependency |
+| 4 | **Relax interface, atomic + cache.** Manifest `relax:`, `relax_cache` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal` | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params; relaxed atoms keep their creator frames and the trace gains one `service` frame whose `touched` equals the displaced set | M, 1 build; GFN2 route is the known dependency |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
-| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
+| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
 | 7 | **CI goldens for core scripts.** Each core generator gets an `examples/` script whose output goldens (counts, SHA, findings) run in `scripts/test` without a container — the multicell slice-0 goldens become this | `tests/workspaces/`, `scripts/impacted-tests` | A change to `sheetnet` that alters a golden fails the selected test naming the script | S per generator, with each slice |
 
 Later, named: agent-inside-container (socket bridge for `mode:build`);
@@ -336,3 +457,17 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 6. **Agent-in-container.** Stay out until a case needs file-level
    iteration faster than edit+run (recommended); the socket bridge is the
    only missing piece when it does.
+
+Construction traces (§Construction traces):
+
+7. **Where the per-atom frame id lives.** A per-atom `maker` column on
+   the structure (recommended: rides extXYZ and relax versions, one int
+   per atom) vs a side table `(structure, ordinal) → frame`.
+8. **Which user frames count.** Every `/work/**.py` frame (recommended —
+   the agent's helpers are what it edits) vs `main.py` top level only.
+9. **Loop collapse.** Collapse past 64 childless same-site siblings and
+   keep importing (recommended) vs never collapse and refuse past the
+   frame cap.
+10. **Op frames for the surviving small ops.** Write an `op` frame per
+    `add_block`/`set_pose`/`connect` so every entity has one maker
+    (recommended, minimal) vs leave them on `generated.generator` alone.
