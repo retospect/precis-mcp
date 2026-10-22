@@ -444,3 +444,20 @@ backup? But KISS minimal otherwise."
    shares are dropped as separate shares (they are folders in `cluster`).
    Still kept from the proposal because it is a local-disk change, not a
    share: no scripts that root runs live on NFS.
+9. **The DB node is the database and nothing else.** Reto: "I concur with
+   caspar db only ... File server can go if we no longer need it." Its NFS
+   export retires in phase 5 once no client mounts it. Two DB-node changes
+   ride with this plan:
+   - Its nightly `daily-update-reboot.sh` installs nothing: on Apple
+     silicon a scripted `softwareupdate --install` needs a user's
+     credentials, so the node sat on 26.4 while rebooting every night.
+     Replace it with manual minor updates in a planned window and
+     automatic Security Responses. Dropping the nightly reboot needs a
+     check of what else relies on it.
+   - Pin the database stack in Homebrew (`postgresql@17`, `pgvector`,
+     `pg_cron`, `libpq`) so only a deliberate upgrade with a planned
+     restart moves it. The 2026-10-22 window did 17.9 → 17.11 that way.
+   - Shares created and verified 2026-10-22: `cluster` and `dbbackup`
+     exist with the rules above, the roots belong to deploy, and a mount
+     test from two Macs passed (deploy writes, root refused, `dbbackup`
+     writable from the DB node only).
