@@ -488,6 +488,8 @@ pcb), parametric generator authoring in the wheel, `keepout` binding
 
 ## Open questions for Reto (with recommendations)
 
+**Ruled (Reto 2026-10-22): all six approved as recommended.**
+
 1. **Retire the batch construction put for agents in slice 1, W5-style,
    or keep it until the first prod board is workspace-built?** Rec:
    retire in slice 1 (the ruling's reasoning holds — dev-only users, no
