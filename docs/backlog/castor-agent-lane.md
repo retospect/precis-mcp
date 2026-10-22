@@ -410,6 +410,13 @@ handler contract change, no prod data writes from the lane itself.
 
 ## Open questions / decisions log
 
+**Ruled (Reto 2026-10-22):** recommendations approved, with one change:
+start with **one** castor builder at a time, not 8 ("Lets try castor with
+1 channel ... Evaluate for a while ... one at a time, to see"). Raise the
+budget only after the pilot and a period of single-channel use look
+satisfactory; a second spark-class host with the same model is the
+option for more coding capacity. EAGLE3 stays off. Slice 0 starts now.
+
 1. **Priority field name.** SGLang documents the server-side flags but
    not the per-request field in the OpenAI-compatible body; confirm
    against the image's protocol before slice 4 (recommend: probe
