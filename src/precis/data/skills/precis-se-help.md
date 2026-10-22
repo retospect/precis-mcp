@@ -475,6 +475,8 @@ share an id (diffed as a multiset).
 
 See [[precis-se-atomic-help]].
 
+The construction ops `generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces, not new ops.
+
 Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
 and a binding into a real `structure` design.

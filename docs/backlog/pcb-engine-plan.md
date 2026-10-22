@@ -89,6 +89,8 @@ user's and are **settled** — this file sequences them, it does not relitigate.
    courtyard is a `keepout` derived from `body`. `span` is full-stack only.
 7. **`put` returns delta + bounded exceptions**, via the read renderer with a
    scope parameter. Plus a removal path (`op='disconnect'`, `op='remove'`).
+   **Removal path SUPERSEDED by [pcb-workspace-code](pcb-workspace-code.md)
+   (Reto 2026-10-22):** delete the script line; the run retires the rows.
 8. **Producer/consumer ledger test** — every IR field, schema column and move
    kind needs a mechanically asserted producer AND consumer.
 

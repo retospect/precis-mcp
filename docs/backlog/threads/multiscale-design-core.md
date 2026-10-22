@@ -39,13 +39,9 @@ implicitly waiting on.
    chemistry residue (synthesis routes must terminate in stock; fragment
    scores); ranked in chemistry (13), listed here because the make tree
    it extends is this thread's.
-3. **backlog/structure-workspaces.md** — `prio: high`; scripts build
-   structures in the sandbox, se imports with provenance, relax is a
-   cached service at both scales (Reto 2026-10-22 approved direction,
-   Fable spec). Supersedes se-modules-and-assemblies.md (kept as a stub
-   until its slice 6). Slice 0 (importer + goldens) needs nothing above
-   it; slice 1 waits on sandbox-python-script slice 4 (factory thread) and
-   the proof slice on hexfold-multicell-prism slice 3.
+3. (structure-workspaces moved to its own thread,
+   [structure-workspaces.md](structure-workspaces.md), 2026-10-22; no longer
+   held behind pattern-groups.)
 4. **backlog/multiscale-design-system-spec.md** §5.4 — carve the inspection
    toolkit v1 as its own item; Reto 2026-10-21 named it the first carved
    slice (step 2 of the decided build order).

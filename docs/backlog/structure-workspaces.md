@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Structure workspaces — scripts build in a sandbox, se stores and inspects, relax is a service
 pillar: 3d-design
 prio: high

@@ -6,6 +6,11 @@ model: opus
 pillar: 3d-design
 ---
 
+> **SUPERSEDED by [pcb-workspace-code](pcb-workspace-code.md) (Reto
+> 2026-10-22).** Level 1 (schematic blocks) is a `@pcb.module` in a
+> workspace script; level 2 (pre-routed bundles) is its placed-module cache.
+> `op='instantiate_block'` is not built.
+
 # pcb meta-blocks (design reuse)
 
 Design session 2026-09-10 (Reto + agent), zippy-booping-sky worktree.

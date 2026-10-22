@@ -67,6 +67,8 @@ on an existing board, not a source-board importer; it never adds copper.
 
 ## Author a design — `put(id=<slug>, args={…})`
 
+The batch `put` keys and the construction ops (`class_rules`, `stackup`, `plane_net`, `profile`, `pins`, `pin_rename`, `pin_remove`, `corner_nuts`) still work but are being retired when pcb workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the design), not new ops.
+
 **Batch, re-runnable.** One `put` lays down components (with pins), nets, and
 connections in one transaction; re-`put`ting the same slug **extends** it
 (existing refdes/net names are reused, not duplicated).

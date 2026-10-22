@@ -138,6 +138,10 @@ machinery exists; nothing pushes it. First exception to wire into Gap 1.
 
 ## Gap 5 — there is no removal path at the authoring surface
 
+> **SUPERSEDED by [pcb-workspace-code](pcb-workspace-code.md) (Reto
+> 2026-10-22):** removal is deleting the line in the workspace script; the
+> run retires the rows. `op='remove'`/`'disconnect'` are not built.
+
 *Found by the Fable review; missed by the roleplay walkthrough that this
 whole item is built on.*
 

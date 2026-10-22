@@ -205,9 +205,17 @@ north-star spec needs; reactivated 2026-10-17) · `chemistry.md`
 (created and activated 2026-10-01, catalysis first) · `pcb-platform.md`
 (active 2026-10-17) · `nanoreactor.md` (active 2026-10-17: the
 instrumented NO→NH₃ carbon nanoreactor, its T0–T6 design toolchain and
-`pocket-from-molecule`). Dormant: `multiscale-design-core.md`.
+`pocket-from-molecule`) · `structure-workspaces.md` (active 2026-10-22:
+code-first structure and pcb workspaces). Dormant: `multiscale-design-core.md`.
 
-**Surfaces.** Agent: a design reads out as a replayable op list and an
+**Direction** (Reto, 2026-10-22): designs are built by Python scripts run
+in sandboxed workspaces, every row carrying its call-site frame and
+`script_sha`; MCP keeps inspection, place/route and small edits
+(`backlog/structure-workspaces.md`, `backlog/pcb-workspace-code.md`,
+thread `structure-workspaces.md`).
+
+**Surfaces.** Agent: a design reads out as the workspace script that built
+it (per-row call-site provenance) plus the small-edit op list, and an
 intent statement is authorable. Human: click any block and read its pose,
 envelope, ports, properties, findings and load path in one panel.
 

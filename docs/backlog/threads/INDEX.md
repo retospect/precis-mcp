@@ -63,7 +63,8 @@ Waits:
 ## se — 3D modelling, chains, hexfold, machine design
 
 Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
-`se-machine-design.md` · `multiscale-design-core.md`
+`se-machine-design.md` · `multiscale-design-core.md` ·
+`structure-workspaces.md`
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
@@ -81,8 +82,9 @@ Seams:
 - se-machine-design also owns `backlog/pcb-se-binding.md` and
   `backlog/pcb-argue-with-design.md` — the mm→m crossing between se and
   pcb — not ewod-pcb or pcb-platform.
-- `backlog/structure-workspaces.md` (multiscale-design-core Do-next 3)
-  runs on the factory thread's `sandbox_run mode:script` lane
+- `backlog/structure-workspaces.md` and `backlog/pcb-workspace-code.md`
+  (thread `structure-workspaces.md`; pcb-platform Do-next 1 points at it)
+  run on the factory thread's `sandbox_run mode:script` lane
   (`backlog/sandbox-python-script.md` slice 4) and consumes
   hexfold-toolkit's `sheetnet` layer as its core API; it owns the import
   boundary and the relax interface, factory owns the container.

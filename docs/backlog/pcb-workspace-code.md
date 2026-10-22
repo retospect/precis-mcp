@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: PCB workspaces — netlists and modules built by code, place/route as cached services, DRC in MCP
 pillar: 3d-design
 prio: high

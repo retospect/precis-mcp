@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`, gr488907) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0; brief ready, launch owed by Reto), then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`, gr488907) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -388,7 +388,9 @@ removed as met — the transport move it waited on happened 09-29)
        R ≳ 12 Å. At least 2 dev cycles (the grammar, then the rows), not
        yet scoped.
 
-1a. **backlog/hexfold-tethered-relax-op.md (slice 0, first) and
+1a. **HELD for re-scope against structure-workspaces slice 4p (Reto
+   2026-10-22; launch not to be queued until re-scoped).**
+   **backlog/hexfold-tethered-relax-op.md (slice 0, first) and
    backlog/hexfold-scene-grammar-from-primitives.md (the grammar,
    blocked-by slice 0)** (Reto ruled YES 2026-10-07, via chat-interface;
    both draft, model opus; the readiness vet of 2026-10-07 said
