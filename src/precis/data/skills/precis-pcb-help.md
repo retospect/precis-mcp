@@ -8,7 +8,6 @@ answers:
   - how do I place and route a board (op='place'/op='route')?
   - how do I export a BOM/CPL/DSN or route the board?
   - how do I read a PCB design as a graph — pins, nets, neighbours?
-  - view='drc' reports synthesized_footprint — how do I fix it?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
 status: active
 tags: [design]
@@ -38,7 +37,8 @@ board; `view='links'` reads them back).
 
 Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
 `op=` surface, once the netlist exists), [[precis-pcb-check-help]] (the
-check surface — view='check', phases, finding delta, ERC),
+check surface — view='check', phases, finding delta, ERC, missing
+footprints and pin repair),
 [[precis-pcb-fab-help]] (export views, the JLCPCB fab package/order, the
 availability sweep, the CAD-enclosure bridge), [[precis-part-select-help]] (pick
 real parts), [[precis-net-class-help]] (name + classify nets),
@@ -405,118 +405,12 @@ distances), stores one `answer` note `re=` the question,
 interference concerns, an honest "not modelled" for what the evidence
 can't settle.
 
-## Fill in a missing footprint — `op='footprint'`
+## Footprints and pin repair — [[precis-pcb-check-help]]
 
-`view='drc'` reporting `synthesized_footprint` means a catalog `part=`
-instance has no cached pad geometry — it was DRC'd at a fabricated bound,
-not its real footprint, so every other finding on that refdes is a guess.
-Pull the real one:
-
-```python
-get(kind="pcb", id="s", view="drc")  # -> synthesized_footprint: part U1
-put(kind="pcb", id="s", args={"op": "footprint", "part": "C639448"})
-get(kind="pcb", id="s", view="footprints")  # confirm U1's C-number is cached
-```
-
-`parts=[...]` pulls several C-numbers in one call; a failed pull reports
-`error` in that part's own row instead of raising, so one bad C-number
-doesn't lose the rest. `force=True` re-pulls even when already cached.
-
-The real footprint always wins and is stored. Router copper it now collides
-with is ripped (`<net> ripped: … — re-route`); pad or placement collisions
-are listed as `now visible (real footprint)` and stand until a re-place. The
-cache is shared, so the reply also names other designs using the part.
-
-**Pads are not pins.** A pin is an electrical name the netlist declares and
-wires (`pins`/`connections`, pin swaps, `pin_to_net` by name); a pad is
-copper the footprint owns, keyed by pad number. Once a real footprint is
-cached, every one of its pads is on the board — rendered, gerber'd, claimed
-on the router's grid and clearance-checked — whether or not a pin names
-it: an NC lead, an unused corner land, a second tab the footprint numbers
-like the first. A pad whose name matches a declared pin carries that pin's
-net (two pads sharing one name are two lands of one pin, bonded inside the
-part); any other pad is net-less copper nothing may route through. Pad
-count therefore equals the footprint's pad count, however many nets touch
-the part; `view='drc'` names an unwired pad it hits by its footprint label.
-
-Since Slice 2 (pcb-lazy-netlist-and-checks.md) **every footprint pad is
-also a declared pin**: `put` completes a component's pin list from the
-cached footprint's `pin_map` (the reply's `pins_completed` counts them; a
-re-`put` completes a part whose footprint arrived later). A declared pin
-with no net and no marker is an `unconnected_pin` finding — `warn` while
-the board is being worked, `error` at fab phase; `nc`/`unused` silence it,
-`must_terminate` upgrades it to an error. A footprint pad no pin claims at
-all is `undeclared_pad`, and a part whose footprint is not cached reports
-NOT-CHECKED — never a clean pass.
-
-`pin_name_mismatch` is a different finding: the footprint IS cached, but
-a declared pin name matches none of its pads, so that pin still sits at a
-synthesized bound. Re-pulling cannot fix it; rename the pin. A design
-`put` and `view='footprints'` both list the declared names beside the
-footprint's own (`U_TEMP: declared VDD; the footprint names ADD0, ALERT,
-GND, SCL, SDA, V+`).
-
-When the vendor has nothing for a C-number, author the footprint directly
-instead — same pad shape as `footprints:[...]` in `put`'s design-authoring
-args:
-
-```python
-put(
-    kind="pcb", id="s",
-    args={"op": "footprint", "part": "C999999",
-          "footprint": {"pads": [{"pin": "1", "shape": "rect", "x": -0.5, "y": 0, "w": 0.6, "h": 0.8}, ...]}},
-)
-```
-
-A footprint dict takes `name`, `pads`, `pin_map`, `courtyard`, `centroid`,
-`note` and `holes`; any other key is refused. `holes` is a list of
-non-plated standoff/peg holes `{x, y, dia_mm}` in footprint-local mm (same
-frame as the pads): they move, rotate and flip with their part, and reach
-the drill file, DRC and the router at the part's current pose. A
-`put footprints` entry replaces the whole footprint: omit `holes` (or the
-courtyard) and the stored ones are cleared, so re-send them with every edit.
-
-`view='footprints'` lists every catalog-part instance on the board
-(refdes, C-number, cached?, source, pad count) — the read-side counterpart,
-and where to check before trusting a `view='drc'` pass on that part.
-
-## Fix a wrong pin name — `op='pin_rename'` / `op='pin_remove'`
-
-A connection pin that is a pad NUMBER of a cached footprint is wired to
-that pad's pin name. A pin already declared wrong:
-`args={'op':'pin_rename','refdes':'U1','pin':'8','to':'GND'}` keeps its
-connection; if `to` exists, `op='pin_remove'` the wrong pin (its
-connection goes too) and re-put the connection.
-
-## Annotate pin semantics on an existing part — `op='pins'`
-
-A re-`put` never edits pins (create-or-extend only), so the pin facts the
-ERC rules read — `etype`, `rail`, `max_voltage_v`, `vih`, `vil`,
-`max_current_a`, `current_role` (`series`|`shunt`|`signal`), `nc`,
-`unused`, `must_terminate`, `min_dielectric` — are annotated after the
-fact, one refdes per call:
-
-```python
-put(kind="pcb", id="s", args={
-    "op": "pins", "refdes": "U7", "source": "datasheet p.12",
-    "pins": [{"name": "VDD", "etype": "power_in", "rail": "3v3",
-              "max_voltage_v": 3.6, "max_current_a": 0.5},
-             {"name": "SDA", "etype": "bidi", "rail": "3v3"}]})
-```
-
-`name` must be one of the component's real pins — a bad one refuses the
-call and lists them. Re-sending the same values is a no-op
-("already as declared"); `null` clears a field, `pad` is refused (pad
-binding stays with canonical-name authoring). `source` says who or what
-asserted the fact (a datasheet page, `import`, a hand check) and is
-recorded per pin; the `args.source` above applies to pins without one.
-Annotating `max_current_a` without `current_role` still checks it against
-the net's `current` — `shunt` is the only exemption (a tap, not the
-through-path). `min_dielectric` (`x7r`, `c0g`, …) on a `power_in` pin is
-the datasheet's "CIN ≥ X7R"-style requirement: `passive_rating` holds
-every capacitor on the pin's rail to it. The rating side needs no
-annotation — a part carrying a C-number gets value/dielectric/rating
-parsed from its catalog description, shown as `derived:` on `#REFDES`.
+Fill in a missing footprint (`op='footprint'`, the `synthesized_footprint`
+fix), pads vs pins, fix a wrong pin name (`op='pin_rename'`/`'pin_remove'`)
+and annotate pin semantics (`op='pins'`):
+`get(kind='skill', id='precis-pcb-check-help')`.
 
 ## Place and route it — `put(args={'op':'place'|'route', …})`
 
