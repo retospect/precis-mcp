@@ -365,6 +365,57 @@ subspace per fin count; a CI golden like the two flow examples. Gradients:
 sensitivities, a later slice); the tracer is Monte-Carlo and
 non-smooth, so flow cases anneal.
 
+### Bracket example (slice 2; Reto 2026-10-22 "seems right")
+
+`examples/workspaces/bracket/` fits a part to existing blocks — the
+third workspace example, after the two flow ones and the fin. Design
+`mount`: block `base` anchored, with threaded ports `h1`–`h3` (role
+`fastener`, direction = hole axis, annotations `{thread: 'M5x0.8',
+depth}`); block `carriage` floating at an offset with ports `h1`–`h2`.
+The recipe references ports **by name**, never coordinates:
+`{context: {design, version, anchor_ports, payload_ports,
+keepout_blocks}, load: {mass_from: 'carriage', g: 5, directions: 'all6'
+| one direction}, material, process, fastener, safety_factor,
+features}`; the server stages the named blocks as
+`/work/in/context.json` (structure-workspaces §The loop).
+
+- **build**: pads at the ports, normal to the port direction;
+  clearance holes from a fastener table (new in `precis_geom`:
+  clearance diameters and standard screw lengths per thread); a web
+  inside the allowed space minus the keepouts.
+- **evaluate**: `physics=['elastic']`, anchors `fixed`, `mass × 5 g`
+  per direction as `force` at the payload bolt contacts → peak stress /
+  safety factor, deflection, per-feature utilisation (`attribution`,
+  se-flow-kernel 4b); fit checks from the kit, not the solver: no
+  interference with keepouts (`cad/relate.py`), minimum clearance, each
+  hole coaxial with its port within tolerance.
+- **search**: ESO/BESO-style rib add/remove on the feature graph, or
+  anneal; **mass** is the script's objective; stress, deflection and
+  fit are hard.
+- **output**: block `bracket` with ports `a1`–`a3`, `p1`–`p2`
+  (clearance-hole mirrors of the anchor and payload ports), five
+  connects `bracket.aN—base.hN` / `bracket.pN—carriage.hN` emitted from
+  the manifest (`out.connect`); declared measures re-checked on import;
+  an optional BOM of 5 M5 screws with lengths from the bolt-axis rays;
+  stored rays (`bolt_axis` ×5, `tool_access` bundles ×5, `load_path`
+  ×2, `manufacturability`; structure-workspaces §Macro leg); recipe +
+  summary + final trace.
+- **later edit**: moving `base.h2` changes the context version → the
+  bracket is stale → a plain rebuild follows the port; `search` runs
+  only if the limits then fail; `ray.changed` on `bolt-a2` names what
+  moved.
+
+Acceptance (`tests/workspaces/test_bracket.py`, no container; the
+elastic rows of §Verification cover the solver): the start design
+(solid web) passes every hard bound; the search's best has lower mass
+than the start and every accepted state holds stress, deflection and
+fit; the five connects import and `view='clearance'` on `mount` is
+clean; each `bolt_axis` ray reports engagement ≥ 1.5 d and a standard
+screw length, the BOM lists them; `tool_access` bundles hit nothing; a
+1 mm move of `base.h2` followed by `run` rebuilds without search,
+re-fits, and reports `ray.changed` on `bolt-a2`; `pga.find_holes` on a
+copy of `base` without ports proposes `h1`–`h3`.
+
 ## Server-side independent re-check on import
 
 The importer (`precis_se/workspace_import.py`, structure-workspaces
@@ -414,7 +465,7 @@ are measured and written into this item.
 | # | delivers | extends | acceptance | size |
 |---|---|---|---|---|
 | 1 | **Scalar family + Joule.** `src/precis_fields/` (`grid.py`, `fv.py` N-d — absorbs multiphysics's `precis_flow.fv`, `physics.py` registry with heat/dc-current/electrostatics/species/darcy, `coupled.py` Picard + Joule, `card.py`, `solve.py` direct/cg/amg); `precis_geom.fields.grid_from_design` (SDF from `component_sdf_np`), `precis.cad.patch` (resolver moved out of `datums.py`), `precis_geom.physics.evaluate` gains the scalar names; `src/precis_se/fields.py` (`fields:` token, BC measures → kernel BCs, material rows → coefficients, `FIELDS_COMPUTERS`, `view='fields'`), `_LAZY_TABLES['fields']`, the `fields_solve` job type + request table reuse, measurand seed migration + `resistivity_temp_coeff` as a core material property (migration; `precis-material-help`), the `material=` block attribute (manifest + import; `set_mode` half as fallback) with the value-selection rule, import-linter contract for `precis_fields`, the fields section of `precis-workspace-optimize-help`, BC lines in `precis-se-regions-help`, the heat example `examples/workspaces/fin-heat/` (§The toolkit) | `precis_se/properties/__init__.py`, `precis_se/datums.py`, `precis_se/drc.py` hard gate, `workspace_import.py` re-check, `packaging/geom/`, `handlers/material.py` (value selection) | every analytic case in §Verification up to Darcy passes at its tolerance with its order recorded; fv parity 1e-12 on the hex chamber; a hard `max-temperature ≤ 350 K` on a wire that reaches 400 K is a DRC finding; a missing `electrical_resistivity` gives a reason, never 0; a material with two sourced `thermal_conductivity` rows at 300 K and 500 K picks the closer temperature and the card cites that row; `evaluate` twice is bitwise equal; a 128³ request inline refuses naming `budget='job'`; the job lane solves it and the next run reads it; bytes/cell at 64³ and 128³ written into this item; a tampered manifest value yields `measure.script_mismatch`; the fin-heat golden's best `thermal-resistance` is below the start's and every accepted state holds the hard bound | L, 2–3 builds; after structure-workspaces slice 2 and se-flow-kernel slices 4a–4b (the toolkit entry, the kit and the skill exist) |
-| 2 | **Thermoelastic via scikit-fem.** `precis_fields.mesh` (marching-cubes surface → `gmsh` PyPI wheel imported in-process → mesh arrays via its Python API, version recorded on the card; hex fallback from the cut-cell grid), `precis_fields.elastic` (P1/P2 vector problem, λ/μ from E/ν, thermal strain from the slice-1 `T`, BCs `fixed`/`displacement`/`traction`/`force`, rigid-body near-nullspace for AMG), the `elastic` card group, outputs `max-displacement`/`max-von-mises`/`reaction-force`/`safety-factor`; `[fields]` extra (`scikit-fem`, `gmsh`, optional `pyamg`) installed in the job image only — the MCP process never imports gmsh | `pyproject.toml`, `deploy/` job image, `view='fields'` | the five slice-2 verification rows pass; P1-vs-P2 locking recorded on the cantilever; the FEniCSx bimetal cross-check ≤ 2 %; a yield exceedance is `stress.yield_exceeded` with the element's position; the hex fallback runs the uniaxial bar without gmsh | M–L, 2 builds; after 1 |
+| 2 | **Thermoelastic via scikit-fem.** `precis_fields.mesh` (marching-cubes surface → `gmsh` PyPI wheel imported in-process → mesh arrays via its Python API, version recorded on the card; hex fallback from the cut-cell grid), `precis_fields.elastic` (P1/P2 vector problem, λ/μ from E/ν, thermal strain from the slice-1 `T`, BCs `fixed`/`displacement`/`traction`/`force`, rigid-body near-nullspace for AMG), the `elastic` card group, outputs `max-displacement`/`max-von-mises`/`reaction-force`/`safety-factor`; `[fields]` extra (`scikit-fem`, `gmsh`, optional `pyamg`) installed in the job image only — the MCP process never imports gmsh; the **bracket example** (§Bracket example: `examples/workspaces/bracket/`, the fastener table in `precis_geom`, `pga.find_holes`, `/work/in/context.json` staging and macro rays per structure-workspaces) | `pyproject.toml`, `deploy/` job image, `view='fields'`, `workspace_import.py` (context staging), `precis_geom.assembly` | the five slice-2 verification rows pass; P1-vs-P2 locking recorded on the cantilever; the FEniCSx bimetal cross-check ≤ 2 %; a yield exceedance is `stress.yield_exceeded` with the element's position; the hex fallback runs the uniaxial bar without gmsh; the bracket acceptance list in §Bracket example | M–L, 2–3 builds; after 1; the bracket after structure-workspaces 2r (macro rays) |
 | 3 | **Advection coupling with the flow kernel.** The fluid cells of a thin-gap chamber carry `U` from `precis_flow` (re-dimensionalised via the scale triple), species/heat advect in the fluid and conduct in the solid (conjugate heat transfer), interface continuity through the harmonic face; `peclet` cell line on the card; TVD limiter as multiphysics slice 1 | `precis_fields.fv` advection term, `precis_se/fields.py` + `flow.py` | the multiphysics slice-1 Taylor-dispersion case run as a 3-D fluid-plus-wall grid agrees with the depth-averaged result within 5 %; a heated wall under a flowing chamber reproduces the Nu = 8.23 plate coupling within 5 % | M, 2 builds; after 1 and multiphysics slice 1 |
 
 Later, named: transient (implicit Euler / Crank–Nicolson on the same
