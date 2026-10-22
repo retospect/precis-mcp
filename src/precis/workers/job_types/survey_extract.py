@@ -14,6 +14,16 @@ by. A re-run of the same paper re-derives the same literals on the same
 spans and the store's duplicate refusal turns them into skips, so the
 pass is idempotent.
 
+The slice boundary is the pacing: after ``chunks_per_slice`` chunks the
+job parks on a ``Yield`` and waits out a full coordinator claim cycle —
+minutes per slice on a busy worker, which priced a 634-chunk paper at
+~10 h on the castor pilot (jo504632). That park only exists to throttle
+a remote/paid endpoint, so it is rung-aware: once a routed call lands
+``local`` (no external rate limit, no metered cost) the dispatch skips
+the inter-chunk park and runs the paper to completion — a crash then
+re-runs the paper, cheap under the idempotent dup-skip. A remote or
+unknown placement keeps the per-slice park.
+
 When every chunk is read the job spawns one ``measure_accept`` child
 and waits on it. ``measure_accept`` draws the deterministic stratified
 sample (:mod:`precis.extract.accept`), has a frontier-tier model review
@@ -383,11 +393,14 @@ def _process_chunk(
     model_pin: str | None,
     stats: dict[str, int],
     escalations: list[dict[str, Any]],
-) -> str | None:
-    """One chunk end to end. ``'paused'`` when the router paused (the
-    caller yields for the window rather than burning through it),
-    ``'failed'`` when the consecutive-error cap says the lane is down,
-    ``None`` otherwise."""
+) -> tuple[str | None, str | None]:
+    """One chunk end to end — ``(outcome, landed_placement)``. Outcome is
+    ``'paused'`` when the router paused (the caller yields for the window
+    rather than burning through it), ``'failed'`` when the
+    consecutive-error cap says the lane is down, ``None`` otherwise. The
+    landed placement is ``result.placement`` (``'local'``/``'cloud'``)
+    when the routed call reports one — the caller's pacing signal;
+    ``None`` when the call never ran or stamped none."""
     req = LlmRequest(
         tier=tier,
         prompt=_prompt.reader_prompt(
@@ -426,14 +439,16 @@ def _process_chunk(
             },
         )
         return (
-            "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None
+            "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None,
+            None,
         )
+    placement = getattr(result, "placement", None)
     if getattr(result, "paused", False):
         # A saturated local slot is a wait, not an error — it must not
         # burn the consecutive-error budget that fails the job on a
         # genuinely down lane.
         stats["paused"] += 1
-        return "paused"
+        return "paused", placement
     if getattr(result, "error", None) or not getattr(result, "text", ""):
         stats["llm_errors"] += 1
         stats["consecutive_errors"] += 1
@@ -448,7 +463,8 @@ def _process_chunk(
             },
         )
         return (
-            "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None
+            "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None,
+            placement,
         )
     stats["consecutive_errors"] = 0
     reply = _prompt.parse_reply(result.text)
@@ -468,7 +484,7 @@ def _process_chunk(
                 "detail": (result.text or "")[:200],
             },
         )
-        return None
+        return None, placement
     outcome = build_runs(
         reply,
         chunk_id=chunk["chunk_id"],
@@ -567,7 +583,7 @@ def _process_chunk(
                     "measure": run.output_id,
                 },
             )
-    return None
+    return None, placement
 
 
 def _survey_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
@@ -632,7 +648,11 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
         return Done(summary="survey_extract cancelled", success=False)
 
     processed = 0
-    while idx < len(chunks) and processed < per_slice:
+    # ``None`` = no routed call has reported a placement yet; the paced
+    # loop below treats it like remote. A ``local`` landing flips the
+    # pacing off — see the module docstring.
+    local_lane: bool | None = None
+    while idx < len(chunks) and (processed < per_slice or local_lane):
         chunk = chunks[idx]
         idx += 1
         if not include_all and _skippable(chunk):
@@ -643,7 +663,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             continue
         processed += 1
         stats["chunks"] += 1
-        outcome = _process_chunk(
+        outcome, landed = _process_chunk(
             ctx,
             chunk=chunk,
             paper=paper,
@@ -655,6 +675,8 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             stats=stats,
             escalations=escalations,
         )
+        if landed is not None:
+            local_lane = landed == "local"
         if outcome == "failed":
             return Done(
                 summary=(
@@ -676,6 +698,11 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 },
                 wake_when=_wake_s(300),
             )
+        # The unrolled local loop still answers a cancel at the old
+        # per-slice cadence — a 600-chunk run must not become
+        # uncancellable for its ~30 min.
+        if local_lane and processed % per_slice == 0 and ctx.is_cancel_requested():
+            return Done(summary="survey_extract cancelled", success=False)
 
     if idx < len(chunks):
         if ctx.is_cancel_requested():

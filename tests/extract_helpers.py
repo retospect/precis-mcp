@@ -112,8 +112,17 @@ def fake_ctx(
     )
 
 
-def llm_result(text: str, model: str = "test-local") -> LlmResult:
-    return LlmResult(text=text, cost_usd=0.0, turns_used=1, model=model, tier=Tier.BIG)
+def llm_result(
+    text: str, model: str = "test-local", placement: str | None = None
+) -> LlmResult:
+    return LlmResult(
+        text=text,
+        cost_usd=0.0,
+        turns_used=1,
+        model=model,
+        tier=Tier.BIG,
+        placement=placement,
+    )
 
 
 def drive(ctx_meta: dict[str, Any], store: Store, spec: Any) -> tuple[Done, list]:

@@ -19,7 +19,7 @@ from precis.errors import BadInput
 from precis.store import Migrator, Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils.llm.router import Rung, Transport
-from precis.workers.executors._yield import Yield
+from precis.workers.executors._yield import Done, Yield
 from precis.workers.job_types import survey_extract as job
 from tests.extract_helpers import (
     CHUNK1,
@@ -580,6 +580,94 @@ class TestCastorTrialPrep:
         stats = done.summary_meta["stats"]
         assert stats["skipped_section"] == 0
         assert stats["calls"] == 4
+
+
+class TestRungAwarePacing:
+    """jo504632 pacing (castor pilot): the per-slice ``Yield`` park is for
+    a remote/paid endpoint — it spends a whole coordinator claim cycle
+    (~minutes) per ``chunks_per_slice`` chunks. A routed call that lands
+    ``local`` (no rate limit, no metered cost) must run the paper to
+    completion in one dispatch instead."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def test_local_placement_runs_the_paper_in_one_dispatch(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        slept: list[float] = []
+        monkeypatch.setattr(job.time, "sleep", slept.append)
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result('{"results": []}', placement="local"),
+        )
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        # chunks_per_slice=1 with 3 chunks: the paced path would park
+        # after chunk 1; the local lane must finish in one dispatch.
+        out = dispatch(
+            fake_ctx(
+                store,
+                _extract_meta(world, skip_accept=True, chunks_per_slice=1),
+                [],
+            ),
+            job.SPEC,
+        )
+        assert isinstance(out, Done)
+        assert out.success
+        assert out.summary_meta["stats"]["calls"] == 3
+        assert slept == []
+
+    def test_remote_placement_keeps_the_per_slice_park(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result('{"results": []}', placement="cloud"),
+        )
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(
+            fake_ctx(
+                store,
+                _extract_meta(world, skip_accept=True, chunks_per_slice=1),
+                [],
+            ),
+            job.SPEC,
+        )
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "extract"
+        assert out.state["stats"]["calls"] == 1
+        assert out.wake_when.kind == "at_time"
+
+    def test_unreported_placement_keeps_the_per_slice_park(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A result with no placement stamp (older rung, direct provider)
+        paces exactly like remote — only a confirmed local landing skips
+        the park."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(
+            fake_ctx(
+                store,
+                _extract_meta(world, skip_accept=True, chunks_per_slice=1),
+                [],
+            ),
+            job.SPEC,
+        )
+        assert isinstance(out, Yield)
+        assert out.state["stats"]["calls"] == 1
 
 
 def _seed_body_chunk(

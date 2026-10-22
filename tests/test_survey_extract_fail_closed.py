@@ -26,7 +26,7 @@ def _ctx() -> DispatchContext:
 
 
 def _call(stats: dict[str, int], escalations: list[dict[str, Any]]) -> str | None:
-    return job._process_chunk(
+    outcome, _placement = job._process_chunk(
         _ctx(),
         chunk={"chunk_id": 1, "chunk_kind": "paragraph", "text": "x"},
         paper=1,
@@ -38,6 +38,7 @@ def _call(stats: dict[str, int], escalations: list[dict[str, Any]]) -> str | Non
         stats=stats,
         escalations=escalations,
     )
+    return outcome
 
 
 def test_consecutive_errors_accumulate_and_trip_abort(
