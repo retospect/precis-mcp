@@ -27,6 +27,11 @@ Stop and report back — do not file anything — if:
 
 ## How to work
 
+The precis write verbs are deferred tools — before your first `put`/`tag`,
+load them with ToolSearch `select:mcp__precis__put,mcp__precis__tag`; an
+unselected write dies with `No such tool available` and the record is lost
+(gr504489).
+
 1. Read the caller's finding and target. If either is missing, stop (see
    above).
 2. **Dedup check** — before filing, search for an existing match:

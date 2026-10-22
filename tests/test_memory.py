@@ -10,14 +10,16 @@ from threading import Barrier, Event
 from typing import Any
 
 import pytest
+from psycopg.errors import LockNotAvailable
 
 from precis.cli import memory as cli_memory
 from precis.dispatch import Hub
-from precis.errors import BadInput, Gone, Internal, NotFound
+from precis.errors import BadInput, Gone, Internal, NotFound, Upstream
 from precis.handlers.memory import MemoryHandler
 from precis.response import Response
 from precis.runtime import PrecisRuntime
 from precis.store import Store, as_dream_actor
+from precis.utils import db_retry
 from tests.conftest import id_of
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1135,71 @@ def test_anchored_edit_after_retirement_cannot_write(
     with pytest.raises(Gone):
         handler.edit(id=mid, mode="find-replace", find="beta", text="BETA")
     assert [c.text for c in store.chunks.list_chunks_for_ref(mid)] == [_BODY]
+
+
+def test_edit_body_write_retries_through_lock_contention(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock timeout on the write retries inside the call (gr504486):
+    contention inside the retry budget must not surface as an error turn
+    at all during an edit burst on one node."""
+    mid = _make(handler)
+    real_tx = store.tx
+    attempts = {"n": 0}
+
+    def contended_tx() -> Any:
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise LockNotAvailable("could not obtain lock")
+        return real_tx()
+
+    monkeypatch.setattr(store, "tx", contended_tx)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    out = handler.edit(id=mid, mode="find-replace", find="beta", text="BETA")
+    assert f"edited body of memory id={mid}" in out.body
+    assert attempts["n"] == 3
+    assert _body(handler, store, mid) == _BODY.replace("beta", "BETA")
+
+
+def test_edit_meta_only_retries_through_lock_contention(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The meta-only patch path (rule=/warrant=/meta=, no body rewrite)
+    takes the same lock and gets the same retry."""
+    mid = _make(handler)
+    real_tx = store.tx
+    attempts = {"n": 0}
+
+    def contended_tx() -> Any:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise LockNotAvailable("could not obtain lock")
+        return real_tx()
+
+    monkeypatch.setattr(store, "tx", contended_tx)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    out = handler.edit(id=mid, meta={"hook": "patched under contention"})
+    assert f"id={mid}" in out.body
+    assert attempts["n"] == 2
+
+
+def test_edit_body_write_lock_exhaustion_refuses_with_next(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock that outlasts the retry budget refuses with a next= naming
+    the re-read — not the bare psycopg LockNotAvailable."""
+    mid = _make(handler)
+
+    def always_locked() -> Any:
+        raise LockNotAvailable("still locked")
+
+    monkeypatch.setattr(store, "tx", always_locked)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with pytest.raises(Upstream) as excinfo:
+        handler.edit(id=mid, mode="replace", text="never written")
+    assert excinfo.value.next is not None
+    assert "retry the edit" in excinfo.value.next
+    assert _body(handler, store, mid) == _BODY
 
 
 def test_anchored_edit_resyncs_mentions_and_preserves_manual_links(

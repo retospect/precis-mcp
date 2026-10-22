@@ -63,21 +63,34 @@ event rather than losing a concurrent writer's prose. Whole-body
 replacement remains explicit. Creation fields (title, rule, warrant and
 hook) travel in a call-local ``put_meta`` payload; staging them on the
 shared handler let concurrent puts overwrite or clear each other's
-metadata, even on failed requests.
+metadata, even on failed requests. Edit writes additionally run inside
+:func:`precis.utils.db_retry.retry_locked` (bounded, full jitter): a
+``lock_timeout`` collision during an edit burst retries in-process
+instead of costing the agent a turn (gr504486); an exhausted budget
+refuses with ``Upstream`` + a ``next=`` naming the re-read.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 
 from psycopg import Connection
+from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
 
-from precis.errors import BadInput, Gone, Internal, NotFound, Unsupported
+from precis.errors import (
+    BadInput,
+    Gone,
+    Internal,
+    NotFound,
+    Unsupported,
+    Upstream,
+)
 from precis.handlers._argument_view import render_argument_view
 from precis.handlers._attribution import (
     AUDIT_VALUE,
@@ -96,6 +109,7 @@ from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry
+from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -945,13 +959,16 @@ class MemoryHandler(NumericRefHandler):
             # Meta-only patch (rule=/warrant=/meta=, no body rewrite) — skip the
             # chunk delete+reinsert and mention re-sync entirely; nothing
             # in the prose changed.
-            with self.store.tx() as conn:
-                self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
-                if new_title is not None:
-                    self.store.chunks.set_ref_title(
-                        ref.id, new_title, source="agent", conn=conn
-                    )
-                self.store.chunks.sync_header_card(ref.id, conn=conn)
+            def _patch_meta() -> None:
+                with self.store.tx() as conn:
+                    self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
+                    if new_title is not None:
+                        self.store.chunks.set_ref_title(
+                            ref.id, new_title, source="agent", conn=conn
+                        )
+                    self.store.chunks.sync_header_card(ref.id, conn=conn)
+
+            self._write_retried(ref.id, "meta edit", _patch_meta)
             changed = ", ".join(
                 k for k in ("rule", "warrant", "hook", "type") if k in meta_patch
             )
@@ -1025,6 +1042,36 @@ class MemoryHandler(NumericRefHandler):
             f"delete(kind='memory', id={ref_id})"
         )
 
+    def _write_retried[T](self, ref_id: int, what: str, fn: Callable[[], T]) -> T:
+        """Run one memory write under bounded lock-contention retry.
+
+        Prod roles run ``lock_timeout='5s'``; a burst of edits against one
+        node (a memory-graph hygiene pass, a thread node hit by several
+        sessions) surfaced as ``Upstream LockNotAvailable`` — 18 lost
+        turns in the 2026-10-21 22:00Z hour (gr504486). Each attempt
+        re-invokes ``fn`` so it opens a fresh ``store.tx()`` — the contract
+        :func:`retry_locked` requires (an aborted transaction can never be
+        continued). A retry that reaches the lock but finds the body
+        changed by the holder still refuses through ``expected_body`` as
+        before — only the lock-wait itself is replayed. When the budget
+        runs out the call refuses with a ``next=`` instead of leaking the
+        bare psycopg error.
+        """
+        try:
+            return retry_locked(fn, label=f"memory {what} ref_id={ref_id}")
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            raise Upstream(
+                f"memory {ref_id} is still locked by another writer "
+                "(lock-retry budget exhausted)",
+                next=(
+                    f"get(kind='memory', id={ref_id}) to re-read the "
+                    "current body, then retry the edit — contention that "
+                    "outlasts the retry budget usually means another "
+                    "session holds a long write; if it repeats, file a "
+                    "gripe naming the id"
+                ),
+            ) from exc
+
     def _write_body(
         self,
         ref_id: int,
@@ -1049,54 +1096,59 @@ class MemoryHandler(NumericRefHandler):
         it sets or clears ``AUDIT:ungrounded-number`` in the same
         transaction. Returns the old body.
         """
-        with self.store.tx() as conn:
-            row = conn.execute(
-                "SELECT title, retired_at FROM refs "
-                "WHERE ref_id = %s AND kind = 'memory' FOR NO KEY UPDATE",
-                (ref_id,),
-            ).fetchone()
-            if row is None:
-                raise NotFound(
-                    f"memory {ref_id} not found",
-                    next="search(kind='memory', q='<topic>') for the live id",
+
+        def _do() -> str | None:
+            with self.store.tx() as conn:
+                row = conn.execute(
+                    "SELECT title, retired_at FROM refs "
+                    "WHERE ref_id = %s AND kind = 'memory' FOR NO KEY UPDATE",
+                    (ref_id,),
+                ).fetchone()
+                if row is None:
+                    raise NotFound(
+                        f"memory {ref_id} not found",
+                        next="search(kind='memory', q='<topic>') for the live id",
+                    )
+                if row[1] is not None:
+                    raise Gone(
+                        f"memory {ref_id} has been deleted",
+                        next="search(kind='memory', q='<topic>') for a live "
+                        "memory on the topic",
+                    )
+                old_body = self.store.chunks.replace_body_chunk(
+                    ref_id,
+                    new_text,
+                    chunk_kind=_BODY_KIND,
+                    source="agent",
+                    reason=reason.strip() if reason and reason.strip() else None,
+                    conn=conn,
                 )
-            if row[1] is not None:
-                raise Gone(
-                    f"memory {ref_id} has been deleted",
-                    next="search(kind='memory', q='<topic>') for a live memory "
-                    "on the topic",
-                )
-            old_body = self.store.chunks.replace_body_chunk(
-                ref_id,
-                new_text,
-                chunk_kind=_BODY_KIND,
-                source="agent",
-                reason=reason.strip() if reason and reason.strip() else None,
-                conn=conn,
-            )
-            previous = old_body if old_body is not None else (row[0] or "")
-            if expected_body is not None and previous != expected_body:
-                raise BadInput(
-                    f"memory {ref_id} changed during the edit; nothing written",
-                    next=(
-                        f"get(kind='memory', id={ref_id}), then retry the "
-                        "anchored edit against the current body"
-                    ),
-                )
-            if meta_patch:
-                self.store.update_ref(ref_id, meta_patch=meta_patch, conn=conn)
-            if new_title is not None:
-                self.store.chunks.set_ref_title(
-                    ref_id, new_title, source="agent", conn=conn
-                )
-            if meta_patch or new_title is not None:
-                self.store.chunks.sync_header_card(ref_id, conn=conn)
-            # Re-sync auto-mention links to the rewritten body: drop the old
-            # auto links, add the current ones. Hand-added links survive.
-            self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
-            if misses is not None:
-                self._apply_attribution_tag(ref_id, misses, conn=conn)
-        return old_body
+                previous = old_body if old_body is not None else (row[0] or "")
+                if expected_body is not None and previous != expected_body:
+                    raise BadInput(
+                        f"memory {ref_id} changed during the edit; nothing written",
+                        next=(
+                            f"get(kind='memory', id={ref_id}), then retry the "
+                            "anchored edit against the current body"
+                        ),
+                    )
+                if meta_patch:
+                    self.store.update_ref(ref_id, meta_patch=meta_patch, conn=conn)
+                if new_title is not None:
+                    self.store.chunks.set_ref_title(
+                        ref_id, new_title, source="agent", conn=conn
+                    )
+                if meta_patch or new_title is not None:
+                    self.store.chunks.sync_header_card(ref_id, conn=conn)
+                # Re-sync auto-mention links to the rewritten body: drop the
+                # old auto links, add the current ones. Hand-added links
+                # survive.
+                self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
+                if misses is not None:
+                    self._apply_attribution_tag(ref_id, misses, conn=conn)
+            return old_body
+
+        return self._write_retried(ref_id, "body edit", _do)
 
     def _sync_mention_links(
         self,

@@ -3892,11 +3892,30 @@ def _axis_filter_set(
     # typo'd tag/kind returning "0 skills" reads as "nothing matches",
     # which is indistinguishable from a valid-but-empty slice. A *known*
     # value with no skills still returns the honest empty set below.
+    # One exception: ``tag=`` carrying a kind name or handle code is a
+    # predictable slip (gr504487 — agents write ``tag='se'`` for "the se
+    # skills") — the kind belongs on the other axis, so it is routed to
+    # ``kinds=`` rather than refused. A real tag still wins the check
+    # above; a value that is neither tag nor kind stays a BadInput.
+    kind_axes: list[str] = []
     if tag is not None and tag not in VALID_TAGS:
-        raise BadInput(
-            f"unknown tag {tag!r} — valid tags: {', '.join(VALID_TAGS)}",
-            next="get(kind='skill', id='toc', tag='workflow')",
-        )
+        remapped = tag if is_known_kind(tag) else None
+        if remapped is None:
+            try:
+                remapped, _is_chunk = kind_for_code(tag)
+            except KeyError:
+                remapped = None
+        if remapped is None:
+            raise BadInput(
+                f"unknown tag {tag!r} — valid tags: {', '.join(VALID_TAGS)}",
+                next=(
+                    "get(kind='skill', id='toc', tag='workflow') — or, to "
+                    "filter by the kind a skill is about: "
+                    "get(kind='skill', id='toc', kinds='<kind>')"
+                ),
+            )
+        tag = None
+        kind_axes.append(remapped)
     if kinds is not None and not is_known_kind(kinds):
         try:
             long_kind, _is_chunk = kind_for_code(kinds)
@@ -3923,6 +3942,8 @@ def _axis_filter_set(
         sets.append(frozenset(graph.by_family(family.strip().lower())))
     if tag is not None:
         sets.append(frozenset(graph.by_tag(tag)))
+    for kind_axis in kind_axes:
+        sets.append(frozenset(graph.by_kind(kind_axis)))
     if kinds is not None:
         sets.append(frozenset(graph.by_kind(kinds)))
     result = sets[0]

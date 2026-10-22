@@ -44,6 +44,10 @@ justify against the diff.
   output, not a missed opportunity.
 
 ## Closing mechanics
+- The precis write verbs are deferred tools — before your first
+  `put`/`tag`, load them with ToolSearch
+  `select:mcp__precis__put,mcp__precis__tag`; an unselected write dies
+  with `No such tool available` and the close is lost (gr504489).
 - Gripe: `put(kind='gripe', id=N, text='resolved: <sha> (r<N>) — <how verified>',
   tags=['STATUS:done'])`. The tag is refused unless the newest comment
   starts `resolved:`. `delete` is only for duplicates, spam, filed-in-error.

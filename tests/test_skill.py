@@ -1937,6 +1937,43 @@ def test_toc_filter_rejects_unknown_tag(skill: SkillHandler) -> None:
     assert "orientation" in msg and "workflow" in msg
 
 
+def test_toc_filter_tag_naming_a_kind_remaps_to_kinds_axis(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``tag='<kind>'`` is a predictable slip (gr504487 — agents write
+    ``tag='se'`` for "the se skills"): the value is honored on the
+    ``kinds=`` axis rather than refused with the tag vocabulary."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-paper": _md(front="flavor: reference\nkinds:\n  - paper", body="body"),
+            "zzq-patent": _md(
+                front="flavor: reference\nkinds:\n  - patent", body="body"
+            ),
+        },
+    )
+    out = skill.get(id="toc", tag="paper")
+    assert "zzq-paper" in out.body
+    assert "zzq-patent" not in out.body
+
+
+def test_toc_filter_tag_naming_a_kind_code_remaps_to_its_kind(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``tag='me'`` (a handle code, not a kind name) resolves to its long
+    kind the same way the ``kinds=`` code slip does."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-mem": _md(front="flavor: reference\nkinds:\n  - memory", body="body"),
+            "zzq-paper": _md(front="flavor: reference\nkinds:\n  - paper", body="body"),
+        },
+    )
+    out = skill.get(id="toc", tag="me")
+    assert "zzq-mem" in out.body
+    assert "zzq-paper" not in out.body
+
+
 def test_toc_filter_rejects_unknown_kind(skill: SkillHandler) -> None:
     with pytest.raises(BadInput) as excinfo:
         skill.get(id="toc", kinds="nonexistent-kind")
