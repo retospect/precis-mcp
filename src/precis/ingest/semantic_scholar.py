@@ -10,7 +10,7 @@ from typing import Any
 from semanticscholar import SemanticScholar
 
 from precis.utils import rate_limit
-from precis.utils.http import call_with_backoff
+from precis.utils.http import _status_of, call_with_backoff
 
 
 def _client(api_key: str = "") -> SemanticScholar:
@@ -72,6 +72,11 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
 
     Returns:
         Normalized metadata dict or None if not found.
+
+    Raises:
+        S2RateLimited: S2 answered 429 through the whole backoff budget
+            (or the shared limiter refused) — batch callers should defer
+            the item to the next pass rather than error it (gr503080).
     """
     sch = _client(api_key)
     results = _search_with_retry(sch, title, limit)
@@ -83,8 +88,24 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
 
 
 def _search_with_retry(sch: SemanticScholar, title: str, limit: int) -> Any:
-    """Search S2 with shared backoff on 429."""
-    return call_with_backoff(lambda: sch.search_paper(title, limit=limit), service="s2")
+    """Search S2 with shared backoff on 429; :class:`S2RateLimited` when the
+    budget runs out on refusals, so a caller can defer instead of erroring
+    (gr503080)."""
+    try:
+        return call_with_backoff(
+            lambda: sch.search_paper(title, limit=limit), service="s2"
+        )
+    except rate_limit.RateLimited as exc:
+        raise S2RateLimited(
+            f"Semantic Scholar title search for {title!r} deferred: {exc}"
+        ) from exc
+    except Exception as exc:
+        if _status_of(exc) == 429:
+            raise S2RateLimited(
+                f"Semantic Scholar kept refusing the title search for "
+                f"{title!r} (HTTP 429 through the whole backoff budget)"
+            ) from exc
+        raise
 
 
 def search_s2_papers(
@@ -126,14 +147,17 @@ _RATE_LIMITED_PARK_S = 10.0
 
 def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
     """Like :func:`_search_with_retry` but a 429 (the lib raises
-    ``ConnectionRefusedError``) returns :data:`_RATE_LIMITED` at once instead
+    ``ConnectionRefusedError``, wrapped in ``tenacity.RetryError`` by its
+    own one-shot retry stub) returns :data:`_RATE_LIMITED` at once instead
     of backoff-looping: free-text lit-search is best-effort and must not stall
     a quest tick / hub_refine pass (gr459597). Other errors still retry."""
 
     def _call() -> Any:
         try:
             return sch.search_paper(query, limit=limit)
-        except ConnectionRefusedError:
+        except Exception as exc:
+            if _status_of(exc) != 429:
+                raise
             # The lib hides the response, so there is no Retry-After; park
             # the shared row briefly so the next caller does not walk into
             # the same 429.
@@ -243,6 +267,15 @@ class S2ResolverError(RuntimeError):
     """
 
 
+class S2RateLimited(S2ResolverError):
+    """S2 kept answering 429 through the whole backoff budget (or the shared
+    ``s2`` limiter row refused the attempt). A subtype of
+    :class:`S2ResolverError` so existing strict-mode callers still catch it,
+    but distinct so a batch sweep (``resolve-metadata``, the junk-title
+    repair pass) can *defer* the ref — it stays queued for the next pass —
+    instead of counting the refusal as a lookup failure (gr503080)."""
+
+
 def get_paper_by_id(
     paper_id: str, api_key: str = "", *, propagate: bool = False
 ) -> dict[str, Any] | None:
@@ -274,7 +307,8 @@ def get_paper_by_id(
         return None
     except Exception as exc:
         if propagate:
-            raise S2ResolverError(
+            exc_cls = S2RateLimited if _status_of(exc) == 429 else S2ResolverError
+            raise exc_cls(
                 f"Semantic Scholar lookup for {paper_id!r} failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc

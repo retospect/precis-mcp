@@ -1531,6 +1531,8 @@ def render_attention(store: Store) -> Response:
             if len(first) > 76:
                 first = first[:76].rstrip() + "…"
             lines.append(f"{_h(h['id']):<6} {first}")
+            if h["reasons"]:
+                lines.append(f"      reason: {', '.join(h['reasons'])}")
             if h.get("budget_usd") is not None:
                 lines.append(f"      budget: ${h['budget_usd']:.2f} (granted)")
     if unminted:

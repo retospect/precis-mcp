@@ -1962,7 +1962,7 @@ def repair_junk_title_papers(
     """
     from precis.ingest.crossref import lookup_crossref
     from precis.ingest.openalex_meta import fetch_openalex_work
-    from precis.ingest.semantic_scholar import lookup_s2
+    from precis.ingest.semantic_scholar import S2RateLimited, lookup_s2
     from precis.utils.rate_limit import RateLimited
 
     if crossref_fn is None:
@@ -2028,9 +2028,9 @@ def repair_junk_title_papers(
                     dry_run=dry_run,
                 )
             )
-        except RateLimited:
+        except (RateLimited, S2RateLimited):
             log.info(
-                "repair_junk_title_papers: shared limiter refused at ref %d; "
+                "repair_junk_title_papers: upstream refused at ref %d; "
                 "deferring the rest unstamped",
                 ref_id,
             )

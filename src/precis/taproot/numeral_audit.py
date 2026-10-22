@@ -107,6 +107,13 @@ _SPACED_EXP_RE = re.compile(
     r"(\d{1,3}(?:[,\u202f\u2009\u00a0]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
     r"\s*[×x*·]\s*1\s+0((?:\s+[+-]?\s*\d){1,3})"
 )
+#: Digit runs glued onto a letter inside a name (``GMTKN55``, ``B3LYP``).
+#: ``_NUM_RE``'s word-boundary lookbehind drops them on BOTH sides — so a
+#: claim's standalone ``55`` matching only the name's ``55`` was reported
+#: absent (gr503439). Source-side widening only, same rule as
+#: ``_SPACE_GROUPED_RE``: the claim side can only lose a match, never gain
+#: a false hit.
+_NAME_DIGITS_RE = re.compile(r"(?<=[A-Za-z])\d+(?:\.\d+)?(?![\d.])")
 _SPELLED_RE = re.compile(r"\b(" + "|".join(_SPELLED) + r")\b", re.IGNORECASE)
 
 
@@ -242,6 +249,13 @@ def absent_numerals(sentence: str, source_text: str) -> list[str]:
             have.add(mant * Decimal(10) ** exp)
         except ArithmeticError:
             continue
+    for m in _NAME_DIGITS_RE.finditer(_prepare(source_text)):
+        # ``the GMTKN55 database`` -- the ``55`` glued inside the name is
+        # dropped by ``_NUM_RE``'s boundary lookbehind on the source side,
+        # exactly as it is on the claim side; widening ``have`` here is
+        # what lets a claim's standalone ``55 subsets`` match it.
+        if (named := _dec(m.group(0))) is not None:
+            have.add(named)
     for m in _SPELLED_RE.finditer(source_text):
         have.add(_SPELLED[m.group(1).lower()])
     seen: set[str] = set()

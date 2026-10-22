@@ -478,6 +478,61 @@ def test_track2_scans_past_missing_candidate(store: Store) -> None:
     assert r.verdict == "auto" and r.doi == "10.1016/scanpast"
 
 
+def test_title_candidates_drop_affiliation_lines(store: Store) -> None:
+    """gr503080: front-matter affiliation lines are not title candidates —
+    the two real offenders from the 2026-10-21 run, plus a postal tail and
+    a comma-joined author-affiliation line. The real title still gets in."""
+    rid = _titleless_paper(
+        store,
+        slug="affil",
+        n=0x105,
+        chunks=(
+            "Current address: Department of Computer Science, Aston University, Birmingham",
+            "MRC Applied Psychology Unit Cambridge, England",
+            "J. Smith, Department of Physics, Cambridge, MA 02139",
+            "Continuous deformations in random networks",
+        ),
+    )
+    cands, trusted = _title_candidates(store, _ref(store, rid))
+    assert cands == ["Continuous deformations in random networks"]
+    assert not trusted
+
+
+def test_track2_s2_rate_limited_defers_and_stops(store: Store) -> None:
+    """gr503080: an S2 429 storm is a deferral, not an error — the ref keeps
+    its tag (the next pass retries it) and the sweep stops instead of
+    burning every remaining ref's backoff budget on the same refusal."""
+    from precis.ingest.semantic_scholar import S2RateLimited
+
+    a = _titleless_paper(
+        store,
+        slug="defer-a",
+        n=0x106,
+        chunks=("A paper about graphene",),
+        tag=True,
+    )
+    b = _titleless_paper(
+        store,
+        slug="defer-b",
+        n=0x107,
+        chunks=("A paper about graphene",),
+        tag=True,
+    )
+    calls = 0
+
+    def _s2_429(title: str, api_key: str) -> dict[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        raise S2RateLimited("HTTP 429 through the whole backoff budget")
+
+    out = resolve_triage(store, crossref_fn=_no_call, s2_fn=_s2_429)
+    r = _verdict(out, a)
+    assert r.verdict == "deferred" and r.reason == "rate-limited"
+    assert calls == 1  # the pass stopped at the first refusal
+    assert _has_triage(store, a) and _has_triage(store, b)
+    assert all(x.ref_id != b for x in out)  # b never reached
+
+
 def test_track2_scraped_title_without_year_is_review(store: Store) -> None:
     # gr239230: for a title-less PDF the query title is scraped from body
     # chunks, so query-vs-hit similarity is near-tautological — without an

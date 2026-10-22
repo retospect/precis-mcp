@@ -56,6 +56,8 @@ from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
+from tenacity import RetryError
+
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.optional_deps import require_optional
 
@@ -152,6 +154,27 @@ def request_with_deadline(
         raise httpx_mod.ReadTimeout(str(exc)) from exc
 
 
+def _unwrap_retry(exc: BaseException) -> BaseException:
+    """The real failure inside a ``tenacity.RetryError``.
+
+    The ``semanticscholar`` client wraps every failure its own retry loop
+    gave up on in ``RetryError`` — and ``retry=False`` doesn't opt out (it
+    just swaps in ``stop_after_attempt(1)``), so a single S2 429 surfaces
+    as ``RetryError(ConnectionRefusedError)``, not the
+    ``ConnectionRefusedError`` the status table below knows (gr503080 —
+    the wrapped 429 read as unretryable and failed on first attempt).
+    """
+    if not isinstance(exc, RetryError):
+        return exc
+    attempt = getattr(exc, "last_attempt", None)
+    if attempt is None:
+        return exc
+    inner = attempt.exception()
+    if inner is None or inner is exc:
+        return exc
+    return _unwrap_retry(inner)
+
+
 def _status_of(exc: BaseException) -> int | None:
     """HTTP status carried by ``exc``, or ``None`` when it has none.
 
@@ -161,6 +184,7 @@ def _status_of(exc: BaseException) -> int | None:
     ``ConnectionRefusedError``); httpx and ``requests`` carry the response
     on the exception. Only the S2 mapping needs the type-based table.
     """
+    exc = _unwrap_retry(exc)
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code
     response = getattr(exc, "response", None)
@@ -187,6 +211,7 @@ def _status_of(exc: BaseException) -> int | None:
 def _headers_of(exc: BaseException) -> Any:
     """Response headers carried by ``exc`` (httpx/requests ``.response``, or
     a stdlib ``urllib.error.HTTPError`` which is its own response)."""
+    exc = _unwrap_retry(exc)
     if isinstance(exc, urllib.error.HTTPError):
         return exc.headers
     return getattr(getattr(exc, "response", None), "headers", None)
@@ -230,7 +255,7 @@ def is_retryable_external_error(exc: BaseException) -> bool:
     status = _status_of(exc)
     if status is not None:
         return status == 429 or 500 <= status < 600
-    return _is_transport_error(exc)
+    return _is_transport_error(_unwrap_retry(exc))
 
 
 # ── The politeness core ────────────────────────────────────────────────────

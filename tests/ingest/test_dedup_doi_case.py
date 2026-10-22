@@ -239,3 +239,169 @@ class TestReconcileByDoiCase:
         _mk_stub(store, slug="a", doi="10.1/aaa")
         _mk_stub(store, slug="b", doi="10.1/bbb")
         assert reconcile_by_doi_case(store, dry_run=False) == []
+
+    def test_uncorroborated_group_skipped_and_todo_raised(self, store: Store):
+        # gr501446: pa42498 was merged into pa44470 on a case-variant DOI
+        # alone — same year, entirely different titles (a DOI typo or
+        # publisher reuse). The gate must refuse the merge and file a
+        # review todo instead.
+        paper = _mk_pdf_paper_titled(
+            store,
+            slug="cnt-graphene",
+            doi="10.1000/CNT.GRAPH",
+            title="Electronic Structure of Carbon Nanotubes on Graphene Substrates",
+            year=2019,
+        )
+        stub = _mk_stub_titled(
+            store,
+            slug="cholesteric",
+            doi="10.1000/cnt.graph",
+            title="Pitch tuning induced by optical torque in heliconical "
+            "cholesteric liquid crystals",
+            year=2019,
+        )
+
+        outcomes = reconcile_by_doi_case(store, dry_run=False)
+
+        assert len(outcomes) == 1
+        assert outcomes[0].skipped is not None
+        assert not _is_deleted(store, stub) and not _is_deleted(store, paper)
+
+        todos = _review_todos(store)
+        assert len(todos) == 1
+        assert {paper, stub} == set(todos[0]["meta"]["ref_ids"])
+        assert todos[0]["meta"]["doi"] == "10.1000/cnt.graph"
+
+        # A second pass must not re-file the standing todo.
+        reconcile_by_doi_case(store, dry_run=False)
+        assert len(_review_todos(store)) == 1
+
+    def test_uncorroborated_group_skipped_in_dry_run_no_todo(self, store: Store):
+        _mk_pdf_paper_titled(
+            store,
+            slug="cnt-graphene",
+            doi="10.1000/CNT.GRAPH",
+            title="Electronic Structure of Carbon Nanotubes on Graphene Substrates",
+        )
+        _mk_stub_titled(
+            store,
+            slug="cholesteric",
+            doi="10.1000/cnt.graph",
+            title="Pitch tuning induced by optical torque in heliconical "
+            "cholesteric liquid crystals",
+        )
+
+        outcomes = reconcile_by_doi_case(store, dry_run=True)
+
+        assert len(outcomes) == 1 and outcomes[0].skipped is not None
+        assert _review_todos(store) == []
+
+    def test_corroborated_by_author_and_year_merges(self, store: Store):
+        # Titles differ in wording but the same first author + year is the
+        # same corroboration the other merge paths accept — merge proceeds.
+        paper = _mk_pdf_paper_titled(
+            store,
+            slug="cnt-graphene",
+            doi="10.1000/CNT.GRAPH",
+            title="Electronic Structure of Carbon Nanotubes on Graphene",
+            year=2019,
+            authors=[{"name": "Beltagy, I."}],
+        )
+        stub = _mk_stub_titled(
+            store,
+            slug="cnt-graphene-stub",
+            doi="10.1000/cnt.graph",
+            title="Electronic structure of graphene-supported carbon nanotubes",
+            year=2019,
+            authors=[{"name": "Beltagy, I."}],
+        )
+
+        outcomes = reconcile_by_doi_case(store, dry_run=False)
+
+        assert len(outcomes) == 1 and outcomes[0].skipped is None
+        assert _is_deleted(store, stub) and not _is_deleted(store, paper)
+        assert _review_todos(store) == []
+
+
+def _mk_pdf_paper_titled(
+    store: Store,
+    *,
+    slug: str,
+    doi: str,
+    title: str,
+    year: int | None = None,
+    authors: list | None = None,
+) -> int:
+    """``_mk_pdf_paper`` with the identity fields the gr501446 gate reads."""
+    import hashlib
+
+    sha = hashlib.sha256(slug.encode()).hexdigest()
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 1, '') "
+            "ON CONFLICT (pdf_sha256) DO NOTHING",
+            (sha, sha),
+        )
+        ref = store.insert_ref(
+            kind="paper",
+            slug=slug,
+            title=title,
+            year=year,
+            authors=authors,
+            conn=conn,
+        )
+        conn.execute("UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, ref.id))
+        conn.execute("ALTER TABLE ref_identifiers DISABLE TRIGGER USER")
+        conn.execute(
+            "ALTER TABLE ref_identifiers DROP CONSTRAINT ref_identifiers_doi_lc"
+        )
+        try:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('doi', %s, %s, 'test')",
+                (doi, ref.id),
+            )
+        finally:
+            conn.execute(
+                "ALTER TABLE ref_identifiers ADD CONSTRAINT ref_identifiers_doi_lc "
+                "CHECK (id_kind <> 'doi' OR id_value = lower(id_value)) NOT VALID"
+            )
+            conn.execute("ALTER TABLE ref_identifiers ENABLE TRIGGER USER")
+    return ref.id
+
+
+def _mk_stub_titled(
+    store: Store,
+    *,
+    slug: str,
+    doi: str,
+    title: str,
+    year: int | None = None,
+    authors: list | None = None,
+) -> int:
+    """A PDF-less stub with an explicit title/year/authors (lowercase DOI)."""
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="paper",
+            slug=slug,
+            title=title,
+            year=year,
+            authors=authors,
+            conn=conn,
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', %s, %s, 'test')",
+            (doi, ref.id),
+        )
+    return ref.id
+
+
+def _review_todos(store: Store) -> list[dict]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' "
+            "AND retired_at IS NULL AND meta->>'source' = 'reconcile:doi-case-review'"
+        ).fetchall()
+    return [{"ref_id": int(r[0]), "meta": r[1]} for r in rows]

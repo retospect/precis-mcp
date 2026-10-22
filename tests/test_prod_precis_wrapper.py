@@ -70,9 +70,20 @@ def test_cloud_url_child_environment(
     )
     assert f"url={expected}\n" in result.stdout
     assert "dsn=postgresql://fixture@127.0.0.1:1/fixture\n" in result.stdout
-    assert "args=run precis tools get --kind gripe --id fixture" in result.stdout
+    assert (
+        "args=run --extra paper precis tools get --kind gripe --id fixture"
+        in result.stdout
+    )
     assert result.stderr == ""
     assert expected not in result.args
+
+
+def test_wrapper_syncs_the_paper_extra() -> None:
+    """gr503047: a plain-synced worktree lacks rapidfuzz/marker/fitz, so
+    ingest-side subcommands died on ModuleNotFoundError. The wrapper must
+    sync the [paper] extra the paper CLI commands need."""
+    script = _WRAPPER.read_text(encoding="utf-8")
+    assert "--extra paper" in script
 
 
 _WRAPPER = Path(__file__).resolve().parents[1] / "scripts" / "prod-precis"
@@ -144,7 +155,7 @@ def test_fresh_tree_runs_writes_silently(tmp_path: Path) -> None:
     clone, env = _stale_tree_fixture(tmp_path, stale=False)
     r = _run(clone, env, "quest", "redispatch", "1")
     assert r.returncode == 0, r.stderr
-    assert "ran run precis quest redispatch 1" in r.stdout
+    assert "ran run --extra paper precis quest redispatch 1" in r.stdout
     assert r.stderr == ""
 
 
@@ -170,7 +181,7 @@ def test_stale_tree_warns_but_runs_reads(tmp_path: Path, args: tuple[str, ...]) 
     clone, env = _stale_tree_fixture(tmp_path, stale=True)
     r = _run(clone, env, *args)
     assert r.returncode == 0, r.stderr
-    assert "ran run precis" in r.stdout
+    assert "ran run --extra paper precis" in r.stdout
     assert "WARNING" in r.stderr and "not a descendant of origin/prod" in r.stderr
 
 
@@ -180,4 +191,4 @@ def test_stale_tree_override_runs_write(tmp_path: Path) -> None:
         clone, {**env, "PRECIS_ALLOW_STALE_PROD_TREE": "1"}, "quest", "redispatch", "1"
     )
     assert r.returncode == 0, r.stderr
-    assert "ran run precis quest redispatch 1" in r.stdout
+    assert "ran run --extra paper precis quest redispatch 1" in r.stdout

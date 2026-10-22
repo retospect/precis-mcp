@@ -213,20 +213,81 @@ def _call(cmd: Command, args: argparse.Namespace) -> None:
     """Run ``cmd``; its module is already imported by the parser build.
     A command with a ``trust`` origin runs as that converted producer."""
     run = getattr(_load(cmd), cmd.run)
-    if cmd.trust is None:
-        run(args)
-        return
-    from precis.store.revision_context import (
-        TRUST_ORIGINS,
-        TrustOrigin,
-        trust_producer,
-    )
+    try:
+        if cmd.trust is None:
+            run(args)
+            return
+        from precis.store.revision_context import (
+            TRUST_ORIGINS,
+            TrustOrigin,
+            trust_producer,
+        )
 
-    if cmd.trust not in TRUST_ORIGINS:
-        raise ValueError(f"precis {cmd.name}: unknown trust origin {cmd.trust!r}")
-    origin = cast(TrustOrigin, cmd.trust)
-    with trust_producer(origin, actor_type="operator", actor=f"cli:{cmd.name}"):
-        run(args)
+        if cmd.trust not in TRUST_ORIGINS:
+            raise ValueError(f"precis {cmd.name}: unknown trust origin {cmd.trust!r}")
+        origin = cast(TrustOrigin, cmd.trust)
+        with trust_producer(origin, actor_type="operator", actor=f"cli:{cmd.name}"):
+            run(args)
+    except ImportError as exc:
+        _missing_extra_refusal(cmd, exc)
+
+
+#: Import name -> the ``[project.optional-dependencies]`` extra that ships
+#: it. Consulted when a subcommand's ``run()`` dies on a deferred-import
+#: ``ModuleNotFoundError`` — the parser-load ``ImportError`` path
+#: (:func:`_load`) already refuses by name, but a paper command's lazy
+#: ``from precis.ingest.* import …`` inside ``run()`` used to surface a raw
+#: traceback in a tree synced without ``[paper]`` (gr503047). Only
+#: unambiguous mappings are listed — a dep shared by two extras, or one not
+#: in the table (a core dep means a broken venv, and a precis.* name means a
+#: code bug), keeps its traceback.
+_EXTRA_FOR_MODULE: dict[str, str] = {
+    "marker": "paper",
+    "fitz": "paper",
+    "pymupdf": "paper",
+    "rapidfuzz": "paper",
+    "fonttools": "paper",
+    "sentence_transformers": "embed",
+    "fastapi": "web",
+    "uvicorn": "web",
+    "jinja2": "web",
+    "multipart": "web",
+    "markdown_it": "web",
+    "discord": "asa",
+    "slack_bolt": "asa-slack",
+    "slack_sdk": "asa-slack",
+    "kokoro_onnx": "tts",
+    "soundfile": "tts",
+    "mace": "dft-ml",
+    "torch_dftd": "dft-ml",
+    "autocatpath": "catalyst",
+    "agox": "struct-search",
+    "OCP": "cad-step",
+    "PIL": "guide",
+    "mendeleev": "estimate",
+    "tblite": "estimate",
+    "RNA": "chain",
+    "mp_api": "pourbaix",
+}
+
+
+def _missing_extra_refusal(cmd: Command, exc: ImportError) -> None:
+    """Refuse a command whose deferred import named a known optional extra.
+
+    Re-raises ``exc`` unchanged when the missing module maps to no extra —
+    a ``precis.*`` or stdlib name is a code bug that deserves its
+    traceback, not an install hint.
+    """
+    missing = getattr(exc, "name", None) or ""
+    extra = _EXTRA_FOR_MODULE.get(missing.split(".")[0])
+    if extra is None:
+        raise exc
+    print(
+        f"precis {cmd.name}: unavailable — missing dependency {missing!r} "
+        f"(the [{extra}] extra). Next: uv sync --extra {extra}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

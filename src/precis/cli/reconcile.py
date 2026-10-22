@@ -100,14 +100,16 @@ def run(args: argparse.Namespace) -> None:
         print(r.line())
 
     all_outcomes = doi_outcomes + outcomes + title_outcomes
-    merged = sum(len(o.duplicate_ref_ids) for o in all_outcomes)
+    merged = sum(len(o.duplicate_ref_ids) for o in all_outcomes if o.skipped is None)
+    skipped = sum(1 for o in all_outcomes if o.skipped is not None)
     verb = "would merge" if dry_run else "merged"
     review_note = f", {len(review)} flagged for review" if review else ""
+    skip_note = f", {skipped} group(s) skipped for review" if skipped else ""
     print(
         f"\nreconcile-duplicates [{mode}] done: {verb} {merged} duplicate ref(s) "
-        f"across {len(all_outcomes)} group(s) "
+        f"across {len(all_outcomes) - skipped} group(s) "
         f"({len(doi_outcomes)} doi-case, {len(outcomes)} pdf_sha256, "
-        f"{len(title_outcomes)} title){review_note}.",
+        f"{len(title_outcomes)} title){review_note}{skip_note}.",
         file=sys.stderr,
     )
     if dry_run and all_outcomes:

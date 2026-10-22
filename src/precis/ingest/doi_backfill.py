@@ -39,8 +39,13 @@ from typing import Any
 from precis.errors import BadInput
 from precis.ingest.crossref import lookup_crossref
 from precis.ingest.metadata_resolve import CrossrefFn, S2Fn, _resolve_one
-from precis.ingest.semantic_scholar import get_papers_batch, lookup_s2
+from precis.ingest.semantic_scholar import (
+    S2RateLimited,
+    get_papers_batch,
+    lookup_s2,
+)
 from precis.store import Ref, Store
+from precis.utils.rate_limit import RateLimited
 
 log = logging.getLogger(__name__)
 
@@ -258,6 +263,11 @@ def _phase_b(
                 s2_fn=s2_fn,
                 call_timeout=timeout,
             )
+        except (S2RateLimited, RateLimited) as exc:
+            # Saturated upstream — the remaining refs stay DOI-less and the
+            # next pass retries them (gr503080). Don't keep hammering.
+            log.info("backfill-dois: deferring title phase (%s)", exc)
+            break
         except Exception:
             log.exception("backfill-dois: title #%s errored", ref_id)
             continue

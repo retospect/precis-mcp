@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 import textwrap
@@ -154,6 +155,53 @@ def test_missing_dependency_named_when_invoked(
     assert "precis broken: unavailable" in err
     assert "missing dependency 'precis_absent_dep_xyz'" in err
     assert "Traceback" not in err
+
+
+def _cmd_with_run_missing_dep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> Command:
+    """A subcommand that imports fine but whose ``run`` hits a deferred-import
+    ``ModuleNotFoundError`` — the paper-command crash shape (gr503047)."""
+    # The module name embeds the missing dep so repeated calls in one test
+    # session don't collide on the sys.modules cache.
+    mod = "precis_runmiss_" + re.sub(r"\W", "_", missing)
+    (tmp_path / f"{mod}.py").write_text(
+        "def add_parser(sub):\n"
+        "    sub.add_parser('runmiss')\n"
+        "def run(args):\n"
+        f"    raise ModuleNotFoundError(\"No module named '{missing}'\", "
+        f"name={missing!r})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    cmd = Command("runmiss", mod, "Missing dep at run.")
+    monkeypatch.setattr(registry, "COMMANDS", (*registry.COMMANDS, cmd))
+    return cmd
+
+
+def test_run_missing_extra_refuses_with_sync_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A deferred import of a known-extra module refuses with the sync fix
+    instead of a traceback — the resolve-metadata-in-plain-tree crash."""
+    _cmd_with_run_missing_dep(tmp_path, monkeypatch, "rapidfuzz")
+    assert _run(monkeypatch, "runmiss") == 1
+    err = capsys.readouterr().err
+    assert "precis runmiss: unavailable" in err
+    assert "'rapidfuzz'" in err
+    assert "next: uv sync --extra paper" in err.lower()
+    assert "Traceback" not in err
+
+
+def test_run_missing_unmapped_module_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deferred import that names no extra (a precis.* name = code bug,
+    a core dep = broken venv) keeps its traceback — the refusal is only
+    for modules a declared extra actually ships."""
+    _cmd_with_run_missing_dep(tmp_path, monkeypatch, "precis.no_such_mod")
+    with pytest.raises(ModuleNotFoundError, match="precis.no_such_mod"):
+        _run(monkeypatch, "runmiss")
 
 
 class _FakeEntryPoint:

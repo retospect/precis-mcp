@@ -74,4 +74,9 @@ if [[ -z "${PRECIS_LLM_BASE_URL+x}" && -r "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL
 fi
 export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
 cd "$root"
-exec uv run precis "$@"
+# --extra paper: a plain `uv sync` worktree lacks the [paper] extra
+# (rapidfuzz/marker/fitz), so every ingest-side subcommand
+# (resolve-metadata, reconcile-duplicates, add, …) used to die on
+# ModuleNotFoundError (gr503047). Sync the extra the paper commands need —
+# not `embed`: the remote embedder above stands in for it.
+exec uv run --extra paper precis "$@"

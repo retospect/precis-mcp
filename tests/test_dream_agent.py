@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils.claude_agent import AgentResult, ClaudeAgentError
 from precis.workers.dream_agent import (
@@ -427,8 +428,14 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
     }
     log_id = opened["log_id"]
 
-    # env_overlay threads PRECIS_CURRENT_AGENTLOG onto the dispatched request.
-    assert captured["env_overlay"] == {agentlog.ENV_VAR: str(log_id)}
+    # env_overlay threads PRECIS_CURRENT_AGENTLOG onto the dispatched
+    # request, alongside the run's verb deny (gr503441).
+    from precis.workers.envelope import DENY_VERBS_ENV
+
+    assert captured["env_overlay"] == {
+        agentlog.ENV_VAR: str(log_id),
+        DENY_VERBS_ENV: "edit,delete,link",
+    }
 
     # The provenance-handle footer is injected into the dispatched prompt so
     # each memory cites `agentlog:<id>` and auto-links back to the tick node.
@@ -484,6 +491,66 @@ def test_run_dream_pass_finalizes_agentlog_on_dispatch_error(
     assert ref is not None
     assert ref.meta.get("status") is not None
     assert ref.meta.get("ended_at")
+
+
+# ── gr503441: the dream carries its verb deny in env_overlay ─────────
+
+
+def test_dream_env_overlay_carries_verb_deny(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``disallowed_tools`` only lands in claude's tool-NAME deny (typed
+    profile). The profile-independent leg is ``PRECIS_MCP_DENY_VERBS`` in
+    the spawned serve's env — derived from the same tool list so the two
+    can't drift."""
+    from precis.workers import dream_agent as da
+    from precis.workers.envelope import DENY_VERBS_ENV
+
+    prompt_path = tmp_path / "dream-prompt.md"
+    prompt_path.write_text("dream.", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt_path))
+
+    captured: dict = {}
+
+    def _fake(*args, **kw) -> AgentResult:
+        captured["env_overlay"] = kw.get("env_overlay")
+        return AgentResult(
+            final_text="dreamed.", cost_usd=0.0, duration_s=1, turns_used=1
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _fake)
+    result = run_dream_pass(store)
+    assert result.claimed == 1
+
+    overlay = captured["env_overlay"]
+    assert overlay is not None
+    assert overlay[DENY_VERBS_ENV] == "edit,delete,link"
+    # Derived, not hand-copied: the overlay verbs are exactly the
+    # mcp__precis__* entries of the tool deny list.
+    assert set(overlay[DENY_VERBS_ENV].split(",")) == {
+        t.removeprefix("mcp__precis__")
+        for t in da._DREAM_DISALLOWED_TOOLS
+        if t.startswith("mcp__precis__")
+    }
+
+
+def test_dream_deny_env_refuses_edit_in_dispatch(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the env the dream's spawned serve inherits, an ``edit`` call
+    is refused at the verb layer — the envelope message, under either MCP
+    profile."""
+    from precis.workers import dream_agent as da
+    from precis.workers.envelope import DENY_VERBS_ENV
+
+    monkeypatch.setenv(DENY_VERBS_ENV, da._DREAM_DENIED_VERBS)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "edit", {"kind": "memory", "id": 1, "text": "x"}
+    )
+    assert is_error is True
+    assert "Denied" in body
+    assert "permission envelope" in body
 
 
 # ── lens selection (persona-from-oracle + process fallback) ─────────

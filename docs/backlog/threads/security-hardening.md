@@ -37,10 +37,7 @@ residual items.
    password) are still live, without printing any secret; then a rotation
    window agreed with Reto, since agent_rw needs a deliberate cluster pause.
    A live leaked credential outranks every boundary below.
-2. **gr503441** — the dream pass's deny list is not routed through
-   `envelope.denied_verbs`, and subagent writes are not attributed to the
-   parent run (leftovers of the closed agent-deny-lists item).
-3. **backlog/db-role-enforce-pgbouncer.md** — SET ROLE enforcement breaks
+2. **backlog/db-role-enforce-pgbouncer.md** — SET ROLE enforcement breaks
    under the transaction pool; the read-only-agent guarantee depends on the
    answer (shared with session-mcp-shared-server Horizon 1).
 

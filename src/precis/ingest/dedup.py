@@ -35,10 +35,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
 from precis.store.revision_context import trust_door
-from precis.utils.title_merge import title_merge_refusal
+from precis.utils.title_merge import _first_family, title_merge_refusal
 
 log = logging.getLogger(__name__)
 
@@ -393,9 +393,17 @@ class ReconcileOutcome:
     duplicate_ref_ids: list[int]
     key: str  # the shared value (pdf_sha256 / lowercase DOI) the group collapsed on
     key_label: str = "pdf_sha256"  # what `key` names, for display
+    #: Set when the group was left live for human review instead of
+    #: merged — the corroboration gate refused it (gr501446).
+    skipped: str | None = None
 
     def line(self) -> str:
         dups = ", ".join(f"#{d}" for d in self.duplicate_ref_ids)
+        if self.skipped is not None:
+            return (
+                f"SKIP   #{self.survivor_ref_id} vs {dups} "
+                f"({self.key_label} {self.key[:24]}…; {self.skipped})"
+            )
         return (
             f"MERGE  survivor #{self.survivor_ref_id} <- {dups} "
             f"({self.key_label} {self.key[:24]}…)"
@@ -590,6 +598,99 @@ def _maybe_validate_doi_constraint(conn: Any) -> bool:
     return True
 
 
+def _doi_case_corroborated(conn: Any, a_id: int, b_id: int) -> bool:
+    """True when a DOI-case pair still looks like one work, not just one DOI.
+
+    The group key is only a DOI match modulo case — a typo'd or
+    publisher-reused DOI groups unrelated papers (gr501446: pa42498 was
+    merged into pa44470 — same year, entirely different titles). Require
+    the same corroboration the other merge paths demand before folding:
+    trigram title similarity at :data:`_TITLE_AUTO_SIM`, or an agreeing
+    first-author family name with years within ±1. Missing evidence (a
+    blank/junk title, a NULL year, no authors) fails closed — the group is
+    left live and flagged for review rather than merged on a maybe.
+    """
+    rows = conn.execute(
+        "SELECT ref_id, title, year, authors FROM refs WHERE ref_id = ANY(%s)",
+        ([a_id, b_id],),
+    ).fetchall()
+    by_id = {int(r[0]): r for r in rows}
+    a, b = by_id.get(a_id), by_id.get(b_id)
+    if a is None or b is None:
+        return False
+    ta, tb = (a[1] or "").strip(), (b[1] or "").strip()
+    if ta and tb and not (_title_is_junk(ta) or _title_is_junk(tb)):
+        row = conn.execute("SELECT similarity(%s, %s)", (ta, tb)).fetchone()
+        if row and row[0] is not None and float(row[0]) >= _TITLE_AUTO_SIM:
+            return True
+    fa, fb = _first_family(a[3]), _first_family(b[3])
+    if fa and fa == fb and a[2] is not None and b[2] is not None:
+        return abs(int(a[2]) - int(b[2])) <= 1
+    return False
+
+
+_DOI_CASE_REVIEW_SOURCE = "reconcile:doi-case-review"
+_DOI_CASE_REVIEW_TAG = "paper-doi-case-review"
+
+
+def _raise_doi_case_review(
+    store: Store, *, ref_ids: list[int], ldoi: str
+) -> int | None:
+    """File a ``STATUS:open`` review todo for a skipped DOI-case group.
+
+    Deduped on ``(source, doi)`` like ``raise_junk_title_papers``: an open
+    (or human-closed non-``done``) todo already covering the group is not
+    re-filed, so the nightly sweep doesn't re-raise it every pass. Returns
+    the todo ref_id, or ``None`` when one already stands.
+    """
+    from precis.config import load_config
+    from precis.utils.handle_registry import format_handle
+
+    with store.tx() as conn:
+        standing = conn.execute(
+            "SELECT 1 FROM refs t "
+            "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
+            "  AND t.meta->>'source' = %s AND t.meta->>'doi' = %s "
+            "  AND NOT EXISTS (SELECT 1 FROM ref_tags rt "
+            "    JOIN tags tg USING (tag_id) "
+            "    WHERE rt.ref_id = t.ref_id "
+            "      AND tg.namespace = 'STATUS' AND tg.value = 'done')",
+            (_DOI_CASE_REVIEW_SOURCE, ldoi),
+        ).fetchone()
+        if standing is not None:
+            return None
+        handles = ", ".join(format_handle("paper", i) for i in ref_ids)
+        todo_ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=(
+                f"Review DOI-case duplicate group on {ldoi}: {handles} — "
+                "the refs share a DOI modulo case but title/authors do not "
+                "corroborate them as one work (a DOI typo or publisher "
+                "reuse). Merge by hand only if they really are the same "
+                "paper (gr501446)."
+            ),
+            meta={
+                "source": _DOI_CASE_REVIEW_SOURCE,
+                "doi": ldoi,
+                "ref_ids": sorted(ref_ids),
+            },
+            conn=conn,
+        )
+        store.add_tag(
+            todo_ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for tag in (_DOI_CASE_REVIEW_TAG, f"waiting-for:{load_config().owner}"):
+            store.add_tag(
+                todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn
+            )
+    return todo_ref.id
+
+
 def reconcile_by_doi_case(
     store: Store,
     *,
@@ -602,8 +703,12 @@ def reconcile_by_doi_case(
     Keeps the ingested (chunked) copy per :func:`pick_survivor_keep_chunks` and
     merges the PDF-less stub(s) into it, then canonicalises every stored DOI to
     lowercase (:func:`_normalize_doi_rows`) so the surviving rows satisfy the
-    ``ref_identifiers_doi_lc`` invariant. Dry-run (default) reports the planned
-    merges without writing. Returns one :class:`ReconcileOutcome` per group.
+    ``ref_identifiers_doi_lc`` invariant. A group whose members fail the
+    corroboration gate (:func:`_doi_case_corroborated`, gr501446) is skipped —
+    recorded as a skipped outcome and, outside dry-run, filed as a review
+    todo — never merged on the DOI alone. Dry-run (default) reports the
+    planned merges without writing. Returns one :class:`ReconcileOutcome`
+    per group.
     """
     with store.pool.connection() as conn:
         groups = conn.execute(_DOI_CASE_GROUPS_SQL).fetchall()
@@ -619,6 +724,25 @@ def reconcile_by_doi_case(
             continue
         survivor = pick_survivor_keep_chunks(cands)
         dups = [c.ref_id for c in cands if c.ref_id != survivor]
+        with store.pool.connection() as conn:
+            uncorroborated = [
+                d for d in dups if not _doi_case_corroborated(conn, survivor, d)
+            ]
+        if uncorroborated:
+            outcomes.append(
+                ReconcileOutcome(
+                    survivor,
+                    dups,
+                    ldoi,
+                    key_label="doi",
+                    skipped=f"uncorroborated: {uncorroborated}",
+                )
+            )
+            if not dry_run:
+                _raise_doi_case_review(
+                    store, ref_ids=[survivor, *uncorroborated], ldoi=ldoi
+                )
+            continue
         if dry_run:
             outcomes.append(ReconcileOutcome(survivor, dups, ldoi, key_label="doi"))
             continue

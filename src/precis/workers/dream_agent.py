@@ -80,6 +80,7 @@ from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.utils.working_set_render import render_working_set
 from precis.workers import dream_throttle
+from precis.workers.envelope import DENY_VERBS_ENV
 from precis.workers.runner import BatchResult
 from precis.workers.working_set import Provenance, WorkingSet
 
@@ -133,12 +134,32 @@ _DEFAULT_TIMEOUT_S = 600
 # (dreams run on corpus state; the precis ``web``/``websearch`` kinds go via
 # ``get``/``search``, not the built-in WebFetch/WebSearch). Explicit here
 # rather than via the opt-in envelope these standing passes never set.
+#
+# Two legs (gr503441): ``disallowed_tools`` lands only in ``claude -p``'s
+# tool-NAME deny list, which resolves under the ``typed`` MCP profile
+# alone; the profile-independent leg is the verb-level deny the spawned
+# ``precis serve`` reads from ``PRECIS_MCP_DENY_VERBS``
+# (``runtime/dispatch._refuse_envelope_denied_verb``). An ``Envelope``
+# can't express "put but not edit/delete/link" without a vocabulary
+# change, so the dream carries its verb deny itself via ``env_overlay``
+# (``claude_agent._prepare_agent_env`` only pops the var when an envelope
+# is active; the dream sets none). ``_DREAM_DENIED_VERBS`` derives from
+# the tool names so the two lists can't drift.
 _DREAM_DISALLOWED_TOOLS: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
     "mcp__precis__edit",
     "mcp__precis__delete",
     "mcp__precis__link",
+)
+
+#: The precis verbs behind the ``mcp__precis__*`` tool denies above,
+#: exported to the spawned ``precis serve`` as ``PRECIS_MCP_DENY_VERBS``
+#: via ``env_overlay`` — the profile-independent leg of the same box.
+_DREAM_DENIED_VERBS: str = ",".join(
+    t.removeprefix("mcp__precis__")
+    for t in _DREAM_DISALLOWED_TOOLS
+    if t.startswith("mcp__precis__")
 )
 
 
@@ -191,7 +212,9 @@ def run_dream_pass(store: Store) -> BatchResult:
         )
     except Exception:
         log.warning("dream_agent: failed to open agentlog", exc_info=True)
-    env_overlay = {agentlog.ENV_VAR: str(log_id)} if log_id is not None else None
+    env_overlay = {DENY_VERBS_ENV: _DREAM_DENIED_VERBS}
+    if log_id is not None:
+        env_overlay[agentlog.ENV_VAR] = str(log_id)
 
     # Reliable provenance edge — rides the write-time auto-mention linkifier
     # (confirmed live), NOT the env-scoped `touched` path above (which depends

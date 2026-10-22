@@ -658,7 +658,14 @@ def _render_toon_table(
                 else f"{hit.kind}:{hit.slug}"
             )
         elif hit.ref_id is not None:
-            ident = f"{hit.kind}:{hit.ref_id}"
+            # Numeric-ref kinds whose producer didn't backfill ``uhandle``
+            # (``_body_search_hits``): format the universal handle here so
+            # the cell is paste-able into ``get()``; ``kind:ref_id`` stays
+            # the last resort for kinds with no registered code.
+            ident = (
+                handle_registry.try_format(hit.kind, hit.ref_id, chunk=False)
+                or f"{hit.kind}:{hit.ref_id}"
+            )
         else:
             ident = "?"
         links_cell = ""
@@ -704,7 +711,12 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
         elif hit.slug:
             ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
         elif hit.ref_id is not None:
-            ident = str(hit.ref_id)
+            # Same ``uhandle``-less numeric-ref case as the toon table:
+            # a bare ``12`` can't be pasted into ``get()``; the formatted
+            # handle can. Bare int stays the last resort.
+            ident = handle_registry.try_format(
+                hit.kind, hit.ref_id, chunk=False
+            ) or str(hit.ref_id)
         else:
             ident = "?"
         rows.append(

@@ -541,6 +541,41 @@ def test_attention_view_lists_halted_leaves(handler: TodoHandler, store: Store) 
     assert "Need a thought" in out.body
 
 
+def test_attention_view_renders_halt_reason_under_title(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``halt:<reason>`` tag prints its reason under the title —
+    without it a halted leaf shows no *why* (gr503440)."""
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="ran over the cost cap")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt:cost-cap"), set_by="system")
+
+    out = handler.search(view="attention")
+
+    assert "Halted (1)" in out.body
+    assert "reason: cost-cap" in out.body
+
+
+def test_attention_view_omits_reason_line_on_bare_halt(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Bare ``halt`` carries no reason → no reason line."""
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="owner-parked")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt"), set_by="user")
+
+    out = handler.search(view="attention")
+
+    assert "Halted (1)" in out.body
+    assert "reason:" not in out.body
+
+
 def test_attention_view_shows_granted_budget_on_a_halted_todo(
     handler: TodoHandler, store: Store
 ) -> None:

@@ -63,7 +63,9 @@ tags :data:`MISMATCH_TAG` for a human, records what was withheld in
 that produced the mismatch (the one delete this module performs). Never
 fires on a ref carrying ``human_verified_at``.
 
-Reuses ``lookup_crossref`` / ``lookup_s2`` (both carry tenacity backoff),
+Reuses ``lookup_crossref`` / ``lookup_s2`` (both carry bounded shared
+backoff; an exhausted S2 rate limit surfaces as ``S2RateLimited`` → the
+ref defers to the next pass, it is not an error),
 ``update_paper_fields`` + ``set_ref_identifier`` + ``rewrite_cards``, and
 drops the ``needs-triage`` tag on a successful apply. Network-bound, so it
 runs on-cluster; unit-tested with injected resolver fns.
@@ -87,11 +89,12 @@ from precis.ingest.pdf_sidecar import (
     is_pii,
     render_leaked_markup,
 )
-from precis.ingest.semantic_scholar import lookup_s2
+from precis.ingest.semantic_scholar import S2RateLimited, lookup_s2
 from precis.ingest.verify_metadata import content_tokens, title_overlap
 from precis.liveness import drain_sleep
 from precis.store import Store, Tag
 from precis.utils.authors import to_name_dicts
+from precis.utils.rate_limit import RateLimited
 
 log = logging.getLogger(__name__)
 
@@ -159,12 +162,15 @@ _BOOK_DOI_RE = re.compile(r"/b97[89]", re.IGNORECASE)
 CrossrefFn = Callable[[str, str], "dict[str, Any] | None"]
 S2Fn = Callable[[str, str], "dict[str, Any] | None"]
 
-#: Network guards. The Crossref/S2 clients carry their own tenacity backoff
-#: (bounded — 5 attempts — so they can't loop forever), but under
+#: Network guards. The Crossref/S2 clients carry their own backoff
+#: (``precis.utils.http.call_with_backoff``, bounded at 5 attempts with
+#: Retry-After honoured — so they can't loop forever), but under
 #: rate-limiting a single call can still cost tens of seconds. A wall-clock
 #: cap per call keeps one wedged lookup from stalling the batch, and a
 #: politeness delay between papers spreads requests so we don't provoke the
-#: 429s in the first place. Both env-tunable via the CLI.
+#: 429s in the first place. A lookup that still runs out of budget on
+#: refusals surfaces as ``S2RateLimited`` → a ``deferred`` verdict that
+#: stops the pass (gr503080). Both env-tunable via the CLI.
 _DEFAULT_CALL_TIMEOUT = 20.0
 _DEFAULT_DELAY = 0.5
 #: Sentinel: the network call exceeded its wall-clock budget.
@@ -192,7 +198,10 @@ class Resolution:
     """The verdict + recovered metadata for one triage paper."""
 
     ref_id: int
-    verdict: str  # 'auto' | 'review' | 'discard' | 'miss' | 'parked'
+    # 'auto' | 'review' | 'discard' | 'miss' | 'parked' | 'deferred'
+    # ('deferred' = a rate-limited lookup; the ref keeps its tag and the
+    # next pass retries — never counted as a failure, gr503080)
+    verdict: str
     track: str  # 'doi' | 'title' | '-'
     reason: str
     title: str = ""
@@ -272,6 +281,109 @@ def _clean_title_line(raw: str) -> str:
     return s
 
 
+#: Affiliation/address front-matter that survives the furniture filters but
+#: is never a paper title (gr503080): institutional lead-ins, a
+#: comma-joined place tail, or a trailing postal code. Admitted as title
+#: candidates these waste an S2 lookup and land the ref in unresolved.
+_AFFIL_LEAD_RE = re.compile(
+    r"^(?:current\s+address|present\s+address|department\s+of|dept\.?\s+of|"
+    r"university|institute|school\s+of|laborator(?:y|ies)|mrc)\b",
+    re.I,
+)
+
+#: A postal code at the line's end (UK ``CB2 1TN``, Canadian ``K1A 0B1``,
+#: US ``02139``/``02139-1234``).
+_POSTAL_TAIL_RE = re.compile(
+    r"(?:\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b|"
+    r"\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b|"
+    r"\b\d{5}(?:-\d{4})?)\s*$",
+    re.I,
+)
+
+#: An institution word anywhere in a comma-joined line (``J. Smith,
+#: Department of Physics, Cambridge``) marks the author-affiliation block.
+_INSTITUTION_WORD_RE = re.compile(
+    r"\b(?:university|institut|depart|laborator|cent(?:er|re)|college|"
+    r"hospital|academy|school|mrc|cnrs|nih)\w*",
+    re.I,
+)
+
+#: Place names that close an affiliation line (``…, Cambridge, England``).
+#: Deliberately the common-in-corpus set, not ISO-3166 — this is a negative
+#: filter on title candidates, not a geography reference.
+_AFFIL_PLACE_WORDS = frozenset(
+    {
+        "england",
+        "scotland",
+        "wales",
+        "ireland",
+        "uk",
+        "usa",
+        "united kingdom",
+        "united states",
+        "canada",
+        "australia",
+        "germany",
+        "france",
+        "italy",
+        "spain",
+        "portugal",
+        "netherlands",
+        "belgium",
+        "switzerland",
+        "austria",
+        "sweden",
+        "norway",
+        "denmark",
+        "finland",
+        "poland",
+        "japan",
+        "china",
+        "india",
+        "israel",
+        "singapore",
+        "korea",
+        "south korea",
+        "taiwan",
+        "brazil",
+        "mexico",
+        "argentina",
+        "russia",
+        "greece",
+        "turkey",
+        "czech republic",
+        "hungary",
+        "new zealand",
+    }
+)
+
+
+def _is_affiliation_line(line: str) -> bool:
+    """True for an affiliation/postal front-matter line, never a title.
+
+    Three shapes (gr503080): an institutional lead-in ("Current address:
+    Department of …", "MRC Applied Psychology Unit", "University of …");
+    a trailing postal code; or a comma-joined line (2+ commas) ending in a
+    country/place word or carrying an institution name (``J. Smith,
+    Department of Physics, Cambridge, England``).
+    """
+    if _AFFIL_LEAD_RE.match(line):
+        return True
+    if _POSTAL_TAIL_RE.search(line):
+        return True
+    if line.count(",") >= 2:
+        tail = line.rsplit(",", 1)[-1].strip().rstrip(".")
+        if tail.lower() in _AFFIL_PLACE_WORDS:
+            return True
+        if _INSTITUTION_WORD_RE.search(line) and re.fullmatch(
+            r"[A-Z][\w'.-]*(?:[ -][A-Z][\w'.-]*){0,2}", tail
+        ):
+            # "…, Some Institute of Something, Cambridge" — capitalised
+            # place tail on an institution-bearing line.
+            return True
+    return False
+
+
 def _is_title_like(line: str) -> bool:
     """True if ``line`` could plausibly be a paper title — length-bounded, has
     real words, isn't embedded-metadata junk or first-page furniture."""
@@ -280,6 +392,8 @@ def _is_title_like(line: str) -> bool:
     if is_garbage_title(line) or is_pii(line):
         return False
     if any(p.search(line) for p in _FURNITURE_LINE_RES):
+        return False
+    if _is_affiliation_line(line):
         return False
     letters = sum(c.isalpha() for c in line)
     # A title is mostly letters; reject mostly-digit/punct lines (page refs,
@@ -813,6 +927,18 @@ def resolve_triage(
                 s2_fn=s2_fn,
                 call_timeout=call_timeout,
             )
+        except (S2RateLimited, RateLimited) as exc:
+            # gr503080: a 429 storm / refused limiter row is a deferral, not
+            # a failure — the ref keeps its needs-triage tag and the next
+            # pass retries it. Stop the whole pass: every later lookup lands
+            # on the same saturated service and burns its own backoff budget.
+            log.info(
+                "resolve-metadata: #%s deferred (%s); stopping the pass",
+                ref.id,
+                exc,
+            )
+            results.append(Resolution(ref.id, "deferred", "-", "rate-limited"))
+            break
         except Exception:
             log.exception("resolve-metadata: ref #%s failed", ref.id)
             results.append(Resolution(ref.id, "miss", "-", "error"))

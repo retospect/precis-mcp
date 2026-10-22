@@ -514,12 +514,26 @@ def test_toon_table_id_falls_back_to_kind_qualified_slug() -> None:
     assert "paper:acheson26~5" in out.body
 
 
-def test_toon_table_id_falls_back_to_kind_qualified_ref_id() -> None:
-    s1 = [SearchHit(score=0.9, kind="memory", title="t", preview="p", ref_id=42)]
+def test_toon_table_id_formats_handle_for_numeric_ref_kind() -> None:
+    """A ``uhandle``-less numeric-ref hit (memory/todo/gripe/…) renders its
+    formatted universal handle — paste-able into ``get()`` — rather than the
+    ``kind:ref_id`` fallback (gr503440)."""
+    s1 = [SearchHit(score=0.9, kind="memory", title="t", preview="p", ref_id=12)]
     out = merge_and_render(
         [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
     )
-    assert "memory:42" in out.body
+    assert "me12" in out.body
+    assert "memory:12" not in out.body
+
+
+def test_toon_table_id_falls_back_to_kind_qualified_ref_id() -> None:
+    """A kind with no registered handle code keeps the ``kind:ref_id``
+    last-resort cell."""
+    s1 = [SearchHit(score=0.9, kind="thing", title="t", preview="p", ref_id=42)]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "thing:42" in out.body
 
 
 def test_toon_table_links_column_from_summary() -> None:
@@ -874,3 +888,43 @@ def test_keywords_shape_renders_empty_cell_when_no_keywords() -> None:
     )
     assert "foo~1" in out.body
     assert "paper" in out.body
+
+
+def test_keywords_shape_formats_handle_for_numeric_ref_kind() -> None:
+    """Same gr503440 fix as the toon table: a ``uhandle``/``slug``-less
+    numeric-ref hit renders ``me12``, never a bare ``12`` the agent
+    cannot paste into ``get()``."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="memory",
+            title="t",
+            preview="p",
+            ref_id=12,
+            keywords=("dreaming",),
+        )
+    ]
+    out = merge_and_render(
+        [s1],
+        page_size=10,
+        query="topics",
+        mode="rrf",
+        output_shape="keywords",
+    )
+    assert "me12" in out.body
+    # The pre-fix cell was the bare ref_id.
+    assert "\n12\t" not in out.body
+    assert "\t12\t" not in out.body
+
+
+def test_keywords_shape_bare_int_stays_last_resort_for_codeless_kind() -> None:
+    s1 = [SearchHit(score=0.9, kind="thing", title="t", preview="p", ref_id=7)]
+    out = merge_and_render(
+        [s1],
+        page_size=10,
+        query="topics",
+        mode="rrf",
+        output_shape="keywords",
+    )
+    assert "7" in out.body
+    assert "thing" in out.body

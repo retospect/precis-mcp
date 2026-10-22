@@ -101,7 +101,13 @@ def run(args: argparse.Namespace) -> None:
     )
 
     # Group by verdict; print the actionable lanes (review / discard) in full.
-    buckets: dict[str, list] = {"auto": [], "review": [], "discard": [], "miss": []}
+    buckets: dict[str, list] = {
+        "auto": [],
+        "review": [],
+        "discard": [],
+        "miss": [],
+        "deferred": [],
+    }
     for r in results:
         buckets.setdefault(r.verdict, []).append(r)
     for lane in ("auto", "review", "discard"):
@@ -109,12 +115,17 @@ def run(args: argparse.Namespace) -> None:
             print(r.line())
 
     verb = "applied" if apply else "would apply"
+    deferred = (
+        f", {len(buckets['deferred'])} deferred (rate-limited, retry next pass)"
+        if buckets["deferred"]
+        else ""
+    )
     print(
         f"\nresolve-metadata [{mode}] done over {len(results)} paper(s): "
         f"{verb} {len(buckets['auto'])} auto, "
         f"{len(buckets['review'])} for review, "
         f"{len(buckets['discard'])} discard-candidates, "
-        f"{len(buckets['miss'])} unresolved.",
+        f"{len(buckets['miss'])} unresolved{deferred}.",
         file=sys.stderr,
     )
     if not apply and buckets["auto"]:
