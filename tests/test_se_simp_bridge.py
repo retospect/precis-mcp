@@ -949,3 +949,215 @@ def test_the_job_reports_bounded_iteration_progress(
     assert "iteration 1/6" in lines[0] and "compliance" in lines[0]
     assert "iteration 6/6" in lines[-1]
     assert ("status", "succeeded") in events
+
+
+# --------------------------------------------------------------------------
+# O5: declared flat faces — annotations={'boss': t} on a load_at/fixed_at
+# port pins a passive slab normal to the port's declared axis face
+# --------------------------------------------------------------------------
+
+_BOSS_PORT = {
+    "op": "add_port",
+    "block": "beam",
+    "name": "tip",
+    "pose": "[0.012 0.0 0.006] m",
+    "direction": [1.0, 0.0, 0.0],
+    "annotations": {"boss": 0.004},
+}
+
+# the 24x12x12 mm box is x/y-centred (x runs -0.012..0.012), so tip sits
+# on the x+ face; its nearest element (11, 2, 2) — 8 nodes touching a
+# 2x3x3 patch — gives the boss slab x in {10, 11} (two layers for
+# boss 0.004 at pitch 0.002) over y/z in {1..3}
+_BOSS_CELLS = np.zeros((12, 6, 6), dtype=bool)
+_BOSS_CELLS[10:12, 1:4, 1:4] = True
+_PAD = 2  # fieldops' REDISTANCE_PAD: element (i,j,k) is field cell (i+2,...)
+
+
+def _boss_ops(**port_overrides: Any) -> list[dict[str, Any]]:
+    port = {**_BOSS_PORT, **port_overrides}
+    if "annotations" in port_overrides:
+        port["annotations"] = port_overrides["annotations"]
+    return [*_cantilever_ops(), port]
+
+
+def _slab_solid_in_field(fld: Any) -> bool:
+    off = _PAD
+    region = np.asarray(fld.grid)[off : off + 12, off : off + 6, off : off + 6]
+    return bool(np.all(region[_BOSS_CELLS] <= 0.0))
+
+
+def test_bossed_port_pins_a_solid_slab_at_its_declared_face() -> None:
+    tree = _tree(_boss_ops())
+    echo, req = simp_bridge.prepare_simp(tree, _simp_op(load_at="tip", max_iter=8))
+    assert "boss 0.004 m on load_at port 'tip' (face x+, 2 layer(s))" in echo
+    solve = simp_bridge.solve_simp(tree, req)
+    # the declared patch is pinned at 1 in the design variables and stays
+    # solid (>0.5 → inside the field's zero set) in the printed field
+    assert np.all(solve.result.design_density[10:12, 1:4, 1:4] == 1.0)
+    assert np.all(solve.result.density[10:12, 1:4, 1:4] > 0.5)
+    assert _slab_solid_in_field(solve.field)
+    # the run summary records what was pinned, and the slab counts passive
+    (boss,) = solve.summary["bosses"]
+    assert boss["port"] == "tip" and boss["at"] == "load_at"
+    assert boss["face"] == "x+" and boss["layers"] == 2
+    assert boss["thickness_m"] == pytest.approx(0.004)
+    assert boss["elements"] == int(_BOSS_CELLS.sum())
+    # passive = the port's patch (the slab, superset) + the x- face layer
+    assert solve.summary["passive_elements"] == 18 + 36
+    # the load path is intact — the solve still descends
+    assert solve.summary["compliance_last"] < solve.summary["compliance_first"]
+
+
+def test_boss_on_fixed_at_and_unit_string_form() -> None:
+    tree = _tree(_boss_ops(annotations={"boss": "2 mm"}))
+    _e, req = simp_bridge.prepare_simp(tree, _simp_op(fixed_at="tip", max_iter=5))
+    assert "boss 0.002 m on fixed_at port 'tip' (face x+, 1 layer(s))" in _e
+    solve = simp_bridge.solve_simp(tree, req)
+    assert np.all(solve.result.design_density[11, 1:4, 1:4] == 1.0)
+    assert np.all(solve.result.density[11, 1:4, 1:4] > 0.5)
+    assert solve.summary["bosses"][0]["layers"] == 1
+
+
+def test_boss_refusals_at_op_time() -> None:
+    # a boss with no declared face direction is refused, with the fix named
+    tree2 = _tree(
+        [
+            *_cantilever_ops(),
+            {
+                "op": "add_port",
+                "block": "beam",
+                "name": "tip",
+                "pose": "[0.024 0.006 0.006] m",
+                "annotations": {"boss": 0.004},
+            },
+        ]
+    )
+    with pytest.raises(simp_bridge.SimpBridgeError, match="no direction") as exc:
+        simp_bridge.prepare_simp(tree2, _simp_op(load_at="tip"))
+    assert "direction=" in str(exc.value.next)
+    # a non-axis-aligned face refuses, never flattens to the nearest axis
+    tree = _tree(_boss_ops(direction=[1.0, 1.0, 0.0]))
+    with pytest.raises(simp_bridge.SimpBridgeError, match="not axis-aligned") as exc:
+        simp_bridge.prepare_simp(tree, _simp_op(load_at="tip"))
+    assert exc.value.next is not None
+    # bad boss values
+    for bad in (0.0, -0.001, "thick", "0.004", True):
+        tree = _tree(_boss_ops(annotations={"boss": bad}))
+        with pytest.raises(simp_bridge.SimpBridgeError):
+            simp_bridge.prepare_simp(tree, _simp_op(load_at="tip"))
+    # a boss on a port the op does not name is merely descriptive — no refusal
+    tree = _tree(
+        [
+            *_cantilever_ops(),
+            {
+                "op": "add_port",
+                "block": "beam",
+                "name": "unused",
+                "pose": "[0.0 0.006 0.006] m",
+                "annotations": {"boss": "thick"},
+            },
+        ]
+    )
+    simp_bridge.prepare_simp(tree, _simp_op())
+
+
+def test_boss_refusal_is_a_named_badinput_with_next(handler: SeHandler) -> None:
+    ops = [
+        *_cantilever_ops(),
+        {
+            "op": "add_port",
+            "block": "beam",
+            "name": "tip",
+            "pose": "[0.024 0.006 0.006] m",
+            "direction": [1.0, 1.0, 0.0],
+            "annotations": {"boss": 0.004},
+        },
+    ]
+    handler.put(id="simp-boss-bad", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="not axis-aligned") as exc:
+        handler.edit(id="simp-boss-bad", ops=[_simp_op(load_at="tip")])
+    assert exc.value.next is not None
+
+
+def test_boss_end_to_end_and_overhang_free(handler: SeHandler, store: Store) -> None:
+    handler.put(id="simp-boss", text=json.dumps({"ops": _boss_ops()}))
+    ref = store.get_ref(kind="se", id="simp-boss")
+    assert ref is not None
+    tree = _load(handler, "simp-boss")
+    _e, req = simp_bridge.prepare_simp(tree, _simp_op(load_at="tip", max_iter=10))
+    outcome = simp_bridge.run_simp(store, ref.id, req)
+    summary = outcome.summary
+    assert summary["bosses"][0]["elements"] == int(_BOSS_CELLS.sum())
+    # the bound field is solid over the declared patch
+    cad_ref = store.get_ref(kind="cad", id=outcome.cad_slug)
+    assert cad_ref is not None
+    spec, _h = store.cad_load(cad_ref.id)
+    sha = spec.nodes[0].config[len("field:") :]
+    _header, fld = store.get_field(sha)
+    assert _slab_solid_in_field(fld)
+    # zero overhang at the declared build_dir, patch included
+    assert summary["overhang_violations_field"] == 0
+    tree = _load(handler, "simp-boss")
+    report = se_printing.report_for(tree, "beam", cad_store_reader=store)
+    assert report is not None
+    assert [f.rule for f in report.findings if f.rule == "overhang"] == []
+
+
+def test_moving_or_rebossing_the_port_changes_the_inputs_hash() -> None:
+    tree = _tree(_boss_ops())
+    _e, req = simp_bridge.prepare_simp(tree, _simp_op(load_at="tip"))
+    before = simp_bridge.inputs_sha(tree, req)
+    # same port, same pose, different boss -> a different problem
+    apply_ops(
+        tree,
+        [
+            {"op": "remove_port", "block": "beam", "name": "tip"},
+            {
+                "op": "add_port",
+                "block": "beam",
+                "name": "tip",
+                "pose": "[0.012 0.0 0.006] m",
+                "direction": [1.0, 0.0, 0.0],
+                "annotations": {"boss": 0.006},
+            },
+        ],
+    )
+    assert simp_bridge.inputs_sha(tree, req) != before
+    # and moving the bossed port still changes the hash (the moved-load-port
+    # rule, unchanged by the boss reading)
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_port_pose",
+                "block": "beam",
+                "name": "tip",
+                "pose": "[0.012 0.0 0.010] m",
+            }
+        ],
+    )
+    assert simp_bridge.inputs_sha(tree, req) not in {
+        before,
+        simp_bridge.inputs_sha(_tree(_boss_ops()), req),
+    }
+
+
+def test_repin_bosses_restores_what_the_morphology_cut() -> None:
+    shape = (12, 6, 6)
+    pin = _BOSS_CELLS
+    occ = np.ones(shape, dtype=bool)
+    fld = fieldops.from_density(
+        occ.astype(float), 0.5, pitch=_PITCH, origin=(0.5 * _PITCH,) * 3
+    )
+    # simulate open() having cut the slab's outer layer
+    g = np.asarray(fld.grid).copy()
+    g[_PAD + 11, _PAD + 1 : _PAD + 4, _PAD + 1 : _PAD + 4] = _PITCH
+    cut_fld = fieldops.Field(grid=g, pitch=fld.pitch, origin=fld.origin, exact=False)
+    findings: list[str] = []
+    out = simp_bridge._repin_bosses(cut_fld, pin, (0.5 * _PITCH,) * 3, _PITCH, findings)
+    assert _slab_solid_in_field(out)
+    assert findings and "re-pinned" in findings[0]
+    # nothing cut -> the field object is returned untouched
+    same = simp_bridge._repin_bosses(fld, pin, (0.5 * _PITCH,) * 3, _PITCH, [])
+    assert same is fld

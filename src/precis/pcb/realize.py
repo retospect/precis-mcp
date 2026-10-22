@@ -189,6 +189,26 @@ class RealizeConfig:
     #: wire to keep a via out from under a body. ``0.0`` is off — prod's
     #: default, today's behaviour exactly.
     via_body_cost_mm: float = 0.0
+    #: Multiplier on track length through a DECLARED plane layer
+    #: (:attr:`_RouteContext.plane_layers`, handed to
+    #: :func:`vroute.Request.layer_cost`). A track crossing a pour cuts
+    #: it — every severed channel is a pour-island risk, so signals
+    #: should prefer a free inner layer. 2.5 sits inside the stackup
+    #: spec's "about 2–3x" ruling (docs/backlog/pcb-stackup-regions.md,
+    #: "high cost does not need to be massively high"): a via-pair detour
+    #: onto an inner layer (~2 mm via cost plus the same wire) beats a
+    #: plane-layer run longer than ~1.3 mm, while short pad-entry stubs
+    #: still fit on the surface. A soft cost, never a keep-out — a board
+    #: with no free inner layer still routes on the plane layer at the
+    #: surcharge. ``1.0`` is off.
+    plane_layer_cost: float = 2.5
+    #: The ONE bounded retry round's expansion pool (gr503666): after the
+    #: main pass, each failed routable net gets a single re-search on the
+    #: full window (no margin cap) with its class's whole allowed layer
+    #: set — the inner layers explicitly open — spending from this
+    #: dedicated pool, separate from ``max_expansions``. Bounded by work,
+    #: so the retry is deterministic too. ``0`` disables the retry.
+    retry_expansions: int = 30000
 
 
 # ── the closed-form geometric primitive ──────────────────────────────────
@@ -481,7 +501,7 @@ class UnroutedReason:
       (:func:`_net_class_layers`, checked in :func:`_realize_vector`).
     - ``'search_budget'`` — a search ran out of ``max_expansions`` before
       finding a path or proving there is none. Two origins: the segment's
-      REAL search on the busy grid exhausted (:func:`_realize_vector` records
+      REAL search hit the expansion cap (:func:`_realize_vector` records
       it — reported directly, never re-probed, since a pads-only probe
       that finds a corridor would mislabel the budget failure
       ``'congestion'``; gr489909, 2026-10-20), or the diagnosis's own
@@ -490,6 +510,20 @@ class UnroutedReason:
       2026-10-01; the real-search case as ``'congestion'`` until
       2026-10-20 — on a fine grid over a large board each conflation is
       the common case, not a corner.
+    - ``'keepout'`` — the search reached the goal's layer but every leg
+      into the goal (or out of the start) was refused ONLY by non-copper
+      obstacles — a ``track_only`` reserved region (a derived power
+      area), a ``via_only`` silk keep-out, or a fiducial/NPTH keep-out —
+      not by another net's copper. Different fix from ``'congestion'``:
+      the reservation, not a race, has to move. Witness-sampled
+      (``fail_witness``'s ``goal_blockers``/``start_blockers``,
+      gr503666).
+    - ``'via_blocked'`` — the search roamed its allowed layers but never
+      REACHED the goal's layer: every layer transition was refused (no
+      legal via site in reach, or no route to one that cleared). The
+      layer-transition refusal of gr503666's vocabulary; without it this
+      case read as ``'no_path'`` even though a corridor exists on each
+      layer and only the hop between them is missing.
     """
 
     seg_id: int
@@ -984,6 +1018,10 @@ class _RouteContext:
     #: (:func:`_via_body_zones`), handed to every ``vroute.Request`` as
     #: ``via_body_zones``; empty when ``config.via_body_cost_mm`` is 0.
     via_body_zones: tuple[Any, ...] = ()
+    #: The stackup layers some net is declared a plane on (the union of
+    #: every ``net_plane_layers`` bitmask) — the layers a routed track
+    #: pays ``RealizeConfig.plane_layer_cost`` on (gr503666).
+    plane_layers: frozenset[int] = frozenset()
 
 
 def _route_context(
@@ -1087,6 +1125,11 @@ def _route_context(
         net_layer_clearance,
         _track_reserved_regions(ir, config),
         _via_body_zones(ir) if config.via_body_cost_mm > 0 else (),
+        frozenset(
+            layer
+            for mask in ir.net_plane_layers
+            for layer in plane_layers_of(int(mask))
+        ),
     )
 
 
@@ -1397,12 +1440,23 @@ def _route_seg_vector(
     names: list[str],
     spent: list[int],
     island_notes: dict[int, str],
-    exhausted: set[int],
+    fail_witness: dict[int, dict[str, Any]],
+    *,
+    budget: int | None = None,
+    window_mm: float | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia]] | None:
     """One segment's vector route — ``None`` when the search found no
     legal path within its share of the pass budget. Stamps the new copper
     into ``space`` on success; a layer-locked-to-nothing net returns
     ``None`` without searching (:class:`UnroutedReason` ``'layer_lock'``).
+
+    ``spent`` counts expansions against ``budget`` (the active pool —
+    ``config.max_expansions`` for the main pass, ``config.retry_expansions``
+    for the one retry round; ``window_mm`` is the retry's full-board
+    window). On failure the last search's witness stats land in
+    ``fail_witness[seg_id]`` for :func:`_diagnose_all`'s per-segment
+    reason; ``{"stop": "budget"}`` when the pool ran out before the
+    search could start.
 
     Island terminals (:attr:`RealizeResult.island_terminals`): each end's
     candidate terminals are the pin's own pad first, then its
@@ -1470,9 +1524,18 @@ def _route_seg_vector(
         bounds = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
     else:
         bounds = (-1e6, -1e6, 1e6, 1e6)
-    remaining = int(config.max_expansions) - spent[0]
-    if remaining <= 0:
+    cap = int(budget if budget is not None else config.max_expansions)
+    if cap - spent[0] <= 0:
+        fail_witness[seg_id] = {"stop": "budget"}
         return None
+    # A routed track on a declared plane layer pays the surcharge
+    # (`config.plane_layer_cost`, gr503666): signals detour onto a free
+    # inner layer instead of cutting the pour.
+    layer_cost = (
+        {la: float(config.plane_layer_cost) for la in allowed if la in ctx.plane_layers}
+        if config.plane_layer_cost > 1.0
+        else None
+    )
     path: vroute.VPath | None = None
     used_pair: tuple[vroute.Terminal, vroute.Terminal] | None = None
     attempts = 0
@@ -1497,7 +1560,9 @@ def _route_seg_vector(
                 via_layers=tuple(range(n)),
                 via_body_cost_mm=config.via_body_cost_mm,
                 via_body_zones=ctx.via_body_zones,
-                max_expansions=max(1, int(config.max_expansions) - spent[0]),
+                layer_cost=layer_cost,
+                window_mm=window_mm if window_mm is not None else 3.0,
+                max_expansions=max(1, cap - spent[0]),
             )
             stats = {}
             path = vroute.route(space, req, stats=stats)
@@ -1507,9 +1572,8 @@ def _route_seg_vector(
                 break
         if path is not None or attempts >= 4:
             break
-    if stats.get("stop") in ("budget", "exhausted"):
-        exhausted.add(seg_id)
     if path is None:
+        fail_witness[seg_id] = dict(stats)
         return None
     if used_pair is not None and terms:
         note = _describe_used_terminal(used_pair[0], used_pair[1], terms)
@@ -1597,7 +1661,7 @@ def _realize_vector(
     )
     names, index, n = _layer_index(ir)
     island_notes: dict[int, str] = {}
-    exhausted: set[int] = set()
+    fail_witness: dict[int, dict[str, Any]] = {}
     spent = [0]
     budget = int(config.max_expansions)
     edge_inset = max(ctx.clearance_max, ctx.edge_min) + 0.01
@@ -1665,16 +1729,28 @@ def _realize_vector(
     routed: set[int] = set()
     no_position: set[int] = set()
     tried = 0
+    retried = 0
+    retry_routed = 0
     out_of_budget = False
-    # Shortest net first — the same ordering the escape pass used.
-    for net in sorted(by_net, key=lambda k: net_span(by_net[k])):
-        if spent[0] >= budget:
-            out_of_budget = True
-            break
+    retry_pool = int(config.retry_expansions)
+    retry_spent = [0]
+    bbox = _outline_bbox(ir)
+    retry_window = (
+        math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1]) if bbox is not None else 1e6
+    )
+
+    def route_net(net: int, pool: list[int], cap: int, count: list[int]) -> bool:
+        """All of one net's segments, all-or-nothing into ``space`` —
+        rolled back unless every one routes AND the pour guard passes
+        (``misses`` tracks the plane-miss count across nets). Returns
+        True when the net routed. ``pool``/``cap`` are the active
+        expansion budget; ``window_mm`` is set for the retry round's
+        full-board window."""
+        nonlocal misses
         mark = space.mark()
         net_tracks: list[RealizedTrack] = []
         net_vias: list[RealizedVia] = []
-        ok = True
+        window = retry_window if pool is retry_spent else None
         for s in sorted(by_net[net], key=seg_span):
             pa_, pb_ = (
                 pin_point(ir, int(ir.seg_pin_a[s])),
@@ -1683,7 +1759,7 @@ def _realize_vector(
             if pa_ is None or pb_ is None:
                 no_position.add(s)
                 continue
-            tried += 1
+            count[0] += 1
             got = _route_seg_vector(
                 space,
                 ir,
@@ -1693,32 +1769,60 @@ def _realize_vector(
                 index,
                 n,
                 names,
-                spent,
+                pool,
                 island_notes,
-                exhausted,
+                fail_witness,
+                budget=cap,
+                window_mm=window,
             )
             if got is None:
-                ok = False
-                break
+                space.rollback(mark)
+                return False
             net_tracks += got[0]
             net_vias += got[1]
-        if ok and poured_layers & {t.layer for t in net_tracks}:
+        if poured_layers & {t.layer for t in net_tracks}:
             now = plane_misses(net_tracks, net_vias)
             if now[0] > misses[0] or now[1] > misses[1]:
-                ok = False
-            else:
-                misses = now
-        if not ok:
-            space.rollback(mark)
-            unrouted += [s for s in by_net[net] if s not in no_position]
-            continue
-        tracks += net_tracks
-        vias += net_vias
+                space.rollback(mark)
+                return False
+            misses = now
+        tracks.extend(net_tracks)
+        vias.extend(net_vias)
         routed.update(by_net[net])
-    # Every route segment never attempted (budget ran out mid-board) is
-    # failed copper for this run — report it, never pretend it routed.
+        return True
+
+    tried_c = [0]
+    # Shortest net first — the same ordering the escape pass used.
+    for net in sorted(by_net, key=lambda k: net_span(by_net[k])):
+        if spent[0] >= budget:
+            out_of_budget = True
+            break
+        route_net(net, spent, budget, tried_c)
+    tried = tried_c[0]
+    # The ONE bounded retry round (gr503666): every still-unrouted
+    # routable net gets a single re-search on the full board window —
+    # no margin cap — spending the dedicated ``retry_expansions`` pool,
+    # on the same class-resolved layer set (``ctx.net_layers`` already
+    # names every routable layer its class permits, the inner layers
+    # explicitly included; a class lock is never widened). A net whose
+    # class resolved to nothing is a hard ``layer_lock``, not a retry
+    # candidate.
+    if retry_pool > 0:
+        for net in sorted(by_net, key=lambda k: net_span(by_net[k])):
+            if retry_spent[0] >= retry_pool:
+                break
+            if net in ctx.net_layer_lock_fail:
+                continue
+            if all(s in routed or s in no_position for s in by_net[net]):
+                continue
+            retried += 1
+            if route_net(net, retry_spent, retry_pool, [0]):
+                retry_routed += 1
+    # Every route segment never routed (failed, or never attempted when
+    # the budget ran out mid-board) is failed copper for this run —
+    # report it, never pretend it routed.
     for s in ctx.route_ids:
-        if s not in routed and s not in no_position and s not in unrouted:
+        if s not in routed and s not in no_position:
             unrouted.append(s)
     pours, extra_unrouted = pour()
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
@@ -1797,7 +1901,7 @@ def _realize_vector(
         routed_tracks=tracks,
         routed_vias=vias,
         plane_failed_pins=plane_failed_pins,
-        exhausted=exhausted,
+        fail_witness=fail_witness,
     )
     report = vroute.EscapeReport(
         tried=tried,
@@ -1805,6 +1909,9 @@ def _realize_vector(
         expansions=spent[0],
         elapsed_s=time.monotonic() - t0,
         out_of_budget=out_of_budget,
+        retried=retried,
+        retry_routed=retry_routed,
+        retry_expansions=retry_spent[0],
     )
     return tracks, vias, unrouted, pours, reasons, unstitched, island_notes, report
 
@@ -4595,7 +4702,7 @@ def _diagnose_all(
     routed_tracks: list[RealizedTrack] | None = None,
     routed_vias: list[RealizedVia] | None = None,
     plane_failed_pins: list[int] | None = None,
-    exhausted: set[int] | None = None,
+    fail_witness: dict[int, dict[str, Any]] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted``.
@@ -4611,12 +4718,18 @@ def _diagnose_all(
     reached ``vroute.route`` at all, so re-running the point-to-point
     probes below would ask the wrong question.
 
-    ``exhausted`` (:func:`_realize_vector`'s record of which segments'
-    REAL search ended on the expansion cap, from the route's own
-    ``stats['stop']``) is checked before the probes for the same reason:
-    the busy-space search already answered why this segment failed — the
-    budget ran out — so a pads-only probe that then finds a corridor
-    would misreport the failure as a lost race (gr489909)."""
+    ``fail_witness`` (:func:`_realize_vector`'s record of each failed
+    segment's LAST search stats — ``vroute``'s ``fail_stats``: stop
+    reason, terminal-leg counts, via hops, layers reached and sampled
+    blocker witnesses) is checked before the probes for the same reason:
+    the busy-space search already answered much of why this segment
+    failed, so a pads-only probe is either redundant (a budget stop,
+    where finding a corridor would misreport the failure as a lost race,
+    gr489909) or better answered by the search's own witnesses (an
+    ``'exhausted'`` stop is not a budget failure — the sampled graph
+    gave out, and WHERE it gave out is the diagnosis: the start's own
+    exits, a layer transition, or the goal entry, each naming its
+    blockers)."""
     reasons: list[UnroutedReason] = []
     pins_by_net: dict[int, list[int]] = {}
     for pid in plane_failed_pins or ():
@@ -4652,7 +4765,9 @@ def _diagnose_all(
                 )
             )
             continue
-        if exhausted and seg_id in exhausted:
+        witness = (fail_witness or {}).get(seg_id) or {}
+        stop = str(witness.get("stop") or "")
+        if stop == "budget":
             reasons.append(
                 UnroutedReason(
                     seg_id,
@@ -4667,6 +4782,15 @@ def _diagnose_all(
                 )
             )
             continue
+        if stop == "exhausted":
+            reason = _exhausted_reason(ir, seg_id, net_id, ctx, witness)
+            if reason is not None:
+                reasons.append(reason)
+                continue
+            # No witness verdict (the goal's layer WAS reached and real
+            # copper contested it, or the sampling simply missed) — fall
+            # through to the pads-only probes, which answer
+            # corridor-existence authoritatively.
         rules = _seg_rules(ir, seg_id, ctx.rules_by_net, config)
         n_vias, group_extent = _via_group_extent(ir, seg_id, rules, ctx.clearance)
         if probe is None:
@@ -4697,6 +4821,104 @@ def _diagnose_all(
             )
         )
     return reasons
+
+
+def _blocker_phrase(pairs: list[tuple[str, str]]) -> str:
+    """``[(net, kind)]`` witness entries (``copper``/``reserved``/
+    ``keepout``) as a short phrase for a reason message — nets named,
+    the non-copper kinds spelled out."""
+    nets = sorted({str(n) for n, k in pairs if k == "copper"})
+    soft = sorted({str(n) for n, k in pairs if k != "copper"})
+    kinds = sorted({k for _n, k in pairs if k != "copper"})
+    parts: list[str] = []
+    if nets:
+        parts.append(
+            ", ".join(nets[:5]) + (f" +{len(nets) - 5} more" if len(nets) > 5 else "")
+        )
+    if kinds:
+        parts.append(
+            f"{'/'.join(kinds)} obstacle(s)"
+            + (f" ({', '.join(soft[:3])})" if soft else "")
+        )
+    return "; ".join(parts)
+
+
+def _exhausted_reason(
+    ir: PcbIR,
+    seg_id: int,
+    net_id: int,
+    ctx: _RouteContext,
+    witness: dict[str, Any],
+) -> UnroutedReason | None:
+    """WHY a search that emptied its frontier failed — the witnesses the
+    A* recorded on the busy space (``vroute``'s ``fail_stats``, stored by
+    :func:`_route_seg_vector`). ``exhausted`` is NOT ``'search_budget'``:
+    the budget did not run out, the sampled graph did — and WHERE it ran
+    out is the diagnosis.
+
+    - start legs all refused → ``'no_path'`` walled at the source (or
+      ``'keepout'`` when only non-copper obstacles refused them);
+    - the goal's layer never entered ``layers_reached`` →
+      ``'via_blocked'`` — the layer transition, not a corridor, is
+      missing;
+    - every goal-approach leg refused only by non-copper obstacles →
+      ``'keepout'``;
+    - otherwise (real copper contested the goal, or no witness either
+      way — a pure sampling miss) → ``None``, and the pads-only probes
+      in :func:`_diagnose_unrouted` decide corridor-existence.
+    """
+    b = int(ir.seg_pin_b[seg_id])
+    geom = ctx.pad_geoms[b]
+    goal_layers = (
+        set(range(len(ir.stackup) or 1))
+        if geom.drill_mm
+        else {_side_layer(ir, int(ir.pin_instance[b]), ctx.signal_layers)}
+    )
+    reached = set(witness.get("layers_reached") or ())
+    goal_blockers = list(witness.get("goal_blockers") or [])
+    start_blockers = list(witness.get("start_blockers") or [])
+    if witness.get("start_legs") == 0 and witness.get("start_fails"):
+        if start_blockers and all(k != "copper" for _n, k in start_blockers):
+            return UnroutedReason(
+                seg_id,
+                net_id,
+                "keepout",
+                "every exit leg from this connection's source pin was "
+                f"refused by keep-outs/reserved regions: "
+                f"{_blocker_phrase(start_blockers)}",
+            )
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "no_path",
+            "every exit leg from this connection's source pin was refused"
+            + (
+                f" by {_blocker_phrase(start_blockers)}"
+                if start_blockers
+                else " — its pad is walled in"
+            ),
+        )
+    if not (reached & goal_layers):
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "via_blocked",
+            "the route search reached layer(s) "
+            f"{'/'.join(layer_names(ir, sorted(reached))) or 'none'} but never "
+            f"the goal's ({'/'.join(layer_names(ir, sorted(goal_layers)))}) — "
+            f"every layer transition was refused ({witness.get('via_sites', 0)} "
+            f"via sites found, {witness.get('via_hops', 0)} taken); a corridor "
+            "may exist per layer and only the hop between them be missing",
+        )
+    if goal_blockers and all(k != "copper" for _n, k in goal_blockers):
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "keepout",
+            "every leg into this connection's goal pad was refused only by "
+            f"keep-outs/reserved regions: {_blocker_phrase(goal_blockers)}",
+        )
+    return None
 
 
 def _diagnose_unrouted(
@@ -5340,7 +5562,7 @@ def re_realize_segments(
         )
         space = vroute.Space(obstacles, _space_clearance(ir, ctx))
         spent = [0]
-        exhausted: set[int] = set()
+        fail_witness: dict[int, dict[str, Any]] = {}
         for s in seg_ids:
             pa_ = pin_point(ir, int(ir.seg_pin_a[s]))
             pb_ = pin_point(ir, int(ir.seg_pin_b[s]))
@@ -5357,7 +5579,7 @@ def re_realize_segments(
                 names,
                 spent,
                 island_notes,
-                exhausted,
+                fail_witness,
             )
             if got is not None:
                 replaced[s], replaced_vias[s] = got

@@ -91,6 +91,12 @@ block is bound to — from there it is ordinary geometry (`cut` bores,
   over that face's nodes) or a port that has a pose in the block frame
   (a port without one is refused). The elements under both are passive
   solid, so a loaded face never thins to a skin.
+- `annotations={'boss': <thickness>}` on a `load_at`/`fixed_at` **port**
+  pins a passive solid slab that thick at the port's declared flat face
+  (O5): a number in metres or a length string (`'2 mm'`). The face is
+  the port's `direction`, must be exactly `±x`/`±y`/`±z`, and is a
+  contract — morphology that would thin it is reverted (and reported);
+  a missing or tilted direction refuses with the fix named.
 - `build_dir=` — one of the six axis tokens; the AM overhang filter bakes
   it into the solve. Default: the envelope box's largest face down
   (`z+` on a tie), and the echo says which it chose.

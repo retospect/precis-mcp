@@ -7,7 +7,7 @@ effort: high
 
 ## Resume
 
-- **Next:** O5 + declared flat faces (Do next 2), then the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
+- **Next:** the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O5 + declared flat faces shipped 2026-10-21 (`annotations={'boss': <t>}` on a `load_at`/`fixed_at` port pins a passive slab at its declared axis face; non-axis directions refuse). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
 - **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): `pocket-from-molecule` drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
@@ -114,9 +114,9 @@ off that gap until it closes.
    needs the realize loop, extract it from `pocket_realize.py` here.
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 listed
-   O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15. Left:
-   - O5 + declared flat faces (load ports with a solid contact boss):
-     about 1 build, no migration.
+   O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15, O5 + declared
+   flat faces shipped 2026-10-21 (port `annotations={'boss': <t>}` →
+   passive slab at the port's declared axis face). Left:
    - The house `min_member` figure (null in every fdm row; 3 mm proposed)
      waits on print 2 being handled. Print 2 is a re-run of the bracket
      with `min_member=0.003`, `max_iter` about 150, owed after r40 is

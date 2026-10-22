@@ -628,6 +628,10 @@ Coordinator follow-up 2026-10-21 (where O5 / flat faces are defined):
 **Ruled (Reto 2026-10-21, via chat-99: "O5 seems fine"):** Q1 the reading
 below is O5 (note §14 is no longer on disk; this text is now the
 definition); Q2 build now; Q3 acceptance as written.
+**Landed 2026-10-21 (sss-o5):** `annotations={'boss': <thickness>}` on a
+posed `load_at`/`fixed_at` port pins a passive slab normal to the port's
+axis-aligned `direction` (`precis_se/simp_bridge.py`, O5 section of
+`tests/test_se_simp_bridge.py`).
 
 O5 is defined only in "note §14" of a review file outside the repo; the
 thread (`threads/se-machine-design.md` Do next 2) has one line: "O5 +

@@ -664,22 +664,45 @@ owns the time.
 
 ### Slice 3b — reach the rest, and the time
 
-Scope (coordinator ruling 2026-10-18):
+Part-landed 2026-10-22 (router-a, gr503666): the maze is gone
+(d42369679), so `vroute` is the whole router, not a post-pass. This
+landing adds (1) a per-segment failure reason: the search records
+witnesses (`vroute` `fail_stats`: start/goal leg counts, via sites and
+hops, layers reached, sampled blocker obstacles) and the diagnosis maps
+them onto the `UnroutedReason` kinds — the new `'keepout'` (only
+non-copper refused the terminal legs: a reserved region, a silk
+keep-out, a fiducial/NPTH ring) and `'via_blocked'` (the goal's layer
+was never reached: the layer transition, not a corridor, is missing)
+beside `'no_path'`/`'width'`/`'congestion'`/`'search_budget'`; the job
+summary prints one line per unrouted segment and `last_route` carries
+`unrouted_reasons`; (2) a declared-plane-layer cost
+(`RealizeConfig.plane_layer_cost`, 2.5× — inside the stackup spec's
+"about 2–3×" ruling) on `vroute.Request.layer_cost`, so signals prefer
+a free inner layer over cutting the pour; (3) one bounded retry round
+for failed routable nets on the full board window from a dedicated
+pool (`RealizeConfig.retry_expansions`).
+
+Measured 2026-10-22 on `tests/fixtures/pcb/route_bench.py::bench_esp32c3`
+(seeds 3–5, the gr503666 boards): routed 10/11, 10/11, 9/11 → 11/11 on
+all three (target: all 14 segments — met); B.Cu signal track falls to
+0 mm on every seed (was the dominant signal layer) and In1+In2 rise from
+~28–68 mm to ~176–203 mm — the pour stays whole. Witness data on the
+failures: searches ended `exhausted` with every leg into the goal
+refused by other nets' copper on F.Cu — congestion at the pad entry,
+which the surcharge relieves by keeping the outer layers sparse.
+
+Still-open scope (coordinator ruling 2026-10-18, adjusted to the
+vector-only world):
 
 1. **Node coverage.** taz15-blank still fails CN4_42, MCU_BOOT, MCU_RST,
    USB2_A5, USBD- (and the plane nets GND, PV+); their searches end with
    the graph exhausted, not the budget, so the octagon-corner node set
    misses the corridor.
-2. **Time.** Post-pass ≤ 10 % of the maze's wall time (now ~40 s: board
-   wall nano 88 → 131 s, taz15-blank 55 → 94 s at slice 3a), and
-   the silk cost: relabel only near the new copper.
-3. **Trigger.** Expose the maze's walled-in result from `grid.route` and
-   fire only on walled-in segments, instead of on every failed segment
-   (nano: ~100 tries).
-
-The realizer's legality helpers (`_drop_via_site`, `_via_clears_vias`,
-`_clears_foreign_pours`) still move onto the kernel so the post-pass and the
-stitcher agree.
+2. **Time.** The vector pass's wall time per board is reported against
+   slice 0's table; and the silk cost: relabel only near the new copper.
+3. **Trigger.** (Was "expose the maze's walled-in result" — the maze is
+   removed.) The witness stats now say directly why a search stopped;
+   nano's fire count is still reported per board.
 
 Exit: taz15-blank ≥ 149/151 (CN4_40/42/56/58/60/67/74, MCU_BOOT realized),
 0 nets stripped by post-route DRC; nano floors hold; esp32c3 seeds and
@@ -740,19 +763,17 @@ targeted was deleted in d42369679):
 
 Owning files: `src/precis/pcb/vroute.py`, `realize.py`, `tests/test_pcb_vroute.py`.
 
-### Slice 4 — vector fallback for every maze failure
+### Slice 4 — every failed segment gets a reason and a second chance
 
-The post-pass widens to all failed segments, most-constrained first, with the
-shared route cost (`routecost.py`, slice 4 creates it; `maze._step_penalty`
-reads it, bit-for-bit). A segment that fails in `vroute` keeps the maze's
-`UnroutedReason`, plus a `vroute` reason kind.
+(Updated 2026-10-22 for the vector-only world: the maze this slice was
+a fallback FOR no longer exists; `vroute` is the router. The slice's
+real content — failure reasons and the shared route cost — landed in
+the 3b work above: every unrouted segment carries an `UnroutedReason`
+kind plus the search's own witnesses, and `Request.layer_cost` is the
+first shared route-cost term. What remains is `routecost.py` proper —
+direction penalties, bundle discount — read by `vroute`'s step cost.)
 
-Exit: on every benchmark, routed ≥ slice 3 and floors hold; nano routed
-count reported (expected to rise; `silk_missing` and `clearance` must not).
-Decision recorded: does `vroute` run first on fine-pitch pads (pads whose
-slack is below one grid cell)? Only if it measures better.
-
-Owning files: `vroute.py`, `realize.py`, `maze.py`, `src/precis/pcb/routecost.py`.
+Owning files: `vroute.py`, `realize.py`, `src/precis/pcb/routecost.py`.
 
 ### Slice 5 — CDT region graph and portal capacities (probe)
 
@@ -949,7 +970,14 @@ a board we route.
 
 Teardrops, length matching; specced after slice 7.
 
-### Slice 10 — retire the maze (Decision 1)
+### Slice 10 — retire the maze (Decision 1) — DONE ahead of schedule
+
+Landed in d42369679 (2026-10-20): the grid router was deleted outright
+(`maze.py`, `globalplan.py`, the `corridor=`/`negotiate=` params, the
+reorder passes) and `vroute` became the only router. The exit criteria
+below were written for a gradual retirement; what remains as ongoing
+exit discipline is the benchmark table holding its counts. The list of
+items it retired, kept for the record:
 
 Delete grid routing: `maze.OccupancyGrid.route`/`_route_in`/`_astar_kernel`,
 `Negotiation`, the reorder passes in `realize._realize_maze` (becomes

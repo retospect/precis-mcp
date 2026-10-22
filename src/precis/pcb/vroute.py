@@ -112,7 +112,15 @@ class Request:
     ``via_body_cost_mm`` on top of ``via_cost_mm`` — both in wire-length
     millimetres, so the search prefers a detour of up to that much extra
     wire over a via under a body (gr502369; Reto 2026-10-21). A soft
-    cost, never a keep-out; ``0.0`` prices every via site the same."""
+    cost, never a keep-out; ``0.0`` prices every via site the same.
+
+    ``layer_cost`` is a per-layer multiplier on track leg length (same
+    soft-cost discipline): a millimetre of wire on layer ``L`` costs
+    ``layer_cost[L]`` millimetres of path budget. Every multiplier must
+    be >= 1.0 — the octile heuristic is then still admissible (no
+    octilinear path is shorter than its cost). ``None``/absent means 1.0
+    everywhere; the declared-plane surcharge lives in
+    ``realize._plane_layer_costs`` (gr503666)."""
 
     net: str
     width_mm: float
@@ -125,6 +133,7 @@ class Request:
     via_cost_mm: float = 1.0
     via_body_cost_mm: float = 0.0
     via_body_zones: tuple[Any, ...] = ()
+    layer_cost: dict[int, float] | None = None
     bend_cost_mm: float = 0.05
     window_mm: float = 3.0
     max_expansions: int = 6000
@@ -285,6 +294,43 @@ class Space:
                 return False
         return True
 
+    def blockers(
+        self, body: Body, net: str, layer: int, *, via_site: bool = False
+    ) -> list[Obstacle]:
+        """The foreign obstacles ``body`` violates on ``layer`` — the
+        witness half of :meth:`clears`, for failure diagnosis: a leg that
+        fails can NAME what it failed against (a net's copper, a
+        ``track_only`` reservation, a ``via_only`` keep-out)."""
+        li = self._layer(layer)
+        if li is None:
+            return []
+        assert li._tree is not None and li._nets is not None
+        assert li._cores is not None and li._radii is not None
+        assert li._arcs is not None and li._pads is not None
+        assert li._track_only is not None and li._via_only is not None
+        own = self.cl(net, layer)
+        reach = max(own, self._reach.get(layer, 0.0))
+        cand = li._tree.query(box(*body.bounds()), predicate="dwithin", distance=reach)
+        if not len(cand):
+            return []
+        foreign = li._nets[cand] != net
+        if via_site:
+            foreign |= li._pads[cand] | li._via_only[cand]
+            foreign &= ~li._track_only[cand]
+        else:
+            foreign &= ~li._via_only[cand]
+        cand = cand[foreign]
+        if not len(cand):
+            return []
+        req = np.array(
+            [max(own, self.cl(str(n), layer)) for n in li._nets[cand]], dtype=float
+        )
+        out: list[Obstacle] = []
+        for i, need in zip(cand.tolist(), req.tolist(), strict=True):
+            if kernel.gap(body, li.obstacles[i].body) < need - 1e-9:
+                out.append(li.obstacles[i])
+        return out
+
     def clears_legs(
         self, legs: Sequence[tuple[Coord, Coord]], half: float, net: str, layer: int
     ) -> np.ndarray:
@@ -431,7 +477,12 @@ def route(
     both windows. Bounded by work, never by the clock, so a result does
     not depend on the machine. ``stats``, when given, receives
     ``expansions`` (both windows), the last window's ``nodes`` per layer
-    and ``stop`` (``found``, ``exhausted``, ``budget``, ``no_layer``)."""
+    and ``stop`` (``found``, ``exhausted``, ``budget``, ``no_layer``).
+    On a non-``found`` stop it also carries the search witnesses
+    (``_route_in_window.fail_stats``): ``start_legs``, ``start_fails``,
+    ``goal_fails``, ``via_sites``, ``via_hops``, ``layers_reached`` and
+    the sampled ``start_blockers``/``goal_blockers`` — the raw material
+    for ``realize``'s per-segment failure reason."""
     if stats is None:
         stats = {}
     window = req.window_mm
@@ -627,6 +678,20 @@ def _route_in_window(
                 return poly
         return None
 
+    def terminal_blockers(layer: int, a: Coord, b: Coord) -> list[Obstacle]:
+        """When every connector ``a``→``b`` fails, what refused it —
+        the union of :meth:`Space.blockers` over each connector's legs
+        (terminal-adjacent legs only: the goal entry and the start exit
+        are what a failure report names)."""
+        out: dict[int, Obstacle] = {}
+        for poly in connectors(a, b):
+            for p, q in itertools.pairwise(poly):
+                if not leg_clear(layer, p, q):
+                    body = Body(LineString([p, q]), (), half)
+                    for ob in space.blockers(body, req.net, layer):
+                        out[id(ob)] = ob
+        return list(out.values())
+
     arrays = {layer: np.array(pts, dtype=float) for layer, pts in nodes.items()}
     node_at = {
         layer: {(round(p[0], 9), round(p[1], 9)): k for k, p in enumerate(pts)}
@@ -648,8 +713,63 @@ def _route_in_window(
     for layer in start_layers:
         g[(layer, 0)] = 0.0
         heapq.heappush(heap, (h0, 0.0, next(tie), (layer, 0)))
+    lc = {k: v for k, v in (req.layer_cost or {}).items()}
     expansions = 0
     neighbours_k = 64
+    start_legs = 0
+    via_sites = 0
+    via_hops = 0
+    goal_fails = 0
+    start_fails = 0
+    #: Blocker witnesses are sampled: each entry costs a second index
+    #: query per refused leg, so past ~32 distinct obstacles a failing
+    #: search only grows the counter, not the witness list.
+    _WITNESS_CAP = 32
+    goal_blocked: dict[int, Obstacle] = {}
+    start_blocked: dict[int, Obstacle] = {}
+
+    def fail_stats(stop: str) -> None:
+        """The failure witnesses a caller's diagnosis reads (besides
+        ``stop``): how far the search got. ``start_legs``/``via_sites``/
+        ``via_hops``/``layers_reached`` say WHICH mechanism ran out (the
+        start's own exit, a layer change, the corridor); ``start_blockers``/
+        ``goal_blockers`` name — as ``(net, kind)`` — what refused the
+        terminal-adjacent legs, ``kind`` telling real copper apart from a
+        ``track_only`` reservation or a ``via_only`` keep-out; the
+        ``_fails`` totals count EVERY refusal, sampled or not."""
+        stats.update(
+            stop=stop,
+            expansions=expansions,
+            start_legs=start_legs,
+            via_sites=via_sites,
+            via_hops=via_hops,
+            start_fails=start_fails,
+            goal_fails=goal_fails,
+            layers_reached=sorted({la for la, _i in g}),
+            start_blockers=[
+                (
+                    ob.net,
+                    "reserved"
+                    if ob.track_only
+                    else "keepout"
+                    if ob.via_only
+                    else "copper",
+                )
+                for ob in start_blocked.values()
+            ],
+            goal_blockers=[
+                (
+                    ob.net,
+                    "reserved"
+                    if ob.track_only
+                    else "keepout"
+                    if ob.via_only
+                    else "copper",
+                )
+                for ob in goal_blocked.values()
+            ],
+        )
+
     while heap:
         _f, cost, _t, state = heapq.heappop(heap)
         if cost > g.get(state, math.inf) + 1e-12:
@@ -659,7 +779,7 @@ def _route_in_window(
             stats.update(stop="found", expansions=expansions)
             return _reconstruct(parent, state, cost, expansions)
         if expansions >= req.max_expansions:
-            stats.update(stop="budget", expansions=expansions)
+            fail_stats("budget")
             return None
         expansions += 1
         here = nodes[layer][i]
@@ -676,8 +796,22 @@ def _route_in_window(
                 continue
             poly = best_connector(layer, here, nodes[layer][j])
             if poly is None:
+                if j == 1 and layer in goal_layers:
+                    goal_fails += 1
+                    if len(goal_blocked) < _WITNESS_CAP:
+                        for ob in terminal_blockers(layer, here, nodes[layer][j]):
+                            goal_blocked[id(ob)] = ob
+                elif i == 0 and layer in start_layers:
+                    start_fails += 1
+                    if len(start_blocked) < _WITNESS_CAP:
+                        for ob in terminal_blockers(layer, here, nodes[layer][j]):
+                            start_blocked[id(ob)] = ob
                 continue
-            step = _length(poly) + req.bend_cost_mm * (len(poly) - 1)
+            if i == 0 and layer in start_layers:
+                start_legs += 1
+            step = _length(poly) * lc.get(layer, 1.0) + req.bend_cost_mm * (
+                len(poly) - 1
+            )
             nxt = (layer, j)
             new = cost + step
             if new < g.get(nxt, math.inf) - 1e-12:
@@ -687,6 +821,7 @@ def _route_in_window(
                     heap, (new + octile(nodes[layer][j], goal), new, next(tie), nxt)
                 )
         if req.via is not None and i != 1 and via_fits(here):
+            via_sites += 1
             # The jump may land on a terminal-only layer too — that is the
             # whole point of one (drop back to the goal pad's own layer).
             for other in itertools.chain(req.layers, term_only):
@@ -707,11 +842,12 @@ def _route_in_window(
                     new += req.via_body_cost_mm
                 if new < g.get(nxt, math.inf) - 1e-12:
                     g[nxt] = new
+                    via_hops += 1
                     parent[nxt] = (state, [here], True)
                     heapq.heappush(
                         heap, (new + octile(here, goal), new, next(tie), nxt)
                     )
-    stats.update(stop="exhausted", expansions=expansions)
+    fail_stats("exhausted")
     return None
 
 
@@ -811,6 +947,13 @@ class EscapeReport:
     expansions: int
     elapsed_s: float
     out_of_budget: bool = False
+    #: The one bounded retry round (gr503666): failed nets re-searched
+    #: once on the full window out of the dedicated pool —
+    #: ``retried``/``retry_routed`` count NETS (the commit unit),
+    #: ``retry_expansions`` the pool's spend.
+    retried: int = 0
+    retry_routed: int = 0
+    retry_expansions: int = 0
 
     def line(self) -> str | None:
         """The route summary line; ``None`` when nothing was tried."""
@@ -823,6 +966,11 @@ class EscapeReport:
         )
         if self.out_of_budget:
             out += " (stopped at the expansion budget)"
+        if self.retried:
+            out += (
+                f"; retry routed {self.retry_routed} of {self.retried} "
+                f"failed nets ({self.retry_expansions} expansions)"
+            )
         return out
 
 

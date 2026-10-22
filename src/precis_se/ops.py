@@ -72,11 +72,14 @@ used here as-is or extended with se's own cascades:
   its ports from its template at read time (:func:`effective_ports`, the
   same rule as envelope/desc/use). ``roles`` is a capability set (the
   pin→roles pattern); ``direction`` normalizes to unit length (zero
-  vector rejected); ``annotations`` is an open dict — at this round every
-  key is treated as *descriptive* (rendered, never enforced); the one
-  superset registry with contract classes (se-kind.md "Annotations")
-  arrives with the first checked consumer, and *then* the three-way
-  engaged/declared-but-unchecked/descriptive honesty report. The port
+  vector rejected); ``annotations`` is an open dict — descriptive by
+  default (rendered, never enforced); two keys have checked consumers:
+  ``external`` (:mod:`precis_se.validate` treats it as the
+  declared-attachment honesty marker) and ``boss``
+  (:mod:`precis_se.simp_bridge` — a ``load_at``/``fixed_at`` port
+  carrying ``{'boss': <thickness>}`` pins a solid contact slab in the
+  SIMP domain, O5). The superset registry with contract classes
+  (se-kind.md "Annotations") still arrives with the registry half. The port
   ``name`` may not contain ``'.'`` — the ``connect``/``disconnect``
   ``'block.port'`` syntax reserves it. ``pose``/``rot`` optionally place
   the port ITSELF in the block's local frame (metres/radians; ``rot``

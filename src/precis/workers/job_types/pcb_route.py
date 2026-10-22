@@ -1839,6 +1839,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     vector_line = rres.vector.line() if rres.vector is not None else None
     if vector_line:
         pin_swap_summary += "\n" + vector_line
+    # One line per unrouted segment, naming the reason (gr503666): the
+    # pcb_routes rows carry the full diagnosis, but the job summary is
+    # what a reader sees first — "11 of 14 gridless" alone named nothing.
+    unrouted_lines = [
+        f"unrouted {pcb_session.segment_key(ir, seg_id)} "
+        f"({ir.net_name[int(ir.seg_net[seg_id])]!s}): "
+        f"{(reason_by_seg[seg_id].kind if seg_id in reason_by_seg else 'unknown')}"
+        for seg_id in rres.unrouted
+    ]
+    if unrouted_lines:
+        pin_swap_summary += "\n" + "\n".join(unrouted_lines[:12])
+        if len(unrouted_lines) > 12:
+            pin_swap_summary += (
+                f"\n… and {len(unrouted_lines) - 12} more unrouted segments"
+            )
     # A class naming a layer the stackup does not route on is narrowed, not
     # refused (gr472108): say so, or a "no gain" reads as a routing result.
     for drop in rres.class_layer_drops:
@@ -2047,6 +2062,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "vias": len(rres.vias),
         "warnings": [w.message() for w in rres.warnings][:20],
         "vector": (rres.vector.line() if rres.vector else None),
+        # Per-segment failure kinds (gr503666) — the machine-readable half
+        # of the summary's unrouted lines; the full message lives on each
+        # net's pcb_routes row.
+        "unrouted_reasons": {
+            pcb_session.segment_key(ir, r.seg_id): r.kind for r in rres.unrouted_reasons
+        },
         "class_layer_drops": list(rres.class_layer_drops),
         "pre_route_drc": {
             "errors": n_placement_errors,

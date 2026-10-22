@@ -42,6 +42,21 @@ in the run summary.
 pinned at density 1 (``simp_optimize(passive=...)``): a loaded face that
 thins to a skin is the classic SIMP artefact.
 
+**Declared flat faces — the contact boss (O5).** A ``load_at``/
+``fixed_at`` *port* may declare ``annotations={'boss': <thickness>}`` (a
+number in metres, or a length string like ``'2 mm'``): the solve then
+additionally pins a passive solid slab that thick, normal to the port's
+declared face, over the transverse footprint the port's nodes already
+occupy. The face is the port's ``direction`` and must be axis-aligned —
+a port with no direction, or one whose direction is not ``±x``/``±y``/
+``±z``, refuses with the fix named (re-add the port with
+``direction=``, or drop the boss). Face tokens cannot carry a boss — a
+token declares no port. The boss is a declaration, not solver output:
+morphology (``open``/``round``) that would thin it is reverted on the
+slab and the restore is reported; it can never silently make a declared
+contact face less than the declared thickness. No migration — the slab
+rides the existing ``passive=`` pin and ``annotations`` jsonb.
+
 **The boundary round (gr495400).** ``pitch`` equal to ``min_member / 3``
 is allowed — three elements across a member — but the filter radius
 ``min_member / (2 pitch)`` is then exactly the engine's 1.5-element
@@ -108,17 +123,20 @@ from precis.cad.scene import NodeSpec, SceneSpec
 from precis.cad.vec import as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.design import history as design_history
+from precis.errors import BadInput
 from precis.structsolve.simp import (
     ENGINE_VERSION,
     SimpResult,
     overhang_violations,
     simp_optimize,
 )
+from precis.utils.units import parse_quantity
 from precis_se import capabilities as se_caps
 from precis_se import persist
 from precis_se.modes import ModeError, parse_mode
 from precis_se.ops import (
     OpError,
+    PortSpec,
     SeBlock,
     SeTree,
     apply_ops,
@@ -163,6 +181,17 @@ FRAME_ORIGIN = "simp"
 #: the boundary pitch and was clamped to half a pitch (module docstring,
 #: gr495400) — the value an explicit ``round``/``open`` above is refused.
 ROUND_SOURCE_CLAMPED = "min_member/3 clamped to half a pitch"
+#: The port ``annotations`` key declaring a flat-face contact boss (the
+#: spec's O5 — module docstring): a ``load_at``/``fixed_at`` port carrying
+#: ``annotations={'boss': <thickness>}`` pins a passive solid slab that
+#: thick at the port's declared face. Read by this bridge only — on any
+#: other port the key stays merely descriptive.
+BOSS_ANNOTATION = "boss"
+#: How close to a unit axis a bossed port's ``direction`` must sit (the
+#: dominant component's share of the norm): the slab is pinned on an
+#: axis-aligned face only — anything further off refuses rather than
+#: snapping to the nearest axis and silently flattening a tilted face.
+_BOSS_AXIS_SHARE = 1.0 - 1e-9
 #: The per-iteration hook the engine's ``progress=`` and this bridge's
 #: ``solve_simp``/``run_simp`` take: ``(iteration, max_iter, compliance)``.
 SimpProgress = Callable[[int, int, float], None]
@@ -485,6 +514,150 @@ def _elements_touching(
     return out
 
 
+# --------------------------------------------------------------------------
+# O5: declared flat faces — a bossed port pins a solid slab at its face
+# --------------------------------------------------------------------------
+
+
+def _port_boss_m(port: PortSpec, what: str) -> float | None:
+    """The port's declared contact-boss thickness in metres —
+    ``annotations['boss']``: a number (metres, the stored unit) or a
+    length string (``'2 mm'`` — bare numeral strings are refused, the
+    usual units guard). ``None`` when the port declares no boss."""
+    raw = (port.annotations or {}).get(BOSS_ANNOTATION)
+    if raw is None:
+        return None
+    where = f"{what} port {port.name!r} annotations[{BOSS_ANNOTATION!r}]"
+    if isinstance(raw, str):
+        try:
+            v = parse_quantity(raw, "length", arg_name=where)
+        except BadInput as exc:
+            raise SimpBridgeError(
+                f"realize(simp): {where}: {exc}",
+                next=getattr(exc, "next", None),
+            ) from exc
+    elif isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise SimpBridgeError(
+            f"realize(simp): {where} must be a thickness — a number in "
+            f"metres or a length string like '2 mm', got {raw!r}"
+        )
+    else:
+        v = float(raw)
+    if not (v > 0.0 and math.isfinite(v)):
+        raise SimpBridgeError(f"realize(simp): {where} must be > 0 m, got {raw!r}")
+    return v
+
+
+def _boss_face(port: PortSpec, what: str) -> tuple[int, int]:
+    """``(axis, ±1)`` — the axis face a bossed port's slab is normal to.
+    The port's ``direction`` is the declared face normal and must name
+    one of the six axis directions exactly (O5: a non-axis-aligned face
+    is refused, never silently flattened to the nearest axis)."""
+    if port.direction is None:
+        raise SimpBridgeError(
+            f"realize(simp): {what} port {port.name!r} declares a boss but "
+            "carries no direction — the flat face is the port's declared "
+            "normal, and none was declared",
+            next=(
+                "re-add the port with direction=<the face normal> "
+                "(remove_port + add_port, e.g. direction='[1 0 0]' for the "
+                "x+ face), or drop the boss annotation"
+            ),
+        )
+    d = np.asarray(port.direction, dtype=float)
+    n = float(np.linalg.norm(d))
+    axis = int(np.argmax(np.abs(d))) if n > 0.0 else 0
+    if n <= 0.0 or abs(float(d[axis])) < _BOSS_AXIS_SHARE * n:
+        raise SimpBridgeError(
+            f"realize(simp): {what} port {port.name!r} declares a boss on a "
+            f"face whose direction {[round(float(x), 6) for x in d]} is not "
+            "axis-aligned — a boss slab pins on one of the six axis faces "
+            "only",
+            next=(
+                "set the port's direction to exactly ±x, ±y or ±z "
+                "(remove_port + add_port with direction=), or drop the "
+                "boss annotation"
+            ),
+        )
+    return axis, (1 if d[axis] > 0.0 else -1)
+
+
+def _boss_layers(thickness: float, pitch: float, extent: int) -> int:
+    """Slab depth in elements: ``ceil(thickness / pitch)`` (at least one
+    layer — a sub-pitch boss still pins its face), never past the box."""
+    return min(max(1, math.ceil(thickness / pitch - 1e-9)), extent)
+
+
+def _boss_slab(
+    domain: np.ndarray,
+    origin: np.ndarray,
+    pitch: float,
+    port: PortSpec,
+    axis: int,
+    sign: int,
+    thickness: float,
+) -> tuple[np.ndarray, int]:
+    """The passive slab mask a bossed port pins, and its depth in
+    elements: the transverse footprint the port's nodes already occupy
+    (:func:`_elements_touching` of the port's eight nodes — the same
+    patch the load/support pins today), extruded that many layers inward
+    from the face its direction names. Cells outside the domain stay in
+    the mask — the engine pins ``passive & domain`` and the summary
+    reports the intersection."""
+    shape = domain.shape
+    n_layers = _boss_layers(thickness, pitch, shape[axis])
+    nodes = _port_nodes(domain, origin, pitch, np.asarray(port.pose, dtype=float))
+    patch = _elements_touching(shape, nodes)
+    columns = np.expand_dims(patch.any(axis=axis), axis)
+    layers = np.zeros(shape[axis], dtype=bool)
+    if sign > 0:
+        layers[shape[axis] - n_layers :] = True
+    else:
+        layers[:n_layers] = True
+    depth = layers.reshape([shape[i] if i == axis else 1 for i in range(3)])
+    return np.broadcast_to(columns, shape) & depth, n_layers
+
+
+def _repin_bosses(
+    fld: Field,
+    pin: np.ndarray,
+    element_origin: Any,
+    pitch: float,
+    findings: list[str],
+) -> Field:
+    """Re-impose the declared boss slabs on a post-morphology field —
+    ``open``/``round`` erode surface cells and the slab is at the
+    surface, so an erosion can cut below the declared thickness; the
+    boss is a declaration (module docstring), so the cells come back and
+    the restore is reported. ``pin`` is in element indices
+    (``slab & domain`` — cells outside the keep-in are never re-pinned);
+    the field's own box and pitch are kept. Returns ``fld`` unchanged
+    when the morphology cut nothing."""
+    off = np.rint((np.asarray(element_origin) - np.asarray(fld.origin)) / pitch).astype(
+        int
+    )
+    solid = np.asarray(fld.grid) <= 0.0
+    lo = np.maximum(off, 0)
+    hi = np.minimum(off + np.array(pin.shape), np.array(solid.shape))
+    if np.any(hi <= lo):
+        return fld
+    dst = tuple(slice(int(lo[a]), int(hi[a])) for a in range(3))
+    src = tuple(slice(int(lo[a] - off[a]), int(hi[a] - off[a])) for a in range(3))
+    cut = np.zeros(solid.shape, dtype=bool)
+    cut[dst] = pin[src]
+    cut &= ~solid
+    if not cut.any():
+        return fld
+    grid = np.asarray(fld.grid).copy()
+    grid[cut] = -0.5 * float(fld.pitch)
+    findings.append(
+        f"declared boss slab(s) re-pinned after the morphology — "
+        f"{int(np.count_nonzero(cut))} voxel(s) the morphology cut were "
+        "restored (a declared flat face is the contract, not a suggestion)"
+    )
+    return Field(grid=grid, pitch=fld.pitch, origin=fld.origin, exact=False)
+
+
 @dataclass(frozen=True)
 class _BuildFrame:
     """The axis permutation that makes ``build_dir`` the engine's ``+z``:
@@ -598,9 +771,11 @@ def prepare_simp(
     outside ``(0, 1)``, an unknown ``build_dir``/``load_at``/``fixed_at``
     token, ``round`` combined with ``open``/``close``, ``max_iter`` beyond
     :data:`MAX_ITER_CAP`, a grid beyond :data:`MAX_ELEMENTS``, a pitch
-    coarser than ``min_member / 3``, or an explicit ``round``/``open``
+    coarser than ``min_member / 3``, an explicit ``round``/``open``
     above half a pitch at the boundary pitch ``min_member / 3``
-    (gr495400).
+    (gr495400), or a ``boss``-declaring ``load_at``/``fixed_at`` port
+    whose ``direction`` is missing or not axis-aligned (O5 — module
+    docstring).
 
     ``min_member`` (given, or the house :data:`MIN_MEMBER_FIELD`) widens
     the filter radius to ``min_member / (2 pitch)`` elements and, unless
@@ -743,6 +918,7 @@ def prepare_simp(
 
     ports = se_effective_ports(tree, node)
     locations: dict[str, str] = {}
+    boss_notes: list[str] = []
     for what in ("load_at", "fixed_at"):
         raw = op.get(what)
         if raw is None or not str(raw).strip():
@@ -767,6 +943,14 @@ def prepare_simp(
                 f"block frame — set_port_pose it, or give {what} a face token"
             )
         locations[what] = token
+        boss_m = _port_boss_m(port, what)
+        if boss_m is not None:
+            baxis, bsign = _boss_face(port, what)
+            boss_notes.append(
+                f"boss {boss_m:g} m on {what} port {token!r} (face "
+                f"{'xyz'[baxis]}{'+' if bsign > 0 else '-'}, "
+                f"{_boss_layers(boss_m, pitch, shape[baxis])} layer(s))"
+            )
     if locations["load_at"] == locations["fixed_at"]:
         raise SimpBridgeError(
             f"realize(simp): load_at and fixed_at both name {locations['load_at']!r} "
@@ -875,7 +1059,8 @@ def prepare_simp(
         f"realize({key!r}, strategy='simp'): queued a {JOB_TYPE} job — pitch "
         f"{pitch:g} m over a {shape[0]}x{shape[1]}x{shape[2]} grid{domain_note}, volfrac "
         f"{volfrac:g}, {dir_note}, load at {locations['load_at']!r}, fixed at "
-        f"{locations['fixed_at']!r}, max_iter {max_iter}{_member_note(request)}"
+        f"{locations['fixed_at']!r}{''.join(f', {n}' for n in boss_notes)}, "
+        f"max_iter {max_iter}{_member_note(request)}"
         f"{_morphology_note(request)}; "
         f"{key!r} stays "
         f"unrealized until the job lands (advisory tier: the compliance is a "
@@ -942,6 +1127,7 @@ def inputs_sha(tree: SeTree, req: SimpRequest) -> str | None:
     node = tree.blocks.get(req.block)
     if node is None:
         return None
+    ports = se_effective_ports(tree, node)
     payload = {
         "engine": ENGINE_VERSION,
         "envelope": effective_envelope(tree, node),
@@ -949,9 +1135,15 @@ def inputs_sha(tree: SeTree, req: SimpRequest) -> str | None:
         "pose": node.pose,
         "rot": node.rot,
         "ports": {
-            name: p.pose
-            for name, p in sorted(se_effective_ports(tree, node).items())
-            if p.pose is not None
+            name: p.pose for name, p in sorted(ports.items()) if p.pose is not None
+        },
+        # a boss the solve reads is part of the problem it solved: a
+        # re-declared or moved boss port must not hash to the same inputs
+        # (only the ports the request actually names are read)
+        "bosses": {
+            t: (ports[t].annotations or {}).get(BOSS_ANNOTATION)
+            for t in (req.load_at, req.fixed_at)
+            if t in ports and BOSS_ANNOTATION in (ports[t].annotations or {})
         },
         "request": req.to_params(),
     }
@@ -1081,6 +1273,45 @@ def solve_simp(
     passive = _elements_touching(shape, load_nodes) | _elements_touching(
         shape, fixed_nodes
     )
+    # O5 declared flat faces: a bossed load/fixed port additionally pins a
+    # solid slab at its declared axis face (module docstring).
+    boss_mask = np.zeros(shape, dtype=bool)
+    bosses: list[dict[str, Any]] = []
+    for what, token in (("load_at", req.load_at), ("fixed_at", req.fixed_at)):
+        if token.lower() in AXIS_TOKENS:
+            continue  # a face token declares no port, so can carry no boss
+        port = se_effective_ports(tree, node).get(token)
+        if port is None or port.pose is None:
+            continue  # prepare_simp refuses both before this
+        thickness = _port_boss_m(port, what)
+        if thickness is None:
+            continue
+        baxis, bsign = _boss_face(port, what)
+        face_token = f"{'xyz'[baxis]}{'+' if bsign > 0 else '-'}"
+        slab, n_layers = _boss_slab(
+            domain, origin, req.pitch, port, baxis, bsign, thickness
+        )
+        if not bool((slab & domain).any()):
+            raise SimpBridgeError(
+                f"realize(simp): {what} port {token!r}'s boss lands on the "
+                f"{face_token} face, but no active element sits under its "
+                f"footprint there — {req.block!r}'s keep-in does not reach "
+                "that face under the port",
+                next="check the port's direction names the face the contact "
+                "actually sits on, or drop the boss",
+            )
+        boss_mask |= slab
+        bosses.append(
+            {
+                "port": token,
+                "at": what,
+                "face": face_token,
+                "thickness_m": thickness,
+                "layers": n_layers,
+                "elements": int(np.count_nonzero(slab & domain)),
+            }
+        )
+    passive |= boss_mask
 
     frame = _BuildFrame.for_dir(req.build_dir)
     share = force_local / float(len(load_nodes))
@@ -1127,6 +1358,10 @@ def solve_simp(
             morphology["close_m"] = req.close_r
     except ValueError as exc:
         raise SimpBridgeError(f"realize(simp): morphology: {exc}") from exc
+    if morphology and boss_mask.any():
+        # A declared boss is the contract, not solver output — restore the
+        # slab the morphology cut BEFORE measuring/checking below.
+        fld = _repin_bosses(fld, boss_mask & domain, origin, req.pitch, findings)
     volume_final = float(np.count_nonzero(np.asarray(fld.grid) <= 0.0)) * req.pitch**3
     if volume_final <= 0.0:
         raise SimpBridgeError(
@@ -1165,6 +1400,7 @@ def solve_simp(
         "domain": grid.note,
         "active_elements": int(np.count_nonzero(domain)),
         "passive_elements": int(np.count_nonzero(passive & domain)),
+        "bosses": bosses,
         "load_nodes": len(load_nodes),
         "support_nodes": len(fixed_nodes),
         "force_local_n": [float(x) for x in force_local],

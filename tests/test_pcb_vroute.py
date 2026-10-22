@@ -281,6 +281,73 @@ def test_batched_leg_check_matches_the_single_leg_predicate(seed: int) -> None:
     assert batch == single
 
 
+# ── plane-layer cost (gr503666) ──────────────────────────────────────────
+#
+# A declared plane layer is a soft price zone for TRACK legs: wire on it
+# costs ``layer_cost[L]`` millimetres per real millimetre, so a via-pair
+# detour onto a free inner layer beats any run longer than a couple of
+# millimetres. Both fixtures route (2, 2) → (18, 2), terminals pinned to
+# layer 0, layers (0, 1), a via spec — the choice is exactly "16 mm on
+# the costly layer" vs "2 vias + ~16 mm inner".
+
+
+def test_a_costly_layer_is_avoided_for_a_long_run() -> None:
+    req = _req(
+        (2.0, 2.0),
+        (18.0, 2.0),
+        layers=(0, 1),
+        via=v.ViaSpec(0.6, 0.3),
+        terminal_layers=(0,),
+        layer_cost={0: 10.0},
+    )
+    path = v.route(_space([]), req)
+    assert path is not None
+    # Two vias: off the pricey layer and back to the goal pad's own.
+    assert len(path.vias) == 2
+    layers = {layer for layer, _pts in path.runs}
+    assert layers == {0, 1}
+    inner = sum(v._length(pts) for layer, pts in path.runs if layer == 1)
+    surface = sum(v._length(pts) for layer, pts in path.runs if layer == 0)
+    assert inner > surface
+
+
+def test_the_same_run_stays_on_the_surface_without_the_cost() -> None:
+    req = _req(
+        (2.0, 2.0),
+        (18.0, 2.0),
+        layers=(0, 1),
+        via=v.ViaSpec(0.6, 0.3),
+        terminal_layers=(0,),
+    )
+    path = v.route(_space([]), req)
+    assert path is not None
+    assert path.vias == []
+    assert {layer for layer, _pts in path.runs} == {0}
+
+
+# ── failure witnesses (gr503666) ─────────────────────────────────────────
+
+
+def test_a_failed_search_reports_its_witnesses() -> None:
+    """A goal walled in by foreign copper fails ``exhausted`` with the
+    witnesses the diagnosis reads: the goal's own layer was reached, its
+    approach legs were refused, and the blockers are named."""
+    box_in = [
+        _wall("W", (13.0, 13.0), (17.0, 13.0)),
+        _wall("W", (17.0, 13.0), (17.0, 17.0)),
+        _wall("W", (17.0, 17.0), (13.0, 17.0)),
+        _wall("W", (13.0, 17.0), (13.0, 13.0)),
+    ]
+    stats: dict = {}
+    req = _req((5.0, 5.0), (15.0, 15.0))
+    assert v.route(_space(box_in), req, stats=stats) is None
+    assert stats["stop"] == "exhausted"
+    assert stats["start_legs"] > 0
+    assert stats["goal_fails"] > 0
+    assert ("W", "copper") in stats["goal_blockers"]
+    assert stats["layers_reached"] == [0]
+
+
 def test_octagon_corners_circumscribe_the_grown_body() -> None:
     body = k.body_of(
         {"ctype": "pad", "shape": "rect", "x": 1.0, "y": 2.0, "w": 0.6, "h": 1.2}
