@@ -81,6 +81,14 @@ graph-health-metrics, five parked gripes, and the seam with
   door behind `precis garden`, AC 1–6 green on dev-DB fixtures
   (`tests/test_garden.py`). Open in the item: `links.meta.agentlog_id`
   stamping and non-merge apply paths.
+- **garden-cadence built (2026-10-22, worktree `garden-cadence`, Reto chat-99):** the
+  gardener now ticks ~2-hourly off an operator-seeded recurring todo
+  (job-mode automation shape) instead of a daily `scheduler_leases`
+  mint — `mint_job` and the `graph_garden` cadence are retired, the
+  service/dry-rest gates evaluate per run, and cooling counts runs
+  (`DRY_RUNS_ESCALATE=36`, `COOL_RUNS=84`). The recurring seed lands
+  post-deploy (coordinator); a lit service with no recurring is what
+  `watchdog:cadence/graph_garden` flags.
 - **gr503580 built (2026-10-22, worktree `garden-timeout`):** the
   `untagged` detector's per-row seeded count timed out the first prod
   run (jo503579, 0 proposals); counts are a one-shot CTE now (75 ms on

@@ -257,33 +257,6 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
-def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
-    """Mint ONE queued ``graph_garden`` job per UTC day — the proposals-
-    only graph-upkeep pass (the closed graph-gardener spec). Same shape as
-    ``_run_doctor_tick_mint``: host-agnostic cadence (the lease is the
-    fleet-singleton throttle), ``meta.idem_key='garden:<date>'`` is the
-    per-day dedup, and the minted job drains under the ``job_inproc``
-    executor like every other bounded in-proc job. The cadence is an
-    hourly check tick, not the run clock (gr503581): when the day's job
-    carries STATUS:failed the mint adds one ``garden:<date>:retry`` job —
-    a failed run costs an hour, not a day.
-
-    Two gates inside :func:`precis.graph.garden.service.mint_job` keep a
-    dark service free: the ``graph_garden`` service_config row lights it
-    (absent = off, operator opt-in only), and the empty-run cooling backs
-    the mint off to weekly after ``DRY_REST_ESCALATE`` consecutive
-    zero-proposal days. ``batch_size`` is unused — the idem_key IS the
-    per-day cap. ``spends`` stays unset: minting is free, the LLM spend
-    lives in the job's proposer calls.
-    """
-    del batch_size
-    from precis.graph.garden.service import mint_job
-
-    minted = mint_job(store)
-    if minted is not None:
-        log.info("scheduler: minted graph_garden job id=%d", minted)
-
-
 #: ``anki_sync`` failure backoff (§A). A failed tick holds the *cadence* back
 #: ``min(fail_count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS``
 #: before the next attempt — the whole-account analogue of
@@ -908,21 +881,12 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=7 * 24 * 3600 + 53 * 60,
         run=_run_cfp_watch,
     ),
-    # the closed graph-gardener spec: the graph gardener's daily mint.
-    # Host-agnostic like doctor_tick — the lease is the fleet-singleton
-    # throttle and the idem_key the per-day dedup. The interval is a ~1h
-    # *check tick*, not the run clock (gr503581, same shape as
-    # structural/deep_review): mint_job re-reads the day's job each fire,
-    # so a failed run gets its one bounded retry on the next tick — under
-    # ~1h — instead of waiting a full cadence. Off the exact hour (+7m)
-    # so it doesn't pile onto the hourly ticks above. No `eligible`
-    # check: the mint itself is dark-gated on the graph_garden
-    # service_config row, so an unset fleet just no-ops.
-    Cadence(
-        name="graph_garden",
-        interval_s=3600 + 7 * 60,
-        run=_run_graph_garden_mint,
-    ),
+    # The graph gardener's cadence is NOT a scheduler cadence — it is an
+    # operator-seeded recurring todo (meta.schedule +
+    # executor='job_inproc' + job_type='graph_garden'; the tick spawns a
+    # subtask the dispatch pass mints the job from). The service_config
+    # on/off gate and the dry-run cooling moved into the job's per-run
+    # dispatch (precis.graph.garden.service).
     # gr484070: mine the tool_calls ledger for rejected-before-work call
     # clusters and file/bump one gripe each.
     # Host-agnostic, daily, off the exact day

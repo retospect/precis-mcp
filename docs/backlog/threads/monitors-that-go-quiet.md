@@ -64,6 +64,16 @@ gr346534, soft-deleted)
   job is STATUS:failed — and `watchdog:cadence/graph_garden` now reads
   stale while the newest job failed instead of staying green on the
   lease alone.
+- Built 2026-10-22 (worktree `garden-cadence`, Reto's 2-hourly ruling via
+  chat-99): the `graph_garden` scheduler cadence + `mint_job` are
+  retired — an operator-seeded recurring todo (`meta.schedule` 2h +
+  executor/job_type) drives each run through the generic spawner
+  (spawned_for_tick idempotency + collision-skip), with the
+  service_config gate and cooling evaluated per run in the job's
+  dispatch. `watchdog:cadence/graph_garden` now reads the recurring's
+  `schedule:spawn` events plus the newest job: >1 missed tick, a spawn
+  with no job after it, or a failed newest run all go stale. Lease rows
+  for cadences removed from the registry are ignored as residue.
 - Waiting on others: the review session's resend of dedupe items 1 and 2
   (Do-next 1); the orchestrator's round for the NFS-hang branch (Do-next 2),
   whose `*Hung`/`*Absent` rules join the rendered set when it lands.

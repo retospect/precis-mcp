@@ -47,6 +47,7 @@ from precis.workers.health_digest import (
     _check_hosts_alive,
     _check_taproot_edges,
     _diagnose_embed_pipeline,
+    _garden_check,
     _idle_aware_backlog_checks,
     _layer1_checks,
     _layer2_checks,
@@ -206,28 +207,44 @@ def _seed_lease(store, name: str, *, interval_s: int, overdue_s: float) -> None:
         conn.commit()
 
 
-def test_stopped_cadence_reported_stale_within_interval_plus_margin(store) -> None:
+def _register_cadences(monkeypatch, *names: str) -> None:
+    """Put ``names`` in the cadence registry for this test — the lease
+    loop only watches registry members; a removed cadence's residue row
+    is ignored."""
+    monkeypatch.setattr(
+        health_digest,
+        "CADENCES",
+        tuple(Cadence(name=n, interval_s=60, run=lambda s, b: None) for n in names),
+    )
+
+
+def test_stopped_cadence_reported_stale_within_interval_plus_margin(
+    store, monkeypatch
+) -> None:
     # interval 60s, margin = max(60, 900) = 900s; overdue by 1000s > margin.
+    _register_cadences(monkeypatch, "c-stopped")
     _seed_lease(store, "c-stopped", interval_s=60, overdue_s=1000)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-stopped")
     assert hit.status == "stale"
 
 
-def test_short_cadence_late_by_one_slow_rotation_is_ok(store) -> None:
+def test_short_cadence_late_by_one_slow_rotation_is_ok(store, monkeypatch) -> None:
     """The 2026-09-25 ``materialize`` flap: a 300 s cadence firing 11 min
     late because the winning worker's rotation ran long (a 12-min
     ``orcid_enrich`` batch ahead of the scheduler pass). That is the worker
     architecture, not a stopped cadence — inside the 15-min margin floor."""
+    _register_cadences(monkeypatch, "c-slow-rotation")
     _seed_lease(store, "c-slow-rotation", interval_s=300, overdue_s=660)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-slow-rotation")
     assert hit.status == "ok"
 
 
-def test_short_cadence_past_the_margin_floor_is_stale(store) -> None:
+def test_short_cadence_past_the_margin_floor_is_stale(store, monkeypatch) -> None:
     """...but the floor is a floor, not a blindfold: 20 min overdue on a
     300 s cadence is past interval+floor and reads stale."""
+    _register_cadences(monkeypatch, "c-really-stopped")
     _seed_lease(store, "c-really-stopped", interval_s=300, overdue_s=1200)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-really-stopped")
@@ -235,11 +252,22 @@ def test_short_cadence_past_the_margin_floor_is_stale(store) -> None:
     assert "300s + 900s" in hit.detail
 
 
-def test_cadence_within_margin_is_ok(store) -> None:
+def test_cadence_within_margin_is_ok(store, monkeypatch) -> None:
+    _register_cadences(monkeypatch, "c-fresh")
     _seed_lease(store, "c-fresh", interval_s=60, overdue_s=30)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-fresh")
     assert hit.status == "ok"
+
+
+def test_unregistered_lease_row_is_ignored(store, monkeypatch) -> None:
+    """A lease row for a cadence no longer in the registry is residue,
+    not a stopped cadence — nothing can fire it anymore (e.g. the
+    retired ``graph_garden`` cadence), so it must not flap forever."""
+    _register_cadences(monkeypatch)  # empty registry
+    _seed_lease(store, "removed-cadence", interval_s=60, overdue_s=100000)
+    results = _cadence_staleness_checks(store)
+    assert not any(r.name == "removed-cadence" for r in results)
 
 
 # ── never-seeded: eligible-everywhere-false blind spot (gr194430) ───────
@@ -284,12 +312,55 @@ def test_cadence_with_fresh_lease_is_not_flagged_never_seeded(
     assert hit.status == "ok"
 
 
-# ── job-backed cadences: on-schedule lease + failed run goes red (gr503581)
+# ── graph_garden: recurring-driven staleness (not a scheduler cadence) ──
+
+
+def _lit_garden(store) -> None:
+    set_service_prio(store, "*", "graph_garden", 1)
+
+
+def _seed_garden_recurring(
+    store,
+    *,
+    cron: str = "0 */2 * * *",
+    last_spawn_s: float | None = None,
+    paused: bool = False,
+) -> int:
+    """The job-mode recurring that drives ``graph_garden``: a
+    ``kind='todo'`` with ``meta.schedule`` + ``meta.executor`` +
+    ``meta.job_type``, plus one ``schedule:spawn`` event ``last_spawn_s``
+    seconds ago when given."""
+    rid = seed_ref(store, title="Graph gardener", kind="todo")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+            (
+                json.dumps(
+                    {
+                        "schedule": {"cron": cron},
+                        "executor": "job_inproc",
+                        "job_type": "graph_garden",
+                    }
+                ),
+                rid,
+            ),
+        )
+        if last_spawn_s is not None:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, ts, payload) "
+                "VALUES (%s, 'schedule', 'spawn', "
+                "  now() - (%s || ' seconds')::interval, '{}'::jsonb)",
+                (rid, last_spawn_s),
+            )
+        conn.commit()
+    if paused:
+        store.add_tag(rid, Tag.closed("STATUS", "paused"), set_by="system")
+    return rid
 
 
 def _seed_garden_job(store, status: str) -> int:
     """A ``kind='job'`` ref with ``meta.job_type='graph_garden'`` and a
-    STATUS tag — what the mint + executor write."""
+    STATUS tag — what the dispatch + executor write."""
     rid = seed_ref(store, title="garden job", kind="job")
     with store.pool.connection() as conn:
         conn.execute(
@@ -301,36 +372,73 @@ def _seed_garden_job(store, status: str) -> int:
     return rid
 
 
-def test_job_backed_cadence_red_when_last_run_failed(store) -> None:
-    """gr503581: a fresh lease only proves the mint fired — a newest job
-    carrying STATUS:failed still reads stale (jo503579 stayed green a
-    whole day on the lease alone)."""
-    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
+def test_garden_check_dark_service_is_ok(store) -> None:
+    hit = _garden_check(store)
+    assert hit.name == "graph_garden" and hit.status == "ok"
+    assert "dark" in hit.detail
+
+
+def test_garden_check_lit_without_recurring_is_stale(store) -> None:
+    _lit_garden(store)
+    hit = _garden_check(store)
+    assert hit.status == "stale"
+    assert "job_type='graph_garden'" in hit.detail
+
+
+def test_garden_check_paused_recurring_is_ok(store) -> None:
+    _lit_garden(store)
+    _seed_garden_recurring(store, paused=True)
+    assert _garden_check(store).status == "ok"
+
+
+def test_garden_check_fresh_spawn_and_job_ok(store) -> None:
+    _lit_garden(store)
+    _seed_garden_recurring(store, last_spawn_s=300)
+    _seed_garden_job(store, "succeeded")
+    assert _garden_check(store).status == "ok"
+
+
+def test_garden_check_missed_ticks_are_stale(store) -> None:
+    """More than one missed bucket: a 2h-cron recurring whose last spawn
+    is 5h old owes >=2 ticks — the spawner stopped or the queue wedged."""
+    _lit_garden(store)
+    _seed_garden_recurring(store, last_spawn_s=5 * 3600)
+    _seed_garden_job(store, "succeeded")
+    hit = _garden_check(store)
+    assert hit.status == "stale"
+    assert "ticks behind" in hit.detail
+
+
+def test_garden_check_spawn_without_job_is_stale(store) -> None:
+    """A spawn event older than the dispatch margin with no job after it:
+    tick children are minted but never reach the executor."""
+    _lit_garden(store)
+    _seed_garden_recurring(store, last_spawn_s=2 * 3600)
+    hit = _garden_check(store)
+    assert hit.status == "stale"
+    assert "not reaching the executor" in hit.detail
+
+
+def test_garden_check_failed_job_is_stale(store) -> None:
+    """gr503581 kept: a fresh schedule only proves the tick fired — a
+    newest job carrying STATUS:failed still reads stale (jo503579 stayed
+    green a whole day on the lease alone)."""
+    _lit_garden(store)
+    _seed_garden_recurring(store, last_spawn_s=300)
     _seed_garden_job(store, "failed")
-    results = _cadence_staleness_checks(store)
-    hit = next(r for r in results if r.name == "graph_garden")
+    hit = _garden_check(store)
     assert hit.status == "stale"
     assert "STATUS:failed" in hit.detail
 
 
-def test_job_backed_cadence_green_when_last_run_succeeded(store) -> None:
-    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
-    _seed_garden_job(store, "succeeded")
-    results = _cadence_staleness_checks(store)
-    hit = next(r for r in results if r.name == "graph_garden")
-    assert hit.status == "ok"
-
-
-def test_job_backed_cadence_green_while_retry_queued(store) -> None:
-    """The bounded retry minted after the failure is the newest job —
-    queued, not failed — so the watchdog is green while the response is
-    already in flight."""
-    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
+def test_garden_check_green_while_retry_queued(store) -> None:
+    """The next tick's job already queued is the newest job — not failed —
+    so the watchdog is green while the response is in flight."""
+    _lit_garden(store)
+    _seed_garden_recurring(store, last_spawn_s=300)
     _seed_garden_job(store, "failed")
     _seed_garden_job(store, "queued")
-    results = _cadence_staleness_checks(store)
-    hit = next(r for r in results if r.name == "graph_garden")
-    assert hit.status == "ok"
+    assert _garden_check(store).status == "ok"
 
 
 # ── (b) idle-vs-stuck for the embed backlog check ───────────────────────

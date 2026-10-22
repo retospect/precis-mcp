@@ -2,7 +2,7 @@
 
 DB-backed (``store`` fixture): seeded pairs exercise the deterministic
 detectors, the proposals-only ledger write, the explicit apply/undo door,
-and the dark/cooled mint gates. The LLM is never invoked — the runner's
+and the dark/cooled run gates. The LLM is never invoked — the runner's
 ``propose=`` seam takes a deterministic verdict, and the dispatch glue is
 driven through a stub context with a monkeypatched proposer.
 """
@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from psycopg.errors import QueryCanceled
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound
 from precis.graph.garden import candidates as cand
@@ -30,10 +31,11 @@ from precis.graph.garden.proposals import (
 from precis.graph.garden.proposer import Verdict
 from precis.graph.garden.runner import run_garden_tick
 from precis.graph.garden.service import (
+    DRY_RUNS_ESCALATE,
     cooling_active,
     graph_garden_enabled,
-    mint_job,
 )
+from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 
@@ -127,7 +129,9 @@ def _lit_service(store: Store) -> None:
         )
 
 
-def _seed_garden_job(store: Store, *, proposals: int, status: str) -> int:
+def _seed_garden_job(
+    store: Store, *, proposals: int, status: str, skipped: str | None = None
+) -> int:
     rid = _ref(
         store,
         "job",
@@ -135,7 +139,10 @@ def _seed_garden_job(store: Store, *, proposals: int, status: str) -> int:
         meta={
             "job_type": "graph_garden",
             "executor": "job_inproc",
-            "garden": {"proposals": proposals},
+            "garden": {
+                "proposals": proposals,
+                **({"skipped": skipped} if skipped is not None else {}),
+            },
         },
     )
     store.add_tag(rid, Tag.closed("STATUS", status), set_by="system")
@@ -375,26 +382,41 @@ class TestAC5QuietCooling:
         assert _table_count(store, "chunks") == 0
         assert _table_count(store, "links") == 0
 
-    def test_mint_dark_lit_and_idempotent(self, store: Store) -> None:
+    def test_enabled_gate(self, store: Store) -> None:
         assert graph_garden_enabled(store) is False
-        assert mint_job(store) is None
         _lit_service(store)
         assert graph_garden_enabled(store) is True
-        first = mint_job(store)
-        assert first is not None and mint_job(store) == first
-        meta = _meta(store, first)
-        assert meta["job_type"] == "graph_garden"
-        assert meta["idem_key"].startswith("garden:")
 
-    def test_cooling_after_three_empty_runs(self, store: Store) -> None:
-        _lit_service(store)
+    def test_cooling_counts_runs_and_re_arms(self, store: Store) -> None:
+        """Cooling is counted in runs, not days: a streak of
+        ``escalate_after`` dry succeeded runs trips it, it holds for
+        ``cool_runs`` gate-skipped runs, and it re-arms from the next
+        real run (matching the retired day-counted cooldown)."""
         for _ in range(3):
             _seed_garden_job(store, proposals=0, status="succeeded")
-        assert cooling_active(store) is True
-        assert mint_job(store) is None
-        # A productive newest run breaks the streak → cooled off.
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is True
+        # Gate-skipped runs count the window down — one at a time.
+        _seed_garden_job(store, proposals=0, status="succeeded", skipped="cooled")
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is True
+        _seed_garden_job(store, proposals=0, status="succeeded", skipped="cooled")
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is False
+        # A real dry run after the window re-arms the whole cycle.
+        _seed_garden_job(store, proposals=0, status="succeeded")
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is True
+        # A productive run breaks the streak → cooled off.
         _seed_garden_job(store, proposals=2, status="succeeded")
-        assert cooling_active(store) is False
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is False
+
+    def test_cooling_skips_inflight_and_resets_on_failure(self, store: Store) -> None:
+        """An in-flight newest job is evidence neither way — the dispatch
+        evaluates cooling while its own job sits queued/running. A failed
+        run resets the streak (a broken pass is not a quiet pass)."""
+        for _ in range(3):
+            _seed_garden_job(store, proposals=0, status="succeeded")
+        _seed_garden_job(store, proposals=0, status="queued")
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is True
+        _seed_garden_job(store, proposals=0, status="failed")
+        assert cooling_active(store, escalate_after=3, cool_runs=2) is False
 
 
 # ── AC 6: exclusive-axis sibling label swap → one confusion proposal ───────
@@ -572,60 +594,7 @@ class TestDetectorBounds:
         assert run.candidates == []
 
 
-# ── gr503581: one bounded retry after a failed daily run ────────────────
-
-
-class TestDailyRetry:
-    def test_failed_day_mints_one_retry_job(self, store: Store) -> None:
-        _lit_service(store)
-        first = mint_job(store)
-        assert first is not None
-        store.add_tag(
-            first,
-            Tag.closed("STATUS", "failed"),
-            set_by="system",
-            replace_prefix=True,
-        )
-        retry = mint_job(store)
-        assert retry is not None and retry != first
-        assert _meta(store, retry)["idem_key"].endswith(":retry")
-        # A failed retry is NOT retried — one per UTC day.
-        store.add_tag(
-            retry,
-            Tag.closed("STATUS", "failed"),
-            set_by="system",
-            replace_prefix=True,
-        )
-        assert mint_job(store) == retry
-
-    def test_non_failed_day_is_not_retried(self, store: Store) -> None:
-        _lit_service(store)
-        first = mint_job(store)
-        assert first is not None
-        store.add_tag(
-            first,
-            Tag.closed("STATUS", "succeeded"),
-            set_by="system",
-            replace_prefix=True,
-        )
-        assert mint_job(store) == first
-
-    def test_new_day_mints_a_fresh_daily_job(self, store: Store) -> None:
-        _lit_service(store)
-        first = mint_job(store)
-        assert first is not None
-        store.add_tag(
-            first,
-            Tag.closed("STATUS", "failed"),
-            set_by="system",
-            replace_prefix=True,
-        )
-        retry = mint_job(store)
-        assert retry is not None and retry != first
-        tomorrow = datetime.now(UTC) + timedelta(days=1)
-        nxt = mint_job(store, now=tomorrow)
-        assert nxt is not None and nxt not in (first, retry)
-        assert _meta(store, nxt)["idem_key"] == f"garden:{tomorrow:%Y-%m-%d}"
+# ── dispatch glue: gates per run, outcome contract, dedup across runs ──
 
 
 class TestDispatchGlue:
@@ -666,19 +635,74 @@ class TestDispatchGlue:
         assert "graph_garden" in known_job_types()
         assert spec.compatible_executors == frozenset({"job_inproc"})
 
-    def test_dispatch_clean_tick_writes_no_chunk(self, store: Store) -> None:
+    def test_dispatch_dark_service_gate_skips(self, store: Store) -> None:
+        """The service_config gate is evaluated per run now (the mint
+        that used to gate is gone): a dark service skips the tick and
+        says so on meta.garden — no scanning, no failure."""
         from precis.workers.job_types.graph_garden import SPEC, _dispatch
 
         ctx = self._Ctx(store, {"pass": "all"})
         _dispatch(ctx, SPEC)
+        assert ctx.meta["garden"]["skipped"] == "dark"
         assert ctx.meta["garden"]["proposals"] == 0
         assert ctx.events == [] and ctx.failure is None
+
+    def test_dispatch_cooled_gate_skips(self, store: Store) -> None:
+        """A dry streak of ``DRY_RUNS_ESCALATE`` runs cools the pass —
+        the run gate-skips with the marker the cooling walk counts."""
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        _lit_service(store)
+        for _ in range(DRY_RUNS_ESCALATE):
+            _seed_garden_job(store, proposals=0, status="succeeded")
+        ctx = self._Ctx(store, {"pass": "all"})
+        _dispatch(ctx, SPEC)
+        assert ctx.meta["garden"]["skipped"] == "cooled"
+        assert ctx.events == [] and ctx.failure is None
+
+    def test_dispatch_clean_tick_writes_no_chunk(self, store: Store) -> None:
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        _lit_service(store)
+        ctx = self._Ctx(store, {"pass": "all"})
+        _dispatch(ctx, SPEC)
+        assert ctx.meta["garden"]["proposals"] == 0
+        assert "skipped" not in ctx.meta["garden"]
+        assert ctx.events == [] and ctx.failure is None
+
+    def test_consecutive_runs_do_not_repropose(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ledger dedup holds across runs: two consecutive runs over
+        the same graph produce proposals only on the first — a 12-a-day
+        cadence must not spam the reviews ledger (or the proposer)."""
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        _lit_service(store)
+        stale = _ref(store, "concept", "forgotten thing")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - interval '400 days' "
+                "WHERE ref_id = %s",
+                (stale,),
+            )
+        monkeypatch.setattr("precis.graph.garden.proposer.propose_llm", _accept)
+        ctx1 = self._Ctx(store, {"pass": "prune"})
+        _dispatch(ctx1, SPEC)
+        assert ctx1.meta["garden"]["proposals"] == 1
+        ctx2 = self._Ctx(store, {"pass": "prune"})
+        _dispatch(ctx2, SPEC)
+        g2 = ctx2.meta["garden"]
+        assert g2["proposals"] == 0 and g2["skipped_pending"] == 1
+        assert "skipped" not in g2
+        assert _table_count(store, "reviews") == 1
 
     def test_dispatch_paused_proposer_defers(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from precis.workers.job_types.graph_garden import SPEC, _dispatch
 
+        _lit_service(store)
         _ref(store, "concept", "forgotten thing")
         with store.pool.connection() as conn:
             conn.execute("UPDATE refs SET updated_at = now() - interval '400 days'")
@@ -698,6 +722,8 @@ class TestDispatchGlue:
         job_summary chunk names it — a partial tick is never silent."""
         from precis.workers.job_types.graph_garden import SPEC, _dispatch
 
+        _lit_service(store)
+
         def _boom(*_a: Any, **_kw: Any) -> list[GardenCandidate]:
             raise QueryCanceled("canceling statement due to statement timeout")
 
@@ -708,3 +734,61 @@ class TestDispatchGlue:
         (kind, text) = ctx.events[0]
         assert kind == "job_summary" and "untagged" in text
         assert ctx.failure is None
+
+
+# ── the recurring todo is the cadence (precis-recurring-help) ───────────
+
+
+@pytest.fixture
+def handler(hub: Hub) -> TodoHandler:
+    return TodoHandler(hub=hub)
+
+
+def _id_of(body: str) -> int:
+    return int(body.split("id=")[1].split()[0].rstrip(",.()"))
+
+
+def _set_last_tick(store: Store, ref_id: int, when: datetime) -> None:
+    """A synthetic ``schedule:spawn`` event — the spawner's "last fired"
+    marker (same helper shape as tests/test_schedule.py)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, ts, payload) "
+            "VALUES (%s, 'schedule', 'spawn', %s, '{}'::jsonb)",
+            (ref_id, when),
+        )
+        conn.commit()
+
+
+class TestRecurringMintPath:
+    def test_tick_spawns_child_carrying_garden_job_type(
+        self, handler: TodoHandler, store: Store
+    ) -> None:
+        """The garden cadence is an operator-seeded recurring todo: a due
+        tick mints a child carrying ``executor``/``job_type``/``params`` —
+        the dispatch pass turns that child into the ``graph_garden`` job."""
+        from precis.workers.schedule import run_schedule_pass
+
+        resp = handler.put(
+            text="Graph gardener",
+            meta={
+                "schedule": {"every": "2h"},
+                "executor": "job_inproc",
+                "job_type": "graph_garden",
+                "params": {"pass": "all"},
+            },
+        )
+        rid = _id_of(resp.body)
+        _set_last_tick(store, rid, datetime.now(UTC) - timedelta(hours=3))
+        assert run_schedule_pass(store, limit=50).ok >= 1
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE parent_id = %s AND retired_at IS NULL",
+                (rid,),
+            ).fetchone()
+        assert row is not None
+        meta = dict(row[0])
+        assert meta["job_type"] == "graph_garden"
+        assert meta["executor"] == "job_inproc"
+        assert meta["params"] == {"pass": "all"}
+        assert meta["spawned_for_tick"] is not None

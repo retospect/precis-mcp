@@ -7,21 +7,26 @@ deterministic detectors, then one routed LLM verdict per candidate
 NOTHING else: no merges, splits, prunes, relinks or tags — proposals
 wait for a human (or a separate, explicit apply verb) to act.
 
-Who mints it: the ``graph_garden`` scheduler cadence
-(:func:`precis.workers.scheduler._run_graph_garden_mint` →
-:func:`precis.graph.garden.service.mint_job`), at most one job per UTC
-day (``meta.idem_key='garden:<date>'``), and only while the
-``graph_garden`` service is lit in ``service_config`` — dark by
-default. A hand ``put(kind='job', job_type='graph_garden',
-params={'pass': 'merge'})`` works anywhere the ``job_inproc`` executor
-runs — the job itself does not re-check the service flag, the mint does
-(an operator put IS the opt-in).
+Who mints it: an operator-seeded recurring todo under Watches —
+``meta.schedule`` + ``meta.executor='job_inproc'`` +
+``meta.job_type='graph_garden'`` (see ``precis-recurring-help``). Each
+due tick spawns a subtask the dispatch pass mints this job from; the
+spawner's per-tick ``spawned_for_tick`` idempotency and its
+collision-skip on a still-open previous child are the run bound. The
+gates that used to sit in the cadence mint are evaluated here, per run:
+a dark ``graph_garden`` ``service_config`` (absent row = off) or an
+active cooling streak writes ``meta.garden.skipped`` and exits — a
+dark/cooled run does no scanning and counts as neither a dry run nor a
+productive one. A hand ``put(kind='job', job_type='graph_garden',
+params={'pass': 'merge'})`` takes the same gates — light the service to
+run it.
 
 Outcome contract (the cooling streak reads this): ``meta.garden`` on the
 job row carries ``{candidates, proposals, skipped_pending, rejected,
-llm_errors, skipped_detectors}``; a tick that proposes nothing writes no
-chunks — "zero proposals and zero log entries" for a clean graph. A tick
-that skipped a detector on its deadline writes one summary naming it.
+llm_errors, skipped_detectors}`` — plus ``skipped`` on a gate-skipped
+run; a tick that proposes nothing writes no chunks — "zero proposals
+and zero log entries" for a clean graph. A tick that skipped a detector
+on its deadline writes one summary naming it.
 """
 
 from __future__ import annotations
@@ -68,6 +73,27 @@ PARAMS_SCHEMA: dict[str, Any] = {
 }
 
 
+def _gate_skip(ctx: Any, reason: str) -> None:
+    """Record a gate-skipped run on ``meta.garden`` and return.
+
+    ``skipped`` is the cooling streak's marker: a gate-skipped run is
+    neither a dry run nor a productive one
+    (:func:`precis.graph.garden.service.cooling_active` reads this key),
+    and a ``'cooled'`` value is what counts the cool window down."""
+    ctx.set_meta(
+        garden={
+            "skipped": reason,
+            "candidates": 0,
+            "proposals": 0,
+            "skipped_pending": 0,
+            "rejected": 0,
+            "llm_errors": 0,
+            "skipped_detectors": [],
+        }
+    )
+    log.info("graph_garden: run skipped (%s)", reason)
+
+
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """Plugin dispatcher invoked by ``job_inproc`` for a claimed job.
 
@@ -76,6 +102,15 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     the real context both satisfy the used surface: ``.meta``,
     ``.store``, ``.set_meta``, ``.append_chunk``, ``.defer``,
     ``.record_failure``)."""
+    from precis.graph.garden.service import cooling_active, graph_garden_enabled
+
+    if not graph_garden_enabled(ctx.store):
+        _gate_skip(ctx, "dark")
+        return
+    if cooling_active(ctx.store):
+        _gate_skip(ctx, "cooled")
+        return
+
     params = dict(ctx.meta.get("params") or {})
 
     raw_pass = params.get("pass", "all")
@@ -173,8 +208,9 @@ SPEC = JobTypeSpec(
         "(dupes, orphans, stale nodes, dangling/cycle edges, under-tagged "
         "refs, polysemy and sibling-confusion signals), one routed LLM "
         "verdict each, proposals into the reviews ledger — never a graph "
-        "write. Minted daily by the graph_garden cadence, dark until the "
-        "graph_garden service_config row is lit."
+        "write. Minted by the operator-seeded recurring todo; a run skips "
+        "while the graph_garden service_config row is dark or a dry "
+        "streak cools the pass."
     ),
     dispatch=_dispatch,
 )

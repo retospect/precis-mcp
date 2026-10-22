@@ -50,14 +50,20 @@ runs one bounded pass per tick — ``params.pass`` picks the detector
 subset (``merge|split|relink|prune|tag-sweep|siblings|all``), ``limit``
 bounds candidates scanned, ``max_proposals`` bounds writes, and each
 detector runs under a wall-clock deadline that skips it rather than
-zeroing the tick (gr503580). The ``graph_garden`` scheduler cadence is
-an hourly *check tick*: :func:`precis.graph.garden.service.mint_job`
-mints at most one job per UTC day (``meta.idem_key='garden:<date>'``),
-plus one ``garden:<date>:retry`` when the day's job failed (gr503581),
-and only while the ``graph_garden`` service_config row is lit — dark by
-default (:func:`precis.graph.garden.service.graph_garden_enabled`). After
-``dry_rest_escalate`` consecutive empty runs the mint backs off to the
-cooldown interval instead of minting daily forever.
+zeroing the tick (gr503580). The cadence is an operator-seeded
+**recurring todo** under Watches — ``meta.schedule`` +
+``meta.executor='job_inproc'`` + ``meta.job_type='graph_garden'`` (the
+job-mode automation shape, ``precis-recurring-help``): each due tick
+spawns a subtask the dispatch pass mints the job from, and the
+spawner's ``spawned_for_tick`` idempotency plus collision-skip on a
+still-open previous child are the run bound. The gates are evaluated
+per run by the job dispatcher
+(:mod:`precis.workers.job_types.graph_garden`): a dark
+``graph_garden`` service_config row
+(:func:`precis.graph.garden.service.graph_garden_enabled`) or an
+active cooling streak writes ``meta.garden.skipped`` and exits. After
+``DRY_RUNS_ESCALATE`` consecutive empty runs the pass cools for
+``COOL_RUNS`` runs instead of scanning every tick.
 
 **Polysemy contract (provisional).** The split pass fires when a live
 ``finding`` linked to a node carries ``meta.annotation='polysemy'``

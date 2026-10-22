@@ -96,7 +96,7 @@ import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
@@ -1739,52 +1739,198 @@ _CADENCE_NEVER_SEEDED_EXEMPT = frozenset({"materialize"})
 #: interval.
 _CADENCE_MARGIN_FLOOR_S = 900
 
-#: Cadences whose fire mints a job — cadence name → ``meta.job_type``.
-#: For these the lease staying green only proves the *mint* fired, not
-#: that the minted run finished: jo503579 failed on a statement timeout
-#: and ``watchdog:cadence/graph_garden`` stayed green a whole day
-#: (gr503581). An on-schedule lease on a mapped cadence still reads
-#: stale while the newest job of its type carries STATUS:failed; a newer
-#: queued/running row (the bounded retry) reads green — the response is
-#: already in flight.
-_JOB_BACKED_CADENCES: dict[str, str] = {"graph_garden": "graph_garden"}
+#: ``graph_garden`` is driven by an operator-seeded recurring todo, not a
+#: ``scheduler_leases`` cadence — the cadence mint was retired (the
+#: recurring's per-tick ``spawned_for_tick`` idempotency and its
+#: collision-skip on a still-open previous child are the run bound).
+#: Its staleness watchdog is :func:`_check_graph_garden` below.
+#:
+#: How far behind a live recurring may fall before the check reads stale:
+#: missed ticks counted by ``ticks_since`` over the recurring's own cron —
+#: ``>= _GARDEN_MISSED_TICKS`` means more than one whole bucket skipped,
+#: which already carries ~one bucket of slack.
+_GARDEN_MISSED_TICKS = 2
+#: Spawn-to-job grace: a ``schedule:spawn`` event whose child still hasn't
+#: produced a ``graph_garden`` job after this long means the dispatch or
+#: executor lane — not the schedule — is wedged.
+_GARDEN_DISPATCH_MARGIN_S = 3600
 
 
-def _job_backed_run_failed(store: Store, cadence: str, job_type: str) -> str | None:
-    """Detail string when the newest live ``job_type`` job is
-    ``STATUS:failed``, else ``None``. Never raises — a read blip is no
-    evidence of a failed run."""
+def _garden_check(store: Store) -> CheckResult:
+    """Staleness for the recurring-driven ``graph_garden`` job.
+
+    The driving recurring is a ``kind='todo'`` carrying
+    ``meta.job_type='graph_garden'`` plus a ``meta.schedule`` block — the
+    job-mode automation shape (``precis-recurring-help``). Stale when:
+
+    * the service is lit but no such recurring exists (the operator
+      seed never landed or was deleted), or
+    * an unpaused recurring is more than one tick behind —
+      :func:`ticks_since` on the last ``ref_events(source='schedule',
+      event='spawn')`` ts (the recurring's ``created_at`` before its
+      first spawn) — the spawner stopped or the queue is wedged, or
+    * spawn events keep landing but no ``graph_garden`` job follows
+      within ``_GARDEN_DISPATCH_MARGIN_S`` — children are minted yet
+      never reach a job, or
+    * the newest ``graph_garden`` job carries ``STATUS:failed`` —
+      gr503581's lease-vs-run gap kept: a ticking schedule proves the
+      tick fired, not that the run finished.
+
+    A dark ``service_config`` (or every matching recurring paused) reads
+    ok — nothing is expected while the service is off.
+    """
+    from precis.graph.garden.service import graph_garden_enabled
+    from precis.workers.schedule.parse import parse_schedule, ticks_since
+
+    dark = CheckResult(
+        "cadence",
+        "graph_garden",
+        "ok",
+        "graph_garden: service dark (no service_config row) — "
+        "the recurring is not expected to produce",
+        _WARN,
+    )
+    if not graph_garden_enabled(store):
+        return dark
     try:
         with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT r.ref_id, "
+            recs = conn.execute(
+                "SELECT r.ref_id, r.created_at, r.meta->'schedule', "
+                "  (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+                "    LIMIT 1) AS status, "
+                "  (SELECT max(e.ts) FROM ref_events e "
+                "    WHERE e.ref_id = r.ref_id AND e.source = 'schedule' "
+                "      AND e.event = 'spawn') AS last_spawn "
+                "FROM refs r WHERE r.kind = 'todo' AND r.retired_at IS NULL "
+                "  AND r.meta ? 'schedule' "
+                "  AND r.meta->>'job_type' = 'graph_garden' "
+                "ORDER BY r.ref_id",
+            ).fetchall()
+            job = conn.execute(
+                "SELECT r.ref_id, r.created_at, "
                 "  (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
                 "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
                 "    LIMIT 1) "
                 "FROM refs r WHERE r.kind = 'job' AND r.retired_at IS NULL "
-                "  AND r.meta->>'job_type' = %s "
+                "  AND r.meta->>'job_type' = 'graph_garden' "
                 "ORDER BY r.ref_id DESC LIMIT 1",
-                (job_type,),
             ).fetchone()
     except Exception:
-        log.warning(
-            "health_digest: last-run check failed for cadence %s",
-            cadence,
-            exc_info=True,
+        log.warning("health_digest: graph_garden check failed", exc_info=True)
+        return CheckResult(
+            "cadence",
+            "graph_garden",
+            "unknown",
+            "graph_garden: staleness probe failed",
+            _WARN,
         )
-        return None
-    if row is None or row[1] != "failed":
-        return None
-    return (
-        f"{cadence}: lease on schedule but the newest {job_type} job "
-        f"(ref {int(row[0])}) carries STATUS:failed — the mint fired, "
-        "the run did not finish"
+
+    live = [r for r in recs if r[3] != "paused"]
+    if recs and not live:
+        return CheckResult(
+            "cadence",
+            "graph_garden",
+            "ok",
+            "graph_garden: recurring paused — nothing expected",
+            _WARN,
+        )
+    if not live:
+        return CheckResult(
+            "cadence",
+            "graph_garden",
+            "stale",
+            "graph_garden: service lit but no recurring todo carries "
+            "meta.job_type='graph_garden' — the schedule tick is not "
+            "seeded (precis-recurring-help)",
+            _WARN,
+        )
+
+    def _aware(ts: Any) -> datetime:
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+
+    now = datetime.now(UTC)
+    last_spawn: datetime | None = None
+    for _rid, created_at, spec, _status, spawn in live:
+        try:
+            sched = parse_schedule(dict(spec or {}))
+        except Exception:
+            return CheckResult(
+                "cadence",
+                "graph_garden",
+                "stale",
+                f"graph_garden: recurring {_rid} carries an unparseable "
+                "meta.schedule — it can never tick",
+                _WARN,
+            )
+        if sched.cron is None:
+            continue  # a one-shot 'at' schedule has no missed-tick count
+        spawn_at = _aware(spawn) if spawn is not None else None
+        base = spawn_at if spawn_at is not None else _aware(created_at)
+        missed = ticks_since(
+            base,
+            replace(sched, backfill_missed=True),
+            now=now,
+        )
+        if len(missed) >= _GARDEN_MISSED_TICKS:
+            return CheckResult(
+                "cadence",
+                "graph_garden",
+                "stale",
+                f"graph_garden: recurring {_rid} is {len(missed)} ticks "
+                f"behind (last spawn "
+                f"{spawn_at.isoformat() if spawn_at is not None else 'never'}) — "
+                "the schedule spawner stopped or the queue is wedged",
+                _WARN,
+            )
+        if spawn_at is not None and (last_spawn is None or spawn_at > last_spawn):
+            last_spawn = spawn_at
+
+    if last_spawn is not None:
+        # The newest spawn owes a job once it is older than the dispatch
+        # margin — a spawn inside the margin may still be in flight, and
+        # a job created *before* it can't be its child.
+        spawn_age = (now - last_spawn).total_seconds()
+        job_ts = _aware(job[1]) if job is not None else None
+        owes_a_job = job_ts is None or job_ts < last_spawn
+        if spawn_age > _GARDEN_DISPATCH_MARGIN_S and owes_a_job:
+            return CheckResult(
+                "cadence",
+                "graph_garden",
+                "stale",
+                "graph_garden: schedule spawning but no graph_garden job "
+                f"within {_GARDEN_DISPATCH_MARGIN_S}s "
+                f"(last spawn {last_spawn.isoformat()}, newest job "
+                f"{job_ts.isoformat() if job_ts else 'none'}) — spawned "
+                "children are not reaching the executor",
+                _WARN,
+            )
+    if job is not None and job[2] == "failed":
+        return CheckResult(
+            "cadence",
+            "graph_garden",
+            "stale",
+            "graph_garden: schedule on time but the newest graph_garden "
+            f"job (ref {int(job[0])}) carries STATUS:failed — the tick "
+            "fired, the run did not finish",
+            _WARN,
+        )
+    return CheckResult(
+        "cadence",
+        "graph_garden",
+        "ok",
+        "graph_garden: recurring ticking on schedule",
+        _WARN,
     )
 
 
 def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
     """Every ``scheduler_leases`` row overdue past ``interval_s + margin``,
-    plus (gr194430) every registry cadence with **no** lease row at all.
+    plus (gr194430) every registry cadence with **no** lease row at all,
+    plus :func:`_garden_check` for the recurring-driven ``graph_garden``
+    job (no lease row — it's not a scheduler cadence). Lease rows whose
+    name is no longer in :data:`CADENCES` are skipped — a retired
+    cadence's residue can't be "stopped", it just can't fire.
 
     Zero per-cadence config — a cadence added to ``workers/scheduler.py``
     is watched the moment it seeds its first lease row, no digest edit.
@@ -1849,27 +1995,26 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
             )
         )
     now = datetime.now(UTC)
+    registered = {cad.name for cad in CADENCES}
     for lease in leases:
+        if lease.name not in registered:
+            # A lease row for a cadence no longer in the registry is
+            # residue, not a stopped cadence (e.g. graph_garden's
+            # retired cadence mint — nothing can fire it anymore, so
+            # "stopped firing" would flap forever).
+            continue
         margin_s = max(lease.interval_s, _CADENCE_MARGIN_FLOOR_S)
         next_fire = lease.next_fire_at
         if next_fire.tzinfo is None:
             next_fire = next_fire.replace(tzinfo=UTC)
         overdue_s = (now - next_fire).total_seconds()
         if overdue_s <= margin_s:
-            job_type = _JOB_BACKED_CADENCES.get(lease.name)
-            detail = (
-                _job_backed_run_failed(store, lease.name, job_type)
-                if job_type is not None
-                else None
-            )
             out.append(
                 CheckResult(
                     "cadence",
                     lease.name,
-                    "stale" if detail is not None else "ok",
-                    detail
-                    if detail is not None
-                    else (
+                    "ok",
+                    (
                         f"{lease.name}: on schedule (next due in {-overdue_s / 60:.0f}min)"
                         if overdue_s < 0
                         else f"{lease.name}: fired within interval+margin"
@@ -1895,6 +2040,7 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
                 _WARN,
             )
         )
+    out.append(_garden_check(store))
     return out
 
 
@@ -2037,6 +2183,9 @@ _PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
     ("meta", "alert_backlog_rot"): "alert_backlog_rot",
     ("infra", "tool_latency"): "tool_latency",
     ("infra", "tool_latency_regressed"): "tool_latency_regressed",
+    # The graph gardener left the lease cadences for a recurring todo;
+    # its watchdog keeps the id the derived lease check used to emit.
+    ("cadence", "graph_garden"): "watchdog:cadence/graph_garden",
 }
 
 

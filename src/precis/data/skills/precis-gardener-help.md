@@ -118,12 +118,33 @@ when an operator runs it.
 
 ## Scheduling
 
-The `graph_garden` scheduler cadence mints at most one job per UTC day
-(`idem_key='garden:<date>'`). It stays dark — mints nothing — until a
-`service_config` row for `graph_garden` carries `prio >= 1` on any host.
-After three consecutive zero-proposal runs the mint backs off to a
-weekly interval (the "dry rest" — a healthy empty graph should cost
-nothing). The proposer's model is steerable via the operation row
+The gardener is driven by an operator-seeded **recurring todo** under
+Watches — a `meta.schedule` (`{'every': '2h'}`) plus
+`meta.executor='job_inproc'` and `meta.job_type='graph_garden'`, the
+job-mode automation shape (`precis-recurring-help`,
+`precis-automations`). Each due tick spawns a subtask the dispatch pass
+mints the job from; the spawner's `spawned_for_tick` stamp makes a tick
+idempotent and its collision-skip holds the next tick while the
+previous child is still open, so runs can't pile up.
+
+The two gates are evaluated **per run**, inside the job's dispatch —
+not by the schedule:
+
+- **dark** — no `service_config` row for `graph_garden` with
+  `prio >= 1` on any host: the run writes `meta.garden.skipped='dark'`
+  and exits. To turn the gardener on, ask a human operator to light the
+  `graph_garden` service.
+- **cooled** — after `DRY_RUNS_ESCALATE` (36) consecutive
+  zero-proposal runs the pass cools for `COOL_RUNS` (84) runs
+  (`meta.garden.skipped='cooled'`): the old "dry rest", counted in runs
+  rather than days. A productive or failed run resets the streak.
+
+`watchdog:cadence/graph_garden` watches the recurring's spawn events
+(`ref_events(source='schedule')`) plus the newest job: more than one
+missed tick, a spawn with no job after it, or a newest job
+`STATUS:failed` all read stale.
+
+The proposer's model is steerable via the operation row
 `llm.op.graph_garden:propose` — a tier or chain override flips where
 judging runs without a redeploy.
 
