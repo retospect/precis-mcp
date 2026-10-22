@@ -819,18 +819,24 @@ removed as met — the transport move it waited on happened 09-29)
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
     on N equal-120 seams, each an inward rib, authored pore cells, the
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
-16. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
+16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms with
+    H-columns (Reto 2026-10-22, "we want these anyways"): fold tokens with
+    an H side, `k3-sp3-z` prism seams, honeycomb cells. Ranked after 15
+    because its prism builder is the T2 cross-section's sibling and slice 2
+    lands the decoration core item 10's isolation band needs; slice 7 waits
+    on the xtb dispatch route from the session host.
+17. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
     relax, fragment GFN2 and a module cache so blocks above ~1k atoms
     relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;
     sits behind the tunnel slice it makes relaxable (S5 waits on the Mac
     probe).
-17. **Cases A–D sublattice test** (from se-nanobud-graph, folded
+18. **Cases A–D sublattice test** (from se-nanobud-graph, folded
     2026-10-21) — a test, not new code: hexfold's `annot.sublattice`
     (`same`/`cross` per attachment bond) reproduces Wang & Li's published
     Cases A–D magnetic/non-magnetic split (same-sublattice junction bonds
     → ~6 μB, cross-sublattice → non-magnetic). Verify the primary source
     first (`perplexity-research:339983`).
-18. **td344088** — the se + hexfold paper. The thread's end state; it
+19. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Owned quests, kept dormant
