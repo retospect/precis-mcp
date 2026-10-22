@@ -1870,6 +1870,129 @@ class TestHarvest:
         assert len(held) == 1 and "inside it, not on it" in held[0]
         assert not any("rejected the candidate geometry" in n for n in step2.notes)
 
+    def _geometry_release_harness(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch, job_meta: dict[str, Any]
+    ) -> tuple[int, int, list[int], list[dict[str, Any]]]:
+        """A candidate wedged on an invalid-geometry seed, with dispatch and
+        the gripe handler faked — the shape st497185 sat in (gr498293)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid, job_meta=job_meta)
+        calls: list[int] = []
+        gripes: list[dict[str, Any]] = []
+
+        def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return "autocatpath[ml]"
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                pass
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripes.append({"text": text})
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+        return qid, sid, calls, gripes
+
+    def test_geometry_hold_releases_when_seed_was_minted_on_old_engine(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr498293/st497185: a seed stamped ``params.engine_token`` under an
+        engine that has since moved must NOT be held — the rejection was a
+        pre-fix engine bug, so the retry ladder gets a fresh dispatch."""
+        qid, sid, calls, gripes = self._geometry_release_harness(
+            store,
+            monkeypatch,
+            job_meta={
+                "failure_class": "invalid-geometry",
+                "params": {"engine_token": "0.0.0-definitely-retired"},
+            },
+        )
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        assert gripes == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+        assert not meta.get("quest_seed_geometry_noted")
+        assert any("geometry hold released" in n for n in step.notes)
+
+    def test_geometry_hold_stays_for_same_engine_stamp(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid, sid, calls, gripes = self._geometry_release_harness(
+            store,
+            monkeypatch,
+            job_meta={
+                "failure_class": "invalid-geometry",
+                "params": {"engine_token": compute_mod._autocatpath_engine_token()},
+            },
+        )
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == []
+        assert gripes == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_geometry_noted")
+
+    def test_geometry_hold_prestamp_releases_on_moved_content_key(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pre-stamp jobs (no ``params.engine_token``): the hold releases
+        when the stored ``params.content_key`` no longer recomputes under
+        the current engine token — the same "engine moved" evidence,
+        recovered from the idem key itself."""
+        qid, sid, calls, gripes = self._geometry_release_harness(
+            store,
+            monkeypatch,
+            job_meta={
+                "failure_class": "invalid-geometry",
+                "params": {
+                    "config": {"name": "rx", "slab": {"element": "Pd"}},
+                    "slab_extxyz": "1\nx\nH 0 0 0\n",
+                    "seed": 0,
+                    "model_index": 0,
+                    # A key minted under a DIFFERENT engine token.
+                    "content_key": "0" * 64,
+                },
+            },
+        )
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        assert gripes == []
+
+    def test_geometry_hold_prestamp_stays_on_matching_content_key(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pre-stamp job whose stored key still recomputes under the current
+        engine → the rejection is current-engine evidence → keep the hold."""
+        config = {"name": "rx", "slab": {"element": "Pd"}}
+        slab = "1\nx\nH 0 0 0\n"
+        qid, sid, calls, gripes = self._geometry_release_harness(
+            store,
+            monkeypatch,
+            job_meta={
+                "failure_class": "invalid-geometry",
+                "params": {
+                    "config": config,
+                    "slab_extxyz": slab,
+                    "seed": 0,
+                    "model_index": 0,
+                    "content_key": compute_mod._autocatpath_seed_content_key(
+                        config, slab, 0, 0
+                    ),
+                },
+            },
+        )
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == []
+        assert gripes == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_geometry_noted")
+
     def test_timeout_seed_with_raised_retry_wall_is_redispatched(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

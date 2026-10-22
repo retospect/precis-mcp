@@ -3262,6 +3262,47 @@ def _is_off_lane_reap(job_meta: dict[str, Any]) -> bool:
     )
 
 
+def _geometry_hold_engine_moved(seed_meta: dict[str, Any]) -> bool:
+    """True iff the engine that produced an ``invalid-geometry`` verdict is
+    not the engine a re-dispatch would mint under. The "fails identically
+    on every re-dispatch" premise of :func:`_seed_geometry_held` only holds
+    for the engine that rejected the geometry — once the engine moves, the
+    latch's cause may be fixed and the hold must release (gr498683's
+    engine-changed re-arm, mirrored here: st497185 stayed wedged on the
+    pre-fix H-site rejection minted under autocatpath 0.31.0 while the
+    deployed engine was 0.32.0 — the sweeper latch had been re-armed by
+    hand, but this hold still refused the re-dispatch).
+
+    Two evidences, cheapest first: the mint-time ``params.engine_token``
+    stamp; for pre-stamp jobs, whether the stored ``params.content_key``
+    still recomputes under the CURRENT engine token — the engine fold is
+    the only part of a same-geometry re-dispatch's seed key that can drift
+    (verified on prod: jo497920's stored key recomputes byte-equal under
+    ``"0.31.0"``). A rerun-minted seed's key also carries the rerun nonce,
+    which reads the same way — still bounded: the released dispatch mints
+    a stamped job, so a still-bad geometry re-holds on its next failure.
+    An unverifiable latch — no stamp AND missing recompute inputs — keeps
+    the hold, the same "no evidence, stays held" posture as the sweeper's
+    ``parked_engine_version`` re-arm.
+    """
+    params = seed_meta.get("params")
+    if not isinstance(params, dict):
+        return False
+    stamped = params.get("engine_token")
+    if stamped is not None:
+        return str(stamped) != _autocatpath_engine_token()
+    try:
+        key = _autocatpath_seed_content_key(
+            params["config"],
+            params["slab_extxyz"],
+            params["seed"],
+            params["model_index"],
+        )
+    except (KeyError, TypeError):
+        return False
+    return key != params.get("content_key")
+
+
 def _seed_geometry_held(
     store: Store,
     cand: Any,
@@ -3281,10 +3322,22 @@ def _seed_geometry_held(
     counter; the candidate is not ruled out (no physical verdict either).
     The note is appended once per seed job, deduped by stamping the job id
     on the candidate (``quest_seed_geometry_noted``).
+
+    The hold is per-ENGINE, not eternal: when the rejecting engine is not
+    the engine a re-dispatch would mint under
+    (:func:`_geometry_hold_engine_moved`), it releases so the retry ladder
+    mints a fresh engine-keyed tree — a still-bad geometry then fails again
+    under a stamped job and re-holds on the next pass.
     """
     from precis.workers.sweeper import INVALID_GEOMETRY_CLASS
 
     if seed_meta.get("failure_class") != INVALID_GEOMETRY_CLASS:
+        return False
+    if _geometry_hold_engine_moved(seed_meta):
+        notes.append(
+            f"seed for [{handle}] was rejected under a retired engine rev — "
+            "geometry hold released, re-dispatch gets a fresh try"
+        )
         return False
     job_id = seed_meta.get("_job_ref_id")
     if (
