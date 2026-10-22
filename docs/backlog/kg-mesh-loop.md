@@ -186,6 +186,9 @@ question 1).
 
 ## Open questions / decisions log
 
+**Ruled (Reto 2026-10-22): all approved as recommended; slice 0 may
+start.**
+
 1. **Stamp substrate: tag or reviews row.** Recommend the reviews row
    (`content_sha` gives "unchanged" for free; the gardener reads it
    already), with the `kg-review:` tag written as a mirror for agents.

@@ -206,6 +206,9 @@ acceptance queries above, run on prod read-only.
 
 ## Open questions / decisions log
 
+**Ruled (Reto 2026-10-22): 1–7 approved as recommended. 8: the group
+table is with Reto; slice 0 may start.**
+
 1. **`method` start node vs v1.5's `axis/method`.** Recommend separate
    nodes: `axis/*` names edge angles (a label vocabulary), `method/*`
    classifies refs (instance-of targets). Same slug is fine — paths differ.
