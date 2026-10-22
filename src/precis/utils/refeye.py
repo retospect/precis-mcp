@@ -175,9 +175,12 @@ RING_GROUPS: dict[str, frozenset[str]] = {
 #: ``served-by`` mixes sub-quests with papers and structures, and a hub
 #: with hundreds of serving papers (qu202467: 484) would hide every
 #: serving sub-quest behind the per-label cap — sub-quests list before
-#: any paper (``fisheye-everywhere.md`` in-scope 3). Within a kind the
-#: stored edge order stands.
-RING_GROUP_KIND_RANK: dict[str, tuple[str, ...]] = {"Roadmap": ("quest",)}
+#: any paper (``fisheye-everywhere.md`` in-scope 3). Findings rank next:
+#: they join a quest by ``serves`` (``add_link`` refuses a ``supports``
+#: edge on a quest endpoint), so they share the ``served-by`` block and
+#: would otherwise sit behind hundreds of older serving papers. Within a
+#: kind the stored edge order stands.
+RING_GROUP_KIND_RANK: dict[str, tuple[str, ...]] = {"Roadmap": ("quest", "finding")}
 
 #: What the ``fisheye+1hop`` link neighborhood (``eye_render.py::
 #: _link_neighbors``) follows — the union of :data:`RING_GROUPS`.

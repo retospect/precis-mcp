@@ -148,7 +148,7 @@ a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
 | **Concepts** | `has-prerequisite`, `prerequisite-of`, `analogy-of`, `contrasts-with` | `get(kind='concept', id='cn9', extent='fisheye+1hop')` → `Concepts:` · `has-prerequisite: cn4 — Maxwell counting` |
 | **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
 | **Argument** | `entails`, `entailed-by`, `qualifies`, `qualified-by`, `derived-from`, `derived-into` | `get(kind='memory', id='me12', extent='fisheye+1hop')` → `Argument:` · `derived-from: me3 — …` (the proof tree itself: `view='argument'`, `precis-memory-help`) |
-| **Notes & links** | `related-to`, `see-also`, `supports`, `cites`, `generalises`, `corrects` | `get(kind='paper', id='pa5', extent='fisheye+1hop')` → `Notes & links:` · `related-to: me77 — Read this for the floppy modes`; a finding that `supports` a quest reads `supported-by:` on the quest |
+| **Notes & links** | `related-to`, `see-also`, `supports`, `cites`, `generalises`, `corrects` | `get(kind='paper', id='pa5', extent='fisheye+1hop')` → `Notes & links:` · `related-to: me77 — Read this for the floppy modes`; a finding joins a quest by `serves` (a `supports` edge on a quest is refused), so it reads `served-by:` under `Roadmap` on the quest, listed after sub-quests and before papers |
 
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
 structural and not in the ring; `view='links'` lists everything.

@@ -1090,8 +1090,9 @@ class QuestHandler(NumericRefHandler):
         # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
         # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
         # quests it serves and the ones serving it under `Roadmap`, plus the
-        # papers/structures that serve it (`served-by`) and findings that
-        # support it (`supported-by`, under `Notes & links`).
+        # findings, papers and structures that serve it (`served-by`;
+        # sub-quests first, then findings). Legacy `supports` rows from
+        # findings still read `supported-by` under `Notes & links`.
         if concrete and is_eye_view(view):
             return self.eye(id=id, extent=view, q=q)
         # An unrecognised view on a concrete id would otherwise fall through to

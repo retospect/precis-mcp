@@ -186,8 +186,9 @@ rubric` (quest-specific) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
 `view='fisheye+1hop'` shows the quests this one serves and the quests
-serving it under `Roadmap:`, with papers/structures (`served-by`) and
-supporting findings (`supported-by`) capped at 8 per group, see
+serving it under `Roadmap:`, with the findings, papers and structures
+that serve it (`served-by`, sub-quests then findings first) capped at 8
+per group, see
 `precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
 `measures`) are in the next section.
 Note the trap: this doc says *deeds* constantly, but it isn't a view — a
