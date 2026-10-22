@@ -116,6 +116,12 @@ def test_meditation_default_with_no_override(monkeypatch: pytest.MonkeyPatch) ->
     assert operations.resolve_op("meditation") == (Tier.BIG, None)
 
 
+def test_chase_verify_defaults_to_big(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reto's 2026-10-22 ruling moves this plain completion to BIG."""
+    _bind(monkeypatch, {})
+    assert operations.resolve_op("chase:verify") == (Tier.BIG, None)
+
+
 def test_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """No store bound at all (DB-free) still resolves the registry default —
     op_override degrades to None, never raises."""
@@ -510,6 +516,28 @@ def test_resolve_op_chain_parses_and_filters_tools(
         "llm_summarize", tools_needed=True, backend=backend
     )
     assert tooled is not None and [r.model for r in tooled] == ["b"]
+
+
+def test_chase_verify_op_chain_can_pin_castor_local_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = [
+        {
+            "transport": "local",
+            "model": "openai/gpt-oss-120b",
+            "placement": "local",
+            "max_tokens": 4096,
+            "timeout_s": 300,
+            "reasoning_effort": "low",
+        }
+    ]
+    _set_op_override(monkeypatch, "chase:verify", {"chain": chain})
+    rungs = operations.resolve_op_chain(
+        "chase:verify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+    )
+    assert rungs is not None and len(rungs) == 1
+    assert rungs[0].transport is llm_router.Transport.LOCAL
+    assert rungs[0].model == "openai/gpt-oss-120b"
 
 
 def test_resolve_op_chain_non_registered_is_none(

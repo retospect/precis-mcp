@@ -81,6 +81,7 @@ def test_batch_prompt_labels_items_and_shares_claim_once() -> None:
         )
     prompt = r.call_args[0][0].prompt
     assert prompt.count("CLAIM:\nX is 5 nm.") == 1  # claim side paid once
+    assert prompt.count("First decide the chunk's STANCE") == 1  # rubric paid once
     assert prompt.count("ORIGIN") == 1
     assert "ITEM 1" in prompt and "ITEM 2" in prompt
     assert "chunk text 1" in prompt and "chunk text 2" in prompt
@@ -186,6 +187,7 @@ def test_batch_of_one_is_the_single_call() -> None:
     ) as r:
         out = _verify_supports_batch(claim="X", scope={}, items=[_item(1)])
     assert r.call_count == 1
+    assert r.call_args[0][0].tier.value == "big"
     assert "ITEM 1" not in r.call_args[0][0].prompt  # the single prompt
     assert out == [_verdict("no")]
     assert _verify_supports_batch(claim="X", scope={}, items=[]) == []
@@ -217,6 +219,7 @@ def test_batch_request_pins_a_scaling_completion_cap() -> None:
     ) as r:
         _verify_supports_batch(claim="X", scope={}, items=items)
     req = r.call_args[0][0]
+    assert req.tier.value == "big"
     assert req.max_tokens is not None and req.max_tokens > 4 * 1500
     assert req.source == "chase:verify"
 

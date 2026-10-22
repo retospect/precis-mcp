@@ -185,9 +185,9 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
         ),
     ),
     "chase:verify": OpDefault(
-        tier=Tier.MEDIUM,
+        tier=Tier.BIG,
         model=None,
-        label="Taproot evidence verify (MEDIUM)",
+        label="Taproot evidence verify (BIG)",
         description=(
             "`_chase_llm._verify_support_with_caveats` — the does-this-passage-"
             "support-this-claim verdict behind every taproot evidence edge. "
@@ -197,12 +197,10 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "The single highest-leverage tier in the taproot lane: its verdict "
             "decides what becomes a citable evidence edge, and a `no`/`partial` "
             "is memoed rather than attached, so a weak verifier silently shapes "
-            "the corpus. Registered steerable (2026-08-21) so that tier is an "
-            "`llm.op.chase:verify` row rather than a redeploy — the intended "
-            'escalation is `{"tier": "big"}` before a bulk refine sweep. '
-            "MEDIUM stays the code default because `chase` runs continuously "
-            "and a blanket BIG would re-price the steady state, not just the "
-            "sweep."
+            "the corpus. Reto ruled on 2026-10-22 to route this plain "
+            "completion to castor's local gpt-oss lane. BIG is the capability "
+            "tier; the per-operation `llm.op.chase:verify` chain selects the "
+            "local model and resolves its endpoint through the model card."
         ),
     ),
     "taproot:reword": OpDefault(

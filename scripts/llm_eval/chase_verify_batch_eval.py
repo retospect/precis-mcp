@@ -65,7 +65,7 @@ SOURCE = "chase:verify"
 
 #: Env chain the candidate arm dispatches under (same seam medium_castor_eval
 #: uses): one rung, the rung an operator flip would write.
-CANDIDATE_CHAIN_ENV = "PRECIS_LLM_CHAIN_MEDIUM"
+CANDIDATE_CHAIN_ENV = "PRECIS_LLM_CHAIN_BIG"
 
 _OP_SQL = "SELECT value FROM app_settings WHERE key = %(key)s"
 _CARD_SQL = """
@@ -428,7 +428,7 @@ def run_group(
     endpoint: str | None,
 ) -> dict[str, Any]:
     """One group's rebuilt prompt through one arm. ``arm`` is ``candidate``
-    (Tier.MEDIUM under the env-pinned rung, ``local_url`` repoint — no slot
+    (Tier.BIG under the env-pinned rung, ``local_url`` repoint — no slot
     reservation, no bound store → no prod writes) or ``reference``
     (Tier.FRONTIER rung 0)."""
     prompt, n_items = rebuild_prompt(group["claim_block"], group["item_blocks"], cl)
@@ -438,13 +438,13 @@ def run_group(
         "max_tokens": (cl._verify_batch_max_tokens(n_items) if n_items > 1 else None),
     }
     if arm == "candidate":
-        # source=chase:verify — the registered op — so the env-pinned MEDIUM
+        # source=chase:verify — the registered op — so the env-pinned BIG
         # chain is what prod's resolve_op path lands on.
-        req = LlmRequest(tier=Tier.MEDIUM, source=SOURCE, local_url=endpoint, **kwargs)
+        req = LlmRequest(tier=Tier.BIG, source=SOURCE, local_url=endpoint, **kwargs)
     else:
         # NOT chase:verify: resolve_op force-remaps a registered source to
-        # its op tier (MEDIUM) even with no store bound, which would quietly
-        # rung the "reference" back onto medium. An unregistered source lets
+        # its op tier (BIG) even with no store bound, which would quietly
+        # rung the "reference" back onto BIG. An unregistered source lets
         # the request's own FRONTIER tier stand.
         req = LlmRequest(tier=Tier.FRONTIER, source=f"{SOURCE}-eval:ref", **kwargs)
     t0 = time.monotonic()

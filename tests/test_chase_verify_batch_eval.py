@@ -286,13 +286,13 @@ def test_end_to_end_fake_arms(
     assert s["unparseable"] == {"candidate": 0, "frontier": 0}
     # the candidate arm pinned the env chain + local_url; the reference arm
     # saw neither (env popped before it ran) and ran FRONTIER.
-    cand = [c for c in calls if c.tier == m.Tier.MEDIUM]
+    cand = [c for c in calls if c.tier == m.Tier.BIG]
     ref = [c for c in calls if c.tier == m.Tier.FRONTIER]
     assert len(cand) == len(ref) == 2
     assert all(c.local_url == "http://example.test/v1" for c in cand)
     assert all(c.source == m.SOURCE for c in cand)
     # the reference must NOT use the registered source — resolve_op would
-    # force-remap it back to MEDIUM and the arm would stop being frontier.
+    # force-remap it back to BIG and the arm would stop being frontier.
     assert all(c.source != m.SOURCE for c in ref)
     assert all(c.log_call is False for c in calls)
     assert m.CANDIDATE_CHAIN_ENV not in __import__("os").environ

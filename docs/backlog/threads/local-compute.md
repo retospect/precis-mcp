@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Reto deploys `49a-sglang.yml` on castor (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize`, `llm.chain.small`, and (Reto's call, eval below) `llm.chain.medium` — and read `/placement` after 24 h.
+- **Next:** Reto deploys `49a-sglang.yml` on castor (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize` and `llm.chain.small` — and read `/placement` after 24 h. `chase:verify` is separately routed through its local per-operation chain per Reto's 2026-10-22 ruling; the old tier-wide `llm.chain.medium` candidate is superseded.
 - **Blocked by:** Reto's deploy + settings writes (above). NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
@@ -45,7 +45,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
   gpt-oss is 6 points under the incumbent's own rerun self-agreement, with the whole gap in the fuzzy `partial` stratum (haiku self-agrees only 16/24 there). Reads: fine for summarize/small, a judgment call for medium — Reto decides, per the 2026-10-03 keep-judgment-on-Claude plan.
 
-- **chase:verify batch eval, landed 2026-10-21 (gr499038):** batch verify shipped 7c769aebd; Reto ruled at triage Q5 the op routes to castor regardless, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. Coordinator runs it after the `llm.op.chase:verify` castor row is in.
+- **chase:verify batch eval, landed 2026-10-21 (gr499038):** batch verify shipped 7c769aebd; Reto ruled on 2026-10-22 to route this plain completion to castor, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. The live op chain already points to the castor local model; a six-item fixture measured 1,177 prompt tokens/item for singles vs 2,021 total (337/item) batched, a 71.4% reduction.
 
 - **Staged settings writes (prod-psql; DO NOT apply until the sglang deploy AND this branch are live — see the max_tokens note above):**
 
@@ -60,11 +60,8 @@ Current declared activity: the `roster:` front matter above; dated allocation de
   -- revert:
   UPDATE app_settings SET value = '[{"placement":"cloud","model":"z-ai/glm-4.7-flash","transport":"openai_compat"}]' WHERE key='llm.chain.small';
 
-  -- llm.chain.medium: optional (eval above; agentic calls skip the local rung
-  -- automatically — it can't carry tools — and keep haiku)
-  UPDATE app_settings SET value = '[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_p"},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_agent"}]' WHERE key='llm.chain.medium';
-  -- revert:
-  UPDATE app_settings SET value = '[{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_p"},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_agent"}]' WHERE key='llm.chain.medium';
+  -- llm.chain.medium is unchanged: chase:verify now uses its per-operation
+  -- local chain (Reto 2026-10-22), not a tier-wide castor override.
   ```
 
   Note the melchior `glm-4.7-flash` rung stays as a local standby in the op chain: after the wait/spill fix it serves only when castor's 32 slots are saturated, keeping ~all traffic off the big Mac while preserving a local escape before cloud spend.

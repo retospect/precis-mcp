@@ -1,7 +1,7 @@
 """Default-off LLM hooks for the finding-chase worker.
 
 Split out of ``workers/chase.py`` 2026-06-05. These three functions
-are the *only* paths in ``chase`` that issue paid LLM calls:
+are the *only* paths in ``chase`` that issue LLM calls:
 
 * :func:`_verify_support_with_caveats` reads the target chunk + claim
   and records support / caveats / cited-others on the chain entry. Also
@@ -20,8 +20,10 @@ are the *only* paths in ``chase`` that issue paid LLM calls:
 
 All three activate only when the worker is invoked with
 ``with_llm=True`` (or env ``PRECIS_CHASE_LLM=1``); the deterministic
-default chase path never touches them. Cost: ~$0.05–$0.10 per
-established finding under Haiku.
+default chase path never touches them. Placement and cost follow the live
+``chase:verify`` operation chain; the call site pins neither a model nor a
+host, and its plain completion can use the local gpt-oss lane without a
+Claude agent/tool loop.
 
 Failure mode: any of these may return ``None`` (or the proposed
 input, in the ``_locate_*`` case) on LLM error; callers must
@@ -402,7 +404,7 @@ def _verify_support_with_caveats(
     )
     res = route(
         LlmRequest(
-            tier=Tier.MEDIUM,
+            tier=Tier.BIG,
             prompt=prompt,
             source="chase:verify",
             timeout_s=timeout_s,
@@ -551,7 +553,7 @@ def _verify_supports_batch(
     )
     res = route(
         LlmRequest(
-            tier=Tier.MEDIUM,
+            tier=Tier.BIG,
             prompt=prompt,
             source="chase:verify",
             max_tokens=_verify_batch_max_tokens(len(items)),
