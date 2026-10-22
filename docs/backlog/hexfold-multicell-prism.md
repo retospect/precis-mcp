@@ -131,8 +131,10 @@ directly (prototype `build.py`, `vinfo` k2 branch). Examples: A1 =
 Every `+`/`-` vertex is minted as the `k3-sp3-z` dimer chain (seam atoms
 paired along the axis, `hexfold.channel.DIMER_A` = 1.60 Å, registration
 from `sp3_seam._place_k3z`). `periods` must be even (`fit.unsolvable`
-otherwise). `prism-k3-120-z` stays as the sp2 preview row and gains WARN
-`seam.sp2_preview` pointing at the relax campaign.
+otherwise). `prism-k3-120-z` is **retired** (Reto 2026-10-22: "retire
+things that are broken"): its sp2 seams collapse in GFN2. New builds
+refuse with `seam.sp2_retired` naming `prism-k3-sp3-z` and the token
+mapping; stored blocks keep their coordinates and say so on regenerate.
 
 **F3 — `cells-k3-sp3-z`.** New feature type for multi-cell
 cross-sections:
@@ -238,8 +240,8 @@ Acceptance:
   exactly one same-seam partner at 1.60 Å (seed); each seam's ring census
   equals `straight_k3z`'s; `prism.rib.clearance` still enforced.
 - Odd `periods` refused `fit.unsolvable` before build.
-- `prism-k3-120-z` outputs unchanged apart from the new
-  `seam.sp2_preview` WARN.
+- `prism-k3-120-z` refuses new builds with `seam.sp2_retired` (one test);
+  the skills drop it from the examples.
 - GFN2 (local, periodic `++++++`, smallest even cell): dimer pairs stay at
   1.55–1.65 Å, no bond change.
 
@@ -297,9 +299,9 @@ result. Recorded means: an xtb-rung relax stored on the structure (after
 slice 7), or until then a memory or finding linked to the block that
 states method, cell, k-points, Te, fmax, energy vs reference and the bond
 change census. UFF and stick are previews and are described as such.
-Generator findings never claim stability; `cells.fold.enclosed` and
-`seam.sp2_preview` are the cases where GFN2 has contradicted or not yet
-tested the construction. The skills state this rule (§Skills).
+Generator findings never claim stability; `cells.fold.enclosed` is the
+case where GFN2 has not yet
+confirmed the construction. The skills state this rule (§Skills).
 
 The current se design blocks state UFF results only and claim no
 stability; me503663 holds the GFN2 record.
@@ -343,9 +345,7 @@ Total: about 6 builds plus the blocked slice 7.
 
 ## Open questions for Reto
 
-1. Default seam row: should `prism-k3-120-z` be retired in favour of
-   `prism-k3-sp3-z`, or kept as the sp2 preview row with a WARN (this
-   spec's choice)?
+1. ~~Retire `prism-k3-120-z`?~~ Ruled 2026-10-22: retire it (above).
 2. Is `ribs:"meet"` (slice 6) worth having, or is the `cells` form enough?
 3. Bundles: until the 4-chain wall result, is the WARN enough, or should
    `cells.fold.enclosed` be an ERROR at `rows` < 4?
