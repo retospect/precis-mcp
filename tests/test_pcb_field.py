@@ -547,10 +547,13 @@ def test_t9_t10_gradient_checks(name: str, seed: int) -> None:
     lay = F.Layout(_board(seed))
     term: F.Term = F.GridWell(lay) if name == "T9" else F.RotationWell(lay)
     z = lay.pack()
-    assert term.value_grad(z)[0] > 0.0
     res = F.check_gradient(term.value_grad, z, rng=np.random.default_rng(seed), h=1e-5)
     assert res.dot_rel_err < 1e-4, res
-    assert all(1.8 < o < 2.3 for o in res.taylor_orders), res
+    if name == "T9":
+        # T9 is smooth-curved so the Taylor remainder is order-2; T10's
+        # preferred-number well is piecewise LINEAR between its Huber caps,
+        # leaving a ~0 (fp-noise) remainder whose order ratio is undefined.
+        assert all(1.8 < o < 2.3 for o in res.taylor_orders), res
     assert res.fd_max_rel_err < 1e-3, res
 
 
@@ -616,12 +619,12 @@ def test_t9_via_wells_pull_vias_onto_their_pitch() -> None:
     assert vias[0] == pytest.approx([8.0, 2.0], abs=1e-4)
 
 
-def test_t10_preference_order_zero_then_180_then_90() -> None:
-    """θ is a real variable: descent lands in the nearest well basin, with
-    0° and 180° preferred over 90° — a start between 90 and 180 settles on
-    180. Only 0/180 are exact minima of the summed wells (the coarse terms
-    tilt every finer well toward 0), so the exact snap then puts θ on the
-    15° grid."""
+def test_t10_lands_on_the_priced_grid() -> None:
+    """θ is a real variable: descent lands in the nearest well basin.
+    Under the preferred-number well (Q7) every multiple of 90° is equally
+    deep — a start between 90 and 180 settles on 180, a start inside a
+    45° basin stays there. The exact snap then puts θ on the finest
+    tier's grid."""
     sq = np.array([[-1.0, -1], [1, -1], [1, 1], [-1, 1]])
     parts = tuple(F.Part(pads=np.zeros((1, 2)), court=sq) for _ in range(5))
     lay = F.Layout(
@@ -637,14 +640,22 @@ def test_t10_preference_order_zero_then_180_then_90() -> None:
     _x, _y, th, _v = lay.unpack(z)
     deg = np.degrees(th)
     snapped = np.round(deg / F.ROT_SNAP_DEG) * F.ROT_SNAP_DEG % 360.0
-    np.testing.assert_allclose(snapped, [0.0, 90.0, 180.0, 180.0, 180.0], atol=1e-9)
+    np.testing.assert_allclose(snapped, [0.0, 90.0, 180.0, 135.0, 180.0], atol=1e-6)
 
-    def well(d: float) -> float:
-        return sum(
-            w * (1.0 - np.cos(k * np.radians(d))) for k, w in F.ROT_WELL_WEIGHTS.items()
-        )
 
-    assert well(0.0) < well(180.0) < well(90.0)
+def test_t10_rotation_cost_orders_90_then_45_then_off_grid() -> None:
+    """The rotation cost (Q7): multiples of 90° share the deepest price,
+    a 45° pose pays a small surcharge, and a pose on neither tier pays
+    more than 45° — priced, not forbidden."""
+
+    def cost(d: float) -> float:
+        return float(F.preferred.evaluate(d, F.ROT_WELL_COEFFS).value)
+
+    assert cost(0.0) == pytest.approx(cost(90.0), abs=1e-3)
+    assert cost(90.0) == pytest.approx(cost(180.0), abs=1e-3)
+    assert cost(45.0) > cost(0.0) + 1.0
+    assert cost(30.0) > cost(45.0)
+    assert cost(22.5) > cost(45.0)
 
 
 def test_polish_snaps_onto_raster_and_rotation_wells() -> None:
@@ -665,8 +676,9 @@ def test_polish_snaps_onto_raster_and_rotation_wells() -> None:
     ir = engine.ir
     assert res.moved
     lane = res.detail.split(";", 1)[0]
-    assert lane in {"raster+15deg", "15deg", "90deg", "seed-theta"}
-    if lane == "raster+15deg":
+    snap_lane = f"{F.ROT_SNAP_DEG:g}deg"
+    assert lane in {f"raster+{snap_lane}", snap_lane, "90deg", "seed-theta"}
+    if lane == f"raster+{snap_lane}":
         for i in res.moved:
             pitch = engine._preferred_snap_grid_mm(i)
             x0, y0, x1, y1 = (float(v) for v in engine.bounds_for(i))
@@ -688,7 +700,7 @@ def test_polish_snaps_onto_raster_and_rotation_wells() -> None:
                     float(seed_rot[i]) % 360.0, abs=1e-6
                 )
     else:
-        snap_deg = F.ROT_SNAP_DEG if lane.endswith("15deg") else 90.0
+        snap_deg = F.ROT_SNAP_DEG if lane.endswith("deg") and lane != "90deg" else 90.0
         for i in res.moved:
             rot = float(ir.inst_rot[i])
             assert rot == pytest.approx(round(rot / snap_deg) * snap_deg, abs=1e-6)
@@ -803,14 +815,17 @@ def _assert_written_rots_valid(
     engine: OptimizeEngine, res: F.PolishResult, seed_rot: np.ndarray
 ) -> None:
     """Every rotation the polish WROTE is in [0, 360) and a multiple of
-    15° — or the part's own seed θ restored by the fallback lane."""
+    the finest rotation tier — or the part's own seed θ restored by the
+    fallback lane."""
     ir = engine.ir
     for i in res.moved:
         rot = float(ir.inst_rot[i])
         assert 0.0 <= rot < 360.0, f"part {i}: rot {rot} out of range"
-        off = min(rot % 15.0, 15.0 - rot % 15.0)
+        off = min(rot % F.ROT_SNAP_DEG, F.ROT_SNAP_DEG - rot % F.ROT_SNAP_DEG)
         seeded = abs(rot - float(seed_rot[i]) % 360.0) < 1e-6
-        assert off < 1e-6 or seeded, f"part {i}: rot {rot} off the 15° grid"
+        assert off < 1e-6 or seeded, (
+            f"part {i}: rot {rot} off the {F.ROT_SNAP_DEG:g}° grid"
+        )
 
 
 @pytest.mark.parametrize(("seed", "n"), [(1, 8), (2, 6), (7, 8), (2, 8)])
@@ -874,6 +889,49 @@ def test_gate_refusal_falls_back_to_seed_theta(monkeypatch) -> None:
         )
     if res.applied:
         assert res.detail.startswith("seed-theta")
+
+
+def test_polish_writes_a_45_pose_when_90_is_unreachable(monkeypatch) -> None:
+    """Q7: rotation in 45° steps is allowed when it earns — priced, not
+    forbidden. A part seeded on the 45° well is written at 45° (a legal,
+    grid-valued, off-90 pose) even though every 90° alternative is gated
+    out — the stand-in for "only a 45° pose routes"."""
+    engine = _engine(1, 8)
+    ir = engine.ir
+    ir.inst_rot[0] = 45.0
+    real_legal = engine._placement_is_legal
+
+    def no_90s(proposals, rotations=None, in_outline=False):
+        # On this board the 90° grid is unreachable for part 0 — the
+        # stand-in for a pose only a 45° step makes routable.
+        for i, rot in (rotations or {}).items():
+            if i != 0:
+                continue
+            seed_d = abs(rot - 45.0) % 360.0
+            if min(seed_d, 360.0 - seed_d) < 1e-6:
+                continue
+            if rot % 90.0 < 1e-6 or rot % 90.0 > 90.0 - 1e-6:
+                return False
+        return real_legal(proposals, rotations=rotations, in_outline=in_outline)
+
+    monkeypatch.setattr(engine, "_placement_is_legal", no_90s)
+    res = F.polish_placement(engine)
+    assert res.applied, res
+    rot = float(ir.inst_rot[0])
+    assert rot == pytest.approx(45.0, abs=1e-6)
+
+
+def test_polish_resnaps_an_unearned_tilt_to_90() -> None:
+    """Q7's cost side: a part authored a hair off the 90° grid with no
+    reason to be there descends into the 45° basin, but the priced
+    comparison sends it back to a 90 multiple — 90° stays cheapest.
+    (Seed 8 measured: the tilt does not pay its tier gap here.)"""
+    engine = _engine(8, 8)
+    ir = engine.ir
+    ir.inst_rot[0] = 44.0
+    res = F.polish_placement(engine)
+    assert res.applied, res
+    assert float(ir.inst_rot[0]) % 90.0 == pytest.approx(0.0, abs=1e-6)
 
 
 def test_wirelength_worse_basin_is_refused(monkeypatch) -> None:

@@ -123,6 +123,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   board edge), parts shelf-pack the L around it; nano bands max
   34.5 % (was 59). `_signed` batched through shapely ufuncs:
   8-seed place+route 27:48 → 20:02.
+  placer-j: Q7 rotation pricing — T10 = preferred-number well over
+  (90,45,15)° tiers (90 free, 45 priced, 15 more), stage-1 rotation
+  well switch (ROT_WELL_FROM_STAGE1) against early θ drift, tilt gate
+  folded into priced E; snap_to_preferred shares the well's grid.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
   cross-probing, shared zoom/pan module with se. **Spec slices 1–3

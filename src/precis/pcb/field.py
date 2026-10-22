@@ -16,11 +16,17 @@ gradient (numpy; no autodiff dependency). Landed terms:
 * **T6** rubber bands — decoupling-cap pad to served pin, ``d₀`` slack.
 * **T9** raster wells — ``Σ w_p (1 − cos(2πc/p))`` on part centres (own
   pitch included) and vias; ramped coarse → fine in Harden only.
-* **T10** rotation wells — ``Σ w_k (1 − cos(kθ))`` over
-  ``k ∈ {1,2,4,8,12,24}`` with k=4 dominant; θ is a real variable, snapped
-  to the nearest 15° well in Harden, and an off-90° snap survives only on
-  a measured gain (``ROT_TILT_MIN_GAIN``); the write is always a grid
-  value in [0, 360), the descended continuous θ never is (gr503694).
+* **T10** rotation wells — the preferred-number well over
+  :data:`ROT_TIERS_DEG` (one bilateral-Huber well per angle pitch, tiers
+  combined by softmin, ``precis.structsolve.preferred``): multiples of
+  90° are free, a 45° pose pays a small cost (Reto Q7 2026-10-22:
+  rotation is priced, not forbidden — "routable 45 beats unroutable 90
+  any day"). θ is a real variable, snapped to the finest
+  well grid (``ROT_SNAP_DEG``) in Harden, and an off-90° snap survives
+  only when it beats the same pose's 90° re-snap on the priced energy by
+  more than ``ROT_TILT_MIN_GAIN``;
+  the write is always a grid value in [0, 360), the descended continuous
+  θ never is (gr503694).
 * **Density** (gr503556) — ``Σ_b A_b·softplus_β(ρ_b − ρ_target)²`` over a
   bin grid, ρ deposited through a Gaussian kernel on part centres at
   ``LAMBDA_DENSITY``: the "router needs more space" spread force the
@@ -55,6 +61,8 @@ import shapely
 from scipy.optimize import minimize
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
+
+from precis.structsolve import preferred
 
 _LOG = logging.getLogger(__name__)
 _Z = np.ndarray  # packed state, shape (n_vars,)
@@ -751,36 +759,63 @@ GRID_WELL_WEIGHTS: dict[float, float] = {
     0.5: 1.0,
 }
 
-#: T10's well orders and weights (spec §Cost row T10, Decision 5): nested
-#: cosine wells ``1 − cos(kθ)`` put minima on the 360°/k grid, so the
-#: weight hierarchy encodes the preference order 0 > 180 > 90 > 45 > 30 >
-#: 15 degrees. k=4 DOMINATES (D5's "strong preference for multiples of
-#: 90", gr503694): an off-grid θ pays ~2·w₄·λ_wells before any real term
-#: is even consulted — on top of which the snap's tilt gate
-#: (:data:`ROT_TILT_MIN_GAIN`) drops a tilt unless it measurably earns.
-#: 0 > 180 > 90 survives via w₁ > w₂ on top of the shared k=4 basin.
-ROT_WELL_WEIGHTS: dict[int, float] = {
-    1: 1.0,
-    2: 0.9,
-    4: 2.0,
-    8: 0.08,
-    12: 0.05,
-    24: 0.03,
-}
+#: T10's angle tiers in degrees (Reto Q7, 2026-10-22 — "allow rotation in
+#: 45° steps any time it helps, with a rotation cost term (penalty for
+#: non-90 angles); routable 45 beats unroutable 90 any day"): one
+#: bilateral-Huber well per pitch, combined by softmin —
+#: :mod:`precis.structsolve.preferred`, the same scorer the
+#: preferred-number machinery uses for lengths. Every multiple of 90° is
+#: a deepest basin; a 45° pose pays the tier-depth difference
+#: (~κ·A·p_fine/2 ≈ 5.6 at λ_wells). The tier list is the single
+#: tunable: adding ``15.0`` re-enables a finer-priced tier (the 20-board
+#: sweep measured (90,45) at 18 applied / 0 illegal vs 16 / 2 with the
+#: 15° tier — the extra rest points let odd 30/60° tilts through without
+#: earning a route). ``default_coefficients`` derives the depths.
+ROT_TIERS_DEG: tuple[float, ...] = (90.0, 45.0)
 
-#: θ snaps to the nearest multiple of this — T10's finest well grid.
-ROT_SNAP_DEG = 15.0
+#: θ snaps to the nearest multiple of this — T10's finest well tier.
+ROT_SNAP_DEG = min(ROT_TIERS_DEG)
+
+#: The rotation cost in coefficient form — κ = 0.5 is the
+#: :func:`preferred.default_coefficients` depth rule (each coarser tier
+#: deeper by κ·A·p_finer/2), so the 45° pose pays ≈ 11.25·A·λ_wells
+#: (~1.4 at the defaults) over the free 90° basin. A = 0.25 sets the
+#: sawtooth's steepest pull (A·180/π·λ ≈ 7.2 per rad) near the retired
+#: cosine stack's max |∂E/∂θ| (Σ w_k·k ≈ 12.8 before λ) — enough to hold
+#: a seed θ against casual drift while a real clearance or wirelength
+#: pull can still buy an off-90 pose.
+ROT_WELL_COEFFS: preferred.Coefficients = preferred.default_coefficients(
+    ROT_TIERS_DEG, A=0.25
+)
+
+#: Reto Q7's open question — the early-stage θ drift: without a rotation
+#: term the λ_T4 ramp drifted rotatable parts ~−0.5…−0.7 rad into basins
+#: the snap could not recover from (no_gain rose 1→7 of 20 boards after
+#: the bounds fix). True keeps T10 on from stage 1, so θ sits on a well
+#: bottom the whole run — effectively held at its start angle until
+#: Harden, but priced rather than pinned, so a real pull can still buy a
+#: 45° pose; False restores the original schedule (wells only in
+#: Harden). One named switch so either ruling is a one-line change.
+ROT_WELL_FROM_STAGE1 = True
 
 #: A snapped θ off the 90° grid is written only when its measured final
 #: energy beats the same pose re-snapped to the nearest 90° by more than
-#: this margin (gr503694). The tilt's own well penalty (~2·w₄·λ_wells ≈ 2.6)
-#: is inside the comparison, so the constant prices ONLY the board-level
-#: gain the tilt must still show on top of that — 10.0 is ~10 mm of
-#: wirelength-equivalent energy, the "essentially all 0/90/180/270"
-#: reading of D5 (a 0.5 bar let 4-9 of 29 esp32c3 parts stay tilted).
-#: ``math.inf`` flips the output policy to 90°-grid-only — the open D5
-#: question for Reto is a one-line change either way.
+#: this margin (gr503694). The tilt's own rotation cost (T10's tier-depth
+#: gap) is already inside the comparison, so the constant prices ONLY the
+#: board-level gain the tilt must still show on top of that — 10.0 is
+#: ~10 mm of wirelength-equivalent energy, the "essentially all
+#: 0/90/180/270" reading of D5 (a 0.5 bar let 4-9 of 29 esp32c3 parts
+#: stay tilted). ``math.inf`` flips the output policy to 90°-grid-only;
+#: 0.0 leaves the rotation cost as the only bar.
 ROT_TILT_MIN_GAIN = 10.0
+
+
+def snap_rotation_deg(rot: float) -> float:
+    """θ's writable grid point nearest ``rot`` — a multiple of the finest
+    rotation tier (:data:`ROT_SNAP_DEG`), normalised to [0, 360). Shared
+    by the polish's snap and ``OptimizeEngine.snap_to_preferred`` so both
+    paths write the same grid (Q7)."""
+    return round(rot / ROT_SNAP_DEG) * ROT_SNAP_DEG % 360.0
 
 
 class SupplyTree(Term):
@@ -905,24 +940,30 @@ class GridWell(Term):
 
 
 class RotationWell(Term):
-    """T10 (slice 2): ``Σ_i Σ_k w_k (1 − cos(k θ_i))`` over
-    :data:`ROT_WELL_WEIGHTS`. Smooth and non-convex: the strong low-``k``
-    wells own the basins, the weak high-``k`` wells mark the 45/30/15°
-    likings a compromise θ settles into. No x/y gradient."""
+    """T10 (slice 2, Reto Q7 2026-10-22): ``Σ_i P(rot_i)`` — the
+    preferred-number penalty of :mod:`precis.structsolve.preferred` over
+    the angle tiers in ``coeffs`` (:data:`ROT_WELL_COEFFS` by default).
+    One bilateral-Huber well per tier pitch, combined by softmin: the
+    deepest basin is the coarsest tier's grid, so multiples of 90° are
+    free and a 45° pose pays the 45↔90 depth gap — a rotation COST, not
+    a forbidden zone. Smooth (the Huber caps
+    smooth both ends of the sawtooth, the softmin smooths tier ties) and
+    non-convex. The state θ is radians counter-clockwise; the penalty
+    reads the engine's clockwise-degree rotation. No x/y gradient."""
 
-    def __init__(self, layout: Layout, weights: Mapping[int, float] | None = None):
+    def __init__(self, layout: Layout, coeffs: preferred.Coefficients | None = None):
         super().__init__(layout)
-        self.weights = dict(ROT_WELL_WEIGHTS if weights is None else weights)
+        self.coeffs = ROT_WELL_COEFFS if coeffs is None else coeffs
 
     def value_grad(self, z: _Z) -> tuple[float, _Z]:
         lay = self.layout
         x, _y, th, _v = lay.unpack(z)
-        gth = np.zeros_like(th)
-        total = 0.0
-        for k, w in self.weights.items():
-            total += w * float((1.0 - np.cos(k * th)).sum())
-            gth += w * k * np.sin(k * th)
-        return total, lay.scatter(np.zeros_like(x), np.zeros_like(x), gth)
+        res = preferred.evaluate(-np.degrees(th), self.coeffs)
+        # d(rot_deg)/dθ = −180/π — chain the degree gradient back to rad.
+        gth = -np.asarray(res.grad) * (180.0 / math.pi)
+        return float(np.sum(res.value)), lay.scatter(
+            np.zeros_like(x), np.zeros_like(x), gth
+        )
 
 
 # ── slice 2: JLCPCB pairwise SMD spacing ─────────────────────────────────
@@ -1368,7 +1409,7 @@ def resolve_tilts(
     th0: np.ndarray,
     min_gain: float = ROT_TILT_MIN_GAIN,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """k=4 dominance (spec D5): a snapped θ off the 90° grid survives
+    """90° preferred (spec D5, Q7): a snapped θ off the 90° grid survives
     only when its measured energy beats the same pose re-snapped to the
     nearest 90° by more than ``min_gain``. Greedy, per part, in index
     order. ``energy_of(ths)`` prices the pose with those θ (x, y held);
@@ -1418,16 +1459,19 @@ def polish_placement(
     lambda_density: float = LAMBDA_DENSITY,
 ) -> PolishResult:
     """Descend x, y, θ on T1 + T4 + T5 + T6 + the D14 tree + bin density
-    with a λ_T4 ramp, then a Harden
-    stage with the wells on (T9's coarsest raster first, then its full
-    pitch set; T10 throughout — spec §Schedule 3, "wells off" in Spread),
-    and try the exact snap in a fallback cascade: x, y onto each part's own
-    raster + θ onto the nearest 15° well, then θ-only, then the old 90°
-    snap, then the descended x, y at each part's SEED θ — the continuous
-    descended θ is never written (gr503694); every written rotation is
-    normalised to [0, 360). On the 15° lanes an off-90° θ survives only
-    when its measured E beats the 90° re-snap by ``ROT_TILT_MIN_GAIN``
-    (D5's strong 90° preference). The first pose accepted commits — accept
+    with a λ_T4 ramp (T10's rotation well joins from stage 1 while
+    :data:`ROT_WELL_FROM_STAGE1` holds — Q7's drift question), then a
+    Harden stage with the wells on (T9's coarsest raster first, then its
+    full pitch set; T10 throughout — spec §Schedule 3, "wells off" in
+    Spread), and try the exact snap in a fallback cascade: x, y onto each
+    part's own raster + θ onto the nearest well grid point
+    (:data:`ROT_SNAP_DEG`), then θ-only, then the old 90° snap, then the
+    descended x, y at each part's SEED θ — the continuous descended θ is
+    never written (gr503694); every written rotation is normalised to
+    [0, 360). On the finest-grid lanes an off-90° θ survives only when
+    its measured E, rotation cost included, beats the 90° re-snap by
+    ``ROT_TILT_MIN_GAIN`` (Q7: priced, not forbidden). The first pose
+    accepted commits — accept
     requires (a) lower E at the final weights, (b) the wirelength terms
     (T1 + supply tree) not worse than the seed beyond
     ``POLISH_WIRELENGTH_WORSEN``, (c) ``_placement_is_legal``
@@ -1442,7 +1486,7 @@ def polish_placement(
     field's own energy). Otherwise the board is left exactly as it was.
 
     When every lane fails the legality gate, one bounded repair descent
-    runs before the refuse: θ pinned at the raster+15° snap's wells,
+    runs before the refuse: θ pinned at the raster+finest-grid snap's wells,
     x/y re-descended at ``REPAIR_LAMBDA_T4`` capped by ``repair_iter`` —
     repair over refuse, the contract the signature's ``repair_iter``
     has always named. The stages' cost is bounded by
@@ -1600,8 +1644,13 @@ def polish_placement(
         return res.x
 
     z = z0.copy()
+    # ROT_WELL_FROM_STAGE1 (Q7's drift question): with the rotation well
+    # on through the ramp, θ starts on a well bottom and stays there —
+    # held at its start angle until Harden, but priced rather than pinned
+    # (a strong enough real pull can still buy an off-90 pose).
+    ramp_wells: tuple[Term, ...] = (t10,) if ROT_WELL_FROM_STAGE1 else ()
     for l4 in lambda_t4:
-        z = descend(energy(l4).value_grad, z)
+        z = descend(energy(l4, ramp_wells).value_grad, z)
     # Harden: wells come on after the λ_T4 ramp — T9's coarsest pitch
     # alone first (a fine well's basin could otherwise hold a part between
     # coarse multiples), then the full raster set.
@@ -1679,8 +1728,8 @@ def polish_placement(
     refused: tuple[int, ...] = ()
     detail = ""
     lanes = {
-        (True, ROT_SNAP_DEG): "raster+15deg",
-        (False, ROT_SNAP_DEG): "15deg",
+        (True, ROT_SNAP_DEG): f"raster+{ROT_SNAP_DEG:g}deg",
+        (False, ROT_SNAP_DEG): f"{ROT_SNAP_DEG:g}deg",
         (False, 90.0): "90deg",
         (False, None): "seed-theta",
     }
@@ -1862,7 +1911,7 @@ def polish_placement(
 
     def _repair() -> PolishResult | None:
         """The bounded repair descent ``repair_iter`` has always named
-        (the stage the lane cascade dropped): θ pinned at the raster+15°
+        (the stage the lane cascade dropped): θ pinned at the raster+finest-grid
         snap's wells, x/y re-descend at :data:`REPAIR_LAMBDA_T4` to
         re-open the gaps the descent or the snap closed, then the same
         accept gates. A pose it cannot make legal is the same refuse the

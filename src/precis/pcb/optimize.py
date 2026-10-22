@@ -172,7 +172,7 @@ transcribe. :meth:`OptimizeEngine.snap_to_preferred` is a deterministic
 post-anneal cleanup — strictly after :meth:`snap_hard_aligns` (hard
 aligns win) and after the cosmetic outline recentre — that rounds each
 non-frozen part's centre onto a grid scaled to the part and its rotation
-onto the nearest 90°, every candidate gated by the same
+onto the nearest rotation-well grid point, every candidate gated by the same
 :meth:`_placement_is_legal` a generated move takes. The grid is the
 part's own pin pitch when that exceeds 1 mm (connectors and headers land
 on the round pitch their pins already carry — 2.54, 1.27, a JST's own
@@ -3512,7 +3512,8 @@ class OptimizeEngine:
 
         Rounds every non-frozen part's centre onto the part-scaled grid of
         :meth:`_preferred_snap_grid_mm` and its rotation onto the nearest
-        90°, both gated by :meth:`_placement_is_legal` (the same courtyard
+        rotation-well grid point (:func:`precis.pcb.field.snap_rotation_deg`),
+        both gated by :meth:`_placement_is_legal` (the same courtyard
         / mounting-hole / authored-via / outline / soft-pin-bounds check a
         generated move takes) — a snap the gate refuses leaves the
         unsnapped pose. Runs AFTER :meth:`snap_hard_aligns` and skips any
@@ -3592,9 +3593,13 @@ class OptimizeEngine:
                     }
             # Rotation: only an ungrouped, rotation-free part (a soft pin
             # already holds it; a group member's spin would break the
-            # rigid body).
+            # rigid body). The grid is the rotation well's finest tier —
+            # the same ``snap_rotation_deg`` the field polish writes
+            # (Q7: one well, one grid).
             if len(members) == 1 and inst in self._movable_rot:
-                snapped_rot = round(rot / 90.0) * 90.0 % 360.0
+                from precis.pcb.field import snap_rotation_deg
+
+                snapped_rot = snap_rotation_deg(rot)
                 if abs(snapped_rot - (rot % 360.0)) > 1e-9:
                     x_now, y_now = float(ir.inst_x[inst]), float(ir.inst_y[inst])
                     if self._placement_is_legal(

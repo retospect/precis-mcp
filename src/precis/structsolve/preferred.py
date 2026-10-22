@@ -184,17 +184,19 @@ def evaluate(m: npt.ArrayLike, coeffs: Coefficients) -> PreferredResult:
     )
 
 
-def default_coefficients(tiers: Sequence[float], *, kappa: float = 0.5) -> Coefficients:
+def default_coefficients(
+    tiers: Sequence[float], *, kappa: float = 0.5, A: float = 1.0
+) -> Coefficients:
     """Coefficients-as-rules (method doc §4 table): ``eps =
     1e-4·min(tiers)``; ``beta = 1/(A·eps)`` so the softmin transition
     over an energy difference of ``A·eps`` is ~1 unit of exponent
     (blend width = eps, matching the well smoothing); finest tier
     ``B = 0``, each coarser tier deeper by ``kappa·A·p_fine/2`` —
-    the survival criterion applied as the definition. ``A = 1``
-    unscaled; :func:`scale_A` applies the ρ* rule at use time."""
+    the survival criterion applied as the definition. ``A`` defaults
+    to 1 (unscaled); callers that need a sized well pass it directly,
+    or :func:`scale_A` applies the ρ* rule at use time."""
     ts = tuple(float(p) for p in tiers)
     order = np.argsort(ts)[::-1]  # coarse first
-    A = 1.0
     eps = 1e-4 * min(ts)
     beta = 1.0 / (A * eps)
     b_sorted = np.zeros(len(ts))

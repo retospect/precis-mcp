@@ -486,6 +486,19 @@ fired phantom pad-vs-pad hits against the part's own pins.
 rect/obround outline by the recorded total rotation; the rotated
 multi-pad-part regression lives in `test_pcb_drc.py`.
 
+Landed (placer-j, 2026-10-22): Reto Q7 — rotation is priced, not
+forced. T10 is the structsolve preferred-number well over angle tiers
+(90, 45)° (`field.ROT_WELL_COEFFS`, A = 0.25 to match the retired
+cosine stack's steepest pull): multiples of 90° are free, a 45° pose
+pays the 45↔90 tier-depth gap (~1.4 at λ_wells). The tilt gate's
+margin folded into the priced comparison (`_resolve_tilts`), the polish
+snap and `snap_to_preferred` share `field.snap_rotation_deg`'s
+finest-tier grid, and `ROT_WELL_FROM_STAGE1` holds θ near its start
+through the λ_T4 ramp (the early-drift question — the named switch for
+either ruling). The optional third (15°) tier measured worse on the
+20-board sweep (16 applied / 2 illegal vs 18 / 0) and let unpriced
+30/60° tilts through, so the write grid is 45°.
+
 ## Decisions (Reto 2026-10-18)
 
 Numbers 1–10 answer the former open questions; D11–D16 were approved after.
