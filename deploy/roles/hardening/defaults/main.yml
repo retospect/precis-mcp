@@ -187,3 +187,9 @@ host_memory_guard_units: []
 # identifier `memsnap` (`journalctl -t memsnap`; needs a persistent journal).
 memsnap_enabled: false
 memsnap_interval_min: 10
+
+# ── macOS nightly update + reboot ──
+# Off = the 03:00 cron is removed (script still deployed). Off on the DB node:
+# softwareupdate cannot install unattended on Apple silicon, so the reboot is
+# all cost.
+hardening_macos_nightly_reboot: true

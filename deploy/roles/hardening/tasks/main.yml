@@ -158,10 +158,13 @@
   become: true
   tags: [hardening, security, reboot_script]
 
+# On a host with hardening_macos_nightly_reboot off, tailscale is upgraded in
+# the planned maintenance window instead (this script is its only other path).
 - name: Schedule daily 3 AM update + reboot (macOS)
   when: os_family == "darwin"
   ansible.builtin.cron:
     name: "daily 3am update and reboot"
+    state: "{{ 'present' if hardening_macos_nightly_reboot | bool else 'absent' }}"
     minute: "0"
     hour: "3"
     job: "/usr/local/bin/daily-update-reboot.sh"

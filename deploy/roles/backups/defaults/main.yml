@@ -11,8 +11,9 @@
 # (2026-09-08: a /go at 03:22 UTC hung 17+ min with a silent log). See
 # docs/runbooks/migration-deploy-window.md.
 #
-# The DB node reboots at 03:00 UTC (daily-update-reboot root cron), the dump
-# starts 30 min later and runs ~48 min (03:30 → ~04:18 UTC, very stable), so
+# The nightly 03:00 UTC macOS reboot (daily-update-reboot root cron) is
+# optional per host (hardening_macos_nightly_reboot; off on the DB node). The
+# 03:30 dump time stays as-is either way. It starts 30 min after that slot and runs ~48 min (03:30 → ~04:18 UTC, very stable), so
 # the window closes at 04:20 UTC. tests/test_deploy_backup_window.py asserts
 # the cron slot falls inside the window.
 pg_backup_cron_hour: "3"

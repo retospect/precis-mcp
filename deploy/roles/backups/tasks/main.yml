@@ -78,10 +78,11 @@
     owner: "{{ pg_user }}"
   become: true
 
-# 03:30, not earlier: the DB node's daily-update-reboot root cron drains
-# Postgres and reboots at 03:00 UTC. Running the dump 30 min after gives the
-# DB time to come back and lets the backup grow toward a ~23 h budget before
-# the next reboot, instead of the old 02:00 slot's hard 60-min ceiling.
+# 03:30, kept as-is: where enabled (hardening_macos_nightly_reboot, optional
+# per host), the daily-update-reboot root cron drains Postgres and reboots at
+# 03:00 UTC. Running the dump 30 min after gives the DB time to come back and
+# lets the backup grow toward a ~23 h budget before the next reboot, instead
+# of the old 02:00 slot's hard 60-min ceiling.
 # The slot and the deploy no-go window it implies are both in
 # defaults/main.yml — change them there, together.
 - name: Schedule nightly pg_dump via cron
