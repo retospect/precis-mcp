@@ -227,8 +227,11 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
      harvest/stamp; no rule-out yet) and the R15 contribs fix are on main
      since 2026-10-07 (folded in from the Codex branch). The one
      production proof job runs after a deploy carries them; job 468292
-     (died on the contribs client) stays as the before-record. Rule-out,
-     lift and the leached proposal are the next slice. qu202468's
+     (died on the contribs client) stays as the before-record. Rule-out
+     and lift landed 2026-10-21 (`ruled-out:pourbaix-dissolved` on a
+     windowed dissolved-everywhere host verdict, lifted on a clean
+     re-verdict); the leached proposal, leaderboard flags and tick prose
+     are the next slice. qu202468's
      operating point is set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10.
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
    named; blocked by 1 and 2 because a window over an incomplete network

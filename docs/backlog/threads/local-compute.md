@@ -45,6 +45,8 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
   gpt-oss is 6 points under the incumbent's own rerun self-agreement, with the whole gap in the fuzzy `partial` stratum (haiku self-agrees only 16/24 there). Reads: fine for summarize/small, a judgment call for medium — Reto decides, per the 2026-10-03 keep-judgment-on-Claude plan.
 
+- **chase:verify batch eval, landed 2026-10-21 (gr499038):** batch verify shipped 7c769aebd; Reto ruled at triage Q5 the op routes to castor regardless, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. Coordinator runs it after the `llm.op.chase:verify` castor row is in.
+
 - **Staged settings writes (prod-psql; DO NOT apply until the sglang deploy AND this branch are live — see the max_tokens note above):**
 
   ```sql

@@ -58,6 +58,11 @@ one production proof job succeeds on a deploy that carries this code.
 
 ## Rule-out / lift slice (ready 2026-10-21)
 
+**Landed 2026-10-21:** items 1–4 built (rule-input stamps, the
+`ruled-out:pourbaix-dissolved` tag + `dead-end` entry, the lift `note`
+citing both bases) with their acceptance tests in
+`tests/test_quest_pourbaix.py`.
+
 `status: ready` covers this slice only. The rest of In scope items 4–5
 (the `leached` candidate proposal, the flags in the leaderboard, the tick
 prose) and the last acceptance bullet (qu202468 on prod) stay follow-ups.

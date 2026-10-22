@@ -12,7 +12,7 @@ from precis.errors import BadInput
 from precis.handlers.quest import QuestHandler, _check_operating_conditions
 from precis.quest import pourbaix as pourbaix_mod
 from precis.quest.frontier import _META_NON_MEASURE
-from precis.quest.pourbaix import _request
+from precis.quest.pourbaix import RULED_OUT_TAG, _request
 
 
 class TestOperatingConditions:
@@ -156,6 +156,7 @@ def test_harvest_stamps_successful_matching_verdict(monkeypatch: Any) -> None:
             ref_id: rows[ref_id] for ref_id in ids if ref_id in rows
         },
         stamp_ref_meta=lambda ref_id, meta: stamps.append((ref_id, meta)),
+        tags_for=lambda *_: [],
     )
     built = _request(quest.meta, candidate)
     assert built is not None
@@ -186,6 +187,246 @@ def test_pourbaix_evidence_is_not_a_pareto_measure() -> None:
         "pourbaix_worst_in_window",
         "pourbaix_dG_eV_atom",
         "pourbaix_domain",
+        "pourbaix_dissolved_everywhere",
+        "pourbaix_verdict_source",
         "pourbaix_basis",
         "pourbaix_job_id",
     } <= _META_NON_MEASURE
+
+
+# ── rule-out / lift gate ────────────────────────────────────────────────
+
+_WINDOW = {"U_RHE": [-0.4, 0], "pH": [7, 10]}
+
+
+class _GateStore:
+    """Minimal store double for the harvest gate: rows, stamps, tags."""
+
+    def __init__(self, rows: dict[int, Any], tags: set[str] | None = None) -> None:
+        self.rows = rows
+        self.tags = set(tags or set())
+        self.stamps: list[dict[str, Any]] = []
+
+    def fetch_refs_by_ids(self, ids: Any) -> dict[int, Any]:
+        return {i: self.rows[i] for i in ids if i in self.rows}
+
+    def stamp_ref_meta(self, _ref_id: int, meta: dict[str, Any]) -> None:
+        self.stamps.append(meta)
+
+    def tags_for(self, _ref_id: int) -> list[str]:
+        return sorted(self.tags)
+
+    def add_tag(self, _ref_id: int, tag: Any, **_kw: Any) -> None:
+        self.tags.add(str(tag))
+
+    def remove_tag(self, _ref_id: int, tag: Any, **_kw: Any) -> bool:
+        self.tags.discard(str(tag))
+        return True
+
+
+def _windowed_quest() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=9,
+        meta={
+            "operating_conditions": {
+                "U_RHE": -0.2,
+                "pH": 7,
+                "ion_conc_M": 1e-6,
+                "window": dict(_WINDOW),
+            }
+        },
+    )
+
+
+def _verdict(
+    point_verdict: str,
+    *,
+    everywhere: bool,
+    source: str = "host_phase",
+    window: Any = ...,
+    dopants: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    win = dict(_WINDOW) if window is ... else window
+    return {
+        "point": {"verdict": point_verdict, "U_RHE": -0.2, "pH": 7},
+        "worst_in_window": point_verdict,
+        "dissolved_everywhere": everywhere,
+        "verdict_source": source,
+        "dG_pbx_eV_atom": 0.4,
+        "domain": [{"label": "Cu2+"}],
+        "dopants": dopants or [],
+        "basis": {
+            "U_RHE": -0.2,
+            "pH": 7,
+            "ion_conc_M": 1e-6,
+            "window": win,
+            "mp_version": "v1",
+        },
+    }
+
+
+def _harvest(
+    monkeypatch: Any,
+    store: _GateStore,
+    candidate: Any,
+    *,
+    job_id: int = 71,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    entries: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "precis.quest.compute._find_job_by_idem_key", lambda *_: (job_id, "succeeded")
+    )
+    monkeypatch.setattr(
+        "precis.quest.logbook.append_entry", lambda *_a, **kw: entries.append(kw)
+    )
+    monkeypatch.setattr("precis.utils.handle_registry.try_format", lambda *_: "st42")
+    note = pourbaix_mod.harvest_pourbaix_candidate(store, 9, candidate)
+    return note, entries
+
+
+def test_rule_out_when_dissolved_across_window(monkeypatch: Any) -> None:
+    quest = _windowed_quest()
+    candidate = SimpleNamespace(id=42, title="Cu slab", meta={"geom_hash_c": "g"})
+    store = _GateStore(
+        {
+            9: quest,
+            71: SimpleNamespace(
+                meta={"verdict": _verdict("dissolved", everywhere=True)}
+            ),
+        }
+    )
+
+    note, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == {RULED_OUT_TAG}
+    assert store.stamps[0]["pourbaix_dissolved_everywhere"] is True
+    assert store.stamps[0]["pourbaix_verdict_source"] == "host_phase"
+    dead_ends = [e for e in entries if e["entry_type"] == "dead-end"]
+    assert len(dead_ends) == 1
+    assert "[st42]" in dead_ends[0]["text"] and "window" in dead_ends[0]["text"]
+    assert note is not None and "ruled-out [st42]" in note
+
+
+def test_dissolved_at_point_only_is_not_ruled_out(monkeypatch: Any) -> None:
+    quest = _windowed_quest()
+    candidate = SimpleNamespace(id=43, title="Ag slab", meta={"geom_hash_c": "h"})
+    store = _GateStore(
+        {
+            9: quest,
+            71: SimpleNamespace(
+                meta={"verdict": _verdict("dissolved", everywhere=False)}
+            ),
+        }
+    )
+
+    _, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == set()
+    assert not any(e["entry_type"] == "dead-end" for e in entries)
+
+
+def test_lift_removes_tag_with_basis_note(monkeypatch: Any) -> None:
+    new_window = {"U_RHE": [-0.1, 0], "pH": [7, 9]}
+    quest = SimpleNamespace(
+        id=9,
+        meta={
+            "operating_conditions": {
+                "U_RHE": -0.2,
+                "pH": 7,
+                "ion_conc_M": 1e-6,
+                "window": dict(new_window),
+            }
+        },
+    )
+    candidate = SimpleNamespace(
+        id=42,
+        title="Cu slab",
+        meta={
+            "geom_hash_c": "g",
+            "pourbaix_job_id": 70,
+            "pourbaix_basis": {
+                "U_RHE": -0.2,
+                "pH": 7,
+                "ion_conc_M": 1e-6,
+                "window": dict(_WINDOW),
+            },
+        },
+    )
+    job = SimpleNamespace(
+        meta={"verdict": _verdict("stable", everywhere=False, window=new_window)}
+    )
+    store = _GateStore({9: quest, 71: job}, tags={RULED_OUT_TAG})
+
+    _, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == set()
+    notes = [e for e in entries if e["entry_type"] == "note"]
+    assert len(notes) == 1
+    assert "[-0.4, 0]" in notes[0]["text"] and "[-0.1, 0]" in notes[0]["text"]
+
+
+def test_repeat_dissolved_verdict_is_a_noop(monkeypatch: Any) -> None:
+    quest = _windowed_quest()
+    candidate = SimpleNamespace(
+        id=42,
+        title="Cu slab",
+        meta={"geom_hash_c": "g", "pourbaix_job_id": 70},
+    )
+    store = _GateStore(
+        {
+            9: quest,
+            71: SimpleNamespace(
+                meta={"verdict": _verdict("dissolved", everywhere=True)}
+            ),
+        },
+        tags={RULED_OUT_TAG},
+    )
+
+    _, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == {RULED_OUT_TAG}
+    assert not any(e["entry_type"] == "dead-end" for e in entries)
+
+
+def test_dopant_elemental_verdict_never_rules_out(monkeypatch: Any) -> None:
+    quest = _windowed_quest()
+    candidate = SimpleNamespace(id=42, title="Cu:Co slab", meta={"geom_hash_c": "g"})
+    job = SimpleNamespace(
+        meta={
+            "verdict": _verdict(
+                "stable",
+                everywhere=False,
+                dopants=[
+                    {
+                        "element": "Co",
+                        "verdict_source": "elemental",
+                        "verdict": "dissolved",
+                        "dissolved_everywhere": True,
+                    }
+                ],
+            )
+        }
+    )
+    store = _GateStore({9: quest, 71: job})
+
+    _, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == set()
+    assert not any(e["entry_type"] == "dead-end" for e in entries)
+
+
+def test_no_window_never_rules_out(monkeypatch: Any) -> None:
+    quest = SimpleNamespace(
+        id=9,
+        meta={"operating_conditions": {"U_RHE": -0.2, "pH": 7, "ion_conc_M": 1e-6}},
+    )
+    candidate = SimpleNamespace(id=42, title="Cu slab", meta={"geom_hash_c": "g"})
+    job = SimpleNamespace(
+        meta={"verdict": _verdict("dissolved", everywhere=True, window=None)}
+    )
+    store = _GateStore({9: quest, 71: job})
+
+    _, entries = _harvest(monkeypatch, store, candidate)
+
+    assert store.tags == set()
+    assert not any(e["entry_type"] == "dead-end" for e in entries)

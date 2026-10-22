@@ -1313,12 +1313,14 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "barrier_wrong_site",
         "adsorption_barrier",
         "barrier_screen",
-        # Bulk Pourbaix results are diagnostic evidence until a separate
-        # quest-gate slice defines how verdicts affect candidate eligibility.
+        # Bulk Pourbaix stamps (quest.pourbaix.harvest_pourbaix_candidate)
+        # feed the ruled-out:pourbaix-dissolved gate, never Pareto axes.
         "pourbaix_verdict",
         "pourbaix_worst_in_window",
         "pourbaix_dG_eV_atom",
         "pourbaix_domain",
+        "pourbaix_dissolved_everywhere",
+        "pourbaix_verdict_source",
         "pourbaix_basis",
         "pourbaix_job_id",
         # dicts stamped at harvest (:func:`precis.quest.compute._network_basis`

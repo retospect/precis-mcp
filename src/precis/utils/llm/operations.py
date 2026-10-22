@@ -205,6 +205,17 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "sweep."
         ),
     ),
+    "taproot:reword": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Taproot reword sweep",
+        description=(
+            "`propose_reword` — the per-claim rewrite proposal inside the "
+            "`precis taproot reword-sweep` batch job. MEDIUM mirrors the call "
+            "site's literal, so default behaviour is unchanged; the prod "
+            "`llm.op.taproot:reword` row will pin it for the sweep."
+        ),
+    ),
     "survey_extract": OpDefault(
         tier=Tier.BIG,
         model=None,
