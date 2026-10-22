@@ -346,7 +346,9 @@ Total: about 6 builds plus the blocked slice 7.
 ## Open questions for Reto
 
 1. ~~Retire `prism-k3-120-z`?~~ Ruled 2026-10-22: retire it (above).
-2. Is `ribs:"meet"` (slice 6) worth having, or is the `cells` form enough?
-3. Bundles: until the 4-chain wall result, is the WARN enough, or should
-   `cells.fold.enclosed` be an ERROR at `rows` < 4?
-4. Should cells carry fins or pores in v2, or is the honeycomb wall-only?
+2. ~~`ribs:"meet"`?~~ Ruled 2026-10-22: drop slice 6; the `cells` form builds
+   the tri-tube (one way to build a structure, not two).
+3. ~~Bundle notch ERROR?~~ Ruled 2026-10-22: WARN until the 4-chain wall
+   GFN2 result; then ERROR if wider walls also rupture, rule removed if they hold.
+4. ~~Fins/pores in cells?~~ Ruled 2026-10-22: later, as vocabulary additions,
+   once the bundle result is in.

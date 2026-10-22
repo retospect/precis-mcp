@@ -159,6 +159,24 @@ Acceptance thresholds, read after seven days of D4:
 - **Dedup of non-MCP tools** (`Read` has its own hook, gr499044; Bash
   output is gr499039's fold).
 
+## Reto 2026-10-22 review (his ideas; the last bullet is a recommendation awaiting his call)
+
+- **A hash is enough.** The map stays `body_sha → entry` plus a second
+  `handle → last body_sha`; the repeat check is one set lookup.
+- **Say "supersedes".** When a handle comes back with a different sha, the
+  full body is prefixed with one line: `supersedes the copy from call #12
+  (sha 1a2b3c4d)`, so the agent does not merge two versions.
+- **Invalidate by timestamp.** Any reset signal (compaction hook, a detected
+  or suspected tool-result clear, `args={'fresh': True}` on any call, or an
+  explicit `seen reset`) drops every entry sent before that moment, not just
+  one entry. The rolling window is the same rule applied continuously.
+- **Recommended: self-describing marker, no mnemonic.** The marker always states what it
+  is in plain words (as above), and names the skill once per window
+  (`skill:precis-seen-help`). Reto floated: a verbose first
+  explanation then a short tag, and a rare-token mnemonic such as `緩存` found
+  via the skills. Recommendation against: both fail exactly when the agent has forgotten the first explanation, while
+  the plain marker costs ~15 tokens against bodies of hundreds.
+
 ## Open questions for Reto
 
 1. **Fallback if S10.0 shows `updatedInput` does not reach MCP tools.**
