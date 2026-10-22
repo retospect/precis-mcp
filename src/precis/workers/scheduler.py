@@ -263,7 +263,10 @@ def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
     ``_run_doctor_tick_mint``: host-agnostic cadence (the lease is the
     fleet-singleton throttle), ``meta.idem_key='garden:<date>'`` is the
     per-day dedup, and the minted job drains under the ``job_inproc``
-    executor like every other bounded in-proc job.
+    executor like every other bounded in-proc job. The cadence is an
+    hourly check tick, not the run clock (gr503581): when the day's job
+    carries STATUS:failed the mint adds one ``garden:<date>:retry`` job —
+    a failed run costs an hour, not a day.
 
     Two gates inside :func:`precis.graph.garden.service.mint_job` keep a
     dark service free: the ``graph_garden`` service_config row lights it
@@ -907,13 +910,17 @@ CADENCES: tuple[Cadence, ...] = (
     ),
     # the closed graph-gardener spec: the graph gardener's daily mint.
     # Host-agnostic like doctor_tick — the lease is the fleet-singleton
-    # throttle and the idem_key the per-day dedup. Off the exact day
-    # boundary (+59m) so it doesn't pile onto the nanopub/catalog fires.
-    # No `eligible` check: the mint itself is dark-gated on the
-    # graph_garden service_config row, so an unset fleet just no-ops.
+    # throttle and the idem_key the per-day dedup. The interval is a ~1h
+    # *check tick*, not the run clock (gr503581, same shape as
+    # structural/deep_review): mint_job re-reads the day's job each fire,
+    # so a failed run gets its one bounded retry on the next tick — under
+    # ~1h — instead of waiting a full cadence. Off the exact hour (+7m)
+    # so it doesn't pile onto the hourly ticks above. No `eligible`
+    # check: the mint itself is dark-gated on the graph_garden
+    # service_config row, so an unset fleet just no-ops.
     Cadence(
         name="graph_garden",
-        interval_s=24 * 3600 + 59 * 60,
+        interval_s=3600 + 7 * 60,
         run=_run_graph_garden_mint,
     ),
     # gr484070: mine the tool_calls ledger for rejected-before-work call

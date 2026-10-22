@@ -48,11 +48,14 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector
 subset (``merge|split|relink|prune|tag-sweep|siblings|all``), ``limit``
-bounds candidates scanned, ``max_proposals`` bounds writes. The
-``graph_garden`` scheduler cadence mints at most one job per UTC day
-(``meta.idem_key='garden:<date>'``), and only while the
-``graph_garden`` service_config row is lit — dark by default
-(:func:`precis.graph.garden.service.graph_garden_enabled`). After
+bounds candidates scanned, ``max_proposals`` bounds writes, and each
+detector runs under a wall-clock deadline that skips it rather than
+zeroing the tick (gr503580). The ``graph_garden`` scheduler cadence is
+an hourly *check tick*: :func:`precis.graph.garden.service.mint_job`
+mints at most one job per UTC day (``meta.idem_key='garden:<date>'``),
+plus one ``garden:<date>:retry`` when the day's job failed (gr503581),
+and only while the ``graph_garden`` service_config row is lit — dark by
+default (:func:`precis.graph.garden.service.graph_garden_enabled`). After
 ``dry_rest_escalate`` consecutive empty runs the mint backs off to the
 cooldown interval instead of minting daily forever.
 

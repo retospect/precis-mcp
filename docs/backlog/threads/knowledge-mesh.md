@@ -81,6 +81,11 @@ graph-health-metrics, five parked gripes, and the seam with
   door behind `precis garden`, AC 1–6 green on dev-DB fixtures
   (`tests/test_garden.py`). Open in the item: `links.meta.agentlog_id`
   stamping and non-merge apply paths.
+- **gr503580 built (2026-10-22, worktree `garden-timeout`):** the
+  `untagged` detector's per-row seeded count timed out the first prod
+  run (jo503579, 0 proposals); counts are a one-shot CTE now (75 ms on
+  prod, was 120 s+), each detector runs under a 60 s deadline with
+  skip-and-continue, and the job summary names skipped detectors.
 
 ## Do next
 

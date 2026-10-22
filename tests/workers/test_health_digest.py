@@ -284,6 +284,55 @@ def test_cadence_with_fresh_lease_is_not_flagged_never_seeded(
     assert hit.status == "ok"
 
 
+# ── job-backed cadences: on-schedule lease + failed run goes red (gr503581)
+
+
+def _seed_garden_job(store, status: str) -> int:
+    """A ``kind='job'`` ref with ``meta.job_type='graph_garden'`` and a
+    STATUS tag — what the mint + executor write."""
+    rid = seed_ref(store, title="garden job", kind="job")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+            (json.dumps({"job_type": "graph_garden"}), rid),
+        )
+        conn.commit()
+    store.add_tag(rid, Tag.closed("STATUS", status), set_by="system")
+    return rid
+
+
+def test_job_backed_cadence_red_when_last_run_failed(store) -> None:
+    """gr503581: a fresh lease only proves the mint fired — a newest job
+    carrying STATUS:failed still reads stale (jo503579 stayed green a
+    whole day on the lease alone)."""
+    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
+    _seed_garden_job(store, "failed")
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "graph_garden")
+    assert hit.status == "stale"
+    assert "STATUS:failed" in hit.detail
+
+
+def test_job_backed_cadence_green_when_last_run_succeeded(store) -> None:
+    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
+    _seed_garden_job(store, "succeeded")
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "graph_garden")
+    assert hit.status == "ok"
+
+
+def test_job_backed_cadence_green_while_retry_queued(store) -> None:
+    """The bounded retry minted after the failure is the newest job —
+    queued, not failed — so the watchdog is green while the response is
+    already in flight."""
+    _seed_lease(store, "graph_garden", interval_s=4020, overdue_s=60)
+    _seed_garden_job(store, "failed")
+    _seed_garden_job(store, "queued")
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "graph_garden")
+    assert hit.status == "ok"
+
+
 # ── (b) idle-vs-stuck for the embed backlog check ───────────────────────
 
 

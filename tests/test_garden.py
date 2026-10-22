@@ -10,9 +10,12 @@ driven through a stub context with a monkeypatched proposer.
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from psycopg.errors import QueryCanceled
 
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound
@@ -508,6 +511,123 @@ class TestProposalsOnly:
         assert prop2.current is False
 
 
+# ── gr503580: bounded detectors — scan_cap + per-detector skip ──────────
+
+
+class TestDetectorBounds:
+    def test_untagged_honours_scan_cap(self, store: Store) -> None:
+        """``scan_cap`` bounds the refs inspected, oldest-first: the seeder
+        plus the first two untagged findings — never all four."""
+        seeded = _ref(store, "finding", "tagged finding")
+        store.add_tag(seeded, Tag.closed("DOMAIN", "materials"), set_by="system")
+        for i in range(4):
+            _ref(store, "finding", f"untagged {i}")
+        hits = cand.untagged_candidates(
+            store, namespaces=("DOMAIN",), kinds=("finding",), scan_cap=3
+        )
+        assert len(hits) == 2
+
+    def test_untagged_needs_a_seeded_namespace(self, store: Store) -> None:
+        for i in range(3):
+            _ref(store, "finding", f"plain {i}")
+        assert (
+            cand.untagged_candidates(store, namespaces=("DOMAIN",), kinds=("finding",))
+            == []
+        )
+
+    def test_cancelled_detector_is_skipped_and_the_rest_run(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr503580: a detector cancelled by its statement timeout is
+        logged and skipped — the remaining detectors still produce."""
+        stale = _ref(store, "concept", "forgotten thing")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - interval '400 days' "
+                "WHERE ref_id = %s",
+                (stale,),
+            )
+
+        def _boom(*_a: Any, **_kw: Any) -> list[GardenCandidate]:
+            raise QueryCanceled("canceling statement due to statement timeout")
+
+        monkeypatch.setattr(cand, "untagged_candidates", _boom)
+        out = run_garden_tick(store, passes=("prune", "tag-sweep"), propose=_accept)
+        assert out.skipped_detectors == ["untagged"]
+        assert out.proposals == 1
+
+    def test_detector_past_its_budget_is_skipped(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wall-clock budget is per detector: still running at the
+        deadline means abandoned and recorded in ``skipped``."""
+
+        def _slow(*_a: Any, **_kw: Any) -> list[GardenCandidate]:
+            time.sleep(0.3)
+            return []
+
+        monkeypatch.setattr(cand, "untagged_candidates", _slow)
+        run = cand.run_detectors(store, passes=("tag-sweep",), detector_deadline_s=0.05)
+        assert run.skipped == ["untagged"]
+        assert run.candidates == []
+
+
+# ── gr503581: one bounded retry after a failed daily run ────────────────
+
+
+class TestDailyRetry:
+    def test_failed_day_mints_one_retry_job(self, store: Store) -> None:
+        _lit_service(store)
+        first = mint_job(store)
+        assert first is not None
+        store.add_tag(
+            first,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        retry = mint_job(store)
+        assert retry is not None and retry != first
+        assert _meta(store, retry)["idem_key"].endswith(":retry")
+        # A failed retry is NOT retried — one per UTC day.
+        store.add_tag(
+            retry,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        assert mint_job(store) == retry
+
+    def test_non_failed_day_is_not_retried(self, store: Store) -> None:
+        _lit_service(store)
+        first = mint_job(store)
+        assert first is not None
+        store.add_tag(
+            first,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        assert mint_job(store) == first
+
+    def test_new_day_mints_a_fresh_daily_job(self, store: Store) -> None:
+        _lit_service(store)
+        first = mint_job(store)
+        assert first is not None
+        store.add_tag(
+            first,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        retry = mint_job(store)
+        assert retry is not None and retry != first
+        tomorrow = datetime.now(UTC) + timedelta(days=1)
+        nxt = mint_job(store, now=tomorrow)
+        assert nxt is not None and nxt not in (first, retry)
+        assert _meta(store, nxt)["idem_key"] == f"garden:{tomorrow:%Y-%m-%d}"
+
+
 class TestDispatchGlue:
     class _Ctx:
         """A minimal DispatchContext stand-in (all-callable)."""
@@ -570,3 +690,21 @@ class TestDispatchGlue:
         ctx = self._Ctx(store, {"pass": "prune"})
         _dispatch(ctx, SPEC)
         assert ctx.deferred is not None and ctx.failure is None
+
+    def test_dispatch_summary_names_skipped_detectors(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr503580: a skipped detector lands in meta.garden AND the
+        job_summary chunk names it — a partial tick is never silent."""
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        def _boom(*_a: Any, **_kw: Any) -> list[GardenCandidate]:
+            raise QueryCanceled("canceling statement due to statement timeout")
+
+        monkeypatch.setattr(cand, "untagged_candidates", _boom)
+        ctx = self._Ctx(store, {"pass": "tag-sweep"})
+        _dispatch(ctx, SPEC)
+        assert ctx.meta["garden"]["skipped_detectors"] == ["untagged"]
+        (kind, text) = ctx.events[0]
+        assert kind == "job_summary" and "untagged" in text
+        assert ctx.failure is None

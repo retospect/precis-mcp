@@ -111,13 +111,47 @@ def cooling_active(
     return age < cool_interval_s
 
 
+def _insert_job(
+    store: Store, conn: Any, *, idem_key: str, params: dict[str, Any] | None
+) -> int:
+    """Insert the queued ``graph_garden`` job row + STATUS tag under
+    ``idem_key``; returns the new ref id. Caller holds the transaction."""
+    from precis.store.types import Tag
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"graph_garden ({idem_key})",
+        meta={
+            "job_type": JOB_TYPE,
+            "executor": JOB_EXECUTOR,
+            "params": dict(params or {}),
+            "idem_key": idem_key,
+        },
+        prio=_JOB_PRIO,
+        conn=conn,
+    )
+    store.add_tag(
+        ref.id,
+        Tag.closed("STATUS", "queued"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    return int(ref.id)
+
+
 def mint_job(
     store: Store,
     *,
     now: datetime | None = None,
     params: dict[str, Any] | None = None,
 ) -> int | None:
-    """Mint at most one queued ``graph_garden`` job per UTC day.
+    """Mint at most one queued ``graph_garden`` job per UTC day — plus one
+    bounded retry (gr503581): when the day's job already exists but carries
+    ``STATUS:failed``, the next call mints ``garden:<date>:retry`` once; a
+    failed retry is not retried again. The cadence ticks hourly so the
+    retry lands within ~1h of the failure instead of costing a full day.
 
     Returns the job ref id — the *existing* one when the day already
     minted (the ``idem_key`` guard makes a re-mint a no-op) — or ``None``
@@ -136,35 +170,27 @@ def mint_job(
         if cooling_active(store):
             return None
         existing = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
-            "AND meta->>'idem_key' = %s LIMIT 1",
+            "SELECT r.ref_id, "
+            "  (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) "
+            "FROM refs r WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            "AND r.meta->>'idem_key' = %s LIMIT 1",
             (idem_key,),
         ).fetchone()
+        key = idem_key
         if existing is not None:
-            return int(existing[0])
-        from precis.store.types import Tag
-
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
-            title=f"graph_garden ({idem_key})",
-            meta={
-                "job_type": JOB_TYPE,
-                "executor": JOB_EXECUTOR,
-                "params": dict(params or {}),
-                "idem_key": idem_key,
-            },
-            prio=_JOB_PRIO,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
-        )
-        return int(ref.id)
+            if existing[1] != "failed":
+                return int(existing[0])
+            # The day's run failed — the one bounded retry per UTC day.
+            key = f"{idem_key}:retry"
+            retried = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+                "AND meta->>'idem_key' = %s LIMIT 1",
+                (key,),
+            ).fetchone()
+            if retried is not None:
+                return int(retried[0])
+        return _insert_job(store, conn, idem_key=key, params=params)
 
 
 __all__ = [
@@ -173,6 +199,7 @@ __all__ = [
     "JOB_EXECUTOR",
     "JOB_TYPE",
     "SERVICE_NAME",
+    "_insert_job",
     "cooling_active",
     "graph_garden_enabled",
     "mint_job",

@@ -1739,6 +1739,48 @@ _CADENCE_NEVER_SEEDED_EXEMPT = frozenset({"materialize"})
 #: interval.
 _CADENCE_MARGIN_FLOOR_S = 900
 
+#: Cadences whose fire mints a job — cadence name → ``meta.job_type``.
+#: For these the lease staying green only proves the *mint* fired, not
+#: that the minted run finished: jo503579 failed on a statement timeout
+#: and ``watchdog:cadence/graph_garden`` stayed green a whole day
+#: (gr503581). An on-schedule lease on a mapped cadence still reads
+#: stale while the newest job of its type carries STATUS:failed; a newer
+#: queued/running row (the bounded retry) reads green — the response is
+#: already in flight.
+_JOB_BACKED_CADENCES: dict[str, str] = {"graph_garden": "graph_garden"}
+
+
+def _job_backed_run_failed(store: Store, cadence: str, job_type: str) -> str | None:
+    """Detail string when the newest live ``job_type`` job is
+    ``STATUS:failed``, else ``None``. Never raises — a read blip is no
+    evidence of a failed run."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.ref_id, "
+                "  (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+                "    LIMIT 1) "
+                "FROM refs r WHERE r.kind = 'job' AND r.retired_at IS NULL "
+                "  AND r.meta->>'job_type' = %s "
+                "ORDER BY r.ref_id DESC LIMIT 1",
+                (job_type,),
+            ).fetchone()
+    except Exception:
+        log.warning(
+            "health_digest: last-run check failed for cadence %s",
+            cadence,
+            exc_info=True,
+        )
+        return None
+    if row is None or row[1] != "failed":
+        return None
+    return (
+        f"{cadence}: lease on schedule but the newest {job_type} job "
+        f"(ref {int(row[0])}) carries STATUS:failed — the mint fired, "
+        "the run did not finish"
+    )
+
 
 def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
     """Every ``scheduler_leases`` row overdue past ``interval_s + margin``,
@@ -1814,14 +1856,24 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
             next_fire = next_fire.replace(tzinfo=UTC)
         overdue_s = (now - next_fire).total_seconds()
         if overdue_s <= margin_s:
+            job_type = _JOB_BACKED_CADENCES.get(lease.name)
+            detail = (
+                _job_backed_run_failed(store, lease.name, job_type)
+                if job_type is not None
+                else None
+            )
             out.append(
                 CheckResult(
                     "cadence",
                     lease.name,
-                    "ok",
-                    f"{lease.name}: on schedule (next due in {-overdue_s / 60:.0f}min)"
-                    if overdue_s < 0
-                    else f"{lease.name}: fired within interval+margin",
+                    "stale" if detail is not None else "ok",
+                    detail
+                    if detail is not None
+                    else (
+                        f"{lease.name}: on schedule (next due in {-overdue_s / 60:.0f}min)"
+                        if overdue_s < 0
+                        else f"{lease.name}: fired within interval+margin"
+                    ),
                     _WARN,
                 )
             )

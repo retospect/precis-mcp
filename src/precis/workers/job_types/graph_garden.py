@@ -19,8 +19,9 @@ runs — the job itself does not re-check the service flag, the mint does
 
 Outcome contract (the cooling streak reads this): ``meta.garden`` on the
 job row carries ``{candidates, proposals, skipped_pending, rejected,
-llm_errors}``; a tick that proposes nothing writes no chunks — "zero
-proposals and zero log entries" for a clean graph.
+llm_errors, skipped_detectors}``; a tick that proposes nothing writes no
+chunks — "zero proposals and zero log entries" for a clean graph. A tick
+that skipped a detector on its deadline writes one summary naming it.
 """
 
 from __future__ import annotations
@@ -51,6 +52,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "limit": {"type": "integer", "minimum": 1},
         "scan_cap": {"type": "integer", "minimum": 1},
         "max_proposals": {"type": "integer", "minimum": 1},
+        # Per-detector wall-clock budget in seconds (run_detectors'
+        # skip-and-continue; gr503580).
+        "detector_deadline_s": {"type": "integer", "minimum": 1},
         "stale_days": {"type": "integer", "minimum": 1},
         "kinds": {"type": "array", "items": {"type": "string"}},
         "tag_namespaces": {"type": "array", "items": {"type": "string"}},
@@ -81,6 +85,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     else:
         passes = tuple(str(p) for p in raw_pass)
 
+    from precis.graph.garden.candidates import DETECTOR_DEADLINE_S
     from precis.graph.garden.runner import (
         DEFAULT_LIMIT,
         DEFAULT_MAX_PROPOSALS,
@@ -112,6 +117,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         tag_kinds=_strs("tag_kinds", ("finding", "paper", "concept", "memory")),
         exclusive_axes=_strs("exclusive_axes", ()),
         max_proposals=_ints("max_proposals", DEFAULT_MAX_PROPOSALS),
+        detector_deadline_s=_ints("detector_deadline_s", int(DETECTOR_DEADLINE_S)),
         propose=propose_llm,
     )
     ctx.set_meta(
@@ -121,6 +127,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
             "skipped_pending": outcome.skipped_pending,
             "rejected": outcome.rejected,
             "llm_errors": outcome.llm_errors,
+            "skipped_detectors": list(outcome.skipped_detectors),
         }
     )
     if outcome.paused:
@@ -140,15 +147,20 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         )
         return
     # A clean tick writes no chunks — the outcome lives in meta.garden
-    # only (the "zero log entries" contract).
-    if outcome.proposals or outcome.llm_errors:
-        ctx.append_chunk(
-            "job_summary",
+    # only (the "zero log entries" contract). A tick that skipped a
+    # detector DOES write: a silent partial run is what gr503580 was.
+    if outcome.proposals or outcome.llm_errors or outcome.skipped_detectors:
+        summary = (
             "graph_garden — "
             f"{outcome.candidates} candidate(s), {outcome.proposals} proposal(s) "
             f"written to reviews, {outcome.skipped_pending} already pending, "
-            f"{outcome.rejected} rejected, {outcome.llm_errors} proposer error(s)",
+            f"{outcome.rejected} rejected, {outcome.llm_errors} proposer error(s)"
         )
+        if outcome.skipped_detectors:
+            summary += "; skipped detectors (timed out): " + ", ".join(
+                outcome.skipped_detectors
+            )
+        ctx.append_chunk("job_summary", summary)
 
 
 SPEC = JobTypeSpec(

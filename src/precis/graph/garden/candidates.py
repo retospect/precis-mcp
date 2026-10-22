@@ -8,7 +8,10 @@ candidate is evidence, never a verdict.
 Bounds: each detector takes ``limit`` (max candidates emitted) and the
 wide scans also take ``scan_cap`` (max refs inspected, oldest-first by
 ``ref_id`` — deterministic across ticks, so a bounded pass eventually
-covers the corpus over successive runs).
+covers the corpus over successive runs). :func:`run_detectors` adds a
+per-detector wall-clock deadline plus skip-and-continue on a Postgres
+statement timeout, so one slow detector cannot zero the tick
+(gr503580 — ``untagged`` did exactly that on the first prod run).
 
 Similarity legs: the embedding leg joins ``card_combined`` chunks
 against ``chunk_embeddings`` restricted to the *default* embedder
@@ -22,14 +25,19 @@ this layer must not import handlers).
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from psycopg.errors import QueryCanceled
 
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
+from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.lexical import lexical_overlap
 
 if TYPE_CHECKING:
@@ -77,6 +85,15 @@ PRUNE_MAX_DISTANCE = 0.6
 #: A live node untouched, unlinked and unviewed for this many days is a
 #: prune candidate (proposal only — retire stays a human decision).
 STALE_DAYS = 180
+
+#: Per-detector wall-clock budget inside :func:`run_detectors`
+#: (gr503580). Past it the detector is *abandoned* — the daemon thread
+#: keeps running until its queries hit the role's ``statement_timeout``
+#: and the pool reclaims the connections, exactly like the scheduler's
+#: per-cadence bound. Bounded scans finish in seconds; 60 s is already
+#: ~30x a healthy detector's time and stays well under the 120 s
+#: ``agent_rw`` statement timeout that ends the abandoned work.
+DETECTOR_DEADLINE_S = 60.0
 
 #: How many same-kind refs must already carry a namespace before its
 #: absence elsewhere is a tag-sweep candidate (avoids proposing a
@@ -667,28 +684,48 @@ def untagged_candidates(
     namespaces: tuple[str, ...] = ("DOMAIN", "TOPIC"),
     kinds: tuple[str, ...] = ("finding", "paper", "concept", "memory"),
     min_seeded: int = TAG_SWEEP_MIN_SEEDED,
+    scan_cap: int = 2000,
     limit: int = 50,
 ) -> list[GardenCandidate]:
     """Live refs of ``kinds`` carrying no tag in ``namespaces`` while at
     least ``min_seeded`` same-kind live refs do — the namespace is in use
     for the kind and this ref was skipped. The proposed *value* is the
-    proposer's job; the candidate only carries the gap."""
+    proposer's job; the candidate only carries the gap.
+
+    Bounded like the other wide scans: at most ``scan_cap`` live refs of
+    ``kinds`` are inspected per namespace, oldest-first by ``ref_id``
+    (deterministic across ticks). The per-kind seeded counts are computed
+    ONCE in the ``seeded`` CTE — the original shape ran one
+    ``ref_tags``×``tags``×``refs`` count per scanned row, an
+    O(refs × ref_tags) nest that hit the statement timeout on the first
+    prod run before any candidate was emitted (gr503580)."""
     out: list[GardenCandidate] = []
     for ns in namespaces:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT r.ref_id, r.kind, r.title FROM refs r "
-                "WHERE r.retired_at IS NULL AND r.kind = ANY(%(kinds)s) "
-                "  AND NOT EXISTS ("
-                "    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
-                "     WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s) "
-                "  AND (SELECT count(*) FROM ref_tags rt "
-                "        JOIN tags t USING (tag_id) "
-                "        JOIN refs r2 ON r2.ref_id = rt.ref_id "
-                "         WHERE t.namespace = %(ns)s AND r2.kind = r.kind "
-                "           AND r2.retired_at IS NULL) >= %(min_seed)s "
-                "ORDER BY r.ref_id LIMIT %(n)s",
-                {"kinds": list(kinds), "ns": ns, "min_seed": min_seeded, "n": limit},
+                "WITH seeded AS ("
+                "  SELECT r2.kind, count(*) AS n FROM ref_tags rt "
+                "   JOIN tags t ON t.tag_id = rt.tag_id "
+                "   JOIN refs r2 ON r2.ref_id = rt.ref_id "
+                "  WHERE t.namespace = %(ns)s AND r2.retired_at IS NULL "
+                "    AND r2.kind = ANY(%(kinds)s) GROUP BY r2.kind), "
+                "scan AS ("
+                "  SELECT r.ref_id, r.kind, r.title FROM refs r "
+                "  WHERE r.retired_at IS NULL AND r.kind = ANY(%(kinds)s) "
+                "  ORDER BY r.ref_id LIMIT %(cap)s) "
+                "SELECT s.ref_id, s.kind, s.title FROM scan s "
+                "JOIN seeded d ON d.kind = s.kind AND d.n >= %(min_seed)s "
+                "WHERE NOT EXISTS ("
+                "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "   WHERE rt.ref_id = s.ref_id AND t.namespace = %(ns)s) "
+                "ORDER BY s.ref_id LIMIT %(n)s",
+                {
+                    "kinds": list(kinds),
+                    "ns": ns,
+                    "min_seed": min_seeded,
+                    "cap": scan_cap,
+                    "n": limit,
+                },
             ).fetchall()
         for rid, kind, title in rows:
             out.append(
@@ -916,6 +953,16 @@ def detectors_for(passes: tuple[str, ...]) -> list[str]:
     return sorted(set(out))
 
 
+@dataclass(slots=True)
+class DetectorRun:
+    """One :func:`run_detectors` pass: the concatenated candidates plus
+    ``skipped`` — the names of detectors that hit their statement timeout
+    or wall-clock budget and were skipped so the rest could still run."""
+
+    candidates: list[GardenCandidate] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
 def run_detectors(
     store: Store,
     *,
@@ -927,41 +974,85 @@ def run_detectors(
     tag_namespaces: tuple[str, ...] = ("DOMAIN", "TOPIC"),
     tag_kinds: tuple[str, ...] = ("finding", "paper", "concept", "memory"),
     exclusive_axes: tuple[str, ...] = (),
-) -> list[GardenCandidate]:
+    detector_deadline_s: float = DETECTOR_DEADLINE_S,
+) -> DetectorRun:
     """Run the detectors selected by ``passes`` and concatenate their
-    candidates (each detector already bounded by ``limit``)."""
-    out: list[GardenCandidate] = []
+    candidates (each detector already bounded by ``limit``).
+
+    Each detector runs under ``detector_deadline_s`` wall-clock via
+    :func:`call_with_deadline` (``<= 0`` disables) — an over-budget
+    detector is abandoned on its daemon thread and its queries still die
+    at the role's ``statement_timeout``. A detector cancelled by Postgres
+    (``QueryCanceled``) or abandoned past its own budget is logged with
+    its name and elapsed seconds, lands in ``skipped``, and the pass
+    continues with the remaining detectors — one slow detector must not
+    zero the tick (gr503580).
+    """
+    out = DetectorRun()
     for det in detectors_for(passes):
+        fn: Callable[[], list[GardenCandidate]] | None = None
         if det == "dup_pair":
-            out += duplicate_candidates(
-                store, kinds=kinds, limit=limit, scan_cap=scan_cap
+            fn = partial(
+                duplicate_candidates, store, kinds=kinds, limit=limit, scan_cap=scan_cap
             )
         elif det == "orphan":
-            out += orphan_taxon_candidates(store, limit=limit)
+            fn = partial(orphan_taxon_candidates, store, limit=limit)
         elif det == "stale":
-            out += stale_candidates(
-                store, kinds=kinds, stale_days=stale_days, limit=limit
+            fn = partial(
+                stale_candidates, store, kinds=kinds, stale_days=stale_days, limit=limit
             )
         elif det == "dangling_edge":
-            out += dangling_edge_candidates(store, limit=limit)
+            fn = partial(dangling_edge_candidates, store, limit=limit)
         elif det == "cycle_edge":
-            out += cycle_edge_candidates(store, limit=limit)
+            fn = partial(cycle_edge_candidates, store, limit=limit)
         elif det == "redundant_link":
-            out += redundant_link_candidates(store, scan_cap=scan_cap, limit=limit)
+            fn = partial(
+                redundant_link_candidates, store, scan_cap=scan_cap, limit=limit
+            )
         elif det == "untagged":
-            out += untagged_candidates(
-                store, namespaces=tag_namespaces, kinds=tag_kinds, limit=limit
+            fn = partial(
+                untagged_candidates,
+                store,
+                namespaces=tag_namespaces,
+                kinds=tag_kinds,
+                scan_cap=scan_cap,
+                limit=limit,
             )
         elif det == "polysemy":
-            out += polysemy_candidates(store, limit=limit)
+            fn = partial(polysemy_candidates, store, limit=limit)
         elif det == "sibling_confusion":
-            out += sibling_confusion_candidates(
-                store, exclusive_axes=exclusive_axes, limit=limit
+            fn = partial(
+                sibling_confusion_candidates,
+                store,
+                exclusive_axes=exclusive_axes,
+                limit=limit,
             )
+        if fn is None:
+            continue
+        started = time.monotonic()
+        try:
+            found = (
+                call_with_deadline(
+                    fn, deadline_s=detector_deadline_s, label=f"garden:{det}"
+                )
+                if detector_deadline_s > 0
+                else fn()
+            )
+        except (QueryCanceled, DeadlineExceeded) as exc:
+            log.warning(
+                "garden: detector %s skipped after %.1fs — %s",
+                det,
+                time.monotonic() - started,
+                exc,
+            )
+            out.skipped.append(det)
+            continue
+        out.candidates += found
     return out
 
 
 __all__ = [
+    "DETECTOR_DEADLINE_S",
     "DUP_MAX_DISTANCE",
     "DUP_MIN_LEXICAL",
     "GARDEN_KINDS",
@@ -970,6 +1061,7 @@ __all__ = [
     "PRUNE_TOP_K",
     "RELINK_MIN_DISTANCE",
     "STALE_DAYS",
+    "DetectorRun",
     "GardenCandidate",
     "cycle_edge_candidates",
     "dangling_edge_candidates",

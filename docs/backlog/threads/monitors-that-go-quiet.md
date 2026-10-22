@@ -58,6 +58,12 @@ gr346534, soft-deleted)
   or asa_bot is down, PostgresDown included.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the
   diagnose_gripe cost ledger (job 464662).
+- Built 2026-10-22 (worktree `garden-timeout`, gr503581): a failed daily
+  `graph_garden` run gets one bounded retry — the cadence is an hourly
+  check tick and `mint_job` mints `garden:<date>:retry` when the day's
+  job is STATUS:failed — and `watchdog:cadence/graph_garden` now reads
+  stale while the newest job failed instead of staying green on the
+  lease alone.
 - Waiting on others: the review session's resend of dedupe items 1 and 2
   (Do-next 1); the orchestrator's round for the NFS-hang branch (Do-next 2),
   whose `*Hung`/`*Absent` rules join the rendered set when it lands.

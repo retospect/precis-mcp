@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import (
+    DETECTOR_DEADLINE_S,
     GARDEN_KINDS,
     STALE_DAYS,
     GardenCandidate,
@@ -50,6 +51,9 @@ class GardenOutcome:
     llm_errors: int = 0
     paused: bool = False
     detectors: list[str] = field(default_factory=list)
+    #: Detectors skipped on their timeout/budget this tick (gr503580) —
+    #: the job summary names them so a partial tick is visible.
+    skipped_detectors: list[str] = field(default_factory=list)
 
 
 def run_garden_tick(
@@ -64,6 +68,7 @@ def run_garden_tick(
     tag_kinds: tuple[str, ...] = ("finding", "paper", "concept", "memory"),
     exclusive_axes: tuple[str, ...] = (),
     max_proposals: int = DEFAULT_MAX_PROPOSALS,
+    detector_deadline_s: float = DETECTOR_DEADLINE_S,
     propose: ProposerFn | None = None,
 ) -> GardenOutcome:
     """One bounded tick. Returns the outcome; writes only reviews rows.
@@ -74,7 +79,7 @@ def run_garden_tick(
     """
     if propose is None:
         propose = propose_llm
-    candidates = run_detectors(
+    run = run_detectors(
         store,
         passes=passes,
         kinds=kinds,
@@ -84,8 +89,10 @@ def run_garden_tick(
         tag_namespaces=tag_namespaces,
         tag_kinds=tag_kinds,
         exclusive_axes=exclusive_axes,
+        detector_deadline_s=detector_deadline_s,
     )
-    out = GardenOutcome(candidates=len(candidates))
+    candidates = run.candidates
+    out = GardenOutcome(candidates=len(candidates), skipped_detectors=list(run.skipped))
     for cand in candidates:
         if out.proposals >= max_proposals:
             break
