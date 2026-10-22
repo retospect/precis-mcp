@@ -114,6 +114,12 @@ cluster without measures.
    review stamps (Q1) landed; quest→finding direction fixed; one
    retrieval gold question for qu164903 answers through `precis mesh
    retrieval` on prod (the harness exists; gold labels await Reto).
+   Gold set built: `scripts/llm_eval/gold_set/retrieval_qu164903.jsonl`
+   (11 questions over hubs fi504759–fi504782, typed lookup/cross-paper/
+   stance/grounding, 5 marked `open`; `labelled_by: model:…` until Reto
+   reviews; form test `tests/test_kg_mesh_gold.py`). Gap: none of the 10
+   hubs links to qu164903, so the fisheye arm cannot reach them from the
+   quest anchor until the quest→finding fix lands.
 1. **Cluster selector + coverage metrics.** SQL only; `precis mesh loop
    clusters|stats`. Run read-only on prod; qu164903 selects first.
 2. **Cheap tier.** The four detectors → ledger proposals on castor, no
