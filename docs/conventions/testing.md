@@ -238,8 +238,8 @@ misses some. Before shipping run
 
 1. `tests/test_kind_totality.py::test_artifact_kind_fallback_matches_live_role_derivation`
    needs `precis_web/item_view.py::_ARTIFACT_KIND_FALLBACK` updated; then
-2. `tests/precis_web/test_item_view.py::test_artifact_kinds_falls_back_*`
-   (two tests) hardcode that list alphabetically. Fix both or each reds the
+2. `tests/precis_web/test_item_view.py::test_artifact_kinds_falls_back_when_hub_is_none`
+   and `…::test_artifact_kinds_falls_back_on_hub_error` hardcode that list alphabetically. Fix both or each reds the
    other.
 3. `tests/test_handle_registry.py` (`EXPECTED_PERSISTENT_KINDS`) and
    `tests/test_mcp_verb_kwarg_parity.py` (`_EXEMPT`).

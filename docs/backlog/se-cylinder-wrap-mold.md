@@ -105,7 +105,7 @@ many slides" before any geometry is cut.
    `modes.py` for the molded part itself (draft, wall-thickness rows).
 4. **Cross-dimensional (later, optional).** The wrap map (`u, v,
    repeat, twist`) is the same object as hexfold's roll-up
-   (`hexfold/build.py::_patch_seed3`: chiral vector = the periodicity +
+   (`src/hexfold/build.py::_patch_seed3`: chiral vector = the periodicity +
    twist condition, `lattice.py::wrap_tube`). Slice 4 moves the shared
    piece, mapping and periodicity check, into one module both use, so a
    pattern spec can be realised as a relief (macro) or as lattice sites
