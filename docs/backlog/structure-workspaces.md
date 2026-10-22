@@ -562,6 +562,178 @@ reads a traceback*: no view renders internals, file paths outside
 `/work`, or more than the frame line. *Cost*: measured in slice 2 beside
 the latency number; the budget is < 5 % of build time.
 
+## Structure fisheye: navigating atoms
+
+Reto, 2026-10-22 (approved): the extent ladder (`precis-fisheye-help`)
+focuses an atom, a frame or a region and renders its surroundings by
+distance — bonds, rings and π systems, the construction hierarchy, and
+the relax provenance of the neighbourhood. Today `structure` and `se`
+sit in the eye's link family (`eye_render._render_note_eye`: card +
+link ring); atoms are reachable only through region selectors. This
+section is the spatial eye for both kinds; the se handler and
+`handlers/structure.py` override `Handler.eye` the way
+`handlers/python.py::PythonHandler.eye` does, and fall back to the note
+eye for a bare design handle.
+
+**Focus handle.** `<ref>~<focus>` — `~` is the in-ref selector every
+kind already uses (`<id>~<ord>`, python `~L120`, md `~<heading>`).
+
+| focus | se form | structure form |
+|---|---|---|
+| one atom | `hcol-array-1~p#aC12` (`<block path>#<atom label>`; the trace's `AtomPath` forms `p/w3/(2,1,A)` and `#uid:path` also parse) | `st7~aC12` (`st7#aC12` from `precis-structure-help` stays as an alias) |
+| a frame | `hcol-array-1~frame:<key>` (`/rest`, `/touched`, `!` as in §Construction traces) | — (a structure ref has no trace; its block does) |
+| a region | `hcol-array-1~atoms:p[0,3,5-9]`, `~sites:p/seam/s1..s3`, `~mol:nh3@3`, any `precis-se-regions-help` selector | `st7~find:element=Pd,undercoordinated` (the `view='find'` predicate) |
+
+Every neighbour the eye renders carries its canonical handle
+(`<slug>~<block>#a<El><n>`, `~frame:<key>`), so one `get` re-centres;
+`q=`/`ring=` narrow as on other eyes, `+recall` refuses (no embedding
+for an atom; `next=` names `search(kind='structure', …)`).
+
+**Rungs.** Each strictly contains the previous.
+
+| `extent=` | atom focus | frame / region focus |
+|---|---|---|
+| `kwd` | `p#aC12 C sp2 ·3 bonds· rings 6,6,6 · xtb interfaces free · junction#7` | frame line + `made`/`touched` counts |
+| `summary` | + the bond list (partner, order, Å) on one line, the π line, the relax line | + children one line each, relax histogram over the set |
+| `verbatim` | the atom card: element, hybridisation (declared and inferred from bond orders, flagged when they differ), charge, `fixed` mask, position (block frame Å; world), coordination vs valence, the bonds, the π block, the relax block, the made-by line | the frame card as `view='trace'` renders it (`{'frame': key}`), or the resolved selector + its atom count, plus the relax block over the set |
+| `fisheye` | + the bonded shell (below), the hierarchy ladder, the π system beyond the rings | + the shell around the set's boundary (bonds leaving the set, graduated from there), the hierarchy ladder, π systems crossing the boundary |
+| `fisheye+1hop` | + the containing block's ring: relax runs (`derived-from` seed, the `service` frames), pockets whose region holds the focus, findings whose subject is the focus or its creator frame, measures whose datum covers it, the workspace folder; the python id of the maker | same, over the set |
+| `fisheye+2hop` | + second hop as counts per kind and relation, `q='<kind>:<label>'` expands one | same |
+
+**Bonded shell — the spatial neighbourhood.** BFS over the bound
+structure's bond graph (`structure/probe.py::_adjacency`; periodic
+images count, the image offset shows), crossing into another block
+along `kind='bond'` connects (`join` seams) with block-qualified
+handles. Graduated like a draft section's reading-order span:
+
+- hop 1 — one line per bond, full: handle, element, hybridisation,
+  bond order/kind, length Å, relax level when it differs from the
+  focus; capped at 8 lines (a 12-coordinated metal overflows with
+  `… +N more — view='neighborhood'`).
+- hops 2–3 — grouped lines `hop 2: 6 atoms — 4 C sp2, 2 H · 3
+  sample handles`, grouped by (element, hybridisation, relax level); a
+  group that differs from the focus's relax level or method is its own
+  line, never folded.
+- hops 4–6 — counts only (`hop 4–6: 18 / 41 / 60`), then `beyond: N
+  atoms in block, M across seams`.
+
+Hop order first, bond length second; the same ordering the browser
+viewer uses for its shells.
+
+**Up and down the hierarchy.** One `Up:` ladder per focus, each rung a
+handle: `junction(k=2)#7 (frame:ab12cd34) ← assemble ← bundle
+(main.py:30 · ws-hcol::main.bundle) ← build ← run 17 · block p ·
+design hcol-array-1` — the creator frame and its parents from the one
+stored trace (§Construction traces), then the block (`view='block'`),
+then the design. A frame focus adds `Down:` — its child frames with
+`made`/`touched` counts and their `frame:` handles (capped 8, `… +N
+more`), never atom lists. A fetched unit's ladder crosses the `unit`
+frame into the unit's own trace and ends at its relax frame (§Relaxed
+units).
+
+**Shared π electrons.** Three facts per atom: its rings (ids and
+sizes), its conjugated system (id, atom count, aromatic ring count),
+and the rest of that system as counts plus one selector
+(`pi:<system id>` joins the regions family; `pi:<id>/rings`,
+`pi:<id>/aromatic`).
+
+- *Source: our bond graph, not RDKit.* A bond carries π when
+  `kind='aromatic'` or `order ≥ 1.5` (`structure/scene.py::Bond`); an
+  atom is in a π system when it has ≥ 1 such bond, or is declared
+  sp2/sp (`Atom.hybridization`) with a lone pair on N/O/S adjacent to
+  one (the `view='surface'` acceptor rule). A system is a connected
+  component over π bonds; rings are `probe.rings(max_size=8)` (smallest
+  cycles). A ring is aromatic when every member is in one π system and
+  its size is 6 with all bonds `aromatic`/order 1.5 (the hexfold and
+  `from_smiles` case), else when it is an isolated ring passing Hückel
+  4n+2 over its π electron count. RDKit perception (`GetRingInfo`,
+  `SetAromaticity`) runs as a cross-check only on a finite block ≤ 500
+  atoms when `precis-mcp[chem]` is installed; a difference is the
+  finding `pi.perception_differs` naming the ring, never a silent
+  override — hexfold nets with open rims and periodic cells do not
+  sanitise in RDKit, so ours is canonical.
+- *When:* at every structure save (import, op, relax write-back) — pure
+  over (geometry, bonds), run by the persist path, never by the eye.
+- *Stored per block, keyed by geometry:* table `structure_pi`
+  (migration) `(structure_ref, pi_key) → JSONB {rings: [[ordinals]],
+  systems: [{id, atoms: ordinal ranges, aromatic_rings}], atom:
+  {ordinal: {rings, system}}}`; `pi_key = sha256(structure_sha ·
+  sorted bonds (i, j, order, kind, image))` — `structure/cache.py::
+  structure_sha` is bond-independent by design, so the key must add
+  the bond list. A relax that moves atoms but keeps bonds recomputes
+  (new `structure_sha`); a cache hit copies. The se block reads it
+  through its bound structure; an unbound block has no π block.
+
+**Relaxation awareness** (Reto's addition). The relax block on an atom
+focus, from the trace's `service` frames (`relax(...)` with `args`
+`method, scope, shell, cell, supercell, kspacing, periodic, assembly,
+unit, cache`), their `touched` ranges with the per-atom level slice 4a
+records, `meta.last_relax` on the structure ref
+(`precis_se/handler.py::_bound_last_relax`), and the run's per-atom
+forces (`struct_runs`, `structure/cache.py::serialize_forces`, the
+`view='atom'` `|F|` column):
+
+```
+relax: xtb · interfaces (shell 6 Å, pass 2) · free · residual |F| 0.03 eV/Å
+       context: finite block p in assembly pair, run 17
+       seed: unit u123 prism(cccR…,4,6) gfnff axis · supercell [1,1,4] Γ
+       stale: no (golden current)
+```
+
+- `level ∈ seed|motif|unit|interfaces|full`, `method ∈ seed|uff|gfnff|
+  xtb|ml|dft-fast|dft-tight`, both from the atom's last `relax`
+  modifier frame; `motif-template` from the creator frame's
+  `args.motif`; `module-cache` when the ladder crosses a `unit` frame.
+- `frozen|free`: slice 4a records the `fixed` ranges on each
+  `interfaces` frame; an atom in them is `frozen` with the pass number.
+- context: `periodic unit (L=4.26 Å, n=4, Γ)` or `finite block`, the
+  cell mode (`axis|inplane|full|fixed`), `kspacing`/`kpts` for a DFT
+  rung, the assembly and shell radius for `interfaces`, the catalogue
+  entry (`unit u123`) the coordinates came from.
+- `stale`: `unit.stale` (golden-diff, §Relaxed units) or `edited since
+  relax` when the structure version is newer than its last relax frame.
+- residual force when the run stored forces; `—` otherwise, never an
+  EMT estimate without saying so.
+
+The shell makes a mixed-method neighbourhood explicit: every hop-1 line
+and every hop 2–3 group carries its level when it differs, and a
+`relax mix:` line closes the shell — `this atom: xtb interfaces free ·
+hop 2: 4 atoms gfnff unit u123 frozen · hop 3+: gfnff unit`. Methods
+differing within 2 bonds add `WARN mixed methods within 2 bonds — bond
+lengths across the seam are not comparable; `assembly.strain` on frame
+…` (the finding from §Relax hierarchy, when present). This is where a
+relaxed-looking number misleads; the eye never hides it in a fold.
+
+**Python side — code ↔ atoms both ways.** `handlers/_python_eye.py::
+_ring1_symbol` gains a **Placed** group (after Tests) for a symbol
+under a `ws-<slug>` root: one line per design built from the
+workspace — `hcol-array-1: 3 occurrences · made 72 atoms 144 bonds ·
+touched 96 · frame:qual=main.bundle · run 17` — read from the one
+stored trace like `view='placed'` (§Join with the `python` kind); `main`
+and `wt-*` symbols never show it. Block and atom eyes carry a
+**made-by** line: `made-by: ws-hcol::main.bundle (main.py:30) →
+junction#7`, the python id first so `get(kind='python', id=…)` is one
+paste; a block made by an op reads `made-by: op add_block (call
+<ledger id>)`. So `view='placed'` stays the exhaustive list; the eyes
+are the navigation.
+
+**Token budgets**, counted as 2t's ≤ 150-token trace is: `kwd` ≤ 25,
+`summary` ≤ 60, `verbatim` ≤ 150, `fisheye` ≤ 400 on an atom and ≤ 450
+on a frame/region, `+1hop` ≤ 600, `+2hop` ≤ 650. Each shell and ring
+section states its budget and overflows with `… +N more` naming the
+view that expands it (`neighborhood`, `rings`, `trace`, `links`) —
+never a silent cut.
+
+**Browser.** `/eye/<handle>?extent=` renders the same text
+(`precis_web/routes/eye.py`); `linkify_handles`'s `_HANDLE_IN_TEXT`
+matches only `[a-z]{2}\d+`, so it gains the `<slug>~<block>#a<El><n>`,
+`~frame:<key>` and `pi:<id>` forms, each a link that re-centres. The
+3D viewers (`precis_web/blocktree_3d.py`; the structure page's
+hover-highlight halo, `routes/structure.py`) take `?focus=<handle>` and
+colour the eye's data: halo on the focus, hop 1 solid, hops 2–3 fading,
+the π system tinted, relax level as per-atom colour with frozen atoms
+hatched — pointer only, the eye text is the contract.
+
 ## Packaging
 
 - **Core packages** (maintained, golden-tested, in this repo): `hexfold`
@@ -622,8 +794,9 @@ else to build with). Pose, connect and the small edits stay.
 Inspection stays and grows in MCP: `validate`, `drc`, `clearance`, `sites`,
 `catalogue`, `mold`, `stability`, `freedom`, renders, `view='block'` now
 rendering the workspace provenance with the one `run` call that reproduces
-the block, and `view='trace'` with the `frame:` selector (§Construction
-traces).
+the block, `view='trace'` with the `frame:` selector (§Construction
+traces), and the atom/frame/region eye on `extent=` (§Structure
+fisheye).
 
 ## Guardrails, checked
 
@@ -649,13 +822,14 @@ traces).
 | 1b | **Git objects in Postgres** (ruled 2026-10-22, §Code storage option b). `git_objects`/`git_refs` migration, stager writes blob/tree/commit rows, `generated.script_sha` FK, `view='source'`/diff over rows, export via `git fast-import`; host repo becomes a materialised cache | `_sandbox_inputs.stage_code`, `persist`, `tree_to_json` | Two runs sharing files share blob rows; a block cannot cite a commit sha the DB lacks (FK); `fast-import` export clones and `uv run` rebuilds byte-identical | M, 1–2 builds; after 1 |
 | 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item, trace overhead < 5 % of build); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
 | 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
-| 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector | `handlers/python.py` roots, `_python_render.py`, `view='trace'` | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root | S–M, 1 build; after 2t |
+| 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector; the **Placed** group in the python eye's ring 1 and the **made-by** line on block eyes (§Structure fisheye) | `handlers/python.py` roots, `_python_render.py`, `_python_eye.py::_ring1_symbol`, `view='trace'`, the se `view='block'` render | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root; `extent='fisheye+1hop'` on that id shows `Placed:` with the same three numbers and the `frame:qual=` selector, and on `main::…` shows none; the block eye's `made-by:` id resolves with `get(kind='python')` | S–M, 1 build; after 2t |
+| 2e | **Structure fisheye: navigating atoms** (§Structure fisheye). `~<focus>` handles (atom, `frame:`, any selector) on `se` and `structure` eyes; rungs kwd→+2hop; the bonded shell (BFS, seam-crossing, graduated 1 / 2–3 / 4–6 / beyond); the `Up:`/`Down:` ladder; `structure_pi` migration + perception at save + `pi:` selector + `pi.perception_differs`; the relax block and `relax mix:` line (level/frozen rows fill in after 4a); `+1hop` block ring; `/eye/` handle forms; viewer `?focus=` pointer | `_eye.py::eye_handle` (`~` focus past the digit-only chunk selector), `eye_render.py`, the se handler `eye` override and `handlers/structure.py`, `datums.py::parse_selector` (`pi:`), `structure/probe.py`, `persist.save_tree`/structure save path, `routes/eye.py::linkify_handles` | On the (4, 6) A2 block: `~p#aC12` at `fisheye` lists 3 hop-1 bonds with order and Å, hop-2/3 groups and counts to hop 6, an `Up:` ladder ending in `junction#k ← … main.py:<line>`, rings `6,6,6` and one π system whose selector resolves to the system's atom count; a seam atom two bonds from a frozen unit atom renders the `relax mix:` line and the WARN; `~frame:<key>` at `fisheye` shows children and the boundary shell, never an atom list; a `from_smiles` benzene block reports one aromatic 6-ring and RDKit cross-check agrees (no finding); a pyrrole block records `pi.perception_differs` or agrees, either way stated; `pi_key` changes when a bond order changes with geometry fixed and `structure_sha` does not; every rung's token count ≤ its budget on the A2 atom, measured as 2t's; `/eye/hcol-array-1~p#aC12` links every neighbour handle; `+recall` refuses with `next=` | M, 1–2 builds; after 2t and 2p; relax rows complete after 4a |
 | 2a | **Assembly API.** `precis_geom.assembly`: `tile` (packed, fused), `mirror`, `translate`/`rotate`/`transform`, `place` (port-to-port), `assembly`/`instance`; `array_block`, `instance_block`, `set_pose`, `connect` rewired onto it; frames per call; `op` frames on the op path | `precis_se/ops.py`, `blocktree/ops.py`, `cad/vec.py` (improper transforms), `sheetnet.junction` | `array_block` and `tile(fused=False)` on one template give byte-identical trees; `tile(fused=True, n=3)` of a 2-period prism equals the 6-period prism's SHA; `mirror` of a chiral tube flips the chiral index and emits the INFO; a nested `assembly` places through its parent's port and `frame:` on it selects every child atom | M–L, 2 builds; after 2, before 6 |
 | 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks (the `generate` leg runs at the pre-slice-1 sha or through the core wheel directly, since the op is gone by then) | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
 | 4 | **Relax interface, atomic + cache.** Manifest `relax:` incl. `periodic`/`kspacing`/`supercell`, `relaxed_units` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types, vacuum padding and `relax.period_mismatch` | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal`, `structure/cache.py` key | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params and differs by `cell`/`supercell`/`kspacing`; relaxed atoms keep their creator frames and the trace gains one `service` frame whose `touched` equals the displaced set; a 1D-periodic manifest relaxes a `pbc` unit, not the capped block | M, 1 build; GFN2 route is the known dependency |
 | 4p | **Infinite-relax ladder gaps.** `cell='axis'` mask; supercell rule for Γ-only rungs; `kspacing` → `kpts` on the `dft-*` request path and in the GPAW container; `gfnff` rung (xtb-python extra); `tile` + `terminate` + tethered end relax as the unit→finite path | `structure/relax.py` (`CELL_MODES`, `_CELL_MASKS`), `workers/job_types/struct_relax.py`, `sheetnet`, `hexfold-tethered-relax-op` | A 1D unit relaxed `axis` at `xtb` reports the period change; the same unit at `dft-fast` records `kpts` from 0.2 Å⁻¹; `tile(unit, 6)` + H caps gives the census of the (4, 6) A2 target with interior coordinates equal to the unit's; `gfnff` on a periodic cell runs or refuses with the install hint | M, 1–2 builds; DFT part needs `PRECIS_DFT_NODE` |
 | 4m | **Motif templates.** `relaxed_motifs` migration, extraction from relaxed units through their frames, `motif=` on `junction`/`decorate`/`_block_from_net`, `seed` fallback, versioning | `sheetnet.py`, `hexfold_relax_job.py` write-back, `relaxed_units` | Motif-seeded A2 and tri-tube seeds: RMSD vs GFN2 minimum and step counts recorded before/after; slice-0 goldens unchanged under `method: 'seed'` | M, 1 build; after 4u |
-| 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched` | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'` | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level | M, 1 build; after 4u, 2t |
+| 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched`, `fixed` ranges and pass number on each `interfaces` frame (the eye's `frozen|free` row, §Structure fisheye) | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'`, the 2e relax block | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level; a frozen unit atom's eye reads `frozen (pass 2)` and a shell atom's `free` | M, 1 build; after 4u, 2t |
 | 4u | **Relaxed-unit catalogue.** Units as library-design blocks with `generated.generator='unit'`, `blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
 | 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) and the alias convention (`pg`, `pga`; every example uses them) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
