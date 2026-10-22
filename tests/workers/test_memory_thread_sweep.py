@@ -9,6 +9,7 @@ itself. No LLM, no network.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -221,3 +222,55 @@ def test_plan_reports_each_rule(store: Any, handler: MemoryHandler) -> None:
     assert plan[b].superseded_by == a
     assert plan[c].rule == "c"
     assert plan[c].left == "carry me"
+
+
+def test_rule_s_never_retires_a_currency_suspect(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """gr503035: a stale thread whose body carries a dated section inside
+    the stale window claims to be current — a currency suspect, listed but
+    never retired."""
+    today = datetime.now(UTC).date().isoformat()
+    tid = _thread(handler, f"Left: hold for Reto\n\n## {today}\nNewest live state.")
+    _age(store, tid, 20)
+
+    plan = {item.ref_id: item for item in plan_thread_sweep(store)}
+    assert plan[tid].rule == "s"
+    result = run_memory_thread_sweep_pass(store)
+    assert (result.claimed, result.ok, result.failed) == (0, 0, 0)
+    assert not _retired(store, tid)
+
+
+def test_rule_c_still_retires_when_dates_are_all_old(
+    store: Any, handler: MemoryHandler
+) -> None:
+    old = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+    tid = _thread(handler, f"Left: carry\n\n## {old}\nStale state.")
+    _age(store, tid, 20)
+
+    result = run_memory_thread_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, tid)
+
+
+def test_a_retired_thread_leaves_no_links(store: Any, handler: MemoryHandler) -> None:
+    """gr503031: the sweep's retire path drops the node's edges too."""
+    tid = _thread(handler, "Left: none\n\nDone.")
+    other = _memory(handler, "a gotcha", tags=["section:gotchas"])
+    store.add_link(
+        src_ref_id=other, dst_ref_id=tid, relation="qualifies", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=tid, dst_ref_id=other, relation="related-to", set_by="agent"
+    )
+
+    run_memory_thread_sweep_pass(store)
+
+    assert _retired(store, tid)
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (tid, tid),
+        ).fetchone()
+    assert n is not None and int(n[0]) == 0

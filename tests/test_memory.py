@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from precis.cli import memory as cli_memory
 from precis.dispatch import Hub
 from precis.errors import BadInput, Gone, Internal, NotFound
 from precis.handlers.memory import MemoryHandler
@@ -156,6 +157,100 @@ def test_delete(handler: MemoryHandler) -> None:
 def test_delete_missing_raises(handler: MemoryHandler) -> None:
     with pytest.raises(NotFound):
         handler.delete(id=99999)
+
+
+def _link_count(store: Store, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (ref_id, ref_id),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_delete_removes_inbound_and_outbound_links(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr503031: a soft-deleted memory must not leave edges pointing at the
+    tombstone — fisheye renders them as dead ends."""
+    victim = id_of(handler.put(text="doomed thread node").body)
+    a = id_of(handler.put(text="gotcha that qualifies it").body)
+    b = id_of(handler.put(text="another qualifier").body)
+    store.add_link(
+        src_ref_id=a, dst_ref_id=victim, relation="qualifies", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=b, dst_ref_id=victim, relation="qualifies", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=victim, dst_ref_id=a, relation="related-to", set_by="agent"
+    )
+
+    r = handler.delete(id=victim)
+
+    assert "deleted" in r.body
+    assert "2 inbound" in r.body and "1 outbound" in r.body
+    assert _link_count(store, victim) == 0
+    assert store.links_for(a, direction="out") == []
+
+
+def test_delete_migrates_links_to_meta_superseded_by(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """With ``meta.superseded_by`` set the edges move onto the successor —
+    the same retarget ``supersede`` makes."""
+    victim = id_of(handler.put(text="old node").body)
+    succ = id_of(handler.put(text="survivor node").body)
+    src = id_of(handler.put(text="citing gotcha").body)
+    store.add_link(
+        src_ref_id=src, dst_ref_id=victim, relation="qualifies", set_by="agent"
+    )
+    store.stamp_ref_meta(victim, {"superseded_by": succ})
+
+    r = handler.delete(id=victim)
+
+    assert f"migrated to memory id={succ}" in r.body
+    inbound = store.links_for(succ, direction="in")
+    assert any(
+        link.src_ref_id == src and link.relation == "qualifies" for link in inbound
+    )
+    assert _link_count(store, victim) == 0
+
+
+def test_dangling_links_finds_and_prunes_dead_edges(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """``precis memory prune-links``: retired/missing endpoints are listed;
+    ``supersedes`` tombstone edges are kept by design."""
+    live = id_of(handler.put(text="live node").body)
+    dead = id_of(handler.put(text="doomed node").body)
+    store.add_link(
+        src_ref_id=live, dst_ref_id=dead, relation="related-to", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=live, dst_ref_id=dead, relation="supersedes", set_by="agent"
+    )
+    # Seed the pre-fix state: retire_ref alone leaves the edges behind.
+    store.retire_ref(dead)
+
+    dangling = store.dangling_links()
+    assert len(dangling) == 1
+    assert dangling[0]["relation"] == "related-to"
+    assert dangling[0]["dst_state"] == "retired"
+
+    # dry-run lists and writes nothing
+    out = cli_memory.render_prune_links(store, dry_run=True)
+    assert f"{dead}" in out and "dry run" in out
+    assert _link_count(store, dead) == 2
+
+    out = cli_memory.render_prune_links(store, dry_run=False)
+    assert "removed 1 dangling edge(s)" in out
+    assert store.dangling_links() == []
+    # the supersedes tombstone still stands
+    assert any(
+        link.relation == "supersedes" for link in store.links_for(live, direction="out")
+    )
 
 
 def test_search_finds_match(handler: MemoryHandler) -> None:

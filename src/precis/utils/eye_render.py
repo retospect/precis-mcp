@@ -725,7 +725,8 @@ def _hub_member_notes(
 ) -> dict[int, str] | None:
     """For a ``section:index`` memory: ``{member id: hook}`` for each live
     ``contains`` neighbour (``meta.hook``, else the body's first line, cut to
-    :data:`_HUB_HOOK_CAP`); ``None`` for any other ref."""
+    :data:`_HUB_HOOK_CAP`), band-ordered — ACTIVE members head the listing
+    (:func:`precis.utils.memory_hubs.band_order`); ``None`` for any other ref."""
     if not any(label == _HUB_MEMBER_LABEL for _g, label in hop1):
         return None
     if not _is_hub(store, ref_id):
@@ -736,7 +737,9 @@ def _hub_member_notes(
         if label == _HUB_MEMBER_LABEL
         for oid in oids
     ]
-    shown = _by_recency(store, members)[:_HUB_LIST_CAP]
+    from precis.utils.memory_hubs import band_order
+
+    shown = band_order(store, members)[:_HUB_LIST_CAP]
     firsts = _first_body_lines(
         store,
         [o for o in shown if not (getattr(refs[o], "meta", None) or {}).get("hook")],
@@ -774,28 +777,6 @@ def _first_body_lines(store: Store, ids: list[int]) -> dict[int, str]:
             (ln.strip() for ln in str(text or "").splitlines() if ln.strip()), ""
         )
     return out
-
-
-def _by_recency(store: Store, ids: list[int]) -> list[int]:
-    """``ids`` newest-first by ``GREATEST(last_viewed_at, last_recalled_at,
-    updated_at)`` (NULLs ignored); input order on a tie or a query failure."""
-    if len(ids) < 2:
-        return ids
-    try:
-        with store.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT ref_id, GREATEST(last_viewed_at, last_recalled_at, "
-                "updated_at) FROM refs WHERE ref_id = ANY(%s)",
-                (list(ids),),
-            ).fetchall()
-    except Exception:
-        log.debug("recency read failed", exc_info=True)
-        return ids
-    stamp = {int(r[0]): r[1] for r in rows if r[1] is not None}
-    floor = min(stamp.values()) if stamp else None
-    if floor is None:
-        return ids
-    return sorted(ids, key=lambda i: stamp.get(i, floor), reverse=True)
 
 
 def _space_tags(store: Store, ref_ids: Any) -> dict[int, frozenset[str]]:
@@ -990,16 +971,22 @@ _FIRST_HOP_EXPAND_CAP = 500
 
 def _expand_first_hop(
     store: Store,
+    ref_id: int,
     hop1: dict[tuple[str, str], list[int]],
     refs: dict[int, Any],
     label: str,
 ) -> str:
     """One first-hop label's live neighbours, uncapped by the ring's per-group
-    cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`)."""
+    cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`). A ``section:index``
+    memory's ``contains`` expansion keeps the hub listing's band order."""
     ids = [o for (_g, lab), oids in hop1.items() if lab == label for o in oids]
     if not ids:
         known = ", ".join(sorted({lab for _g, lab in hop1})) or "none"
         raise ValueError(f"eye: no first-hop group {label!r}; groups here: {known}")
+    if label == _HUB_MEMBER_LABEL and _is_hub(store, ref_id):
+        from precis.utils.memory_hubs import band_order
+
+        ids = band_order(store, ids)
     audit = _audit_flagged(store, refs)
     lines = [f"— linked (1 hop) · {label}: {len(ids)} —"]
     lines.extend(
@@ -1307,7 +1294,9 @@ def _rings(
         hop1, refs = _first_hop(store, ref_id, ring=ring)
         first_hop_label = expand if expand is not None and ":" not in expand else None
         if first_hop_label is not None:
-            sections.append(_expand_first_hop(store, hop1, refs, first_hop_label))
+            sections.append(
+                _expand_first_hop(store, ref_id, hop1, refs, first_hop_label)
+            )
         elif expand is None:
             sections.append(_render_ring(store, ref_id, hop1, refs))
         if ext >= Extent.HOP2 and first_hop_label is None:

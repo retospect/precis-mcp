@@ -196,7 +196,9 @@ def test_flat_index_still_scans_every_bullet_for_landed_threads(
     res = _run(lint_repo, home)
 
     assert res.returncode == 0
-    assert "landed thread → some-topic.md" in res.stdout, res.stdout
+    # gr503035: no Left:/NEXT: and no dated section → a currency suspect,
+    # never a landed-thread retire line.
+    assert "currency suspect → some-topic.md" in res.stdout, res.stdout
 
 
 def test_open_work_words_still_suppress_the_landed_flag(
@@ -329,16 +331,16 @@ def test_graph_mode_flags_landed_and_payload_nodes_by_handle(
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
     assert res.returncode == 0
-    assert (
-        "landed thread → me464085 (Old campaign) — verify, then "
-        "delete(kind='memory', id='me464085')" in res.stdout
-    ), res.stdout
+    # gr503035: undated, marker-less landed node → currency suspect, not a
+    # hygiene finding (suspects are listed, never problems).
+    assert "currency suspect → me464085 (Old campaign)" in res.stdout, res.stdout
     assert "me464086" not in res.stdout, res.stdout  # open-work words keep it
     assert "payload-smell → me464087 (Recipe) (1 code fence(s)" in res.stdout
     assert "edit(kind='memory', id='me464087')" in res.stdout, res.stdout
     assert "no `## Threads` heading" not in res.stdout, res.stdout
     assert "unindexed" not in res.stdout, res.stdout
-    assert "memory-lint: 2 hygiene issue(s) above" in res.stdout, res.stdout
+    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+    assert "currency suspects: 1 " in res.stdout, res.stdout
 
 
 def test_graph_mode_landed_scan_reads_only_threads_nodes_from_the_manifest(
@@ -359,9 +361,9 @@ def test_graph_mode_landed_scan_reads_only_threads_nodes_from_the_manifest(
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
     assert res.returncode == 0
-    assert "landed thread → me464085 (Old campaign)" in res.stdout, res.stdout
+    assert "currency suspect → me464085 (Old campaign)" in res.stdout, res.stdout
     assert "me464160" not in res.stdout, res.stdout
-    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+    assert "memory-lint: ✓ clean (graph mode" in res.stdout, res.stdout
 
 
 def test_graph_mode_currency_runs_over_the_nodes(
@@ -529,7 +531,7 @@ def test_file_mode_ignores_the_node_cache_and_the_stray_check(
     res = _run(lint_repo, home, nodes=nodes)
 
     assert res.returncode == 0
-    assert "landed thread → some-topic.md (all cited commits in main" in res.stdout
+    assert "currency suspect → some-topic.md" in res.stdout
     assert "stray write" not in res.stdout, res.stdout
     assert "me1" not in res.stdout, res.stdout
     assert "graph mode" not in res.stdout, res.stdout
@@ -733,8 +735,8 @@ def test_graph_mode_unsectioned_manifest_is_a_finding_and_scans_every_node(
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
     assert "no memory node carries a section:<slug> tag" in res.stdout, res.stdout
-    assert "landed thread → me5 (Old campaign)" in res.stdout, res.stdout
-    assert "memory-lint: 2 hygiene issue(s) above" in res.stdout, res.stdout
+    assert "currency suspect → me5 (Old campaign)" in res.stdout, res.stdout
+    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
 
 
 def test_graph_mode_flags_the_fisheye_shape_from_the_manifest(
@@ -980,6 +982,126 @@ def test_graph_mode_prose_supersedes_quiet_when_the_edge_exists(
     assert "prose-only supersedes" not in out, out
 
 
+# ---------------------------------------------------------------------------
+# gr503035 — the landed verdict must honour newer text (Left: / dated sections)
+# ---------------------------------------------------------------------------
+
+
+def _backdated_commit(repo: Path, days: int) -> str:
+    """A main commit dated ``days`` ago — an old 'newest cited landing' the
+    dated-section rule compares against."""
+    when = (
+        datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+    env = _test_env(GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    for attempt in range(50):
+        (repo / f"old-{days}-{attempt}.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(repo),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", f"old {days} {attempt}"],
+            cwd=str(repo),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        sha = _git(repo, "rev-parse", "--short=12", "HEAD").stdout.strip()
+        if any(c in "abcdef" for c in sha):
+            return sha
+    pytest.fail("no backdated sha with a hex letter after 50 attempts")
+    return ""
+
+
+def test_gr503035_open_left_line_is_not_a_retire_candidate(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """A thread citing only landed shas but whose Left: names open work is
+    neither a retire candidate nor a suspect — it declares itself live."""
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me90.md").write_text(
+        f"# Live thread\n\nLeft: ship the next wave\n\nlanded {sha}.\n",
+        encoding="utf-8",
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me90", "threads", _today()) + "\n", encoding="utf-8"
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "retire candidate → me90" not in out, out
+    assert "landed thread → me90" not in out, out
+    assert "currency suspect → me90" not in out, out
+
+
+def test_gr503035_fresh_dated_section_is_a_currency_suspect(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """A dated section newer than the newest cited landing → currency
+    suspect, never a retire line (the 2026-10-21 incident shape)."""
+    home, _mem, cache, nodes = graph_setup
+    old_sha = _backdated_commit(lint_repo, 40)
+    (nodes / "me91.md").write_text(
+        f"# Suspect thread\n\n## {_days_ago(5)} — latest wave state\n"
+        f"landed {old_sha}.\n",
+        encoding="utf-8",
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me91", "threads", _today()) + "\n", encoding="utf-8"
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "retire candidate → me91" not in out, out
+    assert "landed thread → me91" not in out, out
+    assert "currency suspect → me91 (Suspect thread)" in out, out
+    assert "currency suspects: 1 " in out, out
+
+
+def test_gr503035_dated_section_older_than_landing_retires(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """Newest dated section older than the newest cited landing AND older
+    than 14 days → the retire verdict stands."""
+    home, _mem, cache, nodes = graph_setup
+    old_sha = _backdated_commit(lint_repo, 20)
+    (nodes / "me92.md").write_text(
+        f"# Done thread\n\n## {_days_ago(40)} — wrapped\nlanded {old_sha}.\n",
+        encoding="utf-8",
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me92", "threads", _today()) + "\n", encoding="utf-8"
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "landed thread → me92 (Done thread)" in out, out
+    assert "retire candidate → me92 (Done thread): thread landed" in out, out
+    assert "currency suspect → me92" not in out, out
+
+
+def test_gr503035_left_none_is_a_retire_candidate(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me93.md").write_text(
+        f"# Closed thread\n\nLeft: none\n\nlanded {sha}.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me93", "threads", _today()) + "\n", encoding="utf-8"
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "retire candidate → me93 (Closed thread): thread landed" in out, out
+
+
 def test_graph_mode_prose_supersedes_skips_a_pre_column_manifest(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
@@ -1075,7 +1197,8 @@ def _band_row(
 
 def _band_setup(nodes: Path, sha: str) -> None:
     old = _days_ago(30)
-    landed = f"state: SHIPPED. commit {sha} landed in main.\n"
+    # A dated section older than the landing and 14d: the gr503035 retire rule.
+    landed = f"## {old}\nstate: SHIPPED. commit {sha} landed in main.\n"
     bodies = {
         "me10": ("Fresh thread", "Left: land the parser.\n"),
         "me11": ("Landed campaign", landed),

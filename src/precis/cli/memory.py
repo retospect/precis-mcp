@@ -896,14 +896,21 @@ def _render_loaded(
     store: Store | None = None,
 ) -> str:
     """The session-start index. A hub (``section:index`` node) heads a block of
-    the nodes whose nearest hub ancestor along ``part-of`` it is, newest-touched
-    first, each line prefixed with its ``section:<type>``; a detail node nests
-    one level under its ``part-of`` parent. The root hub (no parent, has
-    part-of members) renders no header. Older graphs pair a hub with the topics
-    tagged ``section:<its slug>`` instead; nodes reaching no hub fall under
+    the nodes whose nearest hub ancestor along ``part-of`` it is — band
+    order (ACTIVE members first, then recency inside each group;
+    :func:`precis.utils.memory_hubs.band_order`), each line prefixed with
+    its ``section:<type>``; a detail node nests one level under its
+    ``part-of`` parent. The root hub (no parent, has part-of members)
+    renders no header. Older graphs pair a hub with the topics tagged
+    ``section:<its slug>`` instead; nodes reaching no hub fall under
     ``Unfiled``. ``store`` supplies the edges and recency; without it only the
     slug pairing applies."""
-    from precis.utils.memory_hubs import hubs_of, parents_of, recency_stamps
+    from precis.utils.memory_hubs import (
+        band_order,
+        hubs_of,
+        parents_of,
+        recency_stamps,
+    )
 
     refs, tags = loaded
     values_of = {r.id: {v for _ns, v in tags.get(r.id, [])} for r in refs}
@@ -957,13 +964,24 @@ def _render_loaded(
             pre = _type_prefix(values_of[m.id])
             return "" if pre == f"[{hub_slug.rstrip('s')}]" else pre
 
-        oldest = datetime.min.replace(tzinfo=UTC)
         ordered = any(_order_key(m)[0] == 0 for m in members)
-        members = (
-            sorted(members, key=lambda m: stamps.get(m.id) or oldest, reverse=True)
-            if stamps and not ordered  # meta.order pins a hand-ordered section
-            else sorted(members, key=_order_key)
-        )
+        if store is not None and stamps and not ordered:
+            # meta.order pins a hand-ordered section; else band order —
+            # ACTIVE first, recency within a group
+            rank = {
+                rid: i
+                for i, rid in enumerate(
+                    band_order(
+                        store,
+                        [m.id for m in members],
+                        tags=values_of,
+                        stamps=stamps,
+                    )
+                )
+            }
+            members = sorted(members, key=lambda m: rank.get(m.id, len(rank)))
+        else:
+            members = sorted(members, key=_order_key)
         kids: dict[int, list[Any]] = {}
         top: list[Any] = []
         for m in members:
@@ -1025,6 +1043,28 @@ def _render_loaded(
 #: node names the summary's hub.
 #: Column order is the contract with scripts/memory-lint.
 SECTIONS_MANIFEST = "_sections.tsv"
+
+
+def render_prune_links(store: Store, *, dry_run: bool) -> str:
+    """The ``precis memory prune-links`` report — one line per dangling edge
+    (src or dst ref retired/missing, ``supersedes`` tombstones kept), then
+    the count. Without ``dry_run`` the edges are deleted in one transaction."""
+    dangling = store.dangling_links(kinds=("memory",))
+    lines = [
+        f"  link {e['link_id']}: {e['src_ref_id']} -[{e['relation']}]-> "
+        f"{e['dst_ref_id']} (src {e['src_state']}, dst {e['dst_state']})"
+        for e in dangling
+    ]
+    if dry_run:
+        lines.append(
+            f"memory prune-links (dry run): {len(dangling)} "
+            "dangling edge(s), nothing written"
+        )
+        return "\n".join(lines) + "\n"
+    with store.tx() as conn:
+        n = store.delete_links([e["link_id"] for e in dangling], conn=conn)
+    lines.append(f"memory prune-links: removed {n} dangling edge(s)")
+    return "\n".join(lines) + "\n"
 
 
 def _handle_of(ids: list[int]) -> str:
@@ -1315,6 +1355,21 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Actually retire the listed nodes (default: plan only).",
     )
     swp.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    prn = msub.add_parser(
+        "prune-links",
+        help=(
+            "List (and unless --dry-run, delete) link edges touching a "
+            "memory whose src or dst ref is retired or missing — the dead "
+            "ends a memory delete used to leave (gr503031). 'supersedes' "
+            "tombstone edges are kept."
+        ),
+    )
+    prn.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List the dangling edges and write nothing.",
+    )
+    prn.add_argument("--database-url", default=None, help="Postgres DSN override.")
     mirror = msub.add_parser(
         "mirror", help="Explicit faithful file/graph snapshot exchange."
     )
@@ -1451,6 +1506,8 @@ def run(args: argparse.Namespace) -> None:
                     f"memory sweep: claimed={result.claimed} "
                     f"retired={result.ok} failed={result.failed}"
                 )
+        elif args.memory_cmd == "prune-links":
+            print(render_prune_links(store, dry_run=args.dry_run), end="")
         elif args.recall_set is not None:
             from precis.cli._common import cli_embedder
 

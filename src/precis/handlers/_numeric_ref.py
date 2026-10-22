@@ -2519,18 +2519,15 @@ class NumericRefHandler(Handler):
             )
             return 0
 
-    def _delete(self, id: str | int | None) -> Response:
-        if id is None:
-            raise BadInput(
-                "delete requires id=",
-                next=f"delete(kind={self.kind!r}, id=N)",
-            )
-        ref_id = self._coerce_id(id)
+    def _resolve_ref_for_delete(self, ref_id: int) -> Ref:
+        """The delete verb's live-ref guard, shared by every ``_delete``.
+
+        NotFound names the ref's real kind on a mix-up (ids are one global
+        sequence); Gone when it was already soft-deleted.
+        """
         try:
-            self._resolve_live_ref(ref_id)
+            return self._resolve_live_ref(ref_id)
         except NotFound:
-            # ids are one global sequence: name the ref's real kind so a
-            # mixed-up id reads as a kind mix-up, not a missing row.
             other = self.store.fetch_refs_by_ids([ref_id], include_deleted=False)
             actual = other.get(ref_id)
             if actual is not None and actual.kind != self.kind:
@@ -2544,6 +2541,15 @@ class NumericRefHandler(Handler):
                     ),
                 ) from None
             raise
+
+    def _delete(self, id: str | int | None) -> Response:
+        if id is None:
+            raise BadInput(
+                "delete requires id=",
+                next=f"delete(kind={self.kind!r}, id=N)",
+            )
+        ref_id = self._coerce_id(id)
+        self._resolve_ref_for_delete(ref_id)
         self.store.retire_ref(ref_id)
         return Response(body=f"deleted {self._sense()} id={ref_id}")
 

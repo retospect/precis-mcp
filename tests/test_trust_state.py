@@ -312,6 +312,72 @@ def test_carry_names_its_predecessor(store: Store) -> None:
     assert rec["action"] == "carry" and rec["payload"]["carry_from"] == old
 
 
+def test_migrate_links_carries_a_considered_stamp(store: Store) -> None:
+    """Slice 1 remainder item 2: a considered link keeps its stamp when a
+    merge re-points it — each copied row inserts under its own carry act
+    naming the row it replaces."""
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        old = _memory(store, title="old")
+        new = _memory(store, title="survivor")
+        anchor = _memory(store, title="anchor")
+        lid = store.add_link(
+            src_ref_id=anchor, dst_ref_id=old, relation="related-to"
+        ).id
+    store.record_trust_act(
+        _consider(store, "link", lid), actor="reto", actor_type="human"
+    )
+    with store.tx() as conn:
+        assert store.migrate_links(old, new, conn=conn) == 1
+    (moved,) = [
+        l for l in store.links_for(new, direction="in") if l.src_ref_id == anchor
+    ]
+    assert _stamp(store, "link", moved.id) == ("generated", "considered", 1)
+    (rec,) = store.trust_acts_for("link", moved.id)
+    assert rec["action"] == "carry" and rec["payload"]["carry_from"] == lid
+    assert rec["after"] == {
+        "origin": "generated",
+        "confidence": "considered",
+        "version": 1,
+    }
+
+
+def test_migrate_links_dedup_keeps_the_existing_edge(store: Store) -> None:
+    """A copy that conflicts with a pre-existing twin inserts nothing and
+    binds no act: the twin keeps its own stamp and history."""
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        old = _memory(store, title="old")
+        new = _memory(store, title="survivor")
+        anchor = _memory(store, title="anchor")
+        twin = store.add_link(
+            src_ref_id=anchor, dst_ref_id=new, relation="related-to"
+        ).id
+        store.add_link(src_ref_id=anchor, dst_ref_id=old, relation="related-to")
+    with store.tx() as conn:
+        assert store.migrate_links(old, new, conn=conn) == 1
+    (only,) = store.links_for(new, direction="in")
+    assert only.id == twin
+    assert _stamp(store, "link", twin) == ("generated", "hunch", 1)
+    assert [a["action"] for a in store.trust_acts_for("link", twin)] == ["create"]
+
+
+def test_migrate_links_leaves_no_act_behind(store: Store) -> None:
+    """The per-row act state is transaction-local and restored: the merge's
+    next write on the same connection (the supersede path's ``supersedes``
+    edge) sees the caller's context, not the last row's carry."""
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        old = _memory(store, title="old")
+        new = _memory(store, title="survivor")
+        anchor = _memory(store, title="anchor")
+        store.add_link(src_ref_id=anchor, dst_ref_id=old, relation="related-to")
+        with store.tx() as conn:
+            store.migrate_links(old, new, conn=conn)
+            supersedes = store.add_link(
+                src_ref_id=new, dst_ref_id=old, relation="supersedes", conn=conn
+            ).id
+    assert _stamp(store, "link", supersedes) == ("generated", "hunch", 1)
+    assert [a["action"] for a in store.trust_acts_for("link", supersedes)] == ["create"]
+
+
 def test_stale_expected_version_is_refused(store: Store) -> None:
     with revision_context(trust_origin="generated", trust_actor_type="agent"):
         mid = _memory(store)

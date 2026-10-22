@@ -39,11 +39,15 @@ Slices, in build order:
    and SPENT are threads-only: check 2 found that runbooks and gotchas
    cite landed shas as durable knowledge. The AC5 recall test is unchanged
    (S1 touches no search path).
-2. **S2 — band placement in hub renders.** Order a hub's members ACTIVE,
-   SETTLED, SPENT in its fisheye and in `memory index --full`. The server
-   has no git checkout, so SPENT cannot be computed there; S2 places
-   ACTIVE by time and leaves SPENT to the lint. Touches
-   `utils/refeye.py` ordering, so the recall test must be re-run.
+2. **S2 — band placement in hub renders: built.** Order a hub's members
+   ACTIVE, SETTLED, SPENT in its fisheye and in `memory index --full`.
+   `utils/memory_hubs.band_order` heads ACTIVE (touched < 7d, or a
+   `section:threads` member whose title+body carries an open-work word —
+   the lint's `open_re` ported), then SETTLED+SPENT by recency: the server
+   has no git checkout, so SPENT cannot be computed there and stays with
+   `memory-lint --bands`. Covers the fisheye `contains` listing and its
+   `q='contains'` expansion plus `--full`'s per-hub blocks. Recall test
+   re-run, numbers unchanged (9/10 native+mirror, SET 4/36 both).
 3. **S3 — conventions index skill.** P0's first bullet as written (approved
    2026-09-14). Reto decides whether it is still wanted now that
    `conventions-as-findings.md` turns rules into findings: the skill's

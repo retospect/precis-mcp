@@ -110,3 +110,35 @@ def test_index_groups_by_hub_with_type_prefix_nesting_and_recency(hub: Hub) -> N
     )
     unfiled = lines.index("## Unfiled")
     assert f"Orphan ({_h(orphan)})" in lines[unfiled + 2]
+
+
+def test_full_index_orders_hub_members_active_band_first(hub: Hub) -> None:
+    """S2 (context-memory-hierarchy): ``memory index --full`` orders a hub's
+    members like the fisheye does — ACTIVE (touched < 7d, or a threads node
+    with open-work words) first, then the rest by recency."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root", "x", HUB)
+    fresh = _note(handler, "Fresh", "f", "section:gotchas")
+    open_thread = _note(handler, "Open", "Left: blocked on review", "section:threads")
+    mid = _note(handler, "Mid", "m", "section:runbooks")
+    for m in (fresh, open_thread, mid):
+        _part_of(store, m, root)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '30 days' WHERE ref_id = %s",
+            (open_thread,),
+        )
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '10 days' WHERE ref_id = %s",
+            (mid,),
+        )
+
+    lines = render_memory_index(store, full=True).splitlines()
+
+    want = [_h(fresh), _h(open_thread), _h(mid)]
+    got = [
+        next(h for h in want if f"({h})" in ln)
+        for ln in lines
+        if any(f"({h})" in ln for h in want)
+    ]
+    assert got == want

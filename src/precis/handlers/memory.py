@@ -1656,6 +1656,64 @@ class MemoryHandler(NumericRefHandler):
             return Response(body=f"no {self._sense()} entries on page {page}")
         return Response(body="\n".join(lines))
 
+    # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
+
+    def _delete(self, id: str | int | None) -> Response:
+        """Soft-delete a memory and drop its link edges in one transaction.
+
+        The base ``retire_ref`` leaves the ref's inbound and outbound
+        links pointing at a tombstone — ``fisheye`` renders them as dead
+        ends and ``memory-lint`` counts them (2026-10-21: 17 unlinked by
+        hand). When ``meta.superseded_by`` names a live memory the edges
+        are retargeted onto it instead (``migrate_links``, the same move
+        ``supersede`` makes); otherwise they're deleted outright. The ack
+        reports what happened to the edges.
+        """
+        if id is None:
+            raise BadInput(
+                "delete requires id=",
+                next=f"delete(kind={self.kind!r}, id=N)",
+            )
+        ref_id = self._coerce_id(id)
+        ref = self._resolve_ref_for_delete(ref_id)
+        successor: int | None = None
+        raw_sup = (ref.meta or {}).get("superseded_by")
+        if raw_sup is not None:
+            try:
+                cand = int(raw_sup)
+            except (TypeError, ValueError):
+                cand = -1
+            if (
+                cand != ref_id
+                and self.store.get_ref(kind="memory", id=cand) is not None
+            ):
+                successor = cand
+        with self.store.tx() as conn:
+            counts = conn.execute(
+                "SELECT count(*) FILTER (WHERE dst_ref_id = %s)::int AS inbound,"
+                "       count(*) FILTER (WHERE src_ref_id = %s)::int AS outbound"
+                "  FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+                (ref_id, ref_id, ref_id, ref_id),
+            ).fetchone()
+            n_in, n_out = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+            if successor is not None:
+                moved = self.store.migrate_links(ref_id, successor, conn=conn)
+            else:
+                removed = self.store.unlink_ref(ref_id, conn=conn)
+            self.store.retire_ref(ref_id, conn=conn)
+        if successor is not None:
+            detail = (
+                f"{moved} link(s) migrated to memory id={successor} "
+                f"(meta.superseded_by)"
+            )
+        else:
+            detail = (
+                f"{n_in} inbound + {n_out} outbound link(s) removed"
+                if (n_in or n_out or removed)
+                else "no links to remove"
+            )
+        return Response(body=f"deleted {self._sense()} id={ref_id} — {detail}")
+
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 
     def supersede(

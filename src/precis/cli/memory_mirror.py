@@ -464,6 +464,7 @@ def import_mirror(
                         adopt[n] = by_file[n][0]
             else:
                 for rid, _title, _fname in found:
+                    store.unlink_ref(rid, conn=conn)
                     store.retire_ref(rid, conn=conn)
                     report.retired.append(f"me{rid}")
         folded = {name.casefold(): name for name in nodes}
@@ -485,6 +486,7 @@ def import_mirror(
                     "restore the file or use --missing keep"
                 )
             for name in report.missing:
+                store.unlink_ref(nodes[name][0], conn=conn)
                 store.retire_ref(nodes[name][0], conn=conn)
                 report.retired_missing.append(f"me{nodes[name][0]}")
         changed: set[str] = set()

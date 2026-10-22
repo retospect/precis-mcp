@@ -13,6 +13,7 @@ retirement sweep (:mod:`precis.workers.memory_thread_sweep`).
 from __future__ import annotations
 
 import re
+from datetime import date
 
 #: Open tag marking a memory as a campaign resume node.
 THREADS_TAG = "section:threads"
@@ -39,6 +40,29 @@ _LEFT_DONE_RE = re.compile(r"^none\.?$", re.IGNORECASE)
 _TITLE_STAMP_RE = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}:\d{2}")
 
 _TRAILING_SEPARATORS = " -–—:;,|("
+
+#: ``YYYY-MM-DD`` anywhere in a body — a thread node's *dated section*. The
+#: newest one is the currency signal the landed verdict (scripts/memory-lint)
+#: and the sweep's suspect guard share.
+_BODY_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+
+
+def newest_body_date(body: str) -> date | None:
+    """The newest ``YYYY-MM-DD`` in the body, or ``None`` when undated.
+
+    "Newest dated section" in the retire rule (gr503035): a date inside
+    the stale window means the node's own text claims to be current — a
+    currency suspect, never a sweep/lint retire action.
+    """
+    best: date | None = None
+    for m in _BODY_DATE_RE.finditer(body or ""):
+        try:
+            d = date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        if best is None or d > best:
+            best = d
+    return best
 
 
 def first_left(body: str) -> str | None:
@@ -73,5 +97,6 @@ __all__ = [
     "THREADS_TAG",
     "first_left",
     "left_is_done",
+    "newest_body_date",
     "title_prefix",
 ]

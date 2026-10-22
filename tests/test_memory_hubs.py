@@ -255,6 +255,75 @@ def test_manifest_carries_hub_and_qualified_columns(hub: Hub, tmp_path: Path) ->
 # ── recency: ordering and the recall stamp ──────────────────────────
 
 
+def test_hub_members_order_active_band_first(hub: Hub) -> None:
+    """S2 (context-memory-hierarchy): a hub's ``contains`` listing heads the
+    ACTIVE band — members touched < 7 days, or a ``section:threads`` member
+    carrying open-work words — then the rest by recency. Open work is
+    threads-scoped: a stale runbook saying "pending" stays in the tail
+    (SPENT lives there too — its sha-in-main oracle needs git, so the
+    server cannot compute it)."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root", "x", HUB)
+    fresh = _note(handler, "Fresh gotcha", "f", "section:gotchas")
+    open_thread = _note(
+        handler, "Open thread", "Left: blocked on review", "section:threads"
+    )
+    mid = _note(handler, "Mid runbook", "m", "section:runbooks")
+    done_thread = _note(handler, "Done thread", "Left: none", "section:threads")
+    stale = _note(handler, "Stale runbook", "the pending queue", "section:runbooks")
+    for m in (fresh, open_thread, mid, done_thread, stale):
+        _part_of(store, m, root)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '30 days' "
+            "WHERE ref_id = ANY(%s)",
+            ([open_thread, stale],),
+        )
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '20 days' WHERE ref_id = %s",
+            (done_thread,),
+        )
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '10 days' WHERE ref_id = %s",
+            (mid,),
+        )
+
+    want = [_h(m) for m in (fresh, open_thread, mid, done_thread, stale)]
+    for out in (
+        render_eye(store, _h(root), "fisheye+1hop"),
+        render_eye(store, _h(root), "fisheye+1hop", q="contains"),
+    ):
+        contains = [ln for ln in out.splitlines() if "contains: me" in ln]
+        assert [next(h for h in want if h in ln) for ln in contains] == want
+
+
+def test_band_order_failure_falls_back_to_recency(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.utils import memory_hubs
+
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    # a stale thread with open work would head the list on a good band read
+    ids = [_note(handler, "T0", "Left: blocked", "section:threads")] + [
+        _note(handler, f"M{i}") for i in range(2)
+    ]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '10 days' WHERE ref_id = %s",
+            (ids[0],),
+        )
+
+    def boom(*_a: object, **_k: object) -> dict[int, str]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(memory_hubs, "_member_texts", boom)
+    # the band read failed soft: plain recency order, the stale thread last
+    assert memory_hubs.band_order(store, ids)[-1] == ids[0]
+    # and a whole-store fault returns the input order
+    monkeypatch.setattr(memory_hubs, "recency_stamps", boom)
+    assert memory_hubs.band_order(store, ids) == ids
+
+
 def test_hub_members_newest_first_by_greatest_of_view_recall_update(hub: Hub) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)

@@ -51,6 +51,7 @@ from precis.utils.memory_threads import (
     THREADS_TAG,
     first_left,
     left_is_done,
+    newest_body_date,
 )
 from precis.workers.runner import BatchResult
 
@@ -102,7 +103,7 @@ class SweepCandidate:
 
     ref_id: int
     title: str
-    rule: str  # "a" | "b" | "c"
+    rule: str  # "a" | "b" | "c" | "s" (currency suspect — listed, never retired)
     reason: str  # human-readable why, for the log line and dry-run list
     #: Rule c only: the ``Left:`` remainder when it names open work —
     #: minted into a carry-over todo before the node retires.
@@ -148,6 +149,26 @@ def plan_thread_sweep(
                 )
             )
         elif updated_at is not None and updated_at < cutoff:
+            # gr503035: a dated section inside the stale window means the
+            # node's own text claims to be current — a currency suspect
+            # (the same guard memory-lint's landed verdict uses), never a
+            # retire action. The sweep has no git oracle, so the
+            # "older than the newest cited landing" half of the rule is
+            # lint-side; this is the half both agree on.
+            fresh = newest_body_date(str(body or ""))
+            fresh_from = ((now or datetime.now(UTC)).date()) - timedelta(
+                days=STALE_DAYS
+            )
+            if fresh is not None and fresh >= fresh_from:
+                plan.append(
+                    SweepCandidate(
+                        ref_id,
+                        title,
+                        "s",
+                        f"currency suspect — dated section {fresh} within {STALE_DAYS}d",
+                    )
+                )
+                continue
             age = ((now or datetime.now(UTC)) - updated_at).days
             carry = left if left else None
             plan.append(
@@ -219,7 +240,14 @@ def run_memory_thread_sweep_pass(
     plan = plan_thread_sweep(store, now=now)
     retired = 0
     failed = 0
+    suspects = 0
     for item in plan:
+        if item.rule == "s":
+            # currency suspects are listed (CLI dry-run shows them) and
+            # logged — never retired (gr503035).
+            suspects += 1
+            log.info("memory_thread_sweep: suspect me%d — %s", item.ref_id, item.reason)
+            continue
         if dry_run:
             log.info(
                 "memory_thread_sweep: would retire me%d rule=%s — %s",
@@ -231,6 +259,11 @@ def run_memory_thread_sweep_pass(
         try:
             todo_id: int | None = None
             with store.tx() as conn:
+                # gr503031: drop the node's edges before retiring so the
+                # tombstone leaves no dead ends (same cleanup as the
+                # delete verb). Runs before the leftover todo is minted —
+                # its pointer edge is the intentional exception.
+                store.unlink_ref(item.ref_id, conn=conn)
                 if item.rule == "c" and item.left:
                     todo_id = _mint_leftover_todo(store, item, conn)
                 if item.superseded_by is not None:
@@ -253,7 +286,7 @@ def run_memory_thread_sweep_pass(
             failed += 1
     return BatchResult(
         handler="memory_thread_sweep",
-        claimed=len(plan),
+        claimed=len(plan) - suspects,
         ok=retired,
         failed=failed,
     )

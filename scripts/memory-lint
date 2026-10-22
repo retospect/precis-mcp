@@ -211,11 +211,11 @@ if [[ -n "$SCAN_DIR" ]]; then
         grep -ohiE '\b[0-9a-f]{7,40}\b' "${topic_files[@]}" 2>/dev/null | grep -iE '[a-f]' \
             | tr 'A-F' 'a-f' | sort -u > "$SHAMAP.out" || true
         if [[ -s "$SHAMAP.out" ]]; then
-            git rev-list main > "$SHAMAP.main" 2>/dev/null || : > "$SHAMAP.main"
+            git log --format='%H %ct' main > "$SHAMAP.main" 2>/dev/null || : > "$SHAMAP.main"
             sed 's/$/^{commit}/' "$SHAMAP.out" | git cat-file --batch-check 2>/dev/null \
                 | paste -d' ' "$SHAMAP.out" - \
-                | awk -v mainf="$SHAMAP.main" 'BEGIN { while ((getline l < mainf) > 0) m[l] = 1 }
-                    { if ($3 == "commit") print $1 "\t" (($2 in m) ? 1 : 0); else print $1 "\tx" }' > "$SHAMAP" || true
+                | awk -v mainf="$SHAMAP.main" 'BEGIN { while ((getline l < mainf) > 0) { split(l, p, " "); m[p[1]] = 1; md[p[1]] = p[2] } }
+                    { if ($3 == "commit") print $1 "\t" (($2 in m) ? 1 : 0) "\t" (($2 in m) ? md[$2] : "-"); else print $1 "\tx\t-" }' > "$SHAMAP" || true
         fi
     fi
 fi
@@ -224,6 +224,79 @@ sha_state() {
     local r
     r=$(awk -F'\t' -v s="$(printf '%s' "$1" | tr 'A-F' 'a-f')" '$1 == s { print $2; exit }' "$SHAMAP")
     printf '%s' "${r:-x}"
+}
+# sha_date <sha> → its committer epoch when the sha resolves to a commit in
+# main, else "".
+sha_date() {
+    awk -F'\t' -v s="$(printf '%s' "$1" | tr 'A-F' 'a-f')" '$1 == s && $2 == 1 { print $3; exit }' "$SHAMAP"
+}
+# newest_landing <file> → newest committer epoch among the file's cited shas
+# that are in main — "the newest cited landing" of the retire rule (gr503035).
+newest_landing() {
+    local s d best=0
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        d=$(sha_date "$s")
+        [[ -n "$d" && "$d" != "-" && "$d" -gt "$best" ]] && best="$d"
+    done < <(grep -ohiE '\b[0-9a-f]{7,40}\b' "$1" | grep -iE '[a-f]' | tr 'A-F' 'a-f' | sort -u)
+    (( best )) && printf '%s' "$best"
+    return 0
+}
+# newest_date <file> → the newest YYYY-MM-DD in the body — the "newest dated
+# section" the retire rule and the thread sweep's suspect guard share.
+newest_date() { grep -ohE '[0-9]{4}-[0-9]{2}-[0-9]{2}' "$1" 2>/dev/null | sort -r | head -n 1 || true; }
+
+# marker_state <file> → done | open | absent for the first Left:/NEXT: line.
+marker_state() {
+    local nextline nexttext
+    nextline=$(grep -m1 -E '^[-*[:space:]]*(NEXT([^A-Za-z0-9_]|$)|Left:)' "$1" || true)
+    [[ -z "$nextline" ]] && { echo absent; return; }
+    nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)[^A-Za-z0-9]*//')
+    if [[ -z "${nexttext//[[:space:]]/}" ]]; then
+        # bare `NEXT:`/`Left:` heading: open if a list item follows
+        nexttext=$(awk '/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)/ { f=1; next } f && NF { print; exit }' "$1" \
+            | sed -E 's/^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]+//' | grep -E '^[[:space:]]*[^[:space:]]' || true)
+    fi
+    if [[ -z "${nexttext//[[:space:]]/}" ]] || printf '%s' "$nexttext" | grep -qiE '^(done|shipped|none|nothing)\b'; then
+        echo done
+    else
+        echo open
+    fi
+}
+# thread_verdict <file> → retire | suspect | live for a landed-oracle-true
+# thread node (gr503035): Left:/NEXT: done → retire; open → live (not a
+# suspect — the sweep's rule c is its honest path). With no marker the dated
+# rule decides: newest dated section older than the newest cited landing AND
+# older than 14 days → retire, else a currency suspect — listed, never acted
+# on by the sweep. The 2026-10-21 incident deleted three live threads on
+# shas alone.
+thread_verdict() {
+    local ms nd nl nd_e cutoff_e
+    ms=$(marker_state "$1")
+    case "$ms" in
+        done) echo retire; return ;;
+        open) echo live; return ;;
+    esac
+    nd=$(newest_date "$1")
+    nl=$(newest_landing "$1")
+    if [[ -n "$nd" && -n "$nl" ]]; then
+        nd_e=$(epoch_of "$nd" || true)
+        cutoff_e=$(( $(date +%s) - 14*86400 ))
+        # newest dated section older than the newest cited landing AND
+        # older than 14 days → the thread predates its landings → retire
+        [[ -n "$nd_e" ]] && (( nd_e < nl && nd_e < cutoff_e )) && { echo retire; return; }
+    fi
+    echo suspect
+}
+suspects=()
+# add_suspect <label> <reason> - one currency-suspect line per node: the
+# landed-thread scan (2) and the retire scan (4) can both flag the same node.
+add_suspect() {
+    local e
+    for e in "${suspects[@]+"${suspects[@]}"}"; do
+        [[ "$e" == "$1 — "* ]] && return 0
+    done
+    suspects+=("$1 — $2")
 }
 
 # 2. landed-thread scan. The `## Threads` section is where the oracle below
@@ -286,12 +359,17 @@ while IFS= read -r b; do
     [[ -z "$b" ]] && continue
     tf="$SCAN_DIR/$b"; [[ -f "$tf" ]] || continue
     if landed_body "$tf"; then
-        if (( GRAPH )); then
-            echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}')"
-        else
-            echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
+        v=$(thread_verdict "$tf")
+        if [[ "$v" == retire ]]; then
+            if (( GRAPH )); then
+                echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}')"
+            else
+                echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
+            fi
+            problems=$((problems+1))
+        elif [[ "$v" == suspect ]]; then
+            add_suspect "$(label_of "$b" "$tf")" "cited shas all landed but its text is fresher than the newest landing (or undated)"
         fi
-        problems=$((problems+1))
     fi
 done <<< "$threads"
 
@@ -488,7 +566,11 @@ elif (( BANDS )); then
         done
         if [[ "$band" != ACTIVE && "$sec" == threads && -f "$tf" ]]; then
             if grep -qiE "$open_re" "$tf"; then band=ACTIVE
-            elif landed_body "$tf"; then band=SPENT; fi
+            elif landed_body "$tf"; then
+                v=$(thread_verdict "$tf")
+                [[ "$v" == retire ]] && band=SPENT
+                [[ "$v" == live ]] && band=ACTIVE
+            fi
         fi
         # Leading-paren patterns: a bare `ACTIVE)` closes the enclosing $( early.
         case "$band" in (ACTIVE) r=0 ;; (SETTLED) r=1 ;; (*) r=2 ;; esac
@@ -561,19 +643,16 @@ if [[ -n "$SCAN_DIR" ]]; then
                 is_thread=1
             fi
             if (( is_thread )); then
-                nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)[^A-Za-z0-9]*//')
-                if [[ -z "${nexttext//[[:space:]]/}" ]]; then
-                    # bare `NEXT:`/`Left:` heading: open if a list item follows on the next non-blank line
-                    nexttext=$(awk '/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)/ { f=1; next } f && NF { print; exit }' "$tf" \
-                        | sed -E 's/^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]+//' | grep -E '^[[:space:]]*[^[:space:]]' || true)
-                fi
-                if [[ -z "${nexttext//[[:space:]]/}" ]] || printf '%s' "$nexttext" | grep -qiE '^(done|shipped|none|nothing)\b'; then
-                    n_res=0; n_out=0
-                    while IFS= read -r s; do
-                        [[ -z "$s" ]] && continue
-                        case "$(sha_state "$s")" in 1) n_res=$((n_res+1));; 0) n_out=$((n_out+1));; esac
-                    done < <(grep -ohiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)
-                    (( n_res > 0 && n_out == 0 )) && reasons+=("thread landed ($n_res cited commit(s), all in main; NEXT empty/done)")
+                n_res=0; n_out=0
+                while IFS= read -r s; do
+                    [[ -z "$s" ]] && continue
+                    case "$(sha_state "$s")" in 1) n_res=$((n_res+1));; 0) n_out=$((n_out+1));; esac
+                done < <(grep -ohiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)
+                if (( n_res > 0 && n_out == 0 )); then
+                    case "$(thread_verdict "$tf")" in
+                        retire) reasons+=("thread landed ($n_res cited commit(s), all in main)") ;;
+                        suspect) add_suspect "$(label_of "$b" "$tf")" "landed shas but a dated section is within the landing/14d window" ;;
+                    esac
                 fi
             fi
         fi
@@ -583,7 +662,18 @@ if [[ -n "$SCAN_DIR" ]]; then
         [[ -n "$mod" ]] && mod_e=$(epoch_of "$mod" || true)
         [[ -z "$mod_e" ]] && mod_e=$(stat -c %Y "$tf" 2>/dev/null || stat -f %m "$tf" 2>/dev/null || echo "$now_e")
         age_d=$(( (now_e - mod_e) / 86400 ))
-        (( age_d > 30 )) && reasons+=("stale >30d (${age_d}d)")
+        if (( age_d > 30 )); then
+            # A threads node whose body carries a date inside the 14d window
+            # is a currency suspect — the same guard the sweep applies —
+            # never a retire line (gr503035).
+            nd=$(newest_date "$tf"); nd_e=""
+            [[ -n "$nd" ]] && nd_e=$(epoch_of "$nd" || true)
+            if [[ "${is_thread:-0}" == 1 && -n "$nd_e" ]] && (( now_e - nd_e < 14*86400 )); then
+                add_suspect "$(label_of "$b" "$tf")" "stale ${age_d}d by the update clock but a dated section is within 14d"
+            else
+                reasons+=("stale >30d (${age_d}d)")
+            fi
+        fi
         if (( ${#reasons[@]} )); then
             rs=$(printf '%s; ' "${reasons[@]}"); rs="${rs%; }"
             echo "  retire candidate → $(label_of "$b" "$tf"): $rs"
@@ -592,6 +682,10 @@ if [[ -n "$SCAN_DIR" ]]; then
     done
 fi
 echo "retire candidates: $retire (listed only; verify, then retire by hand)"
+if (( ${#suspects[@]} )); then
+    for sp in "${suspects[@]}"; do echo "  currency suspect → $sp"; done
+fi
+echo "currency suspects: ${#suspects[@]} (listed only — a dated section is fresher than the newest cited landing; the sweep never retires these)"
 
 # 5. per-claim currency ledger (--currency) — the cheap, deterministic half of
 #    the reconsolidation pass. git + filesystem oracles only (offline, exact);

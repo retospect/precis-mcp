@@ -39,7 +39,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from psycopg import Connection
-from psycopg.errors import ForeignKeyViolation
+from psycopg.errors import ForeignKeyViolation, InFailedSqlTransaction
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -56,6 +56,7 @@ from precis.store._mappers import (
 from precis.store._tag_filter import build_tag_filter
 from precis.store.revision_context import (
     RevisionContext,
+    TrustAct,
     current_revision_context,
     trust_door,
 )
@@ -1688,9 +1689,16 @@ class LinksMixin:
            (memory links are ref-level so those are NULL; a paper→memory
            link keeps the paper's chunk endpoint, which stays valid).
            ``ON CONFLICT DO NOTHING`` dedups against the
-           ``NULLS NOT DISTINCT`` unique index; the ``NOT (...)`` guard
-           drops rows that would become self-loops after substitution
-           (the schema CHECK would otherwise raise, not conflict).
+           ``NULLS NOT DISTINCT`` unique index; rows that would become
+           self-loops after substitution are skipped (the schema CHECK
+           would otherwise raise, not conflict). Each converted copy
+           inserts under its own ``carry`` act naming the row it replaces,
+           so the copy keeps the original's stamp — a considered edge
+           stays considered across the merge rather than re-entering as a
+           ``computed/hunch`` row (0214; graph-node-trust-state slice 1).
+           A copy whose new ends are not trust-converted takes no act and
+           stays unknown/unknown v0; a conflict-skipped copy leaves its
+           act unbound, so the pre-existing twin edge keeps its own stamp.
         2. DELETE the original rows touching ``old_ref_id``.
 
         Returns the number of old rows deleted (the migrated count;
@@ -1716,33 +1724,186 @@ class LinksMixin:
                 next="supersede those measures onto the survivor first; re-pointing "
                 "measures on merge is not built yet",
             )
-        conn.execute(
+        rows = conn.execute(
             """
-            INSERT INTO links
-              (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
-               relation, set_by, meta)
-            SELECT
-              CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
-              src_chunk_id,
-              CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END,
-              dst_chunk_id,
-              relation, set_by, meta
-            FROM links
-            WHERE (src_ref_id = %(old)s OR dst_ref_id = %(old)s)
-              AND NOT (
-                (CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END)
-                = (CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END)
-                AND src_chunk_id IS NOT DISTINCT FROM dst_chunk_id
-              )
-            ON CONFLICT
-              (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation)
-              DO NOTHING
+            SELECT link_id, src_chunk_id, dst_chunk_id, relation, set_by, meta,
+                   CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
+                   CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END,
+                   precis_trust_link_converted(ARRAY[
+                       CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
+                       CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END])
+              FROM links
+             WHERE src_ref_id = %(old)s OR dst_ref_id = %(old)s
+             ORDER BY link_id
             """,
             {"old": old_ref_id, "new": new_ref_id},
-        )
+        ).fetchall()
+        if rows:
+            # A carry act binds to the first row of its relation inserted
+            # while it is set, so each copy gets its own act — set per row
+            # with the bound marker cleared. Both settings are
+            # transaction-local; save and restore them so the caller's
+            # context (and any create-time act it still expects to bind)
+            # is what the merge's later writes see.
+            prior_act, prior_bound = conn.execute(
+                "SELECT current_setting('precis.trust_act', true),"
+                "       current_setting('precis.trust_act_bound', true)"
+            ).fetchone() or (None, None)
+            try:
+                for (
+                    link_id,
+                    src_chunk,
+                    dst_chunk,
+                    relation,
+                    set_by,
+                    meta,
+                    new_src,
+                    new_dst,
+                    converted,
+                ) in rows:
+                    if new_src == new_dst and src_chunk == dst_chunk:
+                        continue  # a self-loop after substitution
+                    act = ""
+                    if converted:
+                        act = TrustAct(
+                            action="carry",
+                            target_kind="link",
+                            create_match=str(relation),
+                            carry_from=int(link_id),
+                            reason=(
+                                f"carried over the merge of ref {old_ref_id} "
+                                f"into ref {new_ref_id}"
+                            ),
+                        ).to_json()
+                    conn.execute(
+                        "SELECT set_config('precis.trust_act', %s, true),"
+                        "       set_config('precis.trust_act_bound', '', true)",
+                        (act,),
+                    )
+                    conn.execute(
+                        "INSERT INTO links (src_ref_id, src_chunk_id, "
+                        "  dst_ref_id, dst_chunk_id, relation, set_by, meta) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (src_ref_id, src_chunk_id, dst_ref_id, "
+                        "  dst_chunk_id, relation) DO NOTHING",
+                        (
+                            new_src,
+                            src_chunk,
+                            new_dst,
+                            dst_chunk,
+                            relation,
+                            set_by,
+                            Jsonb(meta or {}),
+                        ),
+                    )
+            finally:
+                try:
+                    conn.execute(
+                        "SELECT set_config('precis.trust_act', %s, true),"
+                        "       set_config('precis.trust_act_bound', %s, true)",
+                        (prior_act or "", prior_bound or ""),
+                    )
+                except InFailedSqlTransaction:
+                    pass  # a dead transaction keeps no settings to restore
         cur = conn.execute(
             "DELETE FROM links WHERE src_ref_id = %(old)s OR dst_ref_id = %(old)s",
             {"old": old_ref_id},
+        )
+        return cur.rowcount or 0
+
+    def unlink_ref(self, ref_id: int, *, conn: Connection) -> int:
+        """Hard-delete every link row touching ``ref_id``, both directions.
+
+        The memory soft-delete's edge cleanup (gr503031): a retired ref
+        leaves dead ends in every neighbour's fisheye ring, so the delete
+        drops its edges in the same transaction rather than orphaning
+        them. ``supersedes`` edges to *this* node die with it — the
+        tombstone trail lives on ``meta.superseded_by``, not on a ring
+        edge. Caller supplies ``conn`` so the delete and the retire are
+        atomic. Returns the row count.
+        """
+        cur = conn.execute(
+            "DELETE FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (ref_id, ref_id),
+        )
+        return cur.rowcount or 0
+
+    def dangling_links(
+        self,
+        *,
+        kinds: tuple[str, ...] = ("memory",),
+        conn: Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Link rows whose src or dst ref is retired or missing, where at
+        least one endpoint resolves to one of ``kinds`` (a missing
+        endpoint can still match through the other).
+
+        ``supersedes`` rows are skipped: an edge to a superseded-and-
+        retired original is the intended tombstone trail (the lint's
+        prose-vs-edge check and :meth:`follow_supersede` read it), not a
+        dead end. The ``precis memory prune-links`` report/prune reads
+        this; ``dict`` rows carry ``link_id``, ``src_ref_id``,
+        ``dst_ref_id``, ``relation`` plus ``src_state``/``dst_state`` in
+        ``{'live', 'retired', 'missing'}`` for the listing.
+        """
+        sql = """
+            SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation,
+                   s.kind, s.retired_at IS NOT NULL,
+                   d.kind, d.retired_at IS NOT NULL
+              FROM links l
+              LEFT JOIN refs s ON s.ref_id = l.src_ref_id
+              LEFT JOIN refs d ON d.ref_id = l.dst_ref_id
+             WHERE l.relation <> 'supersedes'
+               AND (s.ref_id IS NULL OR s.retired_at IS NOT NULL
+                    OR d.ref_id IS NULL OR d.retired_at IS NOT NULL)
+               AND (s.kind = ANY(%s) OR d.kind = ANY(%s))
+             ORDER BY l.link_id
+        """
+
+        def _do(c: Connection) -> list[dict[str, Any]]:
+            rows = c.execute(sql, (list(kinds), list(kinds))).fetchall()
+            out = []
+            for lid, src, dst, rel, skind, sret, dkind, dret in rows:
+                out.append(
+                    {
+                        "link_id": int(lid),
+                        "src_ref_id": int(src),
+                        "dst_ref_id": int(dst),
+                        "relation": str(rel),
+                        "src_state": (
+                            "missing"
+                            if skind is None
+                            else "retired"
+                            if sret
+                            else "live"
+                        ),
+                        "dst_state": (
+                            "missing"
+                            if dkind is None
+                            else "retired"
+                            if dret
+                            else "live"
+                        ),
+                        "src_kind": skind,
+                        "dst_kind": dkind,
+                    }
+                )
+            return out
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def delete_links(self, link_ids: list[int], *, conn: Connection) -> int:
+        """Delete link rows by ``link_id`` — the write half of
+        ``dangling_links``/``precis memory prune-links``. Caller supplies
+        ``conn`` so the prune can be verified inside one transaction.
+        Returns the row count."""
+        if not link_ids:
+            return 0
+        cur = conn.execute(
+            "DELETE FROM links WHERE link_id = ANY(%s)", (list(link_ids),)
         )
         return cur.rowcount or 0
 

@@ -362,9 +362,12 @@ trust-filtered. The as-built contract lives in the 0214 header and
    fine in compat mode and refused only under strict. A
    `handlers/structure.py` link note (`merge_meta`) is refused only on a
    structure→converted link first stamped elsewhere; unverified.
-2. **Carry on copy.** `migrate_links` copies links as new `computed/hunch`
-   rows, so a considered link loses its stamp across a paper merge. A
-   per-row `carry` act is the fix.
+2. **Carry on copy — BUILT (tree `trust-carry`, 2026-10-21).**
+   `migrate_links` copied links as new `computed/hunch` rows, so a
+   considered link lost its stamp across a paper merge. Now each
+   converted copy inserts under a per-row `carry` act naming the row it
+   replaces; unconverted copies stay v0 and a deduped twin keeps its own
+   stamp.
 3. **Capability.** The GUCs are transport. Human origin and the operator
    acts are gated in Python only (MCP refuses `human`, `correct-origin` and
    `legacy-import`). An authenticated ingress or DB-role capability still

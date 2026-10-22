@@ -12,10 +12,14 @@ gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.eye_render import _HUB_TAG, _VERBATIM_CAP, _hub_ids
+from precis.utils.memory_threads import THREADS_TAG
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +112,111 @@ def recency_stamps(store: Store, ref_ids: list[int]) -> dict[int, Any]:
             (list(ref_ids),),
         ).fetchall()
     return {int(r[0]): r[1] for r in rows}
+
+
+#: Days a member may go untouched and still head its hub — the ACTIVE band's
+#: time arm. ``scripts/memory-lint --bands`` uses the same ``< 7`` day window.
+BAND_ACTIVE_DAYS = 7
+
+#: Open-work words keeping a ``section:threads`` member ACTIVE however old it
+#: is — the same alternatives ``scripts/memory-lint``'s ``open_re`` greps an
+#: exported node file with (that file is ``# <title>`` + body, so this scans
+#: title + body too). Open work is threads-scoped on purpose: a runbook or
+#: gotcha legitimately cites "pending"/"deferred" as durable knowledge.
+_OPEN_WORK_RE = re.compile(
+    r"unshipped|not deployed|not shipped|deferred|remain|residual|pending"
+    r"|blocked|dark|next|todo|wip|design-only|proposal|roadmap|backlog",
+    re.IGNORECASE,
+)
+
+
+def band_order(
+    store: Store,
+    ref_ids: list[int],
+    *,
+    tags: Mapping[int, Iterable[str]] | None = None,
+    stamps: Mapping[int, Any] | None = None,
+    now: datetime | None = None,
+) -> list[int]:
+    """``ref_ids`` in band order: ACTIVE members first, then the rest —
+    recency (viewed/recalled/updated, newest first) inside each group.
+
+    The server-side half of the band placement
+    (``docs/backlog/context-memory-hierarchy.md`` S2): a hub's members
+    render ACTIVE, SETTLED, SPENT. SPENT — every cited sha already in
+    ``main`` — needs a git checkout no server has, so SETTLED and SPENT
+    render as one tail group; ``scripts/memory-lint --bands`` keeps the
+    three-band split.
+
+    ACTIVE = touched within :data:`BAND_ACTIVE_DAYS`, or a
+    ``section:threads`` member whose title+body carries an open-work word
+    (:data:`_OPEN_WORK_RE`). Fail-soft like the recency read it replaces:
+    a store fault returns the input order (stamps unreadable) or the plain
+    recency order (band read failed). ``tags`` is the caller's
+    ``{id: tag values}`` map when it has one (``ref_tags_bulk`` otherwise,
+    fetched for stale members only)."""
+    ids = [int(i) for i in ref_ids]
+    if len(ids) < 2:
+        return ids
+    if stamps is None:
+        try:
+            stamps = recency_stamps(store, ids)
+        except Exception:
+            log.debug("band order recency read failed", exc_info=True)
+            return ids
+    oldest = datetime.min.replace(tzinfo=UTC)
+    ordered = sorted(ids, key=lambda i: stamps.get(i) or oldest, reverse=True)
+    try:
+        active = _band_active(store, ordered, tags=tags, stamps=stamps, now=now)
+    except Exception:
+        log.debug("band order band read failed", exc_info=True)
+        return ordered
+    return [i for i in ordered if i in active] + [i for i in ordered if i not in active]
+
+
+def _band_active(
+    store: Store,
+    ids: list[int],
+    *,
+    tags: Mapping[int, Iterable[str]] | None,
+    stamps: Mapping[int, Any],
+    now: datetime | None,
+) -> set[int]:
+    """The ACTIVE-band ids among ``ids`` (see :func:`band_order`)."""
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=BAND_ACTIVE_DAYS)
+    oldest = datetime.min.replace(tzinfo=UTC)
+    active = {i for i in ids if (stamps.get(i) or oldest) >= cutoff}
+    stale = [i for i in ids if i not in active]
+    if not stale:
+        return active
+    if tags is None:
+        tags = {
+            rid: {v for _ns, v in pairs}
+            for rid, pairs in store.ref_tags_bulk(stale).items()
+        }
+    stale_threads = [i for i in stale if THREADS_TAG in set(tags.get(i, ()))]
+    if not stale_threads:
+        return active
+    texts = _member_texts(store, stale_threads)
+    return active | {i for i in stale_threads if _OPEN_WORK_RE.search(texts.get(i, ""))}
+
+
+def _member_texts(store: Store, ref_ids: list[int]) -> dict[int, str]:
+    """``{ref id: '<title>\\n<body>'}`` — the text the lint's ``open_re``
+    scan sees in an exported ``<handle>.md`` (``# <title>`` line + body)."""
+    refs = store.fetch_refs_by_ids(ref_ids)
+    texts = {i: str(getattr(refs[i], "title", "") or "") for i in ref_ids if i in refs}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, text FROM chunks "
+            "WHERE ref_id = ANY(%s) AND chunk_kind = 'memory_body' "
+            "AND ord >= 0 ORDER BY ord",
+            (list(ref_ids),),
+        ).fetchall()
+    for rid, text in rows:
+        if int(rid) in texts:
+            texts[int(rid)] += "\n" + str(text or "")
+    return texts
 
 
 def accessed_dates(store: Store, ref_ids: list[int]) -> dict[int, str]:

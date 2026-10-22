@@ -90,9 +90,11 @@ graph-health-metrics, five parked gripes, and the seam with
    `revisions.trust_acts`, and six converted verb kinds plus the taproot,
    garden and merge doors. Conversion is per kind (papers stay v0). Review
    findings fixed 2026-10-15 (non-verb writers, paper doors, lock order);
-   landing by /qland per Reto's 2026-10-15 ruling, strict mode off. The
-   item's slice-1 list holds what is left: writer closure, carry on copy,
-   capability, the measured gate and the strict switch. Slice 2 was split
+   landing by /qland per Reto's 2026-10-15 ruling, strict mode off. Carry
+   on copy built 2026-10-21 on tree `trust-carry` (per-row `carry` act in
+   `migrate_links`). The item's slice-1 list holds what is left: writer
+   closure, capability, the measured gate and the strict switch. Slice 2
+   was split
    by Reto on 2026-10-16. 2a (relation classing, the shared evidence
    predicate and its three consumers, no schema) is built on tree
    `trust-2a`. 2b (defined-grounding storage and the admit act, a /go
@@ -230,9 +232,8 @@ graph-health-metrics, five parked gripes, and the seam with
    truth and a draft as a rendered subgraph. Render-only v1, ruled
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
-   for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 9 gives the topic files a recall measurement, P2 ruled yes
-   2026-09-30 (one resident identity + style block).
+   for the harness memory, re-sliced 2026-10-17: S1 (band report) and S2
+   (band placement in hub renders) built; S3/S4 wait on Reto decisions.
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
     Do-next 7; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,

@@ -98,11 +98,13 @@ def test_paper_merge_leaves_the_survivor_paper_at_version_zero(store: Store) -> 
     assert _stamp(store, "ref", survivor) == ("unknown", "unknown", 0)
 
 
-def test_a_door_restamps_only_links_touching_converted_kinds(store: Store) -> None:
+def test_a_door_carries_link_stamps_row_by_row(store: Store) -> None:
     finding = _verb_finding(store)
     old_paper, new_paper, other = (_paper(store, t) for t in ("old", "new", "x"))
     with trust_producer("generated", actor_type="agent"):
-        store.add_link(src_ref_id=finding, dst_ref_id=old_paper, relation="cites")
+        carried = store.add_link(
+            src_ref_id=finding, dst_ref_id=old_paper, relation="cites"
+        ).id
     store.add_link(src_ref_id=other, dst_ref_id=old_paper, relation="cites")
     with trust_producer("computed", actor_type="worker"), store.tx() as conn:
         store.migrate_links(old_paper, new_paper, conn=conn)
@@ -115,8 +117,14 @@ def test_a_door_restamps_only_links_touching_converted_kinds(store: Store) -> No
             ).fetchall()
         )
     assert set(moved) == {finding, other}
-    assert _stamp(store, "link", moved[finding]) == ("computed", "hunch", 1)
+    # the converted copy carries its source row's stamp per row — the
+    # door's 'computed' context does not relabel it (0214 'carry')
+    assert _stamp(store, "link", moved[finding]) == ("generated", "hunch", 1)
+    (act,) = store.trust_acts_for("link", moved[finding])
+    assert act["action"] == "carry" and act["payload"]["carry_from"] == carried
+    # an edge whose new ends are unconverted takes no act and stays v0
     assert _stamp(store, "link", moved[other]) == ("unknown", "unknown", 0)
+    assert store.trust_acts_for("link", moved[other]) == []
     assert _stamp(store, "ref", new_paper) == ("unknown", "unknown", 0)
 
 
