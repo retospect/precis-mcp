@@ -344,3 +344,26 @@ No.
 3. **The DB node's 03:00 update+reboot cron:** keep.
 4. **Backups:** off the DB machine (phase 1 revised above). Only the
    papers live exclusively on the file server.
+
+### Rulings (Reto, chat-99, 2026-10-22, during the maintenance window)
+
+Answers the role-shares proposal (local-compute-12) in favour of fewer
+shares. Reto: "Non-root files is good, owners are good, but general access
+is fine ... Separate out the backup user so agents cant accidentally rm the
+backup? But KISS minimal otherwise."
+
+5. **Server:** the NAS itself, every node mounting it directly; no Mac or
+   Spark relays it ("no middle hops").
+6. **Ownership:** files keep their real, non-root owners. That needs uid
+   pass-through with root squashed, not `all_squash` to one identity; the
+   plan must confirm TOS 7 offers it (the 2026-10-03 read found only
+   squash-to-root/admin/guest) and rely on the cluster's uid/gid parity.
+7. **Access:** general read-write for every cluster node on the main
+   share. Narrower access, when needed, is per user (read-only) or at the
+   container mount, not per share.
+8. **Shares:** two, not the role set. `cluster` (general) and a backup
+   share writable only by the backup writer, so an agent on any other node
+   cannot delete a backup. The `models`, `library`, `logs` and `scratch`
+   shares are dropped as separate shares (they are folders in `cluster`).
+   Still kept from the proposal because it is a local-disk change, not a
+   share: no scripts that root runs live on NFS.
