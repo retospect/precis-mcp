@@ -455,6 +455,10 @@ S5 as a slice (folded into S10a's `agent_credentials`); S10b (deferred
 until `mcp-seen-state-dedup.md` is scheduled); `precis setup --roles`
 creating four roles (two: `precis_ingress`, `agent_rw`).
 
+Names confirmed (Reto 2026-10-22): roles `precis_ingress`, `agent_rw`,
+`precis_owner`; setting `mcp.install_token_reader_from`; scrub function
+`precis.secrets.scrub`.
+
 ## Open questions for Reto (each with a recommendation)
 
 1. **Boundary statement.** Accept that `reader`/`user` are daemon-enforced
