@@ -122,6 +122,12 @@ cluster without measures.
    quest anchor until the quest→finding fix lands.
 1. **Cluster selector + coverage metrics.** SQL only; `precis mesh loop
    clusters|stats`. Run read-only on prod; qu164903 selects first.
+   Landed 2026-10-22: `src/precis/graph/mesh_loop/` (membership reads
+   direct quest↔finding links, claim edges to serving papers, and one
+   hub↔hub hop — the pilot hubs join without serves edges) + a
+   `--quest <id>` pin on both commands. Reto 2026-10-22: rank order
+   stands, so qu164903 is selected by pin (`--quest qu164903`), not by
+   rank — qu500066 (prio 3) legitimately outranks it.
 2. **Cheap tier.** The four detectors → ledger proposals on castor, no
    graph writes. Measure: Opus reads 50 sampled proposals; precision per
    signal is the bar for slice 3 (≥60% or the signal is switched off).

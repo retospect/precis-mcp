@@ -250,7 +250,8 @@ graph-health-metrics, five parked gripes, and the seam with
    under budget caps and kill criteria. `link meta=` built in
    `g5-handlers` (b77539cba, unlanded); still waits on the review
    stamps and the quest-edge direction fix; slice 1 (selector +
-   stats, SQL only) can start now.
+   stats, SQL only) landed 2026-10-22
+   (`precis mesh loop clusters|stats`, `src/precis/graph/mesh_loop/`).
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it

@@ -11,6 +11,8 @@ per-lane accuracy + Wilson CI, judged acceptance, reviewer cost, and the
 two bars. ``usefulness`` prints the mesh-health metrics read-only.
 ``retest`` recomputes the frontier's folded-key test-retest between two
 taxonomy discovery dumps — the auto-apply bar's reference leg.
+``loop clusters|stats`` is the kg-mesh-loop slice 1 surface: the SQL
+cluster selector and the per-quest coverage metrics, read-only.
 """
 
 from __future__ import annotations
@@ -119,6 +121,56 @@ def add_parser(subparsers: Any) -> None:
     )
     rc.add_argument("before", metavar="BEFORE", help="Report JSON before the pass.")
     rc.add_argument("after", metavar="AFTER", help="Report JSON after the pass.")
+
+    lp = sub.add_parser(
+        "loop",
+        help="kg-mesh-loop slice 1: cluster selector + coverage metrics. "
+        "Read-only SQL.",
+    )
+    lsub = lp.add_subparsers(dest="loop_cmd", required=True)
+    for name, helptext in (
+        (
+            "clusters",
+            "Rank qualifying quest clusters (>=8 hubs, <1 stance edge "
+            "per hub). SQL only.",
+        ),
+        (
+            "stats",
+            "Per-quest coverage metrics: hubs, stamped, stance density, "
+            "proposed/accepted/reverted writes, tokens, agreement.",
+        ),
+    ):
+        lp2 = lsub.add_parser(name, help=helptext)
+        lp2.add_argument("--database-url", default=None, help="Postgres DSN override.")
+        lp2.add_argument(
+            "--prod",
+            action="store_true",
+            help="Read PROD via the agent_ro role (secrets-file DSN, "
+            "rewritten and verified read-only).",
+        )
+        lp2.add_argument(
+            "--min-hubs",
+            type=int,
+            default=None,
+            help="Cluster qualifier: minimum hub count (default 8).",
+        )
+        lp2.add_argument(
+            "--max-stance-per-hub",
+            type=float,
+            default=None,
+            metavar="N",
+            help="Cluster qualifier: stance edges per hub must be < N (default 1.0).",
+        )
+        lp2.add_argument(
+            "--quest",
+            default=None,
+            metavar="ID",
+            help="Pin one quest (e.g. qu164903): select its cluster "
+            "regardless of rank; refuses when it doesn't qualify.",
+        )
+        lp2.add_argument(
+            "--json", action="store_true", help="Emit JSON instead of the table."
+        )
 
 
 def _judge_fn(cfg: Any) -> Any:
@@ -355,6 +407,105 @@ def _cmd_retrieval_compare(args: argparse.Namespace) -> None:
     print(render_comparison(cmp))
 
 
+def _cmd_loop(args: argparse.Namespace) -> None:
+    """``mesh loop clusters|stats`` — read-only SQL on the same DSN path
+    as ``mesh usefulness`` (``--prod`` reuses :func:`_prod_ro_dsn`, the
+    ``agent_ro`` rewrite + verified-refusal guard)."""
+    from precis.graph.mesh_loop.clusters import (
+        DEFAULT_MAX_STANCE_PER_HUB,
+        DEFAULT_MIN_HUBS,
+    )
+
+    min_hubs = args.min_hubs if args.min_hubs is not None else DEFAULT_MIN_HUBS
+    max_density = (
+        args.max_stance_per_hub
+        if args.max_stance_per_hub is not None
+        else DEFAULT_MAX_STANCE_PER_HUB
+    )
+    pin: int | None = None
+    if args.quest is not None:
+        raw = args.quest.strip().lower()
+        raw = raw[2:] if raw.startswith("qu") else raw
+        try:
+            pin = int(raw)
+        except ValueError:
+            raise BadInput(
+                f"--quest needs a quest id or handle, got {args.quest!r}",
+                next="e.g. --quest 164903 or --quest qu164903",
+            ) from None
+
+    if args.prod:
+        dsn = _prod_ro_dsn()
+    else:
+        from precis.cli._common import resolve_dsn
+
+        dsn = resolve_dsn(args.database_url)
+
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        if args.loop_cmd == "clusters":
+            from precis.graph.mesh_loop.clusters import (
+                cluster_for_quest,
+                clusters_json,
+                format_clusters,
+                select_clusters,
+            )
+
+            rows = (
+                [
+                    cluster_for_quest(
+                        conn,
+                        pin,
+                        min_hubs=min_hubs,
+                        max_stance_per_hub=max_density,
+                    )
+                ]
+                if pin is not None
+                else select_clusters(
+                    conn, min_hubs=min_hubs, max_stance_per_hub=max_density
+                )
+            )
+            if args.json:
+                print(json.dumps(clusters_json(rows), indent=1, ensure_ascii=False))
+            else:
+                print(
+                    format_clusters(
+                        rows, min_hubs=min_hubs, max_stance_per_hub=max_density
+                    )
+                )
+        elif args.loop_cmd == "stats":
+            from precis.graph.mesh_loop.clusters import cluster_for_quest
+            from precis.graph.mesh_loop.stats import (
+                LoopStats,
+                collect_stats,
+                format_stats,
+                stats_json,
+            )
+
+            rep = collect_stats(conn, min_hubs=min_hubs, max_stance_per_hub=max_density)
+            if pin is not None:
+                cluster_for_quest(
+                    conn,
+                    pin,
+                    min_hubs=min_hubs,
+                    max_stance_per_hub=max_density,
+                )
+                rep = LoopStats(
+                    rows=[r for r in rep.rows if r.cluster.quest_id == pin],
+                    clusters_left=rep.clusters_left,
+                    active_quests=rep.active_quests,
+                )
+            if args.json:
+                print(json.dumps(stats_json(rep), indent=1, ensure_ascii=False))
+            else:
+                print(format_stats(rep))
+        else:  # pragma: no cover - argparse enforces required=True
+            raise BadInput(f"unknown mesh loop subcommand {args.loop_cmd!r}")
+        conn.rollback()
+
+
 def _cmd_retest(args: argparse.Namespace) -> None:
     from precis.mesh_eval.retest import folded_agreement, format_retest
     from precis.taxonomy.config import load_campaign
@@ -375,5 +526,7 @@ def run(args: argparse.Namespace) -> None:
         _cmd_retrieval(args)
     elif args.mesh_cmd == "retrieval-compare":
         _cmd_retrieval_compare(args)
+    elif args.mesh_cmd == "loop":
+        _cmd_loop(args)
     else:  # pragma: no cover - argparse enforces required=True
         raise BadInput(f"unknown mesh subcommand {args.mesh_cmd!r}")
