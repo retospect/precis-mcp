@@ -47,6 +47,22 @@ _docker_disk_bounded() {
     fi
 }
 
+# _docker_disk_now — elapsed seconds for the probe budget. Normally bash
+# SECONDS; tests point PRECIS_DOCKER_DISK_CLOCK at a file holding integer
+# seconds (the fake docker advances it per attempt) so the overall-bound math
+# is exact under load. A missing/non-numeric file falls back to SECONDS.
+_docker_disk_now() {
+    local f="${PRECIS_DOCKER_DISK_CLOCK:-}" v
+    if [ -n "$f" ]; then
+        v="$(cat "$f" 2>/dev/null)"
+        case "$v" in
+            '' | *[!0-9]*) ;;
+            *) echo "$v"; return ;;
+        esac
+    fi
+    echo "$SECONDS"
+}
+
 # _docker_df_avail_gb — reads `df -Pk` output on stdin, prints integer GB of
 # the Available column, nothing when the shape is wrong.
 _docker_df_avail_gb() {
@@ -60,7 +76,7 @@ docker_free_gb() {
     # 0 would mean "no alarm" to perl, i.e. no bound: treat it as unset.
     case "$per" in '' | 0 | *[!0-9]*) per=10 ;; esac
     case "$total" in '' | 0 | *[!0-9]*) total=25 ;; esac
-    deadline=$((SECONDS + total))
+    deadline=$(($(_docker_disk_now) + total))
     if command -v docker >/dev/null 2>&1; then
         for img in "${PRECIS_DOCKER_DISK_IMAGE:-}" precis-dev:latest alpine:latest \
             debian:bookworm-slim; do
@@ -71,7 +87,7 @@ docker_free_gb() {
                     continue
                     ;;
             esac
-            left=$((deadline - SECONDS))
+            left=$((deadline - $(_docker_disk_now)))
             if [ "$left" -le 0 ]; then
                 why="${why:+$why; }overall ${total}s probe bound hit"
                 break
@@ -100,7 +116,7 @@ docker_free_gb() {
     else
         why="docker not on PATH"
     fi
-    left=$((deadline - SECONDS))
+    left=$((deadline - $(_docker_disk_now)))
     if command -v colima >/dev/null 2>&1 && [ "$left" -gt 0 ]; then
         per_try="$per"
         [ "$left" -lt "$per" ] && per_try="$left"

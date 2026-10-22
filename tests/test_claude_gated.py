@@ -40,6 +40,7 @@ import json, os, sys
 seq = os.environ.get("FAKE_STATUS_SEQ", "connected").split(",")
 name = os.environ.get("FAKE_SERVER", "precis")
 mark = os.environ.get("FAKE_MARK")
+reqlog = os.environ.get("FAKE_REQLOG")
 answer = os.environ.get("FAKE_NO_ANSWER") != "1"
 hang = os.environ.get("FAKE_HANG") == "1"
 if os.environ.get("FAKE_DIE"):
@@ -49,6 +50,9 @@ polls = 0
 for line in sys.stdin:
     msg = json.loads(line)
     if msg["type"] == "control_request":
+        if reqlog:
+            with open(reqlog, "a", encoding="utf-8") as f:
+                f.write(str(msg["request_id"]) + "\\n")
         if msg["request"]["subtype"] != "mcp_status" or not answer:
             continue
         st = seq[min(polls, len(seq) - 1)]
@@ -90,6 +94,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "FAKE_STATUS_SEQ",
         "FAKE_SERVER",
         "FAKE_MARK",
+        "FAKE_REQLOG",
         "FAKE_NO_ANSWER",
         "FAKE_HANG",
         "FAKE_DIE",
@@ -136,17 +141,28 @@ def test_prompt_delivered_once_connected_after_polls(
 
 
 def test_gate_pass_logs_the_wait(
-    fake_claude: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    fake_claude: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     # gr463517: a clean pass alone cannot show the gate ran; this line can.
+    # gr506085: the poll count is the number of requests the gate SENT — under
+    # load an extra poll window elapses before "connected" is seen, so pin the
+    # count to what the fake actually received, not a fixed 2.
     monkeypatch.setenv("FAKE_STATUS_SEQ", "pending,connected")
+    reqlog = tmp_path / "reqlog"
+    monkeypatch.setenv("FAKE_REQLOG", str(reqlog))
     with caplog.at_level(logging.INFO, logger="precis.utils._claude_subprocess"):
         _gated(fake_claude)
     [line] = [
         r.getMessage() for r in caplog.records if "claude gate:" in r.getMessage()
     ]
+    sent = reqlog.read_text(encoding="utf-8").splitlines()
+    assert sent == [f"mcp-status-{i}" for i in range(1, len(sent) + 1)]
+    assert len(sent) >= 2  # "pending" never settles the gate
     assert line.startswith("claude gate: precis connected after ")
-    assert line.endswith("(2 mcp_status poll(s))")
+    assert line.endswith(f"({len(sent)} mcp_status poll(s))")
 
 
 @pytest.mark.parametrize("bad", ["failed", "needs-auth"])

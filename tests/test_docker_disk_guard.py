@@ -44,6 +44,9 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #                     -- the df probe's behaviour (usage = docker's flag error)
 #   FAKE_DF_FREE_KB   Available column the probe reports
 #   FAKE_PRUNE_FLAG   the keep-flag `builder prune --help` advertises ('' = none)
+# PRECIS_DOCKER_DISK_CLOCK is docker-disk.sh's injected clock file; slowfail
+# advances it by a virtual +2s per attempt so the probe's budget math is
+# exact under wall-clock load.
 set -u
 args=("$@")
 case "${args[0]:-}" in
@@ -56,7 +59,20 @@ case "${args[0]:-}" in
         echo "Run 'docker run --help' for more information" >&2
         exit 125
         ;;
-      slowfail) sleep 2; exit 1 ;;
+      slowfail)
+        # With the injected clock the first attempt's delay is virtual (+2s,
+        # no real wait); later attempts outlast whatever real bound remains.
+        if [ -n "${PRECIS_DOCKER_DISK_CLOCK:-}" ]; then
+          if [ "$(cat "$PRECIS_DOCKER_DISK_CLOCK" 2>/dev/null)" -ge 2 ] 2>/dev/null; then
+            exec sleep 30
+          fi
+          echo "$(( $(cat "$PRECIS_DOCKER_DISK_CLOCK" 2>/dev/null || echo 0) + 2 ))" \
+            > "$PRECIS_DOCKER_DISK_CLOCK"
+          exit 1
+        fi
+        sleep 2
+        exit 1
+        ;;
       hang) exec sleep 30 ;;
     esac
     printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
@@ -145,6 +161,8 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "PRECIS_DOCKER_MIN_FREE_GB",
         "PRECIS_DOCKER_DISK_CHECK",
         "PRECIS_DOCKER_DISK_TIMEOUT",
+        "PRECIS_DOCKER_DISK_TOTAL_TIMEOUT",
+        "PRECIS_DOCKER_DISK_CLOCK",
         "PRECIS_DOCKER_DISK_IMAGE",
         "PRECIS_BUILD_CACHE_KEEP_GB",
         "PRECIS_NO_AUTOREAP",
@@ -260,10 +278,16 @@ def test_zero_timeout_is_not_an_unbounded_probe(tmp_path: Path) -> None:
 
 def test_overall_bound_caps_the_whole_image_loop(tmp_path: Path) -> None:
     """Each attempt is slow but under its own bound; the total bound still ends it."""
+    # gr506113: the injected clock makes the remaining budget exactly 1s after
+    # the first 2s attempt — wall-clock load can't stretch attempt one into
+    # the whole 3s.
+    clock = tmp_path / "disk.clock"
+    clock.write_text("0\n", encoding="utf-8")
     t0 = time.monotonic()
     proc = _run_test(
         tmp_path,
         FAKE_DF_MODE="slowfail",
+        PRECIS_DOCKER_DISK_CLOCK=str(clock),
         PRECIS_DOCKER_DISK_TIMEOUT="10",
         PRECIS_DOCKER_DISK_TOTAL_TIMEOUT="3",
         timeout=25,
