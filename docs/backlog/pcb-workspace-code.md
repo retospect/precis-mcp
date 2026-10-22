@@ -14,7 +14,10 @@ import boundary, construction traces, `pga` assembly API, relax as a
 service, slice 1b git objects in Postgres) to the `pcb` kind. Same
 workspace kind, same `run`, same importer shape; the design link is
 `pcb:<slug>` instead of `se:<slug>`. Reto's three questions are §Q1–§Q3;
-the rest is what a build needs.
+the rest is what a build needs. The design-optimisation kit
+([se-flow-kernel](se-flow-kernel.md) slice 4b) is se's: pcb shares its
+snapshot and ask/tell layer only — builders and evaluators differ, and
+place/route/DRC stay server services like relax.
 
 The de facto netlist format already is Python that returns a dict:
 `tests/fixtures/pcb/nano_usb_pd_testboard.py::build_design()` emits the

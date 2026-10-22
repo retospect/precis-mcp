@@ -66,6 +66,15 @@ read MCP over a socket) and [agent-workspace-containers](agent-workspace-contain
    its seed. Lookups are keyed `(function, version, params sha, method)`
    so a script fetches "relaxed `prism(cccRcccRcccR, 4, 6)`, GFN2" instead
    of recomputing (§Relax).
+7. **Offline is a design property.** The `precis-geom` wheel is DB-free
+   (§Packaging; the import-graph test). A script builds, evaluates and
+   optimises with no DB and no se interaction — "a digital twin of the
+   twin" (Reto, 2026-10-22). Only the final manifest imports, and the
+   server re-checks it on import with the same code
+   ([se-native-fields](se-native-fields.md) §Server-side re-check).
+   Inputs that live in the DB (process limits, materials) are staged as
+   files (`/work/materials.json`, `params.json`) or passed as params, so
+   the same script runs in CI and on a laptop.
 
 Seam flavour, H side, cell lists, pitch: plain Python arguments.
 
@@ -224,7 +233,7 @@ relative to parent ports/anchors); each records a trace frame.
 | nested instance, own frame | `instance_block` (`blocktree/ops.py::op_instance_block`, cross-design templates via `parse_template_ref`; blocks nest under `parent`) | `pga.assembly(name, children=[...], pose=)` / `pga.instance(template, pose=)` | `instance` |
 | packed tile (copies at a pitch) | `array_block` (`precis_se/ops.py`, pitch × count) | `pga.tile(block, n, pitch=, fused=False)` | `tile#k` per copy |
 | fused tile (one body, bonded across the seam) | atomic: hexfold `periods` + k2 fuse; macro: `cad.graph.Design.merge` | `pga.tile(block, n, period=, fused=True)` — atomic: translational copies + `junction(k=2)` across each boundary; macro: union | `tile` (one frame, `made` = seam bonds) |
-| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only) | `pga.translate(v)`, `pga.rotate(axis, deg)`, `pga.transform(T)` | `pose` |
+| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only); no in-place cad move (`Design.instance` copies) | `pga.translate(v)`, `pga.rotate(axis, deg)`, `pga.transform(T)` — macro: over the new `Design.transform` (§Construction traces) | `pose` (modifier) |
 | mirror | none | `pga.mirror(plane)` — improper transform; atomic emits `chirality.flipped` INFO, macro flips face normals | `mirror` |
 | port-to-port placement | `connect` (ports; `clearance`, kinematic words) | `pga.place(child, at=parent.port('rim+'), align=child.port('rim-'))` — the same solve `connect` runs | `place` |
 | fuse two blocks' atoms | `join` (`atomic/join.py`) | `junction(rims, k)` (multicell slice 1) | `junction` |
@@ -446,8 +455,12 @@ qual, file, line, occ, kind, args, made, touched}`. `kind` is `user`
 (a function in `/work/**.py` — `main.py` and the agent's helpers),
 `core` (a public `precis-geom` function: `sheetnet.strip|pore|place|
 junction|assemble|decorate`, the layouts `prism|cells|...`,
-`precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance`,
-`precis_ws.out.block|instance|connect`), `module` (a promoted agent
+`precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance|transform`
+— `transform` is new (Reto, 2026-10-22): a traced in-place move
+`Design.transform(expr, T)` that recomposes the leaves' placements and
+records a **modifier** frame with the moved instances in `touched`
+(`instance` copies, `transform` moves; `pga.translate|rotate|transform`
+call it) —, `precis_ws.out.block|instance|connect`), `module` (a promoted agent
 module's public functions) or `service` (relax, §Relax). Library
 internals (`join._seam_k3`, `_block_from_net`) never appear — they
 collapse into the public frame that called them. `occ` is the
@@ -865,8 +878,16 @@ runs, with method and level. Until then the `charge` field is omitted.
   export, readers), and the physics toolkit: `precis_flow` (the thin-gap
   kernel), the DB-free cad → `Domain` adapter `precis_geom.flow`
   (refactored out of `src/precis_se/flow.py`; `patch_port` and the
-  computers stay in se — [se-flow-kernel](se-flow-kernel.md) slice 4),
-  `precis_geom.physics` (`evaluate`), and, once built, `precis_fields` +
+  computers stay in se — [se-flow-kernel](se-flow-kernel.md) slice 4a),
+  `precis_geom.physics` (`evaluate`, one interface across physics), the
+  design-optimisation kit — `precis_geom.design` (feature graph with
+  stable ids, snapshot/restore; proposed, under discussion),
+  `precis_geom.params` (bounded parameters over feature attributes,
+  pure `build(params) -> shape`) and `precis_geom.optimize` (ask/tell
+  adapters, evaluate cache, `evaluate_many`, search trace,
+  checkpoint/resume — se-flow-kernel slice 4b; se's kit, pcb shares
+  the loop, trace, snapshot and ask/tell layer only), and, once built,
+  `precis_fields` +
   `precis_geom.fields` ([se-native-fields](se-native-fields.md)). They
   ship to the container as one wheel,
   `precis-geom`, built from this repo at the release sha
@@ -919,6 +940,17 @@ change — the op refuses with `next=` naming the workspace path (the
 blocks keep their coordinates and `regenerate` keeps working through the
 core wheel (same functions). Until slice 1 lands they stay as-is (nothing
 else to build with). Pose, connect and the small edits stay.
+
+**Script-made rows are read-only to construction ops** (Reto,
+2026-10-22). A surviving op that would change geometry a workspace run
+produced (`set_pose`, `add_port`/`remove_port`, `set_envelope`,
+`array_block`, `instance_block` on a block whose `generated.generator ==
+'workspace'`, or any op on its ports/pockets/measures the manifest
+owns) refuses with `next=` naming the workspace param or script edit
+plus `run` — the next run would overwrite the edit. Declarations the
+manifest does not own (`set_desc`, notes, `declare_*`, `user` measures,
+states) stay allowed; `remove_block` is allowed and the echo says the
+next run restores it unless the manifest drops it.
 
 Inspection stays and grows in MCP: `validate`, `drc`, `clearance`, `sites`,
 `catalogue`, `mold`, `stability`, `freedom`, renders, `view='block'` now

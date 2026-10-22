@@ -212,9 +212,10 @@ off that gap until it closes.
    `flow-2b` (Flow tab `/se/<slug>/flow`, `routes/se_flow.py` +
    `static/se-flow-*.js`); slice 3 landed 2026-10-21 on `flow-s3` (`src/precis_flow/
    nano.py` Knudsen MC on cylinder/atom-site lumens, `RegimeCard.route`,
-   `flow:lumen` spec + lumen `view='flow'`); slice 4 (toolkit `evaluate`
-   + example annealer workspace, no server op) is ranked in
-   structure-workspaces Do-next 5, as is `backlog/se-native-fields.md`
+   `flow:lumen` spec + lumen `view='flow'`); slices 4a (toolkit
+   `evaluate` + tracer to the player through a workspace) and 4b (the
+   design-optimisation kit + examples, no server op) are ranked in
+   structure-workspaces Do-next 5–6, as is `backlog/se-native-fields.md`
    (solids: conduction, DC, Joule, thermoelastic) — seam in INDEX.md.
 0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold

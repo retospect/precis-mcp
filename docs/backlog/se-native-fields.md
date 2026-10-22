@@ -21,10 +21,11 @@ turbulence, free surfaces, waves — stays with the external backend
 Code-first (Reto, same day): designs are built by Python scripts in
 workspaces ([structure-workspaces](structure-workspaces.md)); the server
 keeps inspection. So the kernel is a library the sandbox script calls
-through one toolkit function, `evaluate(shape, physics=[...], spec)`,
-shared with the thin-gap flow kernel ([se-flow-kernel](se-flow-kernel.md)
-slice 4). The server recomputes the same measures on import and never
-trusts the script's numbers.
+through one toolkit function, `evaluate(shape, physics=[...], spec, *,
+seed, cells)`, shared with the thin-gap flow kernel
+([se-flow-kernel](se-flow-kernel.md) slice 4a) and driven by the
+design-optimisation kit (slice 4b). The server recomputes the same
+measures on import and never trusts the script's numbers.
 
 ## Scope boundary — three layers, one vocabulary
 
@@ -64,10 +65,12 @@ a cut-cell grid from an SDF callable; `precis_fields.fv` assembles the
 operator; verification (§Verification) measures the boundary order on
 the cylinder and sphere cases and the card refuses below the resolution
 line. **(b) for elasticity** (slice 2) — scikit-fem (BSD-3) on a tet
-mesh from gmsh run as a subprocess in the job container (never
-imported into precis; Q2), with a hex-mesh fallback straight from the
-cut-cell grid (staircase, P1, no gmsh) for verification and for cases
-that need no curved boundary. (c) is rejected: a wrong area that never
+mesh from the `gmsh` PyPI wheel imported in-process in the job
+container (ruled Q2: precis is GPL-3.0-or-later, gmsh GPL-2-or-later —
+compatible; a native crash takes the job process down, and jobs run in
+disposable containers, so the blast radius is one job), with a hex-mesh
+fallback straight from the cut-cell grid (staircase, P1, no gmsh) for
+verification and for cases that need no curved boundary. (c) is rejected: a wrong area that never
 converges is exactly the silent error a regime card exists to catch.
 
 ### Grid from the solid
@@ -146,7 +149,7 @@ naming the `put(kind='material', property=...)` call — never a default.
 | physics | `u` | `K` from material | `S` | patch BC measurands | derived outputs (measurands) |
 |---|---|---|---|---|---|
 | `heat` | `T` (K) | `thermal_conductivity` (W/m·K) | volumetric heat (W/m³): Joule power from `dc-current`, or a `heat-source` region measure | `temperature` (Dirichlet), `heat-flux` (W/m², Neumann), `convection-coefficient` + `ambient-temperature` (Robin) | `max-temperature`, `patch-temperature` (area mean), `heat-flux-total` (W through the datum patch), `thermal-resistance` (K/W between the datum patch and the Dirichlet patch) |
-| `dc-current` | `φ` (V) | `σ = 1/electrical_resistivity` (S/m); `σ(T) = σ₀ / (1 + α_ρ (T − T₀))` when `resistivity_temp_coeff` (1/K, Q4) exists | none | `voltage` (Dirichlet), `current` (A: uniform `J = I/A_patch`, Neumann; the floating potential is reported), insulated default | `electrical-resistance` (Ω = ΔV/I), `current-total` (A through the datum patch), `joule-power` (W), `max-current-density` (A/m²) |
+| `dc-current` | `φ` (V) | `σ = 1/electrical_resistivity` (S/m); `σ(T) = σ₀ / (1 + α_ρ (T − T₀))` when `resistivity_temp_coeff` (1/K; core property, slice-1 migration — ruled Q4) exists | none | `voltage` (Dirichlet), `current` (A: uniform `J = I/A_patch`, Neumann; the floating potential is reported), insulated default | `electrical-resistance` (Ω = ΔV/I), `current-total` (A through the datum patch), `joule-power` (W), `max-current-density` (A/m²) |
 | `electrostatics` | `φ` (V) | `ε = ε₀ · relative_permittivity`; void = `medium` (ε_r 1) | `charge-density` region measure (C/m³) | `voltage`, `surface-charge-density` (C/m², exists in the measurand seed), box faces Neumann 0 (Q5) | `capacitance` (F between the datum patch and the other Dirichlet patch), `max-field` (V/m), `field.breakdown` finding when `max-field > dielectric_strength` |
 | `species` | `c` (mol/m³) | `D` from the `species-diffusivity` region measure (multiphysics slice 1 vocabulary; not a material property) | first-order sink via a patch Robin from `wall-rate-constant` (m/s) | `concentration`, `species-flux`, `wall-rate-constant` | `species-flux-total` (mol/s per patch), `min-concentration`, `damkohler` (gauge) |
 | `darcy` | `p` (Pa) | `κ/μ`: `permeability` region measure (m²), `μ` from the fluid material (`fluid=` slug, multiphysics item 2) | none | `pressure`, `flow-rate` (m³/s, uniform flux), impermeable default | `flow-rate-total`, `hydraulic-resistance` (Pa·s/m³) |
@@ -192,15 +195,24 @@ through `COMPUTERS`.
 - **BC measures** on patches, measurand slugs per the registry table;
   a Robin pair (`convection-coefficient` + `ambient-temperature`) is
   two measures on the same datum.
-- **Materials.** A block's material is its mode key's material half
-  (`precis_se/modes.py::parse_mode`) read as a `material` kind slug
-  (Q3); a half that resolves to no row makes every coefficient line
-  not-applicable with a reason naming the block. A sandbox script
-  passes either a slug (resolved through the read MCP,
-  `get(kind='material', id=…)`, staged as `/work/materials.json` at run
-  start for the blocks' slugs) or a literal property dict; the card
-  records `material: row | literal`, and the import re-check uses the
-  row.
+- **Materials.** A block carries an explicit `material=` slug naming a
+  `material` kind row (ruled Q3; `src/precis/migrations/0092_material_kind.sql`,
+  skill `precis-material-help`: sourced values with conditions,
+  maturity, method and bands) — a block attribute set by the manifest
+  entry (`out.block(..., material='copper-c110')`) or `set_mode`'s
+  material half as a fallback for op-made blocks; a slug that resolves
+  to no row makes every coefficient line not-applicable with a reason
+  naming the block. **Value selection** when a property has several
+  sourced values: closest conditions first (temperature, then the other
+  stated conditions), then method `measured > datasheet > dft >
+  estimated`, then maturity `commercial > lab > speculative`; the card
+  cites the chosen value row and its source. A sandbox script passes
+  either a slug (resolved through the read MCP, `get(kind='material',
+  id=…)`, staged as `/work/materials.json` at run start for the blocks'
+  slugs — the staged file carries the selected rows and their sources,
+  so the script and the server pick the same value) or a literal
+  property dict; the card records `material: row | literal`, and the
+  import re-check uses the row.
 - **Patch resolver, DB-free.** The face resolver in
   `precis_se/datums.py` (`_face_frame` and the `patch:` grammar) moves
   to `precis.cad.patch` so a script resolves `patch:` on the `Design`
@@ -282,11 +294,13 @@ records `grid_sha`, `kernel_version`, `solver`, `iterations`,
 random numbers rule of the flow tracer (`seed=`) is honoured by
 `evaluate` and ignored by the fields kernel.
 
-## The toolkit — `evaluate(shape, physics=[...], spec)` shared with the flow kernel
+## The toolkit — `evaluate(shape, physics=[...], spec, *, seed, cells)` shared with the flow kernel
 
 `precis_geom.physics.evaluate` lives in the `precis-geom` wheel
 (structure-workspaces §Packaging); it is the one entry for a sandbox
-script and for the server's computers.
+script and for the server's computers, one interface across physics:
+flow first (se-flow-kernel slice 4a), each slice here adds its names.
+It runs with no DB and no se (structure-workspaces §Core design 7).
 
 ```python
 import precis_geom as pg
@@ -301,9 +315,8 @@ spec = {
     {"name": "t_max", "measurand": "max-temperature", "strength": "hard", "max_value": 350.0},
     {"name": "r", "measurand": "electrical-resistance", "datum": "patch:a", "strength": "soft"},
   ],
-  "cells": 64,
 }
-o = pgp.evaluate(d, physics=["dc-current", "heat"], spec=spec)
+o = pgp.evaluate(d, physics=["dc-current", "heat"], spec=spec, cells=64)
 o.measures["r"], o.measures["t_max"], o.hard_ok, o.cards["heat"].ok, o.cost.seconds
 ```
 
@@ -315,6 +328,10 @@ never serialised into the manifest). `physics=['flow']` routes to
 `precis_flow` (`solve` + `trace`, `seed=` = common random numbers);
 the scalar names route to `precis_fields`; `['elastic']` to the
 scikit-fem slice; a mixed list runs the couplings the registry knows.
+`cells=` is a keyword, not a spec key (the flow kernel's `nx`; the
+`fields:`/`flow:` token records it on import), so the cache key of the
+optimisation kit — `(shape sha, physics, spec sha, seed, cells)` — reads
+it without parsing the spec.
 
 **Physics only.** Reto, 2026-10-22: "hole count will not be the
 answer to evaluate shape. That's what the tool makes the space to
@@ -332,18 +349,21 @@ block, physics=[...], spec)` writes the manifest entry the importer
 turns into the `fields:` pocket, the BC measures (`origin='user'`) and
 the result measures.
 
-**Optimizer loop.** The guidance lives in the skill
-`precis-workspace-physics-help` (CFD first section, then fields):
-objective = Σ weight·soft measures + script terms; any proposal with
-`hard_ok == False` is rejected before its cost is read; fix `seed=`
-for common random numbers; budgets (`cost.seconds` per call, inline vs
-`budget='job'`, checkpoint the search in `/work/out/search.json` and
-resume via `params.resume`); record the search with `out.search(
-iteration, cost, measures)` into `out/trace.json` so `view='trace'`
-renders the path; gradients: `precis-differentiation-help` — the
-scalar operator is self-adjoint, so `dJ/dK` and `dJ/d(patch shape)` are
-one extra solve each (adjoint sensitivities, a later slice); the
-tracer is Monte-Carlo and non-smooth, so flow cases anneal.
+**Optimizer loop.** The design-optimisation kit is se-flow-kernel
+slice 4b (`precis_geom.params` + `precis_geom.optimize`: cache,
+`evaluate_many`, search trace, checkpoint/resume, `budget='job'`,
+`anneal`/scipy/CMA-ES adapters); its guidance lives in the skill
+`precis-workspace-optimize-help` (CFD first physics section, then
+fields). This spec adds the **heat example** in slice 1:
+`examples/workspaces/fin-heat/main.py` — a heat sink whose fin count
+(integer) and thickness (continuous, bounded by the process `min_wall`)
+are the params, objective = `thermal-resistance` (soft) under the hard
+`max-temperature` bound, run with `scipy_minimize` over the continuous
+subspace per fin count; a CI golden like the two flow examples. Gradients:
+`precis-differentiation-help` — the scalar operator is self-adjoint, so
+`dJ/dK` and `dJ/d(patch shape)` are one extra solve each (adjoint
+sensitivities, a later slice); the tracer is Monte-Carlo and
+non-smooth, so flow cases anneal.
 
 ## Server-side independent re-check on import
 
@@ -393,8 +413,8 @@ are measured and written into this item.
 
 | # | delivers | extends | acceptance | size |
 |---|---|---|---|---|
-| 1 | **Scalar family + Joule.** `src/precis_fields/` (`grid.py`, `fv.py` N-d — absorbs multiphysics's `precis_flow.fv`, `physics.py` registry with heat/dc-current/electrostatics/species/darcy, `coupled.py` Picard + Joule, `card.py`, `solve.py` direct/cg/amg); `precis_geom.fields.grid_from_design` (SDF from `component_sdf_np`), `precis.cad.patch` (resolver moved out of `datums.py`), `precis_geom.physics.evaluate` gains the scalar names; `src/precis_se/fields.py` (`fields:` token, BC measures → kernel BCs, material rows → coefficients, `FIELDS_COMPUTERS`, `view='fields'`), `_LAZY_TABLES['fields']`, the `fields_solve` job type + request table reuse, measurand seed migration, import-linter contract for `precis_fields`, the fields section of `precis-workspace-physics-help`, BC lines in `precis-se-regions-help` | `precis_se/properties/__init__.py`, `precis_se/datums.py`, `precis_se/drc.py` hard gate, `workspace_import.py` re-check, `packaging/geom/` | every analytic case in §Verification up to Darcy passes at its tolerance with its order recorded; fv parity 1e-12 on the hex chamber; a hard `max-temperature ≤ 350 K` on a wire that reaches 400 K is a DRC finding; a missing `electrical_resistivity` gives a reason, never 0; `evaluate` twice is bitwise equal; a 128³ request inline refuses naming `budget='job'`; the job lane solves it and the next run reads it; bytes/cell at 64³ and 128³ written into this item; a tampered manifest value yields `measure.script_mismatch` | L, 2–3 builds; after structure-workspaces slice 2 and se-flow-kernel slice 4 (the toolkit entry and the skill exist) |
-| 2 | **Thermoelastic via scikit-fem.** `precis_fields.mesh` (marching-cubes surface → gmsh subprocess → `.msh` via meshio; hex fallback from the cut-cell grid), `precis_fields.elastic` (P1/P2 vector problem, λ/μ from E/ν, thermal strain from the slice-1 `T`, BCs `fixed`/`displacement`/`traction`/`force`, rigid-body near-nullspace for AMG), the `elastic` card group, outputs `max-displacement`/`max-von-mises`/`reaction-force`/`safety-factor`; `[fields]` extra (`scikit-fem`, `meshio`, optional `pyamg`); gmsh binary in the job image | `pyproject.toml`, `deploy/` job image, `view='fields'` | the five slice-2 verification rows pass; P1-vs-P2 locking recorded on the cantilever; the FEniCSx bimetal cross-check ≤ 2 %; a yield exceedance is `stress.yield_exceeded` with the element's position; the hex fallback runs the uniaxial bar without gmsh | M–L, 2 builds; after 1 |
+| 1 | **Scalar family + Joule.** `src/precis_fields/` (`grid.py`, `fv.py` N-d — absorbs multiphysics's `precis_flow.fv`, `physics.py` registry with heat/dc-current/electrostatics/species/darcy, `coupled.py` Picard + Joule, `card.py`, `solve.py` direct/cg/amg); `precis_geom.fields.grid_from_design` (SDF from `component_sdf_np`), `precis.cad.patch` (resolver moved out of `datums.py`), `precis_geom.physics.evaluate` gains the scalar names; `src/precis_se/fields.py` (`fields:` token, BC measures → kernel BCs, material rows → coefficients, `FIELDS_COMPUTERS`, `view='fields'`), `_LAZY_TABLES['fields']`, the `fields_solve` job type + request table reuse, measurand seed migration + `resistivity_temp_coeff` as a core material property (migration; `precis-material-help`), the `material=` block attribute (manifest + import; `set_mode` half as fallback) with the value-selection rule, import-linter contract for `precis_fields`, the fields section of `precis-workspace-optimize-help`, BC lines in `precis-se-regions-help`, the heat example `examples/workspaces/fin-heat/` (§The toolkit) | `precis_se/properties/__init__.py`, `precis_se/datums.py`, `precis_se/drc.py` hard gate, `workspace_import.py` re-check, `packaging/geom/`, `handlers/material.py` (value selection) | every analytic case in §Verification up to Darcy passes at its tolerance with its order recorded; fv parity 1e-12 on the hex chamber; a hard `max-temperature ≤ 350 K` on a wire that reaches 400 K is a DRC finding; a missing `electrical_resistivity` gives a reason, never 0; a material with two sourced `thermal_conductivity` rows at 300 K and 500 K picks the closer temperature and the card cites that row; `evaluate` twice is bitwise equal; a 128³ request inline refuses naming `budget='job'`; the job lane solves it and the next run reads it; bytes/cell at 64³ and 128³ written into this item; a tampered manifest value yields `measure.script_mismatch`; the fin-heat golden's best `thermal-resistance` is below the start's and every accepted state holds the hard bound | L, 2–3 builds; after structure-workspaces slice 2 and se-flow-kernel slices 4a–4b (the toolkit entry, the kit and the skill exist) |
+| 2 | **Thermoelastic via scikit-fem.** `precis_fields.mesh` (marching-cubes surface → `gmsh` PyPI wheel imported in-process → mesh arrays via its Python API, version recorded on the card; hex fallback from the cut-cell grid), `precis_fields.elastic` (P1/P2 vector problem, λ/μ from E/ν, thermal strain from the slice-1 `T`, BCs `fixed`/`displacement`/`traction`/`force`, rigid-body near-nullspace for AMG), the `elastic` card group, outputs `max-displacement`/`max-von-mises`/`reaction-force`/`safety-factor`; `[fields]` extra (`scikit-fem`, `gmsh`, optional `pyamg`) installed in the job image only — the MCP process never imports gmsh | `pyproject.toml`, `deploy/` job image, `view='fields'` | the five slice-2 verification rows pass; P1-vs-P2 locking recorded on the cantilever; the FEniCSx bimetal cross-check ≤ 2 %; a yield exceedance is `stress.yield_exceeded` with the element's position; the hex fallback runs the uniaxial bar without gmsh | M–L, 2 builds; after 1 |
 | 3 | **Advection coupling with the flow kernel.** The fluid cells of a thin-gap chamber carry `U` from `precis_flow` (re-dimensionalised via the scale triple), species/heat advect in the fluid and conduct in the solid (conjugate heat transfer), interface continuity through the harmonic face; `peclet` cell line on the card; TVD limiter as multiphysics slice 1 | `precis_fields.fv` advection term, `precis_se/fields.py` + `flow.py` | the multiphysics slice-1 Taylor-dispersion case run as a 3-D fluid-plus-wall grid agrees with the depth-averaged result within 5 %; a heated wall under a flowing chamber reproduces the Nu = 8.23 plate coupling within 5 % | M, 2 builds; after 1 and multiphysics slice 1 |
 
 Later, named: transient (implicit Euler / Crank–Nicolson on the same
@@ -412,33 +432,45 @@ __init__.py` (`_LAZY_TABLES`, `COMPUTERS`), `precis_se/datums.py` (import
 the moved resolver), `precis_se/drc.py` (no change; the hard gate reads
 computed values), `workspace_import.py` (re-check), a measurand seed
 migration, `workers/job_types/fields_solve.py` + the request table,
-`pyproject.toml` (`[fields]` extra), the job image (gmsh, slice 2),
-skills `precis-workspace-physics-help` (fields section),
+`pyproject.toml` (`[fields]` extra), the job image (`gmsh` wheel,
+slice 2), a material-property migration (`resistivity_temp_coeff`),
+`handlers/material.py` (value selection), `workspace_import.py`
+(`material=`), `examples/workspaces/fin-heat/`, skills
+`precis-workspace-optimize-help` (fields section),
 `precis-se-regions-help` (BC lines), `precis-material-help`
-(`resistivity_temp_coeff`), `docs/glossary.md` (coefficient set, cut
-cell). `precis_flow` loses `fv` to `precis_fields` once multiphysics
+(`resistivity_temp_coeff`, the selection rule), `docs/glossary.md`
+(coefficient set, cut cell). `precis_flow` loses `fv` to `precis_fields` once multiphysics
 slice 1 has extracted it (or never gains it if this lands first).
 
-## Open questions (default taken if unanswered)
+## Rulings (Reto, 2026-10-22, chat-99)
 
-- Q1 Cut-cell FV for the scalar family (default) vs immersed/conforming
-  FEM. The default stands unless the cylinder and sphere cases miss
-  2 % at `R/8`; then the scalar family moves onto the slice-2 mesh.
-- Q2 gmsh as a subprocess binary in the job container (default; GPL
-  tool never imported, the policy multiphysics slice B set) vs the
-  `gmsh` PyPI wheel in-process. The hex fallback needs neither.
-- Q3 Block material = the mode key's material half read as a
-  `material` slug (default) vs a new `material=` block attribute. The
-  default adds no op; a free-text half that resolves to no row gives
-  a reason.
-- Q4 `resistivity_temp_coeff` minted as a `proposed` material property
-  through the existing `put(kind='material', property=..., unit='1/K')`
-  path (default) vs a core migration.
-- Q5 Electrostatics far field: Neumann 0 on the padded box with the
-  `box_margin ≥ 3` line (default) vs a Robin/infinite-element far field
-  later.
-- Q6 `pyamg` as an optional extra (default; MIT; CG + Jacobi always
-  works, slower) vs required.
-- Q7 A script's over-budget `evaluate` refuses with `next=` naming
-  `budget='job'` (default) vs silently queueing the job — the default
-  keeps a run's cost visible to the script that pays it.
+- **Q1** Cut-cell FV for the scalar family — approved as defaulted. It
+  stands unless the cylinder and sphere cases miss 2 % at `R/8`; then
+  the scalar family moves onto the slice-2 mesh.
+- **Q2** The `gmsh` PyPI wheel imported in-process ("I kinda like the
+  package import"), not a subprocess binary. Licence-compatible: precis
+  is GPL-3.0-or-later, gmsh GPL-2-or-later. A native crash takes the
+  job process down; jobs run in disposable containers. The hex fallback
+  needs no gmsh.
+- **Q3** Blocks carry an explicit `material=` slug naming a `material`
+  kind row; multiple sourced values select by closest conditions
+  (temperature) first, then method `measured > datasheet > dft >
+  estimated`, then maturity `commercial > lab > speculative`; the card
+  cites the chosen value row and its source (§Vocabulary).
+- **Q4** `resistivity_temp_coeff` is a core material property through a
+  migration in slice 1, not a `proposed` property.
+- **Q5** Electrostatics far field: Neumann 0 on the padded box with the
+  `box_margin ≥ 3` line — approved as defaulted; a Robin/infinite-element
+  far field later if a case needs it.
+- **Q6** `pyamg` as an optional extra (MIT; CG + Jacobi always works,
+  slower) — approved as defaulted.
+- **Q7** A script's over-budget `evaluate` refuses with `next=` naming
+  `budget='job'`, never silently queues — approved as defaulted; a run's
+  cost stays visible to the script that pays it.
+- **Order:** this spec's slices follow se-flow-kernel 4a (tracer to the
+  player) and 4b (optimisation kit + examples) — "then we add more
+  physics" — ranked in [threads/structure-workspaces](threads/structure-workspaces.md).
+
+## Open questions
+
+None open.

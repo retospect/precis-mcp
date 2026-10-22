@@ -163,97 +163,265 @@ commit carrying this line; `git log` has the sha.*
      solvers refuse, and the reason names DSMC as out of scope. Slip
      (`se-multiphysics.md` slice 5) later moves the lower bound to 0.1.
    - **Determinism.** Same `seed_rng` gives bitwise-equal `Paths`.
-4. **Toolkit `evaluate` for flow + the annealer as an example workspace
-   script.** No server op (the earlier `anneal_chamber` is dropped).
-   Reto, 2026-10-22: "I feel like the hole placement is a point solution
-   here. What we want is to add this to the tooling kit that is given to
-   the se workspace, such that the coder, whoever it is, can write an
-   annealer that makes the shape do what we wish as specified for the
-   case, and check with the CFD system." And: "hole count will not be
-   the answer to evaluate shape. That's what the tool makes the space to
-   be." Depends on [structure-workspaces](structure-workspaces.md)
-   slices 1–2 (the `run` loop; the `precis-geom` wheel). Delivers:
+4a. **Workspace flow: DB-free adapter, `evaluate(['flow'])`, tracer to
+   the player.** No server op (the earlier `anneal_chamber` is dropped).
+   Depends on [structure-workspaces](structure-workspaces.md) slices
+   1–2 (the `run` loop; the `precis-geom` wheel). Order (Reto,
+   2026-10-22): "particle tracer first and run it all the way to
+   visualizer, then we do a chamber optimizer example (as dogfood).
+   Then we add more physics." Delivers:
    - **`precis_geom.flow`** — the DB-free cad → `Domain` adapter
      refactored out of `src/precis_se/flow.py` (`domain_from_solid`,
-     `Chamber`, `PortPatch`, `_wrap_solid`, `_claim_port`, the port
-     rectangle given directly); `precis_se/flow.py` keeps `patch_port`
-     (needs the tree), the `flow:` token, `FLOW_COMPUTERS` and
-     `view='flow'`, and imports the adapter from the wheel module. The
-     slice-2 tests pass unchanged.
+     `_wrap_solid`, `_claim_port`, the port rectangle given directly).
+     Kit-facing names are general: `Chamber` → `GapDomain` (a built
+     thin gap: `Domain` + scale triple + axis map + outline + depth
+     map; nothing in it is chamber-specific), `_chamber_placed` →
+     `_solid_placed`. `PortPatch` keeps its name — a port rectangle on a
+     face is already the general object; `FlowSpec`/`LumenSpec` keep
+     theirs. `precis_se/flow.py` keeps `patch_port` (needs the tree),
+     the `flow:` token, `FLOW_COMPUTERS` and `view='flow'`, imports the
+     adapter from the wheel module and carries `Chamber = GapDomain`
+     for one release. The slice-2 tests pass unchanged.
    - **`precis_geom.physics.evaluate(shape, physics=['flow'], spec, *,
-     seed, cells)` → `Outcome`** — the shape shared with
-     [se-native-fields](se-native-fields.md) §The toolkit:
-     `measures` = the four flow measurands (`breakthrough-fraction`,
-     `residence-time-t0`, `resistance-ratio`, `evenness`) computed by
-     the same code `FLOW_COMPUTERS` run (the computers call `evaluate`;
-     one implementation), `cards['flow']` = the regime card,
-     `hard_ok`/`failures` from the spec's hard measures, `cost`.
-     **Physics only**: no hole count, no material or process term —
-     those are the script's own objective terms. `seed=` reseeds the
-     tracer identically on every call (common random numbers).
-   - **`precis_flow.anneal`** stays vendored as a pure, generic
-     Metropolis helper (`anneal(state0, propose, cost, schedule, rng)`
-     — geometric cooling, `T/T0`-scaled proposals supplied by the
-     caller); nothing about holes or chambers inside it.
-   - **Example workspace** `examples/workspaces/chamber-anneal/main.py`
-     (a CI golden per structure-workspaces slice 7): builds the hex
-     chamber with `pg` (the `test_se_flow.py` `_hex_design` fixture as
-     code), reads `params.json` (`seed`, `iterations`, `cooling`,
-     weights, `profile`), proposes add / remove / perturb holes with
-     `user` holes pinned and spacing/depth kept inside the process
-     `min_wall` (read through the read MCP), rejects every proposal
-     whose `Outcome.hard_ok` is false, and minimises the script-side
-     objective
-     `cost = −w_break·f + w_res·R/R_ref + w_even·(1 − evenness) + w_holes·n/n_ref`
-     — the `w_holes` term is the script's, not the toolkit's. Accepted
-     states go to `out.search(iteration, cost, measures)` (the trace's
-     `search` section); the best chamber is emitted with its holes as
-     cad `body add` cylinders, the four measures declared `soft` with
-     the weights in meta, plus the hard `resistance-ratio ≤ 1.2`.
-   - **Skill `precis-workspace-physics-help`** (new, CFD as its first
-     section): what `evaluate` returns and refuses per physics, the
-     regime card, the spec shape (hard/soft/gauge), the optimizer-loop
-     guidance (objective from measures, hard constraints reject, common
-     random numbers / fixed seeds, budgets inline vs `budget='job'` on
-     pollux/spark, recording the search in the trace, the link to
-     `precis-differentiation-help` for gradients), the example script,
-     and the import re-check rule. Written here because this is the
-     first toolkit physics; se-native-fields slice 1 adds its section.
-   Acceptance (`tests/test_precis_flow_anneal.py` for the pure helper;
-   `tests/workspaces/test_chamber_anneal.py` running the example without
-   a container; `tests/test_se_flow.py` for the import re-check):
-   - **Cost parity.** On the hex chamber with cfdtest's default weights,
-     `profile='plug'` and the same seed, the example's cost of the
-     initial hole set (flow terms from `evaluate` + the script's hole
-     term) equals cfdtest `cost.evaluate`'s `total` within 1e-9.
-   - **Common random numbers.** `evaluate` on the same state twice
-     gives a bitwise-equal `Outcome`.
-   - **Reproduction.** At cfdtest's default config (`cooling 0.97`,
-     `iters_per_temp 3`, cfdtest's iteration count), the example's best
-     cost lies within the spread of cfdtest `anneal` over 5 seeds, and
-     is strictly below the initial cost.
-   - **Determinism.** The same seed gives the same best hole set.
+     seed, cells)` → `Outcome`** — the one interface across physics
+     ([se-native-fields](se-native-fields.md) §The toolkit): flow is its
+     first physics; each native-fields slice adds its names. `measures`
+     = the four flow measurands (`breakthrough-fraction`,
+     `residence-time-t0`, `resistance-ratio`, `evenness`) computed by the
+     same code `FLOW_COMPUTERS` run (the computers call `evaluate`; one
+     implementation), `cards['flow']` = the regime card,
+     `hard_ok`/`failures` from the spec's hard measures, `cost`, and
+     `paths` (the traced `Paths`, lazy, never in the manifest).
+     **Physics only** (ruling): no hole count, no material or process
+     term. `seed=` reseeds the tracer identically on every call (common
+     random numbers); `cells` is the kernel's `nx`.
+   - **Manifest → player.** `out.physics(block, physics=['flow'], spec)`
+     writes the manifest entry; the importer turns it into the `flow:`
+     pocket and the port measures (`origin='user'`) and re-runs
+     `COMPUTERS` (import re-check below). The slice-2b Flow tab
+     (`/se/<slug>/flow`, `view='flow'`) then plays the workspace-built
+     shape with no player change — the pocket is the object slice 2
+     already stores.
+   - **Skill `precis-workspace-optimize-help`** (new; the general
+     "optimise a design in a workspace" skill, CFD as its first physics
+     section rather than its subject). This slice writes the `evaluate`
+     contract (returns and refusals per physics), the regime card, the
+     spec shape (hard/soft/gauge) and the import re-check rule; 4b adds
+     the optimisation sections; se-native-fields slice 1 adds its
+     physics section.
+   Acceptance (`tests/test_precis_geom_flow.py` for the adapter;
+   `tests/workspaces/test_flow_player.py` end to end;
+   `tests/test_se_flow.py` for the import re-check):
+   - **End to end.** A workspace script builds the hex chamber with `pg`
+     (the `test_se_flow.py` `_hex_design` fixture as code), calls
+     `evaluate(physics=['flow'])`, writes `out.block` + `out.physics`;
+     after `run` the design carries the `flow:` pocket, `view='flow'`
+     serves the player payload (mesh, frames, ports, card — the keys the
+     slice-2b test asserts) and `/se/<slug>/flow` renders it.
+   - **Common random numbers.** `evaluate` on the same shape twice gives
+     a bitwise-equal `Outcome`.
    - **Physics only.** `Outcome.measures` keys are a subset of the
      registered flow measurands; a test asserts no count/material key
-     and that `evaluate` is pure over `(shape, spec, seed)`.
-   - **Hard constraints hold.** With the hard `resistance-ratio ≤ 1.2`,
-     no accepted state violates it; after import `view='drc'` is clean
-     for that measure.
+     and that `evaluate` is pure over `(shape, spec, seed, cells)`.
    - **Import re-check.** After `run`, the server's `COMPUTERS` values
      equal the manifest's stated values within 1e-9 at equal `cells`;
      a tampered manifest value yields `measure.script_mismatch`; a hard
      bound the server's own number violates is a DRC finding whatever
      the manifest claims.
-   - **Script-side invariants** (the example's own test): a pinned
-     `user` hole is never moved or removed; hole depth ≤ plate thickness
-     − `min_wall`; hole spacing ≥ `min_wall`, both asserted on every
-     accepted state; holes import with `origin='proposed'`.
    - **Budget.** `evaluate` above `INLINE_CELLS` refuses with `next=`
-     naming `budget='job'`; the example checkpoints its search to
-     `/work/out/search.json` when the run's `wall_seconds` estimate
-     would be exceeded and resumes from `params.resume`.
-   - **Trace.** The run's trace carries the `search` section; `view=
-     'trace'` renders the best iteration with its measures.
+     naming `budget='job'`.
+   - **Offline.** The end-to-end test's script step runs with no DB and
+     no se import (the wheel alone; structure-workspaces §Core design 7).
+4b. **Design-optimisation kit + two examples (dogfood).** Reto,
+   2026-10-22: "the chamber with the holes is but a point solution. We
+   want the general case implemented, the coder can do cool stuff with
+   it then." And: "hole count will not be the answer to evaluate shape.
+   That's what the tool makes the space to be." After 4a. Delivers:
+   - **Design representation — proposed, under discussion** (Reto is
+     still on this item; the rest of 4b is ruled). Two cases set the
+     bar: the chamber (holes poked, shifted, added, removed —
+     annealing) and a bracket (two planes at an angle, a load, a
+     material, a manufacturing spec: add small supports where the
+     remaining need is highest, anneal, then remove the least-stressed
+     ones, ESO/BESO-like). "It's the coder's choice." Recommended:
+     1. **`precis_geom.design`** — a mutable working design: a feature
+        graph whose features have stable ids (`add`/`remove`/`modify`
+        by id, never "the third hole"). The primary interface, because
+        topology changes (growing and pruning features) are awkward as
+        fixed-length parameter vectors. `build(design) -> Design` (cad
+        graph) is pure; `precis.cad.graph.Design` itself is mutable
+        (its `instances`/`components` dicts grow under `prim`/`pattern`/
+        `instance`; the nodes are frozen) and is treated as a build
+        product, never edited in place by the kit. A stable feature id
+        is not a stable face: booleans split and merge faces, so BCs and
+        ports reference semantic regions and datums — the existing
+        `patch:` selector (`precis_se/datums.py`, moving to
+        `precis.cad.patch`) is exactly that, re-resolved on every
+        rebuild; the rebuild reports `one→many`, `many→one` and
+        `deleted` mappings for the regions a spec names, and a deleted
+        region is a refusal naming the feature, not a silent drop.
+        Interchangeable features canonicalise (holes sorted spatially)
+        so permutations hash to one `shape sha` for the cache.
+     2. **Snapshot/restore**: `design.snapshot()` / `restore(snap)` —
+        copy-on-write or a plain copy, designs are small — for
+        backtracking and Metropolis rejects. Each evaluation is one
+        atomic transaction over design + grid + semantic maps + solver
+        restart data; workers hold copy-on-write snapshots, never a
+        shared undo stack. Across runs the per-run commit
+        (`script_sha`), `target:'fork'` and the retire/restore trail
+        cover it; no design snapshots in the DB.
+     3. **`precis_geom.params`** — named, bounded parameters
+        (`Continuous(lo, hi)`, `Integer(lo, hi)`, `Boolean()`) as a
+        convenience layer over feature attributes, with constraints as
+        functions of the parameters, for continuous optimisers; a
+        `Space` samples, clips and validates; params are an immutable
+        mapping (`build(params)` stays the convention for fixed-topology
+        searches).
+     4. **Ask/tell adapters** (Optuna/Nevergrad style): `ask(n) ->
+        candidates`, `tell(observations)`, `recommend()`; an
+        `Observation` carries `objectives`, `constraints` (`≤ 0`
+        feasible), `status ok|failed|pruned`, `design_hash` and
+        `artifact_uri`, so any search style plugs in and a failed solve
+        is never read as a good objective.
+     5. **`evaluate` returns more than scalars** — still physics
+        outcomes, so the physics-only ruling holds: the `fields`
+        (stress, flow speed, temperature; lazy handles), queries over
+        them (`argmax`, `sample(point)`, `top_k(regions)`), and
+        **per-feature attribution** (`attribution[feature_id][metric]`:
+        flow through each hole, strain energy or stress utilisation per
+        support — what "remove the least-stressed support" reads), each
+        value tagged with its attribution type (`direct` local metric,
+        `additive` integral, `counterfactual`/adjoint influence) because
+        only additive ones sum. Later: adjoint sensitivities. Warm start
+        / incremental re-solve after a small edit (`evaluate(...,
+        warm=prev)` passes restart data; the kernel decides what is
+        still valid) is a performance requirement, measured in the
+        bracket example.
+     Prior art: the cached survey `perplexity-research:506346`
+     (ESO/BESO, SIMP, level-set, SA over features; OpenMDAO, Optuna,
+     Nevergrad, pymoo interfaces; representation and solver-output
+     needs). Folded in: SA over features uses our own move/energy loop
+     (SciPy `dual_annealing` is a fixed-length vector optimiser, the
+     wrong abstraction for add/delete moves); ESO/BESO needs per-element
+     strain energy with neighbourhood filtering, level-set needs a
+     topological derivative to nucleate holes — both read the
+     attribution and fields above; SIMP is a separate density-field
+     route, named as a later plug-in, not slice scope; field-biased
+     proposals are heuristics only — the objective decides.
+     **Scope.** This kit is se's. pcb
+     ([pcb-workspace-code](pcb-workspace-code.md)) shares the workspace
+     run loop, the construction trace, the snapshot and the ask/tell
+     layer, but its builders and evaluators differ: the netlist and
+     modules are built in code, while place/route/DRC stay server
+     services, like relax.
+   - **`precis_geom.optimize`** — search tooling over `evaluate`:
+     - `cache`: `Outcome`s keyed `(shape sha, physics, spec sha, seed,
+       cells)`; a revisited state costs no solve; persisted under
+       `/work/out/evaluate-cache/` so a resumed run reuses it.
+     - `evaluate_many(shapes, ...)`: parallel over the cgroup's cores,
+       results in input order (deterministic).
+     - common random numbers: one `seed` per search, passed to every
+       `evaluate`.
+     - `out.search(iteration, cost, measures, params, accepted)` records
+       **every** evaluation into the trace's `search` section;
+       `view='trace'` renders the best iteration with its measures.
+     - checkpoint/resume: `Search.checkpoint(path)` every N evaluations
+       and when the run's `wall_seconds` estimate would be exceeded
+       (`/work/out/search.json`); `params.resume` reloads it.
+     - `budget='job'`: an `evaluate` above `INLINE_CELLS` refuses naming
+       it; the request pattern of se-native-fields §Budgets.
+     - optimisers as adapters behind the ask/tell interface: `anneal(
+       moves, energy, schedule, rng)` — cfdtest's generic Metropolis
+       helper (geometric cooling, `T/T0`-scaled proposals supplied by
+       the caller; nothing about holes or chambers inside it) vendored
+       here, not into `precis_flow`, over feature-graph moves with
+       snapshot/restore on reject; `scipy_minimize(space, ...)`
+       (`scipy.optimize.minimize`, derivative-free methods on the
+       continuous subspace, integers rounded through the space);
+       `cmaes(space, ...)` over the `cmaes` PyPI wheel (an example dep,
+       not a core dep). Gradient methods later (adjoint sensitivities,
+       se-native-fields "later, named"; `precis-differentiation-help`).
+       A script may import any PyPI optimiser (Optuna, Nevergrad,
+       pymoo plug into ask/tell directly) — the adapters are
+       conveniences; the contract is `design`/`Space` + `evaluate`.
+   - **Examples** (`examples/workspaces/`, CI goldens per
+     structure-workspaces slice 7, run without a container):
+     - `chamber-anneal/main.py`: the hex chamber; params = the hole set
+       (`(x, y, d, depth)` rows, `user` holes pinned) with constraints
+       spacing/depth inside the process `min_wall` (read through the
+       read MCP, staged into `params.json`); rejects `hard_ok == False`
+       before reading the cost; minimises the script-side objective
+       `cost = −w_break·f + w_res·R/R_ref + w_even·(1 − evenness) + w_holes·n/n_ref`
+       (the `w_holes` term is the script's, not the toolkit's); the best
+       chamber is emitted with its holes as cad `body add` cylinders,
+       the four measures `soft` with the weights in meta, plus the hard
+       `resistance-ratio ≤ 1.2`.
+     - `manifold-split/main.py`: a thin manifold splitting one inlet
+       evenly to `N` outlets; params = `N` channel widths (continuous,
+       bounded below by `min_wall`) and the split position; objective =
+       outlet evenness (the `evenness` measurand evaluated over the `N`
+       outlet patches — `precis_flow.stats.nonuniformity` takes a list
+       of outlet masks; the one kernel change, se-machine-design seam)
+       plus `resistance-ratio`; run with `scipy_minimize` and with
+       `anneal`, both recorded in the trace.
+     - a heat example (fin thickness search) when se-native-fields
+       slice 1 lands — filed there.
+   - **Skill `precis-workspace-optimize-help`** gains the optimisation
+     sections: params/space, the loop (objective from measures, hard
+     constraints reject, common random numbers, the cache,
+     `evaluate_many`, budgets inline vs `budget='job'` on pollux/spark,
+     checkpoint/resume, recording the search), the adapters, both
+     examples, the `precis-differentiation-help` link.
+   Acceptance (`tests/test_precis_geom_optimize.py` for params, cache
+   and adapters; `tests/workspaces/test_chamber_anneal.py` and
+   `tests/workspaces/test_manifold_split.py` for the examples, without a
+   container):
+   - **Cost parity.** On the hex chamber with cfdtest's default weights,
+     `profile='plug'` and the same seed, the example's cost of the
+     initial hole set (flow terms from `evaluate` + the script's hole
+     term) equals cfdtest `cost.evaluate`'s `total` within 1e-9.
+   - **Reproduction.** At cfdtest's default config (`cooling 0.97`,
+     `iters_per_temp 3`, cfdtest's iteration count), the example's best
+     cost lies within the spread of cfdtest `anneal` over 5 seeds, and
+     is strictly below the initial cost.
+   - **Determinism.** The same seed gives the same best hole set.
+   - **Params.** `Space.validate` refuses a constraint violation naming
+     the parameter; `build` on equal params gives equal shape shas and
+     never mutates its arguments (the test passes a frozen mapping and
+     a `Design` whose instance count is asserted unchanged).
+   - **Feature graph** (if the proposed representation stands):
+     `remove(id)` then `restore(snap)` gives the same shape sha as
+     before; two hole orders give one sha (canonicalisation); a `patch:`
+     region split by a new feature reports `one→many`, a deleted one
+     refuses naming the feature; a failed solve is an `Observation`
+     with `status='failed'`, never a cost.
+   - **Attribution.** On the chamber, the per-hole flow fractions sum
+     to the breakthrough fraction within 1e-9 (`additive`); the
+     `counterfactual` value for one hole equals evaluate-without-it
+     minus evaluate-with-it on a 3-hole case.
+   - **Cache.** Re-evaluating a visited state does not call the kernel
+     (a call counter); the key changes with each of its five parts.
+   - **`evaluate_many`.** Results equal the sequential results bitwise
+     and arrive in input order, with 1 and 4 workers.
+   - **Adapters.** `scipy_minimize` and `cmaes` reach the optimum of a
+     quadratic test objective over a mixed `Space` within tolerance;
+     `anneal` on the same converges in the mean over 5 seeds.
+   - **Manifold.** The best manifold's outlet evenness is ≥ 0.95 (plug
+     profile, default cells), up from the equal-width start; the hard
+     `resistance-ratio` bound holds on every accepted state.
+   - **Hard constraints hold.** With the hard `resistance-ratio ≤ 1.2`,
+     no accepted state violates it; after import `view='drc'` is clean
+     for that measure.
+   - **Script-side invariants** (the chamber example's own test): a
+     pinned `user` hole is never moved or removed; hole depth ≤ plate
+     thickness − `min_wall`; hole spacing ≥ `min_wall`, both asserted on
+     every accepted state; holes import with `origin='proposed'`.
+   - **Checkpoint/resume.** A search interrupted after `k` evaluations
+     and resumed reaches the same best state as an uninterrupted run
+     with the same seed.
+   - **Trace.** The run's trace carries the `search` section with every
+     evaluation and its `accepted` flag; `view='trace'` renders the best
+     iteration with its measures.
 
 ## Decisions (Reto 2026-10-20: "yes")
 
@@ -267,7 +435,26 @@ commit carrying this line; `git log` has the sha.*
 Sequencing: slice 1 is self-contained and builds now. Slice 2 waits for
 pocket-from-molecule slice 2 to land, because that slice fixes the
 provisional `Computer` signature in `precis_se.properties.COMPUTERS`.
-Slice 2b follows slice 2.
+Slice 2b follows slice 2. Slices 4a → 4b follow structure-workspaces
+slices 1–2 and precede se-native-fields slice 1 (ranked in
+[threads/structure-workspaces](threads/structure-workspaces.md)).
+
+## Decided 2026-10-22 (Reto, chat-99)
+
+- Slice 4 is a general design-optimisation kit, not the hole annealer:
+  `precis_geom.optimize` over `evaluate`, the chamber as one of two
+  examples. Split 4a (tracer to the player through a workspace) / 4b
+  (kit + examples) so the order "tracer → visualizer, then the optimizer
+  dogfood, then more physics" is one slice each.
+- The design representation (feature graph with stable ids + snapshot
+  + params layer + ask/tell + rich `evaluate` outputs) is the
+  recommended design, **proposed, under discussion** — not ruled.
+- Kit-facing names are general (`GapDomain`); the skill is
+  `precis-workspace-optimize-help`, CFD its first physics section.
+- Scripts build, evaluate and optimise with no DB and no se — the wheel
+  is DB-free (structure-workspaces §Core design 7).
+- cfdtest's `anneal.py` was not vendored in slice 1 (`src/precis_flow/`
+  has no `anneal`); it enters as `precis_geom.optimize.anneal` in 4b.
 
 ## Decided before slice 2 (Reto 2026-10-21: "Parabolic default yes")
 
@@ -302,8 +489,11 @@ web player of slice 2b replaces it).
 
 New `src/precis_flow/`; `precis_se` gains the adapter module and the
 `COMPUTERS` entries; `cad` kind untouched beyond reading envelopes;
-`precis_web` gains the Flow tab and its static JS (slice 2b). Slice 4:
+`precis_web` gains the Flow tab and its static JS (slice 2b). Slice 4a:
 `precis_geom.flow` and `precis_geom.physics` in the `precis-geom` wheel
 (`packaging/geom/`), `precis_se/flow.py` shrinks to the tree-bound half,
-`examples/workspaces/chamber-anneal/`, the skill
-`precis-workspace-physics-help`, `workspace_import.py` (re-check).
+`workspace_import.py` (`out.physics` → `flow:` pocket, re-check), the
+skill `precis-workspace-optimize-help`. Slice 4b: `precis_geom.params`,
+`precis_geom.optimize`, `examples/workspaces/chamber-anneal/` and
+`manifold-split/`, `precis_flow.stats` (outlet-mask list), the skill's
+optimisation sections.
