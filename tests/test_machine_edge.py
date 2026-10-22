@@ -310,6 +310,231 @@ class TestExplainsRouting:
         assert _link_row(store, h1, h2, "explains") is not None
 
 
+# ── the link verb carries meta= to the gate (gr504789) ────────────────
+
+
+class TestLinkVerbMeta:
+    """``link(kind='finding'|'paper', ..., meta=...)`` through the real
+    dispatch path. The verb refused ``meta=`` at the dispatch strictness
+    gate, so a machine writer could not carry the annotation the
+    admission gate requires — the hand-driven gardener pilot filed 12
+    plain stance edges and parked the why/evidence ledger in a memory.
+    ``meta`` is opt-in per kind: kinds that don't declare it (memory
+    here) still refuse it at the same gate."""
+
+    def _finding(self, store: Store, title: str) -> int:
+        return _ref(store, "finding", title)
+
+    def test_finding_annotated_machine_edge_accepted(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        src = self._finding(store, "claim a")
+        dst = self._finding(store, "claim b")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "finding",
+                    "id": src,
+                    "target": f"finding:{dst}",
+                    "rel": "supports",
+                    "meta": _meta(),
+                },
+            )
+        assert "[error:" not in out, out
+        row = _link_row(store, src, dst, "supports")
+        assert row is not None
+        meta = row[3]
+        for key in ("model", "prompt_version", "run_id", "why", "evidence"):
+            assert meta[key] == _meta()[key]
+
+    def test_paper_annotated_machine_edge_accepted(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        slug = f"me-{uuid.uuid4().hex[:10]}"
+        src = int(store.insert_ref(kind="paper", slug=slug, title="p", meta={}).id)
+        dst = self._finding(store, "claim")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "paper",
+                    "id": slug,
+                    "target": f"finding:{dst}",
+                    "rel": "supports",
+                    "meta": _meta(),
+                },
+            )
+        assert "[error:" not in out, out
+        row = _link_row(store, src, dst, "supports")
+        assert row is not None and row[3]["run_id"] == _ANNOTATION["run_id"]
+
+    def test_machine_edge_via_verb_missing_pins_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        src = self._finding(store, "claim a")
+        dst = self._finding(store, "claim b")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "finding",
+                    "id": src,
+                    "target": f"finding:{dst}",
+                    "rel": "supports",
+                    "meta": dict(_ANNOTATION),
+                },
+            )
+        assert "[error:BadInput]" in out
+        assert "machine-edge-no-evidence" in out
+        assert "next:" in out and "evidence" in out
+        assert _link_row(store, src, dst, "supports") is None
+
+    def test_machine_edge_via_verb_missing_annotation_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        src = self._finding(store, "claim a")
+        dst = self._finding(store, "claim b")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "finding",
+                    "id": src,
+                    "target": f"finding:{dst}",
+                    "rel": "supports",
+                    "meta": {"evidence": ["pc1"]},
+                },
+            )
+        assert "[error:BadInput]" in out
+        assert "machine-edge-annotation" in out
+        assert "next:" in out
+        assert _link_row(store, src, dst, "supports") is None
+
+    def test_claim_hub_door_forwards_the_annotation(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """The Taproot claim-link door (``link_claims``) also receives the
+        caller's ``meta`` — the machine-edge gate inside ``add_link``
+        sees the same annotation on a hub→hub ``refines`` edge."""
+        h1 = _claim_hub(store, "Sharper wording of the claim.")
+        h2 = _claim_hub(store, "The original claim.")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "finding",
+                    "id": f"fi{h1}",
+                    "target": f"fi{h2}",
+                    "rel": "refines",
+                    "meta": _meta(),
+                },
+            )
+        assert "[error:" not in out, out
+        row = _link_row(store, h1, h2, "refines")
+        assert row is not None and row[3]["run_id"] == _ANNOTATION["run_id"]
+
+    def test_evidence_door_merges_caller_meta_with_source_handle(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """A machine edge through the paper→hub evidence door keeps the
+        door's own ``source_handle`` meta AND the caller's annotation —
+        the merge is what lets ``establishes`` pass the admission gate."""
+        hub_id = _claim_hub(store, "Pd/C catalyzes Suzuki coupling.")
+        paper = int(
+            store.insert_ref(
+                kind="paper",
+                slug=f"me-{uuid.uuid4().hex[:10]}",
+                title="p",
+                meta={},
+            ).id
+        )
+        from precis.store.types import ChunkInsert
+
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="body", meta={})])
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "link",
+                {
+                    "kind": "finding",
+                    "id": f"fi{hub_id}",
+                    "target": f"pc{chunk_id}",
+                    "rel": "establishes",
+                    "meta": _meta(),
+                },
+            )
+        assert "[error:" not in out, out
+        row = _link_row(store, paper, hub_id, "establishes")
+        assert row is not None
+        meta = row[3]
+        assert meta["run_id"] == _ANNOTATION["run_id"]
+        assert meta["source_handle"] == f"pc{chunk_id}"
+
+    def test_human_edge_meta_is_stored_not_gated(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """A human/agent edge is untouched: ``meta=`` lands on the row
+        with no annotation requirement, and a meta-less link still works
+        exactly as before."""
+        src = self._finding(store, "claim a")
+        dst = self._finding(store, "claim b")
+        out = runtime_with_store.dispatch(
+            "link",
+            {
+                "kind": "finding",
+                "id": src,
+                "target": f"finding:{dst}",
+                "rel": "related-to",
+                "meta": {"note": "human annotation, no contract"},
+            },
+        )
+        assert "[error:" not in out, out
+        row = _link_row(store, src, dst, "related-to")
+        assert row is not None and row[3]["note"] == "human annotation, no contract"
+
+        src2 = self._finding(store, "claim c")
+        out = runtime_with_store.dispatch(
+            "link",
+            {
+                "kind": "finding",
+                "id": src2,
+                "target": f"finding:{dst}",
+                "rel": "related-to",
+            },
+        )
+        assert "[error:" not in out, out
+        assert _link_row(store, src2, dst, "related-to") is not None
+
+    def test_kind_without_meta_still_refuses_it(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """Per-kind opt-in is pinned: ``memory`` does not declare ``meta=``
+        on its link, so the strictness gate refuses it exactly as it did
+        for finding/paper before this change."""
+        a = _ref(store, "memory", "a")
+        b = _ref(store, "memory", "b")
+        out = runtime_with_store.dispatch(
+            "link",
+            {
+                "kind": "memory",
+                "id": a,
+                "target": f"memory:{b}",
+                "rel": "related-to",
+                "meta": {"note": "x"},
+            },
+        )
+        assert "[error:BadInput]" in out
+        assert "does not accept" in out
+        assert _link_row(store, a, b, "related-to") is None
+
+
 # ── the merge exemption ────────────────────────────────────────────────
 
 

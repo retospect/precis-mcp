@@ -1185,10 +1185,17 @@ class ComponentHandler(ValueEntityHandler):
                     f"{len(rows) - 50} additional matches; narrow q= to a category path."
                 )
             if category_id is not None:
-                leaf = snapshot.categories and not snapshot.categories[0].get(
-                    "Children"
-                )
-                if leaf:
+                # Digi-Key answers /categories/<leaf> ancestor-anchored —
+                # id=572 comes back as root 26 with 572 among its Children
+                # (gr503437) — so categories[0] is the ancestor, not the
+                # node the id asked for. The leaf test must find the
+                # requested node in the returned tree: parametric filters
+                # are a leaf-only API surface (HTTP 400 "Parametric
+                # Filtering Not Support at Parent Category Level" on a
+                # parent), so options are fetched only for a childless
+                # requested node.
+                requested = _category_node(snapshot.categories, category_id)
+                if requested is not None and not requested.get("Children"):
                     for option in adapter.parameter_options(category_id):
                         name = str(option.get("ParameterName") or "")
                         values = option.get("FilterValues") or []
@@ -1768,6 +1775,22 @@ _PUT_DOOR_RELS: dict[str, str] = {
     "made-of": "put(kind='component', id=<slug>, made_of='material:<slug>')",
     "contains": "put(kind='component', id=<slug>, contains='component:<child>', qty=1)",
 }
+
+
+def _category_node(
+    entries: list[dict[str, Any]], category_id: int
+) -> dict[str, Any] | None:
+    """The node whose ``CategoryId`` is ``category_id``, depth-first, or
+    ``None``. Digi-Key anchors a single-category response at an ancestor
+    (the leaf sits somewhere under ``Children``), so ``categories[0]``
+    is not the requested node (gr503437)."""
+    for entry in entries:
+        if entry.get("CategoryId") == category_id:
+            return entry
+        found = _category_node(entry.get("Children") or [], category_id)
+        if found is not None:
+            return found
+    return None
 
 
 def _fmt_spec(value: Any) -> str:

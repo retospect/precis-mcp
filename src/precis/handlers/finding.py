@@ -705,6 +705,7 @@ class FindingHandler(NumericRefHandler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Taproot-aware link door for findings.
@@ -726,6 +727,13 @@ class FindingHandler(NumericRefHandler):
         - ``rel='explains'`` → this hub is the mechanism/cause that explains
           the ``target`` hub (``fi<id>``); advisory, directed explaining →
           explained, no cycles, no evidence flows.
+
+        ``meta`` (edge metadata, add-only) rides into whichever door
+        writes the edge — merged into the evidence edge's own meta, or
+        passed through to ``link_claims`` / :meth:`_link` — so a machine
+        writer's admission annotation (``meta.evidence`` chunk pins,
+        ``meta.{model,prompt_version,run_id,why}``) reaches the gate at
+        ``store.add_link`` (gr504789).
 
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
@@ -785,7 +793,7 @@ class FindingHandler(NumericRefHandler):
                         hub_ref_id=hub_ref_id,
                         paper_ref_id=resolved.ref_id,
                         role=rel,
-                        meta={"source_handle": tgt},
+                        meta={**(meta or {}), "source_handle": tgt},
                         set_by="agent",
                     )
                     return Response(
@@ -804,6 +812,7 @@ class FindingHandler(NumericRefHandler):
                     to_hub_ref_id=to_hub,
                     relation=rel,
                     set_by="agent",
+                    meta=meta,
                 )
                 return Response(
                     body=(
@@ -853,7 +862,12 @@ class FindingHandler(NumericRefHandler):
                         f"{'' if n == 1 else 's'}: {tgt} ↛ fi{hub_ref_id}"
                     )
                 )
-        return super().link(id=id, target=target, mode=mode, rel=rel, **_kw)
+        # The generic single-id door — ``self._link`` directly, not
+        # ``super().link``, so ``meta`` reaches ``add_link`` (the base
+        # ``link`` signature has no ``meta`` slot; a list id already
+        # raised at ``_coerce_ids`` above, so the batch door never
+        # applies here).
+        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
 
     # ──────────────────────────────────────────────────────────────────
     # get — intercept view='evidence' (Taproot Phase 2c), else base

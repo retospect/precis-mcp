@@ -2598,9 +2598,16 @@ class PaperHandler(Handler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add or remove a link from this paper to another ref."""
+        """Add or remove a link from this paper to another ref.
+
+        ``meta`` (edge metadata, add-only) lands on the link row —
+        a machine writer's admission annotation (``meta.evidence``
+        chunk pins, ``meta.{model,prompt_version,run_id,why}``) reaches
+        the gate at ``store.add_link`` through it (gr504789).
+        """
         target = require_link_target("paper", target)
         validate_link_mode(mode)
         slug, ref_id = self._resolve_paper_slug(id)
@@ -2610,6 +2617,8 @@ class PaperHandler(Handler):
             link=target if mode == "add" else None,
             unlink=target if mode == "remove" else None,
             rel=rel,
+            meta=meta,
+            merge_meta=meta is not None,
         )
         return Response(
             body=format_link_tag_ack(

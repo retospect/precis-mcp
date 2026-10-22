@@ -247,9 +247,10 @@ graph-health-metrics, five parked gripes, and the seam with
    Pd-hydride pilot (me504790: 23 writes, 19 wins over RAG): cheap tier
    proposes per quest cluster, strong tier writes pinned hubs and stance
    edges, each write passes a before/after retrieval test, 2-h cadence
-   under budget caps and kill criteria. Waits on gr504789 (`link meta=`,
-   tree `g5-handlers`), the review stamps and the quest-edge direction
-   fix; slice 1 (selector + stats, SQL only) can start now.
+   under budget caps and kill criteria. `link meta=` built in
+   `g5-handlers` (b77539cba, unlanded); still waits on the review
+   stamps and the quest-edge direction fix; slice 1 (selector +
+   stats, SQL only) can start now.
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it

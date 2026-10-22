@@ -261,6 +261,62 @@ def test_supplier_navigation_roots_children_query_and_bad_id(adapter, monkeypatc
             handler.get(view="supplier-categories", id="component-slug")
 
 
+def test_supplier_categories_leaf_found_in_ancestor_anchored_reply(
+    adapter, monkeypatch
+):
+    """gr503437: a single-category read can come back ancestor-anchored —
+    the live API answered ``/categories/572`` with root 26 carrying 572
+    among its ``Children``, so ``categories[0]`` is the ancestor, not the
+    requested leaf. The leaf test must locate the requested node in the
+    tree: only a childless requested node fetches parametric filters (the
+    API itself refuses them on a parent with HTTP 400)."""
+    monkeypatch.setattr("precis.supply.digikey.DigiKeyAdapter", lambda: adapter)
+    root = {
+        "CategoryId": 26,
+        "Name": "Hardware",
+        "ProductCount": 9062,
+        "Children": [
+            {
+                "CategoryId": 572,
+                "Name": "Screws, Bolts",
+                "ProductCount": 9062,
+                "Children": [],
+            }
+        ],
+    }
+    posts = []
+
+    def handle_get(request):
+        return httpx.Response(200, json={"Category": root})
+
+    def handle_post(request):
+        posts.append(request)
+        return httpx.Response(
+            200,
+            json={"Products": [], "FilterOptions": {"ParametricFilters": _options()}},
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle_get)) as get_client,
+        httpx.Client(transport=httpx.MockTransport(handle_post)) as post_client,
+    ):
+        monkeypatch.setattr("precis.supply.digikey.httpx.get", get_client.get)
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", post_client.post)
+        stub: Any = SimpleNamespace()
+        handler = ComponentHandler(hub=Hub(store=stub))
+        body = handler.get(view="supplier-categories", id=572).body
+        assert "Hardware > Screws, Bolts" in body
+        assert "Thread Size" in body and "parameter 77" in body
+        assert "M4x0.7" in body
+        assert len(posts) == 1
+        # Asking for the parent (26) renders the tree but fetches no
+        # parametric options — the API would answer HTTP 400.
+        body_parent = handler.get(view="supplier-categories", id=26).body
+        assert "Screws, Bolts" in body_parent
+        assert "· parameter" not in body_parent  # the filter section header
+        assert len(posts) == 1
+
+
 def _product(desc, mpn="P1"):
     return {
         "ManufacturerProductNumber": mpn,
