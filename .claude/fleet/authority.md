@@ -28,7 +28,7 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 - Prod MCP writes for its own task: put, edit, tag and link on refs it creates or its task names; soft delete or retire of its own refs and of refs its brief names. Each action stays under $25.
 - Targeted prod data fixes through `scripts/prod-psql`: INSERT, or UPDATE/DELETE whose WHERE names specific rows, under the row cap. It records what changed in the gripe or the commit.
 - Tighten an existing test: lower a ceiling, add an assert, narrow a tolerance.
-- Land its own slice: `scripts/ship --checked` or `--remote`, in a wave of three or fewer that branch-desk names. `--quick` is for docs or lint only. A migration lands only through the release owner.
+- Land its own slice: `scripts/ship --checked` or `--remote`, in a wave of three or fewer that branch-desk names. `--quick` is for docs, lint or code. A migration lands only through the release owner.
 - Never edit its tree while its ship runs.
 
 ## Roles (on top of a tier)
