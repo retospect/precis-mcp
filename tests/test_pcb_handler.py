@@ -1910,10 +1910,11 @@ def test_put_creates_default_board(pcb):
     resp = pcb.put(id="sensor-node", args=_DESIGN)
     # the netlist TOC surfaces the board name + stackup layer summary;
     # gr495287: it names the GND the default stackup really pours (a fill
-    # on both inner layers), not a plane declaration nothing poured
+    # on all four layers since the outer-layer GND pours), not a plane
+    # declaration nothing poured
     summary = (
-        "4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu, GND fill on In1.Cu/In2.Cu, "
-        "power regions on In2.Cu"
+        "4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu, "
+        "GND fill on F.Cu/In1.Cu/In2.Cu/B.Cu, power regions on In2.Cu"
     )
     assert "board: main" in resp.body
     assert summary in resp.body

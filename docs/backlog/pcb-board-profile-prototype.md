@@ -180,10 +180,17 @@ has no consumer until a drill-size check exists.
    `None`, every other caller, emits none of them — criterion 8).
    `furniture.board_furniture(profile=...)` threads
    `refdes_height_mm` into both `build_silk` calls.
-2. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
-   [pcb-stackup-regions](pcb-stackup-regions.md) slice 10 (it owns the
-   spoke generator and the per-class key); this slice then only sets the
-   profile default and proves the exports.
+2. **Thermal reliefs** (item 5) and `starved_thermal` — **shipped**
+   (gr495399). `planes.ThermalSpec`/`_thermal_reliefs` cut a
+   `thermal_gap_mm` antipad around each pour-connected pad and bridge it
+   back with `thermal_spokes` spokes of `thermal_spoke_width_mm` at 45°;
+   a pad keeping fewer than 2 bridges stays solid and is named on the
+   pour's `starved_thermal` list, which `drc.check_starved_thermal`
+   reports (gated by the profile `checks` set). A class's
+   `thermal: 'solid'` wins over the profile (read side only — slice 10
+   still owns the class key's schema and the via-fence half). `fill` on a
+   pour item carries the realized rings so the EPRO writer's POURed cache
+   images the reliefs; gerber holes emit via `_emit_region` as before.
 
 ## Explicitly NOT in scope
 

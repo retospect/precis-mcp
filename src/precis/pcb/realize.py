@@ -94,6 +94,7 @@ from precis.pcb.planes import (
     DerivedRegion,
     PourQuality,
     PourSpec,
+    ThermalSpec,
     derive_regions,
     plane_pours,
     pour_quality,
@@ -209,6 +210,14 @@ class RealizeConfig:
     #: dedicated pool, separate from ``max_expansions``. Bounded by work,
     #: so the retry is deterministic too. ``0`` disables the retry.
     retry_expansions: int = 30000
+    #: Thermal reliefs on pour-connected pads
+    #: (:class:`precis.pcb.planes.ThermalSpec`), the board profile's
+    #: ``thermal_spokes``/``thermal_spoke_width_mm``/``thermal_gap_mm``
+    #: (prototype: 4 x 0.30 mm spokes over a 0.25 mm gap; ``None`` is off —
+    #: prod's solid pour, today's behaviour exactly). A net whose class
+    #: rules set ``thermal: 'solid'`` is exempt: the class value wins over
+    #: the profile.
+    thermal: ThermalSpec | None = None
 
 
 # ── the closed-form geometric primitive ──────────────────────────────────
@@ -1678,6 +1687,8 @@ def _realize_vector(
             footprints,
             fixed_copper,
             npth_clearance_mm=_npth_clearance_mm(config),
+            thermal=config.thermal,
+            class_rules=config.class_rules,
         )
 
     # A route that shatters a plane is a net loss even when legal: a net's
@@ -1706,6 +1717,8 @@ def _realize_vector(
             footprints,
             fixed_copper,
             npth_clearance_mm=_npth_clearance_mm(config),
+            thermal=config.thermal,
+            class_rules=config.class_rules,
         )
         return len(missed), len(pours_)
 
@@ -1857,6 +1870,8 @@ def _realize_vector(
             footprints,
             fixed_copper,
             npth_clearance_mm=_npth_clearance_mm(config),
+            thermal=config.thermal,
+            class_rules=config.class_rules,
         )
         return (r_tracks, r_vias, r_pours), _pour_pieces(
             ir, r_tracks, r_vias, r_pours, ctx.pads
@@ -2135,7 +2150,10 @@ def _track_reserved_regions(
 
 
 def _pad_blockers(
-    ir: PcbIR, layers: list[str], footprints: dict[str, dict[str, Any]] | None
+    ir: PcbIR,
+    layers: list[str],
+    footprints: dict[str, dict[str, Any]] | None,
+    pads: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every placed pad, reshaped into a ``model["copper"]`` item
     :func:`precis.pcb.drc._copper_item_polygon` already knows how to turn
@@ -2175,9 +2193,13 @@ def _pad_blockers(
     therefore correctly gets an antipad on every real net's plane, since
     ``""`` never equals a real net name — exactly right: an NC pad is not
     part of the fill.
+
+    ``pads`` is :func:`pads_for_ir`'s output precomputed by the caller —
+    ``_pour_planes`` needs the same list for thermal reliefs, and
+    ``pad_geometry`` is not free.
     """
     out: list[dict[str, Any]] = []
-    for pad in pads_for_ir(ir, layers, footprints):
+    for pad in pads if pads is not None else pads_for_ir(ir, layers, footprints):
         net = str(pad.get("net") or "")
         x, y = float(pad["x"]), float(pad["y"])
         # A DRILLED pad's land is real copper on every layer, not only the
@@ -2426,6 +2448,8 @@ def _pour_planes(
     fixed_copper: list[dict[str, Any]] | None = None,
     *,
     npth_clearance_mm: float = 0.0,
+    thermal: ThermalSpec | None = None,
+    class_rules: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Pour every plane-assigned layer over the FINISHED copper.
 
@@ -2470,9 +2494,18 @@ def _pour_planes(
     pours: list[dict[str, Any]] = []
     if specs and ir.outline:
         interim = RealizeResult(tuple(tracks), tuple(vias), ())
+        pads = pads_for_ir(ir, layer_names, footprints)
+        # A class's own ``thermal: 'solid'`` wins over the profile
+        # (pcb-board-profile-prototype): power pads that carry current.
+        solid_nets = {
+            str(ir.net_name[n])
+            for n in range(ir.n_nets)
+            if (class_rules or {}).get(str(ir.net_class[n]), {}).get("thermal")
+            == "solid"
+        }
         copper = (
             to_gerber_model(interim, ir, layers=layer_names, outline=[])["copper"]
-            + _pad_blockers(ir, layer_names, footprints)
+            + _pad_blockers(ir, layer_names, footprints, pads)
             + _mounting_hole_blockers(
                 ir,
                 layer_names,
@@ -2488,6 +2521,9 @@ def _pour_planes(
             copper=copper,
             clearance_mm=clearance,
             edge_clearance_mm=edge_inset,
+            thermal=thermal,
+            pads=pads,
+            solid_nets=solid_nets,
         )
     # A promoted net whose plane did not get poured is not connected to
     # anything — its pins reach a via and the via reaches an empty layer.
@@ -2542,6 +2578,8 @@ def fixed_copper_pours(
         footprints,
         fixed_copper,
         npth_clearance_mm=_npth_clearance_mm(config),
+        thermal=config.thermal,
+        class_rules=config.class_rules,
     )
     if not pours:
         return []

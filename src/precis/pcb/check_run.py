@@ -777,7 +777,9 @@ def run(
         copper = copper + pcb_realize.fixed_copper_pours(
             pour_ir,
             pcb_realize.RealizeConfig(
-                fab_caps=capability, class_rules=graph.get("net_classes")
+                fab_caps=capability,
+                class_rules=graph.get("net_classes"),
+                thermal=pcb_planes.thermal_spec(board_profile_rules),
             ),
             footprints,
             fixed,

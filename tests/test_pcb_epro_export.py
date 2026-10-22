@@ -2867,8 +2867,8 @@ def test_handler_epro_verify_passes_on_a_native_board(pcb, tmp_path):
     assert f"sha256: {hashlib.sha256(data).hexdigest()}" in body
     assert "## verify" in body
     assert "parts 2 -> 2" in body
-    # the default stackup's GND fill on In1.Cu and In2.Cu (gr495395)
-    assert "pour zones 2 written -> 2 read" in body, body
+    # the default stackup's GND fill on all four layers (gr495395)
+    assert "pour zones 4 written -> 4 read" in body, body
     assert "\nFAIL " not in body, body
     assert "fiducial pads 4 in the model, 4 written -> 4 read" in body
     assert "verify: 16 ok, 0 FAIL" in body

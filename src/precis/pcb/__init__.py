@@ -415,10 +415,11 @@ def stackup_preset(
     return out
 
 
-#: The default stackup every board is born with (gr495395/gr495287): both
-#: inner layers route and pour a GND ``fill`` over whatever routing leaves,
-#: In2.Cu also deriving power-net regions. A ``fill`` pours after routing
-#: without a ``pcb_planes`` row, so a fresh board's In1.Cu(GND) is real
+#: The default stackup every board is born with (gr495395/gr495287): every
+#: layer pours a GND ``fill`` over whatever routing leaves — Reto's ruling
+#: is "each layer should be filled" (shielding, less etchant, connectivity);
+#: In2.Cu also derives power-net regions. A ``fill`` pours after routing
+#: without a ``pcb_planes`` row, so a fresh board's planes are real
 #: copper; the v1 literal (In1 a ``plane_net`` declaration the router never
 #: poured without ``op='stackup'``) did not. Measured on the nano board
 #: seeds 1-8 against the v1 literal: routed mean 34.375 -> 35.75, per-seed
@@ -442,7 +443,7 @@ def stackup_preset(
 #: ``route_cost``, and ``pour_nets`` — net(s) an import found carried by a
 #: board-covering fill on a signal layer (gr486958).
 DEFAULT_STACKUP: list[dict[str, Any]] = [
-    {"name": "F.Cu", "role": "signal"},
+    {"name": "F.Cu", "role": "signal", "fill": PRESET_GROUND_NET},
     {"name": "In1.Cu", "role": "signal", "routable": True, "fill": PRESET_GROUND_NET},
     {
         "name": "In2.Cu",
@@ -451,5 +452,5 @@ DEFAULT_STACKUP: list[dict[str, Any]] = [
         "fill": PRESET_GROUND_NET,
         "power_regions": True,
     },
-    {"name": "B.Cu", "role": "signal"},
+    {"name": "B.Cu", "role": "signal", "fill": PRESET_GROUND_NET},
 ]

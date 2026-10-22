@@ -17,10 +17,12 @@ from precis.pcb.drc import check_pour_fragmented
 from precis.pcb.planes import (
     FILL_PRIORITY,
     PourSpec,
+    ThermalSpec,
     derive_regions,
     plane_pours,
     region_polygon,
     resolve_assignments,
+    thermal_spec,
 )
 from precis.pcb.session import content_hash
 from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
@@ -116,6 +118,19 @@ def test_stackup_plane_net_and_fill_resolve_without_rows() -> None:
         ("B.Cu", "GND", "fill", FILL_PRIORITY),
     }
     assert all(a.locked for a in got)
+
+
+def test_default_stackup_fills_every_layer() -> None:
+    """gr495395: F.Cu and B.Cu carry a GND ``fill`` too — every layer of a
+    default board pours, per Reto's "each layer should be filled"."""
+    from precis.pcb import DEFAULT_STACKUP
+
+    got, notes = resolve_assignments(DEFAULT_STACKUP, [], ["GND", "N1"])
+    assert notes == []
+    assert {(a.layer, a.net, a.source, a.priority) for a in got} == {
+        (name, "GND", "fill", FILL_PRIORITY)
+        for name in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")
+    }
 
 
 def test_a_missing_net_or_a_whole_board_row_skips_the_declaration() -> None:
@@ -350,3 +365,138 @@ def test_pour_fragmented_counts_electrical_pieces_per_layer() -> None:
     whole = {**split, "copper": [a, b, via_a, via_b, joined]}
     assert pour_components(whole) == {("GND", "F.Cu"): 1}
     assert check_pour_fragmented(whole) == []
+
+
+# ── thermal reliefs (gr495399; pcb-board-profile-prototype last slice) ────
+
+_THERMAL = ThermalSpec(spokes=4, spoke_width_mm=0.30, gap_mm=0.25)
+
+
+def _gnd_pad(x: float, y: float, *, drill: float = 0.0) -> dict[str, Any]:
+    pad: dict[str, Any] = {
+        "layer": "F.Cu",
+        "net": "GND",
+        "shape": "circle",
+        "x": x,
+        "y": y,
+        "w": 1.5,
+        "refdes": "U1",
+        "pin": "3",
+        "synthesized": False,
+    }
+    if drill:
+        pad["drill"] = drill
+    return pad
+
+
+def _pour_with_thermal(
+    pad: dict[str, Any],
+    copper: list[dict[str, Any]] | None = None,
+    **kw: Any,
+) -> list[dict[str, Any]]:
+    return plane_pours(
+        outline=_BOARD,
+        layers=["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+        copper=list(copper or []),
+        clearance_mm=0.2,
+        edge_clearance_mm=0.5,
+        specs=[PourSpec(0, "GND")],
+        thermal=_THERMAL,
+        pads=[pad],
+        **kw,
+    )
+
+
+def _at(pad: dict[str, Any], dist_mm: float, deg: float) -> Point:
+    import math
+
+    a = math.radians(deg)
+    return Point(
+        float(pad["x"]) + dist_mm * math.cos(a),
+        float(pad["y"]) + dist_mm * math.sin(a),
+    )
+
+
+def test_thermal_relief_cuts_an_antipad_and_keeps_four_spokes() -> None:
+    pad = _gnd_pad(20.0, 15.0)
+    pours = _pour_with_thermal(pad)
+    assert len(pours) == 1
+    pour = pours[0]
+    assert pour.get("holes")
+    filled = _poly(pour)
+    # Inside the gap ring (pad radius 0.75 + half the 0.25 gap): an AXIAL
+    # direction is bare (the antipad), a 45-degree direction is a spoke.
+    assert not filled.contains(_at(pad, 0.875, 0.0))
+    assert filled.contains(_at(pad, 0.875, 45.0))
+    for deg in (45.0, 135.0, 225.0, 315.0):
+        assert filled.contains(_at(pad, 0.875, deg))
+    # The realized rings ride ``fill`` so the EPRO POURed cache images the
+    # relief; the antipad hole is one of its rings.
+    rings = pour["fill"][0]["paths"]
+    assert rings[0] == pour["polygon"] and len(rings) == 1 + len(pour["holes"])
+
+
+def test_thermal_relief_through_hole_pad_relieves_on_an_inner_layer() -> None:
+    pad = _gnd_pad(20.0, 15.0, drill=0.8)
+    pours = _pour_with_thermal(pad)
+    inner = [p for p in pours]
+    assert len(inner) == 1
+    filled = _poly(inner[0])
+    assert not filled.contains(_at(pad, 0.875, 0.0))
+    assert filled.contains(_at(pad, 0.875, 45.0))
+
+
+def test_thermal_relief_off_is_byte_identical_and_solid_net_stays_solid() -> None:
+    pad = _gnd_pad(20.0, 15.0)
+    off = plane_pours(
+        outline=_BOARD,
+        layers=["F.Cu"],
+        plane_nets={0: "GND"},
+        copper=[],
+        clearance_mm=0.2,
+        edge_clearance_mm=0.5,
+    )
+    solid = _pour_with_thermal(pad, solid_nets={"GND"})
+    for p in off + solid:
+        assert "holes" not in p and "starved_thermal" not in p and "fill" not in p
+
+
+def test_starved_thermal_marks_a_pad_whose_spokes_are_all_cut() -> None:
+    """A pad boxed in by foreign copper keeps under 2 bridges — it stays
+    solid and is named on the pour's ``starved_thermal`` list, which
+    ``drc.check_starved_thermal`` then reports."""
+    pad = _gnd_pad(20.0, 15.0)
+    # Four foreign vias on the 45-degree axes, each swallowing its spoke's
+    # bridge end.
+    copper = [
+        {
+            "ctype": "via",
+            "net": "SIG",
+            "x": float(pad["x"]) + 1.35 * dx,
+            "y": float(pad["y"]) + 1.35 * dy,
+            "dia_mm": 1.6,
+            "layers": ["F.Cu"],
+        }
+        for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1))
+    ]
+    pours = _pour_with_thermal(pad, copper)
+    assert len(pours) == 1
+    starved = pours[0].get("starved_thermal")
+    assert starved and starved[0]["pad"] == "U1.3"
+    assert starved[0]["spokes"] < 2
+    # Solid: the pad is still merged — no antipad hole anywhere.
+    assert _poly(pours[0]).contains(Point(20.0, 15.0))
+    # And the DRC rule reads the marker.
+    from precis.pcb.drc import check_starved_thermal
+
+    found = check_starved_thermal({"copper": pours, "pads": [pad]})
+    assert [(f.rule, f.severity) for f in found] == [("starved_thermal", "warn")]
+    assert "U1.3" in found[0].detail
+
+
+def test_thermal_spec_from_profile_rules() -> None:
+    from precis.pcb.profiles import profile_rules
+
+    assert thermal_spec(profile_rules("prod")) is None
+    spec = thermal_spec(profile_rules("prototype"))
+    assert spec == ThermalSpec(spokes=4, spoke_width_mm=0.30, gap_mm=0.25)

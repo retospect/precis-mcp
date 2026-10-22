@@ -20,9 +20,10 @@ in five pieces.
 minus every *other* net's copper on that layer dilated by clearance —
 including an antipad around each foreign via barrel that passes through.
 The pour's own net's vias are deliberately not subtracted: that is the
-connection. Thermal reliefs are not modelled (a solid connection is
-electrically correct and thermally pessimistic for hand soldering, which
-is the safe direction for a machine-assembled board).
+connection. Thermal reliefs are opt-in (:class:`ThermalSpec`, the
+``prototype`` board profile; :func:`_thermal_reliefs`): a same-net PAD is
+then cut out of the pour and bridged back by spokes, never a via —
+stitching and return paths stay solid.
 
 The result can be disconnected or holed, and both are reported rather than
 smoothed away: a pour that a foreign via array has cut in half is a real
@@ -76,12 +77,13 @@ from typing import Any
 # and hand-rolling it would be a second, worse implementation of a
 # dependency the project already takes.
 from shapely import STRtree, concave_hull
-from shapely.geometry import MultiPoint, MultiPolygon, Point, Polygon
+from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union, voronoi_diagram
 
 from precis.pcb import clearance as clearance_kernel
 from precis.pcb.drc import _copper_item_polygon, _via_layer_names
+from precis.pcb.profiles import ProfileRules
 
 #: Shapely buffer resolution for round caps/joins. Matches drc.py's own
 #: choice so a pour's boundary and the clearance check's idea of that
@@ -160,6 +162,46 @@ def _pour_item(frag: Polygon, layer_name: str, net: str) -> dict[str, Any]:
     return item
 
 
+@dataclass(frozen=True, slots=True)
+class ThermalSpec:
+    """Thermal-relief geometry for a pour-connected PAD (the ``prototype``
+    profile's relief rule; pcb-board-profile-prototype). A relieved pad
+    gets an antipad of ``gap_mm`` grown around its real shape and
+    ``spokes`` bridges of ``spoke_width_mm`` across the gap, at 45 degrees
+    to the axes so they miss the usual orthogonal escape trace. Vias stay
+    solid — plane stitching and return paths are untouched. A pad whose
+    relief would leave fewer than two spokes after other-net copper is
+    cut stays solid and is reported (``starved_thermal``)."""
+
+    spokes: int
+    spoke_width_mm: float
+    gap_mm: float
+
+
+#: The prototype defaults; a profile row overrides per key
+#: (:func:`thermal_spec`).
+_THERMAL_SPOKE_WIDTH_MM = 0.30
+_THERMAL_GAP_MM = 0.25
+
+#: A spoke bridge smaller than this is a buffering artifact, not copper a
+#: fab would image — same order as :data:`MIN_FRAGMENT_MM2` slivers.
+_MIN_BRIDGE_AREA_MM2 = 1e-4
+
+
+def thermal_spec(rules: ProfileRules) -> ThermalSpec | None:
+    """The :class:`ThermalSpec` a profile's rules describe, ``None`` when
+    the profile does not enable reliefs (``thermal_spokes`` unset — prod's
+    all-off row). ``spoke_width_mm``/``gap_mm`` fall back to the spec's
+    proposed defaults when only the count is set."""
+    if rules.thermal_spokes is None:
+        return None
+    return ThermalSpec(
+        spokes=int(rules.thermal_spokes),
+        spoke_width_mm=float(rules.thermal_spoke_width_mm or _THERMAL_SPOKE_WIDTH_MM),
+        gap_mm=float(rules.thermal_gap_mm or _THERMAL_GAP_MM),
+    )
+
+
 #: Pour priority of a stackup ``fill`` (pcb-stackup-regions slice 3/4):
 #: below every plane (default 0) and every derived region (priority = pin
 #: count, so >= 2), so a fill takes only the area nothing else claims —
@@ -218,6 +260,114 @@ def region_json(poly: Polygon) -> dict[str, Any]:
     return out
 
 
+def _spoke_bridges(
+    pad_poly: BaseGeometry,
+    antipad: BaseGeometry,
+    outer: BaseGeometry,
+    obstacles: BaseGeometry | None,
+    centre: tuple[float, float],
+    thermal: ThermalSpec,
+) -> list[BaseGeometry]:
+    """The spoke bridges one relieved pad keeps: ``thermal.spokes`` thin
+    rectangles radiating at 45 degrees to the axes (they miss the usual
+    orthogonal escape trace), each clipped to the antipad ring minus every
+    obstacle (foreign copper grown by clearance, and the OTHER pads'
+    antipads — a spoke must not run into the next pad's keep-out).
+
+    A bridge counts only when it still joins pad to pour after those cuts:
+    it must share area with the pad's own shape and reach the pour outside
+    every antipad (``outer``)."""
+    cx, cy = centre
+    reach = (
+        max(math.hypot(vx - cx, vy - cy) for vx, vy in antipad.exterior.coords)
+        + thermal.spoke_width_mm
+    )
+    ring = antipad if obstacles is None else antipad.difference(obstacles)
+    out: list[BaseGeometry] = []
+    for i in range(thermal.spokes):
+        ang = math.radians(45.0 + i * 360.0 / thermal.spokes)
+        tip = (cx + reach * math.cos(ang), cy + reach * math.sin(ang))
+        spoke = LineString([(cx, cy), tip]).buffer(
+            thermal.spoke_width_mm / 2.0, quad_segs=_BUFFER_QUAD_SEGS, cap_style=2
+        )
+        bridge = spoke.intersection(ring)
+        if bridge.is_empty or bridge.area < _MIN_BRIDGE_AREA_MM2:
+            continue
+        if bridge.intersection(pad_poly).area <= 1e-9:
+            continue
+        if not bridge.buffer(1e-3).intersects(outer):
+            continue
+        out.append(bridge)
+    return out
+
+
+def _thermal_reliefs(
+    region: BaseGeometry,
+    net: str,
+    layer_name: str,
+    pads: Iterable[dict[str, Any]],
+    blockers: list[BaseGeometry],
+    thermal: ThermalSpec,
+) -> tuple[BaseGeometry, list[dict[str, Any]]]:
+    """Cut each pour-connected pad of ``net`` on ``layer_name`` out of
+    ``region`` (the pour with every foreign blocker already subtracted)
+    and bridge it back with :class:`ThermalSpec` spokes.
+
+    ``pads`` are :func:`precis.pcb.realize.pads_for_ir`-shaped dicts; a
+    drilled pad's land exists on every layer, an undrilled one only on its
+    own ``layer``. A pad the pour never reached is not pour-connected and
+    is left alone. A pad whose relief would keep fewer than two bridges
+    stays SOLID — the starved entry returned beside the region is what
+    :func:`precis.pcb.drc.check_starved_thermal` reports, rather than a
+    pad silently isolated from its own plane."""
+    antipads: list[tuple[dict[str, Any], BaseGeometry, BaseGeometry]] = []
+    for pad in pads:
+        if str(pad.get("net") or "") != net:
+            continue
+        if not pad.get("drill") and str(pad.get("layer") or "") != layer_name:
+            continue
+        pad_poly = _copper_item_polygon({**pad, "ctype": "pad"})
+        if pad_poly is None or pad_poly.is_empty or not pad_poly.intersects(region):
+            continue
+        antipads.append((pad, pad_poly, _clearance_ring(pad_poly, thermal.gap_mm)))
+    if not antipads:
+        return region, []
+    foreign = unary_union(blockers) if blockers else None
+    outer = region.difference(unary_union([a for _, _, a in antipads]))
+    cuts: list[BaseGeometry] = []
+    bridges: list[BaseGeometry] = []
+    starved: list[dict[str, Any]] = []
+    for pad, pad_poly, antipad in antipads:
+        obstacles = [a for _, _, a in antipads if a is not antipad]
+        if foreign is not None:
+            obstacles.append(foreign)
+        kept = _spoke_bridges(
+            pad_poly,
+            antipad,
+            outer,
+            unary_union(obstacles) if obstacles else None,
+            (float(pad["x"]), float(pad["y"])),
+            thermal,
+        )
+        if len(kept) >= 2:
+            cuts.append(antipad)
+            bridges.extend(kept)
+        else:
+            starved.append(
+                {
+                    "pad": f"{pad.get('refdes') or '?'}.{pad.get('pin') or '?'}",
+                    "x": float(pad["x"]),
+                    "y": float(pad["y"]),
+                    "spokes": len(kept),
+                }
+            )
+    if cuts:
+        region = region.difference(unary_union(cuts))
+    if bridges:
+        region = region.union(unary_union(bridges))
+    return region, starved
+
+
 def plane_pours(
     *,
     outline: list[list[float]],
@@ -227,6 +377,9 @@ def plane_pours(
     clearance_mm: float,
     edge_clearance_mm: float,
     specs: list[PourSpec] | None = None,
+    thermal: ThermalSpec | None = None,
+    pads: Iterable[dict[str, Any]] | None = None,
+    solid_nets: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
     """One ``ctype='pour'`` item per connected fragment of each plane.
 
@@ -251,6 +404,17 @@ def plane_pours(
     Emitted items carry ``polygon`` (the exterior ring) and, when the pour
     has any, ``holes`` — a foreign via through a plane leaves a real hole,
     and an exterior-only pour would claim copper where an antipad is.
+
+    ``thermal`` (:class:`ThermalSpec`, the ``prototype`` profile's
+    relief rule) turns a same-net PAD's merge into a relief: antipad of
+    ``gap_mm`` plus ``spokes`` bridges (:func:`_thermal_reliefs`); a pad
+    that would starve stays solid and is named on its pour item's
+    ``starved_thermal`` list. ``pads`` is the board's pad set
+    (``pads_for_ir`` shape); ``solid_nets`` names nets whose class forces
+    ``thermal: 'solid'`` — the class value wins over the profile. Pour
+    items emitted under a thermal spec also carry ``fill`` — the realized
+    rings (exterior + holes) in ``meta.epro_pours`` shape — so the EPRO
+    writer's cached ``POURED`` fill images the reliefs too.
     """
     if specs is None:
         specs = [
@@ -320,10 +484,34 @@ def plane_pours(
                 region = _polygonal(region.intersection(area))
             if blockers:
                 region = region.difference(unary_union(blockers))
+            starved: list[dict[str, Any]] = []
+            relieves = thermal is not None and net not in solid_nets
+            if thermal is not None and relieves:
+                region, starved = _thermal_reliefs(
+                    region, net, layer_name, pads or (), blockers, thermal
+                )
             kept = [f for f in _as_polygons(region) if f.area >= MIN_FRAGMENT_MM2]
             kept = _drop_islands(kept, net, layer_name, layers, copper)
+            spec_out_start = len(out)
             for frag in kept:
-                out.append(_pour_item(frag, layer_name, net))
+                item = _pour_item(frag, layer_name, net)
+                if relieves:
+                    # The realized fill rides as ``fill`` so the EPRO
+                    # writer's cached POURed rings image the reliefs.
+                    item["fill"] = [
+                        {
+                            "paths": [item["polygon"], *(item.get("holes") or [])],
+                        }
+                    ]
+                    held = [s for s in starved if frag.contains(Point(s["x"], s["y"]))]
+                    if held:
+                        item["starved_thermal"] = held
+                        starved = [s for s in starved if s not in held]
+                out.append(item)
+            if relieves and starved and len(out) > spec_out_start:
+                # A starved pad whose centre landed on a fragment edge:
+                # still report it, on this spec's last fragment.
+                out[-1].setdefault("starved_thermal", []).extend(starved)
             claimed.extend(kept)
             if spec.region is None and kept:
                 whole_board_done = True
@@ -936,6 +1124,7 @@ __all__ = [
     "PlaneAssignment",
     "PourQuality",
     "PourSpec",
+    "ThermalSpec",
     "cut_antipads",
     "derive_regions",
     "plane_pours",
@@ -944,4 +1133,5 @@ __all__ = [
     "region_json",
     "region_polygon",
     "resolve_assignments",
+    "thermal_spec",
 ]

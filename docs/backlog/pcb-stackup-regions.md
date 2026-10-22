@@ -380,6 +380,14 @@ reference layer; fences along `ground='local'`/RF room edges at a maximum
 pitch. Per-class thermal reliefs (`thermal: 'solid'|'relief'`) with a spoke
 generator and a `starved_thermal` DRC; solid stays the default.
 
+**Partially shipped (gr495399):** the spoke generator and
+`starved_thermal` exist — `planes.ThermalSpec`/`_thermal_reliefs`, driven
+by the board profile (`thermal_spec(profile_rules)`, prototype on, prod
+off) with the read side of `thermal: 'solid'` honoured from class rules.
+Left here: the class key's schema/validation (`thermal` is read but no
+op validates it yet), `'relief'` as an opt-in on a `prod` board, and the
+return-stitching/via-fence half.
+
 Acceptance criteria:
 - Relief off is bit-for-bit today's copper.
 - A relief class gets spokes on every pad; `starved_thermal` fires on a

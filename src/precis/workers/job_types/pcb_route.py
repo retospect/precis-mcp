@@ -1157,6 +1157,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # The profile's soft cost for a via under a part's courtyard
         # (gr502369); None on prod ⇒ 0, today's behaviour exactly.
         via_body_cost_mm=pcb_profiles.profile_rules(profile).via_body_cost_mm or 0.0,
+        # The profile's thermal reliefs on pour-connected pads
+        # (gr495399); None on prod ⇒ solid pour, today's behaviour.
+        thermal=pcb_planes.thermal_spec(pcb_profiles.profile_rules(profile)),
     )
 
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
@@ -2042,6 +2045,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         geom = {"polygon": pour["polygon"]}
         if pour.get("holes"):
             geom["holes"] = pour["holes"]
+        # Thermal-relief metadata (gr495399): ``starved_thermal`` is what
+        # ``check_starved_thermal`` reports from the stored model, ``fill``
+        # is the realized rings the EPRO writer caches as POURed fill.
+        for key in ("starved_thermal", "fill"):
+            if pour.get(key):
+                geom[key] = pour[key]
         copper_rows.append(
             {
                 "ctype": "pour",

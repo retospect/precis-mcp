@@ -500,12 +500,13 @@ def test_netlist_eval_with_zero_findings_still_records_a_run(
 #: before this slice existed — ``run <8hex>`` masked — so the preset
 #: claim is pinned, not implied. gr488909 dropped its three per-pad
 #: ``connectivity`` rows: a copperless net is the ``unrouted`` question.
+#: The default stackup's F.Cu GND pour connects the GND pads, so net GND
+#: carries no ``unrouted`` row.
 _DRC_GOLDEN = """
-# DRC — run XXXXXXXX — 5 error(s), 2 warn(s)
+# DRC — run XXXXXXXX — 4 error(s), 2 warn(s)
 vs previous run: none to compare against (first run with finding ids on this board) — every finding below is reported without a new/still verdict
 (pads-only DRC — no routed copper yet)
 {id	severity	rule	where	margin_mm	detail}
-344573af2263	error	unrouted	net GND		at least one connection on net GND has no route; the board is not finished
 7423a0f851af	error	unrouted	net SIG		at least one connection on net SIG has no route; the board is not finished
 11898670f503	error	unrouted	net VDD		at least one connection on net VDD has no route; the board is not finished
 4bae789a49c5	error	unconnected_pin	pin U1/MT		pin U1/MT is marked must_terminate and has no net — a pin that must not float is floating (the `unused` marker does not exempt it)

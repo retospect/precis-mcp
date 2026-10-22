@@ -4151,6 +4151,45 @@ def check_fine_pitch_pad(model: dict[str, Any]) -> list[DrcFinding]:
     return findings
 
 
+def check_starved_thermal(model: dict[str, Any]) -> list[DrcFinding]:
+    """WARN: a pour-connected pad whose thermal relief would leave fewer
+    than two spokes after other-net copper is cut — it stays solid
+    (:func:`precis.pcb.planes._thermal_reliefs`), which is the safe
+    failure but also a pad that hand-solders like a plane, so it is named.
+    One finding per pad, off the ``starved_thermal`` markers the pour
+    pass records on its pour items (and ``pcb_copper.geom`` persists)."""
+    findings: list[DrcFinding] = []
+    for item in model.get("copper") or []:
+        if item.get("ctype") != "pour":
+            continue
+        for pad in item.get("starved_thermal") or []:
+            name = str(pad.get("pad") or "?")
+            findings.append(
+                DrcFinding(
+                    rule="starved_thermal",
+                    severity="warn",
+                    where=f"pad {name}",
+                    detail=(
+                        f"{name}: thermal relief would leave "
+                        f"{pad.get('spokes', 0)} spoke(s) on "
+                        f"{item.get('layer', '?')} ({item.get('net', '?')}) "
+                        "— pad stays solid; fewer than 2 spokes connect"
+                    ),
+                    objects=(
+                        {
+                            "pad": name,
+                            "layer": str(item.get("layer") or ""),
+                            "net": str(item.get("net") or ""),
+                            "x": float(pad.get("x") or 0.0),
+                            "y": float(pad.get("y") or 0.0),
+                            "spokes": int(pad.get("spokes") or 0),
+                        },
+                    ),
+                )
+            )
+    return findings
+
+
 def run_geometric_drc(
     model: dict[str, Any],
     *,
@@ -4285,6 +4324,8 @@ def run_geometric_drc(
             findings += check_via_under_part(model, courtyards)
         if "fine_pitch_pad" in checks:
             findings += check_fine_pitch_pad(model)
+        if "starved_thermal" in checks:
+            findings += check_starved_thermal(model)
     return findings
 
 
