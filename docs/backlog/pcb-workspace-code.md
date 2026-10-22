@@ -385,6 +385,48 @@ cache fills from boards that routed cleanly, `0 DRC` on the module's
 nets). The rule envelope (stackup/layer count/clearance rules) is in the
 key, so a mismatch is a miss, never a rescale. Not before slice 3.
 
+**Hierarchical routing — seed, then a global pass (slice 3; Reto
+2026-10-22).** A stamped module is a seed, not an answer — the PCB
+analogue of structures §Relaxed units: a good starting point,
+re-optimised in context.
+
+1. **Module library.** The level-2 cache entries, promoted with their
+   module (`pcbmods`, `ws-promote`): pre-placed, pre-routed chunks keyed
+   on module/version/params/stackup/profile. A library hit is the
+   module's seed; a miss seeds from a solo place+route of that module
+   (below) and fills the library when it routes clean.
+2. **Hierarchical routing as the seed.** `b.use` frames nest, so the
+   board is a tree of modules. Bottom-up, per frame: a leaf module is
+   placed and routed on its own parts and internal nets (library hit,
+   else `pcb_place`/`pcb_route` scoped to the frame, ports as fixed
+   pads at the frame's hull); the result is stamped rigid (`group`/
+   `group_offset`/`group_fixed`, interior copper as fixed rows); the
+   parent frame then places its modules as blocks among its own parts
+   and routes the nets between them (ports and the frame's own nets)
+   around the stamped copper. Same two job types, one run per frame,
+   inner frames first; each run appends its `service` frame with
+   `scope = frame key`.
+3. **Mandatory global refinement pass, allowed to break module
+   boundaries.** Hierarchy alone loses global optimisation. Concretely:
+   a via inside a module is fixed copper, so it cannot move to make
+   room for an inter-module net that has to thread past it; a module
+   cannot shift a millimetre to shorten a bus into its neighbour; a
+   port escape routed against the module's own hull ignores which side
+   the port net arrives from. So after the inter-module route, one pass
+   with the boundaries dissolved: `group_fixed` released to a leash
+   (`max_travel_mm`, small moves of modules and of parts inside them —
+   `field.polish_placement` with the leash as the bound), interior
+   copper demoted from fixed to router copper, then rip-up and reroute
+   of every net crossing a block edge plus every interior net the
+   crossing nets displaced (`pcb_route` negotiation, `loop=k`), under
+   the never-worse guard: the pass replaces the seed only if the
+   unrouted count and DRC errors do not rise. The pass is not a knob:
+   `pcb.route(b, hierarchical=True)` is seed + pass, and the echo
+   reports both stages (`seed 11/12 routed · 38 vias · global 12/12 ·
+   31 vias · 2 parts moved · 4 nets rerouted across edges`). The
+   per-frame stamps stay in the library untouched; the pass edits the
+   board only.
+
 ## DRC and inspection stay in MCP
 
 Nothing in `drc.py`/`check_run.py`/`eyes.py` moves. The script's
@@ -455,7 +497,7 @@ being a second netlist format.
 | 1 | **Importer + replace + retirements (W5).** `pcb/workspace_import.py`, `kind: 'pcb'` dispatch in the workspace run import, retire ops for workspace-owned rows, `meta.workspace`/`meta.frame`, `generated` on the board, the trace stored on the run; batch construction keys and the eight construction ops refuse with `next=`; `precis-pcb-help` sections removed | `store/_pcb_ops.py`, `handlers/pcb.py`, `se workspace_import` dispatch, skills | The §Q1 example runs on the dev lane and `view='check'` on the board matches the laptop `check.txt`; deleting `c3` from the script retires `C3`, its connections and its router copper on the second run, `restore` brings them back; a re-run with no script change is a no-op (zero rows touched, echo says so); `put(kind='pcb', args={'components': ...})` refuses naming the workspace; an `import_epro` board attached later reports foreign rows and retires none | L, 2–3 builds; after structures slice 1 |
 | 2 | **Services.** `requests[]`, `pcb_requests` migration, dispatch to `pcb_place`/`pcb_route`, request key with `CODE_VERSION`, `Placement`/`Routing` readback via the read MCP (`revision` on `view='placement'`/`route-status`), `service` frames from both jobs, `op` frames on `move`/`rip` | `workers/job_types/pcb_place.py`, `pcb_route.py`, `handlers/pcb.py` views | First run queues, echo names the job; after it lands the next run reports `hit` and `pl.ready` is true with no second job; changing one measure re-queues, changing a `note` does not; the board's trace shows `place(field, seed=1, run=N)` touching exactly the moved instances; `op='move'` adds an `op` frame | M, 2 builds |
 | 2t | **Trace views.** `view='trace'` for pcb (refdes/net/frame/set/against), `frame` column on `view='check'`/`drc`, `frame:<key>` selector in `view='svg'`/`placement`, `ws-<slug>` python root for pcb workspaces | `handlers/pcb.py`, `drc.py` render, `handlers/python.py` | A courtyard finding on `U2.CIN` names `main.py:30 b.use(ldo_3v3)`; LCA of `U2.*` is the `b.use` frame at 100 %; a 10-frame trace renders ≤ 200 tokens | M, 1 build |
-| 3 | **Modules promoted + placed-module cache.** `pcbmods` promotion via `ws-promote`, module content hash, `placed=True` → rigid group + interior fixed copper from a cache keyed on module/version/params/stackup/profile, filled from clean-routed boards | `workspace_import.py`, `pcb_requests`, `generators`-style ledger table | A board using the promoted `ldo_3v3` twice gets two rigid groups with identical relative poses and interior copper; a 4-layer stamp into a 2-layer board is a miss, not a rescale; the stamped board routes the port escapes only | M–L, 2 builds |
+| 3 | **Modules promoted + placed-module cache + hierarchical routing.** `pcbmods` promotion via `ws-promote`, module content hash, `placed=True` → rigid group + interior fixed copper from a cache keyed on module/version/params/stackup/profile, filled from clean-routed boards; `pcb.route(b, hierarchical=True)` = per-frame bottom-up place+route (library hit or scoped job), block placement of modules, inter-module route, then the mandatory global pass (leashed `group_fixed`, interior copper demoted, rip-up/reroute across block edges; §Modules); `route_bench.py` gains a flat-vs-hierarchical mode | `workspace_import.py`, `pcb_requests`, `generators`-style ledger table, `workers/job_types/pcb_place.py`/`pcb_route.py` (frame scope), `tests/fixtures/pcb/route_bench.py` | A board using the promoted `ldo_3v3` twice gets two rigid groups with identical relative poses and interior copper; a 4-layer stamp into a 2-layer board is a miss, not a rescale; the stamped board routes the port escapes only. Hierarchical: the seed stage touches only frame-scoped nets per run and the trace shows one `route(vector, scope=<frame>)` per module; the global pass runs unconditionally and its echo names the rerouted edge-crossing nets and moved parts; a seed whose pass would raise unrouted or DRC errors keeps the seed and says so. Comparison on esp32c3 (`bench_esp32c3`, seeds 1–5): flat `pcb_route` vs hierarchical seed + pass, side by side per seed — unrouted count, total track length (mm), via count, wall time (s); unrouted after the pass ≤ flat on every seed (hard), the other three measured and printed (the esp32c3 policy, §Goldens); on at least one seed the pass changes something the seed could not (a via moved or a module shifted), else the pass is a no-op and the row says so | M–L, 2–3 builds |
 | 4 | **Offline full program.** `precis-geom[pcb-kernel]` extra, `session.py` store split, `pcb.local.place/route/drc/gerbers`, `main.py --place --route`, tier-2 CI goldens on sanity (hard) + nano/esp32c3 (measured) | `packaging/geom/pyproject.toml`, `scripts/impacted-tests`, `tests/workspaces/` | `uv run main.py --place --route` on a laptop with no network writes gerbers for the §Q1 board; sanity routes 100 % with 0 DRC in CI; a `vroute` change that alters nano's routed count prints the delta naming the board | M, 2 builds |
 | 5 | **Dogfood migration + skills.** Workspaces attached to `ewod-dogfood-2/-4` (generator recipe, no-op first run), `usbc-attiny-dogfood-b` rebuilt as a fork and promoted, `precis-pcb-workspace-help`, pointer lines in the pcb skills and `precis-workspace-help`, glossary (pcb workspace, request, placed module) | skills, `docs/glossary.md`, prod boards | The EWOD workspaces' first run touches zero rows; the attiny fork's `view='check'` matches the live board's before cut-over; no skill names a retired op | S–M, 1 build |
 
