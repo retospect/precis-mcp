@@ -42,6 +42,20 @@ plus ``data-pcb-part``/``-pad``/``-net``/``data-net-class`` attributes —
 so the workbench's hover/click wiring (``static/pcb-crossprobe.js``)
 treats a part, pin or net as one object in both panes, the way
 ``gerber_view``'s board side already does.
+
+**Sheets** (``docs/backlog/pcb-workbench-layout.md`` slice 2). The
+schematic splits by the board's authored placement groups — the
+``"group"`` key :meth:`Store.pcb_graph` hoists from instance meta.
+``sheet=<name>`` renders only that group's parts; ``sheet=None`` is the
+overview tab holding everything (ungrouped parts live there only). A
+signal net with members on other sheets ends each stub in an off-sheet
+connector — a flag glyph naming the destination sheets (``→ MCU``),
+plus ``overview`` when the net also has ungrouped members, the only
+place they render. Power/ground nets keep their global rail/ground
+glyphs and never get connectors — the same "power is global, never
+flood" convention focus mode and the click cross-probe already follow
+(KiCad's own rule: power symbols connect across sheets without a
+connector).
 """
 
 from __future__ import annotations
@@ -94,6 +108,24 @@ def _is_power(name: str, net_class: str | None) -> bool:
     return (net_class or "").lower() == "power"
 
 
+def sheet_map(graph: dict[str, Any]) -> dict[str, str]:
+    """refdes → its authored placement group (the ``"group"`` key
+    :meth:`Store.pcb_graph` hoists from instance meta) — the sheet the
+    workbench's cross-probe switches to for the part."""
+    return {
+        str(i["refdes"]): str(i["group"])
+        for i in graph.get("instances", [])
+        if i.get("group") and i.get("refdes") is not None
+    }
+
+
+def sheet_names(graph: dict[str, Any]) -> list[str]:
+    """The design's placement-group sheet names, sorted — the tab list
+    the workbench renders. Ungrouped parts are on no named sheet; they
+    live on the overview only."""
+    return sorted(set(sheet_map(graph).values()))
+
+
 def _focus_set(
     focus: str | None,
     all_refdes: set[str],
@@ -143,10 +175,14 @@ class _Part:
         pin_net: dict[str, str],
         *,
         fixed: bool = False,
+        pin_off: dict[str, list[str]] | None = None,
     ) -> None:
         self.refdes = refdes
         self.label = label
         self.pin_net = pin_net
+        #: pin → the sheet names its net continues on (off-sheet
+        #: connector), absent for same-sheet/power/ground/no-connect.
+        self.pin_off = pin_off or {}
         #: the instance carries a placement lock (``pcb_instances.fixed`` is
         #: 'xy'/'both') — "I want this part to stay here". Drawn as a pushpin
         #: and stamped ``data-pinned`` so the pin survives a reload.
@@ -170,7 +206,14 @@ class _Part:
         self.box_h = _HEADER_H + rows * _PIN_PITCH + _BOX_PAD_Y
 
         def _halo(side: list[str]) -> float:
-            widest = max((len(pin_net.get(p, "")) for p in side), default=0)
+            def label_w(pin: str) -> int:
+                net = pin_net.get(pin, "")
+                off = self.pin_off.get(pin)
+                # the drawn text: "net" or "net → dest, dest" for a
+                # cross-sheet connector
+                return len(net) + (len(" → " + ", ".join(off)) if off else 0)
+
+            widest = max((label_w(p) for p in side), default=0)
             return _STUB_LEN + widest * _CHAR_W + 10.0
 
         self.halo_l = _halo(self.left)
@@ -215,15 +258,50 @@ def _label_glyph(
     )
 
 
-def render_schematic_svg(
-    graph: dict[str, Any], *, title: str = "schematic", focus: str | None = None
+def _offsheet_glyph(
+    x: float, y: float, name: str, dests: list[str], *, rightward: bool
 ) -> str:
-    """The whole design as one net-label schematic SVG (see module doc).
+    """The off-sheet connector (slice 2): a flag at the stub tip naming
+    the net and the sheet(s) it continues on — ``SIG → MCU`` — in the
+    net's colour. ``x`` is the stub tip; the flag grows away from the
+    box, pointing outward the way a KiCad sheet pin does."""
+    text = f"{name} → {', '.join(dests)}"
+    w = len(text) * _CHAR_W + 14.0
+    d = 1.0 if rightward else -1.0
+    pts = " ".join(
+        f"{x + d * px:.1f},{y + py:.1f}"
+        for px, py in ((0, -8), (w - 8, -8), (w, 0), (w - 8, 8), (0, 8))
+    )
+    colour = f"hsl({_net_hue(name)},55%,38%)"
+    anchor = "start" if rightward else "end"
+    tx = x + d * 6.0
+    return (
+        f'<polygon points="{pts}" class="offsheet" fill="#fdfdf6" '
+        f'stroke="{colour}" stroke-width="1.2"/>'
+        f'<text x="{tx:.1f}" y="{y + 3.5:.1f}" text-anchor="{anchor}" '
+        f'class="netlabel" fill="{colour}">{escape(text)}</text>'
+    )
+
+
+def render_schematic_svg(
+    graph: dict[str, Any],
+    *,
+    title: str = "schematic",
+    focus: str | None = None,
+    sheet: str | None = None,
+) -> str:
+    """The design as a net-label schematic SVG (see module doc).
 
     ``focus`` enters focus mode (the spec's "fisheye"): the given part or
     net and its one-hop neighbours stay bright while every other part is
     dimmed in place — nothing moves. ``focus`` is a cross-probe handle
     (``U1``, ``U1.3``, ``net:GND``); an unknown target dims nothing.
+
+    ``sheet`` names a placement group (``sheet_names``): only its parts
+    render, and signal nets continuing on other sheets end their stubs
+    in off-sheet connectors. ``None`` is the overview — every part, no
+    connectors; an unknown sheet name renders the overview too, the same
+    graceful no-op an unknown focus target gets.
     """
     net_class_of: dict[str, str | None] = {}
     net_members: dict[str, list[str]] = {}
@@ -241,6 +319,28 @@ def render_schematic_svg(
             parts_on_net.setdefault(name, set()).add(refdes)
             nets_of_part.setdefault(refdes, set()).add(name)
 
+    # Sheet membership (slice 2): authored placement groups. A ``sheet``
+    # render draws that group's parts; net → the sheets its members live
+    # on (named sheets only; ``_UNGROUPED`` marks members on no sheet).
+    sheet_of = sheet_map(graph)
+    if sheet is not None and sheet not in sheet_names(graph):
+        sheet = None
+    _UNGROUPED = "overview"  # connector text for the catch-all tab
+    net_dests: dict[str, list[str]] = {}
+    if sheet is not None:
+        for name, members in net_members.items():
+            if _is_ground(name, net_class_of.get(name)) or _is_power(
+                name, net_class_of.get(name)
+            ):
+                continue  # rails are global — glyph, never a connector
+            hold = {sheet_of.get(r) for r in parts_on_net.get(name, set())}
+            others = sorted(h for h in hold if h is not None and h != sheet)
+            if None in hold:
+                # a member on no named sheet continues on the overview
+                others.append(_UNGROUPED)
+            if others:
+                net_dests[name] = others
+
     # Every pin the design knows about: net members + explicit no-connects.
     pins_of: dict[str, set[str]] = {}
     for (refdes, pin), _ in pin_net.items():
@@ -251,6 +351,8 @@ def render_schematic_svg(
     parts: list[_Part] = []
     for inst in sorted(graph.get("instances", []), key=lambda i: str(i["refdes"])):
         refdes = str(inst["refdes"])
+        if sheet is not None and sheet_of.get(refdes) != sheet:
+            continue
         pins = sorted(pins_of.get(refdes, set()), key=_natural_key)
         parts.append(
             _Part(
@@ -259,6 +361,11 @@ def render_schematic_svg(
                 pins,
                 {p: pin_net.get((refdes, p), "") for p in pins},
                 fixed=bool(inst.get("fixed")),
+                pin_off={
+                    p: net_dests[pin_net[(refdes, p)]]
+                    for p in pins
+                    if (refdes, p) in pin_net and pin_net[(refdes, p)] in net_dests
+                },
             )
         )
 
@@ -356,17 +463,25 @@ def render_schematic_svg(
                         f'<path d="M {edge:.1f} {py:.1f} H {tip:.1f}" class="stub"/>'
                     )
                     if net:
-                        body.append(
-                            f'<g data-handle="{esc(argue.net_handle(net), quote=True)}"'
-                            f' data-pcb-net="{esc(net, quote=True)}"'
-                            f' data-net-class="{esc(str(net_class_of.get(net) or ""), quote=True)}">'
-                            + _label_glyph(
+                        dests = part.pin_off.get(pin)
+                        glyph = (
+                            _offsheet_glyph(
+                                tip, py, net, dests, rightward=(side == "R")
+                            )
+                            if dests
+                            else _label_glyph(
                                 tip,
                                 py,
                                 net,
                                 net_class_of.get(net),
                                 rightward=(side == "R"),
                             )
+                        )
+                        body.append(
+                            f'<g data-handle="{esc(argue.net_handle(net), quote=True)}"'
+                            f' data-pcb-net="{esc(net, quote=True)}"'
+                            f' data-net-class="{esc(str(net_class_of.get(net) or ""), quote=True)}">'
+                            + glyph
                             + "</g>"
                         )
                     else:
@@ -388,6 +503,8 @@ def render_schematic_svg(
     n_parts = len(parts)
     n_nets = len(net_members)
     heading = escape(f"{title} — {n_parts} part(s), {n_nets} net(s), net-label style")
+    if sheet is not None:
+        heading += escape(f" · sheet {sheet}")
     if bright is not None:
         heading += escape(f" · focus {focus_ref or (focus or '').strip()}")
     # Attribute position: escape() alone leaves `"` intact, which would let a
@@ -420,4 +537,4 @@ def render_schematic_svg(
 """
 
 
-__all__ = ["render_schematic_svg"]
+__all__ = ["render_schematic_svg", "sheet_map", "sheet_names"]

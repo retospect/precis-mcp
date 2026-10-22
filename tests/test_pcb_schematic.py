@@ -205,6 +205,135 @@ def test_a_fixed_instance_is_drawn_pinned() -> None:
     assert 'data-handle="R1" data-pcb-part="R1" data-pinned' not in svg
 
 
+# ── sheets (pcb-workbench-layout.md slice 2) ─────────────────────────
+
+
+def _grouped_graph() -> dict[str, Any]:
+    """Two placement groups (MCU, power) plus an ungrouped part, wired so
+    SIG crosses the MCU↔power sheets and TAIL runs from MCU to the
+    ungrouped part; GND and 5V are global."""
+    return {
+        "instances": [
+            {"refdes": "U1", "label": "MCU-QFN16", "n_pins": 4, "group": "MCU"},
+            {"refdes": "R1", "label": "RES-0402-10k", "n_pins": 2, "group": "power"},
+            {"refdes": "C1", "label": "CAP-0402-100n", "n_pins": 2, "group": "power"},
+            {"refdes": "J1", "label": "HDR", "n_pins": 2},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "members": [
+                    {"refdes": "U1", "pin": "3"},
+                    {"refdes": "C1", "pin": "2"},
+                    {"refdes": "J1", "pin": "2"},
+                ],
+            },
+            {
+                "name": "5V",
+                "net_class": "power",
+                "members": [
+                    {"refdes": "U1", "pin": "4"},
+                    {"refdes": "C1", "pin": "1"},
+                ],
+            },
+            {
+                "name": "SIG",
+                "net_class": None,
+                "members": [
+                    {"refdes": "U1", "pin": "1"},
+                    {"refdes": "R1", "pin": "1"},
+                ],
+            },
+            {
+                "name": "TAIL",
+                "net_class": None,
+                "members": [
+                    {"refdes": "U1", "pin": "2"},
+                    {"refdes": "J1", "pin": "1"},
+                ],
+            },
+        ],
+        "unconnected": [],
+    }
+
+
+def test_sheet_names_come_from_placement_groups() -> None:
+    from precis.pcb.schematic import sheet_map, sheet_names
+
+    graph = _grouped_graph()
+    assert sheet_names(graph) == ["MCU", "power"]
+    assert sheet_map(graph) == {"U1": "MCU", "R1": "power", "C1": "power"}
+
+
+def test_a_sheet_renders_only_its_groups_parts() -> None:
+    svg = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    assert ">U1</text>" in svg
+    assert ">R1</text>" not in svg
+    assert ">C1</text>" not in svg
+    assert ">J1</text>" not in svg
+    assert "sheet MCU" in svg
+
+
+def test_cross_sheet_net_gets_connectors_on_both_sheets() -> None:
+    """The spec's exit: SIG joins U1 (MCU) to R1 (power). On the MCU
+    sheet its stub ends in an off-sheet connector naming power; on the
+    power sheet, one naming MCU."""
+    mcu = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    power = render_schematic_svg(_grouped_graph(), title="t", sheet="power")
+    assert 'class="offsheet"' in mcu and 'class="offsheet"' in power
+    assert ">SIG → power</text>" in mcu
+    assert ">SIG → MCU</text>" in power
+    # ...while the overview shows the whole net as plain labels, no flags
+    overview = render_schematic_svg(_grouped_graph(), title="t")
+    assert 'class="offsheet"' not in overview
+    assert ">SIG</text>" in overview
+
+
+def test_net_to_an_ungrouped_part_points_at_the_overview() -> None:
+    svg = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    assert ">TAIL → overview</text>" in svg
+
+
+def test_power_and_ground_never_get_connectors() -> None:
+    """Power/ground are global symbols (KiCad's rule, and slice 1's
+    flood rule) — no connector even though every sheet holds members."""
+    for sheet in ("MCU", "power"):
+        svg = render_schematic_svg(_grouped_graph(), title="t", sheet=sheet)
+        assert ">5V → " not in svg
+        assert ">GND → " not in svg
+
+
+def test_same_sheet_net_keeps_a_plain_label() -> None:
+    """A net entirely inside one sheet is not a cross-sheet net."""
+    graph = _grouped_graph()
+    graph["nets"].append(
+        {
+            "name": "LOCAL",
+            "net_class": None,
+            "members": [
+                {"refdes": "R1", "pin": "2"},
+                {"refdes": "C1", "pin": "1"},
+            ],
+        }
+    )
+    svg = render_schematic_svg(graph, title="t", sheet="power")
+    assert ">LOCAL → " not in svg
+
+
+def test_unknown_sheet_falls_back_to_the_overview() -> None:
+    svg = render_schematic_svg(_grouped_graph(), title="t", sheet="nope")
+    assert ">U1</text>" in svg and ">J1</text>" in svg
+    assert "sheet nope" not in svg
+
+
+def test_sheet_render_stays_deterministic_and_well_formed() -> None:
+    a = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    b = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    assert a == b
+    ET.fromstring(a)
+
+
 def test_hostile_slug_cannot_escape_the_aria_label_attribute() -> None:
     """``title`` is the raw agent-supplied design slug and lands in an
     ATTRIBUTE (aria-label). ``xml.sax.saxutils.escape`` alone leaves ``"``

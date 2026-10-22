@@ -94,9 +94,18 @@ Slice numbers are stable anchors (code comments cite them); don't renumber.
 2. **Multiple sheets.** Sheets come from placement groups, with tabs and
    off-sheet connectors. Exit: a schematic test that a cross-sheet net gets
    connectors on both sheets, and that cross-probing picks the sheet.
+   *Shipped.* ``schematic.svg?sheet=<group>`` renders one placement group's
+   parts; cross-sheet signal nets end in off-sheet connectors naming the
+   destination (``overview`` for ungrouped members; power/ground stay
+   global). Tabs + cross-probe sheet switching live in
+   ``static/pcb-sheets.js``; the click, not the hover, picks the sheet.
 3. **se adopts viewport.js.** Same gestures and keys; 3D adds rotate. Exit:
    se 2D uses the module (static test), and the se 3D key map matches the
-   table.
+   table. *Shipped.* ``/se/{slug}/2d`` loads the projection in an
+   ``<object>`` driven by ``static/viewport.js`` (``static/se-2d.js``); the
+   3D page carries f/0/+/− ``data-shortcut`` buttons wired to the vendored
+   viewer, plus zoom-to-cursor, middle/space-drag pan and
+   double-click-empty fit in ``static/blocktree-3d.js``.
 
 ## Out of scope
 

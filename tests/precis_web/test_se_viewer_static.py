@@ -122,6 +122,57 @@ def _srgb_luminance(css_hex: str) -> float:
     )
 
 
+# ── pcb-workbench-layout.md slice 3: se adopts the shared viewport ────
+
+
+def test_se_2d_reader_uses_viewport_js() -> None:
+    """Slice 3 exit: se 2D rides static/viewport.js — the svg loads as an
+    <object> (the img could never be a viewBox camera), se-2d.js attaches
+    the module, and the toolbar carries the data-vp buttons whose keys
+    shortcuts.js dispatches."""
+    tpl = _read(_TEMPLATES / "blocktree" / "detail.html.j2")
+    js = _read(_STATIC / "se-2d.js")
+    assert '<object id="se-2d-object"' in tpl
+    assert 'data="{{ svg_url }}"' in tpl
+    assert "/static/viewport.js" in tpl and "/static/se-2d.js" in tpl
+    for name in ("in", "out", "fit", "reset"):
+        assert f'data-vp="{name}"' in tpl
+    assert "PrecisViewport.attach" in js and "active: true" in js
+
+
+def test_se_3d_key_map_matches_the_gesture_table() -> None:
+    """Slice 3 exit: the se 3D key map is the table's 2D column — f fit,
+    0 reset, + zoom in, - zoom out — registered through data-shortcut so
+    `?` lists them, and wired to the vendored viewer's reset/zoom."""
+    tpl = _read(_TEMPLATES / "blocktree" / "detail3d.html.j2")
+    js = _read(_STATIC / "blocktree-3d.js")
+    for keys, bid in (
+        ('data-shortcut="+"', "bt3d-vp-in"),
+        ('data-shortcut="-"', "bt3d-vp-out"),
+        ('data-shortcut="f"', "bt3d-vp-fit"),
+        ('data-shortcut="0"', "bt3d-vp-reset"),
+    ):
+        assert keys in tpl and bid in tpl
+    assert "viewButtons" in tpl
+    assert "viewButtons" in js
+    assert "viewer.reset()" in js
+    assert "setCameraZoom(viewer.getCameraZoom() * 1.25)" in js
+
+
+def test_se_3d_gesture_conventions_are_applied_per_render() -> None:
+    """The rest of the table's 3D column: zoom toward the cursor,
+    middle-drag and space+drag pan, double-click empty space fits."""
+    js = _read(_STATIC / "blocktree-3d.js")
+    assert "zoomToCursor" in js
+    assert "mouseButtons.MIDDLE" in js
+    # space held swaps the left button to pan; controls are rebuilt per
+    # render, so the convention is re-applied there
+    assert "_applyGestureConventionsPerRender" in js
+    assert 'e.key !== " "' in js
+    assert 'addEventListener("dblclick"' in js
+    assert "pickAt" in js and "pickVisible" in js
+
+
 def test_no_element_colour_sits_on_a_canvas_background() -> None:
     """Hydrogen rendered pure white vanished on the se page's white canvas
     (gr485857). The CPK table is shared by every host, so each entry — and

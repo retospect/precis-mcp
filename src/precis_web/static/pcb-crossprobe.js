@@ -36,6 +36,7 @@
   let objects = new Map(); // board catalogue key -> identity
   let hovered = null;    // handle currently hovered
   let selecting = new Set(); // els carrying the persistent xs class
+  let lastSel = null;    // the selected target, re-marked after a schematic reload
 
   const boardDoc = () => DOCS.find((d) => d.obj === boardObj);
   const STYLE = {
@@ -302,8 +303,36 @@
     }
   }
 
+  // Slice 2: a click switches the schematic pane to the sheet holding
+  // the object (hover never does — it is transient by rule). The
+  // refdes(es) an object resolves to feed pcb-sheets.js's pickSheet; a
+  // net resolves to every member part, layout-only objects to nothing.
+  function selRefdeses(t) {
+    const h = t && t.handle;
+    if (!h) {
+      if (t && t.object) return selRefdeses({handle: handleOf(t.object)});
+      return [];
+    }
+    if (h.startsWith('net:')) {
+      const n = (facts.nets || {})[h.slice(4)] || {};
+      return [...new Set((n.pins || []).map((p) => String(p).split('.')[0]))];
+    }
+    if (h.includes(':')) {
+      const o = objects.get(h);
+      return o ? selRefdeses({handle: handleOf(o)}) : [];
+    }
+    return [h.includes('.') ? h.split('.')[0] : h];
+  }
+
+  function maybeSwitchSheet(t) {
+    if (!window.PcbSchem || !schemObj) return;
+    window.PcbSchem.setSheet(window.PcbSchem.pickSheet(selRefdeses(t)));
+  }
+
   function selectSchematic(t) {
     if (!t || !t.handle) return;
+    lastSel = t;
+    maybeSwitchSheet(t);
     clearCls('pcb-xs');
     const exp = expansion(t);
     selecting = new Set(mark(exp, 'pcb-xs'));
@@ -342,6 +371,9 @@
       doc.documentElement.addEventListener('mouseleave', () => setHover(null));
       if (obj === schemObj) {
         doc.addEventListener('click', (ev) => selectSchematic(targetAt(doc, ev)));
+        // A sheet/focus reload rebuilt this document — re-light the
+        // selection in the fresh DOM (marks died with the old one).
+        if (lastSel) selecting = new Set(mark(expansion(lastSel), 'pcb-xs'));
       }
     };
     obj.addEventListener('load', onload);
@@ -358,10 +390,13 @@
     selEl.textContent = d.text || '';
     clearCls('pcb-xs');
     selecting = new Set();
+    lastSel = null;
     // A selection lights the same expansion a click resolved — the pin,
     // its net, every pin on it and their parts, in both panes.
     if (d.object && d.object.key) {
       const h = handleOf(d.object);
+      lastSel = h ? {handle: h} : {object: d.object, el: null};
+      maybeSwitchSheet(lastSel);
       selecting = new Set(
         mark(h ? expansion({handle: h}) : {nets: new Set(), pins: [], parts: new Set(), keys: new Set([d.object.key])}, 'pcb-xs')
       );

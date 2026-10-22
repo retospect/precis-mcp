@@ -994,6 +994,10 @@ export async function blocktreeViewer3D({
   // design slug). Optional.
   exportEls,
   exportName,
+  // Camera keys (pcb-workbench-layout.md's gesture table, se 3D column):
+  // `{in, out, fit, reset}` buttons carrying data-shortcut; clicks map to
+  // the vendored viewer's reset/zoom, so `?` lists them. Optional.
+  viewButtons,
 }) {
   const progress = _makeProgress(progressEl);
   if (progress) progress.set("scene", "loading design…");
@@ -1124,6 +1128,9 @@ export async function blocktreeViewer3D({
   const viewerOptions = { up: "Z", collapse: 2 };
 
   let viewer;
+  //: Set when the viewer inits (controls live under `_rendered` and are
+  //: rebuilt per render) — renderScene re-applies the gesture table.
+  let _applyGestureConventionsPerRender = null;
   //: The ONE per-object eye state (se-view-state.js): fed by the viewer's tree
   //: eyes, read by every renderer, re-applied after each scene render.
   const visibility = createObjectVisibility();
@@ -1931,6 +1938,7 @@ export async function blocktreeViewer3D({
     // second addressing scheme would otherwise pass the check once at
     // load and go quiet exactly when it started lying.
     _checkPathInvariant(viewer, drawn);
+    if (_applyGestureConventionsPerRender) _applyGestureConventionsPerRender();
     applyUiState();
     retintAfterRender(shapes);
     if (camera) {
@@ -2031,6 +2039,66 @@ export async function blocktreeViewer3D({
   try {
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
+    // ── workbench gesture table (pcb-workbench-layout.md, se 3D column)
+    // Wheel/pinch zoom toward the cursor; left-drag rotates; right- and
+    // middle-drag pan; space+drag pans; double-click empty space or `f`
+    // fits; `0` resets; `+`/`-` zoom. three's MOUSE enum inlined —
+    // importing `three` for two constants would couple this file to the
+    // import map.
+    const _MB_ROTATE = 0, _MB_PAN = 2;
+    let spaceDown = false;
+    const _controls = () =>
+      viewer && viewer._rendered && viewer._rendered.controls;
+    // Re-applied per render — clear() rebuilds the controls object.
+    const _applyGestureConventions = () => {
+      const c = _controls();
+      if (!c) return;
+      if ("zoomToCursor" in c) c.zoomToCursor = true;
+      if (c.mouseButtons) {
+        c.mouseButtons.MIDDLE = _MB_PAN;
+        c.mouseButtons.LEFT = spaceDown ? _MB_PAN : _MB_ROTATE;
+      }
+    };
+    _applyGestureConventionsPerRender = _applyGestureConventions;
+    if (viewButtons) {
+      const cam = {
+        fit: () => viewer.reset(),
+        reset: () => viewer.reset(),
+        in: () => viewer.setCameraZoom(viewer.getCameraZoom() * 1.25),
+        out: () => viewer.setCameraZoom(viewer.getCameraZoom() / 1.25),
+      };
+      for (const k of ["in", "out", "fit", "reset"]) {
+        if (viewButtons[k]) viewButtons[k].addEventListener("click", cam[k]);
+      }
+    }
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== " " || spaceDown) return;
+      if (window.precisShortcuts && window.precisShortcuts.ignored(e)) return;
+      spaceDown = true;
+      const c = _controls();
+      if (c && c.mouseButtons) c.mouseButtons.LEFT = _MB_PAN;
+    });
+    document.addEventListener("keyup", (e) => {
+      if (e.key !== " ") return;
+      spaceDown = false;
+      const c = _controls();
+      if (c && c.mouseButtons) c.mouseButtons.LEFT = _MB_ROTATE;
+    });
+    // Double-click on EMPTY space fits; the vendored pick's onDoubleClick
+    // resolves synchronously on a hit and already claimed it (bubble
+    // order), so a re-pick that misses or hits nothing pickable is the
+    // table's "empty space".
+    viewerEl.addEventListener("dblclick", (e) => {
+      const picker = viewer && viewer.idPicker;
+      const pc = viewer && viewer.pickingController;
+      const canvas = viewerEl.querySelector("canvas");
+      if (!picker || !canvas) return;
+      const r = canvas.getBoundingClientRect();
+      const hit = picker.pickAt(e.clientX - r.left, e.clientY - r.top);
+      if (!hit || (pc && pc.pickVisible && !pc.pickVisible(hit.info))) {
+        viewer.reset();
+      }
+    });
     // An `isolate` carried in on the URL is folded into this first render
     // (one render at load, not a full render then an isolate re-render).
     const firstIsolate = currentIsolate();

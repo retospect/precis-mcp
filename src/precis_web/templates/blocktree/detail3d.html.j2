@@ -68,6 +68,20 @@
   <button type="button" id="bt3d-explode" class="px-3 py-1 rounded border border-line-strong hover:bg-surface-muted">
     explode
   </button>
+  {# The shared camera keys (pcb-workbench-layout.md's gesture table —
+     se 3D column): the same f/0/+/- the SVG panes carry, registered on
+     data-shortcut so `?` lists them; blocktree-3d.js maps the clicks to
+     the vendored viewer's reset/zoom. #}
+  <span class="vp-tools flex items-center gap-1" role="group" aria-label="view">
+    <button type="button" id="bt3d-vp-in" data-shortcut="+" data-shortcut-label="Zoom in"
+            title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>
+    <button type="button" id="bt3d-vp-out" data-shortcut="-" data-shortcut-label="Zoom out"
+            title="zoom out (-)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">−</button>
+    <button type="button" id="bt3d-vp-fit" data-shortcut="f" data-shortcut-label="Fit view"
+            title="fit view (f) — or double-click empty space" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">fit</button>
+    <button type="button" id="bt3d-vp-reset" data-shortcut="0" data-shortcut-label="Reset view"
+            title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
+  </span>
   <span class="flex items-center gap-1 text-xs text-fg-muted"
         title="the view as on screen, scale bar included — the SVG holds the scene as an image and the scale bar as vector">
     export
@@ -348,6 +362,12 @@
       svg: document.getElementById("bt3d-export-svg"),
     },
     exportName: {{ slug | tojson }},
+    viewButtons: {
+      in: document.getElementById("bt3d-vp-in"),
+      out: document.getElementById("bt3d-vp-out"),
+      fit: document.getElementById("bt3d-vp-fit"),
+      reset: document.getElementById("bt3d-vp-reset"),
+    },
     sceneUrl: {{ scene_url | tojson }},
     validationPanel: document.getElementById("bt3d-validate"),
     validationUrl: {{ validation_url | tojson }},

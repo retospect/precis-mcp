@@ -39,6 +39,18 @@
     return base + '?focus=' + encodeURIComponent(handle);
   }
 
+  // Slice 2: pcb-sheets.js owns the object's ?sheet=&focus= state when
+  // present — reload through it so a sheet switch keeps the focus and
+  // focusing keeps the sheet. The direct URL is the fallback when the
+  // sheets module is not loaded.
+  function reload() {
+    if (window.PcbSchem) {
+      window.PcbSchem.refresh(schemObj);
+      return;
+    }
+    schemObj.setAttribute('data', cur ? focusUrl(cur.handle) : base);
+  }
+
   function partGroup(refdes) {
     const doc = schemDoc();
     return doc
@@ -68,14 +80,16 @@
 
   function enter(target) {
     cur = target;
-    schemObj.setAttribute('data', focusUrl(target.handle));
+    schemObj.dataset.focus = target.handle;
+    reload();
     render();
   }
 
   function exit() {
     if (!cur) return;
     cur = null;
-    schemObj.setAttribute('data', base);
+    delete schemObj.dataset.focus;
+    reload();
     render();
   }
 
@@ -135,7 +149,7 @@
         .then((r) => (r.ok ? r.json() : Promise.reject(r)))
         .then(() => {
           // reload the focus render so the pushpin appears / disappears
-          schemObj.setAttribute('data', focusUrl(cur.handle));
+          reload();
         })
         .catch(() => {
           /* leave the button unchanged on failure */

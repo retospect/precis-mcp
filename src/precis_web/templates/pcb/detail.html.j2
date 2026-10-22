@@ -36,6 +36,8 @@
 {% else %}
 <script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances, 'poses': pcb_poses} | tojson }}</script>
 <script type="application/json" id="pcb-part-cards">{{ pcb_part_cards | tojson }}</script>
+{# refdes → placement group (slice 2): the cross-probe's sheet lookup. #}
+<script type="application/json" id="pcb-sheet-map">{{ pcb_sheet_map | tojson }}</script>
 {# The workbench (docs/backlog/pcb-workbench-layout.md): schematic left,
    layout right, a draggable divider whose split is remembered, and the
    info strip below. Both panes are <object> documents — each SVG keeps
@@ -43,6 +45,15 @@
    zoom/pan in both by rewriting the viewBox. #}
 <style>
   #pcb-workbench { display: flex; align-items: stretch; height: 72vh; min-height: 22rem; }
+  /* Sheet tabs (slice 2): one per placement group plus the overview;
+     pcb-sheets.js switches the schematic <object>'s ?sheet=. */
+  #pcb-sheet-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 4px 1px; }
+  #pcb-sheet-tabs button { font-family: inherit; font-size: 11px; padding: 1px 7px;
+    border: 1px solid rgb(var(--border-line)); border-radius: 4px 4px 0 0;
+    background: transparent; color: rgb(var(--fg-subtle)); cursor: pointer; }
+  #pcb-sheet-tabs button[aria-pressed="true"] { font-weight: 600;
+    color: rgb(var(--fg-secondary)); border-bottom-color: transparent;
+    background: rgb(var(--bg-surface-emphasis)); }
   #pcb-workbench .pcb-pane { display: flex; flex-direction: column; min-width: 0; }
   #pcb-pane-schematic { flex: 0 0 50%; }
   #pcb-pane-layout { flex: 1 1 auto; }
@@ -77,6 +88,17 @@
         <button type="button" data-vp="reset" data-shortcut-label="Reset view" title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
       </span>
     </h2>
+    {% if pcb_sheets %}
+    {# Sheet tabs (slice 2): placement groups. pcb-sheets.js owns the
+       <object>'s ?sheet= (+ ?focus=) URL state via its dataset. #}
+    <div id="pcb-sheet-tabs" role="tablist" aria-label="schematic sheets">
+      <button type="button" role="tab" data-sheet="" aria-pressed="true"
+              title="the whole design">overview</button>
+      {% for s in pcb_sheets %}
+      <button type="button" role="tab" data-sheet="{{ s }}" aria-pressed="false">{{ s }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
     <object id="pcb-schematic-object" type="image/svg+xml"
             data="/pcb/{{ slug | urlencode }}/schematic.svg"
             data-base="/pcb/{{ slug | urlencode }}/schematic.svg"
@@ -170,6 +192,7 @@
 <script src="/static/viewport.js" defer></script>
 <script src="/static/pane-split.js" defer></script>
 <script src="/static/pcb-workbench.js" defer></script>
+<script src="/static/pcb-sheets.js" defer></script>
 <script src="/static/pcb-focus.js" defer></script>
 <script src="/static/pcb-argue.js" defer></script>
 <script src="/static/pcb-hover.js" defer></script>

@@ -63,3 +63,35 @@ def test_layer_toggle_button_and_persistence_are_wired() -> None:
     assert "precis:pcb-workbench:layers-hidden" in js
     assert "setLegendHidden" in js
     assert "pinLegend" in (_STATIC / "viewport.js").read_text(encoding="utf-8")
+
+
+# ── sheets (pcb-workbench-layout.md slice 2) ──────────────────────────
+
+
+def test_sheet_tabs_and_map_are_on_the_page() -> None:
+    tpl = (
+        _REPO / "src" / "precis_web" / "templates" / "pcb" / "detail.html.j2"
+    ).read_text(encoding="utf-8")
+    assert 'id="pcb-sheet-tabs"' in tpl
+    assert 'data-sheet=""' in tpl  # the overview tab
+    assert 'id="pcb-sheet-map"' in tpl
+    assert "pcb-sheets.js" in tpl
+    assert "pcb-sheets.js" in [p.name for p in _STATIC.iterdir()]
+
+
+def test_crossprobe_switches_to_the_sheet_holding_the_object() -> None:
+    """The spec's exit: cross-probing picks the sheet. A select resolves
+    the object's refdes(es), asks PcbSchem.pickSheet and setSheet's it;
+    focus and sheet share the object's URL state through PcbSchem.refresh
+    (no second '?')."""
+    xp = (_STATIC / "pcb-crossprobe.js").read_text(encoding="utf-8")
+    sheets = (_STATIC / "pcb-sheets.js").read_text(encoding="utf-8")
+    focus = (_STATIC / "pcb-focus.js").read_text(encoding="utf-8")
+    assert "PcbSchem.pickSheet" in xp and "PcbSchem.setSheet" in xp
+    assert "selRefdeses" in xp
+    # the selection is re-lit in the reloaded sheet document
+    assert "expansion(lastSel)" in xp
+    # one URL state owner: sheet + focus both in dataset → refresh()
+    assert "dataset.sheet" in sheets and "dataset.focus" in sheets
+    assert "URLSearchParams" in sheets
+    assert "PcbSchem.refresh" in focus

@@ -327,12 +327,25 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                     "turn": revision.turn,
                     "checkpoint_id": revision.checkpoint_id,
                 }
+            # Sheets (workbench spec slice 2): one tab per authored
+            # placement group — the same ``group`` key on instance meta
+            # that ``pcb_graph`` hoists and schematic.sheet_names reads.
+            # ``pcb_sheet_map`` (refdes → group) lets the cross-probe
+            # switch the schematic pane to the sheet holding a clicked
+            # object.
+            _sheets_of = {
+                r["refdes"]: str((r.get("meta") or {}).get("group"))
+                for r in view.raw["tables"]["pcb_instances"]
+                if not r.get("retired_at") and (r.get("meta") or {}).get("group")
+            }
             ctx = {
                 "active_tab": "pcb",
                 "slug": ref.slug,
                 "title": ref.title or ref.slug,
                 **_vitals(store, ref.id),
                 **_notes_ctx(store, ref, conn),
+                "pcb_sheets": sorted(set(_sheets_of.values())),
+                "pcb_sheet_map": _sheets_of,
                 "pcb_context": view.context,
                 "pcb_part_cards": pcb_parts.cards(view),
                 "pcb_instances": view.instances,
@@ -657,7 +670,10 @@ async def pcb_part_thumb(request: Request, slug: str, refdes: str) -> RawRespons
 
 @router.get("/pcb/{slug}/schematic.svg")
 async def pcb_schematic_svg(
-    request: Request, slug: str, focus: str | None = None
+    request: Request,
+    slug: str,
+    focus: str | None = None,
+    sheet: str | None = None,
 ) -> RawResponse:
     store = get_store(request)
     try:
@@ -667,7 +683,11 @@ async def pcb_schematic_svg(
     # ?focus=<handle> enters focus mode: the target part/net and its one-hop
     # neighbours stay bright, the rest dims (static/pcb-focus.js reloads the
     # <object> with this query; the render stays a pure fn of the graph).
-    args = {"focus": focus} if focus and focus.strip() else None
+    # ?sheet=<group> renders one placement-group sheet (slice 2): absent is
+    # the overview, unknown falls back to it too.
+    args = {
+        k: v for k, v in (("focus", focus), ("sheet", sheet)) if v and v.strip()
+    } or None
     resp = _handler(store).get(id=ref.slug, view="schematic", args=args)
     return _svg_response(resp.body)
 
