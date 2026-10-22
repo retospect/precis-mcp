@@ -13,7 +13,7 @@ design-review: yes
 - **Unblocks:** removal of the `generate`/`join`/`terminate` ops and the pcb batch construction put (W5); per-row call-site provenance on se and pcb designs; [pcb-platform](pcb-platform.md) Do-next 1.
 - **Acceptance:** each spec's slice table acceptance column; slice 1 also needs the construction refusals live with `next=` naming the workspace path and no skill naming a retired op.
 - **Worktree:** `structure-workspaces`
-- **Builds:** structure slice 0: 1; slice 1: 2–3; pcb slice 0: 1–2, slice 1: 2–3 (specs' own estimates).
+- **Builds:** structure slice 0: 1; slice 1: 2–3; pcb slice 0: 1–2, slice 1: 2–3; flow slice 4: 1–2; fields slice 1: 2–3 (specs' own estimates).
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
 ## Thread context
@@ -22,6 +22,7 @@ design-review: yes
 **Last reviewed:** 2026-10-22
 **Worktree:** `structure-workspaces`
 **Allocation decision:** active — Reto 2026-10-22.
+**Ruling (Reto 2026-10-22):** the physics toolkit's `evaluate` returns physics outcomes only; design-space terms (hole count, material, manufacturability) are the script's own objective — [se-flow-kernel](../se-flow-kernel.md) slice 4, [se-native-fields](../se-native-fields.md) §The toolkit.
 
 ## Do next
 
@@ -29,16 +30,19 @@ design-review: yes
 2. **pcb-workspace-code slice 0** — `precis_geom.pcb` builder, `to_batch` byte-equal to the nano fixture's `build_design()`; parallel to 1, needs only the trace decorator from structure slice 2 for the trace-key assertions.
 3. **structure-workspaces slice 2** — `precis-geom` wheel, warm venv, `@traced`; the pcb builder, trace views and relax cache all depend on it.
 4. **structure-workspaces slice 1** — workspace kind + `run`; waits on the sandbox lane. Same change removes `generate`/`join`/`terminate` and their skill text (W5: no clock, no wrapper phase). Until it lands those ops stay as-is.
-5. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 4.
-6. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 4.
-7. **structure-workspaces 2t, 2p, 2a** and **pcb-workspace-code 2, 2t** — trace views, python-kind join, assembly API, place/route as cached requests; after 3–5.
-8. **structure-workspaces slice 3** — the 12-wall H-column prism both ways; the proof that the script path is cheaper (needs hexfold-multicell-prism slice 3).
+5. **se-flow-kernel slice 4** — `precis_geom.flow` + `precis_geom.physics.evaluate` in the wheel, the example annealer workspace, the `precis-workspace-physics-help` skill; the first toolkit physics, and the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 3 and 4.
+6. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 4.
+7. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 4.
+8. **structure-workspaces 2t, 2p, 2a** and **pcb-workspace-code 2, 2t** — trace views, python-kind join, assembly API, place/route as cached requests; after 3–6.
+9. **se-native-fields slice 1** — `precis_fields` scalar family + Joule, `fields:` token, computers, the fields section of the physics skill; unblocks every solids case (conduction, DC, Joule) a script can check. After 5 (shares `evaluate` and the card pattern).
+10. **structure-workspaces slice 3** — the 12-wall H-column prism both ways; the proof that the script path is cheaper (needs hexfold-multicell-prism slice 3).
 
 ## Horizon
 
 1. **structure-workspaces slices 4, 4p, 4m, 4a, 4u, 5** — relax interface, periodic ladder, motif templates, interface relax, unit catalogue, macro check-and-report; slice 4p also gates the held [hexfold-tethered-relax-op](../hexfold-tethered-relax-op.md) (see hexfold-toolkit).
 2. **structure-workspaces 2e, 2r** — atom fisheye and observation rays; after 2t/2p.
-3. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration.
+3. **se-native-fields slices 2, 3** — thermoelastic via scikit-fem, then advection coupling with the flow kernel; after fields slice 1 (slice 3 also after se-multiphysics slice 1).
+4. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration.
 
 ## Parked
 

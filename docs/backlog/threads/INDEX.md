@@ -91,6 +91,14 @@ Seams:
 - multiscale-design-core is the substrate se-machine-design's
   model stands on (design-state-core, pattern groups, complementarity);
   se-machine-design consumes it rather than re-deriving it.
+- `src/precis_flow/`, `src/precis_se/flow.py`, `backlog/se-flow-kernel.md`
+  slice 4 and `backlog/se-native-fields.md` — se-machine-design owns the
+  physics (kernels, regime cards, `se-multiphysics.md` slices);
+  structure-workspaces ranks and builds the script-facing toolkit
+  (`precis_geom.flow`/`physics`/`fields` in the wheel, `evaluate`, the
+  `precis-workspace-physics-help` skill, the fields slices). A kernel
+  change lands through se-machine-design; the wheel/API shape through
+  structure-workspaces (seam recorded 2026-10-22).
 
 Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed

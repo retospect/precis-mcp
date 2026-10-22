@@ -69,7 +69,8 @@ machinery that exists:
    silently.
 3. **Outputs are measures through `COMPUTERS`**, as the four flow
    measurands are today. A `hard` measure is a DRC gate, a `soft`
-   measure is an annealer objective (`se-flow-kernel.md` slice 4), and a
+   measure is a workspace script's objective term (`se-flow-kernel.md`
+   slice 4: the toolkit `evaluate` returns physics outcomes only), and a
    `gauge` measure only reports.
 
 The backend can change (kernel, FEniCSx, OpenFOAM) without any change to
@@ -107,6 +108,17 @@ Convergence is reported, never assumed.
 - `Kn > 0.1` with slip, or EDL overlap: nano propagator / PNP;
 - viscoelastic flow, 3-D drops, free surfaces with 3-D shape,
   fluid–structure interaction with large deflection.
+
+### Solids (native, not the backend)
+
+Conduction, DC current, electrostatics and species diffusion *in
+solids and bulk*, Joule heating of a conductor, and thermal expansion /
+stress are [se-native-fields](se-native-fields.md): the 3-D field
+kernel `precis_fields` on a cut-cell grid from the cad solid, with the
+same patch-measure BCs, material rows and `COMPUTERS` outputs as here.
+Slice 2's heat keeps the fluid and the wall *plates*; a thick wall
+(`t_wall/L > 0.05`, wall `Bi > 0.1`) hands the wall to that kernel, not
+to the backend.
 
 ## Shared machinery (slice 1 builds it)
 
@@ -447,8 +459,13 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
    grid-dependent below the finger width). Outputs: `drop-arrival-time`,
    `pinch-off`.
 
-B. **External 3-D backend.** It can start any time after slice 1; its
-   first use is calibrating the card thresholds.
+B. **External 3-D backend — validation and 3-D flow.** Its remit
+   shrank 2026-10-22 ([se-native-fields](se-native-fields.md)): 3-D
+   Navier–Stokes, turbulence, two-phase with 3-D interfaces, and
+   **cross-checking both native kernels** (the thin-gap kernel here,
+   `precis_fields` there — its §Verification names the Elmer and
+   FEniCSx cases). It can start any time after slice 1; its first use
+   is calibrating the card thresholds.
    - **Interface** (`precis_flow.backend`): a `Backend` protocol with
      `capabilities() -> set[str]` (physics names as above) and
      `prepare(case) -> JobSpec`, and `read(job) -> Results` with fields
@@ -463,9 +480,10 @@ B. **External 3-D backend.** It can start any time after slice 1; its
      measure values through the same computers, tagged with the backend
      and mesh size.
    - **Order.** B1 FEniCSx: dolfinx Stokes / Navier–Stokes +
-     advection–diffusion + PNP, gmsh meshing, Python-native. B2 Elmer:
-     heat, electrostatics, FSI. B3 OpenFOAM: `interFoam`,
-     `chtMultiRegionFoam`.
+     advection–diffusion + PNP, gmsh meshing, Python-native; also the
+     thermoelastic cross-check. B2 Elmer: **cross-check only** (heat,
+     electrostatics, elasticity against `precis_fields`; FSI stays
+     named). B3 OpenFOAM: `interFoam`, `chtMultiRegionFoam`.
    - **Calibration test (B1).** On the slice-2 rectangle at
      `h0/L ∈ {0.01, 0.05, 0.1, 0.2}`, measure the kernel `R*` against
      3-D Stokes. The `thinness` threshold stays at 0.05 only if the error
@@ -477,7 +495,8 @@ B is unordered. Heat before electro-osmosis because Joule heating needs it.
 
 ## Explicitly NOT in scope
 
-Turbulence; 3-D solves inside precis (B delegates them); the nano
+Turbulence; 3-D *flow* solves inside precis (B delegates them; 3-D
+diffusion-family solves in solids are `se-native-fields.md`); the nano
 propagator (`se-flow-kernel.md` slice 3); bimolecular wall kinetics
 (`kinetics-engine-v2.md`); liquid-phase catpath rates (no solvation
 model; Q3); a web UI for the new fields beyond the slice-2b payload keys;

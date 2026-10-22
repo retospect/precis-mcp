@@ -9,15 +9,17 @@ title: se flow kernel — dimension-free thin-chamber flow + particle tracing on
 # se flow kernel (dimension-free Hele-Shaw + Lagrangian tracer)
 
 Reto, 2026-10-20: "we do mm to 50 cm or so scale for now. If we can
-meaningfully do this dimension-free, I love it." Source code: the local
-`cfdtest/` scratch repo (`breakthrough-annealer`, gitignored, own git):
-`flow.py` (Hele-Shaw finite-volume Poisson solve → depth-averaged U,
-resistance), `tracker.py` (vectorised Lagrangian tracer with a stochastic
-vertical dispersion active over holes, breakthrough plane), `cost.py`,
-`anneal.py`, `geometry.py` (hex chamber mask, ports, hole rasterisation),
-`render.py`; 1.4 k lines, numpy + scipy, tests on the invariants. Its
-pyproject pins python ≥ 3.14; precis is ≥ 3.12 — the vendored code drops
-the pin.
+meaningfully do this dimension-free, I love it." Source code: the
+`cfdtest` scratch repo at `~/work/projects/code/cfdtest`
+(`src/breakthrough_annealer/`, own git, not in this repo): `flow.py`
+(Hele-Shaw finite-volume Poisson solve → depth-averaged U, resistance),
+`tracker.py` (vectorised Lagrangian tracer with a stochastic vertical
+dispersion active over holes, breakthrough plane), `cost.py`,
+`anneal.py`, `config.py` (defaults: `w_break 10, w_holes 0.5, w_res 5,
+w_even 5`, `cooling 0.97`, `iters_per_temp 3`), `geometry.py` (hex
+chamber mask, ports, hole rasterisation), `render.py`; 1.4 k lines,
+numpy + scipy, tests on the invariants. Its pyproject pins
+python ≥ 3.14; precis is ≥ 3.12 — the vendored code drops the pin.
 
 ## The dimension-free formulation (worked out)
 
@@ -161,47 +163,97 @@ commit carrying this line; `git log` has the sha.*
      solvers refuse, and the reason names DSMC as out of scope. Slip
      (`se-multiphysics.md` slice 5) later moves the lower bound to 0.1.
    - **Determinism.** Same `seed_rng` gives bitwise-equal `Paths`.
-4. **Annealer as an se op**: hole/port placement under the realize loop
-   (cfdtest `anneal.py`), cost terms as measures.
-   The pure annealer is vendored as `precis_flow.anneal`: Metropolis, with
-   add / remove / perturb proposals scaled by `T/T0`, geometric cooling,
-   and the tracer reseeded identically every evaluation (common random
-   numbers). The se op is handler-level `anneal_chamber`, because it
-   spends compute; above the inline budget it runs as a job. The cost is
-   the weighted sum of the chamber's **soft** measures
-   (`breakthrough-fraction` maximised, `resistance-ratio` and hole count
-   minimised, `evenness` maximised), with weights in the measure meta.
-   **Hard** measures are constraints: a proposal that violates one is
-   rejected.
-   Acceptance (`tests/test_precis_flow_anneal.py`,
-   `tests/test_se_flow_anneal.py`):
-   - **Cost parity.** On the hex chamber (`test_se_flow.py` fixture) with
-     cfdtest's default weights (`w_break 10, w_holes 0.5, w_res 5,
-     w_even 5`) as soft measures, `profile='plug'` and the same seed, the
-     op's cost of the initial hole set equals cfdtest `cost.evaluate`'s
-     `total` within 1e-9.
-   - **Common random numbers.** Evaluating the same state twice gives a
-     bitwise-equal cost.
-   - **Reproduction.** At cfdtest's default config (iterations, cooling
-     0.97, 3 iterations per temperature), the best cost lies within the
-     spread of cfdtest `anneal` over 5 seeds. The best is strictly below
-     the initial cost.
+4. **Toolkit `evaluate` for flow + the annealer as an example workspace
+   script.** No server op (the earlier `anneal_chamber` is dropped).
+   Reto, 2026-10-22: "I feel like the hole placement is a point solution
+   here. What we want is to add this to the tooling kit that is given to
+   the se workspace, such that the coder, whoever it is, can write an
+   annealer that makes the shape do what we wish as specified for the
+   case, and check with the CFD system." And: "hole count will not be
+   the answer to evaluate shape. That's what the tool makes the space to
+   be." Depends on [structure-workspaces](structure-workspaces.md)
+   slices 1–2 (the `run` loop; the `precis-geom` wheel). Delivers:
+   - **`precis_geom.flow`** — the DB-free cad → `Domain` adapter
+     refactored out of `src/precis_se/flow.py` (`domain_from_solid`,
+     `Chamber`, `PortPatch`, `_wrap_solid`, `_claim_port`, the port
+     rectangle given directly); `precis_se/flow.py` keeps `patch_port`
+     (needs the tree), the `flow:` token, `FLOW_COMPUTERS` and
+     `view='flow'`, and imports the adapter from the wheel module. The
+     slice-2 tests pass unchanged.
+   - **`precis_geom.physics.evaluate(shape, physics=['flow'], spec, *,
+     seed, cells)` → `Outcome`** — the shape shared with
+     [se-native-fields](se-native-fields.md) §The toolkit:
+     `measures` = the four flow measurands (`breakthrough-fraction`,
+     `residence-time-t0`, `resistance-ratio`, `evenness`) computed by
+     the same code `FLOW_COMPUTERS` run (the computers call `evaluate`;
+     one implementation), `cards['flow']` = the regime card,
+     `hard_ok`/`failures` from the spec's hard measures, `cost`.
+     **Physics only**: no hole count, no material or process term —
+     those are the script's own objective terms. `seed=` reseeds the
+     tracer identically on every call (common random numbers).
+   - **`precis_flow.anneal`** stays vendored as a pure, generic
+     Metropolis helper (`anneal(state0, propose, cost, schedule, rng)`
+     — geometric cooling, `T/T0`-scaled proposals supplied by the
+     caller); nothing about holes or chambers inside it.
+   - **Example workspace** `examples/workspaces/chamber-anneal/main.py`
+     (a CI golden per structure-workspaces slice 7): builds the hex
+     chamber with `pg` (the `test_se_flow.py` `_hex_design` fixture as
+     code), reads `params.json` (`seed`, `iterations`, `cooling`,
+     weights, `profile`), proposes add / remove / perturb holes with
+     `user` holes pinned and spacing/depth kept inside the process
+     `min_wall` (read through the read MCP), rejects every proposal
+     whose `Outcome.hard_ok` is false, and minimises the script-side
+     objective
+     `cost = −w_break·f + w_res·R/R_ref + w_even·(1 − evenness) + w_holes·n/n_ref`
+     — the `w_holes` term is the script's, not the toolkit's. Accepted
+     states go to `out.search(iteration, cost, measures)` (the trace's
+     `search` section); the best chamber is emitted with its holes as
+     cad `body add` cylinders, the four measures declared `soft` with
+     the weights in meta, plus the hard `resistance-ratio ≤ 1.2`.
+   - **Skill `precis-workspace-physics-help`** (new, CFD as its first
+     section): what `evaluate` returns and refuses per physics, the
+     regime card, the spec shape (hard/soft/gauge), the optimizer-loop
+     guidance (objective from measures, hard constraints reject, common
+     random numbers / fixed seeds, budgets inline vs `budget='job'` on
+     pollux/spark, recording the search in the trace, the link to
+     `precis-differentiation-help` for gradients), the example script,
+     and the import re-check rule. Written here because this is the
+     first toolkit physics; se-native-fields slice 1 adds its section.
+   Acceptance (`tests/test_precis_flow_anneal.py` for the pure helper;
+   `tests/workspaces/test_chamber_anneal.py` running the example without
+   a container; `tests/test_se_flow.py` for the import re-check):
+   - **Cost parity.** On the hex chamber with cfdtest's default weights,
+     `profile='plug'` and the same seed, the example's cost of the
+     initial hole set (flow terms from `evaluate` + the script's hole
+     term) equals cfdtest `cost.evaluate`'s `total` within 1e-9.
+   - **Common random numbers.** `evaluate` on the same state twice
+     gives a bitwise-equal `Outcome`.
+   - **Reproduction.** At cfdtest's default config (`cooling 0.97`,
+     `iters_per_temp 3`, cfdtest's iteration count), the example's best
+     cost lies within the spread of cfdtest `anneal` over 5 seeds, and
+     is strictly below the initial cost.
    - **Determinism.** The same seed gives the same best hole set.
-   - **Hard constraints hold.** With a hard `resistance-ratio ≤ 1.2`, no
-     accepted state violates it, and `view='drc'` on the result is clean
+   - **Physics only.** `Outcome.measures` keys are a subset of the
+     registered flow measurands; a test asserts no count/material key
+     and that `evaluate` is pure over `(shape, spec, seed)`.
+   - **Hard constraints hold.** With the hard `resistance-ratio ≤ 1.2`,
+     no accepted state violates it; after import `view='drc'` is clean
      for that measure.
-   - **Origin.** Holes land as cad `body add` cylinders with
-     `origin='proposed'`. A `user` hole is never moved or removed, and a
-     test pins one through the whole run. Re-running revises only its own
-     proposed holes, as one revision per call.
-   - **Manufacturable.** Hole depth stays at or below the floor plate
-     thickness minus the process `min_wall`. Spacing between holes stays
-     at or above `min_wall`. Both are asserted on every accepted state.
-   - **Round trip.** After the op, the four flow measures re-evaluated
-     through `COMPUTERS` equal the op's reported best breakdown within
-     1e-9.
-   - **Budget.** An `iterations` value over the inline cap is refused
-     with `next=` naming the job form.
+   - **Import re-check.** After `run`, the server's `COMPUTERS` values
+     equal the manifest's stated values within 1e-9 at equal `cells`;
+     a tampered manifest value yields `measure.script_mismatch`; a hard
+     bound the server's own number violates is a DRC finding whatever
+     the manifest claims.
+   - **Script-side invariants** (the example's own test): a pinned
+     `user` hole is never moved or removed; hole depth ≤ plate thickness
+     − `min_wall`; hole spacing ≥ `min_wall`, both asserted on every
+     accepted state; holes import with `origin='proposed'`.
+   - **Budget.** `evaluate` above `INLINE_CELLS` refuses with `next=`
+     naming `budget='job'`; the example checkpoints its search to
+     `/work/out/search.json` when the run's `wall_seconds` estimate
+     would be exceeded and resumes from `params.resume`.
+   - **Trace.** The run's trace carries the `search` section; `view=
+     'trace'` renders the best iteration with its measures.
 
 ## Decisions (Reto 2026-10-20: "yes")
 
@@ -250,4 +302,8 @@ web player of slice 2b replaces it).
 
 New `src/precis_flow/`; `precis_se` gains the adapter module and the
 `COMPUTERS` entries; `cad` kind untouched beyond reading envelopes;
-`precis_web` gains the Flow tab and its static JS (slice 2b).
+`precis_web` gains the Flow tab and its static JS (slice 2b). Slice 4:
+`precis_geom.flow` and `precis_geom.physics` in the `precis-geom` wheel
+(`packaging/geom/`), `precis_se/flow.py` shrinks to the tree-bound half,
+`examples/workspaces/chamber-anneal/`, the skill
+`precis-workspace-physics-help`, `workspace_import.py` (re-check).
