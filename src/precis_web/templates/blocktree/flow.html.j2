@@ -1,0 +1,133 @@
+{% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
+{% block title %}{{ title }} — flow{% endblock %}
+{% block content %}
+<div class="flex items-center gap-3 mb-3">
+  {{ drive_back(kind, kind_label) }}
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <span class="text-xs text-fg-subtle">{{ kind_label }} · {{ slug }} · flow</span>
+  <a href="{{ view3d_url }}" class="text-xs text-info hover:underline ml-auto">← 3D view</a>
+</div>
+
+{% if not pockets %}
+<p class="text-sm">This design has no flow chamber spec. Add a pocket shaped
+<code>flow:in=&lt;patch&gt;;out=&lt;patch&gt;;dv=&lt;D_v*&gt;</code> on the chamber block
+(see <code>get(kind='skill', id='precis-se-help')</code>) to play its particles here.</p>
+{% else %}
+{% if pockets | length > 1 %}
+<div class="flex flex-wrap gap-2 mb-3 text-xs">
+  {% for p in pockets %}
+    <a href="{{ p.url }}" class="px-2 py-0.5 rounded border {{ 'border-info text-info' if p.chosen else 'border-line-strong' }}">{{ p.block }} / {{ p.pocket }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="flex flex-col lg:flex-row gap-4">
+  <div class="flex-1 min-w-0">
+    <div id="flow-viewer" class="w-full rounded border border-line-strong overflow-hidden" style="height: 520px;"></div>
+    <div class="flex flex-wrap items-center gap-3 mt-2 text-sm">
+      <button id="flow-play" type="button" class="px-3 py-1 rounded border border-line-strong">pause</button>
+      <input id="flow-scrub" type="range" min="0" max="1" step="any" value="0" class="flex-1 min-w-[12rem]" aria-label="time t*">
+      <span id="flow-clock" class="tabular-nums text-xs w-44">t* = 0.000</span>
+      <label class="text-xs">speed
+        <select id="flow-speed" class="border border-line-strong rounded px-1 py-0.5">
+          <option value="0.25">×¼</option><option value="0.5">×½</option>
+          <option value="1" selected>×1</option><option value="2">×2</option><option value="4">×4</option>
+        </select>
+      </label>
+      <label class="text-xs"><input id="flow-loop" type="checkbox" checked> loop</label>
+    </div>
+    <div class="flex flex-wrap items-center gap-3 mt-2 text-xs">
+      <label>colour
+        <select id="flow-colour" class="border border-line-strong rounded px-1 py-0.5">
+          <option value="speed" selected>speed</option>
+          <option value="height">height in gap</option>
+          <option value="residence">residence time</option>
+        </select>
+      </label>
+      <label><input id="flow-trails" type="checkbox"> trails</label>
+      <label><input id="flow-plane" type="checkbox" checked> tracking plane</label>
+      <label><input id="flow-ports" type="checkbox" checked> ports</label>
+      <label><input id="flow-shell" type="checkbox" checked> walls + lid</label>
+      <label>vertical ×
+        <select id="flow-exaggeration" class="border border-line-strong rounded px-1 py-0.5">
+          <option value="1">1</option><option value="2">2</option>
+          <option value="4" selected>4</option><option value="8">8</option>
+        </select>
+      </label>
+      <span id="flow-crossed" class="tabular-nums text-fg-subtle"></span>
+    </div>
+    <p id="flow-status" class="text-xs text-fg-subtle mt-2"></p>
+    <p class="text-xs text-fg-subtle mt-1">colour: viridis, low → high; residence: grey = trapped.
+      Ports: green inlet, red outlet. Drag to orbit, shift-drag to pan, wheel to zoom.</p>
+  </div>
+
+  <aside class="shrink-0 text-sm" style="flex-basis: 20rem;">
+    <form id="flow-form" class="grid grid-cols-2 gap-x-2 gap-y-1 text-xs mb-3">
+      <div class="col-span-2 font-semibold">run</div>
+      <label for="flow-n">particles</label>
+      <input id="flow-n" name="n" type="number" min="1" max="20000" value="{{ defaults.n }}" class="border border-line-strong rounded px-1">
+      <label for="flow-frames">frames</label>
+      <input id="flow-frames" name="frames" type="number" min="2" max="1000" value="{{ defaults.frames }}" class="border border-line-strong rounded px-1">
+      <label for="flow-profile">gap profile</label>
+      <select id="flow-profile" name="profile" class="border border-line-strong rounded px-1">
+        {% for pr in ("plug", "parabolic") %}
+          <option value="{{ pr }}" {{ 'selected' if pr == defaults.profile else '' }}>{{ pr }}</option>
+        {% endfor %}
+      </select>
+      <div class="col-span-2 font-semibold mt-2">size and fluid (SI) — the clock and the card</div>
+      <label for="flow-size">chamber L (m)</label>
+      <input id="flow-size" name="size" type="text" placeholder="as drawn" class="border border-line-strong rounded px-1">
+      <label for="flow-u0">U0 (m/s)</label>
+      <input id="flow-u0" name="u0" type="text" placeholder="0.01" value="0.01" class="border border-line-strong rounded px-1">
+      <label for="flow-mu">μ (Pa·s)</label>
+      <input id="flow-mu" name="mu" type="text" placeholder="0.001" value="0.001" class="border border-line-strong rounded px-1">
+      <label for="flow-rho">ρ (kg/m³)</label>
+      <input id="flow-rho" name="rho" type="text" placeholder="1000" value="1000" class="border border-line-strong rounded px-1">
+      <label for="flow-pd">particle d (m)</label>
+      <input id="flow-pd" name="particle_d" type="text" placeholder="—" class="border border-line-strong rounded px-1">
+      <label for="flow-rhop">particle ρ</label>
+      <input id="flow-rhop" name="rho_p" type="text" placeholder="—" class="border border-line-strong rounded px-1">
+      <label for="flow-md">molecular D</label>
+      <input id="flow-md" name="molecular_d" type="text" placeholder="—" class="border border-line-strong rounded px-1">
+      <div class="col-span-2 text-fg-subtle">prefilled: water at 1 cm/s — edit to your case.</div>
+      <button type="submit" class="col-span-2 mt-1 px-2 py-1 rounded border border-line-strong">update</button>
+    </form>
+    <div class="font-semibold text-xs mb-1">regime card</div>
+    <div id="flow-card" class="text-xs"></div>
+  </aside>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if payload_url %}
+<script type="importmap">
+{"imports": {"three": "/static/three-r184/three.module.min.js"}}
+</script>
+<script type="module">
+  import { flowPlayer } from "/static/se-flow-player.js";
+  const $ = (id) => document.getElementById(id);
+  flowPlayer({
+    viewerEl: $("flow-viewer"),
+    statusEl: $("flow-status"),
+    cardEl: $("flow-card"),
+    payloadUrl: {{ payload_url | tojson }},
+    controls: {
+      play: $("flow-play"),
+      scrub: $("flow-scrub"),
+      clock: $("flow-clock"),
+      speed: $("flow-speed"),
+      loop: $("flow-loop"),
+      colour: $("flow-colour"),
+      trails: $("flow-trails"),
+      plane: $("flow-plane"),
+      ports: $("flow-ports"),
+      shell: $("flow-shell"),
+      exaggeration: $("flow-exaggeration"),
+      crossed: $("flow-crossed"),
+      form: $("flow-form"),
+    },
+  });
+</script>
+{% endif %}
+{% endblock %}

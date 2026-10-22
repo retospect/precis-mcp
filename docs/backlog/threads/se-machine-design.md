@@ -209,8 +209,10 @@ off that gap until it closes.
    2026-10-20 (Q1–Q3 decided); slice 1 landed 2026-10-20 on `flow-s1`
    (`src/precis_flow/` + tests), slice 2 landed 2026-10-21 on `flow-s2`
    (`src/precis_se/flow.py`: envelope→Domain, `view='flow'` + 2b
-   payload, `flow:` pocket + COMPUTERS), slice 2b (web particle player)
-   follows.
+   payload, `flow:` pocket + COMPUTERS), slice 2b landed 2026-10-21 on
+   `flow-2b` (Flow tab `/se/<slug>/flow`, `routes/se_flow.py` +
+   `static/se-flow-*.js`); slices 3 (nano propagator) and 4 (annealer)
+   follow.
 0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
    halves as the negative (Reto 2026-10-21); Q1–Q4 decided, slice 1

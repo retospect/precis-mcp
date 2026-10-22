@@ -140,6 +140,7 @@ from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic.validate import bound_port_origin
+from precis_se.flow import flow_pockets as se_flow_pockets
 from precis_se.handler import validate_digest as se_validate_digest
 from precis_se.handler import validate_findings as se_validate_findings
 from precis_se.ops import effective_envelope as se_effective_envelope
@@ -1156,6 +1157,13 @@ async def _view3d_page(
     # and the page fetches ``/se/<slug>/validate-panel`` after first paint
     # (gr462703). Live design only.
     show_validate = kind == "se" and not axis.read_only
+    # The Flow tab (routes/se_flow.py, se-flow-kernel slice 2b): offered
+    # when the shown tree carries a ``flow:`` chamber-spec pocket.
+    flow_url = (
+        f"/{kind}/{quote(slug, safe='')}/flow"
+        if kind == "se" and se_flow_pockets(tree)
+        else ""
+    )
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -1174,6 +1182,7 @@ async def _view3d_page(
             "has_atomic": has_atomic,
             "atomic3d_url": atomic3d_url,
             "detail_2d_url": detail_2d_url,
+            "flow_url": flow_url,
             "svg_url": svg_url,
             "note_url": note_url,
             "pick_url": pick_url,

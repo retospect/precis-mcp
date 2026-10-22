@@ -31,9 +31,13 @@ shapes: a text summary (field, streamline/statistics, regime card) and
 ``format='json'`` — the slice-2b player payload: chamber outline +
 floor depth map, ``trace(record_frames=K)`` frames as one base64
 float32 ``(K, n, 3)`` blob (z* is the local gap fraction, 0 = floor,
-1 = ceiling), the scale triple ``(L, h0, u0)`` and the regime card.
-Over :data:`PAYLOAD_CAP_BYTES` the payload subsamples particles first,
-then frames, and says by how much.
+1 = ceiling), port masks, the tracking plane, per-particle outcomes,
+the scale triple ``(L, h0, u0)`` and the regime card (``size=``
+re-dimensionalises the same shape). Over :data:`PAYLOAD_CAP_BYTES` the
+payload subsamples particles first, then frames, and says by how much.
+The run splits into :func:`flow_chamber` (envelope → Domain, the costly
+half), :func:`flow_trace` and :func:`flow_scale` so the web Flow tab
+(``precis_web/routes/se_flow.py``) can memoise the first two.
 
 **Measures through COMPUTERS.** A *chamber spec* is a pocket whose
 ``shape`` is the ``flow:`` token —
@@ -503,12 +507,9 @@ def patch_port(tree: Any, chamber: str, selector: str) -> PortPatch:
     chamber_node = tree.blocks.get(chamber)
     if chamber_node is None:
         raise BadInput(f"no block {chamber!r} — the chamber names a block")
-    chamber_placed = se_datums._placed(tree, chamber_node.name)
-    if chamber_placed is None:
-        raise BadInput(
-            f"block {chamber!r} has no parseable envelope — the chamber "
-            "needs a cad envelope"
-        )
+    # Only the chamber's pose is needed here — its envelope may be a
+    # field: grid that only a store-bound loader can build.
+    chamber_xform = cad_pose(as_vec3(chamber_node.pose), as_vec3(chamber_node.rot))
     target = sel.instance or chamber
     placed = se_datums._placed(tree, target)
     if placed is None:
@@ -521,7 +522,7 @@ def patch_port(tree: Any, chamber: str, selector: str) -> PortPatch:
         frame.point + float(sel.u or 0.0) * frame.u + float(sel.v or 0.0) * frame.v
     )
     # Re-pose the rectangle into the chamber's local frame.
-    rel = chamber_placed.xform.inverse().compose(placed.xform)
+    rel = chamber_xform.inverse().compose(placed.xform)
     return PortPatch(
         point=np.asarray(rel.apply(centre_l), dtype=float),
         normal=np.asarray(rel.apply_dir(frame.normal), dtype=float),
@@ -577,6 +578,15 @@ def _card_from_args(
     return card, card.u0
 
 
+def _finite(x: Any) -> float | None:
+    """A JSON-safe number: NaN/inf (a line the inputs cannot evaluate)
+    becomes ``null`` — strict JSON parsers (the web player) refuse NaN."""
+    if x is None:
+        return None
+    v = float(x)
+    return v if math.isfinite(v) else None
+
+
 def _card_dict(card: RegimeCard | None) -> dict[str, Any] | None:
     if card is None:
         return None
@@ -586,8 +596,8 @@ def _card_dict(card: RegimeCard | None) -> dict[str, Any] | None:
         "lines": [
             {
                 "name": ln.name,
-                "value": ln.value,
-                "threshold": ln.threshold,
+                "value": _finite(ln.value),
+                "threshold": _finite(ln.threshold),
                 "ok": ln.ok,
                 "holds_when": ln.holds_when,
                 "otherwise": ln.otherwise,
@@ -607,13 +617,16 @@ def flow_payload(
     profile: str,
     d_v_star: float,
     block: str = "",
+    scale: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The slice-2b player payload: outline + floor depth map, the
-    recorded frames as one base64 float32 ``(K, n, 3)`` blob (z* is the
-    local gap fraction, 0 = floor, 1 = ceiling), the scale triple
-    ``(L, h0, u0)`` and the regime card. Over
-    :data:`PAYLOAD_CAP_BYTES` the frames blob subsamples particles
-    first, then frames — ``subsampled`` reports the strides."""
+    """The slice-2b player payload: outline + floor depth map + port
+    masks, the recorded frames as one base64 float32 ``(K, n, 3)`` blob
+    (z* is the local gap fraction, 0 = floor, 1 = ceiling), per-particle
+    outcomes (residence ``t*``, broke/exited, first plane crossing), the
+    tracking plane, the scale triple ``(L, h0, u0)`` and the regime
+    card. Over :data:`PAYLOAD_CAP_BYTES` the frames blob subsamples
+    particles first, then frames — ``subsampled`` reports the strides
+    (the per-particle arrays take the same particle stride)."""
     frames = paths.frames
     sub_p = sub_f = 1
     blob = b""
@@ -638,11 +651,24 @@ def flow_payload(
     else:
         frame_shape = None
         frame_t = None
+
+    def _b64(arr: np.ndarray) -> str:
+        return base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode()
+
+    d = chamber.domain
     return {
         "block": block,
         "profile": profile,
         "d_v_star": d_v_star,
-        "scale": {"L": chamber.L, "h0": chamber.h0, "u0": u0},
+        "scale": scale
+        or {
+            "L": chamber.L,
+            "h0": chamber.h0,
+            "u0": u0,
+            "geometry_L": chamber.L,
+            "geometry_h0": chamber.h0,
+        },
+        "z_plane_star": float(d.z_plane_star),
         "frame": {
             "x_axis": _AXES[chamber.x_axis],
             "y_axis": _AXES[chamber.y_axis],
@@ -668,6 +694,19 @@ def flow_payload(
                     chamber.domain.mask.astype(np.uint8).tobytes()
                 ).decode(),
             },
+            "ports": {
+                "dtype": "uint8",
+                "inlet_b64": _b64(d.ports.inlet.astype(np.uint8)),
+                "outlet_b64": _b64(d.ports.outlet.astype(np.uint8)),
+            },
+        },
+        "particles": {
+            "n": int(paths.residence[::sub_p].shape[0]),
+            "dtype": "float32 (residence, cross) / uint8 (broke, exited)",
+            "residence_b64": _b64(paths.residence[::sub_p].astype("<f4")),
+            "broke_b64": _b64(paths.broke[::sub_p].astype(np.uint8)),
+            "exited_b64": _b64(paths.exited[::sub_p].astype(np.uint8)),
+            "cross_b64": _b64(paths.cross_star[::sub_p].astype("<f4")),
         },
         "frames": (
             {
@@ -704,9 +743,38 @@ def _num(args: dict[str, Any], key: str, default: Any = None) -> float | None:
     return float(v)
 
 
-def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
-    """``view='flow'`` — solve + trace the chamber and render the text
-    summary or the slice-2b player payload (``format='json'``)."""
+@dataclass(frozen=True)
+class FlowPocket:
+    """A ``flow:`` chamber spec found on a block — what the web Flow
+    tab offers to play."""
+
+    block: str
+    pocket: str
+    spec: FlowSpec
+
+
+def flow_pockets(tree: Any) -> list[FlowPocket]:
+    """Every pocket whose shape parses as a ``flow:`` chamber spec, in
+    block then pocket name order."""
+    out: list[FlowPocket] = []
+    for bname in sorted(tree.blocks):
+        node = tree.blocks[bname]
+        for pname in sorted(getattr(node, "pockets", {}) or {}):
+            shape = (node.pockets[pname].shape or "").strip()
+            if not shape.startswith("flow:"):
+                continue
+            try:
+                spec = parse_flow_shape(shape)
+            except ValueError:
+                continue
+            out.append(FlowPocket(block=bname, pocket=pname, spec=spec))
+    return out
+
+
+def flow_chamber(store: Any, tree: Any, args: dict[str, Any]) -> Chamber:
+    """The chamber of ``view='flow'`` args (``block``, ``inlet``,
+    ``outlet``, optional ``nx`` and ``zplane``) — the expensive,
+    trace-independent half of a run (the web player caches it)."""
     block = str(args.get("block") or "").strip()
     if not block:
         raise BadInput(
@@ -722,12 +790,6 @@ def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
             "view='flow' needs args={'inlet': <patch>, 'outlet': <patch>} — "
             "patch: selectors tagging the two ports"
         )
-    dv = _num(args, "dv")
-    if dv is None:
-        raise BadInput(
-            "view='flow' needs args.dv — the reduced vertical dispersion "
-            "D_v* (the kernel never defaults it)"
-        )
     placed = _chamber_placed(store, tree, block)
     if placed is None:
         raise BadInput(
@@ -736,6 +798,27 @@ def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
         )
     nx = int(_num(args, "nx", DEFAULT_NX) or DEFAULT_NX)
     zplane = float(_num(args, "zplane", 0.99) or 0.99)
+    return domain_from_solid(
+        placed,
+        patch_port(tree, block, str(inlet_sel)),
+        patch_port(tree, block, str(outlet_sel)),
+        nx=nx,
+        z_plane_star=zplane,
+    )
+
+
+def flow_trace(
+    chamber: Chamber, args: dict[str, Any]
+) -> tuple[Field, Paths, str, float]:
+    """Solve + trace the chamber for ``view='flow'`` args (``dv``
+    required; ``profile``, ``n``, ``frames``, ``seed``, ``seed_z``) →
+    ``(field, paths, profile, d_v*)``."""
+    dv = _num(args, "dv")
+    if dv is None:
+        raise BadInput(
+            "view='flow' needs args.dv — the reduced vertical dispersion "
+            "D_v* (the kernel never defaults it)"
+        )
     profile = str(args.get("profile") or "parabolic").strip().lower()
     if profile not in ("plug", "parabolic"):
         raise BadInput(
@@ -753,14 +836,6 @@ def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
     ):
         raise BadInput("view='flow': seed_z must be [z_lo, z_hi] gap fractions")
     z_lo, z_hi = float(seed_z[0]), float(seed_z[1])
-
-    chamber = domain_from_solid(
-        placed,
-        patch_port(tree, block, str(inlet_sel)),
-        patch_port(tree, block, str(outlet_sel)),
-        nx=nx,
-        z_plane_star=zplane,
-    )
     field = solve(chamber.domain)
     seed = Seed.across_inlet(chamber.domain, z_lo=z_lo, z_hi=z_hi)
     paths = trace(
@@ -772,18 +847,55 @@ def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
         record_frames=frames_k,
         profile=profile,
     )
-    card, u0 = _card_from_args(chamber.L, chamber.h0, args)
-    payload = flow_payload(
-        chamber, paths, card, u0=u0, profile=profile, d_v_star=dv, block=block
-    )
+    return field, paths, profile, dv
+
+
+def flow_scale(
+    chamber: Chamber, args: dict[str, Any]
+) -> tuple[RegimeCard | None, dict[str, Any]]:
+    """The regime card and scale triple for ``view='flow'`` args.
+    ``size`` (m) re-dimensionalises the same shape at another lateral
+    extent — ``L = size``, ``h0`` scaled with it — so the card judges
+    that size; without it the chamber's own geometry stands."""
+    size = _num(args, "size")
+    if size is not None and not (math.isfinite(size) and size > 0.0):
+        raise BadInput(f"view='flow': size must be a length > 0 in m, got {size!r}")
+    k = (size / chamber.L) if size is not None else 1.0
+    L, h0 = chamber.L * k, chamber.h0 * k
+    card, u0 = _card_from_args(L, h0, args)
+    return card, {
+        "L": L,
+        "h0": h0,
+        "u0": u0,
+        "geometry_L": chamber.L,
+        "geometry_h0": chamber.h0,
+    }
+
+
+def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
+    """``view='flow'`` — solve + trace the chamber and render the text
+    summary or the slice-2b player payload (``format='json'``)."""
     fmt = str(args.get("format") or "text").strip().lower()
-    if fmt == "json":
-        return json.dumps(payload, indent=1)
-    if fmt != "text":
+    if fmt not in ("text", "json"):
         raise BadInput(
             f"view='flow': args.format must be 'text' or 'json', got {fmt!r}",
             options=["text", "json"],
         )
+    chamber = flow_chamber(store, tree, args)
+    field, paths, profile, dv = flow_trace(chamber, args)
+    card, scale = flow_scale(chamber, args)
+    payload = flow_payload(
+        chamber,
+        paths,
+        card,
+        u0=scale["u0"],
+        profile=profile,
+        d_v_star=dv,
+        block=str(args.get("block") or "").strip(),
+        scale=scale,
+    )
+    if fmt == "json":
+        return json.dumps(payload, indent=1)
     return _render_flow_text(chamber, field, paths, card, payload)
 
 

@@ -22,6 +22,7 @@
     <a class="underline" href="/{{ kind }}/{{ slug | urlencode }}">current</a>
   </span>
   <a href="{{ detail_2d_url }}" class="text-xs text-info hover:underline ml-auto">Envelope projections →</a>
+  {% if flow_url %}<a href="{{ flow_url }}" class="text-xs text-info hover:underline">Flow →</a>{% endif %}
 </div>
 
 {% if show_validate %}

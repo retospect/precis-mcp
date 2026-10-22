@@ -110,23 +110,14 @@ commit carrying this line; `git log` has the sha.*
    pocket shaped `flow:in=<patch>;out=<patch>;dv=<d_v*>[;profile=…]
    [;zplane=…]`; the adapter's profile default is `parabolic` (Q4).
 
-2b. **Web particle player** (Reto 2026-10-20). A Flow tab beside the
-   se/cad 3-D viewer in `precis_web`, on the vendored three.js
-   (`static/three-r184`):
-   - particles as one `InstancedMesh` of spheres (2 k–20 k), positions
-     interpolated between stored frames for smooth playback;
-   - play/pause, time scrubber, speed, loop; the clock reads `t*` and,
-     through the scale triple, seconds for the chosen chamber size;
-   - one directional light with a shadow map: particles cast, the
-     chamber floor (holes, pockets) receives; walls and lid translucent;
-   - colour by speed, height in gap or residence time; optional short
-     fading trails (last few frames as line segments);
-   - overlays: ports, the tracking plane as a translucent sheet marking
-     crossings, the regime card verdicts beside the player.
-   Test: a page test that the tab loads the payload of the slice-2 hex
-   chamber and the instance count equals the payload's particle count;
-   frame-advance unit test in JS if the web suite has a harness,
-   otherwise a Python test on the payload contract only.
+2b. **Web particle player** *(landed 2026-10-21 — the commit carrying
+   this line)*: the Flow tab `/se/<slug>/flow` (`routes/se_flow.py`,
+   `static/se-flow-player.js` on three-r184, the payload maths in
+   `static/se-flow-frames.js`), linked from the se 3-D view when the
+   design carries a `flow:` pocket. The payload gained port masks, the
+   tracking plane, per-particle outcomes and `size=` re-dimensioning;
+   chamber build and trace are memoised per design version. A `field:`
+   envelope works as a chamber (its ports sit on other blocks).
 3. **Nano propagator**: test-particle Monte Carlo with diffuse wall
    reflection on a hexfold lumen (`generated.sites` + vdW-offset wall),
    same `trace` outputs; the card routes `Kn ≫ 1` here.

@@ -29,6 +29,7 @@ from precis_se.flow import (
     PortPatch,
     domain_from_solid,
     flow_payload,
+    flow_pockets,
     parse_flow_shape,
     patch_port,
     render_flow,
@@ -258,6 +259,32 @@ def test_flow_view_text_and_json() -> None:
     mask = np.frombuffer(base64.b64decode(mesh["mask"]["data_b64"]), dtype=np.uint8)
     assert mask.sum() == 60 * 200  # flat box: every cell inside
     assert payload["subsampled"]["particles_stride"] == 1
+    # 2b player extras: port masks, tracking plane, per-particle outcomes
+    ports = mesh["ports"]
+    inlet = np.frombuffer(base64.b64decode(ports["inlet_b64"]), dtype=np.uint8)
+    assert inlet.size == 60 * 200 and inlet.sum() > 0
+    assert payload["z_plane_star"] == pytest.approx(0.99)
+    parts = payload["particles"]
+    assert parts["n"] == 60
+    res = np.frombuffer(base64.b64decode(parts["residence_b64"]), dtype="<f4")
+    cross = np.frombuffer(base64.b64decode(parts["cross_b64"]), dtype="<f4")
+    assert res.size == 60 and cross.size == 120
+    assert payload["scale"]["geometry_L"] == pytest.approx(0.1)
+    # size= re-dimensionalises the same shape for the card
+    big = json.loads(
+        render_flow(None, tree, {**args, "format": "json", "size": 0.5, "u0": 0.05})
+    )
+    assert big["scale"]["L"] == pytest.approx(0.5)
+    assert big["scale"]["h0"] == pytest.approx(0.005)
+    assert not big["card"]["ok"]
+
+
+def test_flow_pockets_lists_chamber_specs() -> None:
+    tree = _chamber_tree()
+    found = flow_pockets(tree)
+    assert [(fp.block, fp.pocket) for fp in found] == [("c", "flow")]
+    assert found[0].spec.profile == "plug"
+    assert flow_pockets(_box_tree()) == []
 
 
 def test_payload_subsamples_over_cap() -> None:
