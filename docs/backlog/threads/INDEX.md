@@ -81,6 +81,11 @@ Seams:
 - se-machine-design also owns `backlog/pcb-se-binding.md` and
   `backlog/pcb-argue-with-design.md` — the mm→m crossing between se and
   pcb — not ewod-pcb or pcb-platform.
+- `backlog/structure-workspaces.md` (multiscale-design-core Do-next 3)
+  runs on the factory thread's `sandbox_run mode:script` lane
+  (`backlog/sandbox-python-script.md` slice 4) and consumes
+  hexfold-toolkit's `sheetnet` layer as its core API; it owns the import
+  boundary and the relax interface, factory owns the container.
 - multiscale-design-core is the substrate se-machine-design's
   model stands on (design-state-core, pattern groups, complementarity);
   se-machine-design consumes it rather than re-deriving it.

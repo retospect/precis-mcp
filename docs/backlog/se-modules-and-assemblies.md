@@ -8,10 +8,15 @@ model: fable
 
 # se modules and assemblies
 
-> **PAUSED (Reto 2026-10-22).** Direction under discussion: modularity lives in
-> Python code run in sandboxed structure workspaces, inspection and storage in
-> the MCP (a "structure workspaces" spec follows). Slice 1 (`meta.role`,
-> `$name`, `stamp`) is not to be built until that spec rules on it.
+> **SUPERSEDED by [structure-workspaces](structure-workspaces.md) (Reto
+> 2026-10-22).** Modularity lives in Python run in sandboxed structure
+> workspaces; se keeps instances, provenance and the catalogue. What carries
+> over: definitions are functions, `examples` are golden tests, `expose` is
+> the manifest's `ports`, `stamp`/`cap` are calls, `decorate` is the
+> `sheetnet` primitive, the Å-vs-macro table goes to the workspace skill.
+> Dropped: `meta.role='definition'`, `$name`, the three refusals, `def.*`.
+> Nothing below is to be built. The file stays until that spec's slice 6
+> ships because `hexfold-multicell-prism.md` links it; delete it then.
 
 Reto, 2026-10-22: "As we build higher complexity structures, we want to
 define parameterized building blocks, and understand those. Ideally this
