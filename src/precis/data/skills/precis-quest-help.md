@@ -200,6 +200,14 @@ horizon) for "is this quest still live"; `view='rubric'` prints just the
 measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
 
+`view='served'` is the served-by listing: every live ref with an inbound
+`serves` edge, one row each with a `fulltext` flag (body chunks held) and a
+count line. `args={'has_fulltext': True|False}` filters it:
+
+```python
+get(kind="quest", id=164903, view="served", args={"has_fulltext": True})
+```
+
 `view='tree'` is the map: it walks who serves the quest (grouped by
 kind), recurses into sub-quests, prints the deed ledger + tote, and ends
 with a **health** line and a **gaps** list at the foot. On a `"roadmap"`-
@@ -490,7 +498,7 @@ automatically, and compute is off unless you pass `--compute`
 (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the manual CLI
 runs regardless).
 
-## Patch quest meta — compute_lane / quest_body / rubric_objectives / reaction_config
+## Patch quest meta — compute_lane / lit_lane / quest_body / rubric_objectives / reaction_config
 
 `edit(kind='quest', id=N, meta={...})` patch-merges an **allowlisted** key
 into `refs.meta` (siblings untouched — never a whole-dict clobber); an
@@ -502,12 +510,15 @@ parses, so `true`/`[...]` land typed — `off` stays the plain string
 that's wedged.
 
 - **`compute_lane`** — `"off"` makes every armed tick of *this* quest
-  reason-only: no `--compute` dispatch, and no guaranteed-acquisition
-  literature fallback either (a quiet propose step used to force-fire a
-  lit-search + link regardless of this switch — fixed alongside the meta
-  write path itself, since before it nothing could set `compute_lane` on
-  a *live* quest at all). Any other value, or the key's absence, keeps
-  compute on.
+  reason-only: no `--compute` dispatch. Any other value, or the key's
+  absence, keeps compute on. Lit-search does NOT gate on this switch
+  (gr500282) — it is network, not GPU compute; use `lit_lane` for that.
+- **`lit_lane`** — `"off"` skips the tick's lit-search stage and the
+  guaranteed-acquisition fallback (a quiet propose step's force-fired
+  lit-search — that fallback used to key on `compute_lane`; it keys on
+  this switch since gr500282, and before that fix `compute_lane=off`
+  silently starved a lit-only quest's searches). Any other value, or
+  the key's absence, keeps lit-search on.
 - **`quest_body`** — which tick body runs the loop. Unset (the default) is
   the catalyst/materials-discovery body above, unchanged. `"weave"` routes
   to the paper-writing body instead; see `mark_weave_quest`. `"inquiry"` is

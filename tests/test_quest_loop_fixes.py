@@ -184,19 +184,56 @@ class TestTickGrounding:
         assert out.hypotheses_deduped == 0
         assert out.logbook_added >= 1
 
-    def test_planned_search_with_compute_off_is_reported_not_dropped(
+    def test_planned_search_with_lit_lane_off_is_reported_not_dropped(
         self, store: Any
     ) -> None:
         # gr476100: the inquiry tick narrated a search dispatch but the
-        # compute-off lane silently skipped the stage. A planned search that
-        # does not run must show up on the outcome and in the logbook.
-        qid = _mk_quest(store, "A reason-only quest")
+        # lane-off stage silently skipped it. A planned search that does not
+        # run must show up on the outcome and in the logbook — gated on
+        # meta.lit_lane since gr500282, not the compute lane.
+        qid = _mk_quest(store, "A lit-dark quest")
+        store.stamp_ref_meta(qid, {"lit_lane": "off"})
         payload = {"logbook": [], "searches": ["a", {"query": "b"}]}
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         assert out.searches_run == 0
         assert out.searches_refused == 2
         texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
         assert any("2 planned search(es) NOT run" in t for t in texts)
+
+    def test_compute_lane_off_still_runs_lit_search(self, store: Any) -> None:
+        # gr500282: lit-search is network, not GPU compute — a lit-only quest
+        # (meta.compute_lane='off', lit_lane unset) must still run its
+        # searches; the compute lane no longer gates them.
+        qid = _mk_quest(store, "A lit-only quest")
+        store.stamp_ref_meta(qid, {"compute_lane": "off"})
+        stand_in = _mk_quest(store, "A stand-in for a held paper")
+        payload = {"logbook": [], "searches": ["co oxidation kinetics"]}
+
+        def _search(
+            _store: Any, _q: str, _exclude: list[int]
+        ) -> list[tuple[int, float]]:
+            return [(stand_in, 1.0)]
+
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            compute=False,
+            search_fn=_search,
+        )
+        assert out.searches_run == 1
+        assert out.searches_refused == 0
+        assert out.papers_linked == 1
+
+    def test_lit_lane_off_refusal_names_the_switch(self, store: Any) -> None:
+        qid = _mk_quest(store, "A lit-dark quest")
+        store.stamp_ref_meta(qid, {"lit_lane": "off"})
+        payload = {"logbook": [], "searches": ["a"]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.searches_refused == 1
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("lit lane is off" in t and "lit_lane" in t for t in texts)
+        assert any("meta={'lit_lane': 'on'}" in t for t in texts)
 
     def test_unrun_searches_are_filed_on_one_open_todo(self, store: Any) -> None:
         # gr476100: a planned search that cannot run leaves a tracker with
@@ -214,7 +251,8 @@ class TestTickGrounding:
                 ).fetchall()
             return [int(r[0]) for r in rows]
 
-        qid = _mk_quest(store, "A reason-only quest that wants papers")
+        qid = _mk_quest(store, "A lit-dark quest that wants papers")
+        store.stamp_ref_meta(qid, {"lit_lane": "off"})
         payload = {
             "logbook": [],
             "searches": ["nasibulin cnt", {"query": "cnt review"}],
@@ -225,7 +263,7 @@ class TestTickGrounding:
         assert "STATUS:open" in tags
         body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(todo))
         assert "nasibulin cnt" in body and "cnt review" in body
-        assert "compute lane is off" in body
+        assert "lit lane is off" in body
         quest_texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
         assert any("NOT run" in t and "filed on" in t for t in quest_texts)
 

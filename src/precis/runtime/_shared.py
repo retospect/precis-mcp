@@ -135,6 +135,9 @@ class RuntimeShape:
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:
         raise NotImplementedError
 
+    def _dispatch_search_plan(self, kind: Any, args: dict[str, Any]) -> Response:
+        raise NotImplementedError
+
     def _is_source_search_request(self, args: dict[str, Any]) -> bool:
         raise NotImplementedError
 

@@ -948,22 +948,22 @@ class TestFallbackLitSearch:
         assert calls == []
         assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
 
-    def test_compute_lane_off_skips_fallback_and_links_no_paper(
+    def test_lit_lane_off_skips_fallback_and_links_no_paper(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """quest-tick-incident-fix.md item 2: ``meta.compute_lane == 'off'``
-        must stop the force-acquire fallback even with
-        ``PRECIS_QUEST_FORCE_ACQUIRE`` left at its default-ON — a quest
-        declared reason-only must not force-acquire literature just because
-        its own propose step stayed quiet."""
+        """quest-tick-incident-fix.md item 2, re-keyed by gr500282:
+        ``meta.lit_lane == 'off'`` must stop the force-acquire fallback even
+        with ``PRECIS_QUEST_FORCE_ACQUIRE`` left at its default-ON — a quest
+        declared lit-dark must not force-acquire literature just because its
+        own propose step stayed quiet."""
         _stub_tick(monkeypatch, _Outcome(searches_run=0))
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])
 
         ctx = FakeCtx(_meta())
         ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
-            title="A reason-only quest",
-            meta={"compute_lane": "off", "reaction_config": {"substrate": "NO"}},
+            title="A lit-dark quest",
+            meta={"lit_lane": "off", "reaction_config": {"substrate": "NO"}},
         )
 
         calls: list[dict[str, Any]] = []

@@ -96,6 +96,10 @@ SIBLING_MIN_OVERLAP = 0.7
 _DEDUP_SHOW = 5
 _GLOSS_CHARS = 80  # definition prefix on a candidate line
 
+#: Cap on ``get(view='meta', id=[...])`` — matches the numeric-ref batch
+#: cap (``_numeric_ref.BATCH_ID_CAP``).
+_META_VIEW_CAP = 50
+
 
 def _dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Alias kept for the call sites below; the rule itself lives in
@@ -807,15 +811,28 @@ class TaxonHandler(NumericRefHandler):
         q: str | None = None,
         sort: str | None = None,
         cross: list[str] | None = None,
+        # ``view='meta'``'s descendant set (``args={'under': …}``); declared
+        # so the extras gate accepts it on this verb.
+        under: str | int | None = None,
         # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
         # the base dispatch; declared so the extras gate accepts it here.
         since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='path'`` / ``view='facets'`` (``args={'sort': …, 'cross':
-        […]}``) on a concrete node; otherwise the generic numeric-ref get."""
+        […]}``) / ``view='meta'`` (one row per node — id, name, slug,
+        display_unit, required_conditions, axis — over a single node, an
+        ``id=[…]`` list, or every descendant of ``under=``) on a concrete
+        node; otherwise the generic numeric-ref get."""
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        if view == "meta":
+            return self._render_meta_view(id=id, under=under)
+        if under is not None:
+            raise BadInput(
+                "under= applies to get(kind='taxon', view='meta') only",
+                next="get(kind='taxon', under='tn42', view='meta')",
+            )
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
@@ -839,7 +856,7 @@ class TaxonHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='taxon'",
-                options=["path", "facets", *_BASE_VIEWS],
+                options=["path", "facets", "meta", *_BASE_VIEWS],
                 next=(
                     "view='path' (chains up to the start nodes) "
                     "· view='facets' (counts per axis of the instances beneath) "
@@ -905,6 +922,90 @@ class TaxonHandler(NumericRefHandler):
         if chains and total > len(chains):
             out += ["", f"{total - len(chains)} more chain(s) cut (limit {limit})"]
         return Response(body="\n".join(out))
+
+    def _render_meta_view(self, *, id: Any, under: str | int | None) -> Response:
+        """``view='meta'`` — one row per node: handle, name, slug,
+        ``display_unit``, ``required_conditions`` and the axis of its
+        ``specialises`` edge to its (first) parent — the measurand
+        card-fields that used to need prod-psql (gr503059). Bulk via
+        ``id=[…]`` (cap :data:`_META_VIEW_CAP`) or every descendant of
+        ``under=`` (the same set ``search(under=)`` walks)."""
+        from precis.format import render_agent_table
+
+        ids: list[int]
+        axes: dict[int, str | None] = {}
+        scope = ""
+        if under is not None:
+            root = self._resolve_live_ref(self._resolve_spec(under))
+            seen: dict[int, str | None] = {}
+            for rid, _depth, ax in self.store.taxon_descendants(root.id):
+                seen.setdefault(rid, ax)
+            ids = list(seen)
+            axes = seen
+            handle, name = self._node_label(root.id)
+            scope = f" under {handle} {name}"
+        elif isinstance(id, list):
+            if len(id) > _META_VIEW_CAP:
+                raise BadInput(
+                    f"view='meta' id=[...] takes at most {_META_VIEW_CAP} "
+                    f"ids, got {len(id)}",
+                    next=f"split into calls of {_META_VIEW_CAP} or fewer",
+                )
+            ids = [self._resolve_live_ref(self._resolve_spec(elem)).id for elem in id]
+        elif id is not None:
+            ids = [self._resolve_live_ref(self._resolve_spec(id)).id]
+        else:
+            raise BadInput(
+                "view='meta' needs id= or under=",
+                next=(
+                    "get(kind='taxon', id=[<tn…>, …], view='meta') or "
+                    "get(kind='taxon', under='measurand', view='meta')"
+                ),
+            )
+        # Axis on the specialises edge to the node's first parent — the
+        # same parent ``_path_label`` walks. For ``under=`` rows the
+        # traversal edge already carries it; fall back to the parent
+        # edge when it doesn't (or for id= forms).
+        for rid in ids:
+            if rid not in axes:
+                parents = self.store.taxon_parents(rid)
+                axes[rid] = parents[0][1] if parents else None
+        refs = self.store.fetch_refs_by_ids(ids)
+        rows = []
+        for rid in ids:
+            ref = refs.get(rid)
+            if ref is None:
+                continue
+            meta = ref.meta or {}
+            rows.append(
+                {
+                    "id": handle_registry.format_handle(self.kind, rid),
+                    "name": str(meta.get("name") or ref.title),
+                    "slug": str(meta.get("slug") or ""),
+                    "display_unit": str(meta.get("display_unit") or ""),
+                    "required_conditions": ",".join(
+                        str(c) for c in (meta.get("required_conditions") or [])
+                    ),
+                    "axis": axes.get(rid) or "",
+                }
+            )
+        head = f"# {len(rows)} taxon meta{scope}"
+        return Response(
+            body=head
+            + "\n\n"
+            + render_agent_table(
+                rows,
+                schema=[
+                    "id",
+                    "name",
+                    "slug",
+                    "display_unit",
+                    "required_conditions",
+                    "axis",
+                ],
+            ),
+            result_count=len(rows),
+        )
 
     def _render_one(self, ref: Any, tags: Any) -> str:
         meta = ref.meta or {}

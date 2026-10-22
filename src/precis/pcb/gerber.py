@@ -53,9 +53,9 @@ output largely as-is once it exists::
          # per-pad soldermask opening (see `mask_open_regions` below),
          # "none" paste gets no stencil aperture.
          "refdes": "U1", "pin": "3"},   # OPTIONAL — see the X2 identity
-         # note below; today's realizer-built pad dicts (realize.pads_for_ir)
-         # do not carry these two, so component-pin identity is written
-         # only when a caller supplies it.
+         # note below; pads built outside realize.pads_for_ir may omit
+         # these two, so component identity is written only when a caller
+         # supplies it: refdes+pin -> %TO.C+%TO.P, refdes alone -> %TO.C.
       ],
       "mask_open_regions": [   # optional (Slice 1) -- one soldermask
         {"side": "top"|"bottom", "polygon": [[x, y], ...]},   # opening
@@ -69,25 +69,38 @@ output largely as-is once it exists::
       "silkscreen": {"top": [<draw>, ...], "bottom": [<draw>, ...]},  # <draw>
       # is normally the same {"width_mm", "segments"} shape as a track,
       # layer-less, optionally carrying "polarity": "clear" to erase
-      # rather than add ink; OR {"shape": "region", "polygon": [...]} for
-      # a solid fill — see silkscreen_gerber's own docstring.
+      # rather than add ink, and a "refdes" naming the part it belongs to
+      # (-> %TO.C; silk.py's per-part courtyard/pin-1/refdes draws carry
+      # theirs, board-level marks carry refdes=""); OR
+      # {"shape": "region", "polygon": [...]} for a solid fill — see
+      # silkscreen_gerber's own docstring.
     }
 
 Everything here is a pure function of that dict → ``{filename: content}`` —
 zero I/O, trivially unit-testable. :func:`zip_fab` is the one thin
 convenience that touches bytes (an in-memory zip), still no disk/network.
 
-**X2 object attributes** (``%TO.N,<net>*%`` / ``%TO.P,<refdes>,<pin>*%``,
-cleared with ``%TD*%``) are written into ``copper_gerber`` alongside the
-draw/flash they describe — the same mechanism the file-level ``%TF...*%``
-attributes already use, one level down, onto individual objects instead of
-the whole file. This is what lets :mod:`precis.pcb.gerber_view` label a
-hovered trace/via/pad with its net (and, where the model supplies it, its
-component pin) *from the gerber itself* rather than by cross-referencing
-the in-memory model — see that module's docstring for why the second
-option is the wrong one. Every ``%TO...*%`` this writer emits is matched by
-a ``%TD*%`` immediately after the object it describes, so an attribute can
-never carry over onto the next draw/flash by omission.
+**X2 object attributes** (``%TO.N,<net>*%``, ``%TO.P,<refdes>,<pin>*%``
+and ``%TO.C,<refdes>*%``, cleared with ``%TD*%``) are written alongside
+the draw/flash they describe — the same mechanism the file-level
+``%TF...*%`` attributes already use, one level down, onto individual
+objects instead of the whole file. This is what lets
+:mod:`precis.pcb.gerber_view` label a hovered trace/via/pad with its net
+(and, where the model supplies it, its component pin) *from the gerber
+itself* rather than by cross-referencing the in-memory model — see that
+module's docstring for why the second option is the wrong one. Every
+``%TO...*%`` this writer emits is matched by a ``%TD*%`` immediately
+after the object it describes, so an attribute can never carry over onto
+the next draw/flash by omission.
+
+``%TO.C`` is emitted on every object the model attributes to a
+component: copper pads (alongside ``%TO.P`` when the pin is known) and
+the silkscreen's per-part draws (courtyard, pin-1 mark, refdes label).
+Reto ruled this in 2026-10-21 (overriding 5d36040ce): the fab process
+doesn't read component attributes, but fab and assembly people open the
+same export in their own Gerber viewers and need the labels — and it is
+what lets ``gerber_view._part_body_els`` box a pad-less part (a mounting
+hole, fiducial or logo) from its labelled outlines.
 """
 
 from __future__ import annotations
@@ -168,7 +181,8 @@ def _is_polygon_pad(pad: dict[str, Any]) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# X2 object attributes — %TO.N (net) / %TO.P (component pin), %TD (clear)
+# X2 object attributes — %TO.N (net) / %TO.P (component pin) /
+# %TO.C (component refdes), %TD (clear)
 # ─────────────────────────────────────────────────────────────────────
 def _emit_object_attrs(
     body: list[str],
@@ -180,13 +194,22 @@ def _emit_object_attrs(
     """Emit the identity attributes for the object about to be drawn.
     Returns whether anything was emitted, so the caller knows whether it
     owes a matching ``%TD*%`` afterwards — an object with no identity gets
-    no attribute lines at all, not an empty ``%TO.N,*%``."""
+    no attribute lines at all, not an empty ``%TO.N,*%``.
+
+    ``%TO.C,<refdes>*%`` goes on every object named to a component — a pad
+    (with or without a known pin) and a per-part silk draw alike — so a
+    viewer can collect the part's objects, including a part that has no
+    pads at all (module docstring). Order follows KiCad's: net, pin,
+    component."""
     emitted = False
     if net:
         body.append(f"%TO.N,{net}*%")
         emitted = True
     if refdes and pin:
         body.append(f"%TO.P,{refdes},{pin}*%")
+        emitted = True
+    if refdes:
+        body.append(f"%TO.C,{refdes}*%")
         emitted = True
     return emitted
 
@@ -579,19 +602,28 @@ def silkscreen_gerber(model: dict[str, Any], side: str) -> str:
       shaped like a glyph, not a filled polygon). A draw with no
       ``"polarity"`` key (or any value other than ``"clear"``) draws dark,
       unchanged from before this shape existed.
+
+    A draw carrying a ``refdes`` is tagged ``%TO.C,<refdes>*%`` (cleared
+    by the usual matching ``%TD*%``) — a part's courtyard ring, pin-1
+    mark and refdes label are all its objects, and this is the only
+    labelling a pad-less part (mounting hole, fiducial, logo) gets.
     """
     apertures = _ApertureTable()
     body: list[str] = []
     for draw in model.get("silkscreen", {}).get(side, []):
-        if draw.get("shape") == "region":
-            _emit_region({"polygon": draw["polygon"]}, body)
-            continue
-        if draw.get("polarity") == "clear":
-            body.append("%LPC*%")
-            _emit_stroke(draw, apertures, body)
-            body.append("%LPD*%")
-        else:
-            _emit_stroke(draw, apertures, body)
+        refdes = str(draw.get("refdes") or "") or None
+
+        def _emit(draw: dict[str, Any] = draw) -> None:
+            if draw.get("shape") == "region":
+                _emit_region({"polygon": draw["polygon"]}, body)
+            elif draw.get("polarity") == "clear":
+                body.append("%LPC*%")
+                _emit_stroke(draw, apertures, body)
+                body.append("%LPD*%")
+            else:
+                _emit_stroke(draw, apertures, body)
+
+        _emit_with_attrs(body, _emit, refdes=refdes)
     return _assemble(f"Legend,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 

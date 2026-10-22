@@ -176,6 +176,126 @@ def test_td_clears_the_pad_pin_before_the_next_pads_flash():
     assert to_p_idx < td_idx < second_pad_flash_idx
 
 
+# ── %TO.C: the component label (ruled IN by Reto 2026-10-21, overriding
+#    the earlier no-%TO.C call — fab/assembly staff open the export in
+#    their own Gerber viewers and need the labels) ──────────────────────
+def test_named_pad_carries_the_component_attribute_after_its_pin():
+    top = gerber.copper_gerber(_X2_MODEL, "F.Cu")
+    assert "%TO.C,U1*%" in top
+    # KiCad's emission order: net, pin, component — all inside one
+    # %TO.../%TD*% window around the flash.
+    n, p, c = (
+        top.index("%TO.N,3V3*%"),
+        top.index("%TO.P,U1,3*%"),
+        top.index("%TO.C,U1*%"),
+    )
+    td = top.index("%TD*%", c)
+    assert n < p < c < td
+
+
+def test_refdes_only_pad_gets_to_c_without_a_fabricated_pin():
+    """A pad the model names to a part but not a pin (a fiducial, a
+    mounting pad) is a component object: %TO.C — never an invented %TO.P."""
+    model = {
+        **_X2_MODEL,
+        "copper": [],
+        "pads": [
+            {
+                "layer": "F.Cu",
+                "net": "",
+                "shape": "circle",
+                "x": 4.0,
+                "y": 4.0,
+                "w": 0.6,
+                "refdes": "FID1",
+            }
+        ],
+    }
+    top = gerber.copper_gerber(model, "F.Cu")
+    assert "%TO.C,FID1*%" in top
+    assert "%TO.P" not in top
+    assert "%TO.N" not in top  # net is "" — no empty attribute
+
+
+def test_silk_draw_with_a_refdes_is_component_tagged_anonymous_one_is_not():
+    """The mechanism that labels a pad-less part: the silk outlines
+    ``build_silk`` draws per part carry its refdes, so the courtyard /
+    pin-1 / refdes draws emit %TO.C; a board-level mark (refdes absent or
+    "") must not."""
+    model = {
+        **_MODEL,
+        "silkscreen": {
+            "top": [
+                {
+                    "width_mm": 0.15,
+                    "refdes": "MH1",
+                    "role": "outline",
+                    "segments": [
+                        {
+                            "shape": "line",
+                            "start": [18.0, 1.0],
+                            "end": [19.5, 1.0],
+                        }
+                    ],
+                },
+                {  # no refdes -> no attribute lines at all
+                    "width_mm": 0.15,
+                    "segments": [
+                        {
+                            "shape": "line",
+                            "start": [0.0, 14.0],
+                            "end": [5.0, 14.0],
+                        }
+                    ],
+                },
+            ],
+            "bottom": [],
+        },
+    }
+    top = gerber.silkscreen_gerber(model, "top")
+    assert top.count("%TO.C,") == 1
+    assert "%TO.C,MH1*%" in top
+    # the component window is closed with %TD*% before the anonymous
+    # draw's own move, so the attribute cannot leak onto it
+    c_idx = top.index("%TO.C,MH1*%")
+    assert c_idx < top.index("%TD*%", c_idx) < top.index("X0Y14000000D02*")
+
+
+def test_silk_region_draw_with_a_refdes_is_component_tagged():
+    model = {
+        **_MODEL,
+        "silkscreen": {
+            "top": [
+                {
+                    "shape": "region",
+                    "refdes": "LOGO1",
+                    "polygon": [[0.0, 0.0], [5.0, 0.0], [5.0, 3.0], [0.0, 3.0]],
+                }
+            ],
+            "bottom": [],
+        },
+    }
+    top = gerber.silkscreen_gerber(model, "top")
+    assert "%TO.C,LOGO1*%" in top
+    c_idx = top.index("%TO.C,LOGO1*%")
+    assert c_idx < top.index("G36*") < top.index("%TD*%", c_idx)
+
+
+def test_polygon_pad_region_is_component_tagged_too():
+    """A polygon pad emits as a G36/G37 region, not a flash — its %TO.C
+    must still wrap the object it names, same window discipline."""
+    pads = [dict(_POLY_MODEL["pads"][0], refdes="ARR1", pin="R1C1")]
+    top = gerber.copper_gerber({**_POLY_MODEL, "pads": pads}, "F.Cu")
+    c = top.index("%TO.C,ARR1*%")
+    assert (
+        top.index("%TO.P,ARR1,R1C1*%")
+        < c
+        < top.index("G36*")
+        < top.index("G37*")
+        < top.index("%TD*%", c)
+    )
+
+
 def test_pour_hole_does_not_inherit_the_pours_net_attribute():
     """A pour's antipad is where its own net's copper explicitly ISN'T --
     tagging the hole ring with the pour's net would mislabel it."""

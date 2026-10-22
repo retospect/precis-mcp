@@ -1992,6 +1992,15 @@ class DispatchMixin(RuntimeShape):
                 str(args.get("view") or "").strip(), kind, dict(args)
             )
 
+        # Plan view (gr503028): ``search(kind=K, q=…, view='plan')``
+        # renders the route a kind-scoped search *would* take — mode,
+        # embedder, ANN index + why, lexical path, candidate caps —
+        # without running the ranking. Intercepted before kind
+        # resolution like the other view= shapes; kind='*'/omitted
+        # renders one block per fanned-out kind.
+        if verb == "search" and str(args.get("view") or "").strip() == "plan":
+            return self._dispatch_search_plan(kind, dict(args))
+
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
         # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
         # the lexical+RRF path. Intercept before kind resolution — it

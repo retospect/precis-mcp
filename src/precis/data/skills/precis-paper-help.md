@@ -389,6 +389,22 @@ handles/slugs/DOIs): per paper `full-text | card-only | stub`, PDF
 present, and the newest fetcher outcome (`fetch_ok`, `fetch_failed`,
 `no_oa_version`, or never tried). Backlog to chase: `view='stubs'`.
 
+`view='chunks'` sizes one paper (or an `id=[...]` batch, ≤50): total
+chunks, body count, and breakdowns by `chunk_kind` and `section_path`
+tail:
+
+```python
+get(kind="paper", id="pa5044", view="chunks")
+get(kind="paper", id=["pa5044", "pa31"], view="chunks")
+```
+
+To filter a paper search to a quest's servers / to full text only:
+
+```python
+search(kind="paper", q="ammonia", args={"serves": "quest:164903"})
+search(kind="paper", q="ammonia", args={"serves": "quest:164903", "has_fulltext": True})
+```
+
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range
 ## Only papers published after / before a year

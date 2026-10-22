@@ -420,6 +420,16 @@ search(kind="gripe", view="tags")                  # per axis/value ref counts
 search(kind="gripe", view="tags", status="open")   # counts over open only
 ```
 
+`view='plan'` answers "which route/index *would* this search take?" without
+running it — mode, embedder, the vector index (the per-kind one or the global
+fallback) and *why*, the lexical leg, and the candidate caps.
+Use it to tell a slow search (global fallback) from a wrong one:
+
+```python
+search(kind="memory", q="deploy", view="plan")   # one kind
+search(view="plan")                              # every fanned-out kind
+```
+
 `view='meta'` is read-only and cached ~15min (shape changes slowly);
 `view='tags'` groups live ref_tags by namespace (STATUS / OPEN / FLAG
 sections), expired rows excluded. Both are single-kind, like count.

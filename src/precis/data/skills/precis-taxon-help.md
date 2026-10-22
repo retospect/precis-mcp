@@ -128,6 +128,20 @@ start node, or says none do. `get(kind="taxon", id="/unmapped")` lists the
 nodes seeded from the legacy registries whose dimension could not be mapped
 (`dimension_kind` empty), so a curator can set it.
 
+## Meta table over many nodes
+
+`get(kind="taxon", view="meta", id=[...])` or `under=` prints one row per
+node — handle, name, slug, `display_unit`, `required_conditions`, axis —
+the measurand fields `get` alone does not show:
+
+```python
+get(kind="taxon", view="meta", id=["tn465823", "tn465824"])
+get(kind="taxon", view="meta", under="measurand")   # every descendant
+```
+
+An id list caps at 50; `under=` walks the same descendant set
+`search(under=)` uses (the node itself excluded).
+
 ## Facet counts under a node
 
 ```python

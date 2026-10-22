@@ -13,6 +13,7 @@
                                       # papers (Drive-scoped browse)
     precis quest set 7 compute_lane off  # incident lever — patch one
                                       # allowlisted meta key (compute_lane/
+                                      # lit_lane/
                                       # quest_body/rubric_objectives)
 
 The autonomous loop (rung 4d) is dark by default; ``tick`` is the manual, one-
@@ -270,20 +271,20 @@ def add_parser(subparsers: Any) -> None:
 
     s = qsub.add_parser(
         "set",
-        help="Patch one allowlisted quest meta key (compute_lane/quest_body/"
-        "rubric_objectives/demand/supply/operating_conditions/"
+        help="Patch one allowlisted quest meta key (compute_lane/lit_lane/"
+        "quest_body/rubric_objectives/demand/supply/operating_conditions/"
         "reaction_config) — the operator lever for an incident (e.g. "
-        "`precis quest set 401863 compute_lane off` stops the force-acquire "
+        "`precis quest set 401863 lit_lane off` stops the force-acquire "
         "fallback even if the MCP is wedged). Same allowlist + patch-merge "
         "as edit(kind='quest', meta=...).",
     )
     s.add_argument("id", type=int, help="Quest ref id.")
     s.add_argument(
         "key",
-        help="Meta key: compute_lane, quest_body (materials|weave|inquiry|"
-        "roadmap — e.g. `precis quest set 453863 quest_body roadmap`), "
-        "rubric_objectives, demand, supply, operating_conditions, or "
-        "reaction_config (a JSON fragment shallow-merged into the stored "
+        help="Meta key: compute_lane, lit_lane, quest_body (materials|weave|"
+        "inquiry|roadmap — e.g. `precis quest set 453863 quest_body "
+        "roadmap`), rubric_objectives, demand, supply, operating_conditions, "
+        "or reaction_config (a JSON fragment shallow-merged into the stored "
         "config — `precis quest set 164903 reaction_config "
         "'{\"network_her\": true}`').",
     )

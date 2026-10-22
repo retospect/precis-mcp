@@ -645,6 +645,267 @@ def run_search_step(
     return SearchStep(queries_run=queries_run, papers_linked=linked_total, notes=notes)
 
 
+# ── deliberate read/fetch requests (gr502680) ─────────────────────────
+#
+# A tick serves papers as title + abstract snippet and findings as title,
+# so the model's only escape from abstract-depth is to SAY what it wants
+# read — the same deliberate-request pattern as the `reruns` payload field
+# (gr499904, ``compute.apply_reruns``): `read` names a held finding/paper
+# chunk whose full text lands in the NEXT tick's context; `fetch` asks for
+# a served abstract stub's full text via ``PaperHandler.acquire``
+# (idempotent identifier-collapse — the request re-pins the stub at the
+# head of the fetch_oa queue, never a second mint).
+
+#: Quest meta key the ``read`` field parks its requests under — rewritten
+#: wholesale each apply (the batch rendered into this tick's prompt came
+#: from LAST tick's list), so a request is shown to exactly one later tick.
+PENDING_READS_META_KEY = "pending_reads"
+
+#: Logbook marker prefix a successful ``fetch`` request writes — the
+#: serving context's ``full text: requested`` status scans for it.
+_FETCH_MARKER = "lit-fetch:"
+
+
+def _paper_body_held(store: Store, ref_id: int) -> bool:
+    """True when the paper has a readable body — a non-heading, non-empty
+    body chunk (the same "held" notion ``tick._paper_citable_handle`` uses
+    for its cite-handle check; a small local copy per that convention)."""
+    try:
+        for b in store.chunks.list_chunks_for_ref(ref_id):
+            if b.chunk_kind == "heading":
+                continue
+            if (b.text or "").strip():
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _resolve_read_ref(store: Store, ident: str) -> Any | None:
+    """Resolve a ``read`` entry's ``ref`` — any well-formed universal
+    handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live."""
+    resolved = store.resolve_handle(ident)
+    return resolved
+
+
+def apply_reads(
+    store: Store,
+    quest_id: int,
+    entries: Any,
+    *,
+    cap: int = 3,
+    by: str = "agent",
+) -> int:
+    """Execute a tick payload's ``read`` — park the held items the model
+    wants full text of so the NEXT tick's prompt renders them (gr502680).
+
+    Each entry is ``{"ref": "<universal handle>", "why": ...}``; entries
+    past ``cap``, malformed entries, and refs that don't resolve each land
+    as an ``observation`` logbook note — never silent, never a tick
+    failure. ``meta.pending_reads`` is REWRITTEN each call: it is exactly
+    this tick's requests (the previous batch was consumed into this
+    tick's prompt, so a re-sent ref is a fresh request). Returns the
+    number of reads queued.
+    """
+    requests: list[dict[str, str]] = []
+    refused: list[str] = []
+    if isinstance(entries, list):
+        for e in entries[:cap]:
+            if not isinstance(e, dict):
+                refused.append("malformed entry (not an object)")
+                continue
+            ident = str(e.get("ref") or "").strip()
+            why = str(e.get("why") or "").strip()[:200]
+            if not ident:
+                refused.append("entry has no usable `ref`")
+                continue
+            if _resolve_read_ref(store, ident) is None:
+                refused.append(f"{ident}: does not resolve to a held ref/chunk")
+                continue
+            requests.append({"ref": ident, "why": why})
+        if len(entries) > cap:
+            refused.append(
+                f"{len(entries) - cap} entr(ies) over the per-tick cap of {cap}"
+            )
+    elif entries is not None:
+        refused.append("`read` is not a list of {ref, why} objects")
+    try:
+        store.update_ref(quest_id, meta_patch={PENDING_READS_META_KEY: requests})
+    except Exception:
+        log.warning(
+            "apply_reads: failed to park reads for quest %s", quest_id, exc_info=True
+        )
+    for note in refused:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=f"read refused: {note}"[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_reads: logbook note failed", exc_info=True)
+    if requests:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"read: queued {len(requests)} ref(s) for full text next "
+                    f"tick: {', '.join(r['ref'] for r in requests)}"
+                )[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_reads: logbook note failed", exc_info=True)
+    return len(requests)
+
+
+def apply_fetches(
+    store: Store,
+    quest_id: int,
+    entries: Any,
+    *,
+    hub: Any | None = None,
+    cap: int = 2,
+    by: str = "agent",
+) -> int:
+    """Execute a tick payload's ``fetch`` — ask for a served abstract
+    stub's full text through the same acquire path the DOI-hit leg uses
+    (``PaperHandler.acquire``; gr502680).
+
+    Each entry is ``{"paper": "<pa<id> or ref id>", "why": ...}``. A stub
+    with a registered identifier (doi/arxiv/s2) goes through ``acquire`` —
+    the identifier collapses onto the held stub and re-pins it at the head
+    of the ``fetch_oa`` queue, so a repeat request is a no-op pin, never a
+    second mint; a stub with no identifier is re-pinned directly. A paper
+    that already holds a body is refused ("already held"). Refusals land
+    as ``observation`` notes; each success logs a ``lit-fetch:`` marker
+    line the serving context's ``full text: requested`` status reads.
+    Returns the number of fetch requests made.
+    """
+    if not isinstance(entries, list):
+        return 0
+    from precis.utils import handle_registry
+
+    made = 0
+    refused: list[str] = []
+    handler: Any | None = None
+    over_cap = 0
+    for e in entries:
+        # The cap bounds fetches actually made; refused entries (held,
+        # unresolvable, malformed) don't spend a slot.
+        if made >= cap:
+            over_cap += 1
+            continue
+        if not isinstance(e, dict):
+            refused.append("malformed entry (not an object)")
+            continue
+        ident = str(e.get("paper") or "").strip()
+        why = str(e.get("why") or "").strip()[:200]
+        if not ident:
+            refused.append("entry has no usable `paper`")
+            continue
+        parsed = handle_registry.parse(ident)
+        ref_id: int | None = None
+        if parsed is not None and parsed[1] is False and parsed[0] == "paper":
+            ref_id = parsed[2]
+        elif ident.isdigit():
+            ref_id = int(ident)
+        ref = store.get_ref(kind="paper", id=ref_id) if ref_id is not None else None
+        if ref is None:
+            refused.append(f"{ident}: no such held paper")
+            continue
+        if _paper_body_held(store, ref.id):
+            refused.append(
+                f"{ident}: full text already held — read its chunks with `read`"
+            )
+            continue
+        try:
+            ids = store.identifiers_for_refs([ref.id]).get(ref.id, {})
+        except Exception:
+            ids = {}
+        identifier = next(
+            (f"{k}:{ids[k]}" for k in ("doi", "arxiv", "s2") if ids.get(k)), None
+        )
+        try:
+            if identifier is not None:
+                if handler is None:
+                    from precis.dispatch import Hub
+                    from precis.handlers.paper import PaperHandler
+
+                    handler = PaperHandler(
+                        hub=hub if hub is not None else Hub(store=store)
+                    )
+                handler.acquire(
+                    identifier=identifier,
+                    title=(ref.title or None),
+                    reason=f"quest lit-fetch: {why or 'tick-requested'}",
+                    verify=True,
+                )
+            else:
+                store.pin_stub_for_fetch(ref.id)
+        except Exception as exc:
+            log.exception(
+                "apply_fetches: acquire failed for quest %s paper %s",
+                quest_id,
+                ref.id,
+            )
+            refused.append(f"{ident}: acquire failed ({type(exc).__name__})")
+            continue
+        made += 1
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"{_FETCH_MARKER} requested full text for pa{ref.id}"
+                    + (f" — {why}" if why else "")
+                )[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_fetches: logbook note failed", exc_info=True)
+    if over_cap:
+        refused.append(f"{over_cap} entr(ies) over the per-tick cap of {cap}")
+    for note in refused:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=f"fetch refused: {note}"[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_fetches: logbook note failed", exc_info=True)
+    return made
+
+
+def requested_fetches(store: Store, quest_id: int) -> set[int]:
+    """Paper ref ids this quest has already asked full text for — the
+    ``lit-fetch:`` marker lines :func:`apply_fetches` writes. Read by the
+    serving context's ``full text: requested`` status."""
+    try:
+        blocks = [
+            b
+            for b in store.chunks.list_chunks_for_ref(quest_id)
+            if b.chunk_kind == "quest_log"
+        ]
+    except Exception:
+        return set()
+    ids: set[int] = set()
+    for b in blocks:
+        text = b.text or ""
+        if not text.startswith(_FETCH_MARKER):
+            continue
+        ids.update(int(m) for m in re.findall(r"\bpa(\d+)\b", text))
+    return ids
+
+
 #: ``meta.content_key`` of the per-quest todo that collects planned searches
 #: a tick could not run (:func:`file_unrun_searches`).
 UNRUN_SEARCHES_KEY = "quest-unrun-searches"
@@ -721,14 +982,18 @@ __all__ = [
     "LOCAL_KINDS",
     "MAX_LINK_PER_QUERY",
     "MAX_QUERIES",
+    "PENDING_READS_META_KEY",
     "UNRUN_SEARCHES_KEY",
     "AcquiringSearch",
     "QueryReport",
     "SearchFn",
     "SearchQuery",
     "SearchStep",
+    "apply_fetches",
+    "apply_reads",
     "file_unrun_searches",
     "make_acquiring_search",
     "relevance_floor",
+    "requested_fetches",
     "run_search_step",
 ]

@@ -166,9 +166,8 @@ off that gap until it closes.
    with real heights and subtracted mounting holes. Blocked-by 6.
 8. **backlog/pcb-argue-with-design.md** — slices 1+2 shipped; the
    `pcb_argue` job answers open notes in place. No prod `service_config`
-   row owed (a job_type rides the `job_inproc` lane). Left: the `%TO.C`
-   slice (Reto 2026-10-21: emit it, next round — fab viewers need the
-   component labels), the browser click check (human);
+   row owed (a job_type rides the `job_inproc` lane). Left: the browser
+   click check (human);
    `pcb-argue-backport-se` unblocked.
 9. **backlog/cross-scale-single-assembly.md** — blocked-by 6
    (pcb-se-binding).

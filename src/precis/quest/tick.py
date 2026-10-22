@@ -253,6 +253,15 @@ _LOGBOOK_TAIL_REVIEW = 20
 #: one-in-flight bound in ``compute.request_rerun`` still applies.
 MAX_RERUNS_PER_TICK = 2
 
+#: Per-tick cap on deliberate full-text reads (the ``read`` payload field,
+#: gr502680) — each parks a held ref/chunk whose FULL text lands in the next
+#: tick's context, so a weak proposer can't flood the prompt.
+MAX_READS_PER_TICK = 3
+
+#: Per-tick cap on deliberate full-text fetches (the ``fetch`` payload
+#: field, gr502680) — each re-queues a served abstract stub for fetch_oa.
+MAX_FETCHES_PER_TICK = 2
+
 
 def max_proposals_per_tick() -> int:
     """Materialise/dispatch at most this many proposals per tick (WIP cap).
@@ -303,11 +312,15 @@ class QuestTickOutcome:
     graduated: int = 0  # rung 4e — candidates that crossed the ceiling
     # Lit-search grounding action.
     searches_run: int = 0
-    #: Planned `searches` entries the tick did NOT execute (compute lane off,
+    #: Planned `searches` entries the tick did NOT execute (lit lane off,
     #: unparseable entry, over the per-tick cap) — each is also logged as an
     #: `observation`, so a narrated dispatch is never silently dropped (gr476100).
     searches_refused: int = 0
     papers_linked: int = 0
+    #: Deliberate full-text requests (gr502680): `read` entries parked for
+    #: the next tick's context; `fetch` entries sent to the acquire path.
+    reads_queued: int = 0
+    fetches_made: int = 0
     hypotheses_deduped: int = 0
     # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add`
     # entries plus applied `ledger_ops` (add/mark) this tick. An engagement
@@ -401,23 +414,92 @@ def _logbook_tail(store: Store, quest_id: int, n: int = _LOGBOOK_TAIL) -> list[s
     return lines
 
 
+#: Length bound on a served finding's claim snippet — the same role
+#: :data:`_PAPER_DETAIL_CHARS` plays for papers (gr502680).
+_FINDING_DETAIL_CHARS = 300
+
+
+def _finding_measure_lines(store: Store, ref: Ref) -> list[str]:
+    """``mx<id> measurand: value`` one-liners for measure rows a finding is
+    the subject of — empty today (measures subject papers/materials), kept
+    so a measurement finding that ever carries them shows its numbers."""
+    try:
+        rows = store.measures_for(ref.id)
+    except Exception:
+        return []
+    try:
+        from precis.handlers._measure_render import result_line
+    except Exception:
+        return []
+    out = []
+    for row in rows:
+        if row.get("direction") != "output":
+            continue
+        try:
+            out.append(result_line(row))
+        except Exception:
+            continue
+    return out[:3]
+
+
+def _finding_snippet(store: Store, ref: Ref) -> str:
+    """A length-bounded snippet of a finding's substance — its claim text
+    (the ``finding_body`` chunk, falling back to the first non-heading
+    body chunk), plus any measure rows the finding is the subject of.
+    Served title-only, a finding's actual numbers never entered the tick's
+    context (gr502680); mirrors :func:`_paper_abstract_snippet`."""
+    try:
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
+    except Exception:
+        blocks = []
+    text = ""
+    for want in ("finding_body", None):
+        for b in blocks:
+            if want is not None and b.chunk_kind != want:
+                continue
+            if want is None and b.chunk_kind == "heading":
+                continue
+            t = (b.text or "").strip()
+            if t:
+                text = t
+                break
+        if text:
+            break
+    if not text or text == (ref.title or "").strip():
+        text = ""
+    out = ""
+    if text:
+        out = excerpt(text, limit=_FINDING_DETAIL_CHARS, collapse_whitespace=False)
+    measures = _finding_measure_lines(store, ref)
+    if measures:
+        tail = "; ".join(measures)
+        out = f"{out} (measures: {tail})" if out else f"measures: {tail}"
+    return out
+
+
 def _servers_summary(store: Store, quest_id: int) -> list[str]:
     """One line per server kind: count + a couple of ``[handle] title`` items.
 
     Per-item handles (not just titles) — the tick's single LLM call can only
-    cite what's served if the citable handle is in-context.
+    cite what's served if the citable handle is in-context. ``finding``
+    items also carry :func:`_finding_snippet`'s claim text — a served
+    finding's body otherwise never reaches the model (gr502680).
     """
     live = gaps_mod._live_servers(store, quest_id)
-    by_kind: dict[str, list[tuple[str, str]]] = {}
+    by_kind: dict[str, list[tuple[str, str, str]]] = {}
     for r in live:
         title = (r.title or "").splitlines()[0][:50] if r.title else ""
         handle = handle_registry.try_format(r.kind, r.id) or f"{r.kind}:{r.id}"
-        by_kind.setdefault(r.kind, []).append((handle, title))
+        snippet = _finding_snippet(store, r) if r.kind == "finding" else ""
+        by_kind.setdefault(r.kind, []).append((handle, title, snippet))
     out: list[str] = []
     for kind in sorted(by_kind):
         items = by_kind[kind][:3]
-        sample = "; ".join(f"[{h}] {t}" if t else f"[{h}]" for h, t in items)
-        out.append(f"- {kind} ({len(by_kind[kind])}): {sample}")
+        parts = []
+        for h, t, s in items:
+            label = f"[{h}] {t}" if t else f"[{h}]"
+            parts.append(f"{label} — {s}" if s else label)
+        out.append(f"- {kind} ({len(by_kind[kind])}): {'; '.join(parts)}")
     return out
 
 
@@ -593,13 +675,19 @@ def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
     ranked = _rank_papers_by_relevance(
         store, quest_id, papers, _LITERATURE_TOKEN_BUDGET
     )
+    from precis.quest.search import requested_fetches
+
+    requested = requested_fetches(store, quest_id)
     out: list[str] = []
     used_tokens = 0
     shown = 0
     for r, handle in ranked:
         title = (r.title or "").splitlines()[0][:80] if r.title else "(untitled)"
         cite = f"[{handle}] " if handle else ""
-        line = f"- {cite}{title} — {_paper_abstract_snippet(store, r)}"
+        line = (
+            f"- {cite}{title} — {_paper_abstract_snippet(store, r)} "
+            f"(full text: {_fulltext_status(r, handle, requested)})"
+        )
         line_tokens = _estimate_tokens(line)
         if shown and used_tokens + line_tokens > _LITERATURE_TOKEN_BUDGET:
             break
@@ -614,13 +702,22 @@ def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
             f"a body, {len(unshown) - held_n} stubs — not shown is not a stub)"
         )
         named = _logbook_named_papers(store, quest_id)
-        status = [_named_paper_status(r, h) for r, h in unshown if r.id in named][
-            :_NAMED_PAPERS_MAX
-        ]
+        status = [
+            _named_paper_status(r, h, requested) for r, h in unshown if r.id in named
+        ][:_NAMED_PAPERS_MAX]
         if status:
             out.append("Papers your logbook names that are not shown above:")
             out.extend(status)
     return out
+
+
+def _fulltext_status(ref: Ref, handle: str | None, requested: set[int]) -> str:
+    """``held`` | ``requested`` | ``none`` — the paper's full-text state for
+    the ``fetch`` field (gr502680): a stub the quest already asked for shows
+    ``requested`` so the model doesn't re-ask every tick."""
+    if handle is not None:
+        return "held"
+    return "requested" if ref.id in requested else "none"
 
 
 #: How many recent logbook entries :func:`_logbook_named_papers` scans, and
@@ -646,12 +743,16 @@ def _logbook_named_papers(store: Store, quest_id: int) -> set[int]:
     return ids
 
 
-def _named_paper_status(ref: Ref, handle: str | None) -> str:
+def _named_paper_status(
+    ref: Ref, handle: str | None, requested: set[int] | None = None
+) -> str:
     """One status line for a logbook-named paper cut from the shown list."""
     pa = handle_registry.try_format("paper", ref.id) or f"paper:{ref.id}"
     title = (ref.title or "").splitlines()[0][:60] if ref.title else "(untitled)"
     if handle:
         return f"- [{pa}] held with a body, cite as [{handle}] — {title}"
+    if requested and ref.id in requested:
+        return f"- [{pa}] stub, full text requested — {title}"
     return f"- [{pa}] stub awaiting fetch — {title}"
 
 
@@ -686,6 +787,71 @@ def _literature_section(store: Store, quest_id: int) -> str:
         + "\n"
         + _CITE_INSTRUCTION
     )
+
+
+#: Char bound on one requested ref's rendered text in :func:`_requested_
+#: reads_section` — full-text, not snippet, but still bounded against a
+#: pathological chunk.
+_READ_TEXT_CHARS = 6000
+#: A ref-level read joins at most this many body chunks.
+_READ_MAX_CHUNKS = 8
+
+
+def _read_ref_text(store: Store, handle: str) -> str:
+    """The full text a ``read`` request pulls into context: the chunk's own
+    text for a chunk handle (``pc<id>``), the ref's first body chunks joined
+    for a record handle (``fi<id>``/``pa<id>``) — bounded at
+    :data:`_READ_TEXT_CHARS`."""
+    resolved = store.resolve_handle(handle)
+    if resolved is None:
+        return "(no longer resolvable — the ref is gone or the handle is wrong)"
+    if resolved.chunk_id is not None:
+        text = store.chunks.chunk_text_by_id(resolved.chunk_id) or ""
+        return excerpt(
+            text.strip() or "(empty chunk)",
+            limit=_READ_TEXT_CHARS,
+            collapse_whitespace=False,
+        )
+    try:
+        blocks = store.chunks.list_chunks_for_ref(resolved.ref_id)
+    except Exception:
+        blocks = []
+    parts = []
+    for b in blocks:
+        if b.chunk_kind == "heading":
+            continue
+        t = (b.text or "").strip()
+        if t:
+            parts.append(t)
+        if len(parts) >= _READ_MAX_CHUNKS:
+            break
+    text = "\n\n".join(parts).strip() or "(no body chunks held)"
+    return excerpt(text, limit=_READ_TEXT_CHARS, collapse_whitespace=False)
+
+
+def _requested_reads_section(store: Store, quest: Ref) -> str:
+    """The ``## Requested reads`` section — the previous tick's ``read``
+    payload field parked these refs on ``meta.pending_reads``
+    (:func:`precis.quest.search.apply_reads`); the apply path rewrites the
+    list each tick, so a request is rendered for exactly one tick."""
+    from precis.quest.search import PENDING_READS_META_KEY
+
+    reads = (getattr(quest, "meta", None) or {}).get(PENDING_READS_META_KEY)
+    if not isinstance(reads, list) or not reads:
+        return ""
+    lines = ["\n## Requested reads (full text you asked for last tick)"]
+    for e in reads[:5]:
+        if not isinstance(e, dict):
+            continue
+        ref_s = str(e.get("ref") or "").strip()
+        if not ref_s:
+            continue
+        why = str(e.get("why") or "").strip()
+        why_s = f" — why: {why}" if why else ""
+        lines.append(f"### {ref_s}{why_s}\n{_read_ref_text(store, ref_s)}")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n"
 
 
 def _skill_injection_section(stmt: str) -> str:
@@ -1354,6 +1520,7 @@ def build_tick_prompt(
         logbook="\n".join(tail),
         servers="\n".join(servers),
         literature=literature,
+        requested_reads=_requested_reads_section(store, quest),
         skill_injection=_skill_injection_section(stmt),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
         narrative_word_target=narrative_budget.config_from_meta(
@@ -1365,6 +1532,8 @@ def build_tick_prompt(
         banner = _INQUIRY_REVIEW_BANNER if review else ""
         return _PROMPT_TEMPLATE_INQUIRY.format(
             review_banner=banner,
+            read_cap=MAX_READS_PER_TICK,
+            fetch_cap=MAX_FETCHES_PER_TICK,
             dialectic_guidance=_DIALECTIC_GUIDANCE_INQUIRY if has_blocks else "",
             dialectic_schema=_DIALECTIC_SCHEMA_INQUIRY if has_blocks else "",
             **common,
@@ -1403,6 +1572,8 @@ def build_tick_prompt(
         reaction_context=_reaction_context(store, quest, fr=fr),
         proposal_cap=max_proposals_per_tick(),
         rerun_cap=MAX_RERUNS_PER_TICK,
+        read_cap=MAX_READS_PER_TICK,
+        fetch_cap=MAX_FETCHES_PER_TICK,
         dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
         dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS if has_blocks else "",
         **common,
@@ -1536,7 +1707,7 @@ You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
 beaten.)
 
-{results_table}{axis_notes}{literature}{reaction_context}{skill_injection}
+{results_table}{axis_notes}{literature}{requested_reads}{reaction_context}{skill_injection}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \
@@ -1646,6 +1817,14 @@ it would unblock>"}}
   "reruns": [
     {{"structure": "<st<id> or slug of an EXISTING candidate>", \
 "why": "<what the repeat measurement is testing>"}}
+  ],
+  "read": [
+    {{"ref": "<fi<id> or pc<id> of a held item you want the full text of>", \
+"why": "<what you are looking for>"}}
+  ],
+  "fetch": [
+    {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
+"why": "<what the full text would tell you>"}}
   ]
 }}
 
@@ -1659,6 +1838,15 @@ deliberately re-test a credited pass's reproducibility instead of waiting \
 for whichever rerun the system schedules on its own. It re-measures, never \
 revises — a changed reaction or geometry is a `proposals` entry, not a \
 rerun. \
+`read` (0–{read_cap}) pulls a held item's FULL text into the NEXT tick's \
+context — name a `[fi<id>]` finding or a `[pc<id>]` paper chunk from the \
+context above; the finding claims and abstract snippets are otherwise all \
+you see, so use this when the numbers live deeper than the snippet. \
+`fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
+the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
+fetch is already queued); acquisition runs out of band, and once the paper \
+shows `full text: held` a `read` on its `[pc<id>]` chunks brings the text \
+into context. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -1737,7 +1925,7 @@ no evidence for.
 ## What serves this quest
 {servers}
 
-{literature}{skill_injection}
+{literature}{requested_reads}{skill_injection}
 ## Your step
 This is an INQUIRY — a striving that reads, reasons, and synthesises. There is \
 no proposal menu and no Pareto frontier: nothing here converges on a candidate \
@@ -1837,11 +2025,28 @@ strategy tried/settled/still open, not a single fact or citation>",
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
 does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
+  ],
+  "read": [
+    {{"ref": "<fi<id> or pc<id> of a held item you want the full text of>", \
+"why": "<what you are looking for>"}}
+  ],
+  "fetch": [
+    {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
+"why": "<what the full text would tell you>"}}
   ]
 }}
 
 If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
+`read` (0–{read_cap}) pulls a held item's FULL text into the NEXT tick's \
+context — name a `[fi<id>]` finding or a `[pc<id>]` paper chunk from the \
+context above; the finding claims and abstract snippets are otherwise all \
+you see, so use this when the numbers live deeper than the snippet. \
+`fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
+the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
+fetch is already queued); acquisition runs out of band, and once the paper \
+shows `full text: held` a `read` on its `[pc<id>]` chunks brings the text \
+into context. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -1885,6 +2090,8 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "directions",
         "needs",
         "reruns",
+        "read",
+        "fetch",
     }
 )
 
@@ -1900,6 +2107,8 @@ _PAYLOAD_TYPES: dict[str, type] = {
     "searches": list,
     "directions": list,
     "reruns": list,
+    "read": list,
+    "fetch": list,
     "dossier_text": str,
     "dossier_markdown": str,
 }
@@ -3067,15 +3276,77 @@ class _TickRun:
 
         planned = self.payload().get("searches")
         planned = planned if isinstance(planned, list) else []
-        if not self.compute:
-            self._refuse_searches(
-                planned,
-                "compute lane is off for this quest (meta.compute_lane=off), so "
-                "lit-search is skipped on its ticks",
+        from precis.quest.body import quest_lit_enabled
+
+        # Lit-search is network (S2 + OA fetch), not GPU compute — it gates on
+        # the quest's own `meta.lit_lane`, never on the compute lane
+        # (gr500282: a lit-only quest with `compute_lane=off` starved here).
+        lit_why = (
+            "lit lane is off for this quest (meta.lit_lane=off), so "
+            "lit-search is skipped on its ticks — re-arm with "
+            f"edit(kind='quest', id={self.quest_id}, "
+            "meta={'lit_lane': 'on'})"
+        )
+        if not quest_lit_enabled(self.store, self.quest_id):
+            self._refuse_searches(planned, lit_why)
+            dropped = sum(
+                len(self.payload().get(k) or [])
+                for k in ("read", "fetch")
+                if isinstance(self.payload().get(k), list)
             )
+            if dropped:
+                try:
+                    append_entry(
+                        self.store,
+                        self.quest_id,
+                        text=(
+                            f"{dropped} read/fetch request(s) NOT honored: {lit_why}"
+                        )[:400],
+                        entry_type="observation",
+                        by=self.by,
+                    )
+                except Exception:
+                    log.warning(
+                        "run_quest_tick: failed to log refused reads/fetches",
+                        exc_info=True,
+                    )
             return None
 
-        from precis.quest.search import run_search_step
+        from precis.quest.search import (
+            apply_fetches,
+            apply_reads,
+            run_search_step,
+        )
+
+        # Deliberate depth requests (gr502680, the `reruns` pattern): `read`
+        # parks held items for next tick's full-text context; `fetch` sends a
+        # served abstract stub to the acquire path. Own try/except each —
+        # a request bug must never discard the search step.
+        try:
+            self.st["reads_queued"] = apply_reads(
+                self.store,
+                self.quest_id,
+                self.payload().get("read"),
+                cap=MAX_READS_PER_TICK,
+                by=self.by,
+            )
+        except Exception:
+            log.exception(
+                "run_quest_tick: reads apply raised for quest %s", self.quest_id
+            )
+        try:
+            self.st["fetches_made"] = apply_fetches(
+                self.store,
+                self.quest_id,
+                self.payload().get("fetch"),
+                hub=getattr(self.search_fn, "hub", None),
+                cap=MAX_FETCHES_PER_TICK,
+                by=self.by,
+            )
+        except Exception:
+            log.exception(
+                "run_quest_tick: fetches apply raised for quest %s", self.quest_id
+            )
 
         # Each entry is either the legacy plain query string, or
         # `{"query": "...", "hypothetical": "..."}` (HyDE — dossier-hygiene
@@ -3584,6 +3855,8 @@ class _TickRun:
                 searches_run=int(st.get("searches_run") or 0),
                 searches_refused=int(st.get("searches_refused") or 0),
                 papers_linked=papers_linked,
+                reads_queued=int(st.get("reads_queued") or 0),
+                fetches_made=int(st.get("fetches_made") or 0),
                 hypotheses_deduped=int(st.get("deduped") or 0),
                 ledger_added=ledger_added,
                 dialectic_applied=dialectic_applied,

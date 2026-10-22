@@ -415,6 +415,36 @@ def test_malformed_pin_attribute_raises_not_silently_dropped() -> None:
         gerber_view.parse_gerber("%FSLAX46Y46*%\n%MOMM*%\n%TO.P,U1*%\nM02*\n")
 
 
+def test_to_c_tags_an_object_with_its_component_and_no_pin() -> None:
+    """``%TO.C,<refdes>*%`` names a component, not a pin — the parsed
+    object gets ``refdes`` with ``pin`` staying None (so nothing calls a
+    courtyard ring a pad)."""
+    art = gerber_view.parse_gerber(
+        "%FSLAX46Y46*%\n%MOMM*%\n%ADD10C,0.2000*%\nG01*\nD10*\n"
+        "%TO.C,MH1*%\nX1000000Y1000000D02*\nX2000000Y2000000D01*\n%TD*%\nM02*\n"
+    )
+    assert len(art.strokes) == 1
+    assert art.strokes[0].refdes == "MH1"
+    assert art.strokes[0].pin is None
+
+
+def test_malformed_component_attribute_raises_not_silently_dropped() -> None:
+    with pytest.raises(gerber_view.UnsupportedGerber):
+        gerber_view.parse_gerber("%FSLAX46Y46*%\n%MOMM*%\n%TO.C,*%\nM02*\n")
+
+
+def test_other_component_attributes_fall_through_unparsed() -> None:
+    """``%TO.C`` is the one component attribute this reader resolves —
+    the rest of the family (``.CRot``, the deprecated comma-free
+    ``%TO.C<name>`` spelling) is skipped like any unrecognised ``%TF``,
+    never raised on."""
+    art = gerber_view.parse_gerber(
+        "%FSLAX46Y46*%\n%MOMM*%\n%ADD10C,0.2000*%\nG01*\nD10*\n"
+        "%TO.CRot,90*%\nX1000000Y1000000D03*\nM02*\n"
+    )
+    assert art.flashes[0].refdes is None
+
+
 # ── SVG hover tooltips: every rendered element has a <title>, and every
 #    title carries coordinates -- present whether or not the object also
 #    carries X2 identity ────────────────────────────────────────────────
@@ -879,6 +909,79 @@ def test_pad_flash_carries_its_refdes_pin_handle_where_the_gerber_named_it() -> 
         gerber_view.Flash(ap, 2.0, 2.0, refdes="U1", pin="3"), "t"
     )
     assert 'data-handle="U1.3"' in hit
+
+
+def _parts_group(svg: str) -> str:
+    m = re.search(r'<g class="parts">(.*?)</g>', svg, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+def _part_rect(parts: str, refdes: str) -> tuple[float, ...]:
+    m = re.search(
+        r'<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)" '
+        rf'height="([\d.-]+)"[^>]*data-handle="{re.escape(refdes)}"',
+        parts,
+    )
+    assert m is not None, parts
+    return tuple(float(m.group(i)) for i in range(1, 5))
+
+
+def test_a_pad_less_part_gets_a_body_box_from_its_to_c_objects() -> None:
+    """The %TO.C acceptance half (Reto 2026-10-21): a mounting hole /
+    fiducial / logo carries no %TO.P pad, but its silk outlines are
+    labelled %TO.C — the viewer boxes the part from those objects, and
+    the box carries the bare-refdes argue handle, so the pad-less part is
+    clickable in the fab render."""
+    model = _model(
+        silkscreen={
+            "top": [
+                {
+                    "width_mm": 0.2,
+                    "refdes": "MH1",
+                    "role": "outline",
+                    "segments": [
+                        {"shape": "line", "start": [25.0, 5.0], "end": [28.0, 5.0]},
+                        {"shape": "line", "start": [28.0, 5.0], "end": [28.0, 8.0]},
+                        {"shape": "line", "start": [28.0, 8.0], "end": [25.0, 8.0]},
+                        {"shape": "line", "start": [25.0, 8.0], "end": [25.0, 5.0]},
+                    ],
+                }
+            ],
+            "bottom": [],
+        }
+    )
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    assert "%TO.C,MH1*%" in files["t-F_Silkscreen.gbr"]
+    svg = gerber_view.render_fab_svg(files, title="t")
+    x, y, w, h = _part_rect(_parts_group(svg), "MH1")
+    # the stroke's own extent, widened by half its width (0.1 each side)
+    assert (x, y) == pytest.approx((24.9, 4.9))
+    assert (x + w, y + h) == pytest.approx((28.1, 8.1))
+
+
+def test_a_padded_part_is_boxed_by_its_pads_not_its_silk() -> None:
+    """The other half of the rule: a part WITH %TO.P pads keeps the
+    pad-extent box ("the chip" a click means) — its %TO.C courtyard/label
+    draws must not widen the body out to the silk bounding box."""
+    model = _model()
+    model["pads"][0]["refdes"] = "U1"
+    model["pads"][0]["pin"] = "1"
+    model["silkscreen"] = {
+        "top": [
+            {  # a courtyard-sized outline much wider than the pad
+                "width_mm": 0.15,
+                "refdes": "U1",
+                "role": "outline",
+                "segments": [{"shape": "line", "start": [0.0, 8.0], "end": [6.0, 8.0]}],
+            }
+        ],
+        "bottom": [],
+    }
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    x, y, w, h = _part_rect(_parts_group(svg), "U1")
+    # the pad alone: (2.0, 2.0), w 0.9 -> 1.55..2.45 on both axes
+    assert (x, y, x + w, y + h) == pytest.approx((1.55, 1.55, 2.45, 2.45))
 
 
 def test_net_only_objects_carry_the_net_handle_and_identityless_ones_none() -> None:

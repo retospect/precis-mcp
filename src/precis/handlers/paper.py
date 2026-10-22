@@ -129,6 +129,7 @@ _SUPPORTED_VIEWS = (
     "links",
     "claims",
     "authors",
+    "chunks",
 )
 
 
@@ -1402,6 +1403,12 @@ class PaperHandler(Handler):
         until: str | None = None,
         ids: list[str] | None = None,
         days: int | None = None,
+        # ``args={'serves': 'quest:<id>'}`` (gr503059): restrict hits to
+        # the refs serving that quest (inbound ``serves`` edges, live
+        # only). ``args={'has_fulltext': True|False}`` restricts to refs
+        # with / without body chunks — SQL-level, honest in paged totals.
+        serves: str | None = None,
+        has_fulltext: bool | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -1604,6 +1611,23 @@ class PaperHandler(Handler):
                 answers=answers,
             )
 
+        # ``serves='quest:<id>'`` — the refs serving that quest (its
+        # inbound ``serves`` edges) intersect the include channel, same
+        # composition discipline as cited=/hubbed=. An empty serving set
+        # means zero hits, not an unfiltered search.
+        if serves is not None:
+            serving = self._resolve_serves_scope(serves)
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & serving)
+                if include_ref_ids is not None
+                else serving
+            )
+        if has_fulltext is not None and not isinstance(has_fulltext, bool):
+            raise BadInput(
+                f"has_fulltext must be a boolean, got {has_fulltext!r}",
+                next="args={'has_fulltext': true} keeps only refs with body chunks",
+            )
+
         # Everything else — validation, single-leg vs. broad (RRF-fused)
         # retrieval, title-introducer promotion, year-omitted notice — is
         # FusedBlockSearch's job; PaperSearchResultRenderer turns the
@@ -1628,8 +1652,40 @@ class PaperHandler(Handler):
             unique_per_arg=unique_per_norm,
             extra_exclude_ref_ids=exclude_ref_ids,
             extra_include_ref_ids=include_ref_ids,
+            has_body=has_fulltext,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
+
+    def _resolve_serves_scope(self, serves: Any) -> set[int]:
+        """``args={'serves': 'quest:<id>'}`` → the live refs serving it.
+
+        Accepts ``quest:<id>``, a ``qu<id>`` handle or a bare numeric id.
+        The serving set is the src end of the quest's inbound ``serves``
+        edges — the same listing ``get(kind='quest', view='served')``
+        renders. Raises ``NotFound`` when the quest doesn't resolve
+        (a named target must never degrade to an unfiltered search).
+        """
+        token = str(serves).strip()
+        if token.startswith("quest:"):
+            token = token[len("quest:") :].strip()
+        parsed = handle_registry.parse(token)
+        if parsed is not None and parsed[0] == "quest" and not parsed[1]:
+            qid = parsed[2]
+        elif token.isdigit():
+            qid = int(token)
+        else:
+            raise BadInput(
+                f"serves= takes a quest reference, got {serves!r}",
+                next="args={'serves': 'quest:164903'}",
+            )
+        qref = self.store.get_ref(kind="quest", id=qid)
+        if qref is None:
+            raise NotFound(
+                f"quest id={qid} not found",
+                next="search(kind='quest', q='...') to find the quest",
+            )
+        links = self.store.links_for(qref.id, direction="in", relation="serves")
+        return {int(ln.src_ref_id) for ln in links}
 
     # -- count / ingest-state views (gr500649 / gr500651 / gr500643) ---------
 
@@ -2800,6 +2856,9 @@ class PaperHandler(Handler):
         if view == "authors":
             return self._render_authors(ref)
 
+        if view == "chunks":
+            return self._render_chunk_stats(ref)
+
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
@@ -2856,6 +2915,24 @@ class PaperHandler(Handler):
             options=list(_SUPPORTED_VIEWS),
             next=f"see precis-paper-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
+
+    def _render_chunk_stats(self, ref: Ref) -> Response:
+        """``view='chunks'`` — chunk counts by ``chunk_kind`` and by
+        ``section_path`` tail, plus total and body (``ord >= 0``)
+        totals. The per-paper sizing read that used to need prod-psql
+        (gr503059). ``id=[…]`` batches it through ``_get_batch``."""
+        stats = self.store.chunks.chunk_stats_for_ref(ref.id)
+        lines = [
+            f"# {_pa(ref)} — chunks",
+            f"total: {stats['total']} · body: {stats['body']}",
+        ]
+        if stats["by_kind"]:
+            lines += ["", "by chunk_kind:"]
+            lines += [f"  {k}: {n}" for k, n in stats["by_kind"].items()]
+        if stats["by_section"]:
+            lines += ["", "by section tail:"]
+            lines += [f"  {t}: {n}" for t, n in stats["by_section"].items()]
+        return Response(body="\n".join(lines), result_count=stats["total"])
 
     def _render_bibliography(self, ref: Ref) -> Response:
         """``view='bibliography'`` — citations referencing this paper.

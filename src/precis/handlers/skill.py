@@ -2244,6 +2244,8 @@ class SkillHandler(Handler):
         lines.extend(_render_fleet_utilisation(store))
         lines.extend(["", "**Tool-call latency (last hour, all processes)**", ""])
         lines.extend(_render_tool_latency(store))
+        lines.extend(["", "**Indexes**", ""])
+        lines.extend(_render_ann_indexes(store))
         lines.extend(["", "**Embedder**", ""])
         embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
         if embedder is None:
@@ -3237,6 +3239,43 @@ def _render_tool_latency(store: Store | None) -> list[str]:
             ],
             schema=["verb/kind", "n", "p50_ms", "p95_ms", "budget_ms", "errors"],
         ),
+    ]
+
+
+def _render_ann_indexes(store: Store | None) -> list[str]:
+    """Per-kind HNSW index state on ``chunk_embeddings`` (gr503028) —
+    the global index plus every valid per-kind partial index, each with
+    its ``pg_class.reltuples`` row estimate. Read-only: ``pg_index`` +
+    ``pg_class`` only, the same tables the ANN router reads
+    (:func:`precis.store._chunks_ops._ann_kind_state`). A kind whose
+    index is missing/invalid silently falls back to the global index —
+    this table is where that shows."""
+    if store is None:
+        return ["_stateless build — no index catalog to read_"]
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ic.relname, ic.reltuples::bigint "
+                "FROM pg_index i "
+                "JOIN pg_class ic ON ic.oid = i.indexrelid "
+                "JOIN pg_am am ON am.oid = ic.relam "
+                "WHERE i.indrelid = 'chunk_embeddings'::regclass "
+                "  AND am.amname = 'hnsw' AND i.indisvalid "
+                "ORDER BY ic.relname"
+            ).fetchall()
+    except Exception as exc:
+        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+    if not rows:
+        return ["_no hnsw indexes on chunk_embeddings_"]
+    return [
+        render_agent_table(
+            [{"index": str(name), "rows_est": int(est)} for name, est in rows],
+            schema=["index", "rows_est"],
+        ),
+        "_per-kind index `chunk_embeddings_vec_hnsw_<kind>_idx` = fast "
+        "path for that kind's semantic search; everything else shares "
+        "the global `chunk_embeddings_vec_hnsw_idx` (see "
+        "search(view='plan'))_",
     ]
 
 

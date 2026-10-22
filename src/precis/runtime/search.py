@@ -336,6 +336,77 @@ class SearchMixin(RuntimeShape):
                 out.append(k)
         return out
 
+    def _dispatch_search_plan(self, kind: Any, args: dict[str, Any]) -> Response:
+        """``search(view='plan')`` — the route a kind-scoped search *would*
+        take, without running it (gr503028).
+
+        Per kind: the resolved mode, the embedding model, the ANN index
+        (or exact-scan / global-fallback route) and *why*, the lexical
+        leg, and the candidate caps. Read-only: the only SQL is the ANN
+        state probe + an extension-version read, so the call can never
+        rank — which is the point (an agent can't tell a slow search
+        from a wrong one when the route is invisible).
+        """
+        from precis.store._chunks_ops import (
+            _ANN_EF_SEARCH_MAX,
+            _ANN_EF_SEARCH_MIN,
+            _ANN_EF_SEARCH_PER_LIMIT,
+            _ANN_MAX_SCAN_TUPLES,
+            ann_route_plan,
+        )
+
+        store = self.store
+        if store is None:
+            raise Unsupported("view='plan' needs a store-backed deployment")
+        if kind is None or self._is_cross_kind_request(str(kind)):
+            kinds = self._cross_kind_kinds()
+        else:
+            kinds = [self._expand_kind_code(str(kind))]
+        mode = str(args.get("mode") or "hybrid").strip().lower()
+        q = args.get("q")
+        limit = int(args.get("page_size") or 20)
+        ef = min(
+            _ANN_EF_SEARCH_MAX,
+            max(_ANN_EF_SEARCH_MIN, _ANN_EF_SEARCH_PER_LIMIT * limit),
+        )
+        embedder = getattr(self.hub, "embedder", None)
+        lines = [
+            "# search plan (no ranking executed)",
+            f"mode: {mode}"
+            + (f" · q={str(q)[:40]!r}" if q is not None else "")
+            + (
+                f" · embedder={getattr(embedder, 'model', None) or type(embedder).__name__}"
+                if embedder is not None
+                else " · embedder=none (lexical-only)"
+            ),
+            f"candidates: hnsw.ef_search={ef} (clamp {_ANN_EF_SEARCH_MIN}..{_ANN_EF_SEARCH_MAX}"
+            f" of {_ANN_EF_SEARCH_PER_LIMIT}×limit {limit})"
+            f" · hnsw.max_scan_tuples={_ANN_MAX_SCAN_TUPLES}",
+        ]
+        for k in kinds:
+            handler = self.hub.handler_for(k)
+            with store.pool.connection() as conn:
+                plan = ann_route_plan(conn, k, None)
+            mro = {c.__name__ for c in type(handler).__mro__} if handler else set()
+            if "NumericRefHandler" in mro:
+                if getattr(handler, "search_body_chunks", False):
+                    lex = "chunks.tsv FTS (body chunks, grouped by ref)"
+                else:
+                    ck = getattr(handler, "search_card_kinds", None)
+                    lex = "refs.title FTS + chunk leg"
+                    lex += f" (incl. cards: {', '.join(ck)})" if ck else ""
+            elif "PaperHandler" in mro:
+                lex = "chunks.tsv FTS (lex leg of the RRF fusion)"
+            else:
+                lex = "kind-specific path (see the handler's search)"
+            lines += [
+                f"kind={k}:",
+                f"  index: {plan['index'] or 'none (exact scan)'}",
+                f"  route: {plan['route']} — {plan['reason']}",
+                f"  lexical: {lex}",
+            ]
+        return Response(body="\n".join(lines))
+
     def _cross_kind_excluded_kinds(self) -> list[str]:
         """Active kinds searchable per-kind but opted out of cross-kind.
 

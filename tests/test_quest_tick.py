@@ -3883,3 +3883,171 @@ class TestQuestBodyManualEntryPoints:
         _cmd_tick(store, Namespace(id=qid, dry_run=False, tier=None, compute=True))
 
         assert calls == [[]]  # run_compute_step, if called at all, saw nothing
+
+
+# ── lit-depth: finding snippets + read/fetch payload fields (gr502680) ──
+
+
+def _mk_finding(store: Any, claim: str, *, title: str | None = None) -> int:
+    from precis.store.types import ChunkInsert
+
+    ref = store.insert_ref(
+        kind="finding", slug=None, title=title or claim[:80], meta={}
+    )
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=claim, meta={"chunk_kind": "finding_body"})],
+    )
+    return int(ref.id)
+
+
+def _mk_paper_stub(store: Any, title: str, *, doi: str | None = None) -> int:
+    ids = [("doi", doi)] if doi else []
+    ref_id, _created = store.upsert_stub_paper(
+        identifiers=ids, title=title, year=2020, set_by="test"
+    )
+    return int(ref_id)
+
+
+def _serve(store: Any, src: int, qid: int) -> None:
+    store.add_link(src_ref_id=src, dst_ref_id=qid, relation="serves", set_by="agent")
+
+
+def _qref(store: Any, qid: int) -> Any:
+    return store.get_ref(kind="quest", id=qid)
+
+
+class TestFindingDepth:
+    def test_served_finding_claim_enters_tick_context(self, store: Any) -> None:
+        # gr502680: a served finding rendered title-only — its claim (and
+        # numbers) never reached the model.
+        qid = _mk_quest(store, "A quest grounded in claims")
+        fid = _mk_finding(
+            store,
+            "kMC of CO oxidation on O-precovered Pd(111): E_app = 0.06 +/- "
+            "0.04 eV matches the measured 0.04 eV",
+            title="1p-kMC CO oxidation Pd(111) matches measured E_app",
+        )
+        _serve(store, fid, qid)
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "E_app = 0.06" in prompt
+        assert f"[fi{fid}]" in prompt
+
+
+class TestReadField:
+    def test_read_parks_refs_for_next_tick(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest reading deeper")
+        fid = _mk_finding(store, "The full claim with the real numbers 42.5%")
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"fi{fid}", "why": "need the numbers"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        # Next tick's prompt carries the full text.
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Requested reads" in prompt
+        assert "real numbers 42.5%" in prompt
+
+    def test_read_pulls_a_pc_chunk(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest reading a paper chunk")
+        pid = _mk_paper_stub(store, "A held paper")
+        from precis.store.types import ChunkInsert
+
+        store.chunks.insert_chunks(
+            pid,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text="Table 3: turnover frequency 0.12 s-1 at 320 K",
+                    meta={"chunk_kind": "paragraph"},
+                )
+            ],
+        )
+        chunks = store.chunks.list_chunks_for_ref(pid)
+        cid = int(chunks[0].id)
+        payload = {"logbook": [], "read": [{"ref": f"pc{cid}", "why": "the TOF"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "turnover frequency 0.12 s-1" in prompt
+
+    def test_read_cap_and_refusals(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest over-reading")
+        fid = _mk_finding(store, "claim")
+        payload = {
+            "logbook": [],
+            "read": [
+                {"ref": f"fi{fid}"},
+                {"ref": "fi999999999"},
+                {"ref": f"fi{fid}"},
+                {"ref": f"fi{fid}"},
+                {"ref": f"fi{fid}"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        # cap=3 slices entries[:3]: 2 valid + the unresolvable one (still a
+        # slot); the last 2 entries are over-cap refusals.
+        assert out.reads_queued == 2
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("read refused" in t and "999999999" in t for t in texts)
+        assert any("over the per-tick cap" in t for t in texts)
+
+
+class TestFetchField:
+    def test_fetch_requests_fulltext_and_marks_requested(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.handlers import paper as paper_mod
+
+        # Keep the acquire path real but offline: metadata lookups fail fast.
+        monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *a: None)
+        monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda *a: None)
+
+        qid = _mk_quest(store, "A quest wanting full text")
+        pid = _mk_paper_stub(store, "Abstract-only stub", doi="10.5555/x.y")
+        _serve(store, pid, qid)
+
+        # Before: the stub shows `full text: none` in the literature section.
+        lit = tick_mod._literature_section(store, qid)
+        assert "full text: none" in lit
+
+        payload = {
+            "logbook": [],
+            "fetch": [{"paper": f"pa{pid}", "why": "need Table 3"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.fetches_made == 1
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any(f"lit-fetch: requested full text for pa{pid}" in t for t in texts)
+        lit2 = tick_mod._literature_section(store, qid)
+        assert "full text: requested" in lit2
+        # Idempotent: a second request collapses, no error, still one stub.
+        out2 = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out2.fetches_made == 1
+        assert store.get_ref(kind="paper", id=pid) is not None
+
+    def test_fetch_refuses_held_paper_and_cap(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest fetching")
+        held = _mk_paper_stub(store, "Held paper")
+        from precis.store.types import ChunkInsert
+
+        store.chunks.insert_chunks(
+            held,
+            [ChunkInsert(ord=0, text="full body", meta={"chunk_kind": "paragraph"})],
+        )
+        stubs = [_mk_paper_stub(store, f"stub {i}") for i in range(3)]
+        payload = {
+            "logbook": [],
+            "fetch": [
+                {"paper": f"pa{held}"},
+                {"paper": f"pa{stubs[0]}"},
+                {"paper": f"pa{stubs[1]}"},
+                {"paper": f"pa{stubs[2]}"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.fetches_made == 2
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("already held" in t for t in texts)
+        assert any("over the per-tick cap" in t for t in texts)

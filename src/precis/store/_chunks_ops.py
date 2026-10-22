@@ -256,6 +256,44 @@ def _ann_kind_state(conn: Connection) -> tuple[bool, frozenset[str]]:
     return filled, indexed
 
 
+def ann_route_plan(
+    conn: Connection, kind: str | None, kinds: list[str] | None = None
+) -> dict[str, Any]:
+    """The ANN route a kind-scoped semantic leg *would* take — read-only.
+
+    The plan half of :func:`_ann_route` for ``search(view='plan')``
+    (gr503028): the route, the resolved kind, the index name the planner
+    can use (``None`` on the exact path) and a one-line reason, so an
+    agent can tell a slow search (global fallback) from a wrong one
+    without running it.
+    """
+    route, route_kind = _ann_route(conn, kind, kinds)
+    index: str | None
+    if route == "partial":
+        assert route_kind is not None
+        index = ann_partial_index_name(route_kind)
+        reason = "per-kind partial HNSW index (valid)"
+    elif route == "exact":
+        index = None
+        reason = "small kind — kind filter + exact distance scan, no HNSW index"
+    else:
+        index = "chunk_embeddings_vec_hnsw_idx"
+        if route_kind is None:
+            reason = "no single kind — global index + post-filter"
+        elif route_kind in _ANN_GLOBAL_KINDS:
+            reason = (
+                "kind dominates the global index — post-filter keeps "
+                "nearly all candidates, no partial index"
+            )
+        else:
+            reason = (
+                "kind's partial index is missing or invalid (or the "
+                "ref/kind backfill is unvalidated) — global index + "
+                "post-filter fallback"
+            )
+    return {"route": route, "kind": route_kind, "index": index, "reason": reason}
+
+
 def _ann_route(
     conn: Connection, kind: str | None, kinds: list[str] | None
 ) -> tuple[str, str | None]:
@@ -964,6 +1002,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -1017,6 +1056,14 @@ class ChunkStore:
             clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if has_body is not None:
+            from precis.store._body_predicate import has_body_sql
+
+            # Correlated EXISTS, no params — safe under the fused leg's
+            # double-splice of ``where_extra`` into both CTEs (same
+            # discipline as the *_fence clauses).
+            frag = has_body_sql("r")
+            clauses.append(frag if has_body else f"NOT {frag}")
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -1066,6 +1113,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Verbatim keyword search — chunks whose ``keywords`` array contains
         **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
@@ -1113,6 +1161,14 @@ class ChunkStore:
             clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if has_body is not None:
+            from precis.store._body_predicate import has_body_sql
+
+            # Correlated EXISTS, no params — safe under the fused leg's
+            # double-splice of ``where_extra`` into both CTEs (same
+            # discipline as the *_fence clauses).
+            frag = has_body_sql("r")
+            clauses.append(frag if has_body else f"NOT {frag}")
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -1156,6 +1212,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
 
@@ -1207,6 +1264,14 @@ class ChunkStore:
             clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if has_body is not None:
+            from precis.store._body_predicate import has_body_sql
+
+            # Correlated EXISTS, no params — safe under the fused leg's
+            # double-splice of ``where_extra`` into both CTEs (same
+            # discipline as the *_fence clauses).
+            frag = has_body_sql("r")
+            clauses.append(frag if has_body else f"NOT {frag}")
         if exclude_ref_ids:
             where_params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -1282,6 +1347,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -1314,6 +1380,7 @@ class ChunkStore:
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
+                has_body=has_body,
             )
 
         with self.pool.connection() as conn:
@@ -1358,6 +1425,14 @@ class ChunkStore:
         # ``_year_range_clauses`` / ``_chunk_scope_clauses``.
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
+        if has_body is not None:
+            from precis.store._body_predicate import has_body_sql
+
+            # Correlated EXISTS, no params — safe under the fused leg's
+            # double-splice of ``where_extra`` into both CTEs (same
+            # discipline as the *_fence clauses).
+            frag = has_body_sql("r")
+            clauses.append(frag if has_body else f"NOT {frag}")
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -1494,6 +1569,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
         per_paper: int | None = None,
         prefer_body: bool = False,
         pool_per_leg: int = 80,
@@ -1578,6 +1654,7 @@ class ChunkStore:
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
+                has_body=has_body,
             )
         run_lexical = m != "semantic"
         run_semantic = m != "lexical" and bool(query_vecs)
@@ -1613,6 +1690,7 @@ class ChunkStore:
                         chunk_kinds=chunk_kinds,
                         chunk_ids=chunk_ids,
                         card_kinds=card_kinds,
+                        has_body=has_body,
                     )
                 )
         if run_semantic:
@@ -1637,6 +1715,7 @@ class ChunkStore:
                         chunk_kinds=chunk_kinds,
                         chunk_ids=chunk_ids,
                         card_kinds=card_kinds,
+                        has_body=has_body,
                     )
                 )
 
@@ -1698,6 +1777,7 @@ class ChunkStore:
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
         The source-search primitive behind the unified Drive surface:
@@ -1740,6 +1820,7 @@ class ChunkStore:
                 max_distance=max_distance,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                has_body=has_body,
                 per_paper=1,  # one best chunk per ref (breadth / triage)
             )
             fused.sort(
@@ -1769,6 +1850,7 @@ class ChunkStore:
             max_distance=max_distance,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            has_body=has_body,
             per_paper=1,
         )
 
@@ -1794,6 +1876,7 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
@@ -1834,6 +1917,7 @@ class ChunkStore:
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
+                has_body=has_body,
             )
         if m == "semantic" and query_vec is not None:
             return self.search_chunks_semantic(
@@ -1853,6 +1937,7 @@ class ChunkStore:
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
+                has_body=has_body,
             )
         if m == "lexical" or query_vec is None:
             return self.search_chunks_lexical(
@@ -1871,6 +1956,7 @@ class ChunkStore:
                 chunk_kinds=chunk_kinds,
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
+                has_body=has_body,
             )
         return self.search_chunks_fused(
             q=q,
@@ -1891,6 +1977,7 @@ class ChunkStore:
             chunk_kinds=chunk_kinds,
             chunk_ids=chunk_ids,
             card_kinds=card_kinds,
+            has_body=has_body,
         )
 
     # -- relative navigation ------------------------------------
@@ -2977,6 +3064,47 @@ class ChunkStore:
             ).fetchone()
         assert row is not None
         return int(row[0])
+
+    def chunk_stats_for_ref(self, ref_id: int) -> dict[str, Any]:
+        """Chunk counts for one ref, for ``get(view='chunks')`` (gr503059).
+
+        ``total`` counts every live chunk (incl. ``ord < 0`` cards);
+        ``body`` counts ``ord >= 0`` only — the pair answers "634 total,
+        442 body". ``by_kind`` buckets all chunks by ``chunk_kind``;
+        ``by_section`` buckets body chunks by their ``section_path``
+        tail (deepest section title; ``(none)`` when the array is
+        empty/NULL). Three small indexed GROUP BYs.
+        """
+        with self.pool.connection() as conn:
+            total_row = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            body_row = conn.execute(
+                "SELECT count(*) FROM chunks "
+                "WHERE ref_id = %s AND retired_at IS NULL AND ord >= 0",
+                (ref_id,),
+            ).fetchone()
+            kind_rows = conn.execute(
+                "SELECT chunk_kind, count(*) AS n FROM chunks "
+                "WHERE ref_id = %s AND retired_at IS NULL "
+                "GROUP BY chunk_kind ORDER BY n DESC, chunk_kind",
+                (ref_id,),
+            ).fetchall()
+            section_rows = conn.execute(
+                "SELECT coalesce("
+                "  section_path[cardinality(section_path)], '(none)') AS tail, "
+                "       count(*) AS n FROM chunks "
+                "WHERE ref_id = %s AND retired_at IS NULL AND ord >= 0 "
+                "GROUP BY tail ORDER BY n DESC, tail",
+                (ref_id,),
+            ).fetchall()
+        return {
+            "total": int(total_row[0]) if total_row else 0,
+            "body": int(body_row[0]) if body_row else 0,
+            "by_kind": {str(k): int(n) for k, n in kind_rows},
+            "by_section": {str(t): int(n) for t, n in section_rows},
+        }
 
     def count_chunks_for_kind(self, kind: str) -> int:
         """Total body chunks (ord>=0) across all live refs of ``kind``.

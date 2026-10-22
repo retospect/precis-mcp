@@ -218,18 +218,24 @@ def _force_acquire_enabled(store: Any, quest_id: int) -> bool:
     acquisition volume needs throttling) is just flipping this env var, no
     redeploy of the fallback logic itself.
 
-    Also off whenever ``meta.compute_lane == "off"``
-    (:func:`_quest_compute_enabled`) — a quest declared reason-only must not
-    force-acquire literature just because its own propose step stayed quiet
-    (qu401863's cause 1, ``quest-tick-incident-fix.md``: the fallback fired
-    on every quiet slice regardless of the compute-lane switch, appending
-    hardcoded catalysis facets to an unrelated quest's title and linking
-    whatever the corpus + Semantic Scholar returned).
+    Also off whenever ``meta.lit_lane == "off"``
+    (:func:`precis.quest.body.quest_lit_enabled`) — a quest declared
+    lit-dark must not force-acquire literature just because its own
+    propose step stayed quiet (qu401863's cause 1,
+    ``quest-tick-incident-fix.md``: the fallback fired on every quiet
+    slice regardless of the lane switch, appending hardcoded catalysis
+    facets to an unrelated quest's title and linking whatever the corpus
+    + Semantic Scholar returned). The gate moved off ``compute_lane``
+    with gr500282 — lit-search is network, not GPU compute, so a
+    lit-only quest (``compute_lane=off``, ``lit_lane`` unset) still gets
+    the fallback it wants.
     """
     raw = os.environ.get("PRECIS_QUEST_FORCE_ACQUIRE", "true").strip().lower()
     if raw in ("0", "false", "no", "off"):
         return False
-    return _quest_compute_enabled(store, quest_id)
+    from precis.quest.body import quest_lit_enabled
+
+    return quest_lit_enabled(store, quest_id)
 
 
 PARAMS_SCHEMA: dict[str, Any] = {

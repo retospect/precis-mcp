@@ -43,7 +43,9 @@ this whole module exists to avoid.
 **Hover identity comes from the gerber, never the model.** :mod:`precis.pcb
 .gerber` writes X2 object attributes (``%TO.N,<net>*%`` on copper it knows
 the net of, ``%TO.P,<refdes>,<pin>*%`` on pads the model gave a component
-pin) and clears them with ``%TD*%`` right after the object they describe.
+pin, ``%TO.C,<refdes>*%`` on every object it attributes to a component —
+pads and a part's silk outlines alike) and clears them with ``%TD*%``
+right after the object they describe.
 This reader tracks that same attribute state and stamps it onto the
 :class:`Flash`/:class:`Stroke`/:class:`Region` it produces, and
 :func:`render_fab_svg` turns it into an SVG ``<title>`` — the browser's own
@@ -56,12 +58,12 @@ it belongs to on the schematic — e.g. ``F_Cu · (12.3000, 4.5000) mm · pad
 clause, only layer/coordinates/kind: this reader never fills that gap
 by cross-referencing anything outside the gerber/Excellon text, because
 doing so is exactly the divergence-from-the-artefact this module exists to
-eliminate. A recognised ``%TO.N``/``%TO.P`` that fails to parse raises
-:class:`UnsupportedGerber` rather than silently carrying no identity — the
-same discipline as ``%AM``/``%SR`` above; any *other* ``%TO...`` (component-
-level attributes such as ``%TO.C``, which this writer does not emit) falls
-through the same harmless catch-all as an unrecognised ``%TF...`` file
-attribute always has.
+eliminate. A recognised ``%TO.N``/``%TO.P``/``%TO.C`` that fails to parse
+raises :class:`UnsupportedGerber` rather than silently carrying no
+identity — the same discipline as ``%AM``/``%SR`` above; any *other*
+``%TO...`` (the remaining component-level attributes such as ``%TO.CRot``
+or the deprecated comma-free spellings) falls through the same harmless
+catch-all as an unrecognised ``%TF...`` file attribute always has.
 
 **A soldermask layer is rendered as what it physically is: a film with
 holes**, not as the holes themselves. ``F_Mask``/``B_Mask`` gerbers carry
@@ -232,6 +234,8 @@ class Stroke:
     width: float
     #: X2 object identity in force when this object was drawn — ``None``
     #: when the gerber carried no ``%TO...*%`` for it. Never guessed.
+    #: ``refdes`` without ``pin`` means the file said ``%TO.C`` only (a
+    #: component outline, not a pad).
     net: str | None = None
     refdes: str | None = None
     pin: str | None = None
@@ -299,6 +303,7 @@ _COORD_RE = re.compile(r"([XYIJ])(-?\d+)")
 #: instead of raising.
 _TO_N_RE = re.compile(r"%TO\.N,([^*,]*)\*%")
 _TO_P_RE = re.compile(r"%TO\.P,([^*,]*),([^*,]*)\*%")
+_TO_C_RE = re.compile(r"%TO\.C,([^*,]+)\*%")
 
 
 @dataclass
@@ -375,6 +380,14 @@ def parse_gerber(text: str) -> LayerArt:
             if not m:
                 raise UnsupportedGerber(f"malformed pin object attribute: {line!r}")
             attrs = _ObjectAttrs(net=attrs.net, refdes=m.group(1), pin=m.group(2))
+            continue
+        if line.startswith("%TO.C,"):
+            m = _TO_C_RE.match(line)
+            if not m:
+                raise UnsupportedGerber(
+                    f"malformed component object attribute: {line!r}"
+                )
+            attrs = _ObjectAttrs(net=attrs.net, refdes=m.group(1), pin=attrs.pin)
             continue
         if line.startswith("%"):
             continue  # an attribute or other non-drawing extended command
@@ -962,33 +975,67 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
 
 
 def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
-    """One almost-invisible rect per refdes, spanning that part's pad
-    flashes across every copper layer — the "part body" click target of
-    pcb-argue-with-design.md's handle grammar (``data-handle="U1"``).
+    """One almost-invisible rect per refdes — the "part body" click target
+    of pcb-argue-with-design.md's handle grammar (``data-handle="U1"``).
     Painted UNDER the layer stack, so pads, tracks and the mask film keep
     first claim on a click; the host page walks ``elementsFromPoint`` down
-    to it when nothing above carries a handle. A refdes is known here
-    only from ``%TO.P`` pad attributes — the writer emits no component-
-    level ``%TO.C`` (module docstring), and the pads' extent is the body
-    a user means when they click "the chip". Emitting ``%TO.C`` to give a
-    pad-less (pure-mechanical / unplaced) part a body here was decided
-    AGAINST (pcb-argue-with-design.md): it would flip every fab-export
-    byte assertion, forever, and such a part is already reachable by its
-    net, a neighbouring pad, or the whole-design (no-handle) argument."""
-    boxes: dict[str, list[float]] = {}
+    to it when nothing above carries a handle.
+
+    A part's box is the extent of its ``%TO.P`` pads when it has any —
+    the pads' extent is the body a user means when they click "the chip".
+    A part with NO pinned pads is boxed from its ``%TO.C`` objects
+    instead (``gerber._emit_object_attrs`` writes the component refdes on
+    every object the model names — copper pads AND silk courtyard/pin-1/
+    refdes draws — so a pad-less mounting hole, fiducial or logo is still
+    labelled): Reto ruled ``%TO.C`` in on 2026-10-21, overriding the
+    earlier no-``%TO.C`` call (5d36040ce), because fab and assembly staff
+    open the export in their own Gerber viewers and need the labels.
+    """
+    pad_boxes: dict[str, list[float]] = {}
+    comp_boxes: dict[str, list[float]] = {}
+
+    def _grow(boxes: dict[str, list[float]], refdes: str, *ext: float) -> None:
+        box = boxes.setdefault(refdes, [math.inf, math.inf, -math.inf, -math.inf])
+        box[0] = min(box[0], ext[0])
+        box[1] = min(box[1], ext[1])
+        box[2] = max(box[2], ext[2])
+        box[3] = max(box[3], ext[3])
+
     for key, art in arts.items():
-        if not key.endswith("_Cu"):
-            continue
+        is_copper = key.endswith("_Cu")
         for f in art.flashes:
-            if not (f.refdes and f.pin):
+            if not f.refdes:
                 continue
             w = f.aperture.sizes[0]
             h = f.aperture.sizes[1] if len(f.aperture.sizes) > 1 else w
-            box = boxes.setdefault(f.refdes, [math.inf, math.inf, -math.inf, -math.inf])
-            box[0] = min(box[0], f.x - w / 2)
-            box[1] = min(box[1], f.y - h / 2)
-            box[2] = max(box[2], f.x + w / 2)
-            box[3] = max(box[3], f.y + h / 2)
+            ext = (f.x - w / 2, f.y - h / 2, f.x + w / 2, f.y + h / 2)
+            _grow(comp_boxes, f.refdes, *ext)
+            if f.pin and is_copper:
+                _grow(pad_boxes, f.refdes, *ext)
+        for s in art.strokes:
+            if not s.refdes:
+                continue
+            xs = [p[0] for p in s.points]
+            ys = [p[1] for p in s.points]
+            half = s.width / 2
+            _grow(
+                comp_boxes,
+                s.refdes,
+                min(xs) - half,
+                min(ys) - half,
+                max(xs) + half,
+                max(ys) + half,
+            )
+        for r in art.regions:
+            if not r.refdes:
+                continue
+            xs = [p[0] for p in r.ring]
+            ys = [p[1] for p in r.ring]
+            ext = (min(xs), min(ys), max(xs), max(ys))
+            _grow(comp_boxes, r.refdes, *ext)
+            if r.pin and is_copper:
+                _grow(pad_boxes, r.refdes, *ext)
+    boxes = {refdes: pad_boxes.get(refdes) or box for refdes, box in comp_boxes.items()}
     if not boxes:
         return []
     out = ['<g class="parts">']

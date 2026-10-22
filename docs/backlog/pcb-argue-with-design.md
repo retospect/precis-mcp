@@ -64,7 +64,8 @@ The Edge_Cuts group of `render_fab_svg` now carries
   `precis-job-help` listing (`DESCRIPTION` + `known_job_types()`). No
   prod row is owed. A per-job_type kill switch would be new machinery —
   file a gripe if operators ever want one.
-- **`%TO.C` — RULED (Reto 2026-10-21): emit it, next round.** Overrides
+- **`%TO.C` — LANDED 2026-10-21 (pcb-toc).** The ruled slice below shipped
+  as written; the note stays for the ruling's reasoning. Overrides
   the shipping Devin's "no" (5d36040ce). Fab and assembly people open the
   export in their own Gerber viewers and need the component labels, even
   though the fab process does not. Slice: `gerber._emit_object_attrs` emits

@@ -83,6 +83,8 @@ _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
 #: fix): ``compute_lane`` (the reason-only switch —
 #: :data:`precis.workers.job_types.quest_tick.COMPUTE_LANE_META_KEY`),
+#: ``lit_lane`` (the lit-search stage's own switch —
+#: :data:`precis.quest.body.LIT_LANE_META_KEY`, gr500282),
 #: ``quest_body`` (catalyst vs. weave tick routing —
 #: :data:`precis.quest.weave_tick.QUEST_BODY_META_KEY`), ``rubric_objectives``
 #: (the frontier's measured-axis override, :mod:`precis.quest.frontier`),
@@ -99,6 +101,7 @@ _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 _META_ALLOWED_KEYS: frozenset[str] = frozenset(
     {
         "compute_lane",
+        "lit_lane",
         "quest_body",
         "rubric_objectives",
         "demand",
@@ -471,8 +474,13 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "pourbaix",
     "status",
     "rubric",
+    "served",
 )
 
+
+#: Most rows ``view='served'`` renders inline; the rest sit behind a
+#: ``+N more`` line (qu164903-scale listings carry ~1.4k edges).
+_SERVED_ROW_CAP = 200
 
 #: ``view='results'``/``'frontier'`` default token budget — the tick's own
 #: results-table budget (:data:`precis.quest.results_table.RESULTS_TABLE_TOKEN_BUDGET`),
@@ -595,7 +603,7 @@ class QuestHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"budget"}),
+        "get": ArgsSpec({"budget", "has_fulltext"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -1060,6 +1068,9 @@ class QuestHandler(NumericRefHandler):
         if view == "rubric" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_rubric(ref))
+        if view == "served" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_served(ref, args))
         # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
         # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
         # quests it serves and the ones serving it under `Roadmap`, plus the
@@ -1080,7 +1091,7 @@ class QuestHandler(NumericRefHandler):
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
                     "results, series, measures, logbook, pourbaix, status, "
-                    "rubric (quest-specific) · "
+                    "rubric, served (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -1121,6 +1132,48 @@ class QuestHandler(NumericRefHandler):
                 "(no rubric — set axes with "
                 "edit(kind='quest', id=N, meta={'rubric_objectives': [...]})",
             ]
+        return "\n".join(lines)
+
+    def _render_served(self, ref: Ref, args: dict[str, Any] | None) -> str:
+        """``view='served'`` — the served-by listing: every live ref with
+        an inbound ``serves`` edge to this quest, one row each with a
+        ``fulltext`` flag (a body chunk, ``ord >= 0`` — the read that
+        used to need prod-psql, gr503059), plus a count line.
+        ``args={'has_fulltext': True|False}`` filters the listing."""
+        want_ft: bool | None = None
+        if isinstance(args, dict) and "has_fulltext" in args:
+            raw = args["has_fulltext"]
+            if not isinstance(raw, bool):
+                raise BadInput(
+                    f"has_fulltext must be a boolean, got {raw!r}",
+                    next="args={'has_fulltext': true} keeps only refs with body chunks",
+                )
+            want_ft = raw
+        links = self.store.links_for(ref.id, direction="in", relation="serves")
+        servers = self.store.fetch_refs_by_ids({int(ln.src_ref_id) for ln in links})
+        live = [s for s in servers.values() if s.retired_at is None]
+        live.sort(key=lambda s: (s.kind, s.id))
+        ft = self.store.chunks.ref_ids_with_chunks([s.id for s in live])
+        shown = (
+            [s for s in live if (s.id in ft) == want_ft]
+            if want_ft is not None
+            else live
+        )
+        n_ft = sum(1 for s in shown if s.id in ft)
+        lines = [
+            f"# served — quest {ref.id}: {len(shown)} serving "
+            f"({n_ft} with fulltext" + (", filtered)" if want_ft is not None else ")")
+        ]
+        for s in shown[:_SERVED_ROW_CAP]:
+            handle = handle_registry.try_format(s.kind, s.id) or f"{s.kind}:{s.id}"
+            title = (s.title or "").splitlines()[0][:70] if s.title else ""
+            flag = "yes" if s.id in ft else "no"
+            lines.append(f"  {handle} {title}  fulltext={flag}")
+        hidden = len(shown) - _SERVED_ROW_CAP
+        if hidden > 0:
+            lines.append(
+                f"  … +{hidden} more — narrow with args={{'has_fulltext': true|false}}"
+            )
         return "\n".join(lines)
 
     def _render_measures(self, ref: Ref) -> str:
