@@ -311,6 +311,32 @@ caller names in the rung.
   gripe pass/partial/fail, turns, wall, prompt tokens, undefined-tool
   count; a one-line verdict per task type that appeared; shim log shows
   zero reasoning-only stalls after a tool result.
+- **Slice 0a — dropped analysis-channel tool calls (SGLang).** Stopped
+  the pilot at 0/3: gpt-oss often writes its call on the harmony
+  analysis channel (`<|channel|>analysis to=functions.Bash code ...
+  <|call|>`), SGLang 0.5.21's gpt-oss tool parser reads only commentary,
+  and the turn comes back finish `stop`, `matched_stop` 200012, tool_calls
+  null; Claude Code then ends "success" with no work. Evidence (direct
+  `/v1/chat/completions`, 497414 prompt, Read+Bash): turn 1 calls a tool
+  in 1-2/5 requests folded, 4/5 with a system or developer message;
+  after a tool result 0/8 either way, sometimes with the call text leaked
+  into `content`. Under Claude Code's real prompt (gr496070 re-pilot)
+  turn 1 dropped 32/32 attempts with a system message and 4/4 folded.
+  Stopgap in the shim: system message for gpt-oss, and re-send a dropped
+  turn up to 3 times, then a non-retryable 502 naming the cause; it does
+  not rescue the real prompt. Raw mode (`separate_reasoning` false,
+  `skip_special_tokens` false, `no_stop_trim`, `logprobs`) still holds the
+  dropped call in the logprob tokens, so the shim's retries salvage it
+  (known tool names only, JSON-object args). gr496070 re-pilot with
+  salvage: turn 1 got a tool_use, the run reached 40 tool calls (15
+  salvaged, 7 refused, 1 turn exhausted), then aimed every Edit at the
+  main checkout's absolute path instead of its worktree (all refused, no
+  change landed) — a lane-brief/guard problem, not the shim's.
+  Real fix (Reto deploys, no host change from this item): an SGLang build
+  whose gpt-oss parser takes analysis-channel recipients, or serve
+  gpt-oss from vLLM ([claude-code-on-local-serving](claude-code-on-local-serving.md));
+  acceptance: the 497414 repro returns tool_calls 5/5 after a tool
+  result with no shim retry logged.
 - **Slice 1 — observability.** `sglang_extra_args` gains
   `--enable-metrics`; the shim logs one line per request and counts
   undefined tool names; the agent lane's requests land in `llm_call_log`

@@ -34,15 +34,33 @@ def shim():
 
 
 def test_system_folds_into_first_user_turn(shim):
-    # On SGLang's gpt-oss path ANY system-role message stalls tool calling,
-    # so the system prompt must ride the first user turn (gripe comment 1).
+    # Non-gpt-oss models keep the gr500583 fold: the system prompt rides the
+    # first user turn.
     body = {
         "system": "You are concise.",
         "messages": [{"role": "user", "content": "hi"}],
     }
-    msgs = shim.to_chat_body(body)["messages"]
+    msgs = shim.to_chat_body(body, "auto")["messages"]
     assert all(m["role"] != "system" for m in msgs)
     assert msgs == [{"role": "user", "content": "You are concise.\n\nhi"}]
+
+
+def test_gpt_oss_system_goes_out_as_system_message(shim):
+    # castor probe 2026-10-22: a system message called a tool on turn 1 in
+    # 4/5 requests vs 2/5 folded, so gpt-oss defaults to a system message.
+    body = {
+        "model": "openai/gpt-oss-120b",
+        "system": "You are concise.",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    assert shim.to_chat_body(body, "auto")["messages"] == [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content": "hi"},
+    ]
+    # The flag forces the fold back on.
+    assert shim.to_chat_body(body, "fold")["messages"] == [
+        {"role": "user", "content": "You are concise.\n\nhi"}
+    ]
 
 
 def test_tool_round_trip_request(shim):
@@ -387,6 +405,369 @@ def test_stream_truncated_stops_cleanly(shim):
     assert kinds[0] == "message_start" and kinds[-1] == "message_stop"
     md = [d for e, d in ev if e == "message_delta"][0]
     assert md["delta"]["stop_reason"] == "end_turn"
+
+
+# --- dropped tool calls: detect and retry ----------------------------------------
+#
+# gpt-oss on SGLang sometimes writes its tool call on the analysis channel;
+# the parser drops it and the turn ends finish "stop" on <|call|> (200012)
+# with tool_calls null. The shim re-sends such turns, then errors out.
+
+
+def _chat(finish, message, matched_stop=None):
+    return {
+        "choices": [
+            {"finish_reason": finish, "matched_stop": matched_stop, "message": message}
+        ]
+    }
+
+
+DROPPED = _chat("stop", {"reasoning_content": "let me grep", "content": None}, 200012)
+TOOL = _chat(
+    "tool_calls",
+    {
+        "reasoning_content": "let me grep",
+        "tool_calls": [
+            {"id": "c1", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}}
+        ],
+    },
+)
+TEXT = _chat("stop", {"content": "All done."}, 200002)
+
+DROPPED_STREAM = [
+    {"choices": [{"index": 0, "delta": {"reasoning_content": "let me grep"}}]},
+    {
+        "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "stop", "matched_stop": 200012}
+        ]
+    },
+]
+TOOL_STREAM = [
+    {"choices": [{"index": 0, "delta": {"reasoning_content": "let me grep"}}]},
+    {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {
+                                "name": "Bash",
+                                "arguments": '{"command":"ls"}',
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    },
+    {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+]
+TEXT_STREAM = [
+    {"choices": [{"index": 0, "delta": {"reasoning_content": "easy"}}]},
+    {"choices": [{"index": 0, "delta": {"content": "All done."}}]},
+    {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+]
+
+
+class _Upstream:
+    """Fake upstream: hands out the queued replies in order, counting calls."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def __call__(self):
+        reply = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
+        return reply
+
+
+@pytest.mark.parametrize(
+    ("finish", "matched", "content", "reasoning", "tools", "dropped"),
+    [
+        ("stop", 200012, "", True, False, True),
+        (
+            "stop",
+            None,
+            "<|start|>assistant to=functions.Bash<|call|>",
+            True,
+            False,
+            True,
+        ),
+        ("stop", None, "", True, False, True),  # reasoning only
+        ("stop", 200002, "All done.", True, False, False),
+        ("stop", 200012, "", True, True, False),  # tool call made it through
+        ("tool_calls", None, "", True, True, False),
+        ("length", None, "", True, False, False),
+        ("stop", None, "", False, False, False),  # empty but no reasoning
+    ],
+)
+def test_dropped_call_reason(shim, finish, matched, content, reasoning, tools, dropped):
+    reason = shim.dropped_call_reason(finish, matched, content, reasoning, tools)
+    assert (reason is not None) == dropped
+
+
+def test_complete_retry_recovers_tool_call(shim):
+    upstream, logged = _Upstream(DROPPED, TOOL), []
+    msg = shim.complete_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    assert upstream.calls == 2
+    assert msg["stop_reason"] == "tool_use"
+    assert [b["type"] for b in msg["content"]] == ["thinking", "tool_use"]
+    assert len(logged) == 1
+    assert logged[0][0] == "retry" and logged[0][1].startswith(
+        "1/3: matched_stop 200012"
+    )
+
+
+def test_complete_retry_exhausted_raises(shim):
+    upstream, logged = _Upstream(DROPPED), []
+    with pytest.raises(shim.DroppedToolCall, match="4 attempts"):
+        shim.complete_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    assert upstream.calls == 4
+    assert [(e, d[:3]) for e, d in logged] == [("retry", f"{n}/3") for n in (1, 2, 3)]
+
+
+@pytest.mark.parametrize("chat", [TEXT, TOOL])
+def test_complete_normal_turn_untouched(shim, chat):
+    upstream, logged = _Upstream(chat), []
+    msg = shim.complete_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    assert upstream.calls == 1 and logged == []
+    plain = shim.to_anthropic_response(chat, "m")
+    # identical apart from the random message id
+    assert {**msg, "id": ""} == {**plain, "id": ""}
+
+
+def test_stream_retry_recovers_tool_call(shim):
+    upstream, logged = _Upstream(DROPPED_STREAM, TOOL_STREAM), []
+    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a)))
+    assert upstream.calls == 2 and len(logged) == 1
+    # the dropped attempt never reaches the client: one message, one tool_use
+    assert [e for e, _ in ev].count("message_start") == 1
+    starts = [d["content_block"]["type"] for e, d in ev if e == "content_block_start"]
+    assert starts == ["thinking", "tool_use"]
+    md = [d for e, d in ev if e == "message_delta"]
+    assert [d["delta"]["stop_reason"] for d in md] == ["tool_use"]
+
+
+def test_stream_leaked_call_in_content_is_retried(shim):
+    leaked = [
+        {"choices": [{"index": 0, "delta": {"reasoning_content": "open it"}}]},
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "<|start|>assistant to=functions.Bash<|call|>"
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    ]
+    upstream = _Upstream(leaked, TOOL_STREAM)
+    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: None))
+    assert upstream.calls == 2
+    assert not any(d.get("delta", {}).get("type") == "text_delta" for _, d in ev)
+
+
+def test_stream_retry_exhausted_raises_before_any_event(shim):
+    upstream, logged = _Upstream(DROPPED_STREAM), []
+    events = shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    with pytest.raises(shim.DroppedToolCall):
+        next(events)
+    assert upstream.calls == 4 and len(logged) == 3
+
+
+@pytest.mark.parametrize("chunks", [TEXT_STREAM, TOOL_STREAM])
+def test_stream_normal_turn_untouched(shim, chunks):
+    upstream, logged = _Upstream(chunks), []
+    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a)))
+    assert upstream.calls == 1 and logged == []
+    plain = _events(shim, chunks)
+    # identical apart from the per-translator random message id
+    assert [(e, d.get("type")) for e, d in ev] == [(e, d.get("type")) for e, d in plain]
+    assert ev[1:] == plain[1:]
+
+
+# --- salvage: dropped call read back from raw harmony ----------------------------
+#
+# castor 2026-10-22, raw mode (separate_reasoning false, skip_special_tokens
+# false, no_stop_trim): the dropped call came back verbatim in content, with
+# the tool name lowercased.
+
+TOOLS = ["Bash", "Read", "mcp__precis__get"]
+
+
+def _raw(content, tool_calls=None):
+    return {
+        "id": "raw-1",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "matched_stop": 200012,
+                "message": {"content": content, "tool_calls": tool_calls},
+            }
+        ],
+        "usage": {"prompt_tokens": 900, "completion_tokens": 30},
+    }
+
+
+RAW_DROPPED = _raw(
+    "<|channel|>analysis<|message|>We need to run tests to see failure.<|end|>"
+    "<|start|>assistant<|channel|>analysis to=functions.bash code<|message|>"
+    '{"command":"ls -R"}<|call|>'
+)
+
+
+def _salvaged_call(chat):
+    msg = chat["choices"][0]["message"]
+    (tc,) = msg["tool_calls"]
+    return tc["function"]["name"], json.loads(tc["function"]["arguments"])
+
+
+def test_salvage_maps_lowercase_name_to_canonical(shim):
+    chat, how = shim.salvage_call(RAW_DROPPED, TOOLS)
+    assert chat is not None, how
+    assert _salvaged_call(chat) == ("Bash", {"command": "ls -R"})
+    assert chat["choices"][0]["finish_reason"] == "tool_calls"
+    assert chat["choices"][0]["message"]["reasoning_content"] == (
+        "We need to run tests to see failure."
+    )
+    assert "bash -> Bash" in how
+
+
+def test_salvage_reads_logprob_tokens_when_content_is_swallowed(shim):
+    # With Claude Code's full tool set SGLang returned content '' and
+    # reasoning '' for ~100 completion tokens; the logprob tokens kept them.
+    text = (
+        "<|channel|>analysis<|message|>Let's read it.<|end|><|start|>assistant"
+        "<|channel|>commentary to=functions.read code<|message|>"
+        '{\n  "file_path": "/src/bib_parse.py"\n}<|call|>'
+    )
+    raw = _raw("")
+    raw["choices"][0]["logprobs"] = {
+        "content": [{"token": text[i : i + 7]} for i in range(0, len(text), 7)]
+    }
+    chat, how = shim.salvage_call(raw, TOOLS)
+    assert chat is not None, how
+    assert _salvaged_call(chat) == ("Read", {"file_path": "/src/bib_parse.py"})
+    assert chat["choices"][0]["message"]["reasoning_content"] == "Let's read it."
+
+
+def test_salvage_takes_the_last_call(shim):
+    raw = _raw(
+        "<|channel|>analysis to=functions.Read code<|message|>"
+        '{"file_path":"/a"}<|call|>'
+        "<|start|>assistant<|channel|>commentary to=functions.Bash "
+        '<|constrain|>json<|message|>{"command":"pwd"}<|call|>'
+    )
+    chat, _ = shim.salvage_call(raw, TOOLS)
+    assert _salvaged_call(chat) == ("Bash", {"command": "pwd"})
+
+
+def test_salvage_unknown_tool_falls_through(shim):
+    raw = _raw(
+        "<|channel|>analysis to=functions.apply_patch code<|message|>"
+        '{"patch":"x"}<|call|>'
+    )
+    chat, how = shim.salvage_call(raw, TOOLS)
+    assert chat is None and "apply_patch" in how
+
+
+@pytest.mark.parametrize("args", ['{"command": "ls"', '["ls"]', "not json"])
+def test_salvage_bad_json_falls_through(shim, args):
+    raw = _raw(f"<|channel|>analysis to=functions.Bash code<|message|>{args}<|call|>")
+    chat, how = shim.salvage_call(raw, TOOLS)
+    assert chat is None and "JSON object" in how
+
+
+def test_salvage_no_call_falls_through(shim):
+    chat, how = shim.salvage_call(
+        _raw("<|channel|>final<|message|>Done.<|return|>"), TOOLS
+    )
+    assert chat is None and "no harmony tool call" in how
+
+
+def test_salvage_uses_parsed_tool_calls_with_known_names(shim):
+    raw = _raw(
+        "<|channel|>analysis<|message|>look<|end|>",
+        [{"id": "c", "function": {"name": "read", "arguments": '{"file_path":"/x"}'}}],
+    )
+    chat, _ = shim.salvage_call(raw, TOOLS)
+    assert _salvaged_call(chat) == ("Read", {"file_path": "/x"})
+    bad = _raw("", [{"id": "c", "function": {"name": "Edit", "arguments": "{}"}}])
+    assert shim.salvage_call(bad, TOOLS)[0] is None
+
+
+def test_complete_salvage_recovers_tool_use(shim):
+    upstream, raw, logged = _Upstream(DROPPED), _Upstream(RAW_DROPPED), []
+    msg = shim.complete_with_retry(
+        upstream, "m", 3, lambda *a: logged.append(a), raw, TOOLS
+    )
+    assert upstream.calls == 1 and raw.calls == 1
+    assert msg["stop_reason"] == "tool_use"
+    tool = [b for b in msg["content"] if b["type"] == "tool_use"]
+    assert [(b["name"], b["input"]) for b in tool] == [("Bash", {"command": "ls -R"})]
+    assert [e for e, _ in logged] == ["retry", "salvaged"]
+
+
+def test_complete_salvage_refused_then_exhausted(shim):
+    bad = _raw("<|channel|>analysis to=functions.nope code<|message|>{}<|call|>")
+    upstream, raw, logged = _Upstream(DROPPED), _Upstream(bad), []
+    with pytest.raises(shim.DroppedToolCall, match="unknown tool"):
+        shim.complete_with_retry(
+            upstream, "m", 3, lambda *a: logged.append(a), raw, TOOLS
+        )
+    # retries go to the raw request, not the normal one
+    assert upstream.calls == 1 and raw.calls == 3
+    assert [e for e, _ in logged] == ["retry", "salvage_refused"] * 3
+
+
+def test_stream_salvage_recovers_tool_use(shim):
+    upstream, raw, logged = _Upstream(DROPPED_STREAM), _Upstream(RAW_DROPPED), []
+    ev = list(
+        shim.stream_with_retry(
+            upstream, "m", 3, lambda *a: logged.append(a), raw, TOOLS
+        )
+    )
+    assert upstream.calls == 1 and raw.calls == 1
+    assert [e for e, _ in ev].count("message_start") == 1
+    starts = [d["content_block"] for e, d in ev if e == "content_block_start"]
+    assert [b["type"] for b in starts] == ["thinking", "tool_use"]
+    assert starts[1]["name"] == "Bash"
+    args = "".join(
+        d["delta"]["partial_json"]
+        for e, d in ev
+        if e == "content_block_delta" and d["delta"]["type"] == "input_json_delta"
+    )
+    assert json.loads(args) == {"command": "ls -R"}
+    md = [d for e, d in ev if e == "message_delta"]
+    assert [d["delta"]["stop_reason"] for d in md] == ["tool_use"]
+    assert ev[-1][0] == "message_stop"
+
+
+@pytest.mark.parametrize("chunks", [TEXT_STREAM, TOOL_STREAM])
+def test_stream_salvage_leaves_normal_turns_alone(shim, chunks):
+    upstream, raw = _Upstream(chunks), _Upstream(RAW_DROPPED)
+    list(shim.stream_with_retry(upstream, "m", 3, lambda *a: None, raw, TOOLS))
+    assert upstream.calls == 1 and raw.calls == 0
+
+
+@pytest.mark.parametrize("chat", [TEXT, TOOL])
+def test_complete_salvage_leaves_normal_turns_alone(shim, chat):
+    upstream, raw = _Upstream(chat), _Upstream(RAW_DROPPED)
+    shim.complete_with_retry(upstream, "m", 3, lambda *a: None, raw, TOOLS)
+    assert upstream.calls == 1 and raw.calls == 0
+
+
+def test_salvage_default_on_for_gpt_oss_only(shim):
+    assert shim.salvage_on("openai/gpt-oss-120b", "auto")
+    assert not shim.salvage_on("qwen3", "auto")
+    assert not shim.salvage_on("openai/gpt-oss-120b", "off")
+    assert shim.salvage_on("qwen3", "on")
 
 
 # --- shared pieces -------------------------------------------------------------

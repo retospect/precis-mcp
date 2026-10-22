@@ -14,15 +14,26 @@ Two upstream modes:
   answers every turn after a tool result with a thinking block only
   (gr500583) while ``/v1/chat/completions`` keeps calling tools.
 
-In chat mode the Anthropic ``system`` field is folded into the first user
-turn, not sent as a system message: on SGLang's gpt-oss path ANY system-role
-message makes the model end its turn after reasoning with no tool call.
+In chat mode the Anthropic ``system`` field goes out per ``--system-role``
+(env ``ANTHROPIC_SHIM_SYSTEM_ROLE``): ``system`` sends a system message,
+``fold`` prepends it to the first user turn, ``auto`` (default) picks
+``system`` for gpt-oss models and ``fold`` otherwise. Folding came from
+gr500583; a 2026-10-22 probe on castor (task prompt, Read+Bash tools) called a
+tool on turn 1 in 4/5 requests with a system message vs 2/5 folded; after a
+tool result both dropped every call (the drop below, not a system-role stall).
+Chat mode also retries a turn whose tool call SGLang dropped (gpt-oss wrote
+it on the analysis channel; the turn ends on ``<|call|>`` with no
+tool_calls) up to ``ANTHROPIC_SHIM_DROPPED_CALL_RETRIES`` (3) times. With
+salvage on (``--salvage``, env ``ANTHROPIC_SHIM_SALVAGE``: ``auto`` = on
+for gpt-oss) each retry asks for raw harmony and turns the dropped call into
+a tool_use. When retries run dry the client gets a non-retryable 502 instead
+of an empty end_turn. Every retry/salvage is logged with running counts.
 ``count_tokens`` is a chars/4 estimate in both modes.
 
 Stdlib only; no dependency on the precis package. Runs anywhere that can
 reach castor; ``scripts/claude-local`` starts it on demand on loopback.
 
-    scripts/anthropic-shim.py <listen-port> <upstream-host> <upstream-port> [--mode auto|chat|messages]
+    scripts/anthropic-shim.py <listen-port> <upstream-host> <upstream-port> [--mode auto|chat|messages] [--system-role auto|system|fold] [--salvage auto|on|off]
 
 ``auto`` (default) probes ``GET /get_model_info``: SGLang answers it (vLLM
 does not), so the shim picks ``chat`` for SGLang and ``messages`` otherwise.
@@ -32,8 +43,13 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import re
 import sys
+import threading
 import uuid
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOP_BY_HOP = {
@@ -110,7 +126,17 @@ def _tool_result_text(block: dict) -> str:
     return text
 
 
-def _to_chat_messages(body: dict) -> list[dict]:
+SYSTEM_ROLES = ("auto", "system", "fold")
+SYSTEM_ROLE = os.environ.get("ANTHROPIC_SHIM_SYSTEM_ROLE", "auto")
+
+
+def _system_as_message(model: str, system_role: str) -> bool:
+    if system_role == "auto":
+        return "gpt-oss" in model.lower()
+    return system_role == "system"
+
+
+def _to_chat_messages(body: dict, system_role: str) -> list[dict]:
     """Translate Anthropic ``messages`` to OpenAI chat messages.
 
     ``tool_use`` blocks become assistant ``tool_calls``; ``tool_result``
@@ -159,7 +185,9 @@ def _to_chat_messages(body: dict) -> list[dict]:
         if pending:
             out.append({"role": "user", "content": "\n".join(pending)})
     system = _block_text(_as_blocks(body.get("system") or []))
-    if system:
+    if system and _system_as_message(str(body.get("model") or ""), system_role):
+        out.insert(0, {"role": "system", "content": system})
+    elif system:
         for msg in out:
             if msg["role"] == "user":
                 msg["content"] = f"{system}\n\n{msg['content']}"
@@ -172,9 +200,9 @@ def _to_chat_messages(body: dict) -> list[dict]:
 _TOOL_CHOICE = {"auto": "auto", "any": "required", "none": "none"}
 
 
-def to_chat_body(body: dict) -> dict:
+def to_chat_body(body: dict, system_role: str | None = None) -> dict:
     """Translate a ``/v1/messages`` request body to ``/v1/chat/completions``."""
-    out: dict = {"messages": _to_chat_messages(body)}
+    out: dict = {"messages": _to_chat_messages(body, system_role or SYSTEM_ROLE)}
     for src, dst in (
         ("model", "model"),
         ("max_tokens", "max_tokens"),
@@ -280,6 +308,63 @@ def to_anthropic_response(chat: dict, model: str) -> dict:
     }
 
 
+# --- dropped tool calls: detect and retry --------------------------------------
+#
+# gpt-oss on SGLang's gpt-oss tool parser sometimes writes its tool call on
+# the harmony analysis channel (``<|channel|>analysis to=functions.X ...
+# <|call|>``); the parser reads only commentary, so the call is lost and the
+# turn ends finish_reason "stop" on ``<|call|>`` (token 200012) with
+# tool_calls null. Passed through, Claude Code ends the run "success" with no
+# work done. The shim re-sends such a turn and errors out when retries run dry.
+
+CALL_TOKEN_ID = 200012  # harmony <|call|>
+DROPPED_CALL_RETRIES = int(os.environ.get("ANTHROPIC_SHIM_DROPPED_CALL_RETRIES", "3"))
+
+
+class DroppedToolCall(Exception):
+    """Every attempt ended in a dropped tool call; the client gets an error."""
+
+
+class UpstreamError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def dropped_call_reason(
+    finish: str | None,
+    matched_stop: object,
+    content: str,
+    reasoning: bool,
+    tool_calls: bool,
+) -> str | None:
+    """Why a finished turn looks like a dropped tool call, or None if it is fine."""
+    if tool_calls or finish != "stop":
+        return None
+    if matched_stop == CALL_TOKEN_ID:
+        return (
+            f"matched_stop {CALL_TOKEN_ID} (<|call|>) with no tool_calls, "
+            f"{len(content)} chars of text"
+        )
+    if "<|call|>" in content:
+        return f"<|call|> in {len(content)} chars of text, no tool_calls"
+    if reasoning and not content.strip():
+        return "reasoning only, no text or tool_calls"
+    return None
+
+
+def _chat_dropped_call(chat: dict) -> str | None:
+    choice = (chat.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    return dropped_call_reason(
+        choice.get("finish_reason"),
+        choice.get("matched_stop"),
+        msg.get("content") or "",
+        bool(msg.get("reasoning_content")),
+        bool(msg.get("tool_calls")),
+    )
+
+
 def _sse(event: str, data: dict) -> tuple[str, dict]:
     return (event, data)
 
@@ -303,6 +388,21 @@ class ChatStreamTranslator:
         self.open_tc: int | None = None  # upstream tool_calls index of the open block
         self.saw_tool = False
         self.output_tokens = 0
+        # what dropped_call() needs once the turn is over
+        self.finish: str | None = None
+        self.matched_stop: object = None
+        self.text = ""
+        self.saw_thinking = False
+
+    def dropped_call(self) -> str | None:
+        """:func:`dropped_call_reason` for the streamed turn so far."""
+        return dropped_call_reason(
+            self.finish,
+            self.matched_stop,
+            self.text,
+            self.saw_thinking,
+            self.saw_tool,
+        )
 
     def _start(self) -> list[tuple[str, dict]]:
         self.started = True
@@ -381,6 +481,7 @@ class ChatStreamTranslator:
                 continue
             delta = choice.get("delta") or {}
             if delta.get("reasoning_content"):
+                self.saw_thinking = True
                 if self.open_kind != "thinking":
                     out += self._open_block(
                         "thinking", {"type": "thinking", "thinking": ""}
@@ -392,6 +493,7 @@ class ChatStreamTranslator:
                     }
                 )
             if delta.get("content"):
+                self.text += delta["content"]
                 if self.open_kind != "text":
                     out += self._open_block("text", {"type": "text", "text": ""})
                 out += self._delta({"type": "text_delta", "text": delta["content"]})
@@ -420,6 +522,8 @@ class ChatStreamTranslator:
                         }
                     )
             if choice.get("finish_reason"):
+                self.finish = choice["finish_reason"]
+                self.matched_stop = choice.get("matched_stop")
                 out += self._close_block()
                 out.append(
                     _sse(
@@ -460,6 +564,272 @@ class ChatStreamTranslator:
         return out
 
 
+# --- salvage: read a dropped call back from raw harmony -------------------------
+#
+# Asked for raw output (no reasoning split, special tokens kept, stop token
+# not trimmed, per-token logprobs), SGLang returns the harmony text that still
+# holds the call the parser dropped: ``<|channel|>commentary
+# to=functions.read code<|message|>{"file_path": "..."}<|call|>``. With
+# Claude Code's full tool set the parser swallows content and reasoning too
+# (both empty, ~100 completion tokens), so the text is rebuilt from the
+# logprob tokens; content is the fallback. Castor 2026-10-22: the dropped
+# calls named real tools in lowercase (``read`` for ``Read``) or invented
+# ones (``search``). On a dropped turn the shim's retries ask for that and
+# turn the LAST such call into a tool_use, provided its name matches one of
+# the request's tools (case-insensitively) and its arguments are a JSON
+# object; otherwise the retry counts as dropped. It never invents a tool.
+
+SALVAGE_SETTINGS = ("auto", "on", "off")
+SALVAGE = os.environ.get("ANTHROPIC_SHIM_SALVAGE", "auto")
+RAW_HARMONY = {
+    "separate_reasoning": False,
+    "skip_special_tokens": False,
+    "no_stop_trim": True,
+    "logprobs": True,
+}
+_HARMONY_CALL = re.compile(
+    r"to=functions\.([\w.\-]+)(?:(?!<\|message\|>).)*<\|message\|>(.*?)(?:<\|call\|>|\Z)",
+    re.S,
+)
+_HARMONY_ANALYSIS = re.compile(
+    r"<\|channel\|>analysis<\|message\|>(.*?)(?:<\|end\|>|<\|start\|>|\Z)", re.S
+)
+
+
+def salvage_on(model: str, setting: str) -> bool:
+    if setting == "auto":
+        return "gpt-oss" in model.lower()
+    return setting == "on"
+
+
+def _tool_lookup(names: Iterable[str]) -> Callable[[str], str | None]:
+    exact = set(names)
+    folded: dict[str, str] = {}
+    for name in sorted(exact):
+        folded.setdefault(name.lower(), name)
+
+    def canon(name: str) -> str | None:
+        return name if name in exact else folded.get(name.lower())
+
+    return canon
+
+
+def _json_object(raw: str) -> dict | None:
+    try:
+        value = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def salvage_call(raw: dict, tool_names: Iterable[str]) -> tuple[dict | None, str]:
+    """A raw-harmony chat/completions reply -> (normal tool-call reply, how).
+
+    Returns ``(None, why)`` when nothing safe can be recovered.
+    """
+    choice = (raw.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    tokens = ((choice.get("logprobs") or {}).get("content")) or []
+    text = "".join(str(t.get("token", "")) for t in tokens) or (
+        (msg.get("reasoning_content") or "") + (msg.get("content") or "")
+    )
+    canon = _tool_lookup(tool_names)
+    calls: list[tuple[str, dict]] = []
+    if msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function") or {}
+            name = canon(str(fn.get("name", "")))
+            if name is None:
+                return None, f"unknown tool {fn.get('name')!r} in raw tool_calls"
+            args = _json_object(fn.get("arguments") or "")
+            if args is None:
+                return None, f"{name}: raw tool_calls args are not a JSON object"
+            calls.append((name, args))
+        how = "raw reply carried parsed tool_calls"
+    else:
+        matches = list(_HARMONY_CALL.finditer(text))
+        if not matches:
+            return None, (
+                f"no harmony tool call in raw reply ({len(text)} chars, "
+                f"ends {text[-160:]!r})"
+            )
+        said, body = matches[-1].group(1), matches[-1].group(2)
+        name = canon(said)
+        if name is None:
+            return None, f"unknown tool {said!r} in harmony text"
+        args = _json_object(body)
+        if args is None:
+            return None, f"{said}: harmony call args are not a JSON object"
+        calls.append((name, args))
+        how = f"functions.{said} -> {name} from harmony text"
+    reasoning = "\n".join(
+        m.strip() for m in _HARMONY_ANALYSIS.findall(text) if m.strip()
+    ) or ("" if "<|" in text else text.strip())
+    chat = {
+        "id": raw.get("id"),
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": reasoning or None,
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{uuid.uuid4().hex[:24]}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(args)},
+                        }
+                        for name, args in calls
+                    ],
+                },
+            }
+        ],
+        "usage": raw.get("usage") or {},
+    }
+    return chat, how
+
+
+def chat_events(chat: dict, model: str) -> list[tuple[str, dict]]:
+    """A complete chat/completions reply as Anthropic SSE events."""
+    msg = ((chat.get("choices") or [{}])[0]).get("message") or {}
+    chunks: list[dict] = []
+    if msg.get("reasoning_content"):
+        chunks.append(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": msg["reasoning_content"]},
+                    }
+                ]
+            }
+        )
+    if msg.get("content"):
+        chunks.append({"choices": [{"index": 0, "delta": {"content": msg["content"]}}]})
+    calls = [{**tc, "index": i} for i, tc in enumerate(msg.get("tool_calls") or [])]
+    if calls:
+        chunks.append({"choices": [{"index": 0, "delta": {"tool_calls": calls}}]})
+    finish = (chat.get("choices") or [{}])[0].get("finish_reason") or "stop"
+    chunks.append(
+        {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+            "usage": chat.get("usage") or {},
+        }
+    )
+    translator = ChatStreamTranslator(model)
+    if isinstance(chat.get("id"), str):
+        translator.msg_id = chat["id"]
+    out: list[tuple[str, dict]] = []
+    for chunk in chunks:
+        out += translator.feed(chunk)
+    return out + translator.close()
+
+
+# --- retry driver ---------------------------------------------------------------
+
+RetryLog = Callable[
+    [str, str], None
+]  # (event: retry | salvaged | salvage_refused, detail)
+
+
+def _salvage_retry(
+    send_raw: Callable[[], dict], tool_names: Iterable[str], log: RetryLog
+) -> tuple[dict | None, str]:
+    chat, how = salvage_call(send_raw(), tool_names)
+    log("salvaged" if chat is not None else "salvage_refused", how)
+    return chat, how
+
+
+def complete_with_retry(
+    send: Callable[[], dict],
+    model: str,
+    retries: int,
+    log: RetryLog,
+    send_raw: Callable[[], dict] | None = None,
+    tool_names: Iterable[str] = (),
+) -> dict:
+    """Non-streaming turn: retry while the reply is a dropped tool call.
+
+    ``send`` returns one upstream chat/completions body. With ``send_raw``
+    (a raw-harmony request) each retry salvages from it instead of re-sending
+    ``send``. Raises :class:`DroppedToolCall` once ``retries`` retries failed.
+    """
+    reason = ""
+    for attempt in range(retries + 1):
+        if attempt:
+            log("retry", f"{attempt}/{retries}: {reason}")
+            if send_raw is not None:
+                salvaged, reason = _salvage_retry(send_raw, tool_names, log)
+                if salvaged is not None:
+                    return to_anthropic_response(salvaged, model)
+                continue
+        chat = send()
+        dropped = _chat_dropped_call(chat)
+        if dropped is None:
+            return to_anthropic_response(chat, model)
+        reason = dropped
+    raise DroppedToolCall(_dropped_message(retries, reason))
+
+
+def stream_with_retry(
+    open_stream: Callable[[], Iterable[dict]],
+    model: str,
+    retries: int,
+    log: RetryLog,
+    send_raw: Callable[[], dict] | None = None,
+    tool_names: Iterable[str] = (),
+) -> Iterator[tuple[str, dict]]:
+    """Streaming turn: Anthropic SSE events, retrying dropped tool calls.
+
+    A turn's events are held back until it either streams a tool call (then
+    it is good and the rest passes straight through) or finishes; a finished
+    turn that dropped its call is discarded and retried (a salvage from
+    ``send_raw`` when given, else ``open_stream`` again). Nothing is yielded
+    before that decision, so :class:`DroppedToolCall` (and any error from
+    ``open_stream``) raises before the first event.
+    """
+    reason = ""
+    for attempt in range(retries + 1):
+        if attempt:
+            log("retry", f"{attempt}/{retries}: {reason}")
+            if send_raw is not None:
+                salvaged, reason = _salvage_retry(send_raw, tool_names, log)
+                if salvaged is not None:
+                    yield from chat_events(salvaged, model)
+                    return
+                continue
+        translator = ChatStreamTranslator(model)
+        held: list[tuple[str, dict]] = []
+        live = False
+        for chunk in open_stream():
+            events = translator.feed(chunk)
+            if live:
+                yield from events
+            elif translator.saw_tool:
+                live = True
+                yield from held + events
+                held = []
+            else:
+                held += events
+        tail = translator.close()
+        dropped = None if live else translator.dropped_call()
+        if dropped is None:
+            yield from held + tail
+            return
+        reason = dropped
+    raise DroppedToolCall(_dropped_message(retries, reason))
+
+
+def _dropped_message(retries: int, reason: str) -> str:
+    return (
+        f"upstream dropped the model's tool call on {retries + 1} attempts "
+        f"(last: {reason}). gpt-oss wrote the call on the harmony analysis "
+        "channel, which SGLang's gpt-oss tool parser ignores; see "
+        "docs/backlog/castor-agent-lane.md (slice 0a)"
+    )
+
+
 # --- HTTP plumbing -------------------------------------------------------------
 
 
@@ -467,23 +837,43 @@ class Handler(BaseHTTPRequestHandler):
     upstream_host = "127.0.0.1"
     upstream_port = 8000
     mode = "auto"  # auto | chat | messages
+    system_role = SYSTEM_ROLE  # auto | system | fold
+    salvage = SALVAGE  # auto | on | off
     protocol_version = "HTTP/1.1"
+    # dropped-call outcomes since start: retry | salvaged | salvage_refused | exhausted
+    stats: Counter[str] = Counter()
+    stats_lock = threading.Lock()
 
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write("shim: " + (fmt % args) + "\n")
 
-    def _reply_json(self, status: int, obj: dict) -> None:
+    def _log_dropped(self, event: str, detail: str) -> None:
+        with Handler.stats_lock:
+            Handler.stats[event] += 1
+            counts = " ".join(
+                f"{k}={Handler.stats[k]}"
+                for k in ("retry", "salvaged", "salvage_refused", "exhausted")
+            )
+        self.log_message("dropped call %s: %s [%s]", event, detail, counts)
+
+    def _reply_json(self, status: int, obj: dict, retry: bool | None = None) -> None:
         data = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))
+        if retry is not None:
+            # Anthropic SDK clients honour this over their own status rules.
+            self.send_header("x-should-retry", "true" if retry else "false")
         self.end_headers()
         self.wfile.write(data)
 
-    def _reply_error(self, status: int, message: str) -> None:
+    def _reply_error(
+        self, status: int, message: str, retry: bool | None = None
+    ) -> None:
         self._reply_json(
             status,
             {"type": "error", "error": {"type": "api_error", "message": message}},
+            retry,
         )
 
     def _chat_mode(self) -> bool:
@@ -541,69 +931,120 @@ class Handler(BaseHTTPRequestHandler):
         self._forward(path, body)
 
     def _forward_chat(self, body: dict) -> None:
-        """Translate ``/v1/messages`` to ``/v1/chat/completions`` and back."""
-        chat_body = to_chat_body(body)
+        """Translate ``/v1/messages`` to ``/v1/chat/completions`` and back.
+
+        A turn whose tool call the upstream dropped is retried up to
+        :data:`DROPPED_CALL_RETRIES` times (as a raw-harmony salvage when
+        salvage is on for the model); after that the client gets a 502 naming
+        the cause instead of an empty end_turn.
+        """
+        chat_body = to_chat_body(body, Handler.system_role)
         model = str(body.get("model") or "unknown")
-        data = json.dumps(chat_body).encode("utf-8")
-        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP}
-        headers["content-length"] = str(len(data))
-        headers["content-type"] = "application/json"
-        conn = http.client.HTTPConnection(
-            self.upstream_host, self.upstream_port, timeout=600
-        )
+        base_headers = {
+            k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP
+        }
+
+        def encode(payload: dict) -> tuple[bytes, dict]:
+            data = json.dumps(payload).encode("utf-8")
+            return data, {
+                **base_headers,
+                "content-length": str(len(data)),
+                "content-type": "application/json",
+            }
+
+        data, headers = encode(chat_body)
+        send_raw: Callable[[], dict] | None = None
+        if salvage_on(model, Handler.salvage):
+            raw_body = {**chat_body, **RAW_HARMONY, "stream": False}
+            raw_body.pop("stream_options", None)
+            raw_data, raw_headers = encode(raw_body)
+
+            def _send_raw() -> dict:
+                return self._chat_json(raw_data, raw_headers)
+
+            send_raw = _send_raw
+
+        tool_names = [
+            str((t.get("function") or {}).get("name", ""))
+            for t in chat_body.get("tools") or []
+        ]
         try:
-            conn.request("POST", "/v1/chat/completions", body=data, headers=headers)
-            resp = conn.getresponse()
-        except OSError as exc:
-            conn.close()
-            self._reply_error(502, str(exc))
-            return
-        try:
-            if resp.status != 200:
-                raw = resp.read()
-                try:
-                    detail = json.loads(raw)
-                    message = (
-                        (detail.get("error") or {}).get("message")
-                        or detail.get("message")
-                        or raw.decode("utf-8", "replace")[:500]
-                    )
-                except (json.JSONDecodeError, AttributeError):
-                    message = raw.decode("utf-8", "replace")[:500]
-                self._reply_error(resp.status, f"upstream {resp.status}: {message}")
-                return
             if chat_body.get("stream"):
-                self._relay_stream(resp, model)
-            else:
-                self._reply_json(
-                    200, to_anthropic_response(json.loads(resp.read()), model)
+                events = stream_with_retry(
+                    lambda: self._chat_chunks(data, headers),
+                    model,
+                    DROPPED_CALL_RETRIES,
+                    self._log_dropped,
+                    send_raw,
+                    tool_names,
                 )
-        except (OSError, json.JSONDecodeError) as exc:
+                first = next(events)
+                self._relay_stream(first, events)
+            else:
+                reply = complete_with_retry(
+                    lambda: self._chat_json(data, headers),
+                    model,
+                    DROPPED_CALL_RETRIES,
+                    self._log_dropped,
+                    send_raw,
+                    tool_names,
+                )
+                self._reply_json(200, reply)
+        except UpstreamError as exc:
+            self._reply_error(exc.status, str(exc))
+        except DroppedToolCall as exc:
+            self._log_dropped("exhausted", str(exc))
+            # The shim already retried; a client retry loop on top would
+            # multiply load on a shared upstream for the same outcome.
+            self._reply_error(502, str(exc), retry=False)
+        except OSError as exc:
             try:
                 self._reply_error(502, str(exc))
             except OSError:
                 pass
+
+    def _chat_response(
+        self, conn: http.client.HTTPConnection, data: bytes, headers: dict
+    ) -> http.client.HTTPResponse:
+        """POST to chat/completions; a non-200 raises :class:`UpstreamError`."""
+        try:
+            conn.request("POST", "/v1/chat/completions", body=data, headers=headers)
+            resp = conn.getresponse()
+        except OSError as exc:
+            raise UpstreamError(502, str(exc)) from exc
+        if resp.status != 200:
+            raw = resp.read()
+            try:
+                detail = json.loads(raw)
+                message = (
+                    (detail.get("error") or {}).get("message")
+                    or detail.get("message")
+                    or raw.decode("utf-8", "replace")[:500]
+                )
+            except (json.JSONDecodeError, AttributeError):
+                message = raw.decode("utf-8", "replace")[:500]
+            raise UpstreamError(resp.status, f"upstream {resp.status}: {message}")
+        return resp
+
+    def _chat_json(self, data: bytes, headers: dict) -> dict:
+        conn = http.client.HTTPConnection(
+            self.upstream_host, self.upstream_port, timeout=600
+        )
+        try:
+            raw = self._chat_response(conn, data, headers).read()
+            return json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise UpstreamError(502, str(exc)) from exc
         finally:
             conn.close()
 
-    def _relay_stream(self, resp: http.client.HTTPResponse, model: str) -> None:
-        """Translate upstream chat/completions SSE to Anthropic SSE, chunked."""
-        translator = ChatStreamTranslator(model)
-        self.send_response(200)
-        self.send_header("content-type", "text/event-stream")
-        self.send_header("transfer-encoding", "chunked")
-        self.send_header("cache-control", "no-cache")
-        self.end_headers()
-
-        def emit(events: list[tuple[str, dict]]) -> None:
-            for event, data in events:
-                payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
-                self.wfile.write(
-                    f"{len(payload):x}\r\n".encode("ascii") + payload + b"\r\n"
-                )
-            self.wfile.flush()
-
+    def _chat_chunks(self, data: bytes, headers: dict) -> Iterator[dict]:
+        """One upstream SSE stream as decoded ``data:`` objects."""
+        conn = http.client.HTTPConnection(
+            self.upstream_host, self.upstream_port, timeout=600
+        )
         try:
+            resp = self._chat_response(conn, data, headers)
             while True:
                 line = resp.readline()
                 if not line:
@@ -611,18 +1052,46 @@ class Handler(BaseHTTPRequestHandler):
                 line = line.strip()
                 if not line or not line.startswith(b"data:"):
                     continue
-                data = line[5:].strip()
-                if data == b"[DONE]":
+                payload = line[5:].strip()
+                if payload == b"[DONE]":
                     break
                 try:
-                    chunk = json.loads(data)
+                    yield json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                emit(translator.feed(chunk))
-            emit(translator.close())
         finally:
-            self.wfile.write(b"0\r\n\r\n")
+            conn.close()
+
+    def _relay_stream(
+        self, first: tuple[str, dict], events: Iterator[tuple[str, dict]]
+    ) -> None:
+        """Write Anthropic SSE events to the client, chunked."""
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("transfer-encoding", "chunked")
+        self.send_header("cache-control", "no-cache")
+        self.end_headers()
+
+        def emit(event: str, data: dict) -> None:
+            payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+            self.wfile.write(
+                f"{len(payload):x}\r\n".encode("ascii") + payload + b"\r\n"
+            )
             self.wfile.flush()
+
+        try:
+            emit(*first)
+            for event, data in events:
+                emit(event, data)
+        except (OSError, UpstreamError, DroppedToolCall) as exc:
+            # The turn was already live (a tool call streamed); just end it.
+            self.log_message("stream ended early: %s", exc)
+        finally:
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
 
     def _forward(self, path: str, body: dict) -> None:
         data = json.dumps(body).encode("utf-8")
@@ -690,6 +1159,18 @@ def main(argv: list[str]) -> int:
             print(__doc__, file=sys.stderr)
             return 2
         Handler.mode = mode
+    if "--system-role" in flags:
+        role = flags["--system-role"].partition("=")[2]
+        if role not in SYSTEM_ROLES:
+            print(__doc__, file=sys.stderr)
+            return 2
+        Handler.system_role = role
+    if "--salvage" in flags:
+        setting = flags["--salvage"].partition("=")[2]
+        if setting not in SALVAGE_SETTINGS:
+            print(__doc__, file=sys.stderr)
+            return 2
+        Handler.salvage = setting
     srv = ThreadingHTTPServer(("127.0.0.1", listen_port), Handler)
     srv.daemon_threads = True
     srv.serve_forever()
