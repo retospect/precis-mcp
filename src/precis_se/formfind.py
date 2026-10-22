@@ -255,11 +255,33 @@ def _movable(tree: SeTree, op: dict[str, Any], node_names: list[str]) -> set[str
     return movable
 
 
-def op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
-    """Apply the ``formfind`` op (module docstring): solve, vet the
-    result, write solved poses back stamped ``proposed``. Raises
-    :class:`OpError` before any mutation on every refusal path — the op
-    either lands whole or not at all."""
+@dataclass
+class FormfindSolve:
+    """One vetted force-density solve, not yet written back: the axial
+    node roster, which of them the caller authorized to move, and the
+    equilibrium coordinates. :func:`op_formfind` writes it; the assembly
+    check (:mod:`precis_se.assembly_check`) only reads it — how far each
+    movable node sits from equilibrium."""
+
+    node_names: list[str]
+    index: dict[str, int]
+    members: list[_Member]
+    movable: set[str]
+    coords: np.ndarray
+    extent: float
+
+    def displacement(self, tree: SeTree, name: str) -> float:
+        """Metres between ``name``'s stored pose and its solved position."""
+        new = self.coords[self.index[name]]
+        return float(
+            np.linalg.norm(new - np.asarray(tree.blocks[name].pose, dtype=float))
+        )
+
+
+def solve(tree: SeTree, op: dict[str, Any]) -> FormfindSolve:
+    """Vet ``op`` and run the solve without touching ``tree`` — every
+    refusal in the module docstring raises :class:`OpError` here, so
+    :func:`op_formfind` mutates only after this returns."""
     strays = sorted(set(op) - _ALLOWED_KEYS)
     if strays:
         raise OpError(
@@ -316,14 +338,28 @@ def op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
             "spread geometry; adjust the strut/cable balance or the "
             "anchor positions (nothing was written back)"
         )
+    return FormfindSolve(
+        node_names=node_names,
+        index=index,
+        members=members,
+        movable=movable,
+        coords=result.coords,
+        extent=extent,
+    )
 
-    move_tol = _COLLAPSE_RTOL * extent
-    for name in movable:
+
+def op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
+    """Apply the ``formfind`` op (module docstring): solve, vet the
+    result, write solved poses back stamped ``proposed``. Raises
+    :class:`OpError` before any mutation on every refusal path — the op
+    either lands whole or not at all."""
+    solved = solve(tree, op)
+    move_tol = _COLLAPSE_RTOL * solved.extent
+    for name in solved.movable:
         node = tree.blocks[name]
-        new = result.coords[index[name]]
-        if float(np.linalg.norm(new - np.asarray(node.pose, dtype=float))) <= move_tol:
+        if solved.displacement(tree, name) <= move_tol:
             continue  # already at equilibrium — keep the pose AND its stamp
-        new_pose = [float(v) for v in new]
+        new_pose = [float(v) for v in solved.coords[solved.index[name]]]
         node.pose = new_pose
         # The solve writes a WORLD position (its shared coordinate space);
         # storage is parent-relative (module docstring's compose contract,

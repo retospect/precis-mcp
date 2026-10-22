@@ -72,7 +72,8 @@ only maps them.
 
 *Spine.* :mod:`precis_se.handler` (``SeHandler``: tree CRUD; the
 tree/block/ports/measures/datums/pockets/validate/clearance/sweep/drc/bom/
-order/fab/print/fret/chain/kinematics/stability/freedom/interview views;
+order/fab/print/fret/chain/kinematics/stability/freedom/interview/
+assembly_check views;
 ``search`` by intent, ``wants=`` library search, ``compose=`` proposer),
 :mod:`precis_se.ops` (pure typed-op application over an in-memory tree — no
 store access; instancing cycle guards from the shared :mod:`precis.blocktree`
@@ -99,7 +100,12 @@ solve per case, sign-aware ``completeness`` findings, the member
 ``{trans, cis}`` bistability probe; the ``axial`` class and ``cable``
 mechanism) with :mod:`precis_se.formfind` as its generator,
 :mod:`precis_se.precedent`
-(joining-chemistry evidence against ``rxn`` yield rows).
+(joining-chemistry evidence against ``rxn`` yield rows),
+:mod:`precis_se.assembly_check` (macro relax v1 ``method:'assembly'`` —
+the fold of drc, interference depth, stack-up worst-case + RSS, mold pull
+and the read-only formfind solve into one findings list, plus the
+rigid-body mate-redundancy analysis; ``view='assembly_check'`` today, the
+workspace importer's ``relax:`` dispatch when that lands).
 
 *Bought parts, fastening, fabrication (L3/L5).* :mod:`precis_se.bom` /
 :mod:`precis_se.order` / :mod:`precis_se.modes` (the manufacturing-mode

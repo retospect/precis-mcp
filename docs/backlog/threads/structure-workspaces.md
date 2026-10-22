@@ -41,7 +41,8 @@ design-review: yes
 
 ## Horizon
 
-1. **structure-workspaces slices 4, 4p, 4m, 4a, 4u, 5** — relax interface, periodic ladder, motif templates, interface relax, unit catalogue, macro check-and-report; slice 4p also gates the held [hexfold-tethered-relax-op](../hexfold-tethered-relax-op.md) (see hexfold-toolkit).
+1. **structure-workspaces slices 4, 4p, 4m, 4a, 4u** — relax interface, periodic ladder, motif templates, interface relax, unit catalogue; slice 4p also gates the held [hexfold-tethered-relax-op](../hexfold-tethered-relax-op.md) (see hexfold-toolkit).
+   - **Slice 5 (macro check-and-report) landed 2026-10-22 (sw-s5), ahead of slice 0.** `precis_se.assembly_check.assembly_check(store, tree, ref_id)` over the existing design blocks, read-only as `get(kind='se', id=…, view='assembly_check')`: one findings list (`drc` + interference depth per pair + stack-up worst-case and RSS + `mold.undercut` + the rigid-body mate-redundancy analysis + the read-only formfind solve where axial) in the spec's `{geometry, findings[], method:'assembly', seed, constraints}` shape. **Left for slice 0/4:** the importer's `relax: {method: 'assembly'}` calls that function — no second implementation. Not built (W4): a mate solver, settle, FEA; the `clearance below minimum` row has no se-side minimum to read yet (no process row in `modes.py` carries one).
 2. **structure-workspaces 2e, 2r** — atom fisheye and observation rays; after 2t/2p.
 3. **se-native-fields slices 2, 3** — thermoelastic via scikit-fem with the bracket example (fits a part to existing blocks' ports; needs structure 2r's macro rays and the `context.json` staging), then advection coupling with the flow kernel; after fields slice 1 (slice 3 also after se-multiphysics slice 1).
 4. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration.

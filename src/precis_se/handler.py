@@ -637,6 +637,7 @@ class SeHandler(Handler):
             "fret",
             "print",
             "fab",
+            "assembly_check",
         ),
     )
 
@@ -2004,6 +2005,14 @@ class SeHandler(Handler):
             return Response(body=_render_interview(tree))
         if v == "freedom":
             return Response(body=_render_freedom(tree))
+        if v == "assembly_check":
+            from precis_se import assembly_check as se_assembly_check
+
+            return Response(
+                body=se_assembly_check.render(
+                    se_assembly_check.assembly_check(self.store, tree, ref.id)
+                )
+            )
         if v == "stability":
             return Response(body=_render_stability(tree, args))
         if v == "fret":
@@ -2068,6 +2077,9 @@ class SeHandler(Handler):
             "| view='interview' "
             "(the question/answer/decision ledger, open questions first) "
             "| view='freedom' (what is still undecided, and by whom) "
+            "| view='assembly_check' (macro relax v1 check-and-report: "
+            "mate redundancy, interference depth, stack-up worst-case + RSS, "
+            "mold pull, formfind equilibrium — one findings list) "
             "| view='stability' (Maxwell/Calladine rigid / mechanism / "
             "prestress-stabilized over the axial members, plus the "
             "taut/slack load-path solve per case — args={'load_cases': "
@@ -7089,6 +7101,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "fasten": frozenset(),
     "interview": frozenset(),
     "freedom": frozenset(),
+    "assembly_check": frozenset(),
     "stability": frozenset({"load_cases", "bistable"}),
     "mechanics": frozenset(),
     "literature": frozenset({"block"}),

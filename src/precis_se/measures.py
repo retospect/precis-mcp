@@ -34,8 +34,13 @@ units map onto seeded nodes (:data:`LEGACY_MEASURANDS`).
 an anchor (a measure with a declared ``value`` — or, new, a declared
 band — and no usable relation past it), accumulating a running
 multiplier for ``scale``, summing offsets and accumulating tolerances
-**worst-case linear** (Σ|mult·tol| — RSS is a later refinement, named so
-it isn't re-derived). An interval anchor derives a *band*
+**worst-case linear** (Σ|mult·tol|, ``tol_accum``) and, beside it,
+**root-sum-square** (√Σ(mult·tol)², ``tol_rss`` — the statistical stack,
+every contributor independent and centred; always ≤ worst case).
+Agreement below is judged worst-case; :func:`rss_problem` re-judges one
+row under RSS for the assembly check (:mod:`precis_se.assembly_check`),
+where a chain that fails both is over-tight and one that fails only RSS
+is a chain the statistical stack still cannot carry. An interval anchor derives a *band*
 (``derived_min``/``derived_max``); declared-vs-derived agreement is
 checked point-vs-point, point-vs-band and band-vs-band, always with the
 accumulated tolerance as slack. Chains that dangle or cycle are *DRC's
@@ -270,6 +275,8 @@ class StackupResult:
     derived_min: float | None = None
     derived_max: float | None = None
     tol_accum: float = 0.0
+    #: √Σ(mult·tol)² over the same chain — the RSS stack (module docstring).
+    tol_rss: float = 0.0
     unit: str = "m"
     chain: list[str] = field(default_factory=list)  # source-ward, this first
     problem: str | None = None
@@ -361,6 +368,7 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
         mult = 1.0
         offset_sum = 0.0
         tol_sum = 0.0
+        tol_sq_sum = 0.0
         cur = m
         cur_key = me
         while True:
@@ -368,6 +376,7 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
             assert rel is not None
             offset_sum += mult * float(rel["offset"])
             tol_sum += abs(mult) * abs(float(rel["tol"]))
+            tol_sq_sum += (mult * float(rel["tol"])) ** 2
             mult *= float(rel.get("scale", 1.0))
             src_key = str(rel["source"])
             res.chain.append(src_key)
@@ -402,6 +411,7 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
                 # is checked by its own StackupResult).
                 res.derived = mult * src.value + offset_sum
                 res.tol_accum = tol_sum
+                res.tol_rss = math.sqrt(tol_sq_sum)
                 break
             if valid_rel[src_key] is None:
                 # chain's end without a point value: an interval anchor
@@ -412,6 +422,7 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
                     hi = mult * src_band[1] + offset_sum
                     res.derived_min, res.derived_max = min(lo, hi), max(lo, hi)
                     res.tol_accum = tol_sum
+                    res.tol_rss = math.sqrt(tol_sq_sum)
                 break
             cur = src
             cur_key = src_key
@@ -421,15 +432,27 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
     return out
 
 
+def rss_problem(m: MeasureSpec, res: StackupResult) -> tuple[str | None, str | None]:
+    """The row's agreement problem judged with ``tol_rss`` as the slack
+    instead of ``tol_accum`` — ``(detail, kind)`` like the stored
+    ``problem``/``problem_kind``, ``(None, None)`` when it agrees. Only
+    a row that derived something can disagree; a dangling/cyclic/
+    malformed row keeps its own problem and is not re-judged here."""
+    if res.problem_kind not in (None, "mismatch"):
+        return (None, None)
+    return _agreement_problem(m, res, tol=res.tol_rss)
+
+
 def _agreement_problem(
-    m: MeasureSpec, res: StackupResult
+    m: MeasureSpec, res: StackupResult, *, tol: float | None = None
 ) -> tuple[str | None, str | None]:
-    """Declared-vs-derived agreement, with ``tol_accum`` as slack: checks
-    the declared point against the derived point or band, the declared
-    band against the derived point or band, and the declared point
-    against the measure's own band (a hand-edited row can violate what
-    write time gates)."""
-    tol = res.tol_accum
+    """Declared-vs-derived agreement, with ``tol_accum`` as slack (or the
+    caller's ``tol``): checks the declared point against the derived
+    point or band, the declared band against the derived point or band,
+    and the declared point against the measure's own band (a hand-edited
+    row can violate what write time gates)."""
+    if tol is None:
+        tol = res.tol_accum
     band = declared_band(m)
     u = m.unit
     # Same neat formatter as the measures table's value/band/derived
