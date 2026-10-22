@@ -8,6 +8,11 @@ model: fable
 
 # se modules and assemblies
 
+> **PAUSED (Reto 2026-10-22).** Direction under discussion: modularity lives in
+> Python code run in sandboxed structure workspaces, inspection and storage in
+> the MCP (a "structure workspaces" spec follows). Slice 1 (`meta.role`,
+> `$name`, `stamp`) is not to be built until that spec rules on it.
+
 Reto, 2026-10-22: "As we build higher complexity structures, we want to
 define parameterized building blocks, and understand those. Ideally this
 can happen in agent memory but it feels like inventing a new language. How
