@@ -671,6 +671,13 @@ class ExpansionCaps:
     max_fab_usd: float
 
 
+#: The one switch for the post-anneal field polish default
+#: (:attr:`OptimizeConfig.field_polish`). Opt-in until the silk gate lands
+#: (Reto 2026-10-22). A module constant, not ``OptimizeConfig.field_polish``:
+#: on a slots dataclass that class attribute is a (truthy) slot descriptor.
+FIELD_POLISH_DEFAULT = False
+
+
 @dataclass(frozen=True, slots=True)
 class OptimizeConfig:
     """Every tunable this module needs. ``cost`` is passed straight to the
@@ -783,11 +790,13 @@ class OptimizeConfig:
     #: decoupling rubber bands, the supply tree and the raster/rotation
     #: wells. Applied only if the energy drops and every move is legal;
     #: :meth:`OptimizeEngine.total` is reported as a comparison value,
-    #: not the accept gate (Reto 2026-10-21). On by
-    #: default (Reto 2026-10-21: "the placer too, we switch to the new
-    #: kind and dogfood it"); the annealer-only run stays reachable as
-    #: ``field_polish=False`` for the bench's comparison column.
-    field_polish: bool = True
+    #: not the accept gate (Reto 2026-10-21). Opt-in until the silk gate
+    #: lands (Reto 2026-10-22: default-on polish left labels with no
+    #: legal slot, ``silk_missing`` on the film and esp32c3 seeds).
+    #: :data:`FIELD_POLISH_DEFAULT` is the one switch; the place/route job
+    #: params and the handler's ``field_polish`` option only forward an
+    #: explicit value.
+    field_polish: bool = FIELD_POLISH_DEFAULT
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:

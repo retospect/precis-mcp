@@ -34,14 +34,15 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
-from precis.pcb.optimize import MoveKind as _MK
 from precis.pcb.optimize import (
+    FIELD_POLISH_DEFAULT,
     OptimizeConfig,
     ScheduleStage,
     digest_toon,
     optimize,
     resolve_measures,
 )
+from precis.pcb.optimize import MoveKind as _MK
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -58,9 +59,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "snap": {"type": "boolean"},
         "groups": {"type": "boolean"},
         "force": {"type": "boolean"},
-        # Annealer-only run: the field polish (OptimizeConfig.field_polish)
-        # is the default placer; False opts out — the route bench's
-        # `anneal` comparison column runs this way.
+        # Opt-in field polish (optimize.FIELD_POLISH_DEFAULT, off until
+        # the silk gate lands); absent = the config default.
         "field_polish": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
@@ -242,9 +242,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         measures=measures,
         preferred_snap=snap,
         support_groups=groups,
-        # Default follows OptimizeConfig's (field polish on); the param
-        # only ever turns it off for an annealer-only comparison run.
-        field_polish=bool(params.get("field_polish", True)),
+        # Absent param = FIELD_POLISH_DEFAULT, the one switch (off until
+        # the silk gate lands).
+        field_polish=bool(params.get("field_polish", FIELD_POLISH_DEFAULT)),
     )
     # Pre-route DRC gate, measured TWICE: on the stored placement before
     # the anneal touches `ir`, and on the annealed one before anything is

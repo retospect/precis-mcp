@@ -97,9 +97,8 @@ class BenchRow:
     #: ``rule:severity:finding_key`` per finding, sorted — what "DRC
     #: identical by finding_key" (slice 2's exit) is diffed on.
     finding_keys: tuple[str, ...] = ()
-    #: Annealer-only comparison (``field_polish=False``, Reto 2026-10-21:
-    #: the annealer stays only as this column until the field path routes
-    #: every bench board) — ``"routed/nets"`` for the same board's place +
+    #: Annealer-only comparison (``field_polish=False``; the main column
+    #: opts the polish in explicitly, Reto 2026-10-21) — ``"routed/nets"`` for the same board's place +
     #: route run without the polish; ``None`` on boards with no placement
     #: step (fixed-pose replays route the same board either way).
     anneal: str | None = None
@@ -276,8 +275,8 @@ def bench_nano(store: Store, seed: int = 1, *, field_polish: bool = True) -> Ben
     assert ref is not None
     place_args: dict[str, Any] = {"op": "place", "seed": seed}
     route_args: dict[str, Any] = {"seed": seed}
-    if not field_polish:
-        place_args["field_polish"] = route_args["field_polish"] = False
+    # Explicit both ways: the polish is opt-in until the silk gate lands.
+    place_args["field_polish"] = route_args["field_polish"] = field_polish
     assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_latest_job(store, ref.id)
     return _measure_job_board(store, pcb, slug, route_args)
@@ -308,8 +307,8 @@ def bench_esp32c3(store: Store, seed: int, *, field_polish: bool = True) -> Benc
     pcb.put(id=slug, args={"op": "plane_net", "layer": "B.Cu", "net": "VCC3V3"})
     place_args: dict[str, Any] = {"op": "place", "seed": seed}
     route_args: dict[str, Any] = {"seed": seed}
-    if not field_polish:
-        place_args["field_polish"] = route_args["field_polish"] = False
+    # Explicit both ways: the polish is opt-in until the silk gate lands.
+    place_args["field_polish"] = route_args["field_polish"] = field_polish
     assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_latest_job(store, ref.id)
     return _measure_job_board(store, pcb, slug, route_args)

@@ -700,9 +700,9 @@ class PcbHandler(Handler):
                 "place",
                 "escape",
                 "groups",
-                # Opt-out field polish on place/route (annealer-only run —
-                # the bench's `anneal` column; OptimizeConfig.field_polish
-                # is on by default).
+                # Opt-in field polish on place/route
+                # (OptimizeConfig.field_polish, off until the silk gate
+                # lands).
                 "field_polish",
                 "loop",
                 "moves",
@@ -1674,9 +1674,9 @@ class PcbHandler(Handler):
         # series pairs re-laid as organised rows post-anneal.
         if op in ("place", "route") and opts.get("groups") is not None:
             params["groups"] = bool(opts["groups"])
-        # Opt-OUT field polish (optimize.OptimizeConfig.field_polish, on
-        # by default): False gives the annealer-only run the bench's
-        # `anneal` comparison column measures.
+        # Opt-in field polish (optimize.OptimizeConfig.field_polish, off
+        # until the silk gate lands): forwarded only when given, so the
+        # config default stays the one switch.
         if op in ("place", "route") and opts.get("field_polish") is not None:
             params["field_polish"] = bool(opts["field_polish"])
         if op == "route" and opts.get("warm_start") is not None:

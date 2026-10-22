@@ -188,12 +188,13 @@ def test_polish_accept_path_lowers_energy_and_stays_legal(n: int, seed: int) -> 
     _assert_applied_pose_legal(engine, res)
 
 
-def test_field_polish_flag_is_on_by_default_and_runs() -> None:
+def test_field_polish_flag_is_opt_in_and_runs_when_set() -> None:
     from tests.test_pcb_optimize import _seeded_ir
 
-    assert OptimizeConfig().field_polish is True
+    # Opt-in until the silk gate lands (Reto 2026-10-22).
+    assert OptimizeConfig().field_polish is False
     ir = _seeded_ir(6, graph_seed=2, seed_rng_seed=2)
-    res = optimize(ir, OptimizeConfig(seed=2))
+    res = optimize(ir, OptimizeConfig(seed=2, field_polish=True))
     assert any(line.startswith("field_polish ") for line in res.support_groups)
 
 
@@ -220,7 +221,7 @@ def test_polish_is_deterministic() -> None:
     poses = []
     for _ in range(2):
         ir = _seeded_ir(6, graph_seed=2, seed_rng_seed=2)
-        optimize(ir, OptimizeConfig(seed=2))
+        optimize(ir, OptimizeConfig(seed=2, field_polish=True))
         poses.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
     for a, b in zip(poses[0], poses[1], strict=True):
         assert np.array_equal(a, b)

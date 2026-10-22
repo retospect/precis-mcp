@@ -52,7 +52,9 @@ def test_esp32c3_placed_rotations_are_grid_values(store: Store, seed: int) -> No
     assert "created" in pcb.put(id=slug, args=design).body
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
-    assert "enqueued" in pcb.put(id=slug, args={"op": "place", "seed": seed}).body
+    # The polish is opt-in until the silk gate lands; this guards its writes.
+    place_args = {"op": "place", "seed": seed, "field_polish": True}
+    assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_one_job(store, ref.id)
 
     graph = store.pcb_graph(ref.id)

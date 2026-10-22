@@ -84,6 +84,7 @@ from precis.pcb.ir import (
     world_courtyard_polygons,
 )
 from precis.pcb.optimize import (
+    FIELD_POLISH_DEFAULT,
     LOOP_MAX_ROUNDS,
     ExpansionCaps,
     OptimizeConfig,
@@ -166,9 +167,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "cleanup": {"type": "boolean"},
         # Route-only (gr495397): false = no anneal, poses and sketch kept.
         "place": {"type": "boolean"},
-        # Annealer-only joint anneal: the field polish is the default
-        # placer; False opts out — the route bench's `anneal` comparison
-        # column runs this way.
+        # Opt-in field polish (optimize.FIELD_POLISH_DEFAULT, off until
+        # the silk gate lands); absent = the config default.
         "field_polish": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
@@ -1147,9 +1147,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # single path's schedule never draws them anyway.
         expansion=expansion_caps,
         support_groups=groups,
-        # Default follows OptimizeConfig's (field polish on); the param
-        # only ever turns it off for an annealer-only comparison run.
-        field_polish=bool(params.get("field_polish", True)),
+        # Absent param = FIELD_POLISH_DEFAULT, the one switch (off until
+        # the silk gate lands).
+        field_polish=bool(params.get("field_polish", FIELD_POLISH_DEFAULT)),
     )
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,

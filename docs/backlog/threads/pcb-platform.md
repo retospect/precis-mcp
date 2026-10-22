@@ -94,8 +94,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   1–2, slot beside slices 3–5. Slices 0–2 landed in `field.py` (T1/T4,
   SAT T4 + T5/T6 + JLCPCB pair table, T9/T10 wells with θ as a real
   variable). 2026-10-21: Reto switched the default placer to it —
-  `field_polish` on by default (placer-a); the annealer lives on as
-  the bench's `anneal` column; slice 2 (θ, wells) is placer-b.
+  `field_polish` on by default (placer-a); 2026-10-22 Reto took the
+  default off again — opt-in until the silk gate lands (silk_missing on
+  film/esp32c3 seeds); the annealer lives on as the bench's `anneal`
+  column; slice 2 (θ, wells) is placer-b.
   placer-c: ABNORMAL-stalled stages retry θ-pinned (gr503452) and the
   gate is legality + field energy, anneal `total()` report-only
   (gr503458) — polish applies on sanity free-bottom and p2u.

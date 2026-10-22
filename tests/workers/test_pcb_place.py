@@ -286,7 +286,7 @@ def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
     snapped = {r[0]: r[1] for r in rows if r[1] is not None}
     assert "A" not in snapped  # frozen parts are never snapped
     assert snapped  # the snap stamped what it moved
-    # C ends on its 0.5mm preferred grid. The default field polish rasters
+    # C ends on its 0.5mm preferred grid. The field polish (opt-in) rasters
     # onto that same grid (board_from_engine's pitch is
     # _preferred_snap_grid_mm), so when the polish already landed C there
     # the snap has nothing to move and — per its "parts that actually
