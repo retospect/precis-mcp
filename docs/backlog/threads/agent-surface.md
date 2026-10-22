@@ -46,6 +46,8 @@ budgets, then Drive.
    carry the fix.
 3. **backlog/drive-slash-command-line.md** — `/` in the Drive search box
    opens a command popdown; the web counterpart of discoverable verbs.
+   Slice 2 (bare-word qualifiers + `//` escape) landed 2026-10-21;
+   remaining slices are pipes (traverse) and result-list actions.
 
 ## Horizon
 

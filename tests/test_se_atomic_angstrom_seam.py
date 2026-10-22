@@ -57,6 +57,11 @@ _ALLOWED: dict[str, str] = {
         "envelope_fit's design(m)↔atomistic(Å) conversion against a bound "
         "structure scene — the permanent structure-enclave crossing"
     ),
+    "flow.py": (
+        "the nano lumen adapter (se-flow-kernel slice 3) reads a bound "
+        "hexfold structure scene, which is Å-native, into the flow kernel's "
+        "metre lengths — the structure-enclave crossing"
+    ),
     "datums.py": (
         "region resolution poses the bound structure's Å atoms into the "
         "se metre world (the structure-enclave crossing), and the mol: "

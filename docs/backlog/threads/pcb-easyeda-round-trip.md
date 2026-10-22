@@ -243,10 +243,11 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    VERIFIED (import clean). The earlier LAYER/ATTR parse crashes were
    fixed first; the one remaining gap (unfilled pours) is now covered by
    `POURED` fill passthrough, tested in the structural diff.
-5. **backlog/pcb-export-dir-confinement.md** — the four file exports
-   write to any agent-supplied `dir`. Cheap and mechanical, and it closes
-   a write-anywhere path on the shared server, so it ranks above the
-   design work in Horizon. Filed from the orchestrator's round-1 review.
+5. **backlog/pcb-export-dir-confinement.md** — **landed 2026-10-21**
+   (bug-papers-pcb): `_export_dir(slug, args)` confines `args['dir']` to
+   the corpus `pcb/` root or the temp dir for all five export sites
+   (the spec's four plus `_render_fab_package`), with `safe_stem` file
+   stems and BadInput refusal otherwise.
 6. **backlog/pcb-epro-mcp-roundtrip.md** (gr495289) — verify, the
    download route and `op='import_epro'` are built per Reto's rulings;
    left: real-board export timing, and gerber/fab downloads (go given

@@ -3943,13 +3943,32 @@ class PcbHandler(Handler):
         )
         return model
 
-    def _export_dir(self, slug: str) -> Path:
+    def _export_dir(self, slug: str, args: dict[str, Any] | None = None) -> Path:
         """Where artifacts land: ``<PRECIS_CORPUS_DIR>/pcb/<slug>/`` when the
         corpus root is set, else a temp dir. Override per-call with
-        args={'dir': '...'}."""
+        args={'dir': '...'} — resolved (symlinks followed) and confined to
+        the export root: under the corpus ``pcb/`` dir or the system temp
+        dir, anything else refuses rather than writing wherever the serving
+        process can (an agent-supplied absolute path is not a license to
+        write outside the root)."""
         root = load_config().corpus_dir
         base = Path(root) / "pcb" if root else Path(tempfile.gettempdir())
-        out = base / slug
+        raw = (args or {}).get("dir")
+        if not raw:
+            out = base / slug
+            out.mkdir(parents=True, exist_ok=True)
+            return out
+        out = Path(str(raw)).expanduser().resolve()
+        allowed = [Path(tempfile.gettempdir()).resolve()]
+        if root:
+            allowed.append(base.resolve())
+        if not any(out == a or a in out.parents for a in allowed):
+            raise BadInput(
+                f"dir {str(raw)!r} resolves to {out}, outside the export "
+                f"root ({', '.join(str(a) for a in allowed)})",
+                next="omit 'dir' to export under the default root, or pass "
+                "a directory inside it",
+            )
         out.mkdir(parents=True, exist_ok=True)
         return out
 
@@ -4234,9 +4253,7 @@ class PcbHandler(Handler):
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         model = self._export_model(ref_id)
-        raw_dir = args.get("dir")
-        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._export_dir(slug, args)
 
         # one table per view — extension + builder together, so they can't
         # drift apart (was an ext map + a parallel if/elif chain).
@@ -4275,7 +4292,8 @@ class PcbHandler(Handler):
 
         # BOM and CPL are both .csv: a shared `{slug}.csv` let one export
         # silently overwrite the other in the same directory.
-        stem = f"{slug}-{view}" if view in ("bom", "cpl") else slug
+        safe = pcb_epro_write.safe_stem(slug)
+        stem = f"{safe}-{view}" if view in ("bom", "cpl") else safe
         path = out_dir / f"{stem}.{ext}"
         path.write_text(content, encoding="utf-8")
         warns = self._export_warnings(model, view)
@@ -4626,10 +4644,8 @@ class PcbHandler(Handler):
         blob, warnings, files, model = built
         pads, drills, copper = model["pads"], model["drills"], model["copper"]
 
-        raw_dir = args.get("dir")
-        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{slug}-fab.zip"
+        out_dir = self._export_dir(slug, args)
+        path = out_dir / f"{pcb_epro_write.safe_stem(slug)}-fab.zip"
         path.write_bytes(blob)
         banner, _n_drc_errors = self._gerber_drc_banner(ref_id, slug)
 
@@ -4668,14 +4684,13 @@ class PcbHandler(Handler):
         bom = pcb_export.bom_csv(export_model)
         cpl = pcb_export.cpl_csv(export_model)
 
-        raw_dir = args.get("dir")
-        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._export_dir(slug, args)
+        stem = pcb_epro_write.safe_stem(slug)
         written = []
         for fname, text in (
-            (f"{slug}-fab.zip", None),
-            (f"{slug}-bom.csv", bom),
-            (f"{slug}-cpl.csv", cpl),
+            (f"{stem}-fab.zip", None),
+            (f"{stem}-bom.csv", bom),
+            (f"{stem}-cpl.csv", cpl),
         ):
             path = out_dir / fname
             if text is None:
@@ -4954,10 +4969,8 @@ class PcbHandler(Handler):
         slug, model, warnings = build.slug, build.model, build.warnings
         exported, blob = build.exported, build.blob
 
-        raw_dir = args.get("dir")
-        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{slug}.epro2"
+        out_dir = self._export_dir(slug, args)
+        path = out_dir / f"{pcb_epro_write.safe_stem(slug)}.epro2"
         path.write_bytes(blob)
 
         st = exported.stats
@@ -5041,8 +5054,7 @@ class PcbHandler(Handler):
         # never written (the write lives inside the pass loop).
         max_passes = max(1, int(args.get("max_passes") or 3))
         base_iters = int(args.get("iters") or 1500)
-        raw_dir = args.get("dir")
-        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
+        out_dir = self._export_dir(slug, args)
 
         measures = self.store.pcb_measures_list(ref_id)
 
@@ -5067,7 +5079,7 @@ class PcbHandler(Handler):
             out_dir,
             max_passes=max_passes,
             base_iters=base_iters,
-            name=slug,
+            name=pcb_epro_write.safe_stem(slug),
         )
         rows = [
             {

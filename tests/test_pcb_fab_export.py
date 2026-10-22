@@ -10,10 +10,12 @@ flashes, copper, drills and an outline -- not just files that exist.
 from __future__ import annotations
 
 import zipfile
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from precis.config import PrecisConfig
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
@@ -440,3 +442,74 @@ def test_drc_pads_real_for_cached_parts_synthesized_for_the_rest(pcb):
     assert len(other_pads) == len(pads) - 1
     assert other_pads, "U1 + C1 must still contribute real pads"
     assert all(p["synthesized"] is False for p in other_pads)
+
+
+# ── args={'dir'} confinement (docs/backlog/pcb-export-dir-confinement.md) ──
+# Five renderers used to take the raw path as given; all now go through
+# _export_dir(slug, args), which resolves it and refuses anything outside
+# the corpus pcb/ root or the system temp dir.
+def test_export_dir_refuses_paths_outside_the_export_root(
+    pcb, tmp_path, monkeypatch
+) -> None:
+    """``view='bom'|'gerber'|'fab'|'epro'|'route'`` — one per write site —
+    each with ``dir`` set to an absolute out-of-root path, a ``..`` escape
+    and a symlink pointing out of the root: every one raises BadInput and
+    writes nothing. ``cwd`` (the checkout — writable, outside both roots)
+    is the outside target so "nothing written" is a real assertion."""
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(
+        "precis.handlers.pcb.load_config",
+        lambda: PrecisConfig(corpus_dir=str(corpus)),
+    )
+    outside = Path.cwd()
+    escape = tmp_path / "escape"
+    escape.symlink_to(outside)
+    bad_dirs = ["/etc", "../../x", str(escape), str(outside)]
+
+    slug = _seed(pcb)
+    before = set(outside.iterdir())
+    for view in ("bom", "gerber", "fab", "epro", "route"):
+        for bad in bad_dirs:
+            with pytest.raises(BadInput, match="outside the export root"):
+                pcb.get(id=slug, view=view, args={"dir": bad})
+    assert set(outside.iterdir()) == before
+
+
+def test_export_dir_accepts_a_dir_under_each_root(pcb, tmp_path, monkeypatch):
+    """The acceptance half: a ``dir`` under the corpus pcb/ root or the
+    temp dir still writes; no ``dir`` lands at ``<corpus>/pcb/<slug>``."""
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(
+        "precis.handlers.pcb.load_config",
+        lambda: PrecisConfig(corpus_dir=str(corpus)),
+    )
+    slug = _seed(pcb)
+
+    in_corpus = corpus / "pcb" / "deeper"
+    resp = pcb.get(id=slug, view="bom", args={"dir": str(in_corpus)})
+    assert "exported fabtest → BOM" in resp.body
+    assert (in_corpus / "fabtest-bom.csv").is_file()
+
+    resp = pcb.get(id=slug, view="bom")
+    assert "exported fabtest → BOM" in resp.body
+    assert (corpus / "pcb" / slug / "fabtest-bom.csv").is_file()
+
+
+def test_export_dir_refuses_inside_corpus_but_outside_pcb(
+    pcb, tmp_path, monkeypatch
+) -> None:
+    """Inside the corpus root is not enough — the boundary is ``pcb/``:
+    ``<corpus>/elsewhere`` refuses even though it is under the corpus.
+    The temp root is pointed at a sentinel so the corpus isn't also
+    legitimately inside it (``tmp_path`` always is)."""
+    import tempfile
+
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(
+        "precis.handlers.pcb.load_config",
+        lambda: PrecisConfig(corpus_dir=str(corpus)),
+    )
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "T"))
+    slug = _seed(pcb)
+    with pytest.raises(BadInput, match="outside the export root"):
+        pcb.get(id=slug, view="bom", args={"dir": str(corpus / "elsewhere")})

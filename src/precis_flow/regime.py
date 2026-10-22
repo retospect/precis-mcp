@@ -29,6 +29,14 @@ from dataclasses import dataclass
 
 G0 = 9.80665  # standard gravity, m/s^2
 
+#: Knudsen-number bounds (the spec's card): the continuum kernel holds at
+#: ``Kn <= KN_CONTINUUM_MAX``, the free-molecular propagator takes over at
+#: ``Kn >= KN_FREE_MIN``; between them is the transition regime — DSMC,
+#: out of scope here (se-multiphysics.md slice 5 later moves the lower
+#: bound to 0.1).
+KN_CONTINUUM_MAX = 0.01
+KN_FREE_MIN = 10.0
+
 
 @dataclass(frozen=True)
 class RegimeLine:
@@ -111,6 +119,36 @@ class RegimeCard:
     def failures(self) -> tuple[str, ...]:
         return tuple(
             line.name for line in self.lines if line.applicable and not line.ok
+        )
+
+    @property
+    def route(self) -> str:
+        """Which solver this card sends the case to: ``'continuum'`` or
+        ``'knudsen'`` (the slice-3 nano propagator).
+
+        ``'knudsen'`` when the knudsen line was computed and reads
+        ``Kn >= KN_FREE_MIN`` — the five other lines are continuum-model
+        checks and do not gate a free-molecular case (a lumen is never
+        "thin"). ``'continuum'`` only when every applicable line holds.
+        Otherwise raises :class:`ValueError` naming the out-of-scope
+        regime: transition (DSMC) for ``0.01 < Kn < 10``, else the
+        card's failing lines."""
+        kn = self.knudsen
+        if kn.applicable and kn.value >= KN_FREE_MIN:
+            return "knudsen"
+        if kn.applicable and kn.value > KN_CONTINUUM_MAX:
+            raise ValueError(
+                f"Kn = {kn.value:.3g} is the transition regime "
+                f"({KN_CONTINUUM_MAX:g} < Kn < {KN_FREE_MIN:g}) — neither "
+                "the continuum kernel nor the nano propagator holds; "
+                "DSMC is out of scope"
+            )
+        if self.ok:
+            return "continuum"
+        raise ValueError(
+            "regime card fails: "
+            + ", ".join(self.failures)
+            + " — the continuum kernel does not hold"
         )
 
     @classmethod

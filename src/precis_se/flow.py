@@ -70,6 +70,8 @@ from precis.cad.vec import pose as cad_pose
 from precis.errors import BadInput
 from precis.utils.units import format_quantity
 from precis_flow import (
+    AtomWall,
+    CylinderLumen,
     Domain,
     Field,
     Paths,
@@ -77,9 +79,11 @@ from precis_flow import (
     RegimeCard,
     Seed,
     nonuniformity,
+    propagate,
     solve,
     trace,
 )
+from precis_flow.regime import KN_CONTINUUM_MAX, KN_FREE_MIN
 
 #: A chamber's thin axis is unique only when both lateral extents clear
 #: this multiple of the gap (a square tube or a cube has no thin axis;
@@ -182,15 +186,53 @@ class FlowSpec:
     zplane: float = 0.99
 
 
-def parse_flow_shape(text: str) -> FlowSpec:
+@dataclass(frozen=True)
+class LumenSpec:
+    """A lumen spec's parsed ``flow:`` pocket-shape token:
+
+    ``flow:lumen;alpha=<a>`` — the Knudsen propagator on a
+    structure-bound block: the wall is the bound structure's atom sites
+    as vdW spheres (``generated.sites`` in the spec's words), the ports
+    the lumen's two open axial ends, ``alpha`` the required
+    accommodation coefficient (the propagator never defaults it)."""
+
+    alpha: float
+
+
+def parse_flow_shape(text: str) -> FlowSpec | LumenSpec:
     """Parse a ``flow:`` pocket-shape token. ``ValueError`` names the
     grammar on any malformed term."""
     s = (text or "").strip()
     grammar = (
         "'flow:in=<patch>;out=<patch>;dv=<d_v*>[;profile=plug|parabolic][;zplane=<z*>]'"
+        " or 'flow:lumen;alpha=<a>'"
     )
     if not s.startswith("flow:"):
-        raise ValueError(f"flow chamber spec is {grammar}, got {text!r}")
+        raise ValueError(f"flow spec is {grammar}, got {text!r}")
+    if s[len("flow:") :].split(";")[0] == "lumen":
+        kv_l: dict[str, str] = {}
+        for part in s[len("flow:") :].split(";")[1:]:
+            key, sep, val = part.partition("=")
+            if not sep or key.strip() != "alpha":
+                raise ValueError(
+                    f"flow lumen spec: unexpected term {part!r} — "
+                    "'flow:lumen;alpha=<a>'"
+                )
+            kv_l["alpha"] = val.strip()
+        if "alpha" not in kv_l:
+            raise ValueError("flow lumen spec needs alpha= — 'flow:lumen;alpha=<a>'")
+        try:
+            alpha = float(kv_l["alpha"])
+        except ValueError:
+            raise ValueError(
+                f"flow lumen spec: alpha must be a number in [0, 1], "
+                f"got {kv_l['alpha']!r}"
+            ) from None
+        if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+            raise ValueError(
+                f"flow lumen spec: alpha must lie in [0, 1], got {alpha!r}"
+            )
+        return LumenSpec(alpha=alpha)
     kv: dict[str, str] = {}
     for part in s[len("flow:") :].split(";"):
         key, sep, val = part.partition("=")
@@ -534,6 +576,53 @@ def patch_port(tree: Any, chamber: str, selector: str) -> PortPatch:
     )
 
 
+def _bound_scene(store: Any, tree: Any, node: Any) -> Any:
+    """The block's bound structure as a ``BoundScene`` — the
+    ``tree.structures`` resolver first, else a store-backed one."""
+    if node.bound_kind != "structure" or not node.bound:
+        raise BadInput(
+            f"block {node.name!r} is not structure-bound — a flow lumen "
+            "needs a bound structure design (its atom sites wall the lumen)"
+        )
+    resolver = tree.structures
+    if resolver is None and store is not None:
+        from precis_se.persist import structure_scene_resolver
+
+        resolver = structure_scene_resolver(store)
+    bound = resolver(node.bound) if resolver is not None else None
+    if bound is None or bound.scene is None:
+        raise BadInput(
+            f"bound design {node.bound!r} on block {node.name!r} does not "
+            "resolve to a structure scene",
+            next="the tree needs a structures resolver (persist wires one "
+            "on load); a hand-built tree sets tree.structures",
+        )
+    return bound
+
+
+def lumen_from_scene(bound: Any) -> AtomWall:
+    """The bound scene's atoms as the lumen's wall: every generated atom
+    site a vdW sphere (Bondi radii, ``precis_se.atomic.clearance`` —
+    ``generated.sites`` in the spec's words). The scene's own frame and
+    Å units — the propagator reduces by the axial extent."""
+    from precis_se.atomic.clearance import VDW_DEFAULT_A, VDW_RADII_A
+
+    scene = bound.scene
+    atoms = list(scene.atoms.values())
+    if not atoms:
+        raise BadInput("the bound structure has no atoms — no lumen")
+    pos = np.array([scene.cell.frac_to_cart(a.frac) for a in atoms])
+    rad = np.array([VDW_RADII_A.get(a.element, VDW_DEFAULT_A) for a in atoms])
+    try:
+        return AtomWall.from_atoms(pos, rad)
+    except ValueError as exc:
+        raise BadInput(
+            f"the bound structure is not a lumen: {exc}",
+            next="a lumen is an elongated hollow structure with open ends "
+            "(a hexfold tube); a sheet, blob or capped tunnel is not",
+        ) from exc
+
+
 def _card_from_args(
     L: float, h0: float, args: dict[str, Any]
 ) -> tuple[RegimeCard | None, float | None]:
@@ -743,6 +832,240 @@ def _num(args: dict[str, Any], key: str, default: Any = None) -> float | None:
     return float(v)
 
 
+def _lumen_kn_gate(h0_m: float, args: dict[str, Any]) -> None:
+    """The card's routing on a lumen: ``mean_free_path`` (m) sets
+    ``Kn = λ/h0`` against the free diameter ``h0 = 2 R_eff``. ``Kn >= 10``
+    runs (this propagator); ``0.01 < Kn < 10`` refuses naming DSMC;
+    ``Kn <= 0.01`` refuses — a lumen has no continuum solver. No
+    ``mean_free_path`` runs too: a structure-bound lumen is intrinsically
+    the free-molecular case (the card is advisory when the full physical
+    set is given)."""
+    mfp = _num(args, "mean_free_path")
+    if mfp is None:
+        return
+    kn = mfp / h0_m
+    if kn >= KN_FREE_MIN:
+        return
+    if kn > KN_CONTINUUM_MAX:
+        raise BadInput(
+            f"view='flow': Kn = {kn:.3g} is the transition regime "
+            f"({KN_CONTINUUM_MAX:g} < Kn < {KN_FREE_MIN:g}) — neither the "
+            "continuum kernel nor the nano propagator holds; DSMC is "
+            "out of scope (se-flow-kernel.md slice 3)"
+        )
+    raise BadInput(
+        f"view='flow': Kn = {kn:.3g} <= {KN_CONTINUUM_MAX:g} — the "
+        "continuum kernel applies, but a structure-bound lumen is not a "
+        "thin chamber",
+        next="a Hele-Shaw chamber is a cad envelope block with "
+        "patch: ports, not a bound structure",
+    )
+
+
+def _lumen_payload(
+    wall: AtomWall,
+    paths: Paths,
+    card: RegimeCard | None,
+    *,
+    u0: float | None,
+    alpha: float,
+    scale_angstrom: float,
+    block: str,
+) -> dict[str, Any]:
+    """The lumen counterpart of :func:`flow_payload`: same frame blob
+    contract (``(K, n, 3)`` reduced ``(x*, y*, psi)``) and scale triple,
+    with ``h0`` the free diameter ``2 R_eff`` and ``u0`` the thermal
+    ``v̄`` when the caller supplied it. ``mesh.lumen`` carries the wall
+    itself — the reduced atom sites + radii — where a chamber payload
+    carries outline + floor depth; ``regime`` names the solver."""
+    frames = paths.frames
+    sub_p = sub_f = 1
+    blob = b""
+    if frames is not None:
+        while (
+            frames.shape[1] // sub_p > 1
+            and (frames[:, ::sub_p].nbytes) > PAYLOAD_CAP_BYTES
+        ):
+            sub_p *= 2
+        kept = frames[:, ::sub_p]
+        while kept.shape[0] // sub_f > 1 and kept[::sub_f].nbytes > PAYLOAD_CAP_BYTES:
+            sub_f *= 2
+        kept = kept[::sub_f]
+        blob = kept.astype("<f4", copy=False).tobytes()
+        frame_shape = list(kept.shape)
+        frame_t = (
+            np.asarray(paths.frame_t)[::sub_f].tolist()
+            if paths.frame_t is not None
+            else None
+        )
+    else:
+        frame_shape = None
+        frame_t = None
+    L_m = wall.extent * scale_angstrom
+    return {
+        "block": block,
+        "regime": "knudsen",
+        "alpha": alpha,
+        "scale": {
+            "L": L_m,
+            "h0": 2.0 * wall.r_eff * L_m,
+            "u0": u0,
+            "t0": "L / v̄ — residence and frame_t count transits at v̄",
+        },
+        "mesh": {
+            "lumen": {
+                "centres": {
+                    "shape": list(wall.centres.shape),
+                    "dtype": "float32",
+                    "data_b64": base64.b64encode(
+                        wall.centres.astype("<f4").tobytes()
+                    ).decode(),
+                },
+                "radii": {
+                    "shape": list(wall.radii.shape),
+                    "dtype": "float32",
+                    "data_b64": base64.b64encode(
+                        wall.radii.astype("<f4").tobytes()
+                    ).decode(),
+                },
+                "r_eff": wall.r_eff,
+                "r_in": wall.r_in,
+                "encoding": "reduced (x* over the axial extent; "
+                "centres are the wall atom sites)",
+            }
+        },
+        "frames": (
+            {
+                "shape": frame_shape,
+                "dtype": "float32",
+                "encoding": "base64; little-endian; (K, n, 3) = (x*, y*, psi), "
+                "psi the transverse fraction across the free cross-section",
+                "frame_t": frame_t,
+                "data_b64": base64.b64encode(blob).decode(),
+            }
+            if frames is not None
+            else None
+        ),
+        "subsampled": {
+            "particles_stride": sub_p,
+            "frames_stride": sub_f,
+            "note": (
+                "payload over the 20 MB cap — particles subsampled "
+                f"{sub_p}×, frames {sub_f}×"
+                if sub_p > 1 or sub_f > 1
+                else "full resolution"
+            ),
+        },
+        "card": _card_dict(card),
+    }
+
+
+def _render_flow_lumen(store: Any, tree: Any, node: Any, args: dict[str, Any]) -> str:
+    """``view='flow'`` on a structure-bound block: the Knudsen
+    propagator on the bound structure's atom sites — runs without being
+    asked, the card routes ``Kn >= 10`` here."""
+    for key in ("inlet", "outlet", "dv", "nx", "profile", "zplane", "seed_z"):
+        if args.get(key) is not None:
+            raise BadInput(
+                f"view='flow': {key!r} is a thin-chamber input — a "
+                "structure lumen takes 'alpha' plus n/frames/seed and "
+                "the physical scale args"
+            )
+    alpha = _num(args, "alpha")
+    if alpha is None:
+        raise BadInput(
+            "view='flow' on a lumen needs args.alpha — the accommodation "
+            "coefficient (the propagator never defaults it)",
+            next="alpha = 1 is pure diffuse reflection, 0 pure specular",
+        )
+    if not 0.0 <= alpha <= 1.0:
+        raise BadInput(f"view='flow': alpha must lie in [0, 1], got {alpha!r}")
+    bound = _bound_scene(store, tree, node)
+    wall = lumen_from_scene(bound)
+    # the scene is Å-native; the wall's extent is in Å too
+    L_m = wall.extent * 1e-10
+    h0_m = 2.0 * wall.r_eff * wall.extent * 1e-10
+    _lumen_kn_gate(h0_m, args)
+    card, u0 = _card_from_args(L_m, h0_m, args)
+    if card is not None:
+        try:
+            route = card.route
+        except ValueError as exc:
+            raise BadInput(f"view='flow': {exc}") from exc
+        if route != "knudsen":
+            raise BadInput(
+                "view='flow': the regime card holds — but a structure "
+                "lumen is not a thin chamber; the continuum kernel has "
+                "no domain here",
+                next="a Hele-Shaw chamber is a cad envelope block with "
+                "patch: ports, not a bound structure",
+            )
+    n = int(_num(args, "n", 400) or 400)
+    frames_k = int(_num(args, "frames", 0) or 0)
+    seed_no = int(_num(args, "seed", 0) or 0)
+    paths = propagate(wall, n, alpha, seed_no, record_frames=frames_k)
+    payload = _lumen_payload(
+        wall, paths, card, u0=u0, alpha=alpha, scale_angstrom=1e-10, block=node.name
+    )
+    fmt = str(args.get("format") or "text").strip().lower()
+    if fmt == "json":
+        return json.dumps(payload, indent=1)
+    if fmt != "text":
+        raise BadInput(
+            f"view='flow': args.format must be 'text' or 'json', got {fmt!r}",
+            options=["text", "json"],
+        )
+    lines = [
+        "# flow — free-molecular (Knudsen) propagator on an atom-site wall",
+        "",
+        (
+            f"lumen: L = {format_quantity(wall.extent * 1e-10, 'length')} axial, "
+            f"{wall.centres.shape[0]} wall sites, R_eff = "
+            f"{format_quantity(wall.r_eff * wall.extent * 1e-10, 'length')} "
+            f"(inscribed {format_quantity(wall.r_in * wall.extent * 1e-10, 'length')})"
+        ),
+        (
+            f"propagate: n = {paths.n_particles}, alpha {alpha:g}, "
+            f"transmission {paths.breakthrough:.3f}, resolved "
+            f"{paths.resolved_fraction:.2f} "
+            f"(trapped {paths.trapped_fraction:.2f}), flights "
+            f"{paths.steps_used}"
+        ),
+    ]
+    res = paths.residence[np.isfinite(paths.residence)]
+    if res.size:
+        lines.append(
+            f"residence t*: mean {float(res.mean()):.3g}, "
+            f"std {float(res.std()):.3g} (over resolved; t* = t v̄/L)"
+        )
+    if paths.frames is not None:
+        blob_bytes = len(base64.b64decode(payload["frames"]["data_b64"]))
+        sub = payload["subsampled"]
+        lines.append(
+            f"player payload: frames {payload['frames']['shape']} f32 "
+            f"({blob_bytes:,} B) — {sub['note']}; "
+            "get(format='json') serves the full payload"
+        )
+    lines.append("")
+    if card is None:
+        lines.append(
+            "regime card: not computed — pass mu, rho, u0 and "
+            "mean_free_path (SI) for the six-line card"
+        )
+    else:
+        lines.append(
+            f"regime card ({'OK' if card.ok else 'FAILS: ' + ', '.join(card.failures)})"
+            " — routed knudsen:"
+        )
+        for ln in card.lines:
+            mark = "ok" if ln.ok else "FAIL"
+            lines.append(
+                f"  {ln.name:<9} {ln.value:.3g}  [{mark}; holds when "
+                f"{ln.holds_when}; else {ln.otherwise}]"
+            )
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class FlowPocket:
     """A ``flow:`` chamber spec found on a block — what the web Flow
@@ -767,6 +1090,8 @@ def flow_pockets(tree: Any) -> list[FlowPocket]:
                 spec = parse_flow_shape(shape)
             except ValueError:
                 continue
+            if not isinstance(spec, FlowSpec):
+                continue  # a lumen spec has no web player yet
             out.append(FlowPocket(block=bname, pocket=pname, spec=spec))
     return out
 
@@ -779,7 +1104,8 @@ def flow_chamber(store: Any, tree: Any, args: dict[str, Any]) -> Chamber:
     if not block:
         raise BadInput(
             "view='flow' requires args={'block': <chamber block>, "
-            "'inlet': <patch>, 'outlet': <patch>, 'dv': <d_v*>}"
+            "'inlet': <patch>, 'outlet': <patch>, 'dv': <d_v*>} — or "
+            "{'block': <structure-bound block>, 'alpha': <a>} on a lumen"
         )
     if block not in tree.blocks:
         raise BadInput(f"no block {block!r} — the chamber names a block")
@@ -863,6 +1189,23 @@ def flow_scale(
     k = (size / chamber.L) if size is not None else 1.0
     L, h0 = chamber.L * k, chamber.h0 * k
     card, u0 = _card_from_args(L, h0, args)
+    if card is not None:
+        try:
+            route = card.route
+        except ValueError as exc:
+            if card.knudsen.applicable and card.knudsen.value > KN_CONTINUUM_MAX:
+                raise BadInput(f"view='flow': {exc}") from exc
+            # a failing continuum line is shown on the card, not refused —
+            # the web player re-judges a cached trace at other sizes
+            route = "continuum"
+        if route != "continuum":
+            raise BadInput(
+                f"view='flow': the regime card routes {route} — Kn "
+                f"{card.knudsen.value:.3g} puts this chamber in the "
+                "free-molecular regime, and the nano propagator runs on "
+                "structure lumens only (a cad envelope has no atom wall)",
+                next="bind a structure lumen block and pass alpha=",
+            )
     return card, {
         "L": L,
         "h0": h0,
@@ -874,7 +1217,13 @@ def flow_scale(
 
 def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
     """``view='flow'`` — solve + trace the chamber and render the text
-    summary or the slice-2b player payload (``format='json'``)."""
+    summary or the slice-2b player payload (``format='json'``); on a
+    structure-bound block the Knudsen propagator runs instead (slice 3)."""
+    block = str(args.get("block") or "").strip()
+    if block and block in tree.blocks:
+        node = tree.blocks[block]
+        if node.bound_kind == "structure":
+            return _render_flow_lumen(store, tree, node, args)
     fmt = str(args.get("format") or "text").strip().lower()
     if fmt not in ("text", "json"):
         raise BadInput(
@@ -882,8 +1231,8 @@ def render_flow(store: Any, tree: Any, args: dict[str, Any]) -> str:
             options=["text", "json"],
         )
     chamber = flow_chamber(store, tree, args)
+    card, scale = flow_scale(chamber, args)  # routes before the solve
     field, paths, profile, dv = flow_trace(chamber, args)
-    card, scale = flow_scale(chamber, args)
     payload = flow_payload(
         chamber,
         paths,
@@ -999,8 +1348,10 @@ def _flow_pocket(node: Any, datum: str | None) -> Any | str:
 
 def _flow_run(
     tree: Any, measure: Any
-) -> tuple[Chamber | None, Paths | None, FlowSpec | None, str | None]:
-    """Domain + trace for a flow measure, or a reason string."""
+) -> tuple[Any, Paths | None, FlowSpec | LumenSpec | None, str | None]:
+    """Domain + trace (chamber) or wall + propagate (lumen) for a flow
+    measure — the first element is the :class:`Chamber` or the
+    :class:`AtomWall`, or a reason string on failure."""
     node = tree.blocks.get(measure.block)
     if node is None:
         return None, None, None, f"measure names missing block {measure.block!r}"
@@ -1008,6 +1359,13 @@ def _flow_run(
     if isinstance(got, str):
         return None, None, None, got
     _pocket, spec = got
+    if isinstance(spec, LumenSpec):
+        try:
+            wall = lumen_from_scene(_bound_scene(None, tree, node))
+            paths = propagate(wall, 400, spec.alpha, 0)
+        except BadInput as exc:
+            return None, None, spec, str(exc)
+        return wall, paths, spec, None
     placed = _chamber_placed(None, tree, measure.block)
     if placed is None:
         return (
@@ -1059,6 +1417,16 @@ def _flow_resistance_ratio(tree: Any, measure: Any) -> tuple[float | None, str |
     chamber, paths, spec, err = _flow_run(tree, measure)
     if chamber is None or paths is None:
         return None, err
+    if isinstance(chamber, AtomWall):
+        # free-molecular resistance ∝ 1/W — the corrugated lumen against
+        # the smooth cylinder at R_eff = R_axis − r_vdW, same seed
+        if paths.breakthrough <= 0.0:
+            return None, "the lumen transmits nothing — no resistance ratio"
+        assert isinstance(spec, LumenSpec)
+        ref = propagate(CylinderLumen(chamber.r_eff), 400, spec.alpha, 0)
+        if ref.breakthrough <= 0.0:
+            return None, "the smooth-cylinder reference transmits nothing"
+        return float(ref.breakthrough / paths.breakthrough), None
     d = chamber.domain
     flat = Domain(
         mask=d.mask,
@@ -1081,6 +1449,21 @@ def _flow_evenness(tree: Any, measure: Any) -> tuple[float | None, str | None]:
     chamber, paths, spec, err = _flow_run(tree, measure)
     if chamber is None or paths is None:
         return None, err
+    if isinstance(chamber, AtomWall):
+        # the lumen's region is its outlet aperture: exit points mapped
+        # to equal-area polar bins (u = r²/R_eff², v = θ/2π over the
+        # disk — a uniform exit spread reads uniform there)
+        pts = paths.crossing_points()
+        if pts.shape[0] == 0:
+            return None, "no transmitted particles — no evenness"
+        z = pts[:, 1] * 2.0 * chamber.r_eff - chamber.r_eff
+        y = pts[:, 0]
+        u = np.clip((y * y + z * z) / chamber.r_eff**2, 0.0, 1.0)
+        v = (np.arctan2(z, y) + np.pi) / (2.0 * np.pi)
+        nu, _ = nonuniformity(
+            np.column_stack([u, v]), (0.0, 1.0), (0.0, 1.0), EVENNESS_BINS
+        )
+        return float(1.0 - nu), None
     datum = measure.datum or ""
     try:
         sel = se_datums.parse_selector(datum)

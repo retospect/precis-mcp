@@ -49,3 +49,13 @@ orchestrator's round-1 diff review, 2026-10-02. It is not a regression
 `src/precis/handlers/pcb.py` (`_export_dir` and its four callers). Skill
 `precis-pcb-*-help` lines that advertise `args={'dir': ...}` say
 "under the export root". Thread: `pcb-easyeda-round-trip`.
+
+**Landed 2026-10-21 (worktree bug-papers-pcb):** `_export_dir(slug, args)`
+resolves `args['dir']` (symlinks followed) and refuses anything outside
+the corpus `pcb/` root or the system temp dir with `BadInput` + `next=`.
+All five callers — `_render_export` (bom/cpl/netlist/dsn/mechanical),
+`_render_gerber`, `_render_fab_package`, `_render_epro` and the
+Freerouting `_render_route` — go through it, and every file stem goes
+through `epro_write.safe_stem`. Tests in `tests/test_pcb_fab_export.py`
+parametrize the five sites over out-of-root/`..`-escape/symlink dirs plus
+the in-root and no-`dir` happy paths.

@@ -41,6 +41,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse
@@ -69,6 +70,7 @@ from precis_web.routes.items import (
     _parse_date,
     _recent_rows,
     _run_search,
+    _tag_filter_string,
 )
 from precis_web.routes.items import tags_suggest as _tags_suggest
 from precis_web.routes.papers_needed import _KIND_DROPZONES, _watch_dir_from_plist
@@ -106,6 +108,130 @@ _SLASH_TOKEN_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9_+-]*)$")
 #: parser peels it into kind ``paper`` plus ``paper_chunks=with``.
 _PAPER_CHUNKS_TOKEN = "paper+chunks"
 
+#: A bare word still being typed that could be a qualifier — the
+#: ``/drive/complete`` side of the qualifier grammar (drive-slash-command-line
+#: slice 2). No leading ``/``; ``_SLASH_TOKEN_RE`` stays the kind-command
+#: matcher. Token chars exclude ``/`` so a ``//``-escaped literal never
+#: triggers completion.
+_QUALIFIER_TOKEN_RE = re.compile(r"(?:^|\s)([A-Za-z]+(?::[^\s/]*)?)$")
+
+#: ``since:<N><unit>`` — the one qualifier with a grammar inside its value.
+_SINCE_QUAL_RE = re.compile(r"^since:(\d+)([dhw])$")
+
+#: The fixed-value qualifier completions; ``tag:``/``since:`` resolve their
+#: values at fetch time (the tag roster / a free-form duration), so their
+#: ``insert`` is the bare prefix and picking it leaves the caret mid-word
+#: (the client adds no trailing space after an insert ending in ``:``).
+_QUALIFIER_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    (
+        "is:stub",
+        "is:stub",
+        "items with no usable body text (un-ingested or body:partial/needs_ocr)",
+    ),
+    ("has:body", "has:body", "items with usable ingested body text"),
+    ("tag:", "tag:", "filter by a tag, e.g. tag:PRIO:high"),
+    ("since:", "since:", "created in the last N days/hours/weeks, e.g. since:7d"),
+)
+
+
+def _peel_qualifiers(
+    text: str,
+) -> tuple[str, list[str], str | None, str | None, list[str]]:
+    """Pull the GitHub-style qualifiers out of the free text
+    (drive-slash-command-line slice 2).
+
+    A qualifier is a bare whitespace-separated word (no leading ``/`` —
+    ``/tag:x`` stays an address-shaped literal, not a qualifier). Returns
+    ``(rest, tags, paper_chunks, since, unknown)``:
+
+    - ``is:stub`` → ``paper_chunks="without"``; ``has:body`` → ``"with"``
+      (last one wins when both appear)
+    - ``tag:<value>`` → one ``tag=`` facet entry, split on the first colon
+      only (``tag:PRIO:high`` filters on ``PRIO:high``); repeatable
+    - ``since:<N><d|h|w>`` → an ISO ``since=`` value, now (UTC) minus N
+      units — the same timestamp the ``since=`` facet bounds
+    - a word carrying a qualifier prefix but an unrecognised value
+      (``is:foo``, ``since:soon``, ``tag:``) stays in ``rest`` and is
+      named in ``unknown`` so the page can show one notice
+    """
+    rest: list[str] = []
+    tags: list[str] = []
+    paper_chunks: str | None = None
+    since: str | None = None
+    unknown: list[str] = []
+    for w in text.split():
+        lw = w.lower()
+        if lw.startswith("is:"):
+            if lw == "is:stub":
+                paper_chunks = "without"
+            else:
+                rest.append(w)
+                unknown.append(w)
+        elif lw.startswith("has:"):
+            if lw == "has:body":
+                paper_chunks = "with"
+            else:
+                rest.append(w)
+                unknown.append(w)
+        elif lw.startswith("tag:"):
+            if len(w) > 4:
+                tags.append(w[4:])
+            else:
+                rest.append(w)
+                unknown.append(w)
+        elif lw.startswith("since:"):
+            m = _SINCE_QUAL_RE.match(lw)
+            if m is None:
+                rest.append(w)
+                unknown.append(w)
+            else:
+                n = int(m.group(1))
+                delta = {
+                    "d": timedelta(days=n),
+                    "h": timedelta(hours=n),
+                    "w": timedelta(weeks=n),
+                }[m.group(2)]
+                since = (datetime.now(UTC) - delta).isoformat(timespec="seconds")
+        else:
+            rest.append(w)
+    return " ".join(rest), tags, paper_chunks, since, unknown
+
+
+def _qualifier_completions(store: Store, word: str) -> list[dict[str, str]]:
+    """Completions for a bare qualifier word still being typed (slice 2).
+
+    ``word`` is the trailing token ``_QUALIFIER_TOKEN_RE`` caught (no
+    leading ``/``). Before any colon it prefix-matches the four qualifier
+    commands; once it carries ``<name>:<partial value>`` only ``is:`` /
+    ``has:`` complete their fixed values, ``tag:`` completes against the
+    tag roster (``suggest_tags``, the same source ``/drive/tags/suggest``
+    serves), and ``since:`` takes no completion (its value is a free-form
+    ``<N><d|h|w>``). A word that is none of these gets ``[]``.
+    """
+    lw = word.lower()
+    if ":" in lw:
+        name, _, value = lw.partition(":")
+        for fixed, insert, desc in _QUALIFIER_COMMANDS:
+            if fixed.startswith(f"{name}:") and fixed[len(name) + 1 :].startswith(
+                value
+            ):
+                return [{"name": fixed, "insert": insert, "desc": desc}]
+        if name == "tag":
+            return [
+                {
+                    "name": _tag_filter_string(ns, val),
+                    "insert": f"tag:{_tag_filter_string(ns, val)}",
+                    "desc": f"tag filter — {n} refs",
+                }
+                for ns, val, n in store.suggest_tags(word[4:], limit=10)
+            ]
+        return []
+    return [
+        {"name": name, "insert": insert, "desc": desc}
+        for name, insert, desc in _QUALIFIER_COMMANDS
+        if name.startswith(lw)
+    ]
+
 
 @router.get("/complete")
 async def complete(request: Request, text: str = "", pos: int = -1) -> JSONResponse:
@@ -116,14 +242,25 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
     one row per known kind, the same roster ``_split_kind_tokens``
     resolves against (bucket kinds + the ``items_kinds`` cookie's saved
     set, mirroring ``index``'s ``all_kind_defs``), with ``_kind_help``
-    one-liners, so the popdown can't drift from the parser. Anything else
-    (plain text, a pasted path) is ``[]`` — the client then treats it as
-    an ordinary search. Returns ``[{name, insert, desc}]``.
+    one-liners, so the popdown can't drift from the parser — or in a bare
+    qualifier word (``is:``/``has:``/``tag:``/``since:`` — slice 2, no
+    leading slash), served by ``_qualifier_completions`` with ``tag:``
+    values off the same roster ``/drive/tags/suggest`` uses. Anything else
+    (plain text, a pasted path, a ``//``-escaped literal) is ``[]`` — the
+    client then treats it as an ordinary search. Returns
+    ``[{name, insert, desc}]``.
     """
     head = text[:pos] if 0 <= pos <= len(text) else text
     m = _SLASH_TOKEN_RE.search(head)
     if m is None:
-        return JSONResponse([])
+        qm = _QUALIFIER_TOKEN_RE.search(head)
+        if qm is None:
+            return JSONResponse([])
+        return JSONResponse(
+            await asyncio.to_thread(
+                _qualifier_completions, get_store(request), qm.group(1)
+            )
+        )
     prefix = m.group(1).lower()
     saved = [x for x in (request.cookies.get("items_kinds") or "").split(",") if x]
     hub = getattr(get_runtime(request), "hub", None)
@@ -619,7 +756,12 @@ async def index(
     plus Drive's folder-tree sidebar, per-row quick actions, a "show
     deleted" state, and the watch-dir drop-zone info.
 
-    ``q=`` runs the search; ``k=`` (repeated) narrows the kind set —
+    ``q=`` runs the search — leading ``/kind`` tokens narrow the kind set
+    (``/paper+chunks`` also sets ``paper_chunks=with``), a leading ``//``
+    escapes into a literal slash-search (``//foo`` → ``/foo``), and bare
+    qualifier words map onto facets (``is:stub``→``paper_chunks=without``,
+    ``has:body``→``=with``, ``tag:<v>``→``tag=``, ``since:<N><d|h|w>``→
+    ``since=now-N``); ``k=`` (repeated) narrows the kind set —
     the "Source" chips and the "Author" facet (``placement='artifact'``
     kinds); ``tag=`` (repeated) are the tag-filter chips; ``state=stub``
     shows only paper stubs (awaiting fetch), ``state=deleted`` shows
@@ -770,15 +912,33 @@ async def index(
                 "concept",
             ]
         )
-    # ``/draft nano`` -> kind chip + free text "nano" (gr478511).
-    token_kinds, q_rest, token_chunks = _split_kind_tokens(q, all_kind_defs)
-    if token_kinds:
-        selected_kinds = token_kinds
-        q = q_rest
-        if token_chunks:
-            # ``/paper+chunks`` only sets the existing param (gr498598).
-            paper_chunks = "with"
-    tags = [t.strip() for t in tag if t.strip()]
+    # ``/draft nano`` -> kind chip + free text "nano" (gr478511). A
+    # leading ``//`` escapes the parse entirely — one slash is stripped
+    # and the rest searches literally (drive-slash slice 2 §3: ``//foo``
+    # searches ``/foo``; the URL/identifier resolution above already saw
+    # the ``//``-prefixed text, which matches neither, so the escape only
+    # reaches here). Otherwise the bare-word qualifiers peel next —
+    # ``is:stub``/``has:body`` set the ``paper_chunks`` selector,
+    # ``tag:<v>`` adds ``tag=`` facets, ``since:<N><u>`` sets ``since=``;
+    # a qualifier-prefixed word with an unrecognised value stays in the
+    # free text and surfaces in the page notice.
+    qual_tags: list[str] = []
+    qual_unknown: list[str] = []
+    if q.startswith("//"):
+        q = q[1:]
+    else:
+        token_kinds, q_rest, token_chunks = _split_kind_tokens(q, all_kind_defs)
+        if token_kinds:
+            selected_kinds = token_kinds
+            if token_chunks:
+                # ``/paper+chunks`` only sets the existing param (gr498598).
+                paper_chunks = "with"
+        q, qual_tags, qual_pc, qual_since, qual_unknown = _peel_qualifiers(q_rest)
+        if qual_pc is not None:
+            paper_chunks = qual_pc
+        if qual_since is not None:
+            since = qual_since
+    tags = [t.strip() for t in tag if t.strip()] + qual_tags
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though
     # the tag itself is retired (§M facet normalization): recurring is now
@@ -1161,6 +1321,18 @@ async def index(
         )
     else:
         notice = None
+    if qual_unknown:
+        # ``is:foo`` / ``since:soon`` / ``tag:`` — words that look like
+        # qualifiers but aren't stay in the search text; the notice names
+        # them so the operator can see they didn't filter (slice 2 §1).
+        qual_notice = (
+            "unrecognised qualifier"
+            + ("s" if len(qual_unknown) > 1 else "")
+            + ": "
+            + ", ".join(qual_unknown)
+            + " — left in the search text"
+        )
+        notice = f"{notice} · {qual_notice}" if notice else qual_notice
 
     # Watch-dir drop-zone info (papers_needed.py:15-19's second gap) — the
     # cluster's manual-ingest paths, when the web host can read the plist.

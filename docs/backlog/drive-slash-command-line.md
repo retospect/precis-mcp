@@ -65,7 +65,7 @@ second picker. A later MCP form (`search(q='| …')`) can share the parser.
 3. Pipes: traverse stages over link relations.
 4. Result-list actions, first: fetch stubs, with cost line.
 
-## Slice 2 — qualifiers (ready 2026-10-21)
+## Slice 2 — qualifiers (ready 2026-10-21, landed 2026-10-21)
 
 `status: ready` covers this slice only; slices 3 and 4 stay draft.
 

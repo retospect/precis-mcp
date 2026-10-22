@@ -118,9 +118,14 @@ commit carrying this line; `git log` has the sha.*
    tracking plane, per-particle outcomes and `size=` re-dimensioning;
    chamber build and trace are memoised per design version. A `field:`
    envelope works as a chamber (its ports sit on other blocks).
-3. **Nano propagator**: test-particle Monte Carlo with diffuse wall
-   reflection on a hexfold lumen (`generated.sites` + vdW-offset wall),
-   same `trace` outputs; the card routes `Kn ≫ 1` here.
+3. **Nano propagator** *(landed 2026-10-21 — the commit carrying this
+   line)*: test-particle Monte Carlo with diffuse wall reflection on a
+   hexfold lumen (`generated.sites` + vdW-offset wall), same `trace`
+   outputs; the card routes `Kn ≫ 1` here. Landed as
+   `src/precis_flow/nano.py` (`CylinderLumen`/`AtomWall`/`propagate`),
+   `RegimeCard.route`, the adapter's lumen path (`flow:lumen;alpha=`,
+   `view='flow'` on structure-bound blocks), and
+   `tests/test_precis_flow_nano.py` + `tests/test_se_flow_nano.py`.
    Reduced time `t* = t v̄/L` with `v̄ = sqrt(8kT/πm)`. Transmission then
    depends on shape and the accommodation coefficient `α` only: the same
    dimension-free claim the continuum kernel makes.

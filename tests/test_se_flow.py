@@ -26,6 +26,7 @@ from precis_se.flow import (
     FLOW_COMPUTERS,
     PAYLOAD_CAP_BYTES,
     Chamber,
+    FlowSpec,
     PortPatch,
     domain_from_solid,
     flow_payload,
@@ -320,8 +321,10 @@ def test_parse_flow_shape() -> None:
     spec = parse_flow_shape(
         "flow:in=patch:c.side3@0,0+0.006x0.001;out=patch:c.side1@0,0+0.006x0.001;dv=6"
     )
+    assert isinstance(spec, FlowSpec)
     assert spec.d_v_star == 6.0 and spec.profile == "parabolic" and spec.zplane == 0.99
     spec2 = parse_flow_shape("flow:in=p;out=q;dv=0.5;profile=plug;zplane=0.98")
+    assert isinstance(spec2, FlowSpec)
     assert spec2.profile == "plug" and spec2.zplane == 0.98
     for bad in (
         "flow:out=q;dv=1",

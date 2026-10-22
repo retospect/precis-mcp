@@ -211,8 +211,9 @@ off that gap until it closes.
    (`src/precis_se/flow.py`: envelope→Domain, `view='flow'` + 2b
    payload, `flow:` pocket + COMPUTERS), slice 2b landed 2026-10-21 on
    `flow-2b` (Flow tab `/se/<slug>/flow`, `routes/se_flow.py` +
-   `static/se-flow-*.js`); slices 3 (nano propagator) and 4 (annealer)
-   follow.
+   `static/se-flow-*.js`); slice 3 landed 2026-10-21 on `flow-s3` (`src/precis_flow/
+   nano.py` Knudsen MC on cylinder/atom-site lumens, `RegimeCard.route`,
+   `flow:lumen` spec + lumen `view='flow'`); slice 4 (annealer) follows.
 0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
    halves as the negative (Reto 2026-10-21); Q1–Q4 decided, slice 1

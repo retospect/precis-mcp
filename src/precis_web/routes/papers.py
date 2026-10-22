@@ -1952,9 +1952,7 @@ async def edit(
             )
 
     if slug_changed:
-        err = await asyncio.to_thread(
-            _rename_slug, request, ref_id, current_slug, new_slug
-        )
+        err = await _rename_slug_bounded(request, ref_id, current_slug, new_slug)
         if err is not None:
             return templates.TemplateResponse(
                 request,
@@ -1984,6 +1982,37 @@ async def edit(
     # plain `/papers/<id>` load (no param) still gets the usual
     # triage-or-Navigate default.
     return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
+
+
+#: Bound on the re-slug await. ``_rename_slug`` does filesystem work on the
+#: corpus mount (``is_file`` / ``mkdir`` / ``rename`` probes — the corpus
+#: lives on NFS) and DB writes that can wait on another transaction's row
+#: lock; neither carries an in-process timeout, so a wedged mount or a stuck
+#: lock used to hang the request forever (2026-08-17: 12+ minutes, the
+#: cite_key never changed — the hang was before the identifier write).
+#: A fired timeout cannot kill the worker thread (threads are
+#: uninterruptible) — it may still complete the rename in the background,
+#: which the error message says honestly.
+_RENAME_SLUG_TIMEOUT_S = 30.0
+
+
+async def _rename_slug_bounded(
+    request: Request, ref_id: int, old_slug: str, new_slug: str
+) -> str | None:
+    """``_rename_slug`` under a hard bound; an error string on timeout."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_rename_slug, request, ref_id, old_slug, new_slug),
+            timeout=_RENAME_SLUG_TIMEOUT_S,
+        )
+    except TimeoutError:
+        return (
+            f"rename to {new_slug!r} did not finish within "
+            f"{_RENAME_SLUG_TIMEOUT_S:.0f}s — the corpus mount or a DB lock "
+            "is not answering (the worker thread may still complete the "
+            "rename in the background). Next: reload the paper's Meta tab "
+            "and check the handle; retry the edit if it is unchanged."
+        )
 
 
 def _rename_slug(
@@ -2169,9 +2198,7 @@ async def resolve_duplicate(
     new_slug = cite_key.strip().lower()
     current_slug = this_ref.slug or ""
     if new_slug and new_slug != current_slug:
-        err = await asyncio.to_thread(
-            _rename_slug, request, ref_id, current_slug, new_slug
-        )
+        err = await _rename_slug_bounded(request, ref_id, current_slug, new_slug)
         if err is not None:
             return _paper_error(request, "Rename error", err, 400)
 

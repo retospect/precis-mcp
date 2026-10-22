@@ -92,10 +92,57 @@ def test_complete_cursor_position(client) -> None:
         "/c/qu123",  # pasted site path (gr484947 — not a command)
         "https://x.example/drive",  # pasted URL
         "/draft /c/qu1",  # path-shaped token after a command
+        "//foo",  # escaped literal (slice 2) — no completions
+        "nano /draft ",  # trailing space after a command
+        "/draft since:soon",  # qualifier-shaped but not a qualifier
     ],
 )
 def test_complete_non_command_gets_nothing(client, text: str) -> None:
     assert client.get("/drive/complete", params={"text": text}).json() == []
+
+
+# ── slice 2: bare-word qualifier completions ────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("i", "is:stub"),
+        ("is", "is:stub"),
+        ("is:", "is:stub"),
+        ("is:s", "is:stub"),
+        ("h", "has:body"),
+        ("has", "has:body"),
+        ("has:", "has:body"),
+        ("tag", "tag:"),
+        ("since", "since:"),
+        ("/paper i", "is:stub"),  # after the kind tokens
+        ("/draft nano ta", "tag:"),  # after free text, too
+    ],
+)
+def test_complete_offers_qualifiers(client, text: str, want: str) -> None:
+    """A bare trailing word that prefixes a qualifier completes to the
+    qualifier command — ``is:``/``has:`` resolve their fixed value;
+    ``tag:``/``since:`` insert the bare prefix (value typed next)."""
+    names = {
+        i["name"] for i in client.get("/drive/complete", params={"text": text}).json()
+    }
+    assert want in names, (text, names)
+
+
+def test_complete_qualifier_unrecognised_value_gets_nothing(client) -> None:
+    assert client.get("/drive/complete", params={"text": "is:x"}).json() == []
+    assert client.get("/drive/complete", params={"text": "has:chunks"}).json() == []
+    # ``since:`` values are free-form (N<d|h|w>) — nothing to offer.
+    assert client.get("/drive/complete", params={"text": "since:7"}).json() == []
+
+
+def test_complete_tag_values_come_from_the_roster(client) -> None:
+    """``tag:<partial>`` completes from the tag roster (``suggest_tags`` —
+    the FakeStore pool holds topic:co2-capture and topic:graphene)."""
+    items = client.get("/drive/complete", params={"text": "tag:graph"}).json()
+    assert [i["insert"] for i in items] == ["tag:topic:graphene"]
+    assert items[0]["name"] == "topic:graphene"
 
 
 # ── template: the debounced submit must not fire mid-command ────────

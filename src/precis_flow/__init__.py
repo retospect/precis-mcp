@@ -61,7 +61,15 @@ API
   (Q4): ``'plug'`` (default) advects at the depth-averaged speed and
   reproduces cfdtest; ``'parabolic'`` applies the Hele-Shaw gap shear
   ``6 psi (1 - psi)`` that spreads a tracer pulse.
-- :class:`RegimeCard` — ``from_physical(...)`` -> the six verdict lines.
+- :class:`RegimeCard` — ``from_physical(...)`` -> the six verdict lines;
+  ``card.route`` picks the solver: ``'continuum'`` here, ``'knudsen'``
+  the slice-3 propagator, a refusal naming DSMC in the transition band.
+- :class:`Lumen` / :class:`CylinderLumen` / :class:`AtomWall` /
+  :func:`propagate` — the free-molecular propagator (slice 3): diffuse
+  wall reflection (accommodation ``alpha``) on a reduced lumen, same
+  ``Paths`` contract with ``breakthrough`` = transmission and
+  ``t* = t v̄/L``. The continuum kernel's ``D_v*`` analogue is ``alpha``,
+  a required argument.
 - :func:`nonuniformity` — evenness score over first-crossing points.
 - :func:`rasterize_holes` — blind-pocket topography -> ``depth*`` field.
 
@@ -71,19 +79,24 @@ Modules
 
 from .domain import Domain, Ports, rasterize_holes
 from .flow import Field, solve
+from .nano import AtomWall, CylinderLumen, Lumen, propagate
 from .regime import RegimeCard, RegimeLine
 from .stats import nonuniformity
 from .tracer import Paths, Seed, trace
 
 __all__ = [
+    "AtomWall",
+    "CylinderLumen",
     "Domain",
     "Field",
+    "Lumen",
     "Paths",
     "Ports",
     "RegimeCard",
     "RegimeLine",
     "Seed",
     "nonuniformity",
+    "propagate",
     "rasterize_holes",
     "solve",
     "trace",

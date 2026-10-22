@@ -194,6 +194,45 @@ def test_recent_refs_has_chunks_filter(store):
     assert with_chunk.id not in unchunked
 
 
+def test_recent_refs_has_chunks_honours_unusable_body_tags(store):
+    """drive-slash slice 2: ``has_chunks`` means *usable* body — a ref
+    tagged ``body:partial`` / ``body:needs_ocr`` (paper_hygiene's "the held
+    text isn't the article body" marks) counts as chunkless: excluded by
+    ``with``, included by ``without``. Same predicate ``is:stub`` /
+    ``has:body`` ride on."""
+    from precis.embedder import MockEmbedder
+    from precis.store import ChunkInsert
+    from precis.store.types import Tag
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    usable = store.insert_ref(kind="web", slug="usable-body", title="usable")
+    store.chunks.insert_chunks(
+        usable.id,
+        [ChunkInsert(ord=0, text="a real body", embedding=emb.embed_one("x"))],
+    )
+    tagged = store.insert_ref(kind="web", slug="partial-body", title="partial")
+    store.chunks.insert_chunks(
+        tagged.id,
+        [ChunkInsert(ord=0, text="mostly references", embedding=emb.embed_one("x"))],
+    )
+    store.add_tag(tagged.id, Tag.open("body:partial"))
+    bare = store.insert_ref(kind="web", slug="no-body", title="bare")
+
+    chunked = {r.id for r in store.recent_refs(["web"], has_chunks=True)}
+    assert usable.id in chunked
+    assert tagged.id not in chunked  # unusable-body tag → not "with"
+    assert bare.id not in chunked
+
+    unchunked = {r.id for r in store.recent_refs(["web"], has_chunks=False)}
+    assert bare.id in unchunked
+    assert tagged.id in unchunked  # unusable-body tag → counts "without"
+    assert usable.id not in unchunked
+
+    # count_recent_refs runs the identical WHERE, so "N of K" agrees.
+    listed = store.recent_refs(["web"], has_chunks=True, limit=1000)
+    assert store.count_recent_refs(["web"], has_chunks=True) == len(listed)
+
+
 def test_recent_refs_has_external_id_filter(store):
     """``has_external_id`` narrows to refs carrying a fetchable DOI/arXiv/S2 —
     what makes ``/drive``'s "Stubs (to get)" queue (``has_pdf=False`` +

@@ -23,7 +23,9 @@ Downstream of authoring ([[precis-pcb-help]]) and place/route
 ([[precis-pcb-route-help]]): export is the only place the design leaves
 the graph. Artifacts land under `<PRECIS_CORPUS_DIR>/pcb/<slug>/`, or
 the server's temp dir when that is unset (override with
-`args={'dir':'…'}`). That path is on the serving host: the MCP returns the
+`args={'dir':'…'}` — must resolve under that export root or the system
+temp dir; anything else refuses). That path is on the serving host: the
+MCP returns the
 path, not the file. BOM and CPL responses inline a preview; gerber and
 fab do not. epro names a web UI download path (below).
 
@@ -167,7 +169,7 @@ part-kind side.
 
 ## Order at JLCPCB — `view='fab'`, `op='order'`
 
-`view='fab'` (args `{dir}`) writes `{slug}-fab.zip`, `{slug}-bom.csv`,
+`view='fab'` (args `{dir}` — under the export root only) writes `{slug}-fab.zip`, `{slug}-bom.csv`,
 `{slug}-cpl.csv` — the zip is the order upload; BOM/CPL attach by hand at
 jlcpcb.com checkout (the order API has no PCBA endpoints).
 

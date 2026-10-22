@@ -2597,6 +2597,51 @@ def test_paper_edit_renames_slug_and_moves_pdf(client, runtime, tmp_path) -> Non
     assert (tmp_path / "p" / "piela07.pdf").is_file()
 
 
+def test_paper_edit_slug_rename_timeout_surfaces_error(
+    runtime, tmp_path, monkeypatch
+) -> None:
+    """A wedged corpus mount hangs ``_rename_slug``'s ``is_file`` probe
+    before the identifier write — the request must bound the wait and
+    surface the failure, not hang forever (the 2026-08-17 prod repro:
+    12+ minutes, cite_key unchanged).
+
+    ``with TestClient`` (a persistent portal, like the production loop)
+    so the timed-out request returns while the leaked worker thread is
+    still wedged; without it each request gets a fresh portal whose
+    loop shutdown awaits the orphan thread — masking the fix."""
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+    from precis_web.routes import papers as papers_routes
+
+    release = threading.Event()
+    real_resolve = papers_routes._resolve_pdf
+
+    def wedged_probe(corpus_dirs, cite_keys):
+        release.wait(30)
+        return real_resolve(corpus_dirs, cite_keys)
+
+    monkeypatch.setattr(papers_routes, "_resolve_pdf", wedged_probe)
+    monkeypatch.setattr(papers_routes, "_RENAME_SLUG_TIMEOUT_S", 0.05)
+    app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
+    with TestClient(app) as client:
+        resp = client.post(
+            "/papers/10/edit",
+            data={"cite_key": "piela07"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+        assert "did not finish" in resp.text
+        # The rename never landed: no identifier write at response time.
+        assert not runtime.store.identifier_writes
+        # Free the leaked thread now the assertions are done — the portal
+        # teardown below would otherwise wait out its full Event timeout.
+        release.set()
+
+
 def test_paper_edit_slug_only_skips_metadata_dispatch(client, runtime) -> None:
     """A handle-only change doesn't dispatch an `edit` (which would reject
     an empty field set) — it goes straight to the rename path."""

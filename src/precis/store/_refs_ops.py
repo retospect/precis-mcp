@@ -40,7 +40,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, NotFound
 from precis.hints import Hint, merged_redirect_hint
-from precis.store._body_predicate import has_body_sql
+from precis.store._body_predicate import has_body_sql, unusable_body_tag_sql
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_ALIASED,
@@ -2964,8 +2964,14 @@ class RefsMixin:
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
             )
         if has_chunks is not None:
-            exists = has_body_sql("r")
-            clauses.append(exists if has_chunks else f"NOT {exists}")
+            # "Body" means *usable* body: ``with``/``has:body`` also
+            # excludes refs tagged ``body:partial`` / ``body:needs_ocr``
+            # (paper_hygiene says their held text isn't the article body)
+            # and ``without``/``is:stub`` includes them — the Drive
+            # body-availability selector and the slash qualifiers share
+            # this one clause (drive-slash-command-line slice 2).
+            usable = f"{has_body_sql('r')} AND NOT {unusable_body_tag_sql('r')}"
+            clauses.append(usable if has_chunks else f"NOT ({usable})")
         if has_schedule is not None:
             clauses.append(
                 "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
@@ -3028,8 +3034,9 @@ class RefsMixin:
         fetchable id (DOI/arXiv/S2) — paired with ``has_pdf=False`` for
         the "Stubs (to get)" queue, matching :meth:`stub_backlog`'s
         definition; ``no_oa=False`` further drops the cooled no-OA bucket
-        from that queue. ``has_chunks`` filters on ≥1 body chunk (chunked
-        vs unchunked facet). ``parent_id`` narrows to one folder's
+        from that queue. ``has_chunks`` filters on ≥1 *usable* body chunk
+        (chunked vs unchunked facet — a ``body:partial``/``body:needs_ocr``
+        tag counts as unchunked). ``parent_id`` narrows to one folder's
         *direct* children; ``unfiled_only`` keeps refs with no folder
         (default top-level view, mutually exclusive with ``parent_id``).
 

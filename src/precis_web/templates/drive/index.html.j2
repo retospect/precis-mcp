@@ -153,7 +153,7 @@
           </button>
         </template>
       </div>
-      <p class="mt-0.5 text-[11px] text-fg-faint">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest — type <code>/</code> for the command list; a handle or DOI jumps straight to the item. <code>/fav</code> opens <a href="/favorites" class="underline">your favorites</a>.</p>
+      <p class="mt-0.5 text-[11px] text-fg-faint">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest — type <code>/</code> for the command list; <code>is:stub</code> <code>has:body</code> <code>tag:x</code> <code>since:7d</code> filter; <code>//foo</code> searches the literal <code>/foo</code>; a handle or DOI jumps straight to the item. <code>/fav</code> opens <a href="/favorites" class="underline">your favorites</a>.</p>
     </div>
     <div>
       <label for="drive-sort" class="block text-xs text-fg-subtle mb-0.5">Sort</label>
@@ -275,7 +275,7 @@
       allKindDefs, kinds: selectedKinds, tags: selectedTags, discoverKinds,
       sourceKinds, artifactKinds, designKinds, workKinds, machineKinds, derivedKinds,
       kindQuery: '', tagQuery: '', suggestions: [], _t: null,
-      slashItems: [], slashSel: 0, slashOpen: false, _slashAll: null,
+      slashItems: [], slashSel: 0, slashOpen: false, _slashAll: null, _pickTok: null,
       // Every filter change is a full GET navigation, which re-renders the
       // <details> closed; carry its open state across in sessionStorage.
       init() {
@@ -322,11 +322,28 @@
       // gr486407 — a trailing "/token" is an incomplete slash command: the
       // debounced search must not fire (it reads as a page reload) and the
       // command popdown opens instead. Token chars exclude "/", so a pasted
-      // /c/<handle> site path still falls through to the URL jump.
+      // /c/<handle> site path still falls through to the URL jump, and a
+      // "//…" literal escape never opens the popdown (slice 2 §3 — the
+      // second "/" isn't at a token boundary).
       slashToken() {
         const el = this.$refs.q;
         const head = el.value.slice(0, el.selectionStart ?? el.value.length);
         return head.match(/(?:^|\s)\/([A-Za-z0-9_+-]*)$/);
+      },
+      // Slice-2 qualifiers are bare words: a trailing "word" or
+      // "name:value" at the caret completes via the same endpoint. The
+      // char before it can't be "/" (that would be a slash token).
+      qualToken() {
+        const el = this.$refs.q;
+        const head = el.value.slice(0, el.selectionStart ?? el.value.length);
+        return head.match(/(?:^|\s)([A-Za-z]+(?::[^\s/]*)?)$/);
+      },
+      qualifierish(w) {
+        const p = w.toLowerCase();
+        const names = ['is', 'has', 'tag', 'since'];
+        return p.includes(':')
+          ? names.some(n => p.startsWith(n + ':'))
+          : names.some(n => n.startsWith(p));
       },
       // Every token a complete "/word" (/draft , /draft /paper ) — still
       // mid-expression, no free text yet: keep the debounced search off.
@@ -339,7 +356,15 @@
         const m = this.slashToken();
         if (m) {
           clearTimeout(this._t);
+          this._pickTok = { len: m[1].length + 1 };
           this.showSlash(m[1]);
+          return;
+        }
+        const qm = this.qualToken();
+        if (qm && this.qualifierish(qm[1])) {
+          clearTimeout(this._t);
+          this._pickTok = { len: qm[1].length };
+          this.showQual();
           return;
         }
         this.slashOpen = false;
@@ -360,14 +385,29 @@
         this.slashSel = 0;
         this.slashOpen = this.slashItems.length > 0;
       },
+      // Qualifier completions need the real text+caret — tag: values come
+      // from the live roster, so no client-side cache like _slashAll.
+      async showQual() {
+        const el = this.$refs.q;
+        const pos = el.selectionStart ?? el.value.length;
+        try {
+          const r = await fetch('/drive/complete?text=' + encodeURIComponent(el.value) + '&pos=' + pos);
+          this.slashItems = r.ok ? await r.json() : [];
+        } catch (e) { this.slashItems = []; }
+        this.slashSel = 0;
+        this.slashOpen = this.slashItems.length > 0;
+      },
       pickSlash(s) {
         const el = this.$refs.q;
-        const m = this.slashToken();
-        if (!m) return;
+        const t = this._pickTok;
+        if (!t) return;
         const pos = el.selectionStart ?? el.value.length;
-        const start = pos - m[1].length - 1;
-        el.value = el.value.slice(0, start) + s.insert + ' ' + el.value.slice(pos);
-        el.setSelectionRange(start + s.insert.length + 1, start + s.insert.length + 1);
+        const start = pos - t.len;
+        // An insert ending in ':' is a prefix (tag:, since:) — the caret
+        // stays mid-word so the value completes next, no trailing space.
+        const tail = s.insert.endsWith(':') ? '' : ' ';
+        el.value = el.value.slice(0, start) + s.insert + tail + el.value.slice(pos);
+        el.setSelectionRange(start + s.insert.length + tail.length, start + s.insert.length + tail.length);
         this.slashOpen = false;
         this.slashItems = [];
         el.focus();

@@ -283,7 +283,10 @@ is verified done on prod.
    join against the corpus dir). It gates nanopub provenance, not text.
 2. **`backlog/crossref-enrichment.md`** — abstract fallback; mailto still
    unset on `paper_meta_enrich`.
-3. **`backlog/papers-edit-reslug-hangs.md`** — broken feature, 1 repro.
+3. **`backlog/papers-edit-reslug-hangs.md`** — **landed 2026-10-21**
+   (bug-papers-pcb): `_rename_slug` bounded by `asyncio.wait_for` (30s)
+   with a half-applied error page on timeout; the ref-211494 retry is a
+   prod write, Reto's call.
 4. **`backlog/paper-dedup-bucket-b.md`** — 94 refs, CLI-gated ops run.
 5. **`backlog/acquisition-marker-lives-in-the-wrong-place.md`** — backfill
    done; the prose-grep cleanup remains.
