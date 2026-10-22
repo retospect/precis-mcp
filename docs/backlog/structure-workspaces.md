@@ -87,12 +87,19 @@ library and writes `out/`. A `precis_ws` helper (staged like
 ```python
 from precis_ws import out, params, blocks
 from hexfold.sheetnet import prism
+import precis_geom.assembly as pga
 P = params()
 p = prism(seams="cccRcccRcccR", rows=P["R"], periods=P["P"], junction="sp3-z")
 out.block("p", p, ports=p.rims(), relax={"method": "gfn2", "periodic": True})
 guest = blocks.get("guests#c60")          # read MCP, existing block
 out.instance("guest", template="guests#c60", parent="p", pose="[0 0 2] nm")
+pair = pga.assembly("pair", children=[p, pga.mirror(p, plane="yz")])
+out.block("pair", pga.tile(pair, n=3, pitch="[0 0 1.2] nm"))
 ```
+
+Core modules import under short stable aliases — `pg` for `precis_geom`,
+`pga` for `precis_geom.assembly` — so examples, traces and skill text
+spend no tokens on dotted paths (`pga.tile(...)` in a frame line).
 
 Loop latency target: < ~10 s for small structures. Budget: claim tick ≤ 2 s
 (the `job_claude_docker` lane polls on its own interval), warm venv 0–1 s
@@ -175,6 +182,36 @@ anywhere with `uv run`, not only referenced by sha.
   cloned lazily at its first run. Two designs never share a folder, so
   an edit in one cannot silently regenerate the other.
 
+### Code storage — files in the DB, or git objects in the DB? (discussion, not ruled)
+
+Reto, 2026-10-22, on W3: "I side with Fable" (files in the DB as a folder
+`part-of` the design + a host git log — ruled) and "can we have git
+blobs in the DB, or just the files in the DB? I kinda like that." The
+three shapes, concretely:
+
+| | (a) plain files in the DB (ruled baseline) | (b) git objects in Postgres | (c) files in DB + git bundle blobs |
+|---|---|---|---|
+| what is stored | one `folder` ref, one chunk per file, current content only; `script_sha` on blocks points at the host repo | tables `git_objects(sha PK, type, zlib bytes)` and `git_refs(repo, name, sha)`; a run = a commit row; se `design_revisions`/`generated.script_sha` FK to `git_objects.sha`; the DB **is** the repo | (a) plus a `git bundle` blob per run (or per N runs) attached to the run job |
+| dedup across runs / forks | none in the DB (host git dedups on the host only); a fork copies every file | full: identical blobs share one row across runs, forks and workspaces; a fork is one new commit row | bundles repeat shared history unless incremental (`--since`), then restore needs the chain |
+| diff / history cost | no history in the DB; "what changed since run 17" asks the sandbox host; history lost if the host dir dies | `git diff` semantics in SQL: walk two trees, compare blob shas — pure Python over rows or pygit2 with a custom Odb/Refdb backend; cheap, no host | unpack the bundle into a temp repo first (seconds, disk) |
+| integrity | `script_sha` is a string nobody checks; the host repo can be reset (§Risks) | `generated.script_sha` is an FK; a block cannot name a commit the DB lacks; content-addressed rows verify themselves (`sha == sha1(header+bytes)`) | FK to the bundle row only; the sha inside is unchecked unless unpacked |
+| tooling — can a human clone? | no; `tree_to_json` export + `uv run` | yes via export: `git fast-import` stream from the rows, or write loose objects + refs into an empty repo; pygit2 backends make it a live remote if ever wanted; no native `git clone pg://` | yes: `git clone <bundle>` directly, the most human-friendly |
+| backup | rides the nightly dump | rides the nightly dump; rows are immutable so incremental backup is trivial | rides the dump; bundles are opaque blobs, larger |
+| effort | 0 beyond slice 1 | M: migration (2 tables), a writer (`stage_code` → tree + commit rows, ~300 lines of plumbing: hashing, zlib, tree sorting), a reader for `view='source'`/diff, export via fast-import; pygit2 backends optional later | S: `git bundle create` on the host after each run, one blob column |
+
+Recommendation (for discussion): **(b), as slice 1b after slice 1
+lands** — not instead of it. (a) ships the loop; (b) gives the two
+things (a) cannot: a real FK from an se revision to the code that made
+it, and dedup when forks and reruns multiply. The host git repo then
+becomes a cache materialised from the rows (no more two-sources-of-truth
+risk; the host dir can vanish). Write path stays simple: the stager
+already has the file set, hashing it into blob/tree/commit rows is
+deterministic Python (no pygit2 needed to *write*); pygit2's custom
+backends are the read/clone path only if someone wants `git clone`
+against the DB. (c) is cheap but buys the least: humans can clone, the
+DB still cannot check what a block cites. Not for this spec's slices
+0–2; the decision gates slice 1b only.
+
 ## Assembly API — one implementation for ops and scripts
 
 Reto, 2026-10-22: the programmatic interface includes tile (fused and
@@ -182,19 +219,19 @@ packed), mirror, rotate/translate/transform, and hierarchical assembly
 (sub-assemblies as nested instances with their own frames, placed
 relative to parent ports/anchors); each records a trace frame.
 
-| operation | exists today | library call (`precis_geom.assembly`) | frame |
+| operation | exists today | library call (`import precis_geom.assembly as pga`) | frame |
 |---|---|---|---|
-| nested instance, own frame | `instance_block` (`blocktree/ops.py::op_instance_block`, cross-design templates via `parse_template_ref`; blocks nest under `parent`) | `assembly(name, children=[...], pose=)` / `instance(template, pose=)` | `instance` |
-| packed tile (copies at a pitch) | `array_block` (`precis_se/ops.py`, pitch × count) | `tile(block, n, pitch=, fused=False)` | `tile#k` per copy |
-| fused tile (one body, bonded across the seam) | atomic: hexfold `periods` + k2 fuse; macro: `cad.graph.Design.merge` | `tile(block, n, period=, fused=True)` — atomic: translational copies + `junction(k=2)` across each boundary; macro: union | `tile` (one frame, `made` = seam bonds) |
-| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only) | `translate(v)`, `rotate(axis, deg)`, `transform(T)` | `pose` |
-| mirror | none | `mirror(plane)` — improper transform; atomic emits `chirality.flipped` INFO, macro flips face normals | `mirror` |
-| port-to-port placement | `connect` (ports; `clearance`, kinematic words) | `place(child, at=parent.port('rim+'), align=child.port('rim-'))` — the same solve `connect` runs | `place` |
+| nested instance, own frame | `instance_block` (`blocktree/ops.py::op_instance_block`, cross-design templates via `parse_template_ref`; blocks nest under `parent`) | `pga.assembly(name, children=[...], pose=)` / `pga.instance(template, pose=)` | `instance` |
+| packed tile (copies at a pitch) | `array_block` (`precis_se/ops.py`, pitch × count) | `pga.tile(block, n, pitch=, fused=False)` | `tile#k` per copy |
+| fused tile (one body, bonded across the seam) | atomic: hexfold `periods` + k2 fuse; macro: `cad.graph.Design.merge` | `pga.tile(block, n, period=, fused=True)` — atomic: translational copies + `junction(k=2)` across each boundary; macro: union | `tile` (one frame, `made` = seam bonds) |
+| translate / rotate / transform | `set_pose` (`op_set_pose`); `cad.vec.Transform` (proper only) | `pga.translate(v)`, `pga.rotate(axis, deg)`, `pga.transform(T)` | `pose` |
+| mirror | none | `pga.mirror(plane)` — improper transform; atomic emits `chirality.flipped` INFO, macro flips face normals | `mirror` |
+| port-to-port placement | `connect` (ports; `clearance`, kinematic words) | `pga.place(child, at=parent.port('rim+'), align=child.port('rim-'))` — the same solve `connect` runs | `place` |
 | fuse two blocks' atoms | `join` (`atomic/join.py`) | `junction(rims, k)` (multicell slice 1) | `junction` |
 | bind geometry to a block | `bind_structure` / `set_binding` | `out.block(...)` (manifest) | `block` |
 
 DRY rule: the geometry math (pitch expansion, pose composition, port
-alignment, fused-tile seam) lives once in `precis_geom.assembly`;
+alignment, fused-tile seam) lives once in `precis_geom.assembly` (`pga`);
 `precis_se/ops.py` keeps naming, validation and tree bookkeeping and
 calls the library for the numbers. A script and an MCP op on the same
 inputs produce the same block (a golden asserts it). Sub-assemblies: an
@@ -609,6 +646,7 @@ traces).
 |---|---|---|---|---|
 | 0 | **Importer + goldens, no container.** `precis_se/workspace_import.py`, manifest schema, extXYZ reader (with the `maker` per-atom column), cad graph import (`frame` on instances), `trace.json` reader stored once on the run, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/hexfold/data/goldens`, findings, trace key set) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated` (incl. `trace`); a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; a 25k-frame trace imports with `trace.truncated`; goldens pass on main | M, 1 build |
 | 1 | **Workspace kind + `run`.** `folder`-backed workspace ref linked `part-of` its design, with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s`; fork copies the folder; `tree_to_json` embeds files + lock + wheel; **removes `generate`, `join`, `terminate` (refusal naming the workspace path) and their skill sections (W5)** | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path, `persist.tree_to_json`/`tree_from_json` | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease); an exported design restores with its folder and `uv run main.py` rebuilds the block byte-identical on a laptop; `generate` refuses with the workspace `next=` and no skill names it | L, 2–3 builds; needs sandbox slice 4 (lane live) |
+| 1b | **Git objects in Postgres** (gated on §Code storage, not ruled). `git_objects`/`git_refs` migration, stager writes blob/tree/commit rows, `generated.script_sha` FK, `view='source'`/diff over rows, export via `git fast-import`; host repo becomes a materialised cache | `_sandbox_inputs.stage_code`, `persist`, `tree_to_json` | Two runs sharing files share blob rows; a block cannot cite a commit sha the DB lacks (FK); `fast-import` export clones and `uv run` rebuilds byte-identical | M, 1–2 builds; only if ruled |
 | 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item, trace overhead < 5 % of build); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
 | 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
 | 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector | `handlers/python.py` roots, `_python_render.py`, `view='trace'` | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root | S–M, 1 build; after 2t |
@@ -620,7 +658,7 @@ traces).
 | 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched` | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'` | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level | M, 1 build; after 4u, 2t |
 | 4u | **Relaxed-unit catalogue.** Units as library-design blocks with `generated.generator='unit'`, `blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
-| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
+| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-compute-help`; a trace section (the five asks, `frame:`, the build123d limit) and the alias convention (`pg`, `pga`; every example uses them) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, `docs/glossary.md`, `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
 | 7 | **CI goldens for core scripts.** Each core generator gets an `examples/` script whose output goldens (counts, SHA, findings) run in `scripts/test` without a container — the multicell slice-0 goldens become this | `tests/workspaces/`, `scripts/impacted-tests` | A change to `sheetnet` that alters a golden fails the selected test naming the script | S per generator, with each slice |
 
 Later, named: agent-inside-container (socket bridge for `mode:build`);
@@ -647,9 +685,8 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Two sources of truth for files** (DB folder vs host git). The DB is
   truth; git is a run log. A host repo that diverges (manual edits on the
   host) is reset to the staged tree at the next run, and the echo says so.
-  §Code inside the design assumes the DB folder (W3, still open with
-  Reto); under host-git-only the `part-of` link points at a folder ref
-  mirrored from the host repo at each run, and edits are jobs.
+  Ruled W3: the DB folder is truth. Under §Code storage (b) the host
+  repo becomes a materialised cache of the rows and this risk goes away.
 - **Export size.** Embedding the `precis-geom` wheel per design export
   is a few MB each; a design with many promoted modules grows. The
   export lists wheel shas and skips a wheel already present in the
@@ -677,31 +714,28 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **W5 construction ops:** legacy; retired in the slice that makes `run`
   usable, no clock, no wrapper phase (§MCP surface).
 - **W6 agent-in-container:** stays outside until a case needs it.
+- **W3 workspace file storage:** files in the DB as a folder `part-of`
+  the design + a host git log ("I side with Fable"). Git objects in
+  Postgres is a discussion item (§Code storage), not ruled.
+- **Trace granularity:** per-atom `maker` column; every `/work/**.py`
+  frame is a user frame.
+- **Relax cache:** holds the periodic unit; consumers tile and cap it —
+  no per-`(unit, periods, cap)` copies.
+- **Stale policy:** golden-diff — regenerate at the new wheel and
+  compare; a unit goes stale only when its generator's output changed,
+  never on version equality alone.
+- **Export:** designs embed their `precis-geom` and promoted-module
+  wheels (`uv run` offline except PyPI).
+- **Interface relax:** 6 Å free shell around assembly frames, widened
+  by 2 Å (≤ 3×) while residual force on frozen atoms exceeds 0.1 eV/Å;
+  `assembly.strain` reports what remains.
 - Decided in the text: loop collapse past 64 same-site siblings; `op`
   frames for surviving ops.
 
-## Open questions for Reto
+## Open questions for Reto (one left)
 
-1. **W3 workspace file storage.** DB folder ref `part-of` the design +
-   host git as a run log (recommended: editable from the session MCP, no
-   cross-host write path, the export path in §Code inside the design) vs
-   host-git-only with edits as jobs (simpler trust story, slower loop).
-2. **Trace granularity.** Maker as a per-atom column and every
-   `/work/**.py` frame as a user frame (recommended: rides extXYZ and
-   relax versions; the agent's helpers are what it edits) vs a side
-   table `(structure, ordinal) → frame` and `main.py` top level only.
-3. **What the relax cache holds.** The periodic unit, tiled and capped
-   per consumer (recommended: one relax serves every length; caps are a
-   cheap tethered end relax) vs one cached relax per `(unit, periods,
-   cap)`.
-4. **Stale policy on a wheel bump.** Golden-diff re-stamp (recommended:
-   a unit goes stale only when its generator's output changed) vs
-   version-equality (every bump stales every unit — a recompute storm
-   on no-op releases).
-5. **Self-contained export.** Embed the `precis-geom` and promoted-module
-   wheels in the design export (recommended: `uv run` works offline
-   except PyPI) vs publish wheels to GitHub releases and pin by version
-   (smaller exports, needs the network and a release step per wheel).
-6. **Interface-relax threshold.** Residual force on frozen atoms 0.1 eV/Å
-   with a 6 Å free shell widened by 2 Å up to three times (recommended,
-   from the tethered-relax defaults) vs a per-method table.
+1. **Git objects in Postgres** (discussion, §Code storage): (a) plain
+   files only, (b) blob/tree/commit rows with se revisions FK-ing to
+   commit shas (recommended as slice 1b), (c) files + bundle blobs.
+
+Everything else is ruled (§Rulings).
