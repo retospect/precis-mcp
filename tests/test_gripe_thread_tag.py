@@ -103,6 +103,51 @@ def test_create_ack_asks_for_the_thread_unless_given(
     assert "thread:pcb-platform" in _tags(gripe, gid2)
 
 
+def test_put_with_a_backlog_item_slug_gets_the_put_door(
+    gripe: GripeHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gr503548: agents tag docs/backlog/<slug>.md *item* names, not
+    # threads/*.md threads. The refusal says so, points at the link
+    # door, and corrects the put — not a tag() on an id never minted.
+    d = tmp_path / "docs" / "backlog"
+    (d / "threads").mkdir(parents=True)
+    (d / "threads" / "knowledge-mesh.md").write_text("# x\n", encoding="utf-8")
+    (d / "graph-gardener.md").write_text("# x\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_THREADS_DIR", str(d / "threads"))
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="should not file", tags=["thread:graph-gardener"])
+    assert "backlog item" in str(exc.value)
+    assert "md:main/docs/backlog/graph-gardener.md" in str(exc.value)
+    assert isinstance(exc.value.next, str) and exc.value.next.startswith(
+        "put(kind='gripe'"
+    )
+    assert "knowledge-mesh" in (exc.value.options or ())
+
+
+def test_put_with_an_unknown_thread_corrects_the_put_with_nearest(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="should not file", tags=["thread:ship-gate"])
+    assert "nearest: ship-gate-ci" in str(exc.value)
+    assert isinstance(exc.value.next, str) and exc.value.next.startswith(
+        "put(kind='gripe'"
+    )
+    assert "thread:ship-gate-ci" in exc.value.next
+
+
+def test_tag_with_an_unknown_thread_keeps_the_tag_door(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    gid, _ = _new(gripe)
+    with pytest.raises(BadInput) as exc:
+        gripe.tag(id=gid, add=["thread:ship-gate"])
+    assert "nearest: ship-gate-ci" in str(exc.value)
+    assert isinstance(exc.value.next, str) and exc.value.next.startswith(
+        f"tag(kind='gripe', id={gid}"
+    )
+
+
 def test_no_thread_files_means_unchecked_and_said(
     gripe: GripeHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -101,11 +101,13 @@ def test_view_default_reads_as_the_default_view(hub: Hub) -> None:
 
 
 def test_view_with_two_readings_still_refuses(hub: Hub) -> None:
-    """'abstract' could mean the body head or a summary: refused with the
-    view vocabulary."""
+    """'text' could mean the body or a comment's text: refused with the
+    view vocabulary. ('abstract' had two readings until gr503549 ruled
+    one — the paper/patent spelling now reads as view='body', pinned in
+    test_gripe_get_hints.)"""
     h, a, _ = _two(hub)
     with pytest.raises(Unsupported) as exc:
-        h.get(id=a, view="abstract")
+        h.get(id=a, view="text")
     assert "comments" in (exc.value.options or [])
 
 

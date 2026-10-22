@@ -104,7 +104,7 @@ header flags it (`⚠ N of M … also match q`) so the truncation is visible.
 
 ```python
 search(kind="gripe", tags=["STATUS:open"])  # complete enumeration (no q)
-get(kind="gripe", id="/open")               # same set, 20 per page
+get(kind="gripe", id="/open")  # same set, 20 per page
 ```
 
 Queryless gripe browse sorts by PRIO, oldest first within a PRIO
@@ -138,16 +138,17 @@ search(kind="gripe", tags=["STATUS:wontfix"])
 ```python
 get(kind="gripe", id=42)
 # → title card: header + tags + title + comment count
-get(kind="gripe", id=42, view="body")       # the body
-get(kind="gripe", id=42, view="comments")   # every comment, oldest first
-get(kind="gripe", id=42, view="full")       # body + every comment, uncapped
+get(kind="gripe", id=42, view="body")  # the body
+get(kind="gripe", id=42, view="comments")  # every comment, oldest first
+get(kind="gripe", id=42, view="full")  # body + every comment, uncapped
 ```
 
 A bare `get` is the title card only — the body and timeline stay behind
-explicit views (gr499040). The comments view is selectable:
-`args={'comments': K}` is the newest K, `args={'comment': K}` is one
-comment uncapped (a long comment in the window view is cut mid-text and
-names that call). `view='full'` is the complete read.
+explicit views (gr499040). The selectors work inside `view='comments'`
+or `view='full'`: `args={'comments': K}` is the newest K, `args={'comment': K}`
+is one comment uncapped (a long comment in the window is cut mid-text and
+names that call). Plain `view='full'` is the complete read — body + every
+comment, uncapped; with a selector it is body + the window.
 `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
@@ -282,7 +283,12 @@ put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ## Retire a gripe that's been resolved
 
 ```python
-put(kind="gripe", id=42, text="resolved: <sha> (r<N>) — <how verified>", tags=["STATUS:done"])
+put(
+    kind="gripe",
+    id=42,
+    text="resolved: <sha> (r<N>) — <how verified>",
+    tags=["STATUS:done"],
+)
 ```
 
 One call — comment and close land together (two calls,

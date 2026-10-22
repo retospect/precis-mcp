@@ -17,11 +17,13 @@ Surface (see ``precis-gripe-help``):
 - ``get(kind='gripe', id=N)`` is the title card (gr499040, Reto ruling
   2026-10-19): header + tags + ``title:`` + a comment-count line pointing
   at the deep reads — ``view='body'`` for the body,
-  ``view='comments'`` for the timeline. The comments view is selectable:
-  ``args={'comments': K}`` is the newest K, ``args={'comment': K}`` is one
-  comment uncapped (a long one in the window view is cut mid-text at
-  :data:`_comment_timeline.COMMENT_VIEW_CHARS` and names that read).
-  ``view='full'`` is the complete read (body + every comment, uncapped);
+  ``view='comments'`` for the timeline. The timeline selectors
+  ``args={'comments': K}`` (the newest K) and ``args={'comment': K}``
+  (one comment uncapped) work inside ``view='comments'`` and
+  ``view='full'`` — a long one in a window is cut mid-text at
+  :data:`_comment_timeline.COMMENT_VIEW_CHARS` and names that read.
+  ``view='full'`` without a selector is the complete read (body +
+  every comment, uncapped);
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -40,6 +42,7 @@ Surface (see ``precis-gripe-help``):
 
 from __future__ import annotations
 
+import difflib
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -78,9 +81,16 @@ _COMMENT_KIND = "gripe_comment"
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
 #: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is a
 #: first-class view since gr499040 (the complete read — body + every
-#: comment); ``None`` is the default title-card read. Applied to a
-#: single-id get without q= only; the reply names it.
-_VIEW_ALIASES: dict[str, str | None] = {"default": None}
+#: comment); ``None`` is the default title-card read. ``'abstract'`` is
+#: the paper/patent spelling generalised onto gripes (gr503549) — it
+#: reads as ``'body'``; ``'tags'`` reads as the title card, which
+#: already is that. Applied to a single-id get without q= only; the
+#: reply names it.
+_VIEW_ALIASES: dict[str, str | None] = {
+    "default": None,
+    "abstract": "body",
+    "tags": None,
+}
 
 #: ``title:`` line cap on the bare get (gr499040's title card) so a
 #: gripe filed with a long first line can't re-inflate the small read.
@@ -474,13 +484,19 @@ class GripeHandler(NumericRefHandler):
         return interpreted(super().tag(id=id, add=add, remove=remove, **_kw), readings)
 
     def _check_thread_tags(
-        self, tags: list[str] | None, *, id: object = "<id>"
+        self, tags: list[str] | None, *, id: object = "<id>", create: bool = False
     ) -> list[str]:
         """Refuse a ``thread:<slug>`` tag naming no thread file. The closed
         list is :func:`precis.utils.thread_files.thread_slugs`; a process
         without the thread files passes the tag unchecked and says so (the
-        returned reading)."""
-        from precis.utils.thread_files import THREAD_TAG_PREFIX, thread_slugs
+        returned reading). ``create=True`` (the ``put`` create path) makes
+        the refusal's ``next=`` a corrected put — ``tag()`` on an id the
+        refused put never minted is a dead end (gr503548)."""
+        from precis.utils.thread_files import (
+            THREAD_TAG_PREFIX,
+            thread_slugs,
+            threads_dir,
+        )
 
         named = sorted(
             {
@@ -496,16 +512,37 @@ class GripeHandler(NumericRefHandler):
             return ["thread tag not checked: no docs/backlog/threads in this checkout"]
         unknown = [s for s in named if s not in slugs]
         if unknown:
-            shown = id if not isinstance(id, list) else "<id>"
-            raise BadInput(
-                f"unknown thread {unknown[0]!r}: a thread tag names a "
-                "docs/backlog/threads/<slug>.md file",
-                options=sorted(slugs),
-                next=(
-                    f"tag(kind={self.kind!r}, id={shown}, "
-                    f"add=['{THREAD_TAG_PREFIX}<slug>']) with a slug from options"
-                ),
+            slug = unknown[0]
+            close = difflib.get_close_matches(slug, sorted(slugs), n=3, cutoff=0.6)
+            cause = (
+                f"unknown thread {slug!r}: a thread tag names a "
+                "docs/backlog/threads/<slug>.md file"
             )
+            if close:
+                cause += f"; nearest: {', '.join(close)}"
+            if (threads_dir().parent / f"{slug}.md").is_file():
+                # docs/backlog/<slug>.md is a planned-work item, not a
+                # thread — agents tag item slugs (gr503548: graph-gardener,
+                # memory-graph, gardener-value). Name the link door.
+                cause += (
+                    f"; {slug!r} is a backlog item, not a thread — "
+                    "threads are docs/backlog/threads/*.md; link the item "
+                    f"with link='md:main/docs/backlog/{slug}.md' and pick "
+                    "a thread from options"
+                )
+            fix = close[0] if close else "<slug>"
+            if create:
+                next_call = (
+                    f"put(kind={self.kind!r}, title='<title>', text='...', "
+                    f"tags=['{THREAD_TAG_PREFIX}{fix}'])"
+                )
+            else:
+                shown = id if not isinstance(id, list) else "<id>"
+                next_call = (
+                    f"tag(kind={self.kind!r}, id={shown}, "
+                    f"add=['{THREAD_TAG_PREFIX}{fix}'])"
+                )
+            raise BadInput(cause, options=sorted(slugs), next=next_call)
         return []
 
     def _comments(self, ref_id: int, ref: Ref | None = None) -> list[Any]:
@@ -634,7 +671,7 @@ class GripeHandler(NumericRefHandler):
         # decorative tag row. Strip it before strict tag parsing. An
         # explicit ``put(prio=)`` (plumbed via ``_PUT_PRIO``) wins.
         tags, prio_from_tag = split_prio(tags)
-        readings = self._check_thread_tags(tags)
+        readings = self._check_thread_tags(tags, create=True)
         if (put_prio := _PUT_PRIO.get()) is not None:
             prio_from_tag = put_prio
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
@@ -827,9 +864,10 @@ class GripeHandler(NumericRefHandler):
         view: str | None = None,
         q: str | None = None,
         page: int | None = None,
-        # ``args={'comment': K}`` / ``{'comments': K}`` — the
-        # ``view='comments'`` selectors (gr499040; flattened to kwargs by
-        # the dispatcher's extras handling).
+        # ``args={'comment': K}`` / ``{'comments': K}`` — the timeline
+        # selectors inside ``view='comments'``/``view='full'`` (gr499040,
+        # gr503545; flattened to kwargs by the dispatcher's extras
+        # handling).
         comment: int | str | None = None,
         comments: int | str | None = None,
         **_kw: Any,
@@ -853,17 +891,22 @@ class GripeHandler(NumericRefHandler):
             readings.append(f"view={view!r} read as {shown}")
             view = canon
         if comment is not None or comments is not None:
-            # The selectors only mean something inside the timeline view —
-            # read ``comment``/``comments`` anywhere else would be a
-            # silent drop (mcp-authoring rule 6).
-            if view != "comments":
+            # The selectors only mean something inside the timeline
+            # reads — anywhere else they would be a silent drop
+            # (mcp-authoring rule 6). view='full' is legal since
+            # gr503545: "body + the newest K" is a sensible ask, so the
+            # full renderer windows its timeline the same way the
+            # comments view does.
+            if view not in ("comments", "full"):
                 raise BadInput(
                     "args={'comment': K} / args={'comments': K} select inside "
-                    "view='comments'",
-                    next=(
+                    "view='comments' or view='full'",
+                    next=[
                         f"get(kind='gripe', id={id}, view='comments', "
-                        "args={'comments': 5})"
-                    ),
+                        "args={'comments': 5})",
+                        f"get(kind='gripe', id={id}, view='full', "
+                        "args={'comments': 5})",
+                    ],
                 )
         if view in ("comments", "body", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
@@ -881,11 +924,14 @@ class GripeHandler(NumericRefHandler):
             )
         if view is not None and view not in _BASE_VIEWS:
             views = [*_BASE_VIEWS, "body", "comments", "full"]
+            near = difflib.get_close_matches(view, views, n=1)
+            lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
                 next=(
-                    "get(kind='gripe', id=<id>, view='comments') — every comment "
+                    lead
+                    + "get(kind='gripe', id=<id>, view='comments') — every comment "
                     "(args={'comments': K} newest K, {'comment': K} one); "
                     "view='body' the body; the plain get is title + tags + count"
                 ),
@@ -962,7 +1008,21 @@ class GripeHandler(NumericRefHandler):
         if view == "body":
             return f"{head}\n\n{body}"
         if view == "full":
-            section = tl.render_comments(ref, cblocks, kind=self.kind, full=True)
+            if comment is not None or comments is not None:
+                # A selector inside 'full' windows the timeline the same
+                # way view='comments' does — newest K / one uncapped —
+                # on top of the body (gr503545).
+                only, last = self._comment_window(ref, cblocks, comment, comments)
+                section = tl.render_comment_view(
+                    ref, cblocks, kind=self.kind, last=last, only=only
+                )
+                if not section:
+                    section = (
+                        "no comments — "
+                        f"put(kind='gripe', id={ref.id}, text='...') adds one"
+                    )
+            else:
+                section = tl.render_comments(ref, cblocks, kind=self.kind, full=True)
             return f"{head}\n\n{body}" + (f"\n\n{section}" if section else "")
         # view == "comments"
         only, last = self._comment_window(ref, cblocks, comment, comments)

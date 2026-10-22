@@ -30,7 +30,7 @@ status: active
 
 ```python
 get(id="pa5")  # read by handle (prefix infers kind)
-get(kind="paper", id="pa5", view="abstract")  # read + view
+get(kind="paper", id="pa5", view="abstract")  # read + view ('abstract' is a paper/patent view)
 get(kind="math", q="population of Ireland")  # compute
 ```
 
@@ -46,6 +46,11 @@ get(kind="math", q="population of Ireland")  # compute
 | `q` | str | Free-text query for compute-style kinds. |
 | `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` — the node with its neighborhood (`precis-fisheye-help`). |
 | `args` | dict | Typed extras for views that need them. Reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
+
+Per-kind views are listed by the kind's own skill
+(`get(kind='skill', id='precis-<kind>-help')`) or by the `options=` of
+an unknown-view refusal — a view name valid on one kind does not carry
+to another.
 
 ## Pass typed extras to a view
 ## Some views need more than a slug and a name
