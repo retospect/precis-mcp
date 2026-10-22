@@ -15,6 +15,39 @@
 #     linux client in the 2026-08-15 reboot test). The automount unit defers the real mount to
 #     first access, when the network is long up — same lazy semantics the
 #     NAS gets from autofs.
+#
+# Server choice (cluster-fileserver-move): cluster_share_on_nas (defaults/)
+# is the cutover flag. Off, every task below renders exactly the pre-move
+# source and options. On, the source is the NAS's `cluster` share by the
+# name the /etc/hosts line pins, and the old server's line is replaced.
+
+- name: Refuse a cutover the overlay cannot describe
+  when: cluster_share_on_nas | bool
+  ansible.builtin.assert:
+    that:
+      - nas_lan_name | default('') | length > 0
+      - nas_lan_ip | default('') | length > 0
+      - nas_cluster_export | default('') | length > 0
+    fail_msg: >-
+      cluster_share_on_nas needs nas_lan_name, nas_lan_ip and
+      nas_cluster_export in the overlay (inventory.example/hosts.example.yml).
+    quiet: true
+
+- name: Pick the cluster share's source and options
+  ansible.builtin.set_fact:
+    nfs_client_src: >-
+      {{ (nas_lan_name ~ ':' ~ nas_cluster_export) if (cluster_share_on_nas | bool)
+         else (hostvars[nfs_server]['lan_ip'] ~ ':' ~ nfs_export_path ~ '/shared') }}
+    nfs_client_opts_darwin: >-
+      {{ nas_mount_opts_darwin if (cluster_share_on_nas | bool)
+         else 'hard,intr,nosuid,nodev,noatime' }}
+    nfs_client_opts_linux: >-
+      {{ nas_mount_opts_linux if (cluster_share_on_nas | bool)
+         else 'hard,intr,nosuid,nodev,noatime,_netdev,x-systemd.automount,x-systemd.mount-timeout=30' }}
+
+- name: Pin the NAS in /etc/hosts (cutover)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/nas_hosts_entry.yml"
+  when: cluster_share_on_nas | bool
 
 - name: Provision /mnt namespace root (macOS sealed root)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
@@ -41,7 +74,7 @@
   when: os_family == "darwin"
   ansible.builtin.lineinfile:
     path: /etc/fstab
-    regexp: '^(?!{{ (hostvars[nfs_server]["lan_ip"] ~ ":" ~ nfs_export_path ~ "/shared ") | regex_escape }})\S+ {{ shared_mount | regex_escape }} nfs '
+    regexp: '^(?!{{ (nfs_client_src ~ " ") | regex_escape }})\S+ {{ shared_mount | regex_escape }} nfs '
     state: absent
   become: true
 
@@ -49,12 +82,41 @@
   when: os_family == "darwin"
   ansible.builtin.lineinfile:
     path: /etc/fstab
-    regexp: "^{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared "
-    line: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared {{ shared_mount }} nfs hard,intr,nosuid,nodev,noatime 0 0"
+    regexp: "^{{ nfs_client_src | regex_escape }} "
+    line: "{{ nfs_client_src }} {{ shared_mount }} nfs {{ nfs_client_opts_darwin }} 0 0"
     state: present
     create: true
     mode: "0644"
   become: true
+
+# automount -c does not drop a static mount that is already up, so at
+# cutover the old server's share stays mounted until it is unmounted. Plain
+# umount, no -f: with the share's users stopped first (Phase 3 step 8) it
+# succeeds; with one still busy it fails and the play stops there.
+# `mount -t nfs` reads the mount table and never touches the share.
+- name: List NFS mounts (macOS, cutover)
+  when: os_family == "darwin" and cluster_share_on_nas | bool
+  ansible.builtin.command: /sbin/mount -t nfs
+  register: nfs_client_darwin_mounts
+  changed_when: false
+  check_mode: false
+
+- name: Find a share at shared_mount from another source (macOS, cutover)
+  when: os_family == "darwin" and cluster_share_on_nas | bool
+  ansible.builtin.set_fact:
+    nfs_client_stale_mounts: >-
+      {{ nfs_client_darwin_mounts.stdout_lines
+         | select('search', ' on ' ~ (shared_mount | regex_escape) ~ ' [(]')
+         | reject('match', (nfs_client_src | regex_escape) ~ ' on ')
+         | list }}
+
+- name: Unmount the old server's share (macOS, cutover)
+  when:
+    - os_family == "darwin" and cluster_share_on_nas | bool
+    - nfs_client_stale_mounts | length > 0
+  ansible.builtin.command: /sbin/umount {{ shared_mount }}
+  become: true
+  changed_when: true
 
 - name: Apply autofs static map (macOS)
   ansible.builtin.command: /usr/sbin/automount -c
@@ -63,16 +125,82 @@
   changed_when: false
 
 - name: Mount NFS share (Linux)
-  when: os_family == "linux"
+  when: os_family == "linux" and not (cluster_share_on_nas | bool)
   ansible.posix.mount:
     path: "{{ shared_mount }}"
-    src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
+    src: "{{ nfs_client_src }}"
     fstype: nfs
-    opts: hard,intr,nosuid,nodev,noatime,_netdev,x-systemd.automount,x-systemd.mount-timeout=30
+    opts: "{{ nfs_client_opts_linux }}"
     state: mounted
   become: true
 
+# Cutover on Linux writes fstab only (keyed on the path, so the old server's
+# line is replaced, not duplicated). A node still holding the old share,
+# often with processes stuck in D state on it, clears it only by the reboot
+# Phase 3 step 7 schedules; until then the canary below is skipped, since a
+# stat would hang on that mount. A node with nothing mounted there starts
+# the automount now. findmnt reads the mount table and never touches the
+# share.
+- name: Point fstab at the NAS (Linux, cutover)
+  when: os_family == "linux" and cluster_share_on_nas | bool
+  ansible.posix.mount:
+    path: "{{ shared_mount }}"
+    src: "{{ nfs_client_src }}"
+    fstype: nfs
+    opts: "{{ nfs_client_opts_linux }}"
+    state: present
+  become: true
+
+- name: List mounts at shared_mount (Linux, cutover)
+  when: os_family == "linux" and cluster_share_on_nas | bool
+  ansible.builtin.command: findmnt -n -l -o SOURCE,FSTYPE --mountpoint {{ shared_mount }}
+  register: nfs_client_linux_mounts
+  changed_when: false
+  failed_when: nfs_client_linux_mounts.rc not in [0, 1]
+  check_mode: false
+
+- name: Decide whether the old share still holds the mount point (Linux, cutover)
+  when: os_family == "linux" and cluster_share_on_nas | bool
+  ansible.builtin.set_fact:
+    nfs_client_reboot_pending: >-
+      {{ nfs_client_linux_mounts.stdout_lines
+         | map('split')
+         | selectattr('1', 'match', 'nfs')
+         | map('first')
+         | reject('equalto', nfs_client_src)
+         | list | length > 0 }}
+
+- name: Name the share's automount unit (Linux, cutover)
+  when:
+    - os_family == "linux" and cluster_share_on_nas | bool
+    - not (nfs_client_reboot_pending | bool)
+  ansible.builtin.command: systemd-escape -p --suffix=automount {{ shared_mount }}
+  register: nfs_client_automount_unit
+  changed_when: false
+  check_mode: false
+
+- name: Start the share's automount (Linux, cutover)
+  when:
+    - os_family == "linux" and cluster_share_on_nas | bool
+    - not (nfs_client_reboot_pending | bool)
+  ansible.builtin.systemd:
+    name: "{{ nfs_client_automount_unit.stdout }}"
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Report the reboot the cutover still needs (Linux)
+  when:
+    - os_family == "linux" and cluster_share_on_nas | bool
+    - nfs_client_reboot_pending | bool
+  ansible.builtin.debug:
+    msg: >-
+      fstab now mounts {{ nfs_client_src }} at {{ shared_mount }}, but the old
+      share is still mounted there. Reboot this node to finish the cutover
+      (cluster-fileserver-move Phase 3 step 7).
+
 - name: Verify NFS canary
+  when: not (nfs_client_reboot_pending | default(false) | bool)
   ansible.builtin.stat:
     path: "{{ shared_mount }}/.nfs-canary"
   register: nfs_canary
@@ -80,7 +208,9 @@
 - name: Fail if NFS not working
   ansible.builtin.fail:
     msg: "NFS canary file not found at {{ shared_mount }}/.nfs-canary — NFS mount may have failed"
-  when: not nfs_canary.stat.exists
+  when:
+    - not (nfs_client_reboot_pending | default(false) | bool)
+    - not nfs_canary.stat.exists
 
 # ── nfs-keepalive (Linux): hold the transport open against the server ──
 # The NFS server's macOS 26.4 nfsd never FINs a client-closed transport; a

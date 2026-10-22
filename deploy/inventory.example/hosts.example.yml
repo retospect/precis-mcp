@@ -29,8 +29,16 @@ all:
     # Operational (non-backup) DB-node paths: backup/pgbouncer/config_pull
     # scripts + logs and the local pg_dump staging dir. Defaults to
     # shared_mount (today's behaviour); set it in the DB node's host_vars to a
-    # disk-local path once shared_mount moves to a remote file server.
+    # disk-local path before shared_mount moves to a remote file server. The
+    # backups and pgbouncer roles refuse to run with cluster_share_on_nas
+    # set while it still resolves onto shared_mount. Setting it also turns
+    # on newsyslog rotation for pgbouncer.log and the backup logs there.
     host_local_root: "{{ shared_mount }}"
+    # uid:gid the dft/fold/retrosynth containers run as (`docker run --user`).
+    # A root-squashing file server maps root-run scratch to its guest user,
+    # which `deploy` cannot clean up, so set this to deploy's pinned ids
+    # (system_users) before the share moves. Unset = the image's own user.
+    # science_container_user: "1500:1500"
     pgbouncer_port: 6432
     postgres_port: 5432
     # The single Postgres host. precis_* roles build their DSN from this
@@ -55,6 +63,24 @@ all:
     # work_path/projects_path vars derived from it) directly — never
     # prepend shared_mount, that's the other role (/mnt/cluster).
     nas_root: "{{ nas_mount_base }}/{{ nas_mount_name }}"
+    # ── The cluster share on the NAS (cluster-fileserver-move) ──
+    # nas_lan_ip + nas_lan_name: one /etc/hosts line on every node
+    # (autofs_client), so mounts by this name never wait on mDNS. Both
+    # unset = no line. The new mounts below use the name.
+    # nas_lan_ip: "192.0.2.30"
+    # nas_lan_name: "fileserver"
+    # The NAS's two shares. nas_cluster_export is mounted at shared_mount
+    # once cluster_share_on_nas is true; nas_dbbackup_export is mounted at
+    # /mnt/dbbackup (nfs_client's dbbackup_mount) on the `data` group only,
+    # as soon as it is set (01-nfs.yml).
+    # nas_cluster_export: "/Volume1/cluster"
+    # nas_dbbackup_export: "/Volume1/dbbackup"
+    # The cutover flag. false (default): nfs_client mounts shared_mount from
+    # nfs_server's export, as before, so applying the roles early changes
+    # nothing live. true, inside the cutover window only: shared_mount comes
+    # from the NAS, the old server's fstab line is replaced, macOS unmounts
+    # the old share (stop its users first), Linux nodes need a reboot.
+    # cluster_share_on_nas: false
 
   children:
     macos:

@@ -1,0 +1,18 @@
+---
+# Once the cluster share lives on the NAS (cluster_share_on_nas), the DB
+# node's serving and backup paths must not: a NAS outage would stall
+# pgbouncer's log writes, and with them prod DB access
+# (cluster-fileserver-move, "Blast radius"). Refuse the play while
+# host_local_root still resolves onto shared_mount.
+- name: Refuse a DB node whose host_local_root is on the cluster share
+  ansible.builtin.assert:
+    that:
+      - (host_local_root | default(shared_mount)) != shared_mount
+      - not ((host_local_root | default(shared_mount)) ~ '/').startswith(shared_mount ~ '/')
+    fail_msg: >-
+      cluster_share_on_nas is set but host_local_root
+      ({{ host_local_root | default(shared_mount) }}) is on {{ shared_mount }}.
+      Set host_local_root in the DB node's host_vars to a disk-local path
+      first (cluster-fileserver-move Phase 1, 4c).
+    quiet: true
+  when: cluster_share_on_nas | default(false) | bool

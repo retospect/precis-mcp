@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.utils.coerce import as_float
-from precis.utils.container_limits import container_limit_flags
+from precis.utils.container_limits import container_limit_flags, container_user_flags
 from precis_bio.ir import (
     MODE_DE_NOVO,
     ProteinFold,
@@ -114,6 +114,7 @@ def build_fold_argv(
         f"precis-fold-{ref_id}",
     ]
     argv += container_limit_flags()
+    argv += container_user_flags()
     if mem_limit:
         argv += ["--memory", mem_limit, "--memory-swap", mem_limit]
     argv += [

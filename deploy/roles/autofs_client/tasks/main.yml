@@ -5,6 +5,12 @@
 #         fstab + -static uses the same path that /opt/shared already works on.)
 # Linux: NFSv4 via indirect /etc/auto.nas map
 
+# Every node, and the one play that reaches them all: the overlay-driven
+# /etc/hosts line for the NAS (cluster-fileserver-move Phase 0 step 2). A
+# no-op until nas_lan_ip and nas_lan_name are set.
+- name: Pin the NAS in /etc/hosts
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/nas_hosts_entry.yml"
+
 - name: Provision /mnt namespace root (macOS sealed root)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
   when: os_family == "darwin" and nas_mount_base is match('^/mnt(/|$)')

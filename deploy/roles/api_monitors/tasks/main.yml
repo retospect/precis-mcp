@@ -1,18 +1,62 @@
 ---
 # API credit monitoring for Anthropic / Perplexity / other external APIs
+#
+# The weekly pip-audit runs as `deploy`, not root: it writes its reports to
+# the share, and a root-squashing file server maps root to its guest user.
+# The script is root-owned on local disk (ops_script_dir), so no node's
+# `deploy` can rewrite it through NFS (cluster-fileserver-move ruling 8).
+
+- name: Ensure local ops script dir
+  ansible.builtin.file:
+    path: "{{ ops_script_dir }}"
+    state: directory
+    owner: root
+    mode: "0755"
+  become: true
 
 - name: Deploy pip-audit script
   ansible.builtin.template:
     src: pip_audit.sh.j2
-    dest: "{{ shared_mount }}/scripts/pip_audit.sh"
-    mode: "0750"
+    dest: "{{ ops_script_dir }}/pip_audit.sh"
+    owner: root
+    mode: "0755"
   become: true
 
-- name: Schedule weekly pip-audit
+# Root-owned from the years root ran the audit. Only before the move: the DB
+# node's export maps root to root, so the chown works. On the NAS root is
+# squashed and the Phase 2 copy is already deploy's.
+- name: Hand the pip-audit log dir to deploy
+  when: not (cluster_share_on_nas | default(false) | bool)
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/logs/pip-audit"
+    state: directory
+    owner: deploy
+    recurse: true
+  become: true
+
+- name: Schedule weekly pip-audit (as deploy)
   ansible.builtin.cron:
     name: "weekly pip-audit"
     minute: "0"
     hour: "5"
     weekday: "3"
-    job: "{{ shared_mount }}/scripts/pip_audit.sh >> {{ shared_mount }}/logs/pip-audit/audit.log 2>&1"
+    job: "{{ ops_script_dir }}/pip_audit.sh >> {{ shared_mount }}/logs/pip-audit/audit.log 2>&1"
+    user: deploy
   become: true
+
+# The same job used to sit in root's crontab; cron entries are per user, so
+# moving it to deploy leaves root's copy behind unless it is removed.
+- name: Remove the root-run weekly pip-audit
+  ansible.builtin.cron:
+    name: "weekly pip-audit"
+    user: root
+    state: absent
+  become: true
+
+# Best effort, as in config_pull: on the NAS root cannot unlink it.
+- name: Remove the old NFS-resident pip-audit script
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/scripts/pip_audit.sh"
+    state: absent
+  become: true
+  failed_when: false

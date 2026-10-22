@@ -1,0 +1,73 @@
+---
+# The NAS's `dbbackup` share, mounted read-write on the DB node only
+# (cluster-fileserver-move, "Shares"). The NAS rule is the gate: only the DB
+# node's address may write, every other node reads. A new mount point
+# nothing reads yet, so it is safe before the cutover; pg_backup's archive
+# root moves onto it in Phase 6. Dark until the overlay defines
+# nas_dbbackup_export, nas_lan_name and nas_lan_ip (the /etc/hosts line).
+#
+# Hard like the cluster share: a backup write that times out must wait, not
+# truncate. Only the backup jobs use it, so a NAS outage stalls a backup,
+# never pgbouncer or Postgres.
+
+- name: Mount the NAS backup share
+  when:
+    - nas_dbbackup_export | default('') | length > 0
+    - nas_lan_name | default('') | length > 0
+    - nas_lan_ip | default('') | length > 0
+  block:
+    - name: Pin the NAS in /etc/hosts
+      ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/nas_hosts_entry.yml"
+
+    - name: Provision /mnt namespace root (macOS sealed root)
+      ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
+      when: os_family == "darwin" and dbbackup_mount is match('^/mnt(/|$)')
+
+    - name: Ensure the dbbackup mount point exists
+      ansible.builtin.file:
+        path: "{{ dbbackup_mount }}"
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Add the dbbackup entry to /etc/fstab (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^\S+ {{ dbbackup_mount | regex_escape }} nfs '
+        line: "{{ nas_lan_name }}:{{ nas_dbbackup_export }} {{ dbbackup_mount }} nfs {{ nas_mount_opts_darwin }} 0 0"
+        state: present
+        create: true
+        mode: "0644"
+      become: true
+
+    - name: Apply autofs static map (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.command: /usr/sbin/automount -c
+      become: true
+      changed_when: false
+
+    - name: Add the dbbackup entry to fstab (Linux)
+      when: os_family == "linux"
+      ansible.posix.mount:
+        path: "{{ dbbackup_mount }}"
+        src: "{{ nas_lan_name }}:{{ nas_dbbackup_export }}"
+        fstype: nfs
+        opts: "{{ nas_mount_opts_linux }}"
+        state: present
+      become: true
+
+    - name: Name the dbbackup automount unit (Linux)
+      when: os_family == "linux"
+      ansible.builtin.command: systemd-escape -p --suffix=automount {{ dbbackup_mount }}
+      register: nfs_client_dbbackup_unit
+      changed_when: false
+      check_mode: false
+
+    - name: Start the dbbackup automount (Linux)
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        name: "{{ nfs_client_dbbackup_unit.stdout }}"
+        state: started
+        daemon_reload: true
+      become: true

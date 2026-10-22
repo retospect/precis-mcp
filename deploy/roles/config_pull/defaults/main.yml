@@ -1,0 +1,16 @@
+---
+# config_pull defaults. Overridable via host_vars or group_vars.
+
+# Root collects into this local, deploy-owned dir; `deploy` then publishes it
+# to shared_mount/backups/configs/<host>. Root never writes the share: a
+# root-squashing file server maps root to its guest user.
+config_pull_stage_dir: /var/lib/precis-config-pull
+
+# The DB node keeps its configs host-local (host_local_root) and publishes
+# nothing: its pgbouncer dir holds the userlist, which must not land on a
+# share every node's deploy can read.
+config_pull_local_only: "{{ 'data' in group_names }}"
+
+# Root's cron log, on local disk. /var/log/precis-*.log is what
+# roles/logrotate's copy-truncate rotator covers.
+config_pull_log: /var/log/precis-config-pull.log

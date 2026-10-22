@@ -1,0 +1,15 @@
+---
+# One /etc/hosts line for the NAS, so a node resolves it without mDNS
+# (`.local` names need avahi on Linux). Address and name come from the
+# gitignored overlay (nas_lan_ip, nas_lan_name); with either unset this is a
+# no-op. Keyed on the name, so an address change rewrites the line.
+- name: Pin the NAS in /etc/hosts
+  when:
+    - nas_lan_ip | default('') | length > 0
+    - nas_lan_name | default('') | length > 0
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\S+\s+{{ nas_lan_name | regex_escape }}(\s|$)'
+    line: "{{ nas_lan_ip }}\t{{ nas_lan_name }}\t# NAS, managed by ansible"
+    state: present
+  become: true

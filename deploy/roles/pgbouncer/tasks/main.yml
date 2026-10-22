@@ -1,6 +1,9 @@
 ---
 # PgBouncer on the data node — connection pooler in front of Postgres
 
+- name: Keep the DB node's operational paths off the NAS share
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/assert_host_local_root.yml"
+
 - name: Install PgBouncer (macOS)
   when: os_family == "darwin"
   community.general.homebrew:
@@ -62,6 +65,31 @@
     owner: pgboss
     group: staff
     mode: "0755"
+  become: true
+
+# The log dir is roles/backups' (deploy, 0750, group staff on macOS), so
+# pgboss can reach it but not create in it. A fresh host_local_root
+# therefore needs both logfiles pre-created as pgboss, or pgbouncer cannot
+# open them and does not start. Creating the dir here (no owner or mode)
+# only covers a run before the backups role; times are preserved.
+- name: Ensure PgBouncer log directory
+  ansible.builtin.file:
+    path: "{{ host_local_root | default(shared_mount) }}/logs"
+    state: directory
+  become: true
+
+- name: Ensure PgBouncer log files (pgboss-owned)
+  ansible.builtin.file:
+    path: "{{ host_local_root | default(shared_mount) }}/logs/{{ item }}"
+    state: touch
+    owner: pgboss
+    group: staff
+    mode: "0644"
+    access_time: preserve
+    modification_time: preserve
+  loop:
+    - pgbouncer.log
+    - pgbouncer-error.log
   become: true
 
 - name: Deploy PgBouncer launchd plist (macOS)

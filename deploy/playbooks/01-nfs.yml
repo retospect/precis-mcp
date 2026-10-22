@@ -13,3 +13,15 @@
   roles:
     - nfs_client
   tags: [nfs, nfs_client]
+
+# The NAS backup share, DB node only (roles/nfs_client/tasks/dbbackup.yml);
+# a no-op until the overlay names the share.
+- name: Mount the NAS backup share on the DB node
+  hosts: data
+  become: true
+  tasks:
+    - name: Mount dbbackup
+      ansible.builtin.include_role:
+        name: nfs_client
+        tasks_from: dbbackup
+  tags: [nfs, nfs_client, dbbackup]

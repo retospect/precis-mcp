@@ -1,11 +1,27 @@
 ---
-# Log rotation for /shared/logs
+# Log rotation for /shared/logs, the DB node's host-local logs and
+# /var/log/precis-*.log
 
 - name: Deploy logrotate config (macOS — uses newsyslog)
   when: os_family == "darwin"
   ansible.builtin.template:
     src: shared_logs.conf.j2
     dest: /etc/newsyslog.d/shared_logs.conf
+    mode: "0644"
+  become: true
+
+# The DB node's pgbouncer and backup logs leave the share for
+# host_local_root (cluster-fileserver-move; config_pull logs to /var/log). Dark until the overlay sets
+# host_local_root to a path of its own: this playbook rides every routine
+# deploy, and the pgbouncer line SIGHUPs prod's pooler on rotation.
+- name: Deploy host-local log rotation (DB node, macOS)
+  when:
+    - os_family == "darwin"
+    - "'data' in group_names"
+    - (host_local_root | default(shared_mount)) != shared_mount
+  ansible.builtin.template:
+    src: host_local_logs.conf.j2
+    dest: /etc/newsyslog.d/host_local_logs.conf
     mode: "0644"
   become: true
 

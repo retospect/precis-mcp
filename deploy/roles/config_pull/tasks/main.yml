@@ -1,11 +1,49 @@
 ---
-# Nightly config pull: rsync /etc + /opt configs → /shared/backups/configs/<hostname>
-# Runs on all nodes
+# Nightly config pull: rsync /etc + /opt configs → backups/configs/<hostname>
+# Runs on all nodes.
+#
+# Root runs it (sudoers.d and the pgbouncer dir are root-readable), so the
+# script lives on local disk (ops_script_dir), never on NFS, where one
+# fleet-wide `deploy` uid could rewrite it (cluster-fileserver-move ruling 8).
+# Root never writes the share either: it stages locally and `deploy`
+# publishes the stage (config_pull.sh.j2). The DB node stays host-local.
+
+- name: Ensure local ops script dir
+  ansible.builtin.file:
+    path: "{{ ops_script_dir }}"
+    state: directory
+    owner: root
+    mode: "0755"
+  become: true
+
+- name: Ensure local config-pull stage dir
+  ansible.builtin.file:
+    path: "{{ config_pull_stage_dir }}"
+    state: directory
+    owner: deploy
+    mode: "0700"
+  become: true
+
+# Root-owned from the years root wrote it. Only before the move: the DB
+# node's export maps root to root, so the chown works. On the NAS root is
+# squashed, the Phase 2 copy is already deploy's, and the script's own
+# `deploy` mkdir creates a missing dir.
+- name: Hand the share-side config dir to deploy
+  when:
+    - not (config_pull_local_only | bool)
+    - not (cluster_share_on_nas | default(false) | bool)
+  ansible.builtin.file:
+    path: "{{ shared_mount }}/backups/configs/{{ inventory_hostname }}"
+    state: directory
+    owner: deploy
+    recurse: true
+  become: true
 
 - name: Deploy config-pull script
   ansible.builtin.template:
     src: config_pull.sh.j2
-    dest: "{{ host_local_root | default(shared_mount) }}/scripts/config_pull_{{ inventory_hostname }}.sh"
+    dest: "{{ ops_script_dir }}/config_pull.sh"
+    owner: root
     mode: "0750"
   become: true
 
@@ -14,5 +52,15 @@
     name: "nightly config pull to /shared"
     minute: "30"
     hour: "3"
-    job: "{{ host_local_root | default(shared_mount) }}/scripts/config_pull_{{ inventory_hostname }}.sh >> {{ host_local_root | default(shared_mount) }}/logs/config-pull.log 2>&1"
+    job: "{{ ops_script_dir }}/config_pull.sh >> {{ config_pull_log }} 2>&1"
   become: true
+
+# The pre-move copy root ran from the share. Best effort: on the NAS root is
+# squashed and cannot unlink a deploy-owned file, and the cron line above no
+# longer points at it either way.
+- name: Remove the old NFS-resident config-pull script
+  ansible.builtin.file:
+    path: "{{ host_local_root | default(shared_mount) }}/scripts/config_pull_{{ inventory_hostname }}.sh"
+    state: absent
+  become: true
+  failed_when: false

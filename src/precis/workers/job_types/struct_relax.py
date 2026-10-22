@@ -89,7 +89,7 @@ from typing import Any
 
 import numpy as np
 
-from precis.utils.container_limits import container_limit_flags
+from precis.utils.container_limits import container_limit_flags, container_user_flags
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -362,6 +362,7 @@ def build_run_argv(
             del limits[i : i + 2]
         limits += ["--cpuset-cpus", dft_cpuset]
     argv += limits
+    argv += container_user_flags()
     mem_limit = os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip()
     if mem_limit:
         # --memory + an equal --memory-swap: the cap is hard, no swap

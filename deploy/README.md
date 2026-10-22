@@ -398,6 +398,15 @@ Overlay variables the portable roles expect (define these in your local
 `precis_capabilities` map. The `deploy/inventory.example/` templates show
 every one.
 
+The cluster share's move to the NAS (`docs/backlog/cluster-fileserver-move.md`)
+adds optional ones, all dark while unset: `nas_lan_ip` / `nas_lan_name` (the
+NAS's `/etc/hosts` line), `nas_cluster_export` and `nas_dbbackup_export` (its
+two shares), `cluster_share_on_nas` (the cutover flag for `nfs_client`; leave
+it false until the cutover window), `science_container_user` (`docker run
+--user` for dft/fold/retrosynth) and, in the DB node's host_vars,
+`host_local_root`. Scripts root runs install to `ops_script_dir`
+(`group_vars/all.yml`), never under `shared_mount`.
+
 Never bulk-copy from the private checkout: move one file, run the gate, commit.
 
 ## Mount absence alert membership

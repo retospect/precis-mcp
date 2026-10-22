@@ -44,6 +44,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from precis.utils.container_limits import container_user_flags
 from precis.workers.job_types import JobTypeSpec
 from precis_chem import steer
 from precis_chem.askcos import (
@@ -136,6 +137,7 @@ def _build_normalizer_argv(
         "--rm",
         "--name",
         f"precis-normalize-{ref_id}",
+        *container_user_flags(),
         "-v",
         f"{in_dir}:/work/in:ro",
         "-v",

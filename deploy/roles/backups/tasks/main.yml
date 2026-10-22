@@ -11,6 +11,9 @@
 # docs/runbooks/backup-restore-drill.md). Check the overlay's value before a
 # run: host-local path, not the NFS alias.
 
+- name: Keep the DB node's operational paths off the NAS share
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/assert_host_local_root.yml"
+
 - name: Set postgres runtime user
   ansible.builtin.set_fact:
     pg_user: "{{ 'deploy' if os_family == 'darwin' else 'postgres' }}"
@@ -42,9 +45,21 @@
   become: true
   loop:
     - "{{ host_local_root | default(shared_mount) }}/backups/postgres"
-    - "{{ shared_mount }}/backups/configs"
+    - "{{ host_local_root | default(shared_mount) }}/backups/configs"
     - "{{ host_local_root | default(shared_mount) }}/scripts"
-    - "{{ host_local_root | default(shared_mount) }}/logs"
+
+# pgbouncer (pgboss, primary group staff) logs here too, so on macOS the
+# group is pinned to staff: a fresh host_local_root would otherwise inherit
+# its parent's group (BSD semantics), often wheel, and pgbouncer could not
+# reach its logfile. Only this dir: scripts/ holds b2_sync.sh's keys.
+- name: Ensure operational log directory
+  ansible.builtin.file:
+    path: "{{ host_local_root | default(shared_mount) }}/logs"
+    state: directory
+    owner: "{{ pg_user }}"
+    group: "{{ 'staff' if os_family == 'darwin' else omit }}"
+    mode: "0750"
+  become: true
 
 - name: Ensure NAS backup destination exists
   ansible.builtin.file:

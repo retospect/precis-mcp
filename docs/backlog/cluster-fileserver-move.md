@@ -223,7 +223,8 @@ no Full Disk Access grant has to be redone.
    every node, so the Linux nodes no longer depend on mDNS (`.local`).
    - Touches: `/etc/hosts` on six nodes.
    - Rollback: remove the line.
-3. **Role changes, as a branch to the orchestrator:**
+3. **Role changes, as a branch to the orchestrator:** built 2026-10-22
+   (branch `worktree-nas-roles`; not applied to any host, cutover not done):
    - a `host_local_root` variable for the DB node, used by `backups`,
      `pgbouncer` (logfile), `config_pull` and `logrotate` in place of
      `shared_mount`;

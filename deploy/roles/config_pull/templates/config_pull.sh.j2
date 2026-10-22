@@ -1,40 +1,58 @@
 #!/bin/bash
 # {{ ansible_managed }}
 # Nightly config backup for {{ inventory_hostname }}
+#
+# Root collects into a local stage, never onto the share: a root-squashing
+# file server maps root to its guest user. `deploy` then publishes the stage.
 set -euo pipefail
 
+{% if config_pull_local_only | bool %}
+# DB node: host-local only, nothing published (the pgbouncer userlist).
+DEST="{{ host_local_root | default(shared_mount) }}/backups/configs/{{ inventory_hostname }}"
+STAGE="${DEST}"
+{% else %}
 DEST="{{ shared_mount }}/backups/configs/{{ inventory_hostname }}"
-mkdir -p "${DEST}"
+STAGE="{{ config_pull_stage_dir }}/{{ inventory_hostname }}"
+{% endif %}
+mkdir -p "${STAGE}"
 
 echo "[$(date -u)] Config pull starting for {{ inventory_hostname }}"
 
 # SSH config
-rsync -a --delete /etc/ssh/sshd_config "${DEST}/sshd_config" 2>/dev/null || true
+rsync -a --delete /etc/ssh/sshd_config "${STAGE}/sshd_config" 2>/dev/null || true
 
 # Sudoers
-rsync -a /etc/sudoers.d/ "${DEST}/sudoers.d/" 2>/dev/null || true
+rsync -a /etc/sudoers.d/ "${STAGE}/sudoers.d/" 2>/dev/null || true
 
 {% if 'data' in group_names %}
 # Postgres configs (data node)
-rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/pg_hba.conf "${DEST}/pg_hba.conf" 2>/dev/null || true
-rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/conf.d/ "${DEST}/postgres_conf.d/" 2>/dev/null || true
-rsync -a /usr/local/etc/pgbouncer/ "${DEST}/pgbouncer/" 2>/dev/null || true
+rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/pg_hba.conf "${STAGE}/pg_hba.conf" 2>/dev/null || true
+rsync -a --delete {{ postgres_data_dir | default('/var/lib/postgresql/data') }}/conf.d/ "${STAGE}/postgres_conf.d/" 2>/dev/null || true
+rsync -a /usr/local/etc/pgbouncer/ "${STAGE}/pgbouncer/" 2>/dev/null || true
 {% endif %}
 
 {% if 'gateway' in group_names %}
 # Nginx configs (gateway node)
-rsync -a --delete /usr/local/etc/nginx/ "${DEST}/nginx/" 2>/dev/null || true
+rsync -a --delete /usr/local/etc/nginx/ "${STAGE}/nginx/" 2>/dev/null || true
 {% endif %}
 
 {% if 'inference' in group_names %}
 # Ollama systemd overrides (GPU node)
-rsync -a /etc/systemd/system/ollama.service.d/ "${DEST}/ollama.service.d/" 2>/dev/null || true
+rsync -a /etc/systemd/system/ollama.service.d/ "${STAGE}/ollama.service.d/" 2>/dev/null || true
 {% endif %}
 
 # LaunchDaemons (macOS)
 {% if os_family == "darwin" %}
-rsync -a /Library/LaunchDaemons/com.hermes.* "${DEST}/" 2>/dev/null || true
-rsync -a /Library/LaunchDaemons/com.olla.* "${DEST}/" 2>/dev/null || true
+rsync -a /Library/LaunchDaemons/com.hermes.* "${STAGE}/" 2>/dev/null || true
+rsync -a /Library/LaunchDaemons/com.olla.* "${STAGE}/" 2>/dev/null || true
+{% endif %}
+
+{% if not (config_pull_local_only | bool) %}
+# Publish as deploy: no -o/-g (deploy cannot set them), so the copies are
+# deploy's on every node.
+chown -R deploy "${STAGE}"
+sudo -n -u deploy mkdir -p "${DEST}"
+sudo -n -u deploy rsync -rlpt --delete "${STAGE}/" "${DEST}/"
 {% endif %}
 
 echo "[$(date -u)] Config pull complete for {{ inventory_hostname }}"

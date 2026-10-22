@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# newsyslog.conf(5) — the DB node's host-local operational logs under
+# host_local_root (cluster-fileserver-move Phase 0 step 3).
+# pgbouncer keeps its logfile open and reopens it on SIGHUP, hence the pid
+# file and signal 1. The cron logs are reopened by every run's `>>`.
+# pgbouncer-error.log is launchd's stderr fd for the daemon: a rename would
+# strand it on the old inode, so it is not rotated here.
+# logfilename                                  [owner:group]  mode count size  when flags [pid_file] [sig]
+{{ host_local_root }}/logs/pgbouncer.log    pgboss:staff  644  7     10240 *    J     /opt/homebrew/var/run/pgbouncer/pgbouncer.pid 1
+{{ host_local_root }}/logs/backup-*.log     deploy:staff  644  7     10240 *    GJ

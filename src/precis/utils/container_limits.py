@@ -34,4 +34,18 @@ def container_limit_flags() -> list[str]:
     return flags
 
 
-__all__ = ["container_limit_flags"]
+def container_user_flags() -> list[str]:
+    """``--user <uid:gid>`` from PRECIS_CONTAINER_USER, for the science
+    containers that write scratch on the cluster share (dft, fold,
+    retrosynth).
+
+    The share squashes root, so a container running as its image's default
+    root writes files the NAS maps to ``guest``, which ``deploy`` cannot
+    clean up (cluster-fileserver-move, Phase 0 step 3). The roles render
+    ``deploy``'s uid:gid here; uids match fleet-wide. Empty or unset -> empty
+    list (the image's own user, today's behaviour)."""
+    user = os.environ.get("PRECIS_CONTAINER_USER", "").strip()
+    return ["--user", user] if user else []
+
+
+__all__ = ["container_limit_flags", "container_user_flags"]

@@ -1,0 +1,22 @@
+---
+# nfs_client defaults. Overridable via host_vars or group_vars.
+
+# The cutover flag (cluster-fileserver-move Phase 3). false: shared_mount
+# comes from nfs_server's export, exactly as before. true: it comes from the
+# NAS (nas_lan_name:nas_cluster_export), the old server's fstab line is
+# replaced, and on macOS a still-mounted old share is unmounted. Flip it in
+# the overlay only inside the cutover window, so applying the role early can
+# never touch the live mount.
+cluster_share_on_nas: false
+
+# The DB node's mount of the NAS backup share (tasks/dbbackup.yml). Ships
+# dark until the overlay defines nas_dbbackup_export.
+dbbackup_mount: /mnt/dbbackup
+
+# NAS mount options. Hard: soft mounts return EIO on a timeout and can
+# truncate a write silently. macOS mounts v3 with a reserved port (the NAS
+# rule refuses non-privileged ports) through the autofs static map; Linux
+# mounts on first access through a systemd automount, and nofail keeps a
+# NAS outage from failing the boot.
+nas_mount_opts_darwin: hard,intr,nosuid,nodev,noatime,resvport,vers=3
+nas_mount_opts_linux: hard,nosuid,nodev,noatime,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=30

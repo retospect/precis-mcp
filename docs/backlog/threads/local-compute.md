@@ -253,8 +253,11 @@ task set.
       FS fix is a priority now ("it is when it is", no round window).
       - Plan approved with phase 1 revised: no retained DB backups on the
         DB node.
-      - Next: Reto creates the NAS export in the TOS web UI (TOS has no
-        CLI; local-compute-12), then agents verify, test-mount and copy.
+      - Both NAS shares exist and are verified (2026-10-22). Phase 0
+        step 3's role changes are built on branch `worktree-nas-roles`;
+        everything new is dark until the overlay sets its vars, and the
+        cutover is the `cluster_share_on_nas` flag. Next: Reto's overlay
+        edits (`deploy/README.md` lists the vars), then Phase 3.
       - The deploy-role changes (`host_local_root`, verified-only local
         dump prune, b2 postgres source, restore_test from the NAS archive)
         are on main, not deployed. Paths are unchanged at the overlay
