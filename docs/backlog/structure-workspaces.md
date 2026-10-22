@@ -646,7 +646,7 @@ traces).
 |---|---|---|---|---|
 | 0 | **Importer + goldens, no container.** `precis_se/workspace_import.py`, manifest schema, extXYZ reader (with the `maker` per-atom column), cad graph import (`frame` on instances), `trace.json` reader stored once on the run, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/hexfold/data/goldens`, findings, trace key set) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated` (incl. `trace`); a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; a 25k-frame trace imports with `trace.truncated`; goldens pass on main | M, 1 build |
 | 1 | **Workspace kind + `run`.** `folder`-backed workspace ref linked `part-of` its design, with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s`; fork copies the folder; `tree_to_json` embeds files + lock + wheel; **removes `generate`, `join`, `terminate` (refusal naming the workspace path) and their skill sections (W5)** | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path, `persist.tree_to_json`/`tree_from_json` | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease); an exported design restores with its folder and `uv run main.py` rebuilds the block byte-identical on a laptop; `generate` refuses with the workspace `next=` and no skill names it | L, 2–3 builds; needs sandbox slice 4 (lane live) |
-| 1b | **Git objects in Postgres** (gated on §Code storage, not ruled). `git_objects`/`git_refs` migration, stager writes blob/tree/commit rows, `generated.script_sha` FK, `view='source'`/diff over rows, export via `git fast-import`; host repo becomes a materialised cache | `_sandbox_inputs.stage_code`, `persist`, `tree_to_json` | Two runs sharing files share blob rows; a block cannot cite a commit sha the DB lacks (FK); `fast-import` export clones and `uv run` rebuilds byte-identical | M, 1–2 builds; only if ruled |
+| 1b | **Git objects in Postgres** (ruled 2026-10-22, §Code storage option b). `git_objects`/`git_refs` migration, stager writes blob/tree/commit rows, `generated.script_sha` FK, `view='source'`/diff over rows, export via `git fast-import`; host repo becomes a materialised cache | `_sandbox_inputs.stage_code`, `persist`, `tree_to_json` | Two runs sharing files share blob rows; a block cannot cite a commit sha the DB lacks (FK); `fast-import` export clones and `uv run` rebuilds byte-identical | M, 1–2 builds; after 1 |
 | 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** `packaging/geom/`, import-graph test, `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured, written into this item, trace overhead < 5 % of build); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
 | 2t | **Trace views + selector.** `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
 | 2p | **Python-kind join.** `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector | `handlers/python.py` roots, `_python_render.py`, `view='trace'` | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root | S–M, 1 build; after 2t |
@@ -685,8 +685,8 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Two sources of truth for files** (DB folder vs host git). The DB is
   truth; git is a run log. A host repo that diverges (manual edits on the
   host) is reset to the staged tree at the next run, and the echo says so.
-  Ruled W3: the DB folder is truth. Under §Code storage (b) the host
-  repo becomes a materialised cache of the rows and this risk goes away.
+  Ruled W3: the DB folder is truth. Slice 1b (ruled) makes the host
+  repo a materialised cache of the rows and this risk goes away.
 - **Export size.** Embedding the `precis-geom` wheel per design export
   is a few MB each; a design with many promoted modules grows. The
   export lists wheel shas and skips a wheel already present in the
@@ -716,7 +716,9 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **W6 agent-in-container:** stays outside until a case needs it.
 - **W3 workspace file storage:** files in the DB as a folder `part-of`
   the design + a host git log ("I side with Fable"). Git objects in
-  Postgres is a discussion item (§Code storage), not ruled.
+  Postgres: **ruled yes** (Reto 2026-10-22, "I like the git row model,
+  do that. 1b yes") — option (b) of §Code storage, built as slice 1b
+  after slice 1.
 - **Trace granularity:** per-atom `maker` column; every `/work/**.py`
   frame is a user frame.
 - **Relax cache:** holds the periodic unit; consumers tile and cap it —
@@ -732,10 +734,8 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - Decided in the text: loop collapse past 64 same-site siblings; `op`
   frames for surviving ops.
 
-## Open questions for Reto (one left)
+## Open questions for Reto
 
-1. **Git objects in Postgres** (discussion, §Code storage): (a) plain
-   files only, (b) blob/tree/commit rows with se revisions FK-ing to
-   commit shas (recommended as slice 1b), (c) files + bundle blobs.
+None open.
 
 Everything else is ruled (§Rulings).
