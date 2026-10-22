@@ -259,6 +259,22 @@ def quest_gist(ref: Ref) -> str:
     return "\n".join(parts)
 
 
+def _objective_line(fr: Any, meta: dict[str, Any]) -> str:
+    """The ``objective:`` header line of the frontier/leaderboard views.
+
+    ``fr.objectives`` falls back to ``energy (min)`` when the quest
+    declares no ``meta.rubric_objectives`` — fine for a materials quest,
+    but on a non-materials quest with no candidates it asserts an
+    objective nobody set (gr503440). Unset + no candidates says so
+    plainly; unset + candidates keeps the default but flags it."""
+    objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
+    if meta.get("rubric_objectives"):
+        return f"objective: {objs}"
+    if fr.frontier or fr.dominated or fr.provisional or fr.unevaluated:
+        return f"objective: {objs} [default]"
+    return "objective: (none set — meta.rubric_objectives)"
+
+
 def _check_operating_conditions(meta: dict[str, Any]) -> None:
     """Validate the human-set bulk-Pourbaix point and optional window."""
     if "operating_conditions" not in meta:
@@ -1277,8 +1293,11 @@ class QuestHandler(NumericRefHandler):
         from precis.quest import frontier as frontier_mod
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
-        objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
-        lines = [f"# frontier — quest {ref.id}: {head}", f"objective: {objs}", ""]
+        lines = [
+            f"# frontier — quest {ref.id}: {head}",
+            _objective_line(fr, meta),
+            "",
+        ]
 
         def _fmt(c: frontier_mod.Candidate) -> str:
             ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
@@ -1345,10 +1364,10 @@ class QuestHandler(NumericRefHandler):
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
-        objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
+        obj_line = _objective_line(fr, ref.meta or {})
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
             return (
-                f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n\n"
+                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
                 "no candidate structures serve this quest yet."
             )
         graduated = {
@@ -1365,7 +1384,7 @@ class QuestHandler(NumericRefHandler):
             f"{glyph} {tier}" for tier, glyph in frontier_mod.TIER_GLYPH.items()
         )
         return (
-            f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n"
+            f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
             f"tier: {tier_legend}\n\n{body}"
         )
 

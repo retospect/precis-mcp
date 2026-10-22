@@ -341,6 +341,46 @@ def test_rerun_failure_superseded_by_newer_check_run_is_not_red(rig: Rig) -> Non
     assert "CI red" not in out.stderr
 
 
+def test_stale_run_cancelled_shard_does_not_poison_fresh_run(rig: Rig) -> None:
+    """gr504329: check-runs are sha-keyed, so a cancelled shard from a
+    superseded workflow run used to read as this run's red. The verdict
+    scopes to the current run — a job name absent from it is pending."""
+    s = rig.shas["c3"]
+    old = "https://github.com/o/r/actions/runs/1111/job/1"
+    new = "https://github.com/o/r/actions/runs/2222/job/2"
+    lines = [f"test-linux (12)\tcompleted\tcancelled\t{old}\t{old}\t1"]
+    lines += [
+        f"test-linux ({i})\tin_progress\t\t{new}\t{new}\t{100 + i}"
+        for i in range(1, 12)
+    ]
+    (rig.gh_dir / s).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out = _release(rig, *FAST)
+    assert out.returncode == 2
+    assert "CI not green after" in out.stderr  # timeout, not a red verdict
+    assert "CI red" not in out.stderr
+
+
+def test_red_names_job_and_run_of_the_current_run(rig: Rig) -> None:
+    """Same scoping, red case: the current run's own failed shard turns
+    the verdict red, naming the job and the *newer* run id — never the
+    older run's cancelled row."""
+    s = rig.shas["c3"]
+    (rig.gh_dir / "run-id").write_text("2222\n", encoding="utf-8")
+    old = "https://github.com/o/r/actions/runs/1111/job/1"
+    new = "https://github.com/o/r/actions/runs/2222/job/2"
+    (rig.gh_dir / s).write_text(
+        f"test-linux (12)\tcompleted\tcancelled\t{old}\t{old}\t1\n"
+        f"test-linux (3)\tcompleted\tfailure\t{new}\t{new}\t103\n"
+        f"test-linux (1)\tin_progress\t\t{new}\t{new}\t101\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--poll", "0.01", "--ci-timeout", "1")
+    assert out.returncode == 2
+    assert "test-linux (3)" in out.stderr
+    assert "test-linux (12)" not in out.stderr
+    assert "gh run view 2222 --log-failed" in out.stderr
+
+
 def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     copy = tmp_path / "release_script.py"
     copy.write_text(RELEASE.read_text(encoding="utf-8"), encoding="utf-8")

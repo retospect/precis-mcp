@@ -665,6 +665,46 @@ class SearchMixin(RuntimeShape):
             mode="rrf",
             empty_body=empty_body,
         )
+        # gr503440: the date-ordered render had no "N of K" cue — the
+        # store over-fetches a relevance-qualified pool past top_k and
+        # date-sorts it, so a bare "# N matches" hid how much further the
+        # query reaches. Count the same lexical universe the relevance
+        # "N of K" headers count (``count_chunks_lexical`` — the shared
+        # helper, ``distinct_refs`` to match the per-ref collapse), per
+        # kind; semantic/verbatim have no honest count here and keep the
+        # bare headline.
+        if (
+            sort != "relevance"
+            and hits
+            and (mode or "").strip().lower() not in ("semantic", "verbatim")
+        ):
+            per_kind: list[tuple[str, int]] = []
+            total = 0
+            for k in kinds:
+                n = store.chunks.count_chunks_lexical(
+                    q=q,
+                    kind=k,
+                    tags=tags,
+                    exclude_tags=status_excluded or None,
+                    since=since,
+                    until=until,
+                    exclude_ref_ids=exclude_ref_ids,
+                    include_ref_ids=include_ref_ids,
+                    distinct_refs=True,
+                )
+                per_kind.append((k, n))
+                total += n
+            if total:
+                shown = response.result_count or 0
+                head = f"{shown} of {total}" if total > shown else f"{total} total"
+                breakdown = ", ".join(f"{k}: {n}" for k, n in per_kind)
+                lines = response.body.splitlines()
+                lines.insert(1, f"_({head} · {breakdown})_")
+                response = Response(
+                    body="\n".join(lines),
+                    cost=response.cost,
+                    result_count=response.result_count,
+                )
         return _stamp_non_production_embedder(response, embedder)
 
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:

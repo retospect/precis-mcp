@@ -44,6 +44,29 @@ def test_sort_recency_routes_and_returns_hits(
     assert "Beta note" in out
 
 
+def test_recency_render_shows_total_and_per_kind_breakdown(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr503440: the recency-ordered source search reports the "N of K"
+    total and per-kind breakdown — the over-fetched pool made a bare
+    "# N matches" hide how much further the query reaches."""
+    rt = runtime_with_store
+    _seed(
+        rt, "paper", "tot-a", "Alpha study", "spintronic magnon transport in insulators"
+    )
+    _seed(rt, "web", "tot-b", "Beta note", "spintronic magnon transport review")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper,web",
+            "q": "spintronic magnon transport",
+            "sort": "recency",
+        },
+    )
+    assert "2 total · paper: 1, web: 1" in out
+
+
 def test_since_far_future_yields_empty(runtime_with_store: PrecisRuntime) -> None:
     rt = runtime_with_store
     _seed(rt, "paper", "src-c", "Gamma", "topological insulator surface states")

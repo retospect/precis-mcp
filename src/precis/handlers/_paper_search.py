@@ -605,6 +605,7 @@ class FusedBlockSearch:
         kind: str,
         page_size: int,
         promote_rows: bool = True,
+        include_ref_ids: list[int] | None = None,
     ) -> tuple[list[Any], list[tuple[str, str]], set[int]]:
         """Promote near-exact title matches to the front of ``hits``.
 
@@ -616,6 +617,14 @@ class FusedBlockSearch:
         by ref_id so a paper already in ``hits`` is reordered rather
         than duplicated. Best-effort: any lookup hiccup returns
         ``hits`` unchanged.
+
+        ``include_ref_ids`` (the dispatch-resolved ``serves=``/``cited=``/
+        ``hubbed=`` inclusion set, already applied to the search legs)
+        also bounds the introducer — gr503955: an unfiltered title match
+        could name (and promote) a paper outside the include scope,
+        which ``PaperHandler.search_hits`` already avoids by skipping
+        the introducer entirely under any scope. Filtering keeps the
+        callout working for in-scope matches instead.
 
         ``promote_rows=False`` retains only the record callout. Capped
         paper search uses this to preserve its already-selected page:
@@ -649,6 +658,11 @@ class FusedBlockSearch:
             if not matches:
                 return hits, [], set()
             match_ids = [rid for rid, _sim in matches]
+            if include_ref_ids is not None:
+                allowed = set(include_ref_ids)
+                match_ids = [rid for rid in match_ids if rid in allowed]
+                if not match_ids:
+                    return hits, [], set()
             existing = {h[1].id: h for h in hits}
             refs_map = self.store.fetch_refs_by_ids(match_ids)
             front: list[Any] = []
@@ -1127,6 +1141,7 @@ class FusedBlockSearch:
                 kind=kind,
                 page_size=page_size,
                 promote_rows=not capped_body_search,
+                include_ref_ids=include_ref_ids,
             )
 
         # When a publish-date filter is active, count papers that match

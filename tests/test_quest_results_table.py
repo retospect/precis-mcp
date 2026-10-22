@@ -563,6 +563,42 @@ class TestFrontierEmptyHeadline:
         assert "(none converged yet)" in body
 
 
+class TestObjectiveLineWithoutRubric:
+    """gr503440: a quest with no ``meta.rubric_objectives`` must not
+    assert the ``energy (min)`` fallback as if somebody set it — the
+    objective line says ``(none set …)`` when there are no candidates
+    and flags the fallback ``[default]`` when there are."""
+
+    def _no_rubric_quest(self, store: Any) -> int:
+        resp = QuestHandler(hub=Hub(store=store)).put(text="A non-materials quest")
+        m = re.search(r"\bqu(\d+)\b", resp.body)
+        assert m is not None, resp.body
+        return int(m.group(1))
+
+    def test_no_rubric_no_candidates_says_none_set(self, store: Any) -> None:
+        qid = self._no_rubric_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        for view in ("frontier", "leaderboard"):
+            body = h.get(id=qid, view=view).body
+            assert "objective: (none set — meta.rubric_objectives)" in body
+            assert "energy (min)" not in body
+
+    def test_no_rubric_with_candidates_flags_default(self, store: Any) -> None:
+        qid = self._no_rubric_quest(store)
+        sid = _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
+        _converge(store, sid)
+        h = QuestHandler(hub=Hub(store=store))
+        for view in ("frontier", "leaderboard"):
+            body = h.get(id=qid, view=view).body
+            assert "objective: energy (min) [default]" in body
+
+    def test_rubric_quest_line_is_unmarked(self, store: Any) -> None:
+        qid = _mk_quest(store)  # rubric_objectives = barrier min
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "objective: barrier (min)" in body
+        assert "[default]" not in body
+
+
 # ── tick prompt section ──────────────────────────────────────────────────
 
 

@@ -188,6 +188,15 @@ def _run_id(row: list[str]) -> int:
         return 0
 
 
+def _row_run_id(row: list[str]) -> int:
+    """Workflow-run id a check-run row belongs to, from its job urls."""
+    for u in row[3:5]:
+        m = re.search(r"/actions/runs/(\d+)", u)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
 def ci_red(head: str) -> dict[str, Any] | bool | None:
     """False = gh unreadable; None = no completed red; else the failing jobs."""
     try:
@@ -212,6 +221,23 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
     if cp.returncode != 0:
         return False
     rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") >= 3]
+    # gr504329: check-runs are sha-keyed, so rows span every workflow run
+    # ever made on this sha — a cancelled job from a superseded run
+    # poisoned a fresh release's verdict while the new run had not yet
+    # produced its own check-run for that name (r84, 2026-10-22). Scope
+    # the verdict to the CURRENT run: the newest check.yml run id
+    # `gh run list` reports, else the newest run id the rows' urls carry.
+    # A job name absent from the current run is pending, not red. A row
+    # with no parseable run id stays — a red we cannot date is still a
+    # red worth seeing.
+    current_run = 0
+    rid = _regate_run_id(head)
+    if rid.isdigit():
+        current_run = int(rid)
+    if not current_run:
+        current_run = max((_row_run_id(r) for r in rows), default=0)
+    if current_run:
+        rows = [r for r in rows if _row_run_id(r) in (0, current_run)]
     # A rerun adds a newer check-run of the same name: only the latest counts,
     # and a latest that is still running is not red yet.
     latest: dict[str, list[str]] = {}
@@ -398,7 +424,9 @@ def _regate_if_stale(args: argparse.Namespace) -> int:
     )
     run_id = _regate_run_id(cand)
     if not run_id:
-        say("no check.yml run found on that sha to re-run — deploy proceeds to its own verdict check")
+        say(
+            "no check.yml run found on that sha to re-run — deploy proceeds to its own verdict check"
+        )
         return 0
     cp = subprocess.run(
         ["gh", "run", "rerun", run_id],
@@ -410,7 +438,9 @@ def _regate_if_stale(args: argparse.Namespace) -> int:
         timeout=120,
     )
     if cp.returncode != 0:
-        say(f"gh run rerun {run_id} failed ({cp.stderr.strip() or cp.returncode}) — deploy proceeds to its own verdict check")
+        say(
+            f"gh run rerun {run_id} failed ({cp.stderr.strip() or cp.returncode}) — deploy proceeds to its own verdict check"
+        )
         return 0
     say(f"re-ran check.yml run {run_id} on {cand[:9]}")
     return _wait_fresh_verdict(head, args)
@@ -464,7 +494,9 @@ def note_gripes(prev: str, head: str, text: str) -> None:
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
-        say(f"gripe-note: TimeoutExpired after {NOTE_TIMEOUT_S:g}s — no deploy comments")
+        say(
+            f"gripe-note: TimeoutExpired after {NOTE_TIMEOUT_S:g}s — no deploy comments"
+        )
         return
     if out.strip():
         say(out.strip())
