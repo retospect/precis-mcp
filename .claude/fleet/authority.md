@@ -35,12 +35,13 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 
 - **Coordinator:** Tier W. Launches, briefs and closes builders. Never answers another session's permission prompt; Reto does.
 - **Release owner:** Tier W, plus `scripts/release`, `scripts/deploy` and `scripts/round`, each pinned to a release sha, and migration ordering.
+- **Catpath agents and the chat desk** (Reto 2026-10-22, first-hand: "authorize you/catpath agents to push as necessary. And to deploy as necessary"): push catpath `main` and release tags, bump the catpath version, bump precis's pinned `autocatpath` rev, and deploy that bump: `scripts/release` + `scripts/deploy` pinned to the release sha when no other release is open, otherwise it rides the release owner's next round. Migrations still go through the release owner.
 - **Host desk:** Tier R on hosts. Any host change goes through `scripts/host-ops/play` from origin/prod after the gates in me493172.
 
 ## Reto only, for every tier and role
 
 The test: a backup cannot undo it, or it leaves the building.
-- Release or deploy, except the release owner as above.
+- Release or deploy, except the release owner and the catpath grant as above.
 - Secrets: reading, printing, rotating, or adding them to vault.
 - Host plays outside the gated path, service restarts, container recreates, installs.
 - Outward-facing actions: email, nanopub publish or sign, PRs or comments on other people's repos, a PCB `op='order'`, any purchase.
