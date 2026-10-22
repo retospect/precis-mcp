@@ -1384,13 +1384,25 @@ def resolve_tilts(
         if not 1e-6 < float(rot[k]) % 90.0 < 90.0 - 1e-6:
             continue
         e_tilt = energy_of(ths)
-        target = round(float(rot[k]) / 90.0) * 90.0 % 360.0
         keep = ths[k]
-        ths[k] = -math.radians(target)
-        e_grid = energy_of(ths)
+        # The tilt competes with the BEST of the four 90° orientations,
+        # not only the nearest: the descended θ can sit nearer a
+        # pin-flipped 90° (135° rounds to 90° or 180°), and pricing the
+        # tilt against the wrong one let it "earn" the pad-spring and
+        # wirelength the flip cost (esp32c3 gr503694 follow-up). The
+        # nearest wins ties.
+        near = round(float(rot[k]) / 90.0) * 90.0 % 360.0
+        target, e_grid = near, math.inf
+        for step in (0.0, 90.0, 180.0, 270.0):
+            cand = (near + step) % 360.0
+            ths[k] = -math.radians(cand)
+            e_cand = energy_of(ths)
+            if e_cand < e_grid:
+                target, e_grid = cand, e_cand
         if e_tilt < e_grid - min_gain:
             ths[k] = keep
         else:
+            ths[k] = -math.radians(target)
             rot[k] = target
     return ths, rot
 
@@ -1795,6 +1807,23 @@ def polish_placement(
             xw, yw, thw = board.x0.copy(), board.y0.copy(), board.th0.copy()
             for i in keep:
                 xw[i], yw[i], thw[i] = new[i][0], new[i][1], -math.radians(new[i][2])
+            # The kept tilts were priced with the reverted parts at their
+            # candidate pose; re-price them on the written board, where a
+            # tilt that no longer earns ROT_TILT_MIN_GAIN goes back to the
+            # 90° grid (esp32c3 seed 10 kept J1 330°, U2 165°, U3 45° with
+            # J2 reverted). A re-snapped part re-meets the legality gate.
+            rw = -np.degrees(thw) % 360.0
+            _xw, _yw, thw2, rw2 = _resolve_tilts(xw, yw, thw, rw)
+            resnapped = [i for i in keep if abs(rw2[i] - rw[i]) > 1e-6]
+            if resnapped:
+                thw = thw2
+                for i in resnapped:
+                    new[i] = (new[i][0], new[i][1], float(rw2[i]))
+                if not legal(keep):
+                    reason = "illegal"
+                    refused = tuple(keep)
+                    detail = "; ".join(violations(keep, 4))
+                    return None
             e1 = final.value_grad(lay.pack_from(xw, yw, thw))[0]
             if not e1 < e0:
                 return None
@@ -1879,7 +1908,51 @@ def polish_placement(
             ths, rot = ths2, rot2
             xr, yr = _descend_xy(xr, yr, ths)
             _xr, _yr, ths, rot = _resolve_tilts(xr, yr, ths, rot)
-        return _accept(xr, yr, ths, rot, "repaired")
+        tilted = (xr, yr, ths, rot)
+        n_tilt = sum(
+            1
+            for k in np.flatnonzero(lay.free_rot)
+            if abs(float(ths[k]) - float(board.th0[k])) > 1e-6
+            and 1e-6 < float(rot[k]) % 90.0 < 90.0 - 1e-6
+        )
+        if not n_tilt:
+            return _accept(*tilted, "repaired")
+
+        # Even re-priced, a tilt is measured against its 90° re-snap at an
+        # x, y descended AROUND the tilt — the re-snapped part collides
+        # there, so the tilt "earns" the overlap it caused (esp32c3 seeds
+        # 8/9/14/15/17/20 wrote 3-4 of 29 off 90°; CI x86 seeds 1-2 too).
+        # Price the 90° grid fairly: every tilt onto its best 90°
+        # orientation, x, y given the same two descents the tilted board
+        # had, and keep the tilts only when the tilted board beats that by
+        # ROT_TILT_MIN_GAIN per tilt (D5). The loser is the fallback when
+        # the winner fails an accept gate.
+        def to_grid(xs, ys, ths, rot):
+            return resolve_tilts(
+                lambda t: float(final.value_grad(lay.pack_from(xs, ys, t))[0]),
+                ths,
+                rot,
+                free_rot=lay.free_rot,
+                th0=board.th0,
+                min_gain=math.inf,
+            )
+
+        thg, rotg = to_grid(xr, yr, ths, rot)
+        xg, yg = _descend_xy(xr, yr, thg)
+        thg2, rotg2 = to_grid(xg, yg, ths, rot)
+        if not np.array_equal(rotg2, rotg):
+            thg, rotg = thg2, rotg2
+        xg, yg = _descend_xy(xg, yg, thg)
+        e_grid = float(final.value_grad(lay.pack_from(xg, yg, thg))[0])
+        e_tilt = float(final.value_grad(lay.pack_from(xr, yr, ths))[0])
+        order = [(xg, yg, thg, rotg), tilted]
+        if e_tilt < e_grid - ROT_TILT_MIN_GAIN * n_tilt:
+            order.reverse()
+        for cand in order:
+            applied = _accept(*cand, "repaired")
+            if applied is not None:
+                return applied
+        return None
 
     for do_xy, snap_deg in (
         (True, ROT_SNAP_DEG),
