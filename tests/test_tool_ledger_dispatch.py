@@ -349,3 +349,54 @@ def test_every_error_path_fills_error_head_source_client(
         assert error_type and head and "error" in head
         assert source == "sonnet"
         assert client == "ledger-test/9"
+
+
+def test_put_through_tool_boundary_records_session_and_client(
+    runtime_with_store: PrecisRuntime, monkeypatch: Any
+) -> None:
+    """gr504485 contract: a ``put`` dispatched through the tool boundary
+    (``tools.core.put``) with a bound MCP session yields a ``tool_calls``
+    row with non-NULL ``session_id`` and ``client``. Write verbs used to
+    never bind the session, so ~30% of the ledger was unattributable."""
+    from typing import cast
+
+    from precis.tools import core
+
+    class _Info:
+        name = "boundary-test"
+        version = "3"
+
+    class _Params:
+        clientInfo = _Info()
+        meta = None
+
+    class _Session:
+        client_params = _Params()
+
+    class _Ctx:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    result = core.put(
+        kind="memory",
+        text="session-boundary-probe",
+        title="boundary-probe",
+        ctx=cast(Any, _Ctx(_Session())),
+    )
+    assert getattr(result, "isError", False) is False
+    assert "created" in str(result)
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT session_id, seq, client FROM tool_calls "
+            "WHERE verb='put' AND client='boundary-test/3' "
+            "AND ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None, "no ledger row for the boundary put"
+    assert row[0] is not None, "session_id is NULL on the write path"
+    assert row[1] is not None and row[1] >= 1
+    assert row[2] == "boundary-test/3"

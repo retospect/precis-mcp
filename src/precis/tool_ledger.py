@@ -364,6 +364,11 @@ def _sample_value(v: Any, depth: int) -> Any:
     if isinstance(v, str):
         s = " ".join(v.split())  # single-line, TSV-safe
         s = mask_secrets(s, warn=False)
+        if not s:
+            # Explicitly-sent empty strings get the same marker payload
+            # keys produce (gr503460 forensics): without it, "" and an
+            # omitted key are indistinguishable in the ledger.
+            return "<0 chars>"
         return s[:_SAMPLE_STR_CHARS] + ("…" if len(s) > _SAMPLE_STR_CHARS else "")
     if isinstance(v, (list, tuple)):
         if depth >= 2 or not v:

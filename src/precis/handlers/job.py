@@ -82,6 +82,15 @@ _ANCESTRY_GIT_TIMEOUT_S = 5
 #: keeps it on ``main``); a third place the commit graph can be read from.
 _FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
 
+#: Row cap for the ``/limits`` view — comfortably above the named-provider
+#: count; bounds the ``hosts=1`` listing (``host:<netloc>`` rows are seeded
+#: up to ``rate_limit.MAX_SEEDED_HOST_ROWS``).
+_LIMITS_MAX_ROWS = 600
+
+#: Per-section row cap for the ``/delta`` view — a louder window than
+#: this means the tick wants the full surfaces, not the delta.
+_DELTA_SECTION_ROWS = 40
+
 # ── view='count' error-heads trailer (mcp-introspection gap closures
 # 2026-10-14): the "which failure family?" drill into a failed-job count ──
 #: Failed jobs scanned for the trailer. The heads are advisory ("what are
@@ -353,7 +362,15 @@ class JobHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "logs", "builds", "throughput", "cadence")
+        return (
+            "recent",
+            "logs",
+            "builds",
+            "throughput",
+            "cadence",
+            "limits",
+            "delta",
+        )
 
     def get(
         self,
@@ -409,6 +426,12 @@ class JobHandler(NumericRefHandler):
         if view == "cadence" or view.startswith("cadence/"):
             _, _, name = view.partition("/")
             return self._render_cadence_view(name or None)
+        if view == "limits" or view.startswith("limits?"):
+            _, _, query_string = view.partition("?")
+            return self._render_limits_view(query_string)
+        if view == "delta" or view.startswith("delta?"):
+            _, _, query_string = view.partition("?")
+            return self._render_delta_view(query_string)
         return super()._list_view(view)
 
     def _render_cadence_view(self, name: str | None) -> Response:
@@ -667,6 +690,15 @@ class JobHandler(NumericRefHandler):
             header += f"\n# contains_sha: does the build contain {sha}? " + (
                 f"(git ancestry via {repo})" if repo else f"(unknown: {why})"
             )
+            if repo is None:
+                # Machine readers (the doctor tick) used to retry the probe
+                # with other shas — the verdict is process-local ("no
+                # checkout reachable"), so every retry answers the same.
+                header += (
+                    "\n# ancestry is UNVERIFIABLE from this process — do not "
+                    "re-call /builds with other shas this tick; report "
+                    "'could not verify'"
+                )
         if not rows:
             body = (
                 f"{header}\n"
@@ -961,6 +993,346 @@ class JobHandler(NumericRefHandler):
             end + pad,
             str(lease_host) if lease_host else None,
         )
+
+    def _render_limits_view(self, query_string: str) -> Response:
+        """``id='/limits[?provider=<p>&hosts=1]'`` — ``external_rate_limits``.
+
+        Read-only view over the cross-host outbound limiter (migration
+        0121, ``precis.utils.rate_limit``) — the table agents used to
+        detour to prod-psql for (gr504488: "did the fetch_oa limiter
+        fire?" had no agent door). Two lanes per provider row: a
+        token-bucket rate lane (``capacity``/``refill_per_sec``/
+        ``tokens``) and an optional daily-quota lane (``daily_cap``/
+        ``day_used``; ``NULL`` cap = inert).
+
+        ``tokens`` renders the *effective* balance right now — refill
+        applied and clamped to ``capacity``, the same arithmetic
+        ``rate_limit.acquire`` runs — so ~0 means the next caller waits.
+        ``day`` is used_today/daily_cap with ``day_start`` rollover
+        applied (an unread stale counter shows 0, like acquire does).
+
+        ``host:<netloc>`` rows are the per-host pacing table safe_fetch
+        seeds on demand (capped at ``rate_limit.MAX_SEEDED_HOST_ROWS``,
+        several hundred of uninteresting rows) — hidden by default;
+        ``hosts=1`` lists them newest-touched first, ``provider=<p>``
+        pins any one row exactly (``provider=host:...`` works too).
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        provider = (params.get("provider") or "").strip() or None
+        include_hosts = (params.get("hosts") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "all",
+        )
+
+        where: list[str] = []
+        sql_params: dict[str, Any] = {}
+        if provider:
+            where.append("provider = %(provider)s")
+            sql_params["provider"] = provider
+        elif not include_hosts:
+            where.append("provider NOT LIKE 'host:%%'")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        # Named providers sort alphabetically; the host:* population is
+        # only legible newest-touched first.
+        order = (
+            "last_refill DESC"
+            if include_hosts or (provider or "").startswith("host:")
+            else "provider"
+        )
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT provider, capacity, refill_per_sec,
+                       LEAST(capacity,
+                             tokens + refill_per_sec
+                               * EXTRACT(EPOCH FROM (now() - last_refill)))
+                         AS tokens_now,
+                       daily_cap,
+                       CASE WHEN day_start < CURRENT_DATE
+                            THEN 0 ELSE day_used END AS used_today
+                  FROM external_rate_limits
+                  {where_sql}
+                 ORDER BY {order}
+                 LIMIT %(cap)s
+                """,
+                {**sql_params, "cap": _LIMITS_MAX_ROWS},
+            ).fetchall()
+
+        header = (
+            "# external_rate_limits — cross-host outbound limiter\n"
+            "# tokens = burst balance now (refill applied, clamped); "
+            "~0 means the next call waits\n"
+            "# day = used_today / daily_cap ('-' = no daily quota lane)"
+        )
+        if not rows:
+            body = f"{header}\nno external_rate_limits row matches this filter."
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='job', id='/limits')",
+                        "every named provider",
+                    ),
+                    (
+                        "get(kind='job', id='/limits?hosts=1')",
+                        "include the per-host host:<netloc> pacing rows",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        lines = [header, ""]
+        for name, capacity, refill, tokens_now, daily_cap, used_today in rows:
+            day = (
+                f"{int(used_today)}/{int(daily_cap)}"
+                if daily_cap is not None
+                else f"{int(used_today)}/-"
+            )
+            lines.append(
+                f"{name} tokens={float(tokens_now):.1f}/{int(capacity)} "
+                f"refill={float(refill):g}/s day={day}"
+            )
+        lines.append("")
+        lines.append(
+            f"{len(rows)} provider row(s)"
+            + (
+                " — host:<netloc> rows hidden; /limits?hosts=1 shows them"
+                if not (provider or include_hosts)
+                else ""
+            )
+        )
+        return Response(body="\n".join(lines), result_count=len(rows))
+
+    def _delta_cutoff(self, since_raw: str) -> tuple[datetime, str]:
+        """The ``/delta`` cutoff plus a short human label naming where it
+        came from.
+
+        Default: the last *succeeded* ``doctor_tick`` job's
+        ``meta.started_at`` — the tick should see what moved since it
+        last looked. A fleet that never ran one (or whose last runs all
+        failed) falls back to the latest finished doctor_tick's start,
+        then to 8h ago (the cadence window). ``?since=<hours|ISO>``
+        overrides for ad-hoc reads.
+        """
+        if since_raw:
+            try:
+                return (
+                    datetime.now(UTC) - timedelta(hours=float(since_raw)),
+                    f"since={since_raw}h",
+                )
+            except ValueError:
+                pass
+            try:
+                parsed = datetime.fromisoformat(since_raw.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise BadInput(
+                    f"since={since_raw!r} is neither hours nor an ISO timestamp",
+                    next="since=24 (hours) · since=2026-10-22T06:00:00Z · omit "
+                    "for 'since the last doctor tick'",
+                ) from exc
+            return as_utc(parsed) or parsed, f"since={since_raw}"
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.ref_id, r.meta->>'started_at' AS started,
+                       (SELECT t.value FROM ref_tags rt
+                          JOIN tags t ON t.tag_id = rt.tag_id
+                         WHERE rt.ref_id = r.ref_id
+                           AND t.namespace = 'STATUS'
+                         ORDER BY rt.tag_id DESC LIMIT 1) AS status
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.meta->>'job_type' = 'doctor_tick'
+                 ORDER BY r.created_at DESC
+                 LIMIT 10
+                """
+            ).fetchall()
+
+        def _pick(statuses: tuple[str, ...]) -> tuple[datetime, int] | None:
+            for ref_id, started, status in rows:
+                if status not in statuses:
+                    continue
+                ts = as_utc(started)
+                if ts is not None:
+                    return ts, int(ref_id)
+            return None
+
+        if (hit := _pick(("succeeded",))) is not None:
+            return hit[0], f"doctor_tick jo{hit[1]} start"
+        if (hit := _pick(_TERMINAL_STATUSES)) is not None:
+            return (
+                hit[0],
+                f"doctor_tick jo{hit[1]} start (last tick did not succeed)",
+            )
+        return datetime.now(UTC) - timedelta(
+            hours=8
+        ), "8h fallback (no doctor_tick found)"
+
+    def _render_delta_view(self, query_string: str) -> Response:
+        """``id='/delta[?since=<hours|ISO>]'`` — what changed since the
+        last doctor tick.
+
+        The doctor tick used to re-read its whole surface every run
+        (gr504490): the static /rules catalogue (14.9 kB), /open,
+        three watchdog conditions and the same gripe threads — ~15
+        byte-identical calls per tick at ~$0.71. This view is the "only
+        what changed" answer in one read: new + re-sighted alerts,
+        persistent open alerts (the known-noise candidates), and gripe
+        activity (new gripes + new comments) — each row names the ref to
+        drill into, so detail fetches are spent on what actually moved.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        cutoff, cutoff_note = self._delta_cutoff((params.get("since") or "").strip())
+
+        open_state = (
+            "EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t"
+            " ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id"
+            " AND t.namespace = 'OPEN' AND t.value = 'alert-state:open')"
+        )
+        with self.store.pool.connection() as conn:
+            alerts = conn.execute(
+                f"""
+                SELECT r.ref_id,
+                       COALESCE(r.alert_source, r.meta->>'alert_source') AS source,
+                       COALESCE(r.fingerprint, r.meta->>'fingerprint') AS fingerprint,
+                       r.meta->>'severity' AS severity,
+                       r.created_at, r.updated_at,
+                       COALESCE((r.meta->>'seen_count')::int, 1) AS seen_count,
+                       {open_state} AS is_open
+                  FROM refs r
+                 WHERE r.kind = 'alert' AND r.retired_at IS NULL
+                   AND r.updated_at >= %(cutoff)s
+                 ORDER BY r.updated_at DESC
+                 LIMIT %(cap)s
+                """,
+                {"cutoff": cutoff, "cap": _DELTA_SECTION_ROWS},
+            ).fetchall()
+            persistent = conn.execute(
+                f"""
+                SELECT r.ref_id,
+                       COALESCE(r.alert_source, r.meta->>'alert_source') AS source,
+                       COALESCE(r.fingerprint, r.meta->>'fingerprint') AS fingerprint,
+                       r.meta->>'severity' AS severity,
+                       r.created_at, r.updated_at,
+                       COALESCE((r.meta->>'seen_count')::int, 1) AS seen_count
+                  FROM refs r
+                 WHERE r.kind = 'alert' AND r.retired_at IS NULL
+                   AND r.updated_at < %(cutoff)s
+                   AND {open_state}
+                 ORDER BY r.updated_at DESC
+                 LIMIT %(cap)s
+                """,
+                {"cutoff": cutoff, "cap": _DELTA_SECTION_ROWS},
+            ).fetchall()
+            new_gripes = conn.execute(
+                """
+                SELECT ref_id, title, created_at FROM refs
+                 WHERE kind = 'gripe' AND retired_at IS NULL
+                   AND created_at >= %(cutoff)s
+                 ORDER BY created_at DESC LIMIT %(cap)s
+                """,
+                {"cutoff": cutoff, "cap": _DELTA_SECTION_ROWS},
+            ).fetchall()
+            comments = conn.execute(
+                """
+                SELECT r.ref_id, r.title, count(*) AS n,
+                       max(c.created_at) AS last
+                  FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+                 WHERE c.chunk_kind = 'gripe_comment'
+                   AND c.retired_at IS NULL
+                   AND c.created_at >= %(cutoff)s
+                   AND r.retired_at IS NULL
+                 GROUP BY r.ref_id, r.title
+                 ORDER BY last DESC LIMIT %(cap)s
+                """,
+                {"cutoff": cutoff, "cap": _DELTA_SECTION_ROWS},
+            ).fetchall()
+
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        lines = [
+            f"# tick delta — since {cutoff.strftime(fmt)} ({cutoff_note})",
+            "# only refs named here moved; detail-fetch those, skip "
+            "re-reading /rules and unchanged threads",
+        ]
+
+        def _is_new(a: tuple[Any, ...]) -> bool:
+            c = as_utc(a[4])
+            return c is not None and c >= cutoff
+
+        new_alerts = [a for a in alerts if _is_new(a)]
+        sightings = [a for a in alerts if not _is_new(a)]
+
+        lines.append("")
+        lines.append(f"NEW ALERTS ({len(new_alerts)})")
+        for ref_id, source, fp, severity, created, _u, _sc, is_open in new_alerts:
+            ts = as_utc(created)
+            lines.append(
+                f"  al{ref_id} {source}/{fp} severity={severity or '?'} "
+                f"open={str(is_open).lower()} {ts.strftime(fmt) if ts else '?'}"
+            )
+        if not new_alerts:
+            lines.append("  none")
+
+        lines.append("")
+        lines.append(f"REPEAT SIGHTINGS ({len(sightings)})")
+        for ref_id, source, fp, severity, _c, updated, seen_count, is_open in sightings:
+            ts = as_utc(updated)
+            lines.append(
+                f"  al{ref_id} {source}/{fp} severity={severity or '?'} "
+                f"seen_count={seen_count} open={str(is_open).lower()} "
+                f"{ts.strftime(fmt) if ts else '?'}"
+            )
+        if not sightings:
+            lines.append("  none")
+
+        lines.append("")
+        lines.append(
+            f"PERSISTENT OPEN ({len(persistent)}) — still open, nothing new "
+            "since cutoff; baseline-noise candidates, don't re-read "
+            "each one"
+        )
+        for ref_id, source, fp, severity, _c, updated, seen_count in persistent:
+            ts = as_utc(updated)
+            lines.append(
+                f"  al{ref_id} {source}/{fp} severity={severity or '?'} "
+                f"seen_count={seen_count} last={ts.strftime(fmt) if ts else '?'}"
+            )
+        if not persistent:
+            lines.append("  none")
+
+        lines.append("")
+        lines.append(f"NEW GRIPES ({len(new_gripes)})")
+        for ref_id, title, created in new_gripes:
+            ts = as_utc(created)
+            lines.append(
+                f"  gr{ref_id} {str(title or '')[:80]} "
+                f"{ts.strftime(fmt) if ts else '?'}"
+            )
+        if not new_gripes:
+            lines.append("  none")
+
+        lines.append("")
+        lines.append(f"GRIPE COMMENTS ({len(comments)})")
+        for ref_id, title, n, last in comments:
+            ts = as_utc(last)
+            lines.append(
+                f"  gr{ref_id} {str(title or '')[:60]} +{n} comment(s), "
+                f"last {ts.strftime(fmt) if ts else '?'}"
+            )
+        if not comments:
+            lines.append("  none")
+
+        total = (
+            len(new_alerts)
+            + len(sightings)
+            + len(persistent)
+            + len(new_gripes)
+            + len(comments)
+        )
+        return Response(body="\n".join(lines), result_count=total)
 
     # ── put: validated submit ───────────────────────────────────────
 

@@ -23,15 +23,30 @@ around the missing tool.
 Read what the deterministic layers already publish. Confirmed surfaces:
 
 ```python
-get(kind="alert", id="/health")  # FIRST: every health check's verdict (snapshot age shown)
-get(kind="alert", id="/open")  # every open alert, with true totals
+get(kind="job", id="/delta")  # FIRST: what changed since your last tick —
+# new alerts, repeat sightings, persistent-open alerts (baseline-noise
+# candidates), new gripes and new gripe comments. Fetch detail only for
+# the refs it names.
+get(kind="alert", id="/health")  # every health check's verdict (snapshot age shown)
 get(kind="alert", id="<source>/<fingerprint>")  # one failure id: open? recurrence? rule + triage
-get(kind="alert", id="/rules")  # the registered failure-id catalogue (meaning, budget, triage)
 search(kind="alert", tags=["severity:critical"])  # narrow by severity
 search(kind="alert", tags=["alert-source:nursery:spin-loop"])  # narrow by source
 get(kind="llm", id="<model-id>", view="tote")  # llm_call_log rollup for one model
 search(kind="skill", q="health digest")  # discover more skill docs
 ```
+
+**Do not re-read what `/delta` already covers.** `/delta` is one call
+that replaces re-fetching `/open`, the alert catalogue and the gripe
+threads you read last tick:
+
+- `get(kind='alert', id='/rules')` is a static failure-id catalogue —
+  read it **on demand only**, when you need a rule's meaning/budget/
+  triage for a failure id you are actually diagnosing. Never every tick.
+- `get(kind='alert', id='/open')` is the same population `/delta`'s
+  PERSISTENT section already lists. Only call it when the delta's
+  `none`/`(N)` counts look wrong for what `/health` reports.
+- A gripe or comment thread the delta does NOT name did not move since
+  last tick — reference it by id in the report instead of re-reading it.
 
 `precis-health-digest-help`, `precis-nursery-help`, and `precis-alert-help`
 name what each check watches and how it escalates — read one whenever a
@@ -75,7 +90,12 @@ it. Do NOT infer that from two shas — call `/builds` with `args={'sha':
 `yes` means the fix is live there, `no` means it is not, `unknown
 (<reason>)` means git could not tell from here (no checkout reachable, or a
 commit this checkout has never fetched) and is evidence of nothing — say
-"could not verify", do not file. Read per PROCESS, not per host: one host
+"could not verify", do not file. **One probe per tick, never a retry:**
+when `contains_sha` is `unknown` for every row with reason "no checkout
+reachable", the verdict is about *your* process, not the sha — calling
+`/builds` again with a different sha answers the same `unknown`. Stop
+after the first all-unknown answer and write "unverifiable from here".
+Read per PROCESS, not per host: one host
 runs several worker units (e.g. a collapsed worker and a dedicated agent
 lane) and an env or code difference between two units of the same host is a
 real, common failure shape — grouping them together hides it. Two builds for

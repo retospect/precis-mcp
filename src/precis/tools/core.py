@@ -1357,6 +1357,11 @@ def put(
     sponsor_line: str | None = None,
     owner: str | None = None,
     default: bool | None = None,
+    # FastMCP-injected Context, same as get()/search() — binds the MCP
+    # session for the dispatch so tool_calls ledger rows carry
+    # session_id/client on the write path too (gr504485). Excluded from
+    # the wire schema (``skip_names``), so clients never see it.
+    ctx: Context | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -1380,132 +1385,137 @@ def put(
         )
         if reserved_err is not None:
             return reserved_err
-    return _dispatch(
-        "put",
-        {
-            "kind": kind,
-            "id": id,
-            "text": text,
-            "mode": mode,
-            # Rides the same channel as get()'s args=; dispatch pops it and
-            # forwards it unflattened to handlers declaring `args: dict`.
-            # None is falsy there, so the no-args case is a clean no-op.
-            "__extras__": dict(args) if args else None,
-            "tags": tags,
-            "untags": untags,
-            "link": link,
-            "unlink": unlink,
-            "rel": rel,
-            # Kind-specific kwargs — the dispatcher strips None values
-            # before calling the handler, and handlers carry **_kw
-            # catch-alls so unrecognised keys are no-ops for kinds that
-            # don't use them.
-            "title": title,
-            "body": body,
-            "scope": scope,
-            "cited_in": cited_in,
-            "supporters": supporters,
-            "dedup": dedup,
-            "wants": wants,
-            "provenance": provenance,
-            # False is the "not this mode" value and would be stripped by
-            # _invoke_handler's None-filter anyway; pass it through only when
-            # set so the handler's default stands.
-            "hypothesis": hypothesis or None,
-            "motivation": motivation,
-            "testable_by": testable_by,
-            "motivated_by": motivated_by,
-            "llm_models": llm_models,
-            "from_memory": from_memory,
-            "source_handle": source_handle,
-            "source_quote": source_quote,
-            "char_offset": char_offset,
-            "verifier_confidence": verifier_confidence,
-            "verifier_caveats": verifier_caveats,
-            "verified_at": verified_at,
-            "engine": engine,
-            "max_steps": max_steps,
-            "max_routes": max_routes,
-            "strategy": strategy,
-            "refresh": refresh,
-            "requested_by": requested_by,
-            "constraints": constraints,
-            "sequence": sequence,
-            "seeds": seeds,
-            "job_type": job_type,
-            "executor": executor,
-            "params": params,
-            "idem_key": idem_key,
-            "requires": requires,
-            "parent_id": parent_id,
-            "prio": prio,
-            "model": model,
-            "pos": pos,
-            "meta": meta,
-            "ref_meta": ref_meta,
-            "subtype": subtype,
-            "chunk_kind": chunk_kind,
-            "at": at,
-            "project": project,
-            "terms": terms,
-            "table": table,
-            "caption": caption,
-            "regen": regen,
-            "render": render,
-            "plots": plots,
-            "author": author,
-            "msg_id": msg_id,
-            "target": target,
-            "when": when,
-            "in_": in_,
-            "recurring": recurring,
-            "catch_up": catch_up,
-            "doi": doi,
-            "arxiv": arxiv,
-            "identifier": identifier,
-            "year": year,
-            "reason": reason,
-            "status": status,
-            "error": error,
-            "entry": entry,
-            "by": by,
-            "cost": cost,
-            "property": property,
-            "value": value,
-            "unit": unit,
-            "conditions": conditions,
-            "maturity": maturity,
-            "method": method,
-            "rxn_smiles": rxn_smiles,
-            "reaction_class": reaction_class,
-            "source_licence": source_licence,
-            "source": source,
-            "chunk": chunk,
-            "as_of": as_of,
-            "value_type": value_type,
-            "allowed_values": allowed_values,
-            "value_low": value_low,
-            "value_high": value_high,
-            "spec": spec,
-            "category": category,
-            "uom": uom,
-            "made_of": made_of,
-            "contains": contains,
-            "qty": qty,
-            "ref_designator": ref_designator,
-            "series": series,
-            "size": size,
-            "items": items,
-            "name": name,
-            "palette": palette,
-            "fonts": fonts,
-            "logos": logos,
-            "sponsor_line": sponsor_line,
-            "owner": owner,
-            "default": default,
-            "ops": ops,
-        },
-    )
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch(
+            "put",
+            {
+                "kind": kind,
+                "id": id,
+                "text": text,
+                "mode": mode,
+                # Rides the same channel as get()'s args=; dispatch pops it and
+                # forwards it unflattened to handlers declaring `args: dict`.
+                # None is falsy there, so the no-args case is a clean no-op.
+                "__extras__": dict(args) if args else None,
+                "tags": tags,
+                "untags": untags,
+                "link": link,
+                "unlink": unlink,
+                "rel": rel,
+                # Kind-specific kwargs — the dispatcher strips None values
+                # before calling the handler, and handlers carry **_kw
+                # catch-alls so unrecognised keys are no-ops for kinds that
+                # don't use them.
+                "title": title,
+                "body": body,
+                "scope": scope,
+                "cited_in": cited_in,
+                "supporters": supporters,
+                "dedup": dedup,
+                "wants": wants,
+                "provenance": provenance,
+                # False is the "not this mode" value and would be stripped by
+                # _invoke_handler's None-filter anyway; pass it through only when
+                # set so the handler's default stands.
+                "hypothesis": hypothesis or None,
+                "motivation": motivation,
+                "testable_by": testable_by,
+                "motivated_by": motivated_by,
+                "llm_models": llm_models,
+                "from_memory": from_memory,
+                "source_handle": source_handle,
+                "source_quote": source_quote,
+                "char_offset": char_offset,
+                "verifier_confidence": verifier_confidence,
+                "verifier_caveats": verifier_caveats,
+                "verified_at": verified_at,
+                "engine": engine,
+                "max_steps": max_steps,
+                "max_routes": max_routes,
+                "strategy": strategy,
+                "refresh": refresh,
+                "requested_by": requested_by,
+                "constraints": constraints,
+                "sequence": sequence,
+                "seeds": seeds,
+                "job_type": job_type,
+                "executor": executor,
+                "params": params,
+                "idem_key": idem_key,
+                "requires": requires,
+                "parent_id": parent_id,
+                "prio": prio,
+                "model": model,
+                "pos": pos,
+                "meta": meta,
+                "ref_meta": ref_meta,
+                "subtype": subtype,
+                "chunk_kind": chunk_kind,
+                "at": at,
+                "project": project,
+                "terms": terms,
+                "table": table,
+                "caption": caption,
+                "regen": regen,
+                "render": render,
+                "plots": plots,
+                "author": author,
+                "msg_id": msg_id,
+                "target": target,
+                "when": when,
+                "in_": in_,
+                "recurring": recurring,
+                "catch_up": catch_up,
+                "doi": doi,
+                "arxiv": arxiv,
+                "identifier": identifier,
+                "year": year,
+                "reason": reason,
+                "status": status,
+                "error": error,
+                "entry": entry,
+                "by": by,
+                "cost": cost,
+                "property": property,
+                "value": value,
+                "unit": unit,
+                "conditions": conditions,
+                "maturity": maturity,
+                "method": method,
+                "rxn_smiles": rxn_smiles,
+                "reaction_class": reaction_class,
+                "source_licence": source_licence,
+                "source": source,
+                "chunk": chunk,
+                "as_of": as_of,
+                "value_type": value_type,
+                "allowed_values": allowed_values,
+                "value_low": value_low,
+                "value_high": value_high,
+                "spec": spec,
+                "category": category,
+                "uom": uom,
+                "made_of": made_of,
+                "contains": contains,
+                "qty": qty,
+                "ref_designator": ref_designator,
+                "series": series,
+                "size": size,
+                "items": items,
+                "name": name,
+                "palette": palette,
+                "fonts": fonts,
+                "logos": logos,
+                "sponsor_line": sponsor_line,
+                "owner": owner,
+                "default": default,
+                "ops": ops,
+            },
+        )
+    finally:
+        serve_ledger.unbind(token)
 
 
 def edit(
@@ -1720,6 +1730,10 @@ def edit(
     # on the ref's or link's revisions row; dispatch consumes it, so no
     # handler declares it. Omitted → "edit(kind='<kind>')".
     reason: str | None = None,
+    # FastMCP-injected Context — binds the MCP session for the dispatch
+    # (ledger attribution on the write path, gr504485). Invisible to
+    # clients (``skip_names``).
+    ctx: Context | None = None,
 ) -> str:
     """Edit content within an existing ref.
 
@@ -1834,7 +1848,12 @@ def edit(
     if extras:
         payload["__extras__"] = extras
     # See ``get`` for the ``str | CallToolResult`` return contract.
-    return _dispatch("edit", payload)
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch("edit", payload)
+    finally:
+        serve_ledger.unbind(token)
 
 
 def delete(
@@ -1850,6 +1869,9 @@ def delete(
     # gripe/todo: args={'comment': K} hides comment K (add 'restore': True to
     # undo); see precis-delete-help.
     args: dict[str, Any] | None = None,
+    # FastMCP-injected Context — binds the MCP session for the dispatch
+    # (ledger attribution on the write path, gr504485).
+    ctx: Context | None = None,
 ) -> str:
     """Delete a ref or addressed region.
 
@@ -1879,7 +1901,12 @@ def delete(
         if reserved_err is not None:
             return reserved_err
         payload["__extras__"] = dict(args)
-    return _dispatch("delete", payload)
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch("delete", payload)
+    finally:
+        serve_ledger.unbind(token)
 
 
 def tag(
@@ -1904,6 +1931,9 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
+    # FastMCP-injected Context — binds the MCP session for the dispatch
+    # (ledger attribution on the write path, gr504485).
+    ctx: Context | None = None,
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
@@ -1928,17 +1958,22 @@ def tag(
     search(kind='skill', q='classifying refs') for a topical lookup.
     `precis-tags` is the authoritative axis matrix.
     """
-    return _dispatch(
-        "tag",
-        {
-            "kind": kind,
-            "id": id,
-            "add": add,
-            "remove": remove,
-            "meta": meta,
-            "prio": prio,
-        },
-    )
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch(
+            "tag",
+            {
+                "kind": kind,
+                "id": id,
+                "add": add,
+                "remove": remove,
+                "meta": meta,
+                "prio": prio,
+            },
+        )
+    finally:
+        serve_ledger.unbind(token)
 
 
 def link(
@@ -1957,6 +1992,9 @@ def link(
     # clients don't strip it.
     element: str | None = None,
     meta: dict[str, Any] | None = None,
+    # FastMCP-injected Context — binds the MCP session for the dispatch
+    # (ledger attribution on the write path, gr504485).
+    ctx: Context | None = None,
 ) -> str:
     """Add or remove a typed link between two refs.
 
@@ -1970,18 +2008,23 @@ def link(
     search(kind='skill', q='connecting refs') for a topical lookup.
     `precis-relations` lists every rel (cites, blocks, ...).
     """
-    return _dispatch(
-        "link",
-        {
-            "kind": kind,
-            "id": id,
-            "target": target,
-            "mode": mode,
-            "rel": rel,
-            "element": element,
-            "meta": meta,
-        },
-    )
+    session = _ctx_session(ctx)
+    token = serve_ledger.bind(session)
+    try:
+        return _dispatch(
+            "link",
+            {
+                "kind": kind,
+                "id": id,
+                "target": target,
+                "mode": mode,
+                "rel": rel,
+                "element": element,
+                "meta": meta,
+            },
+        )
+    finally:
+        serve_ledger.unbind(token)
 
 
 def more(cursor: str) -> _ToolReturn:

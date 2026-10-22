@@ -210,6 +210,14 @@ class TestArgSample:
     def test_none_args(self) -> None:
         assert tool_ledger.arg_sample({}) is None
 
+    def test_empty_string_marks_as_zero_chars(self) -> None:
+        """gr503460: an explicitly-sent empty string reads ``<0 chars>`` —
+        before, ``""`` was indistinguishable from an omitted key in the
+        ledger (payload keys already used the ``<N chars>`` marker)."""
+        got = json.loads(_sample({"kind": "memory", "id": "", "q": "x"}))
+        assert got["id"] == "<0 chars>"
+        assert got["q"] == "x"
+
     def test_bounded_total(self) -> None:
         args = {f"k{i}": "v" * 200 for i in range(50)}
         sample = _sample(args)

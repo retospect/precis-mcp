@@ -89,12 +89,48 @@ def test_get_without_ctx_binds_no_session(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["session"] is None
 
 
-def test_get_search_ctx_excluded_from_wire_schema() -> None:
+@pytest.mark.parametrize("verb", ["put", "edit", "delete", "tag", "link"])
+def test_write_verbs_bind_ctx_session_around_dispatch(
+    verb: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr504485: write verbs bind the injected MCP session the same way
+    get()/search() do, so ``tool_calls`` rows carry session_id + client
+    on the write path (30% of the ledger was NULL-attributed)."""
+    captured: dict[str, object | None] = {}
+
+    def fake_dispatch(v: str, payload: dict) -> str:
+        captured["session"] = serve_ledger._current_session.get()
+        return "ok"
+
+    monkeypatch.setattr(core, "_dispatch", fake_dispatch)
+    session = _FakeSession()
+    ctx = _fake_ctx(session)
+
+    if verb == "put":
+        result = core.put(kind="memory", text="x", ctx=ctx)
+    elif verb == "edit":
+        result = core.edit(kind="memory", id=1, mode="replace", text="x", ctx=ctx)
+    elif verb == "delete":
+        result = core.delete(kind="memory", id=1, ctx=ctx)
+    elif verb == "tag":
+        result = core.tag(kind="memory", id=1, add=["t"], ctx=ctx)
+    else:
+        result = core.link(kind="memory", id=1, target="memory:2", ctx=ctx)
+
+    assert result == "ok"
+    assert captured["session"] is session
+    assert serve_ledger._current_session.get() is None
+
+
+_ALL_CTX_VERBS = ("get", "search", "put", "edit", "delete", "tag", "link")
+
+
+def test_ctx_excluded_from_wire_schema() -> None:
     """``ctx`` is FastMCP's injected per-request Context — it must not
-    leak into the advertised ``inputSchema`` for either tool."""
+    leak into the advertised ``inputSchema`` of any tool."""
     from precis import server
 
-    for name in ("get", "search"):
+    for name in _ALL_CTX_VERBS:
         tool = server.mcp._tool_manager.get_tool(name)
         assert tool is not None, f"{name!r} tool missing from FastMCP manager"
         assert "ctx" not in tool.parameters.get("properties", {}), (
@@ -107,7 +143,7 @@ def test_ctx_excluded_from_cli_parameters() -> None:
     it isn't CLI-constructible and no CLI caller has an MCP session."""
     from precis.tools import get_tool_info
 
-    for name in ("get", "search"):
+    for name in _ALL_CTX_VERBS:
         info = get_tool_info(name)
         assert "ctx" not in info["parameters"]
 

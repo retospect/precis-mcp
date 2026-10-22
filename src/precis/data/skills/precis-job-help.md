@@ -545,6 +545,44 @@ CLI. Header line states the resolved filter + UTC cutoff; each row is
 matching`. No queryable surface exists for this table anywhere else
 in the agent surface (no Bash, no raw SQL) — this is it.
 
+## Is the external rate limiter pacing a provider?
+
+```python
+get(kind='job', id='/limits')
+# → one row per named provider (s2, openalex, unpaywall, arxiv,
+#   crossref, jlcpcb, ...): `provider tokens=<avail>/<cap>
+#   refill=<n>/s day=<used_today>/<daily_cap|->`
+
+get(kind='job', id='/limits?provider=openalex')   # pin one row
+get(kind='job', id='/limits?hosts=1')             # include host:<netloc> rows
+```
+
+Read-only view over `external_rate_limits` (migration 0121,
+`precis.utils.rate_limit`) — the cross-host outbound limiter fetchers
+like `fetch_oa` go through. `tokens` is the burst balance *right now*
+(refill applied, clamped to capacity), so ~0 means the next call waits;
+`day` is `used_today / daily_cap` (`-` = no daily quota lane). The
+`host:<netloc>` rows are the per-host pacing table safe_fetch seeds on
+demand — hidden unless `hosts=1` (or pin one with
+`provider=host:<netloc>`).
+
+## What changed since the last doctor tick?
+
+```python
+get(kind='job', id='/delta')         # since the last succeeded doctor_tick
+get(kind='job', id='/delta?since=24')          # or a window in hours
+get(kind='job', id='/delta?since=2026-10-22T06:00:00Z')  # or an ISO cutoff
+```
+
+One read that answers "what moved since the last doctor_tick job ran":
+`NEW ALERTS` / `REPEAT SIGHTINGS` / `PERSISTENT OPEN` (still open,
+nothing new — the baseline-noise candidates) / `NEW GRIPES` /
+`GRIPE COMMENTS`, each row naming the ref to drill into. The cutoff
+comes from the last *succeeded* `doctor_tick` job's `meta.started_at`
+(falls back to the latest finished tick, then to 8h ago). This is the
+doctor's gather entry point — the static `/rules` catalogue and
+unchanged threads don't need re-reading.
+
 ## Has a fix reached the fleet yet?
 
 ```python
