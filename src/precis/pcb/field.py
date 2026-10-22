@@ -1337,6 +1337,42 @@ def _legality_violations(
     return out
 
 
+def resolve_tilts(
+    energy_of: Callable[[np.ndarray], float],
+    ths: np.ndarray,
+    rot: np.ndarray,
+    *,
+    free_rot: np.ndarray,
+    th0: np.ndarray,
+    min_gain: float = ROT_TILT_MIN_GAIN,
+) -> tuple[np.ndarray, np.ndarray]:
+    """k=4 dominance (spec D5): a snapped θ off the 90° grid survives
+    only when its measured energy beats the same pose re-snapped to the
+    nearest 90° by more than ``min_gain``. Greedy, per part, in index
+    order. ``energy_of(ths)`` prices the pose with those θ (x, y held);
+    ``rot`` is degrees in [0, 360), ``ths`` the matching −radians. A
+    part at its seed θ (``th0``) is author or anneal intent, not a tilt,
+    and is left alone. The gain is measured at the pose the caller is
+    about to write: a tilt that earned it on a different x, y has to
+    earn it again (the repair lane re-runs this after its descent)."""
+    ths, rot = ths.copy(), rot.copy()
+    for k in np.flatnonzero(free_rot):
+        if abs(float(ths[k]) - float(th0[k])) <= 1e-6:
+            continue
+        if not 1e-6 < float(rot[k]) % 90.0 < 90.0 - 1e-6:
+            continue
+        e_tilt = energy_of(ths)
+        target = round(float(rot[k]) / 90.0) * 90.0 % 360.0
+        keep = ths[k]
+        ths[k] = -math.radians(target)
+        e_grid = energy_of(ths)
+        if e_tilt < e_grid - min_gain:
+            ths[k] = keep
+        else:
+            rot[k] = target
+    return ths, rot
+
+
 def polish_placement(
     engine: Any,
     *,
@@ -1551,25 +1587,15 @@ def polish_placement(
         return xs, ys, ths, rot
 
     def _resolve_tilts(xs, ys, ths, rot):
-        """k=4 dominance (spec D5): a snapped θ off the 90° grid survives
-        only when its measured final energy beats the same pose re-snapped
-        to the nearest 90° by more than ``ROT_TILT_MIN_GAIN``. Greedy,
-        per part, in place-order."""
-        ths, rot = ths.copy(), rot.copy()
-        for k in np.flatnonzero(lay.free_rot):
-            if abs(float(ths[k]) - float(board.th0[k])) <= 1e-6:
-                continue  # at its authored seed θ — author intent, not a tilt
-            if not 1e-6 < float(rot[k]) % 90.0 < 90.0 - 1e-6:
-                continue
-            e_tilt = final.value_grad(lay.pack_from(xs, ys, ths))[0]
-            target = round(float(rot[k]) / 90.0) * 90.0 % 360.0
-            keep = ths[k]
-            ths[k] = -math.radians(target)
-            e_grid = final.value_grad(lay.pack_from(xs, ys, ths))[0]
-            if e_tilt < e_grid - ROT_TILT_MIN_GAIN:
-                ths[k] = keep
-            else:
-                rot[k] = target
+        """:func:`resolve_tilts` at this pose's x, y, priced by the final
+        energy."""
+        ths, rot = resolve_tilts(
+            lambda t: float(final.value_grad(lay.pack_from(xs, ys, t))[0]),
+            ths,
+            rot,
+            free_rot=lay.free_rot,
+            th0=board.th0,
+        )
         return xs, ys, ths, rot
 
     def _wirelength(xs, ys, ths) -> float:
@@ -1761,26 +1787,42 @@ def polish_placement(
         xs, ys, ths, rot = _resolve_tilts(xs, ys, ths, rot)
         rep = energy(REPAIR_LAMBDA_T4, (t9, t10))
         free = np.flatnonzero(lay.free_xy)
-        w0 = np.concatenate([xs[free], ys[free]])
 
-        def rep_fg(w: _Z) -> tuple[float, _Z]:
-            xx, yy = xs.copy(), ys.copy()
-            xx[free] = w[: w.size // 2]
-            yy[free] = w[w.size // 2 :]
-            v, g = rep.value_grad(lay.pack_from(xx, yy, ths.copy()))
-            return v, g[:n_xy]
+        def _descend_xy(xs, ys, ths):
+            w0 = np.concatenate([xs[free], ys[free]])
 
-        w = minimize(
-            rep_fg,
-            w0,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=xy_bounds[:n_xy],
-            options={"maxiter": repair_iter},
-        ).x
-        xr, yr = xs.copy(), ys.copy()
-        xr[free] = w[: w.size // 2]
-        yr[free] = w[w.size // 2 :]
+            def rep_fg(w: _Z) -> tuple[float, _Z]:
+                xx, yy = xs.copy(), ys.copy()
+                xx[free] = w[: w.size // 2]
+                yy[free] = w[w.size // 2 :]
+                v, g = rep.value_grad(lay.pack_from(xx, yy, ths.copy()))
+                return v, g[:n_xy]
+
+            w = minimize(
+                rep_fg,
+                w0,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=xy_bounds[:n_xy],
+                options={"maxiter": repair_iter},
+            ).x
+            xr, yr = xs.copy(), ys.copy()
+            xr[free] = w[: w.size // 2]
+            yr[free] = w[w.size // 2 :]
+            return xr, yr
+
+        xr, yr = _descend_xy(xs, ys, ths)
+        # The tilts above were priced at the snapped, still-colliding
+        # pose, where turning a part off 90° buys back courtyard overlap
+        # the descent then removes anyway. Re-price them at the repaired
+        # pose: a tilt that no longer earns ROT_TILT_MIN_GAIN goes back
+        # to the 90° grid, and x, y re-descend once around the new θ
+        # (esp32c3 seed 4 wrote J1 15°, J2 195°, U1 285°, U2 330° here).
+        _xr, _yr, ths2, rot2 = _resolve_tilts(xr, yr, ths, rot)
+        if not np.array_equal(rot2, rot):
+            ths, rot = ths2, rot2
+            xr, yr = _descend_xy(xr, yr, ths)
+            _xr, _yr, ths, rot = _resolve_tilts(xr, yr, ths, rot)
         return _accept(xr, yr, ths, rot, "repaired")
 
     for do_xy, snap_deg in (

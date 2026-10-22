@@ -23,6 +23,7 @@ pin down (four real bugs a synthetic-graph unit test could not see).
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
 import math
 import random
@@ -2827,3 +2828,101 @@ def test_margin_table_risk_equals_the_full_scan_through_sets_pops_and_compaction
     assert sum(len(h) for h in table._heaps.values()) <= 4 * len(table) + 64 + 1
     with pytest.raises(TypeError):
         del table[next(iter(table))]
+
+
+# ── seed shelf spread is gated to grouped boards (gr503556) ───────────────
+
+
+def _seed_shelf_bottoms(ir) -> tuple[list[float], dict[float, float]]:
+    """Every distinct shelf bottom of a seeded IR (``y - r`` per part,
+    with ``r`` the same circumscribed radius ``seed_placement`` packs
+    to: courtyard bound, floored at the default 8 mm pitch's 1 mm), and
+    each shelf's tallest diameter. Only UNGROUPED instances count — a
+    pattern tile is restamped after the pack and an authored group sits
+    in its own column, so neither is a shelf member."""
+    import numpy as np
+
+    radii = np.maximum(
+        courtyard_bound_radius_mm(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        ),
+        max(COURTYARD_MIN_SEPARATION_MM / 2.0, 8.0 / 8.0),
+    )
+    tallest: dict[float, float] = {}
+    for i in range(ir.n_instances):
+        if int(ir.inst_group[i]) >= 0:
+            continue
+        bottom = round(float(ir.inst_y[i]) - float(radii[i]), 6)
+        tallest[bottom] = max(tallest.get(bottom, 0.0), 2.0 * float(radii[i]))
+    return sorted(tallest), tallest
+
+
+def test_seed_without_groups_is_the_touching_stack_from_the_min_corner():
+    """No authored group, plenty of spare height: the shelves are the
+    old touching stack from the outline's min corner, NOT spread over
+    the board. The spread (gr503556) re-rolls every seed's anneal start
+    and on the group-free esp32c3 reference left seed 4 with a net
+    unrouted, so it is gated to grouped boards only."""
+    from precis.pcb.cost import outline_bbox
+
+    ir = from_graph(_board(20, seed=3), stackup=LEGACY_V1_STACKUP)
+    ir.outline = [(0.0, 0.0), (30.0, 0.0), (30.0, 60.0), (0.0, 60.0)]
+    seed_placement(ir, random.Random(1))
+    assert ir.n_groups == 0
+    _ox0, oy0, _ox1, oy1 = outline_bbox(ir.outline)
+    bottoms, tallest = _seed_shelf_bottoms(ir)
+    assert len(bottoms) >= 2
+    # Spare height exists — the spread WOULD have moved these shelves.
+    stack_top = bottoms[-1] + tallest[bottoms[-1]]
+    assert stack_top < (oy1 - oy0) / 2.0
+    # Anchored at the min corner: edge margin + seed epsilon.
+    assert math.isclose(bottoms[0], oy0 + 0.5 + 1e-3, abs_tol=1e-5)
+    # Touching: each shelf starts where the one below ends (+ epsilon).
+    for lo, hi in itertools.pairwise(bottoms):
+        assert math.isclose(hi, lo + tallest[lo] + 1e-3, abs_tol=1e-5)
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_seed_with_authored_group_spreads_shelves_over_the_board(seed):
+    """The gr503556 case: the nano fixture (one authored rigid header
+    group + pattern tiles) seeds with its shelves spread over the
+    outline — the lowest shelf sits off the bottom edge — and no
+    horizontal fifth of the board holds more than half the part area
+    (the old bottom-aligned pack put ~85 % in one band)."""
+    import numpy as np
+
+    from precis.pcb.cost import outline_bbox
+
+    graph, outline, holes = _nano_fixture_graph()
+    ir = pcb_session.build_ir(graph, outline=outline, mounting_holes=holes)
+    assert any(ir.group_pattern[g] is None for g in range(ir.n_groups))
+    seed_placement(ir, random.Random(seed))
+    assert ir.outline is not None
+    _ox0, oy0, _ox1, oy1 = outline_bbox(ir.outline)
+    bottoms, _tallest = _seed_shelf_bottoms(ir)
+    # Spread: a leftover gap sits under the first shelf (the touching
+    # stack would put it at oy0 + 0.501).
+    assert bottoms[0] > oy0 + 0.5 + 1.0, bottoms
+    ys = np.asarray(ir.inst_y)
+    areas = (
+        np.pi
+        * courtyard_bound_radius_mm(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        )
+        ** 2
+    )
+    band_h = (oy1 - oy0) / 5.0
+    shares = [
+        float(areas[((ys - oy0) // band_h).clip(0, 4) == b].sum() / areas.sum())
+        for b in range(5)
+    ]
+    print(f"\nseed {seed} band area shares: {[round(s, 3) for s in shares]}")
+    assert max(shares) <= 0.5, shares

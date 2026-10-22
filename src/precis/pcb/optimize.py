@@ -1310,7 +1310,12 @@ def seed_placement(
     courtyards block TRANSLATE — and starved the y=10–50 band entirely.
     When the parts don't fit the region the gap is zero and the pack is
     exactly the old touching stack, so the change never makes a
-    too-full board worse. And **rigid groups pack in their own
+    too-full board worse. The spread applies ONLY when authored rigid
+    groups carved a corner column (the gr503556 trigger); a board
+    without one keeps the old touching stack from the outline's min
+    corner, because moving every seed's start re-rolled the esp32c3
+    reference anneal and left seed 4 with a net unrouted. And **rigid
+    groups pack in their own
     region**: an authored group's members sit on the shelf their group's
     own unit would have taken only when there is no outline; otherwise
     the group units get a column on the outline's far edge, so
@@ -1646,6 +1651,14 @@ def seed_placement(
     # and abutting courtyards block TRANSLATE). A zero-or-negative
     # leftover collapses to the old touching stack, so an over-full
     # region degrades to exactly the old pack.
+    #
+    # Gated to the case gr503556 fixed: the spread runs only when
+    # authored rigid groups carved a corner column (``group_units`` is
+    # non-empty only on that branch). Every other board keeps the old
+    # touching stack anchored at the outline's min corner — the spread
+    # moves every seed's anneal start, and on the esp32c3 reference
+    # (no authored groups) it left seed 4 with SCL J1.P4–R2.1 unrouted.
+    spread_shelves = bool(group_units)
     shelf_h = [
         max((2.0 * unit_radius[u] for u in shelf), default=0.0) + _SEED_EPSILON_MM
         for shelf in shelves
@@ -1655,7 +1668,7 @@ def seed_placement(
         idx = [k for k, r_i in enumerate(shelf_rect) if r_i == ri]
         gap = (
             max(0.0, (ry1 - ry0) - sum(shelf_h[k] for k in idx)) / (len(idx) + 1)
-            if ry1 is not None and idx
+            if spread_shelves and ry1 is not None and idx
             else 0.0
         )
         sy = ry0 + gap

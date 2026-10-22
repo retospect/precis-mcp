@@ -933,3 +933,56 @@ def test_supply_tree_p2u_keeps_u1_near_the_hub() -> None:
     hx, hy = float(ir.inst_x[hub]), float(ir.inst_y[hub])
     assert float(ir.inst_x[j_in]) < ux < hx
     assert abs(uy - hy) < 5.0
+
+
+# ── tilt resolution: an off-90° θ must earn its keep at the written pose ──
+
+
+def _tilt_state(rot_deg: list[float], seed_deg: list[float]):
+    rot = np.array(rot_deg, dtype=float)
+    ths = -np.radians(rot)
+    th0 = -np.radians(np.array(seed_deg, dtype=float))
+    return ths, rot, th0
+
+
+def test_a_part_left_at_15_deg_with_no_gain_snaps_back_to_the_90_grid():
+    """A polish pose with one part at 15° and nothing earned by the tilt
+    (a flat energy) writes 0°, not 15°."""
+    ths, rot, th0 = _tilt_state([15.0, 90.0], [0.0, 90.0])
+    out_ths, out_rot = F.resolve_tilts(
+        lambda _t: 1.0, ths, rot, free_rot=np.array([True, True]), th0=th0
+    )
+    assert out_rot.tolist() == [0.0, 90.0]
+    assert out_ths[0] == pytest.approx(0.0)
+
+
+def test_a_tilt_short_of_the_min_gain_snaps_and_one_past_it_stays():
+    """The bar is ROT_TILT_MIN_GAIN, measured at the pose being written:
+    a 15° part whose tilt saves 0.9x the bar goes to 0°, 1.1x stays."""
+
+    def priced(saving: float):
+        def energy_of(t: np.ndarray) -> float:
+            return 100.0 - (saving if abs(t[0] + np.radians(15.0)) < 1e-9 else 0.0)
+
+        return energy_of
+
+    for frac, expect in ((0.9, 0.0), (1.1, 15.0)):
+        ths, rot, th0 = _tilt_state([15.0], [0.0])
+        _ths, out_rot = F.resolve_tilts(
+            priced(frac * F.ROT_TILT_MIN_GAIN),
+            ths,
+            rot,
+            free_rot=np.array([True]),
+            th0=th0,
+        )
+        assert out_rot.tolist() == [expect], frac
+
+
+def test_a_part_at_its_seed_theta_or_locked_is_never_resnapped():
+    """15° at the part's own seed θ is intent, not a polish tilt; a
+    rotation-locked part is not the polish's to move."""
+    ths, rot, th0 = _tilt_state([15.0, 30.0], [15.0, 0.0])
+    _ths, out_rot = F.resolve_tilts(
+        lambda _t: 1.0, ths, rot, free_rot=np.array([True, False]), th0=th0
+    )
+    assert out_rot.tolist() == [15.0, 30.0]
