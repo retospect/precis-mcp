@@ -72,6 +72,15 @@ def test_render_mermaid_shape() -> None:
     assert "| `refs` | 3 |" in out
 
 
+def test_render_mermaid_names_job_and_alert_queues() -> None:
+    # gr506051: ops agents grep the schema doc for the queues — the
+    # banner must name them and point at ``refs.kind``.
+    out = render_mermaid(*parse_tsv(_TSV))
+    assert "jobs" in out and "alerts" in out
+    assert "kind='job'" in out and "kind='alert'" in out
+    assert "refs.kind" in out
+
+
 def test_render_mermaid_no_columns_is_empty_table_section() -> None:
     # Defensive: empty input still renders a well-formed (if empty) doc.
     out = render_mermaid([], [], snapshot="empty")

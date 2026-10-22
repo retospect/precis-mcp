@@ -132,6 +132,14 @@ def render_mermaid(
         f"> Source: {snapshot or 'unknown'} · "
         f"{len(tables)} base tables · {len(fks)} foreign keys."
     )
+    lines.append(">")
+    lines.append(
+        "> **No `jobs`/`alerts` tables.** The ops queues are `refs` "
+        "rows discriminated by `refs.kind` — jobs are `refs` with "
+        "`kind='job'`, alerts with `kind='alert'` — read them through "
+        "the `job`/`alert` MCP kinds (`get`/`search`) or "
+        "`WHERE kind = 'job'|'alert'`."
+    )
     lines.append("")
     lines.append("```mermaid")
     lines.append("erDiagram")
