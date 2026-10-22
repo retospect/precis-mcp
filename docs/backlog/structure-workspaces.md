@@ -110,6 +110,20 @@ Core modules import under short stable aliases — `pg` for `precis_geom`,
 `pga` for `precis_geom.assembly` — so examples, traces and skill text
 spend no tokens on dotted paths (`pga.tile(...)` in a frame line).
 
+**Build/search convention** (Reto, 2026-10-22). A script that searches
+splits into `build(recipe)` — pure, deterministic — and `search()`,
+which edits the recipe, builds, evaluates, accepts or rejects and
+returns the best recipe. `recipe.json` is the full recipe (every input
+`build` needs: dimensions, ports, features, material/process refs,
+units), stored with the run beside the code at `script_sha`, the built
+blocks and the search summary (seed, iterations, cost curve, best
+score, parent recipe hash — recipes form a lineage chain). `uv run
+main.py` builds from `recipe.json`; `uv run main.py search` warm-starts
+from it by default (`--fresh` for the base design). Rebuild, import
+re-check, `regenerate` and the frozen-unit cache call `build(recipe)`,
+never `search`; a search reproduces with its seed within one toolkit
+version only. Worked example: se-flow-kernel slice 4b `chamber-anneal`.
+
 Loop latency target: < ~10 s for small structures. Budget: claim tick ≤ 2 s
 (the `job_claude_docker` lane polls on its own interval), warm venv 0–1 s
 (a pre-built venv per lock sha, §Packaging), build 1–5 s, import 1–2 s.
@@ -454,9 +468,12 @@ atomic case of one rule; the same rule holds for macro modules.
   `pbc` structure ref.
 - **Module = its own workspace/design.** A module is built by its own
   workspace (an agent module or a core example, §Packaging), frozen
-  at a run, and catalogued as a block in the library design with
+  at a run, and catalogued as blocks in the library design with
   `generated = {generator: 'unit', fn, version, params, trace: {run_job,
-  root}}` — macro blocks exactly as atomic units are.
+  root}}` — macro blocks exactly as atomic units are. One module run
+  may emit several blocks; the frozen key covers the **set** (one
+  `frozen_units` row per run with the block names, `blocks.unit`
+  returns the set, and a consumer places members by name).
 - **Fetch.** `blocks.unit(fn, params, *, method=None, cell=None)` on
   the read MCP (the existing `blocks.relaxed` is the relaxed atomic
   spelling of it): a hit returns the frozen geometry and its trace
@@ -532,7 +549,12 @@ trace("name"):` is optional sugar that names a user frame; nothing
 requires it. build123d scripts get frames only from the conversion
 call (OCP internals are untraced) — a known limit, stated in the skill.
 
-**Storage.** One trace per run, stored once as a chunk on the run job
+**Storage.** One trace per run — the **final build's** trace, i.e. the
+creator frames of the objects the run stores (a few KB), plus the
+search summary; the traces of the intermediate builds a `search` makes
+stay in-container as in-memory pointers and never reach Postgres, so
+provenance survives teardown at constant size. Module traces are
+linked (`unit` frame), not copied. Stored once as a chunk on the run job
 (≤ 64 KB typical; hard cap 20k frames — past 64 same-site childless
 siblings they run-length collapse into one frame with an `occ` range,
 and past the cap the importer still imports and emits

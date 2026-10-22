@@ -374,16 +374,46 @@ commit carrying this line; `git log` has the sha.*
        conveniences; the contract is `design`/`Space` + `evaluate`.
    - **Examples** (`examples/workspaces/`, CI goldens per
      structure-workspaces slice 7, run without a container):
-     - `chamber-anneal/main.py`: the hex chamber; params = the hole set
-       (`(x, y, d, depth)` rows, `user` holes pinned) with constraints
-       spacing/depth inside the process `min_wall` (read through the
-       read MCP, staged into `params.json`); rejects `hard_ok == False`
-       before reading the cost; minimises the script-side objective
-       `cost = −w_break·f + w_res·R/R_ref + w_even·(1 − evenness) + w_holes·n/n_ref`
-       (the `w_holes` term is the script's, not the toolkit's); the best
-       chamber is emitted with its holes as cad `body add` cylinders,
-       the four measures `soft` with the weights in meta, plus the hard
-       `resistance-ratio ≤ 1.2`.
+     - `chamber-anneal/main.py`: the hex chamber, written as the
+       workspace flow every optimising script follows (Reto,
+       2026-10-22; structure-workspaces §The loop):
+       - `build(recipe)` — pure, deterministic; `search()` — the
+         annealer: edit recipe → build → evaluate → accept/reject,
+         returns the best recipe. Two functions, one file.
+       - `recipe.json` is the **full** recipe: every input `build`
+         needs (chamber dimensions, ports, the hole set as `(x, y, d,
+         depth)` rows with `user` holes pinned, material/process refs,
+         units) — not just the hole list; `build(recipe.json)` needs
+         nothing else. It is stored with the run beside the code at
+         `script_sha`, the built blocks and the search summary (seed,
+         iterations, cost curve, best score, starting recipe hash).
+       - entry points: `uv run main.py` builds from `recipe.json`;
+         `uv run main.py search` **warm-starts from the existing
+         `recipe.json` by default** (Reto), `--fresh` starts from the
+         base design. A warm start begins at a lower temperature (a
+         reheat schedule, `T0_warm = T0 · reheat`, default 0.1) so it
+         does not scramble the converged state; it writes the new
+         `recipe.json`, then builds. The summary records the parent
+         recipe hash, so recipes form a lineage chain.
+       - rebuild, import re-check, `regenerate` and the frozen-unit
+         cache all call `build(recipe)`, never `search`. Re-running
+         `search` with the same seed reproduces within one toolkit
+         version only (kernel and optimiser versions are in the
+         summary).
+       - the search's constraints (spacing/depth inside the process
+         `min_wall`, read through the read MCP and staged into the
+         recipe) reject before `build`; `hard_ok == False` rejects
+         before the cost is read; the objective is the script's:
+         `cost = −w_break·f + w_res·R/R_ref + w_even·(1 − evenness) + w_holes·n/n_ref`
+         (the `w_holes` term is the script's, not the toolkit's); the
+         best chamber is emitted with its holes as cad `body add`
+         cylinders, the four measures `soft` with the weights in meta,
+         plus the hard `resistance-ratio ≤ 1.2`.
+       - traces during `search` stay in-container (in-memory pointers,
+         never Postgres); Postgres stores only the final build's trace
+         (the stored objects' creator frames, a few KB) plus the search
+         summary, so provenance survives teardown
+         (structure-workspaces §Construction traces, Storage).
      - `manifold-split/main.py`: a thin manifold splitting one inlet
        evenly to `N` outlets; params = `N` channel widths (continuous,
        bounded below by `min_wall`) and the split position; objective =
@@ -447,9 +477,16 @@ commit carrying this line; `git log` has the sha.*
    - **Checkpoint/resume.** A search interrupted after `k` evaluations
      and resumed reaches the same best state as an uninterrupted run
      with the same seed.
-   - **Trace.** The run's trace carries the `search` section with every
-     evaluation and its `accepted` flag; `view='trace'` renders the best
-     iteration with its measures.
+   - **Trace.** The run's trace carries the `search` section (scalars
+     per evaluation: iteration, cost, measures, `accepted`; never a
+     per-evaluation construction trace) and the final build's creator
+     frames only; `view='trace'` renders the best iteration with its
+     measures.
+   - **Recipe round trip.** `uv run main.py` on the stored `recipe.json`
+     rebuilds the stored blocks byte-identical; `search` without
+     `--fresh` starts from that recipe at the reheat temperature and
+     its summary names the parent recipe hash; `--fresh` starts from
+     the base design with no parent.
 
 ## Decisions (Reto 2026-10-20: "yes")
 
