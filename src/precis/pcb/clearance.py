@@ -46,6 +46,8 @@ from shapely import STRtree, box
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
+from precis.pcb.pose import rotate_cw as _rotate_cw
+
 Coord = tuple[float, float]
 
 #: Angular slack when deciding whether a direction lies inside an arc's
@@ -370,15 +372,26 @@ def body_of(item: dict[str, Any]) -> Body | None:
             return None
         if shape == "circle" or (shape == "obround" and w == h):
             return Body(Point(x, y), (), w / 2.0)
+        # ``oblique_rot`` is the pad's recorded total rotation (instance +
+        # pad, CW-from-north degrees — ``padplace.place_footprint_pads``
+        # writes it when a placed land no longer lands axis-aligned). The
+        # unrotated w×h box is NOT the pad: its corners reach past the true
+        # rotated outline (a rotated exposed pad firing a phantom
+        # pad-vs-pad clearance hit against its own part's pins was the
+        # seed-2 nano refusal) while its edges under-cover the true land.
+        rot = float(item.get("oblique_rot") or 0.0)
+
+        def _rp(px: float, py: float) -> tuple[float, float]:
+            rx, ry = _rotate_cw(px, py, rot)
+            return x + rx, y + ry
+
         if shape == "rect":
             hw, hh = w / 2.0, h / 2.0
             return Body(
                 Polygon(
                     [
-                        (x - hw, y - hh),
-                        (x + hw, y - hh),
-                        (x + hw, y + hh),
-                        (x - hw, y + hh),
+                        _rp(px, py)
+                        for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
                     ]
                 ),
                 (),
@@ -387,9 +400,13 @@ def body_of(item: dict[str, Any]) -> Body | None:
         if shape == "obround":
             if w > h:
                 half = (w - h) / 2.0
-                return Body(LineString([(x - half, y), (x + half, y)]), (), h / 2.0)
-            half = (h - w) / 2.0
-            return Body(LineString([(x, y - half), (x, y + half)]), (), w / 2.0)
+                ends = [(-half, 0.0), (half, 0.0)]
+                r = h / 2.0
+            else:
+                half = (h - w) / 2.0
+                ends = [(0.0, -half), (0.0, half)]
+                r = w / 2.0
+            return Body(LineString([_rp(px, py) for px, py in ends]), (), r)
         raise ValueError(f"unknown pad shape {shape!r}")
     return None
 

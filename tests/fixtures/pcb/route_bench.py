@@ -97,6 +97,12 @@ class BenchRow:
     #: ``rule:severity:finding_key`` per finding, sorted — what "DRC
     #: identical by finding_key" (slice 2's exit) is diffed on.
     finding_keys: tuple[str, ...] = ()
+    #: Annealer-only comparison (``field_polish=False``, Reto 2026-10-21:
+    #: the annealer stays only as this column until the field path routes
+    #: every bench board) — ``"routed/nets"`` for the same board's place +
+    #: route run without the polish; ``None`` on boards with no placement
+    #: step (fixed-pose replays route the same board either way).
+    anneal: str | None = None
 
     @property
     def errors(self) -> int:
@@ -119,6 +125,7 @@ class BenchRow:
             tuple(sorted(self.warns_by_rule.items())),
             self.failed_nets,
             self.finding_keys,
+            self.anneal,
         )
 
 
@@ -127,17 +134,19 @@ def _rules(counts: dict[str, int]) -> str:
 
 
 def render_table(rows: Iterable[BenchRow]) -> str:
-    """The slice-0 table: one row per board, DRC broken down by rule."""
+    """The slice-0 table: one row per board, DRC broken down by rule,
+    plus the annealer-only ``anneal`` comparison column."""
     lines = [
-        "| board | routed/nets | failed | conns | vias | wire mm | wall s "
-        "| s/net | s/conn | DRC s | DRC errors | DRC warns |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| board | routed/nets | anneal | failed | conns | vias | wire mm "
+        "| wall s | s/net | s/conn | DRC s | DRC errors | DRC warns |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         per_net = r.wall_s / r.nets if r.nets else 0.0
         per_conn = r.wall_s / r.connections if r.connections else 0.0
         lines.append(
-            f"| {r.board} | {r.routed}/{r.nets} | {r.failed} | {r.connections} "
+            f"| {r.board} | {r.routed}/{r.nets} | {r.anneal or '—'} "
+            f"| {r.failed} | {r.connections} "
             f"| {r.vias} | {r.length_mm:.1f} | {r.wall_s:.1f} | {per_net:.2f} "
             f"| {per_conn:.3f} | {r.drc_s:.2f} | {r.errors}: {_rules(r.errors_by_rule)} "
             f"| {r.warns}: {_rules(r.warns_by_rule)} |"
@@ -256,20 +265,25 @@ def _measure_job_board(
     )
 
 
-def bench_nano(store: Store, seed: int = 1) -> BenchRow:
+def bench_nano(store: Store, seed: int = 1, *, field_polish: bool = True) -> BenchRow:
     for lcsc, fp in nano_fx.CATALOG_FOOTPRINTS.items():
         store.part_footprint_put(lcsc, fp)
     pcb = PcbHandler(hub=Hub(store=store))
     slug = "nano" if seed == 1 else f"nano-s{seed}"
+    slug += "" if field_polish else "-anneal"
     assert "created" in pcb.put(id=slug, args=dict(nano_fx.DESIGN)).body
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
-    assert "enqueued" in pcb.put(id=slug, args={"op": "place", "seed": seed}).body
+    place_args: dict[str, Any] = {"op": "place", "seed": seed}
+    route_args: dict[str, Any] = {"seed": seed}
+    if not field_polish:
+        place_args["field_polish"] = route_args["field_polish"] = False
+    assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_latest_job(store, ref.id)
-    return _measure_job_board(store, pcb, slug, {"seed": seed})
+    return _measure_job_board(store, pcb, slug, route_args)
 
 
-def bench_esp32c3(store: Store, seed: int) -> BenchRow:
+def bench_esp32c3(store: Store, seed: int, *, field_polish: bool = True) -> BenchRow:
     with ESP32C3_FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = copy.deepcopy(json.load(fh))
     m = _ESP32C3_BOARD_MM
@@ -279,7 +293,7 @@ def bench_esp32c3(store: Store, seed: int) -> BenchRow:
             "geom": {"path": [[0, 0], [m, 0], [m, m], [0, m], [0, 0]]},
         }
     ]
-    slug = f"esp32c3-s{seed}"
+    slug = f"esp32c3-s{seed}" if field_polish else f"esp32c3-s{seed}-anneal"
     pcb = PcbHandler(hub=Hub(store=store))
     assert "created" in pcb.put(id=slug, args=design).body
     ref = store.get_ref(kind="pcb", id=slug)
@@ -292,9 +306,13 @@ def bench_esp32c3(store: Store, seed: int) -> BenchRow:
         )
     pcb.put(id=slug, args={"op": "plane_net", "layer": "F.Cu", "net": "GND"})
     pcb.put(id=slug, args={"op": "plane_net", "layer": "B.Cu", "net": "VCC3V3"})
-    assert "enqueued" in pcb.put(id=slug, args={"op": "place", "seed": seed}).body
+    place_args: dict[str, Any] = {"op": "place", "seed": seed}
+    route_args: dict[str, Any] = {"seed": seed}
+    if not field_polish:
+        place_args["field_polish"] = route_args["field_polish"] = False
+    assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_latest_job(store, ref.id)
-    return _measure_job_board(store, pcb, slug, {"seed": seed})
+    return _measure_job_board(store, pcb, slug, route_args)
 
 
 def bench_taz15_blank(store: Store, snapshot: Path = TAZ15_BLANK_SNAPSHOT) -> BenchRow:

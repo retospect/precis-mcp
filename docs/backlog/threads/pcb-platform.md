@@ -86,7 +86,28 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   in one smooth space"): one smooth cost over poses, labels, track
   vertices and vias (money out), basin hopping with discrete topology
   moves, insertion that shoves by descent; consumes vector-router slices
-  1–2, slot beside slices 3–5; ten open questions for Reto in the file.
+  1–2, slot beside slices 3–5. Slices 0–2 landed in `field.py` (T1/T4,
+  SAT T4 + T5/T6 + JLCPCB pair table, T9/T10 wells with θ as a real
+  variable). 2026-10-21: Reto switched the default placer to it —
+  `field_polish` on by default (placer-a); the annealer lives on as
+  the bench's `anneal` column; slice 2 (θ, wells) is placer-b.
+  placer-c: ABNORMAL-stalled stages retry θ-pinned (gr503452) and the
+  gate is legality + field energy, anneal `total()` report-only
+  (gr503458) — polish applies on sanity free-bottom and p2u.
+  placer-d+e: seed spreads shelves over the outline + rigid groups get
+  a far-edge strip (gr503556); bin-density spread term (normalized by
+  total part area after it out-weighed p2u's supply tree); bounded
+  descent + snap clamp + partial revert (gr503640); mounting holes are
+  T4 fixed obstacles on both sides (gr503640 fix 2). Bench: placer-e.
+  placer-f: written rotations are grid values in [0,360) — seed-θ
+  fallback, k=4 dominant + ROT_TILT_MIN_GAIN tilt gate, wirelength
+  never-worse accept gate (gr503694 + the container-only sanity
+  bottom-header divergence). Next: slice 3 labels as variables (T8).
+  placer-i: gr503556 seed cover closed — groups take a top-anchored
+  corner column sized to their rotated bbox (member axis along the
+  board edge), parts shelf-pack the L around it; nano bands max
+  34.5 % (was 59). `_signed` batched through shapely ufuncs:
+  8-seed place+route 27:48 → 20:02.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
   cross-probing, shared zoom/pan module with se. **Spec slices 1–3

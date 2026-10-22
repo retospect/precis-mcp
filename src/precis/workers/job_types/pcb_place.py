@@ -58,6 +58,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "snap": {"type": "boolean"},
         "groups": {"type": "boolean"},
         "force": {"type": "boolean"},
+        # Annealer-only run: the field polish (OptimizeConfig.field_polish)
+        # is the default placer; False opts out — the route bench's
+        # `anneal` comparison column runs this way.
+        "field_polish": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -238,6 +242,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         measures=measures,
         preferred_snap=snap,
         support_groups=groups,
+        # Default follows OptimizeConfig's (field polish on); the param
+        # only ever turns it off for an annealer-only comparison run.
+        field_polish=bool(params.get("field_polish", True)),
     )
     # Pre-route DRC gate, measured TWICE: on the stored placement before
     # the anneal touches `ir`, and on the annealed one before anything is

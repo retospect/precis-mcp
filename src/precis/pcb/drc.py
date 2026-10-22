@@ -149,6 +149,7 @@ from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
+from precis.pcb.pose import rotate_cw as _rotate_cw
 from precis.pcb.profiles import ProfileRules
 from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
 from precis.pcb.rules import (
@@ -691,10 +692,27 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
             return None
         if shape == "circle":
             return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
+        # ``oblique_rot`` (instance + pad rotation, CW-from-north degrees —
+        # :func:`precis.pcb.padplace.place_footprint_pads`'s record on a pad
+        # it could not keep axis-aligned) is part of the shape, not metadata:
+        # read it or the pad is measured as its unrotated w×h box, which is
+        # both a false hit where the true land is narrower (a rotated
+        # exposed pad's corner poking into its neighbour's land) and a
+        # false miss where it is wider. The ring-geometry half already read
+        # it (:func:`_pad_boundary_edges`); the clearance half dropped it.
+        rot = float(item.get("oblique_rot") or 0.0)
+
+        def _rot(px: float, py: float) -> tuple[float, float]:
+            rx, ry = _rotate_cw(px, py, rot)
+            return x + rx, y + ry
+
         if shape == "rect":
             hw, hh = w / 2.0, h / 2.0
             return Polygon(
-                [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
+                [
+                    _rot(px, py)
+                    for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+                ]
             )
         if shape == "obround":
             # A capsule -- the same "buffer a segment" construction a track
@@ -706,10 +724,11 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
                 return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
             if w > h:
                 half_len, r = (w - h) / 2.0, h / 2.0
-                line = LineString([(x - half_len, y), (x + half_len, y)])
+                ends = [(-half_len, 0.0), (half_len, 0.0)]
             else:
                 half_len, r = (h - w) / 2.0, w / 2.0
-                line = LineString([(x, y - half_len), (x, y + half_len)])
+                ends = [(0.0, -half_len), (0.0, half_len)]
+            line = LineString([_rot(px, py) for px, py in ends])
             return line.buffer(r, quad_segs=_BUFFER_QUAD_SEGS)
         raise ValueError(f"unknown pad shape {shape!r}")
     return None

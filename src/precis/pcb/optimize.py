@@ -776,15 +776,18 @@ class OptimizeConfig:
     #: dense board). ``False`` (the default) is bit-for-bit the run the
     #: anneal would otherwise produce.
     support_groups: bool = False
-    #: Opt-in post-anneal placement polish
+    #: Post-anneal placement polish
     #: (:func:`precis.pcb.field.polish_placement`, docs/backlog/
-    #: pcb-unified-place-route.md slice 1): a gradient descent on x, y, θ
-    #: over connectivity pull, courtyard clearance, board edge and
-    #: decoupling rubber bands. Applied only if the energy drops, every move
-    #: is legal and :meth:`OptimizeEngine.total` does not rise. ``False``
-    #: (the default) is bit-for-bit the run without it; the default flips
-    #: only after the nano 8-seed and ewod benches are measured not worse.
-    field_polish: bool = False
+    #: pcb-unified-place-route.md slices 1–2): a gradient descent on
+    #: x, y, θ over connectivity pull, courtyard clearance, board edge,
+    #: decoupling rubber bands, the supply tree and the raster/rotation
+    #: wells. Applied only if the energy drops and every move is legal;
+    #: :meth:`OptimizeEngine.total` is reported as a comparison value,
+    #: not the accept gate (Reto 2026-10-21). On by
+    #: default (Reto 2026-10-21: "the placer too, we switch to the new
+    #: kind and dogfood it"); the annealer-only run stays reachable as
+    #: ``field_polish=False`` for the bench's comparison column.
+    field_polish: bool = True
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -1176,7 +1179,13 @@ def _hole_world_xy(
 
 
 def _hole_blocking_slot(
-    ir: PcbIR, x: float, y: float, r: float, inst: int | None = None
+    ir: PcbIR,
+    x: float,
+    y: float,
+    r: float,
+    inst: int | None = None,
+    *,
+    edge: str = "right",
 ) -> float | None:
     """The right-hand edge (``hole.x + keepout``) of the first mounting
     hole whose keep-out a part of radius ``r`` centred at ``(x, y)`` would
@@ -1190,6 +1199,12 @@ def _hole_blocking_slot(
     where the same over-approximation would reject legal placements (the
     mistake ``_placement_is_legal`` made about board sides until
     2026-09-29 — see its docstring).
+
+    ``edge="right"`` (the default, what the shelf walk needs) returns
+    the worst-case RIGHT-hand edge ``hole.x + keepout + r`` over the
+    blocking holes; ``edge="left"`` returns the left-hand mirror
+    ``hole.x - keepout - r`` — the bound a part sliding left must stay
+    under (the far-edge group column slides left, not right).
     """
     worst: float | None = None
     for hole_idx in range(len(ir.mounting_holes)):
@@ -1200,10 +1215,48 @@ def _hole_blocking_slot(
         sep = r + _hole_keepout_radius_mm(hole)
         if (x - hx) ** 2 + (y - hy) ** 2 >= sep * sep:
             continue
-        edge = hx + _hole_keepout_radius_mm(hole) + r
-        if worst is None or edge > worst:
-            worst = edge
+        if edge == "right":
+            bound = hx + _hole_keepout_radius_mm(hole) + r
+            if worst is None or bound > worst:
+                worst = bound
+        else:
+            bound = hx - _hole_keepout_radius_mm(hole) - r
+            if worst is None or bound < worst:
+                worst = bound
     return worst
+
+
+def _group_rotated_bbox(
+    ir: PcbIR,
+    radii: np.ndarray,
+    members: list[int],
+    local_cx: float,
+    local_cy: float,
+    arot: float,
+) -> tuple[float, float, float, float]:
+    """``(lo_x, hi_x, lo_y, hi_y)`` member-CIRCLE extents of an authored
+    group at body rotation ``arot``, in the group's centroid-relative
+    frame — each member's authored ``group_offset`` rotated about the
+    group centroid plus/minus that member's own keep-out radius. The
+    seed sizes the far-edge column from this (not the circumscribed
+    circle, which is rotation-blind and reserved a 53 mm strip for a
+    38 mm-wide assembly on nano)."""
+    xs: list[tuple[float, float]] = []
+    ys: list[tuple[float, float]] = []
+    for m in members:
+        dx = float(ir.inst_group_offset_dx[m])
+        dy = float(ir.inst_group_offset_dy[m])
+        dx = 0.0 if math.isnan(dx) else dx
+        dy = 0.0 if math.isnan(dy) else dy
+        rx, ry = rotate_offset(dx - local_cx, dy - local_cy, arot)
+        xs.append((rx - float(radii[m]), rx + float(radii[m])))
+        ys.append((ry - float(radii[m]), ry + float(radii[m])))
+    return (
+        min(lo for lo, _hi in xs),
+        max(hi for _lo, hi in xs),
+        min(lo for lo, _hi in ys),
+        max(hi for _lo, hi in ys),
+    )
 
 
 def seed_placement(
@@ -1218,7 +1271,7 @@ def seed_placement(
     **shelf packing by each part's own size** — clusters are laid out in
     order (biggest cluster first, so adjacency survives), each instance
     taking exactly the room its land pattern needs, wrapping to a new
-    shelf at ``row_width``. Adjacency-aware, unlike a uniform random
+    shelf at the region's edge. Adjacency-aware, unlike a uniform random
     scatter: instances that share nets start out near each other, which
     is what makes the SA refiner's job tractable.
 
@@ -1237,7 +1290,35 @@ def seed_placement(
     The packing is legal by construction under
     :meth:`OptimizeEngine._placement_is_legal`: within a shelf, adjacent
     centres are exactly ``r_i + r_j`` apart, and successive shelves are
-    separated by the taller shelf's full height.
+    separated by at least the taller shelf's full height.
+
+    **Shelves spread over the outline's usable height** (2026-10-22,
+    gr503556): the leftover vertical space after the touching stack is
+    split into equal gaps between shelves, so the seed covers the board
+    instead of piling on the bottom edge. The old bottom-aligned pack
+    concentrated ~85 % of nano's parts into one band the anneal could
+    never spread — SWAP only trades occupied slots and abutting
+    courtyards block TRANSLATE — and starved the y=10–50 band entirely.
+    When the parts don't fit the region the gap is zero and the pack is
+    exactly the old touching stack, so the change never makes a
+    too-full board worse. And **rigid groups pack in their own
+    region**: an authored group's members sit on the shelf their group's
+    own unit would have taken only when there is no outline; otherwise
+    the group units get a column on the outline's far edge, so
+    a tall rigid assembly (nano's J_N1/J_N2 pair: ~52 mm) no longer
+    inflates the shelf its small neighbours share. The column is
+    sized to each group's ROTATED bbox — the seed first turns every
+    group to the quarter-turn that minimises its x-extent, which also
+    lands the member-spread axis along the board edge: a rigid row
+    seeded ACROSS the edge (the pair, horizontal) pins every member's
+    centre to one line and a single horizontal band ends up holding
+    ~half the part area — the 59 % band hoard the centred strip put
+    into seed 1/2 before 2026-10-22. Groups stack down from the
+    column's top edge, so the space beside-and-under them is one wide
+    rect the part shelves pack first — a centred lone group used to
+    strand that area AND still sit on the board midline, the one spot
+    where a symmetric ±7.62 mm member pair falls inside a single
+    16 mm band instead of straddling a boundary.
 
     **Corner-anchored on purpose — centering happens AFTER the anneal.**
     A centred seed was tried (2026-08-31) and reverted the same day: the
@@ -1403,13 +1484,65 @@ def seed_placement(
     total_area = float(sum((2.0 * unit_radius[u]) ** 2 for u in order_units))
     row_width = max(2.0 * max_unit_radius, math.sqrt(total_area) * 1.2)
 
+    # ── regions: authored rigid groups get a corner column on the
+    # outline's far edge and every other unit shelf-packs the L around
+    # it (gr503556). On nano the rigid J_N1/J_N2 header pair has a ~26 mm
+    # circumscribed radius; sharing a shelf with it put ~52 mm of dead
+    # height into one row, sat every co-packed small part on its bottom
+    # line, and left ~60 % of the outline empty. A column (not a top
+    # band) keeps the FULL usable height for the small parts' shelves —
+    # the axis the measured banding starves.
+    group_units = [u for u in order_units if isinstance(u, tuple)]
+    part_units: list[int | tuple[str, int]] = [
+        u for u in order_units if isinstance(u, int)
+    ]
+
+    # ── group seed rotation, chosen BEFORE the regions are sized: the
+    # quarter-turn minimising the group's x-extent, so its column is
+    # only as wide as the rotated assembly actually needs and the
+    # member-spread axis lands along the board edge — a rigid row seeded
+    # ACROSS the edge pins every member's centre to one horizontal line
+    # and a single band hoards its whole area (the seed-1/2 59 % the
+    # centred strip produced). Ties draw through ``rng`` so seeds still
+    # differ; a member with its own locked rot pins arot=0 exactly as
+    # before; a group that isn't being reseeded (``force=False`` and
+    # everyone placed) measures at its CURRENT rotation — it isn't
+    # moving, and it doesn't get to spend an rng draw it wouldn't have
+    # spent either.
+    group_seed_arot: dict[int, float] = {}
+    group_extent: dict[int, tuple[float, float, float, float]] = {}
+    for gid, members in group_members.items():
+        if not _is_authored_group(gid):
+            continue
+        local_cx, local_cy = group_local_centroid[gid]
+        if any(bool(ir.inst_fixed_rot[m]) for m in members):
+            arot = 0.0
+        elif force or any(math.isnan(float(ir.inst_x[m])) for m in members):
+            widths: dict[float, float] = {}
+            for candidate in (0.0, 90.0, 180.0, 270.0):
+                b = _group_rotated_bbox(
+                    ir, radii, members, local_cx, local_cy, candidate
+                )
+                widths[candidate] = round(b[1] - b[0], 9)
+            best = min(widths.values())
+            arot = float(rng.choice([a for a, w in widths.items() if w == best]))
+        else:
+            drot0 = float(ir.inst_group_offset_rot[members[0]])
+            drot0 = 0.0 if math.isnan(drot0) else drot0
+            rot0 = float(ir.inst_rot[members[0]])
+            arot = (0.0 if math.isnan(rot0) else rot0 - drot0) % 360.0
+        group_seed_arot[gid] = arot
+        group_extent[gid] = _group_rotated_bbox(
+            ir, radii, members, local_cx, local_cy, arot
+        )
+
     # Pack inside the BOARD when there is one, anchored at the outline's
     # own min corner rather than a synthetic origin: on any outline
     # narrower than the shelf's natural row width, packing from the
     # origin puts parts straight off the edge — and once a part is
     # outside, ``bounds_for`` clamps every TRANSLATE that could rescue it
     # while ``_placement_is_legal`` rejects the crowding that bringing it
-    # back would cause, so it stays outside for the whole anneal.
+    # back would cause, so it stays illegal for the whole anneal.
     #
     # Clamping the row width does NOT make an over-full board fit; parts
     # then wrap down past the bottom edge instead of off the right one.
@@ -1417,47 +1550,187 @@ def seed_placement(
     # reports it. The point here is to stop the seed from putting parts
     # outside a board they would have fitted in.
     origin_x = origin_y = _EDGE_MARGIN_MM
-    outline_bounds: tuple[float, float, float, float] | None = None
+    region_y1: float | None = None  # usable top edge, when an outline exists
+    #: ``(x0, x1, y0, y1)`` rects the shelf pack fills in order; ``y1``
+    #: is ``None`` only on the outline-less fallback (no top at all).
+    part_rects: list[tuple[float, float, float, float | None]] = []
+    col_x0 = 0.0  # left edge of the group column, when one is carved
     if ir.outline and len(ir.outline) >= 3:
-        outline_bounds = outline_bbox(ir.outline)
-        ox0, oy0, ox1, oy1 = outline_bounds
+        ox0, oy0, ox1, oy1 = outline_bbox(ir.outline)
         origin_x, origin_y = ox0 + _EDGE_MARGIN_MM, oy0 + _EDGE_MARGIN_MM
-        usable = (ox1 - _EDGE_MARGIN_MM) - origin_x
-        if usable > 2.0 * max_unit_radius:
-            row_width = min(row_width, usable)
+        usable_x = (ox1 - _EDGE_MARGIN_MM) - origin_x
+        region_y1 = oy1 - _EDGE_MARGIN_MM
+        col_w = max((e[1] - e[0] for e in group_extent.values()), default=0.0)
+        col_h = sum(e[3] - e[2] for e in group_extent.values())
+        if group_extent:
+            col_h += _SEED_EPSILON_MM * (len(group_extent) - 1)
+        if group_units and 0.0 < col_w < usable_x and col_h < region_y1 - origin_y:
+            # The column drops from the TOP edge: its leftover is the
+            # wide rect under it (packed first) plus the narrower column
+            # beside it — a centred group used to strand that area AND
+            # sit on the board midline, the one spot a symmetric member
+            # pair can't split a band from.
+            col_x0 = ox1 - _EDGE_MARGIN_MM - col_w - 2 * _SEED_EPSILON_MM
+            split_y = region_y1 - col_h - _SEED_EPSILON_MM
+            part_rects = [
+                (origin_x, ox1 - _EDGE_MARGIN_MM, origin_y, split_y),
+                (origin_x, col_x0, split_y, region_y1),
+            ]
+        else:
+            # No groups (or a group that can't fit a column): the shelf
+            # region is the usable width clamped by the natural row
+            # width, and the units stay interleaved — the pre-column
+            # behaviour.
+            region_x1 = origin_x + row_width
+            if usable_x > 2.0 * max_unit_radius:
+                region_x1 = min(region_x1, ox1 - _EDGE_MARGIN_MM)
+            part_rects = [(origin_x, region_x1, origin_y, region_y1)]
+            part_units = order_units
+            group_units = []
+    else:
+        part_rects = [(origin_x, origin_x + row_width, origin_y, None)]
+        part_units = order_units
+        group_units = []
 
-    shelf_x = origin_x
-    shelf_y = origin_y
-    shelf_h = 0.0
-    unit_positions: dict[int | tuple[str, int], tuple[float, float]] = {}
-    for unit in order_units:
-        r = unit_radius[unit]
-        diameter = 2.0 * r
-        if shelf_x > origin_x and shelf_x + diameter > origin_x + row_width:
-            shelf_x, shelf_y, shelf_h = origin_x, shelf_y + shelf_h, 0.0
-        # Slide past any mounting hole this slot would land on. See the
-        # "Mounting holes ARE avoided here" note in this function's
-        # docstring for why the old "the anneal will walk it off" answer
-        # stopped being true on 2026-09-30.
-        for _ in range(_SEED_HOLE_SLIDE_TRIES):
-            hit = _hole_blocking_slot(
-                ir,
-                shelf_x + r + _SEED_EPSILON_MM,
-                shelf_y + r + _SEED_EPSILON_MM,
-                r,
-                inst=unit if isinstance(unit, int) else None,
-            )
-            if hit is None:
-                break
-            shelf_x = hit + _SEED_EPSILON_MM
-            if shelf_x > origin_x and shelf_x + diameter > origin_x + row_width:
-                shelf_x, shelf_y, shelf_h = origin_x, shelf_y + shelf_h, 0.0
-        unit_positions[unit] = (
-            shelf_x + r + _SEED_EPSILON_MM,
-            shelf_y + r + _SEED_EPSILON_MM,
+    # ── shelf membership per region (no hole slide yet — that needs the
+    # FINAL shelf y, which the spread below assigns). Each shelf's
+    # height is its tallest unit, same as the old running ``shelf_h``.
+    # A shelf that would cross the region's top edge starts the next
+    # region's pack instead; the last region takes everything left, the
+    # same honest overflow the single-region pack had.
+    shelves: list[list[int | tuple[str, int]]] = []
+    shelf_rect: list[int] = []
+    pending = part_units
+    for ri, (rx0, rx1, ry0, ry1) in enumerate(part_rects):
+        rows: list[list[int | tuple[str, int]]] = []
+        cursor_x = rx0
+        for unit in pending:
+            diameter = 2.0 * unit_radius[unit]
+            if cursor_x > rx0 and cursor_x + diameter > rx1:
+                rows.append([])
+                cursor_x = rx0
+            if not rows:
+                rows.append([])
+            rows[-1].append(unit)
+            cursor_x += diameter + _SEED_EPSILON_MM
+        rows = [row for row in rows if row]
+        if ry1 is None or ri == len(part_rects) - 1:
+            take = len(rows)
+        else:
+            take = 0
+            used = 0.0
+            for row in rows:
+                h = max(2.0 * unit_radius[u] for u in row) + _SEED_EPSILON_MM
+                if used + h > ry1 - ry0:
+                    break
+                used += h
+                take += 1
+        shelves.extend(rows[:take])
+        shelf_rect.extend([ri] * take)
+        pending = [u for row in rows[take:] for u in row]
+
+    # ── spread: shelf bottoms are distributed over each region's usable
+    # height with the leftover split into equal gaps, so the seed covers
+    # the board instead of piling on the bottom edge (gr503556: a
+    # bottom-aligned shelf pack put ~85 % of nano's parts into one band
+    # the anneal could never spread — SWAP only trades occupied slots,
+    # and abutting courtyards block TRANSLATE). A zero-or-negative
+    # leftover collapses to the old touching stack, so an over-full
+    # region degrades to exactly the old pack.
+    shelf_h = [
+        max((2.0 * unit_radius[u] for u in shelf), default=0.0) + _SEED_EPSILON_MM
+        for shelf in shelves
+    ]
+    shelf_ys = [0.0] * len(shelves)
+    for ri, (_rx0, _rx1, ry0, ry1) in enumerate(part_rects):
+        idx = [k for k, r_i in enumerate(shelf_rect) if r_i == ri]
+        gap = (
+            max(0.0, (ry1 - ry0) - sum(shelf_h[k] for k in idx)) / (len(idx) + 1)
+            if ry1 is not None and idx
+            else 0.0
         )
-        shelf_x += diameter + _SEED_EPSILON_MM
-        shelf_h = max(shelf_h, diameter + _SEED_EPSILON_MM)
+        sy = ry0 + gap
+        for k in idx:
+            shelf_ys[k] = sy
+            sy += shelf_h[k] + gap
+
+    # ── positions: walk each shelf left to right, sliding past a
+    # mounting-hole keep-out at the shelf's FINAL y (the slide used to
+    # check the stacked y; a spread shelf moves, so the check now runs
+    # where the part will actually sit). A unit that can't clear the
+    # region's right edge — packed or slid — is carried to the head of
+    # the next shelf; units past the last shelf stack below the old
+    # pack's bottom edge, the same honest overflow as before. See the
+    # "Mounting holes ARE avoided here" note in this function's
+    # docstring for why seeding on a hole is a last resort, never the
+    # plan.
+    unit_positions: dict[int | tuple[str, int], tuple[float, float]] = {}
+    carry: list[int | tuple[str, int]] = []
+    for k, shelf in enumerate(shelves):
+        rx0, rx1, _ry0, _ry1 = part_rects[shelf_rect[k]]
+        queue, carry = carry + shelf, []
+        shelf_x = rx0
+        for unit in queue:
+            r = unit_radius[unit]
+            diameter = 2.0 * r
+            placed = False
+            for _ in range(_SEED_HOLE_SLIDE_TRIES):
+                if shelf_x > rx0 and shelf_x + diameter + _SEED_EPSILON_MM > rx1:
+                    carry.append(unit)
+                    break
+                hit = _hole_blocking_slot(
+                    ir,
+                    shelf_x + r + _SEED_EPSILON_MM,
+                    shelf_ys[k] + r + _SEED_EPSILON_MM,
+                    r,
+                    inst=unit if isinstance(unit, int) else None,
+                )
+                if hit is None:
+                    placed = True
+                    break
+                shelf_x = hit + _SEED_EPSILON_MM
+            if placed or unit not in carry:
+                unit_positions[unit] = (
+                    shelf_x + r + _SEED_EPSILON_MM,
+                    shelf_ys[k] + r + _SEED_EPSILON_MM,
+                )
+                shelf_x += diameter + _SEED_EPSILON_MM
+    # Carried units past the last shelf keep stacking from its top edge —
+    # the old pack's own overflow outcome.
+    carry_rect = shelf_rect[-1] if shelves else len(part_rects) - 1
+    carry_x = part_rects[carry_rect][0]
+    for unit in carry:
+        r = unit_radius[unit]
+        base = (shelf_ys[-1] + shelf_h[-1]) if shelves else part_rects[carry_rect][2]
+        unit_positions[unit] = (
+            carry_x + r + _SEED_EPSILON_MM,
+            base + r + _SEED_EPSILON_MM,
+        )
+        carry_x += 2.0 * r + _SEED_EPSILON_MM
+
+    # ── rigid groups: the corner column, bboxes flush to the outline's
+    # far edge and stacked down from the top (the region comment above
+    # names why top, not centre). A group that can't clear a mounting
+    # hole slides LEFT inside its column — bounded so the bbox stays in
+    # the column, then keeps the blocked slot, the same last resort as
+    # a shelf.
+    if col_x0 and group_units:
+        assert region_y1 is not None  # the column only exists on an outline
+        slot_top = region_y1
+        for u in group_units:
+            gid = u[1]
+            lo_x, hi_x, lo_y, hi_y = group_extent[gid]
+            r = unit_radius[u]
+            cx = ox1 - _EDGE_MARGIN_MM - _SEED_EPSILON_MM - hi_x
+            cy = slot_top - _SEED_EPSILON_MM - hi_y
+            slot_top = cy + lo_y - _SEED_EPSILON_MM
+            bound_x = col_x0 + _SEED_EPSILON_MM - lo_x
+            for _ in range(_SEED_HOLE_SLIDE_TRIES):
+                hit = _hole_blocking_slot(ir, cx, cy, r, edge="left")
+                if hit is None or cx <= bound_x:
+                    break
+                cx = hit - _SEED_EPSILON_MM
+            unit_positions[u] = (cx, cy)
 
     # ── individually-packed instances (ungrouped + pattern members) ------
     freshly_seeded: set[int] = set()
@@ -1506,12 +1779,11 @@ def seed_placement(
             continue
         cx, cy = unit_positions[("group", gid)]
         local_cx, local_cy = group_local_centroid[gid]
-        # A member with its OWN rotation locked pins the whole anchor's
-        # rotation too -- a rigid body can't rotate to satisfy one
-        # member's random draw while contradicting another's fixed one.
-        arot = 0.0
-        if not any(bool(ir.inst_fixed_rot[m]) for m in members):
-            arot = float(rng.choice((0.0, 90.0, 180.0, 270.0)))
+        # The rotation was chosen up front, where the regions were
+        # sized (see `group_seed_arot`'s own comment: the width-
+        # minimising quarter-turn, or 0 when a member's locked rot
+        # pins the whole body's).
+        arot = group_seed_arot.get(gid, 0.0)
         for m in members:
             if bool(ir.inst_fixed_xy[m]):
                 continue

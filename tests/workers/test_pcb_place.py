@@ -229,7 +229,8 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
 
 def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
     """``snap=true`` runs the preferred-number pass and stamps
-    ``meta.preferred_snap`` on every part it moved; a ``max_travel_mm``
+    ``meta.preferred_snap`` on every part it moved (a part the default
+    field polish already rastered onto its grid is not moved again); a ``max_travel_mm``
     instance is reported on the summary's soft-pin line. The frozen part
     is never snapped."""
     args = {
@@ -284,7 +285,18 @@ def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
         ).fetchall()
     snapped = {r[0]: r[1] for r in rows if r[1] is not None}
     assert "A" not in snapped  # frozen parts are never snapped
-    assert "C" in snapped and snapped["C"]["pitch_mm"] == 0.5
+    assert snapped  # the snap stamped what it moved
+    # C ends on its 0.5mm preferred grid. The default field polish rasters
+    # onto that same grid (board_from_engine's pitch is
+    # _preferred_snap_grid_mm), so when the polish already landed C there
+    # the snap has nothing to move and — per its "parts that actually
+    # moved" contract — nothing to stamp.
+    placed = {i["refdes"]: i for i in store.pcb_graph(ref_id)["instances"]}
+    for axis in ("x", "y"):
+        v = float(placed["C"][axis]) / 0.5
+        assert abs(v - round(v)) < 1e-6, placed["C"]
+    if "C" in snapped:
+        assert snapped["C"]["pitch_mm"] == 0.5
     if "B" in snapped:
         # a soft pin may only snap inside its leash
         assert abs(snapped["B"]["x"] - 8.0) <= 2.0 + 1e-9

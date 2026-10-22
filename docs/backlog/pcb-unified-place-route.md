@@ -60,26 +60,27 @@ place-route loop. Those rows are not in `pcb-vector-router.md` on
 `origin/main` at 8b05fe3dc (only rows 1–12 and the 2026-10-18 nano-floor
 note in slice 3); they are quoted here from the brief.
 
-## Current state (verified on origin/main 8b05fe3dc)
+## Current state (verified on origin/main 805f195a5d)
 
 | Claim | Verified | Where |
 |---|---|---|
-| Default pipeline: one anneal, then one maze route, no feedback | Yes. `pcb_route._dispatch` runs the joint place+sketch annealer (`optimize.OptimizeEngine`, move set `MoveKind`: TRANSLATE/ROTATE/SWAP/LAYER_ASSIGN/SIDE_FLIP/PLANE_*), then `realize()` once. `loop=N` (≤ `optimize.LOOP_MAX_ROUNDS` = 3, default rounds 2) is opt-in and swaps in `optimize.anneal_route_loop` (route → `apply_route_feedback` → anneal → route). | `src/precis/workers/job_types/pcb_route.py` docstring; `optimize.py` `RouteLoopConfig`, `anneal_route_loop` |
-| Anneal cost is money + 100·risk; wirelength is chord area | Yes. `cost.evaluate_cost`: `total = money + config.risk_to_money * risk`, `CostConfig.risk_to_money = 100.0`; `routing_area_term` prices each segment's chord as panel area. **Addition:** `ROTATE` and `SIDE_FLIP` are provably cost-neutral — no term reads `inst_rot`; rotation is not optimised today. | `cost.py`; `optimize.py` comment above `_PLACEMENT_KINDS` ("ROTATE is cost-neutral, provably") |
-| Courtyard clearance 0.40 mm | Yes. `ir.COURTYARD_CLEARANCE_MM = 0.40`, read by `optimize._placement_is_legal`, `cost`, `drc`, `check_run`, `session`. Legality is a hard predicate in the annealer, not a graded term. | `ir.py`, `optimize.py` |
-| Maze: ~0.1 mm grid, 8-direction A*, via 3 mm, rip-up by re-ordering | Yes. Pitch = `clearance × realize._PITCH_PER_CLEARANCE` (2/3) capped by `maze.grid_for` (0.0675 mm on the ewod replay); `maze._STEPS` is 8 moves; weighted A* `HEURISTIC_WEIGHT = 1.15`; `VIA_COST_MM = 3.0`, `VIA_UNDER_BODY_COST_MM = 3.0`; rip-up is re-ordering in `realize._realize_maze` (maze docstring "Rip-up and retry"). | `maze.py`, `realize.py` |
+| Default pipeline: one anneal, then one VECTOR route, no feedback | Yes — the grid maze is gone (`d42369679`, 2026-10-20): `pcb_route` accepts only `router='vector'` and `realize()` draws with `vroute` (gridless octilinear A*). The place+sketch annealer (`optimize.OptimizeEngine`, `MoveKind`: TRANSLATE/ROTATE/SWAP/LAYER_ASSIGN/SIDE_FLIP/PLANE_*) is unchanged, as is opt-in `loop=N` → `optimize.anneal_route_loop` (route → `apply_route_feedback` → anneal → route, ≤ `LOOP_MAX_ROUNDS` = 3, default 2). The slice-1 field polish exists behind `OptimizeConfig.field_polish` — still `False` at this sha; the 2026-10-21 ruling flips it (§Decision). | `src/precis/workers/job_types/pcb_route.py` docstring; `realize.py`; `optimize.py` `RouteLoopConfig`, `anneal_route_loop`, `OptimizeConfig.field_polish` |
+| Anneal cost is money + 100·risk; wirelength is chord area | Yes. `cost.evaluate_cost`: `total = money + config.risk_to_money * risk`, `CostConfig.risk_to_money = 100.0`; `routing_area_term` prices each segment's chord as panel area. `ROTATE`/`SIDE_FLIP` remain cost-neutral in the ANNEAL (`evaluate_cost` reads no `inst_rot`). In the field path θ is now a real variable: T1's pad terms carry ∂/∂θ and slice 2's T9/T10 wells price pose and rotation, and `polish_placement` commits θ snapped to the 15° well grid (`ROT_SNAP_DEG`). | `cost.py`; `optimize.py` comment above `_PLACEMENT_KINDS`; `field.py` |
+| Courtyard clearance 0.40 mm | Yes. `ir.COURTYARD_CLEARANCE_MM = 0.40`, read by `optimize._placement_is_legal`, `cost`, `drc`, `check_run`, `session`. Legality is a hard predicate in the annealer, not a graded term. `field.JLCPCB_SPACING_MM` can only RAISE a pair's T4 target, never relax the reserve. | `ir.py`, `optimize.py`, `field.py` |
+| Router: gridless octilinear A* on the exact-clearance kernel | `maze.py` deleted with the grid router. `vroute.route` searches `(node, layer)` — nodes are the octagon corners circumscribing each obstacle inflated by `w/2 + clearance`, legs are octilinear connectors checked by `clearance` (`signed_gap`/`gap` on `Body`); `vroute.escape_pass` (default on, `RealizeConfig.vector_escape`) retries failed segments against frozen copper. Vias through-only. The kernel ships exact signed distance; the analytic `gradient` the "Better maths" row names is not exposed yet. | `vroute.py` docstring, `clearance.py`, `realize.py` |
 | Only F.Cu and B.Cu are routable | **No.** Routable layers are the stackup's: `realize._signal_layers` → `ir.routable_layers` (per-layer routable flag/role). The ewod replay routes on In2.Cu + B.Cu; esp32c3 is four layers. Two-layer boards (nano) route F.Cu and B.Cu because that is their stackup. | `realize.py`, `ir.py` |
 | Silk labels built at render/DRC time, not placed by the optimizer | Yes. `silk.build_silk` is a pure function of the settled `PcbIR`; the label spot is a candidate search (`LABEL_SPOT_ORDER`, `_outline_spot_candidates`, radial `_CANDIDATES`, `_inside_candidates`, else dropped → `silk_missing`). Glyphs are pinned to 0° (Reto, gr495394). Callers: `realize` (via keep-outs, off by default), `drc`, `check_run`, `handlers/pcb`. | `silk.py` docstring |
 | Floors: nano seed 1 35/29, silk_missing 35; 8-seed mean 34.375, min 28 | Dropped 2026-10-19 (Reto; pcb-vector-router §Decisions row 14): the nano test prints these numbers and no longer gates on them. Last pinned: seed 1 35/29, silk_missing 35, 8-seed mean 34.375, min 28. | `tests/test_pcb_nano_usb_pd_testboard.py` |
-| Vector router slices 0–1 landed, slice 2 WIP; VP probe 2cedf6b13 | **Not on main.** No `clearance.py`, `vroute.py`, `topo.py`, `tests/test_pcb_topo.py`, no `rules.required`/`clearance_by_layer`. They live in builder trees. The CDT-portal finding (14/14 ewod, 26/27 qfp-plaza, vs the tile model) is taken from the brief. | `ls src/precis/pcb`, grep |
+| Vector router slices landed | Slices 0–3a are marked shipped in `pcb-vector-router.md`; `clearance.py`, `vroute.py`, `topo.py` (CDT portals + funnel domain) and `tests/test_pcb_topo.py` are on main, and the maze's removal (d42369679) makes vector the only router. The CDT-portal finding (14/14 ewod, 26/27 qfp-plaza, vs the tile model) is taken from the brief. | `ls src/precis/pcb`, `pcb-vector-router.md` §Slices |
 | Tile-plan corridors hurt (38–47 vs 51/55) | Yes. | `pcb-global-plan-probe.md` Parts 3–4 (deleted with the grid router; git history) |
 
 Two facts the design builds on: the IR is already a rubber-band sketch
 whose topology (L0–L2) is invariant under a placement perturbation (L3)
 (`optimize.py` docstring, "One engine, not place-then-route"); and the
-vector-router kernel (slice 2) is specified to expose
-`distance(prim, prim)` and `gradient` analytically ("Better maths" table,
-row "Signed distance, exact analytic").
+vector-router kernel (slice 2) is on main exposing exact signed distance
+(`clearance.signed_gap`/`gap` on `Body`) — its analytic `gradient`
+("Better maths" table, row "Signed distance, exact analytic") is still to
+land, so T4/T5 use the shapely distance meanwhile.
 
 ## Critique of the starting take
 
@@ -398,8 +399,8 @@ ships with its finite-difference check.
 | # | Slice | Test |
 |---|---|---|
 | 0 | `field.py` skeleton: state packing, term interface `(value, grad)`, gradient-check harness (hand-written numpy/numba); T1 and T4 implemented | `tests/test_pcb_field.py`: dot-product, Taylor, FD on random boards for T1, T4; rotation gradient non-zero |
-| 1 (remainder) | Placement polish is in (`field.polish_placement`, behind `OptimizeConfig.field_polish`, default off; SAT T4, T5, T6 landed). Evidence so far (flag on, 24 seeded boards of 6/8/12 parts): 2 applied, 15 illegal, 7 no_gain, so the legality gate refuses most. The JLCPCB pairwise spacing table is in `field.py` and only RAISES T4 targets; relaxing the engine's 0.40 mm per-part reserve to the table is an engine change that moves pinned boards (Reto's call). Left: measure with the flag on, then flip the default | nano 8 seeds and ewod not worse with `field_polish=True`; synthetic 3-part board converges to the known optimum |
-| 2 | Wells T9 (anchor: part centre), T10 (k up to 24); θ becomes a real variable (ROTATE stops being cost-neutral) | synthetic board lands on 10 mm multiples and 0°/180° in preference order, flipped/rotated parts stay aligned; nano floors |
+| 1 (remainder) | Placement polish is in (`field.polish_placement`; SAT T4, T5, T6 landed). **Landed 2026-10-21** (`field_polish` defaults ON — the field placer is the default). The legality gate's 15/24 refusals were measured and fixed: T5 held centres to the unshrunk domain while `bounds_for` shrinks it per part (now the gate's own per-part box), and the 90° snap swung courtyards into neighbours (now a repair descent, θ frozen at snapped wells; unsnapped θ is the last fallback). Refusals name rule + parts. After: 22/24 applied, 2 cost_worse, 0 illegal on the same bench. The JLCPCB pairwise spacing table is in `field.py` and only RAISES T4 targets; relaxing the engine's 0.40 mm per-part reserve to the table is an engine change that moves pinned boards (Reto's call). Left: nano 8 seeds and ewod not worse with `field_polish=True` | nano 8 seeds and ewod not worse with `field_polish=True`; synthetic 3-part board converges to the known optimum |
+| 2 | **Landed.** Wells T9 (anchor: part centre), T10 (k up to 24); θ is a real variable in the field path — `polish_placement` descends θ, the snap puts centres on each part's own raster and θ on the 15° well grid, in a fallback cascade that keeps the descent when a full snap is illegal (the anneal's `MoveKind.ROTATE` stays cost-neutral; the ROTATE_JUMP move is slice 6) | synthetic board lands on 10 mm multiples and 0°/180° in preference order, flipped/rotated parts stay aligned (the nano floors were dropped 2026-10-19; the seeded never-worse polish tests carry the regression instead) |
 | 3 | Labels as variables (T8) with LABEL_JUMP fallback and the failure → OUTLINE_GROW (capped, only if it removes failures) → covered-last-resort order; `silk.build_silk` reads the stored label pose. No label pose exists in `PcbIR` or the store today: a new IR field (per-instance label position) is needed; if it needs a migration, that takes /go | `silk_missing` on nano ≤ 35 and reported; 100 % on a synthetic board the candidate ladder fails; first cases (gr495393): outlines still cut by a routed via — usbc-attiny-dogfood-b R3 at (24.07, 18.43) and J2 at (11.42, 18.21), and the nano (34) / nano r2 (47) cuts left once bulges are vetoed for costing a label |
 | 4 | Bands: taut-band geometry (funnel on the CDT), T2 band length and tension, band order bookkeeping, T3 ordering + offset model, T13 bend rule, T11 ramp + band → octilinear conversion, ERBS spacing/compaction pass, kernel verify; vertex-descent fallback for the polish if needed. Absorbs vector slice 7's funnel, offset and 45° conversion. Needs vector slice 2 plus a funnel domain (vector 5 CDT or vector 3 tangent graph) | DRC warns not up, track length down on nano/ewod; tension gradient matches FD away from kinks; synthetic pinched corridor opens when a part is free; no turn sharper than 90° on any bench board |
 | 5 | Shove by descent: insertion with `α·req`, joint trust-region descent on parts + bands + vias + labels; T7 with Lagrangian portal prices (needs vector slice 5; the chord fallback ships without it), optional LP lower bound; continuous vias (T5 hold-in, pad barrier) | synthetic two-wire corridor routes both; ewod ≥ 51 reported, target 55 |
@@ -445,6 +446,40 @@ path routes every bench board, then it is deleted. Improvement runs as a
 dogfood loop (bench → read the boards → fix → re-bench), not as a gate
 before the switch. gr499239's two annealer flags are not benched; the
 field placer's pad-granular terms supersede them.
+
+Landed (placer-a, 2026-10-21): the flag flip, the legality-gate repair,
+and the `anneal` column — `field_polish=False` is a place/route job
+param feeding the column. Left: dogfood the bench numbers.
+
+Landed (placer-c, 2026-10-21): a descent stage that dies ABNORMAL at the
+θ=0 courtyard kink is retried once with θ pinned — θ stays a real
+variable everywhere else (gr503452, built on placer-b); the accept gate
+is pre-route legality + field E only, `engine.total()` reported as
+`anneal_delta` (gr503458).
+
+Landed (placer-e, 2026-10-22): gr503640 fix 2 — mounting holes enter T4
+as fixed obstacles on both sides (owner-exempt), so the descent pushes a
+part off a hole rather than meeting it at the gate; bin-density
+normalized by total part area (its raw scale out-weighed p2u's supply
+tree and parked U1 in a corner).
+
+Landed (placer-f, 2026-10-22): gr503694 — written rotations are grid
+values in [0, 360): the cascade's last lane restores each part's seed θ
+(the continuous descended θ is never written), k=4 dominates T10 and an
+off-90° tilt survives only on a measured gain over `ROT_TILT_MIN_GAIN`;
+the accept gate also refuses poses whose wirelength terms worsen beyond
+`POLISH_WIRELENGTH_WORSEN` of seed (the platform-sensitive sanity-board
+regression — legal and lower-E, but the ratsnest nearly doubled).
+
+Landed (placer-h, 2026-10-22): the last nano DRC residue — seed 2's five
+same-instance pad-clearance errors on U_B9/U_B15 were the clearance
+geometry dropping `oblique_rot`: a non-primary footprint pad (the
+bucks' exposed pad) reached DRC as an axis-aligned w×h box while every
+primary pad is a true rotated polygon, so the unrotated box's corners
+fired phantom pad-vs-pad hits against the part's own pins.
+`_copper_item_polygon` and `clearance.body_of` now rotate the
+rect/obround outline by the recorded total rotation; the rotated
+multi-pad-part regression lives in `test_pcb_drc.py`.
 
 ## Decisions (Reto 2026-10-18)
 

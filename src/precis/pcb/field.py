@@ -1,18 +1,38 @@
-"""Unified place-and-route energy field — slice 0 skeleton.
+"""Unified place-and-route energy field — slices 0–2.
 
 Spec: ``docs/backlog/pcb-unified-place-route.md`` (§State, §Cost, §Derivative
 route). One scalar energy ``E(z) = Σ λ_t T_t(z)`` over a packed continuous
 state ``z``; each term returns ``(value, grad)`` with a hand-written analytic
-gradient (numpy; no autodiff dependency). This slice ships only the plumbing
-and two terms:
+gradient (numpy; no autodiff dependency). Landed terms:
 
 * **T1** connectivity pull — weighted-average (WA) wirelength per net on
   rotated pad centres, so every pad carries ``∂/∂θ``.
 * **T4** courtyard clearance — ``Σ softplus_β(c − sd(poly_i, poly_j))²`` on
-  shapely polygon distance (the vector clearance kernel replaces it later).
+  shapely polygon distance (the vector clearance kernel replaces it later),
+  with the JLCPCB pairwise SMD spacing table raising per-pair targets, and
+  mounting-hole keep-outs entering as fixed obstacles on both sides.
+* **T5** board edge — softplus pull on part centres, inside the same
+  per-part box ``OptimizeEngine.bounds_for`` gives the legality gate.
+* **T6** rubber bands — decoupling-cap pad to served pin, ``d₀`` slack.
+* **T9** raster wells — ``Σ w_p (1 − cos(2πc/p))`` on part centres (own
+  pitch included) and vias; ramped coarse → fine in Harden only.
+* **T10** rotation wells — ``Σ w_k (1 − cos(kθ))`` over
+  ``k ∈ {1,2,4,8,12,24}`` with k=4 dominant; θ is a real variable, snapped
+  to the nearest 15° well in Harden, and an off-90° snap survives only on
+  a measured gain (``ROT_TILT_MIN_GAIN``); the write is always a grid
+  value in [0, 360), the descended continuous θ never is (gr503694).
+* **Density** (gr503556) — ``Σ_b A_b·softplus_β(ρ_b − ρ_target)²`` over a
+  bin grid, ρ deposited through a Gaussian kernel on part centres at
+  ``LAMBDA_DENSITY``: the "router needs more space" spread force the
+  shelf-packed seed and the SWAP-only anneal lack.
 
-Nothing here is wired into ``optimize()``; :func:`check_gradient` is the
-harness every later term's test reuses (dot-product, Taylor, central FD).
+``polish_placement`` runs the placement half of this energy as one move on
+the engine's board, behind ``OptimizeConfig.field_polish``, gated on
+energy gain + the engine's legality predicate — repair over refuse where
+the legality gate can still be satisfied. The annealer's
+``OptimizeEngine.total()`` is reported as a comparison value, not a gate
+(Reto 2026-10-21). :func:`check_gradient` is the harness every term's
+test reuses (dot-product, Taylor, central FD).
 
 Frames. ``Part.pads`` / ``Part.court`` are in the part's rotating frame:
 the world point of local ``p`` is ``R(θ)·p + (x, y)``. Mirroring for
@@ -26,11 +46,12 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import shapely
 from scipy.optimize import minimize
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
@@ -49,15 +70,20 @@ class Part:
     fixed_xy: bool = False
     fixed_rot: bool = False
     cls: str | None = None  # JLCPCB spacing class (see SPACING_CLASSES), if known
+    #: the part's own snap raster (``_preferred_snap_grid_mm``): an extra
+    #: T9 well pitch and the raster the final snap puts the centre on
+    pitch: float | None = None
 
 
 @dataclass(frozen=True)
 class FieldBoard:
     """Parts, nets and vias at their base pose (the fixed-variable values).
 
-    ``nets[k]`` lists ``(part, pad)`` pairs. ``x0/y0/th0`` are the starting
-    poses; ``vias0`` is ``(n_vias, 2)`` (carried in the state, unused by
-    T1/T4)."""
+    ``nets[k]`` lists ``(part, pad)`` pairs for T1's wirelength pull;
+    ``tree_nets`` lists the supply/ground/pour nets excluded from T1 that
+    keep a spanning-tree term (``SupplyTree``, D14) at ``tree_weights``.
+    ``x0/y0/th0`` are the starting poses; ``vias0`` is ``(n_vias, 2)``
+    (carried in the state, unused by T1/T4)."""
 
     parts: tuple[Part, ...]
     nets: tuple[tuple[tuple[int, int], ...], ...]
@@ -65,6 +91,8 @@ class FieldBoard:
     y0: np.ndarray
     th0: np.ndarray
     vias0: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    tree_nets: tuple[tuple[tuple[int, int], ...], ...] = ()
+    tree_weights: tuple[float, ...] = ()
 
 
 class Layout:
@@ -123,14 +151,24 @@ class Layout:
             ]
         ).astype(float)
 
-    def scatter(self, gx: np.ndarray, gy: np.ndarray, gth: np.ndarray) -> _Z:
-        """Per-part full gradients → packed gradient (vias get zero)."""
+    def scatter(
+        self,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        gth: np.ndarray,
+        gvias: np.ndarray | None = None,
+    ) -> _Z:
+        """Per-part full gradients → packed gradient (vias flat ``(x, y)``)."""
         return np.concatenate(
             [
                 gx[self.free_xy],
                 gy[self.free_xy],
                 gth[self.free_rot],
-                np.zeros(2 * self.n_vias),
+                (
+                    np.zeros(2 * self.n_vias)
+                    if gvias is None
+                    else np.asarray(gvias, dtype=float).reshape(-1)
+                ),
             ]
         )
 
@@ -224,7 +262,17 @@ class CourtyardClearance(Term):
     one polygon and the nearest boundary point of the other). Witness points
     are treated as rigidly attached to their bodies — the envelope-theorem
     gradient — so the term is piecewise smooth, with kinks where the witness
-    pair switches."""
+    pair switches.
+
+    ``obstacles`` adds fixed world-frame polygons (the mounting-hole
+    keep-outs, gr503640): ``Σ_i Σ_h softplus_β(c − sd(poly_i, poly_h))²``.
+    A hole goes through the board, so the same-side exemption does NOT
+    apply — every part interacts — except the obstacle's ``exempt``
+    instance index, the one part whose own footprint cut it
+    (``_hole_owned_by``). Its gradient half is discarded; the obstacle has
+    no pose slot. Posed at build time, so a hole that follows a moving
+    owner drifts from the term — the legality gate still judges it at the
+    owner's proposed pose."""
 
     def __init__(
         self,
@@ -232,6 +280,7 @@ class CourtyardClearance(Term):
         clearance: float = 0.40,
         beta: float = 8.0,
         pair_min: dict[tuple[int, int], float] | None = None,
+        obstacles: Sequence[tuple[np.ndarray, int | None]] = (),
     ):
         super().__init__(layout)
         self.c = float(clearance)
@@ -239,6 +288,12 @@ class CourtyardClearance(Term):
         #: per-pair required clearance, keyed ``(i, j)`` with ``i < j``;
         #: pairs not listed use ``clearance``
         self.pair_min = pair_min or {}
+        #: ``(ring, Polygon, lo, hi, exempt)`` per fixed obstacle — the
+        #: ring and its bounds cache the cull the part pairs get for free.
+        self.obstacles = []
+        for ring, exempt in obstacles:
+            r = np.asarray(ring, dtype=float)
+            self.obstacles.append((r, Polygon(r), r.min(axis=0), r.max(axis=0), exempt))
 
     @staticmethod
     def _convex_ring(ring: np.ndarray) -> np.ndarray | None:
@@ -321,21 +376,29 @@ class CourtyardClearance(Term):
             # axis-aligned courtyard pair) make shapely's witness an arbitrary
             # point on the overlap, which has the wrong rotation derivative, so
             # witness the vertices; ties share the gradient (a subgradient).
-            cands: list[tuple[float, np.ndarray, np.ndarray, bool]] = []
+            # The vertex->polygon distances are one vectorized call per
+            # direction — ``nearest_points`` only runs for the tied few;
+            # measured on nano this cut ``_signed``'s shapely calls ~30x.
+            verts_by_dir: list[tuple[np.ndarray, np.ndarray, Polygon, bool]] = []
+            dmin = math.inf
             for src, dst, flip in ((pa, pb, False), (pb, pa, True)):
-                for v in list(src.exterior.coords)[:-1]:
-                    pt = Point(v)
-                    qv = nearest_points(pt, dst)[1]
+                verts = np.asarray(src.exterior.coords)[:-1]
+                dists = shapely.distance(shapely.points(verts), dst)
+                verts_by_dir.append((verts, dists, dst, flip))
+                dmin = min(dmin, float(dists.min()))
+            cands: list[tuple[float, np.ndarray, np.ndarray, bool]] = []
+            for verts, dists, dst, flip in verts_by_dir:
+                for k in np.flatnonzero(dists <= dmin + 1e-9):
+                    qv = nearest_points(Point(verts[k]), dst)[1]
                     cands.append(
                         (
-                            float(pt.distance(dst)),
-                            np.array(v),
+                            float(dists[k]),
+                            np.array(verts[k]),
                             np.array(qv.coords[0]),
                             flip,
                         )
                     )
-            dmin = min(c[0] for c in cands)
-            tied = [c for c in cands if c[0] <= dmin + 1e-9]
+            tied = cands
             ga, gb = np.zeros(3), np.zeros(3)
             for _d, vv, qq, flip in tied:
                 pa_pt, pb_pt = (qq, vv) if flip else (vv, qq)
@@ -353,16 +416,18 @@ class CourtyardClearance(Term):
         wb: np.ndarray | None = None
         for src, dst, flip in ((pa, pb, False), (pb, pa, True)):
             ring = dst.exterior
-            for v in list(src.exterior.coords)[:-1]:
-                pt = Point(v)
-                if not dst.contains(pt):
-                    continue
-                d = ring.distance(pt)
-                if d > depth:
-                    q = ring.interpolate(ring.project(pt))
-                    vv, qq = np.array(v), np.array(q.coords[0])
-                    depth = d
-                    wa, wb = (qq, vv) if flip else (vv, qq)
+            verts = np.asarray(src.exterior.coords)[:-1]
+            inside = shapely.contains_xy(dst, verts[:, 0], verts[:, 1])
+            pts = verts[inside]
+            if not len(pts):
+                continue
+            ds = shapely.distance(shapely.points(pts), ring)
+            ki = int(ds.argmax())
+            if float(ds[ki]) > depth:
+                q = ring.interpolate(ring.project(Point(pts[ki])))
+                vv, qq = np.array(pts[ki]), np.array(q.coords[0])
+                depth = float(ds[ki])
+                wa, wb = (qq, vv) if flip else (vv, qq)
         if wa is None or wb is None:
             # non-convex, edges cross, no vertex inside: no depth signal
             return 0.0, np.zeros(3), np.zeros(3)
@@ -401,7 +466,136 @@ class CourtyardClearance(Term):
                     gx[idx] += dE_dsd * g[0]
                     gy[idx] += dE_dsd * g[1]
                     gth[idx] += dE_dsd * g[2]
+        for i in range(n):
+            ti = np.array([x[i], y[i]])
+            for ring_h, poly_h, lo_h, hi_h, exempt in self.obstacles:
+                if exempt == i:
+                    continue
+                gap = np.maximum(lo[i] - hi_h, lo_h - hi[i]).max()
+                if gap > reach:
+                    continue
+                sd, gi, _g_h = self._signed(
+                    polys[i], poly_h, rings[i], ring_h, ti, (lo_h + hi_h) / 2.0
+                )
+                u = self.c - sd
+                sp = _softplus(u, self.beta)
+                total += sp * sp
+                dE_dsd = -2.0 * sp * _sigmoid(u, self.beta)
+                gx[i] += dE_dsd * gi[0]
+                gy[i] += dE_dsd * gi[1]
+                gth[i] += dE_dsd * gi[2]
         return total, lay.scatter(gx, gy, gth)
+
+
+class BinDensity(Term):
+    """The spreading term (gr503556): smooth bin-density over the
+    placement domain — the spec's "router needs more space" force
+    (Reto 2026-10-18), built cheap.
+
+    Each part deposits its courtyard area ``a_i`` into the bins through a
+    Gaussian kernel on its CENTRE, RENORMALIZED so the whole ``a_i``
+    always lands inside the domain (``S_i`` is part ``i``'s in-domain
+    kernel mass — half of it leaks out for a part sitting on the edge):
+
+        ρ_b = Σ_i a_i · K_ib / S_i,   K_ib = exp(−|c_b − p_i|² / 2σ²) / (2πσ²)
+
+    Without the ``/S_i`` a part hugging the wall sees half its mass
+    evaporate — an un-renormalized kernel literally rewards leaking off
+    the domain, and the descent walks parts out of bounds. With it, the
+    edge position DOUBLES the local density instead, so the wall stops
+    being a downhill direction at all.
+
+    The cost is the field energy ``E = Σ_b A_b · (ρ_b² − Σ_i φ_ib²)``
+    with ``φ_ib = a_i·K_ib/S_i`` part ``i``'s deposit — a discrete
+    approximation of ∫ρ² with the SELF-interaction removed. Only OTHER
+    parts' mass repels a part: a lone part's own blob otherwise pushes it
+    toward the domain edge (its in-domain kernel centre of mass sits
+    inward), which pinned p2u's free U1 into a far corner against the
+    supply tree's pull. The pair-only form's minimum at fixed total area
+    is still UNIFORM density: only bins carrying mass push back, and the
+    push is proportional to how crowded they already are, so an empty
+    half-board beside a jammed strip is costly — the imbalance the
+    shelf-packed seed left and the anneal could not fix (SWAP trades
+    occupied slots; TRANSLATE is blocked by abutting courtyards). A
+    softplus-over-target form was also tried and rejected: its tail
+    repels parts from EVERY bin — underloaded ones included — and piles
+    them on the boundary instead of spreading them.
+
+    Smooth everywhere (a Gaussian has no kinks), so the FD check applies
+    at any point. No ∂/∂θ on purpose: the kernel sees the centre, not
+    the orientation — rotation's footprint is T4's job. Fixed parts still
+    deposit area (they occupy space); only their gradient vanishes.
+
+    The energy is normalized by ``(Σ a_i)²`` — the raw form scales with
+    total part area, so on a sparse board its λ·E dwarfed the supply
+    tree and connectivity pulls it is supposed to defer to (p2u: U1's
+    tree draw to the J_IN→HUB corridor lost to a ~4·10³ density drop
+    into the far corner, gr503640-class residual). The normalized term
+    keeps the same force DIRECTION — which bins are crowded — while its
+    scale stays ``A²/A_domain``-sized on every board, so
+    :data:`LAMBDA_DENSITY` means the same thing everywhere."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        lo: tuple[float, float] | np.ndarray,
+        hi: tuple[float, float] | np.ndarray,
+        *,
+        bins: int = 8,
+        sigma_scale: float = 1.0,
+    ):
+        super().__init__(layout)
+        lo_a, hi_a = np.asarray(lo, float), np.asarray(hi, float)
+        size = np.maximum(hi_a - lo_a, 1e-6)
+        # Bin counts keep cells ~square: n_x/n_y ∝ the side lengths, with
+        # `bins` bins on the longer axis.
+        ratio = size / size.max()
+        n = np.maximum(2, np.round(bins * ratio).astype(int))
+        edges = [np.linspace(lo_a[d], hi_a[d], n[d] + 1) for d in range(2)]
+        centres = np.stack(
+            np.meshgrid(*[(e[:-1] + e[1:]) / 2.0 for e in edges], indexing="ij"),
+            axis=-1,
+        ).reshape(-1, 2)
+        self.centres = centres
+        self.bin_area = float(np.prod(size / n))
+        #: one bin side of kernel width — a part's mass reaches ~3 bins,
+        #: smooth enough for L-BFGS-B, local enough to matter.
+        self.sigma = float(sigma_scale * np.sqrt(self.bin_area))
+        self.areas = np.array(
+            [float(Polygon(p.court).area) for p in layout.board.parts]
+        )
+        #: ``1/(Σ a_i)²`` — the term's scale factor (class docstring).
+        self._inv_a2 = 1.0 / max(float(self.areas.sum()), 1e-9) ** 2
+        #: per-bin raw deposit weights K_ib are UNNORMALIZED here — the
+        #: ``/S_i`` conservation happens in ``value_grad`` — and the
+        #: Σ_b A_b·ρ² weighting keeps the cost's scale independent of the
+        #: bin count.
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, y, _th, _ = lay.unpack(z)
+        pos = np.stack([x, y], axis=1)  # (n, 2)
+        d2 = ((pos[:, None, :] - self.centres[None, :, :]) ** 2).sum(axis=-1)
+        k = np.exp(-d2 / (2.0 * self.sigma**2)) / (2.0 * math.pi * self.sigma**2)
+        # k is (n, bins); S_i is part i's total in-domain kernel mass and
+        # phi_ib = a_i·k_ib/S_i the part's per-bin deposit.
+        s = np.maximum(k.sum(axis=1), 1e-9)  # (n,)
+        phi = self.areas[:, None] * k / s[:, None]  # (n, bins)
+        rho = phi.sum(axis=0)  # (bins,)
+        q = (phi * phi).sum(axis=0)  # Σ_i φ_ib²  (bins,)
+        total = float(self.bin_area * ((rho * rho) - q).sum() * self._inv_a2)
+        # ∂φ_ib/∂p_i = (a_i/(σ²S_i))·k_ib·(c_b − m_i), with
+        # m_i = Σ_c k_ic·c_c/S_i the centre of mass of part i's deposit
+        # (p_i cancels out of the bracket — a part at its own kernel's
+        # centre moves no mass between bins). Then, with
+        # E = Σ_b A_b(ρ_b² − Σ_j φ_jb²); only φ_ib depends on p_i, so
+        #   ∂E/∂p_i = Σ_b 2A_b(ρ_b − φ_ib) · ∂φ_ib/∂p_i.
+        m = (k @ self.centres) / s[:, None]  # (n, 2)
+        scale = (self.areas / (self.sigma**2 * s))[:, None]  # (n, 1)
+        u = 2.0 * self.bin_area * self._inv_a2 * (rho[None, :] - phi)  # (n, bins)
+        t = u * k  # (n, bins)
+        g = scale * (t @ self.centres - m * t.sum(axis=1)[:, None])
+        return total, lay.scatter(g[:, 0], g[:, 1], np.zeros_like(x))
 
 
 class Energy(Term):
@@ -463,20 +657,26 @@ def check_gradient(
 
 
 class BoardEdge(Term):
-    """T5 (slice 1): ``Σ_i softplus_β(lo − c_i)² + softplus_β(c_i − hi)²`` on
-    part CENTRES against the engine's placement rectangle — the same box
-    ``_placement_is_legal`` clamps centres to. The exact outline test stays in
-    the legality gate; this term only pulls strays inward. Smooth; no ∂/∂θ."""
+    """T5 (slice 1): ``Σ_i softplus_β(lo_i − c_i)² + softplus_β(c_i − hi_i)²``
+    on part CENTRES against a PER-PART box — the same box
+    ``OptimizeEngine.bounds_for`` gives the legality gate (the placement
+    domain shrunk by the part's own keep-out radius, intersected with its
+    soft-pin box). A uniform ``(2,)`` box broadcasts to every part. The
+    exact outline test stays in the legality gate; this term only pulls
+    strays inward. Smooth; no ∂/∂θ."""
 
     def __init__(
         self,
         layout: Layout,
-        lo: tuple[float, float],
-        hi: tuple[float, float],
+        lo: tuple[float, float] | np.ndarray,
+        hi: tuple[float, float] | np.ndarray,
         beta: float = 8.0,
     ):
         super().__init__(layout)
-        self.lo, self.hi, self.beta = lo, hi, float(beta)
+        n = len(layout.board.parts)
+        self.lo = np.broadcast_to(np.asarray(lo, dtype=float), (n, 2)).copy()
+        self.hi = np.broadcast_to(np.asarray(hi, dtype=float), (n, 2)).copy()
+        self.beta = float(beta)
 
     def value_grad(self, z: _Z) -> tuple[float, _Z]:
         lay = self.layout
@@ -484,8 +684,8 @@ class BoardEdge(Term):
         gx, gy = np.zeros_like(x), np.zeros_like(y)
         total = 0.0
         for c, g, lo, hi in (
-            (x, gx, self.lo[0], self.hi[0]),
-            (y, gy, self.lo[1], self.hi[1]),
+            (x, gx, self.lo[:, 0], self.hi[:, 0]),
+            (y, gy, self.lo[:, 1], self.hi[:, 1]),
         ):
             for u, sgn in ((lo - c, -1.0), (c - hi, 1.0)):
                 sp = np.logaddexp(0.0, self.beta * u) / self.beta
@@ -530,6 +730,196 @@ class PadSpring(Term):
                 gy[idx] += gg[1]
                 gth[idx] += -gg[0] * (pt[1] - y[idx]) + gg[1] * (pt[0] - x[idx])
         return total, lay.scatter(gx, gy, gth)
+
+
+# ── slice 2: wells T9 (raster) and T10 (rotation) ────────────────────────
+
+#: T9's base raster, coarse to fine (spec §Cost row T9). The 2 mm well
+#: carries a reduced weight on purpose: it is not nested in 5 mm, so at
+#: full weight a 2-mm-only multiple (0.691 + 1.809 = 2.5·w) would read
+#: CHEAPER than a 5-mm-only one (2·w from the 10 mm well + 2·w₂); keeping
+#: w₂ below 0.25·w restores the coarse-first order. A part's own pitch
+#: joins its set at full weight.
+GRID_WELL_WEIGHTS: dict[float, float] = {
+    10.0: 1.0,
+    5.0: 1.0,
+    2.0: 0.2,
+    1.0: 1.0,
+    0.5: 1.0,
+}
+
+#: T10's well orders and weights (spec §Cost row T10, Decision 5): nested
+#: cosine wells ``1 − cos(kθ)`` put minima on the 360°/k grid, so the
+#: weight hierarchy encodes the preference order 0 > 180 > 90 > 45 > 30 >
+#: 15 degrees. k=4 DOMINATES (D5's "strong preference for multiples of
+#: 90", gr503694): an off-grid θ pays ~2·w₄·λ_wells before any real term
+#: is even consulted — on top of which the snap's tilt gate
+#: (:data:`ROT_TILT_MIN_GAIN`) drops a tilt unless it measurably earns.
+#: 0 > 180 > 90 survives via w₁ > w₂ on top of the shared k=4 basin.
+ROT_WELL_WEIGHTS: dict[int, float] = {
+    1: 1.0,
+    2: 0.9,
+    4: 2.0,
+    8: 0.08,
+    12: 0.05,
+    24: 0.03,
+}
+
+#: θ snaps to the nearest multiple of this — T10's finest well grid.
+ROT_SNAP_DEG = 15.0
+
+#: A snapped θ off the 90° grid is written only when its measured final
+#: energy beats the same pose re-snapped to the nearest 90° by more than
+#: this margin (gr503694). The tilt's own well penalty (~2·w₄·λ_wells ≈ 2.6)
+#: is inside the comparison, so the constant prices ONLY the board-level
+#: gain the tilt must still show on top of that — 10.0 is ~10 mm of
+#: wirelength-equivalent energy, the "essentially all 0/90/180/270"
+#: reading of D5 (a 0.5 bar let 4-9 of 29 esp32c3 parts stay tilted).
+#: ``math.inf`` flips the output policy to 90°-grid-only — the open D5
+#: question for Reto is a one-line change either way.
+ROT_TILT_MIN_GAIN = 10.0
+
+
+class SupplyTree(Term):
+    """D14: a spanning tree per supply/ground/pour net — ``Σ w_n ·
+    MST_length`` over the net's rotated pad centres.
+
+    These nets are excluded from T1 (``board_from_engine`` routes them to
+    :attr:`FieldBoard.tree_nets` instead): the tree is their only pull, and
+    it keeps the net connected while things move — a supply tree's length
+    drags one domain's parts together, so 3.3 V parts cluster and 5 V parts
+    cluster. Per-net weight from ``tree_weights``; ground is lowest (it
+    spans every part and so clusters nothing).
+
+    Piecewise smooth: the MST edge set is discrete and kinks where two
+    candidate edges tie; away from ties the gradient is each tree edge's
+    unit vector onto both pads' poses (same lever-arm ∂/∂θ as T1)."""
+
+    def __init__(self, layout: Layout):
+        super().__init__(layout)
+        self.nets = layout.board.tree_nets
+        self.weights = np.asarray(layout.board.tree_weights, dtype=float)
+
+    @staticmethod
+    def _mst(pts: np.ndarray) -> list[tuple[int, int]]:
+        """Prim over ``pts`` (n,2); returns ``(parent, child)`` index pairs."""
+        n = len(pts)
+        if n < 2:
+            return []
+        dist = np.linalg.norm(pts - pts[0], axis=1)
+        parent = np.zeros(n, dtype=int)
+        in_tree = np.zeros(n, dtype=bool)
+        in_tree[0] = True
+        edges: list[tuple[int, int]] = []
+        for _ in range(n - 1):
+            d = np.where(in_tree, np.inf, dist)
+            j = int(d.argmin())
+            edges.append((int(parent[j]), j))
+            in_tree[j] = True
+            upd = np.linalg.norm(pts - pts[j], axis=1)
+            better = upd < dist
+            dist[better] = upd[better]
+            parent[better] = j
+        return edges
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, y, th, _ = lay.unpack(z)
+        parts = lay.board.parts
+        gx, gy, gth = np.zeros_like(x), np.zeros_like(y), np.zeros_like(th)
+        total = 0.0
+        for net, w in zip(self.nets, self.weights, strict=True):
+            if len(net) < 2 or w == 0.0:
+                continue
+            pts = np.array(
+                [
+                    _world(parts[i], parts[i].pads[k : k + 1], x[i], y[i], th[i])[0]
+                    for i, k in net
+                ]
+            )
+            for a, b in self._mst(pts):
+                diff = pts[a] - pts[b]
+                d = float(np.linalg.norm(diff))
+                if d < 1e-12:
+                    continue
+                total += w * d
+                g = w * diff / d
+                for idx, pt, gg in ((net[a][0], pts[a], g), (net[b][0], pts[b], -g)):
+                    gx[idx] += gg[0]
+                    gy[idx] += gg[1]
+                    gth[idx] += -gg[0] * (pt[1] - y[idx]) + gg[1] * (pt[0] - x[idx])
+        return total, lay.scatter(gx, gy, gth)
+
+
+class GridWell(Term):
+    """T9 (slice 2): raster wells, ``Σ w_p (1 − cos(2πc/p))`` on each part
+    centre in x and y, and on every via.
+
+    The anchor is the part CENTRE — ``x_i``/``y_i`` — never pad 1, so a
+    mirrored or rotated part's pads move in its local frame while its
+    centre keeps the same grid (``snap_to_preferred``'s anchor, spec
+    Decision 6). ``Part.pitch`` joins the part's pitch set at
+    ``own_weight``. ``pitches`` is a ``{pitch_mm: weight}`` map; the
+    Harden stage passes the coarsest pitch alone first so the fine wells
+    cannot trap a part between coarse multiples, then the full set —
+    wells stay off during Spread (spec §Schedule)."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        pitches: Mapping[float, float] | None = None,
+        *,
+        own_weight: float = 1.0,
+        via_pitches: Mapping[float, float] | None = None,
+    ):
+        super().__init__(layout)
+        base = dict(GRID_WELL_WEIGHTS if pitches is None else pitches)
+        self.via_pitches = base if via_pitches is None else dict(via_pitches)
+        self.per_part = [dict(base) for _ in layout.board.parts]
+        for i, part in enumerate(layout.board.parts):
+            if part.pitch is not None and math.isfinite(part.pitch) and part.pitch > 0:
+                self.per_part[i][float(part.pitch)] = float(own_weight)
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, y, _th, vias = lay.unpack(z)
+        gx, gy = np.zeros_like(x), np.zeros_like(y)
+        total = 0.0
+        for i in range(lay.n_parts):
+            for p, w in self.per_part[i].items():
+                f = 2.0 * math.pi / p
+                total += w * (2.0 - math.cos(f * x[i]) - math.cos(f * y[i]))
+                gx[i] += w * f * math.sin(f * x[i])
+                gy[i] += w * f * math.sin(f * y[i])
+        gvia = np.zeros_like(vias)
+        for v in range(len(vias)):
+            for p, w in self.via_pitches.items():
+                f = 2.0 * math.pi / p
+                total += w * (2.0 - math.cos(f * vias[v, 0]) - math.cos(f * vias[v, 1]))
+                gvia[v, 0] += w * f * math.sin(f * vias[v, 0])
+                gvia[v, 1] += w * f * math.sin(f * vias[v, 1])
+        return total, lay.scatter(gx, gy, np.zeros_like(x), gvia)
+
+
+class RotationWell(Term):
+    """T10 (slice 2): ``Σ_i Σ_k w_k (1 − cos(k θ_i))`` over
+    :data:`ROT_WELL_WEIGHTS`. Smooth and non-convex: the strong low-``k``
+    wells own the basins, the weak high-``k`` wells mark the 45/30/15°
+    likings a compromise θ settles into. No x/y gradient."""
+
+    def __init__(self, layout: Layout, weights: Mapping[int, float] | None = None):
+        super().__init__(layout)
+        self.weights = dict(ROT_WELL_WEIGHTS if weights is None else weights)
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, _y, th, _v = lay.unpack(z)
+        gth = np.zeros_like(th)
+        total = 0.0
+        for k, w in self.weights.items():
+            total += w * float((1.0 - np.cos(k * th)).sum())
+            gth += w * k * np.sin(k * th)
+        return total, lay.scatter(np.zeros_like(x), np.zeros_like(x), gth)
 
 
 # ── slice 2: JLCPCB pairwise SMD spacing ─────────────────────────────────
@@ -661,25 +1051,76 @@ def pair_minimums(
 _RAIL_RE = re.compile(
     r"^(\+?\d+(\.\d+)?V\d*|[ADP]?GND\w*|V(SS|CC|DD|BUS|IN|OUT|BAT|REF)\w*)$", re.I
 )
+#: Ground names get the lowest D14 tree weight: ground spans every part,
+#: so its length term would cluster nothing (spec §Cost, D14).
+_GROUND_RE = re.compile(r"^[ADP]?GND\w*$", re.I)
+GROUND_TREE_WEIGHT = 0.25
+SUPPLY_TREE_WEIGHT = 1.0
 #: T6 rubber-band slack: a served decoupling pad within this of its pin is free.
 SUPPORT_D0_MM = 1.5
 #: λ_T4 ramp: start loose so wirelength can pull, end firm so overlaps resolve.
 LAMBDA_T4_RAMP = (0.25, 1.0, 4.0, 16.0)
+#: λ_T4 for the bounded repair descent — hard enough to re-open the gaps
+#: the ramp's λ=16 cap or a snap closed, short of a second full ramp.
+REPAIR_LAMBDA_T4 = 64.0
+#: L-BFGS-B convergence tolerance for the polish's stages — scipy's own
+#: default (2.2e-9) keeps a stage grinding ~0.001-E-relative gains to
+#: ``max_iter``; on a dense board each of those evals is a full O(n²)
+#: courtyard pass (~70 ms on nano, ~660 evals/45 s a polish, every one
+#: sunk when the pose is refused). 1e-7 stops a stage once an iteration
+#: buys less than ~0.0001 of the energy — the tail it skips never moved
+#: a pose the snap cascade could see.
+POLISH_FTOL = 1e-7
+#: λ for the bin-density spread term (gr503556): deliberately small —
+#: the term's job is a bias against re-clustering in the descent and the
+#: accept gate, not a prime mover. Measured 2026-10-22 on the seeded
+#: synthetic boards: λ ≤ ~0.5 keeps every legality gate satisfied (larger
+#: values let the spread push peripheral parts past T5's soft wall), and
+#: on p2u any weight at all lets U1's corner seed trap its supply-tree
+#: pull — the term is a gentle prior, connectivity still wins everywhere
+#: it has a real opinion. The term stays on through Harden: the committed
+#: pose's spread is a real property, and a snap that re-clusters should
+#: fail the energy gate.
+LAMBDA_DENSITY = 0.1
+#: Bins per LONGER domain side for BinDensity (8×~6 on nano ≈ 12 mm cells,
+#: σ one cell — a part's mass reaches its ~3 neighbours).
+DENSITY_BINS = 8
+
+#: Accept gate: an applied pose's wirelength terms (T1 + the D14 supply
+#: tree) may not exceed their seed value by more than this fraction —
+#: spread, courtyard and well terms never pay for a longer ratsnest
+#: (measured 2026-10-22: a platform-sensitive descent landed in a basin
+#: where density/T4 gains hid a 2× wirelength regression on the sanity
+#: board — legal and lower-E, but worse where it counts).
+POLISH_WIRELENGTH_WORSEN = 0.02
 
 
 @dataclass(frozen=True)
 class PolishResult:
     applied: bool
-    reason: str  # applied | unplaced | no_free_vars | no_gain | illegal | cost_worse | bad_gradient
+    #: applied | unplaced | no_free_vars | no_gain | illegal |
+    #: wirelength_worse | measures_worse | bad_gradient
+    reason: str
     e_before: float
     e_after: float
     moved: tuple[int, ...]
+    #: Diagnostics: which snap lane applied, or the violated rules and
+    #: parts when refused.
+    detail: str = ""
+    #: Comparison only, never the gate: ``engine.total()`` after minus
+    #: before the applied move (``None`` when nothing was applied). The
+    #: annealer's risk term prices margins the field path does not
+    #: optimize, so it can rise on an accepted pose (Reto 2026-10-21).
+    anneal_delta: float | None = None
 
     def summary(self) -> str:
-        return (
+        out = (
             f"field_polish {self.reason}: E {self.e_before:.4f} -> "
             f"{self.e_after:.4f}, {len(self.moved)} parts moved"
         )
+        if self.anneal_delta is not None:
+            out += f"; anneal {self.anneal_delta:+.2f}"
+        return f"{out} ({self.detail})" if self.detail else out
 
 
 def board_from_engine(
@@ -731,6 +1172,7 @@ def board_from_engine(
                     np.array([float(ir.pin_w[p]) for p in pads_of[i]]),
                     np.array([float(ir.pin_h[p]) for p in pads_of[i]]),
                 ),
+                pitch=float(engine._preferred_snap_grid_mm(i)),
             )
         )
     by_net: dict[int, list[tuple[int, int]]] = {}
@@ -739,14 +1181,23 @@ def board_from_engine(
         if net < 0:
             continue
         by_net.setdefault(net, []).append((int(ir.pin_instance[p]), slot[p]))
-    nets = tuple(
-        tuple(members)
-        for net, members in sorted(by_net.items())
-        if len({i for i, _ in members}) >= 2
-        and len(members) <= 12
-        and int(ir.net_plane_layers[net]) == 0
-        and not _RAIL_RE.match(str(ir.net_name[net]))
-    )
+    nets: list[tuple[tuple[int, int], ...]] = []
+    tree_nets: list[tuple[tuple[int, int], ...]] = []
+    tree_weights: list[float] = []
+    for net, members in sorted(by_net.items()):
+        if len({i for i, _ in members}) < 2 or len(members) > 12:
+            continue
+        name = str(ir.net_name[net])
+        if int(ir.net_plane_layers[net]) != 0 or _RAIL_RE.match(name):
+            # D14: rails and plane nets keep a spanning-tree pull, never a
+            # T1 wirelength one; ground's weight is lowest (it spans every
+            # part, so it clusters nothing).
+            tree_nets.append(tuple(members))
+            tree_weights.append(
+                GROUND_TREE_WEIGHT if _GROUND_RE.match(name) else SUPPLY_TREE_WEIGHT
+            )
+        else:
+            nets.append(tuple(members))
     springs: list[tuple[int, int, int, int, float]] = []
     for grp in sg.detect_support_groups(ir):
         if grp.kind != "support_cap":
@@ -769,26 +1220,168 @@ def board_from_engine(
     )
     board = FieldBoard(
         parts=tuple(parts),
-        nets=nets,
+        nets=tuple(nets),
         x0=np.asarray(ir.inst_x, dtype=float).copy(),
         y0=np.asarray(ir.inst_y, dtype=float).copy(),
         th0=th0,
+        tree_nets=tuple(tree_nets),
+        tree_weights=tuple(tree_weights),
     )
     return board, springs
+
+
+def _hole_obstacles(engine: Any) -> list[tuple[np.ndarray, int | None]]:
+    """Each mounting hole's keep-out polygon in world frame — T4's fixed
+    obstacles (gr503640 fix 2) — with the one instance index exempt from
+    it (the part whose own footprint cut it, ``_hole_owned_by``), else
+    ``None``. :meth:`OptimizeEngine._hole_at` poses a footprint-derived
+    hole at its owner's CURRENT pose — the base pose the board packs."""
+    from precis.pcb.optimize import _hole_owned_by
+
+    ir = engine.ir
+    out = []
+    for idx, hole in enumerate(ir.mounting_holes):
+        _hx, _hy, poly = engine._hole_at(idx)
+        owner = next(
+            (i for i in range(ir.n_instances) if _hole_owned_by(ir, hole, i)),
+            None,
+        )
+        out.append((np.asarray(poly, dtype=float), owner))
+    return out
+
+
+def _legality_violations(
+    engine: Any,
+    proposals: Sequence[tuple[int, float, float]],
+    rotations: dict[int, float],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    """The rules a proposal set breaks, ``"rule: parts"`` per violation —
+    a reason-returning mirror of ``OptimizeEngine._placement_is_legal``
+    (which short-circuits on the first). Only the polish's refuse path
+    calls it; divergence from the gate is a bug, so keep the checks in the
+    gate's order: bounds box, soft-pin travel, courtyard (rest, then
+    moved-vs-moved), mounting holes, authored-via gap."""
+    from precis.pcb.geom import convex_polygons_overlap
+    from precis.pcb.optimize import (
+        _FIXED_VIA_CLEARANCE_MM,
+        _courtyard_in_outline,
+        _hole_owned_by,
+    )
+
+    ir = engine.ir
+    keepout = engine._keepout_r
+    moving = [inst for inst, _, _ in proposals]
+    proposed_poly = {
+        inst: engine._world_courtyard(inst, x, y, rotations.get(inst))
+        for inst, x, y in proposals
+    }
+    proposed_pose = {
+        inst: (x, y, float(rotations.get(inst, ir.inst_rot[inst])))
+        for inst, x, y in proposals
+    }
+    out: list[str] = []
+    for i, (inst, x, y) in enumerate(proposals):
+        ref = str(ir.instance_refdes[inst])
+        x0, y0, x1, y1 = engine.bounds_for(inst)
+        if not (x0 <= x <= x1 and y0 <= y <= y1):
+            out.append(f"bounds: {ref}")
+        if engine._outline_region is not None and not _courtyard_in_outline(
+            engine._outline_region, proposed_poly[inst]
+        ):
+            out.append(f"outline: {ref}")
+        t = float(engine._soft_pin_mm[inst])
+        if math.isfinite(t):
+            ax = float(engine._soft_pin_anchor[inst, 0])
+            ay = float(engine._soft_pin_anchor[inst, 1])
+            if (
+                math.isfinite(ax)
+                and math.isfinite(ay)
+                and math.hypot(x - ax, y - ay) > t + 1e-9
+            ):
+                out.append(f"soft_pin: {ref}")
+        dx, dy = ir.inst_x - x, ir.inst_y - y
+        d2 = dx * dx + dy * dy
+        d2[moving] = math.inf
+        for other in np.nonzero(d2 < (keepout + keepout[inst]) ** 2)[0]:
+            if engine._sides_clear(inst, int(other)):
+                continue
+            if convex_polygons_overlap(
+                proposed_poly[inst], engine._world_courtyard(int(other))
+            ):
+                out.append(f"courtyard: {ref}<>{ir.instance_refdes[int(other)]}")
+        for hole_idx in range(len(engine._hole_polys)):
+            if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
+                continue
+            hx, hy, hole_poly = engine._hole_at(hole_idx, proposed_pose)
+            sep_h = keepout[inst] + engine._hole_radius[hole_idx]
+            if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
+                continue
+            if convex_polygons_overlap(proposed_poly[inst], hole_poly):
+                out.append(f"hole: {ref}")
+        if engine._fixed_via_gap(inst, x, y, rotations.get(inst)) < (
+            _FIXED_VIA_CLEARANCE_MM
+        ):
+            out.append(f"via_gap: {ref}")
+        for other, ox, oy in proposals[i + 1 :]:
+            if engine._sides_clear(inst, other):
+                continue
+            sep_ij = keepout[inst] + keepout[other]
+            if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
+                continue
+            if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
+                out.append(f"courtyard: {ref}<>{ir.instance_refdes[other]} (moved)")
+        if len(out) >= limit:
+            return out
+    return out
 
 
 def polish_placement(
     engine: Any,
     *,
     max_iter: int = 60,
+    repair_iter: int = 60,
     lambda_t4: Sequence[float] = LAMBDA_T4_RAMP,
     gamma: float = 0.5,
+    lambda_wells: float = 0.5,
+    lambda_density: float = LAMBDA_DENSITY,
 ) -> PolishResult:
-    """Descend x, y, θ on T1 + T4 + T5 + T6 with a λ_T4 ramp, snap the moved
-    rotations to 90°, and accept ONLY if (a) the snapped pose has lower E at
-    the final weights, (b) ``_placement_is_legal`` accepts every move at once,
-    and (c) the engine's own ``total()`` does not rise. Otherwise the board is
-    left exactly as it was."""
+    """Descend x, y, θ on T1 + T4 + T5 + T6 + the D14 tree + bin density
+    with a λ_T4 ramp, then a Harden
+    stage with the wells on (T9's coarsest raster first, then its full
+    pitch set; T10 throughout — spec §Schedule 3, "wells off" in Spread),
+    and try the exact snap in a fallback cascade: x, y onto each part's own
+    raster + θ onto the nearest 15° well, then θ-only, then the old 90°
+    snap, then the descended x, y at each part's SEED θ — the continuous
+    descended θ is never written (gr503694); every written rotation is
+    normalised to [0, 360). On the 15° lanes an off-90° θ survives only
+    when its measured E beats the 90° re-snap by ``ROT_TILT_MIN_GAIN``
+    (D5's strong 90° preference). The first pose accepted commits — accept
+    requires (a) lower E at the final weights, (b) the wirelength terms
+    (T1 + supply tree) not worse than the seed beyond
+    ``POLISH_WIRELENGTH_WORSEN``, (c) ``_placement_is_legal``
+    taking every move at once, and (d) the authored measures' bill
+    (``_money_measures``) not rising and no satisfied hard measure
+    broken — the field energy does not model measures, so the polish may
+    not trade them away (``measures_worse``) — the engine's ``total()`` delta is reported
+    as ``anneal_delta``, a comparison value, not the accept gate (Reto
+    2026-10-21: the field path's gate is pre-route DRC legality plus the
+    field's own energy). Otherwise the board is left exactly as it was.
+
+    When every lane fails the legality gate, one bounded repair descent
+    runs before the refuse: θ pinned at the raster+15° snap's wells,
+    x/y re-descended at ``REPAIR_LAMBDA_T4`` capped by ``repair_iter`` —
+    repair over refuse, the contract the signature's ``repair_iter``
+    has always named. The stages' cost is bounded by
+    ``POLISH_FTOL`` (early-stop when an iteration buys ~nothing) on top
+    of the existing per-stage ``max_iter``, so a dense board's polish
+    stops grinding evals it could never spend.
+
+    A stage whose line search dies ABNORMAL is retried with θ pinned:
+    at θ = 0 the courtyard witness is a tied-vertex kink whose
+    subgradient stalls L-BFGS-B (gr503452), and the retry keeps x, y
+    descending while θ stays a real variable everywhere it does move."""
     from precis.pcb.ir import COURTYARD_CLEARANCE_MM
     from precis.pcb.optimize import Move, MoveKind
 
@@ -800,7 +1393,6 @@ def polish_placement(
     lay = Layout(board)
     if lay.size == 0:
         return PolishResult(False, "no_free_vars", 0.0, 0.0, ())
-    x0, y0, x1, y1 = engine._placement_bounds
     t1 = ConnectivityPull(lay, gamma=gamma)
     # The courtyards are the engine's, already inflated by its 0.40 mm reserve
     # on each side. Unclassed pairs keep slice 1's soft 0.40 mm on top of
@@ -813,14 +1405,44 @@ def polish_placement(
             fallback=3.0 * COURTYARD_CLEARANCE_MM,
             reserve=2.0 * COURTYARD_CLEARANCE_MM,
         ),
+        # gr503640 fix 2: mounting holes as fixed obstacles on BOTH
+        # sides, at the same unclassed-pair minimum — the descent pushes
+        # a part off a hole instead of discovering it at the gate.
+        obstacles=_hole_obstacles(engine),
     )
-    t5 = BoardEdge(lay, (x0, y0), (x1, y1))
+    # T5's box is the gate's own per-part box (bounds_for shrinks the
+    # placement domain by each part's keep-out radius), not the unshrunk
+    # _placement_bounds: measured 2026-10-21, the uniform box let parts
+    # park up to a keep-out radius outside the gate's domain (7 of 24
+    # seeded boards refused on `bounds` alone).
+    bound = np.array([engine.bounds_for(i) for i in range(ir.n_instances)])
+    t5 = BoardEdge(lay, bound[:, :2], bound[:, 2:])
     t6 = PadSpring(lay, springs)
+    t_tree = SupplyTree(lay)
+    # The density domain is the union of the per-part legal boxes — the
+    # places centres may actually go.
+    t_density = BinDensity(
+        lay, bound[:, :2].min(axis=0), bound[:, 2:].max(axis=0), bins=DENSITY_BINS
+    )
+    t9_coarse = GridWell(lay, pitches={10.0: 1.0})
+    t9 = GridWell(lay)
+    t10 = RotationWell(lay)
 
-    def energy(l4: float) -> Energy:
-        return Energy(lay, [(1.0, t1), (l4, t4), (1.0, t5), (1.0, t6)])
+    def energy(l4: float, wells: Sequence[Term] = ()) -> Energy:
+        return Energy(
+            lay,
+            [
+                (1.0, t1),
+                (l4, t4),
+                (1.0, t5),
+                (1.0, t6),
+                (1.0, t_tree),
+                (lambda_density, t_density),
+            ]
+            + [(lambda_wells, w) for w in wells],
+        )
 
-    final = energy(lambda_t4[-1])
+    final = energy(lambda_t4[-1], (t9, t10))
     z0 = lay.pack()
     e0 = final.value_grad(z0)[0]
     # A wrong analytic gradient silently wrecks a descent; refuse rather than
@@ -841,48 +1463,342 @@ def polish_placement(
     if not probe.dot_rel_err < 5e-2:
         _LOG.warning("field_polish refused: gradient check failed (%s)", probe)
         return PolishResult(False, "bad_gradient", e0, e0, ())
-    z = z0.copy()
-    for l4 in lambda_t4:
-        z = minimize(
-            energy(l4).value_grad,
+    n_rot = int(lay.free_rot.sum())
+
+    # L-BFGS-B gets the legality gate's own per-part box as bounds
+    # (gr503640): an unbounded descent could — and on dense boards did —
+    # walk parts outside the domain, and every such proposal died at the
+    # legality gate as an all-or-nothing refusal. θ and vias stay free.
+    xy_bounds: list[tuple[float | None, float | None]] = [(None, None)] * lay.size
+    # z is [x(free), y(free), θ(free_rot), …]: y of slot k sits at
+    # n_free + k, not n_xy + k (that index is θ — it clamped θ to the
+    # y-box and overran z when fewer parts rotate than translate).
+    n_free = n_xy // 2
+    for slot, pi in enumerate(np.flatnonzero(lay.free_xy)):
+        xy_bounds[slot] = (float(bound[pi, 0]), float(bound[pi, 2]))
+        xy_bounds[n_free + slot] = (float(bound[pi, 1]), float(bound[pi, 3]))
+
+    def descend(fg, z: _Z) -> _Z:
+        """One L-BFGS-B stage. On an ABNORMAL stop — the θ = 0 courtyard
+        witness kink's subgradient stalls the line search after 0–1
+        steps, freezing x, y with it (gr503452) — retry once from the
+        stall point with θ pinned, so the stage still descends x, y.
+        ``ftol`` is the early-stop bound (:data:`POLISH_FTOL`): a stage
+        whose iteration buys less than ~0.0001 of the energy has
+        converged for placement purposes and stops there."""
+        res = minimize(
+            fg,
             z,
             jac=True,
             method="L-BFGS-B",
-            options={"maxiter": max_iter},
-        ).x
+            bounds=xy_bounds,
+            options={"maxiter": max_iter, "ftol": POLISH_FTOL},
+        )
+        if res.status == 2 and n_rot:
+            bounds = list(xy_bounds)
+            for k in range(n_xy, n_xy + n_rot):
+                bounds[k] = (float(res.x[k]), float(res.x[k]))
+            res = minimize(
+                fg,
+                res.x,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={"maxiter": max_iter, "ftol": POLISH_FTOL},
+            )
+        return res.x
+
+    z = z0.copy()
+    for l4 in lambda_t4:
+        z = descend(energy(l4).value_grad, z)
+    # Harden: wells come on after the λ_T4 ramp — T9's coarsest pitch
+    # alone first (a fine well's basin could otherwise hold a part between
+    # coarse multiples), then the full raster set.
+    for wells in ((t9_coarse, t10), (t9, t10)):
+        z = descend(energy(lambda_t4[-1], wells).value_grad, z)
     x, y, th, _ = lay.unpack(z)
-    rot = -np.degrees(th)
-    for k in np.flatnonzero(lay.free_rot):
-        if abs(th[k] - board.th0[k]) > 1e-6:
-            rot[k] = (round(rot[k] / 90.0) * 90.0) % 360.0
-        else:
-            rot[k] = -math.degrees(board.th0[k])
-        th[k] = -math.radians(rot[k])
-    e1 = final.value_grad(lay.pack_from(x, y, th))[0]
-    if not e1 < e0:
-        return PolishResult(False, "no_gain", e0, e1, ())
-    old: list[tuple[float, float, float]] = []
-    new: list[tuple[float, float, float]] = []
-    moved: list[int] = []
-    for i in range(ir.n_instances):
-        r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
-        r_new = float(rot[i]) if lay.free_rot[i] else r_old
-        pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
-        pose_new = (float(x[i]), float(y[i]), r_new)
-        if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > 1e-6:
-            moved.append(i)
-            old.append(pose_old)
-            new.append(pose_new)
-    if not moved:
-        return PolishResult(False, "no_gain", e0, e1, ())
-    proposals = [(i, p[0], p[1]) for i, p in zip(moved, new, strict=True)]
-    rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
-    if not engine._placement_is_legal(proposals, rotations=rotations):
-        return PolishResult(False, "illegal", e0, e1, tuple(moved))
-    before = engine.total()
-    move = Move(MoveKind.TRANSLATE, tuple(moved), tuple(old), tuple(new))
-    engine.apply_move(move)
-    if engine.total() > before + 1e-9:
+
+    def _snap(do_xy: bool, snap_deg: float | None):
+        """The exact snap (spec §Schedule 3): part centre onto its own
+        raster, θ onto the nearest well — only over the free variables; a
+        fixed or unmoved part keeps the pose it had. ``snap_deg=None``
+        restores each part's SEED θ (the annealed value the polish started
+        from): the continuous descended θ is never written — it is neither
+        normalised nor on any grid (gr503694). Every returned rotation is
+        normalised to [0, 360)."""
+        xs, ys, ths = x.copy(), y.copy(), th.copy()
+        if do_xy:
+            for k in np.flatnonzero(lay.free_xy):
+                p = board.parts[k].pitch
+                if p is not None and math.isfinite(p) and p > 0.0:
+                    xs[k] = round(float(xs[k]) / p) * p
+                    ys[k] = round(float(ys[k]) / p) * p
+            # A raster snap can push a centre past its own bounds box
+            # (gr503640: "bounds: J_B" on free-bottom) — clamp it back;
+            # the legality gate's box is the authority.
+            for k in np.flatnonzero(lay.free_xy):
+                xs[k] = min(max(float(xs[k]), bound[k, 0]), bound[k, 2])
+                ys[k] = min(max(float(ys[k]), bound[k, 1]), bound[k, 3])
+        rot = -np.degrees(ths)
+        for k in np.flatnonzero(lay.free_rot):
+            if snap_deg is None or abs(ths[k] - board.th0[k]) <= 1e-6:
+                rot[k] = -math.degrees(board.th0[k])
+            else:
+                rot[k] = round(rot[k] / snap_deg) * snap_deg
+            rot[k] %= 360.0
+            ths[k] = -math.radians(rot[k])
+        rot %= 360.0
+        return xs, ys, ths, rot
+
+    def _resolve_tilts(xs, ys, ths, rot):
+        """k=4 dominance (spec D5): a snapped θ off the 90° grid survives
+        only when its measured final energy beats the same pose re-snapped
+        to the nearest 90° by more than ``ROT_TILT_MIN_GAIN``. Greedy,
+        per part, in place-order."""
+        ths, rot = ths.copy(), rot.copy()
+        for k in np.flatnonzero(lay.free_rot):
+            if abs(float(ths[k]) - float(board.th0[k])) <= 1e-6:
+                continue  # at its authored seed θ — author intent, not a tilt
+            if not 1e-6 < float(rot[k]) % 90.0 < 90.0 - 1e-6:
+                continue
+            e_tilt = final.value_grad(lay.pack_from(xs, ys, ths))[0]
+            target = round(float(rot[k]) / 90.0) * 90.0 % 360.0
+            keep = ths[k]
+            ths[k] = -math.radians(target)
+            e_grid = final.value_grad(lay.pack_from(xs, ys, ths))[0]
+            if e_tilt < e_grid - ROT_TILT_MIN_GAIN:
+                ths[k] = keep
+            else:
+                rot[k] = target
+        return xs, ys, ths, rot
+
+    def _wirelength(xs, ys, ths) -> float:
+        """The wirelength terms of one pose — T1's pulls plus the D14
+        supply tree (rails are T1-exempt but still wire)."""
+        p = lay.pack_from(xs, ys, ths)
+        return t1.value_grad(p)[0] + t_tree.value_grad(p)[0]
+
+    wl0 = _wirelength(*lay.unpack(z0)[:3])
+
+    def _off90() -> int:
+        """Placed instances off the 90° grid — the gripe's per-board count
+        (gr503694), read from the pose just written."""
+        return sum(
+            1
+            for i in range(ir.n_instances)
+            if 1e-6 < float(ir.inst_rot[i]) % 90.0 < 90.0 - 1e-6
+        )
+
+    # Fullest snap first; each weaker pose is tried only if the stronger
+    # one buys no E gain or fails the all-at-once legality gate — a
+    # raster/45° snap that collides should cost the snap, not the descent.
+    reason = "no_gain"
+    e1 = e0
+    refused: tuple[int, ...] = ()
+    detail = ""
+    lanes = {
+        (True, ROT_SNAP_DEG): "raster+15deg",
+        (False, ROT_SNAP_DEG): "15deg",
+        (False, 90.0): "90deg",
+        (False, None): "seed-theta",
+    }
+
+    def _apply_honouring_measures(move: Move) -> bool:
+        """Apply ``move`` unless it worsens the authored measures. The
+        field energy does not model proximity/separation/align measures,
+        so the polish must not trade them away: the anneal pays for them
+        in ``_money_measures`` and the polish may not raise that bill
+        (nor break a satisfied hard measure). Undone on refusal, with
+        ``reason = "measures_worse"``."""
+        nonlocal reason, refused, detail
+        if not engine._measure_pairs:
+            engine.apply_move(move)
+            return True
+        usd0 = engine._money_measures
+        hard0 = _hard_measures_met()
+        engine.apply_move(move)
+        usd1 = engine._money_measures
+        if usd1 <= usd0 + 1e-9 and hard0 <= _hard_measures_met():
+            return True
         engine.undo_move(move)
-        return PolishResult(False, "cost_worse", e0, e1, tuple(moved))
-    return PolishResult(True, "applied", e0, e1, tuple(moved))
+        reason = "measures_worse"
+        refused = tuple(move.instances)
+        detail = f"measures {usd0:.4g} -> {usd1:.4g} USD"
+        return False
+
+    def _hard_measures_met() -> frozenset[int]:
+        """Indices of the hard, steering measures currently satisfied."""
+        return frozenset(
+            idx
+            for idx, (_a, _b, spec) in enumerate(engine._measure_pairs)
+            if spec.hard and spec.weight > 0.0 and engine._measure_usd.get(idx) == 0.0
+        )
+
+    def _accept(
+        xs: np.ndarray, ys: np.ndarray, ths: np.ndarray, rot: np.ndarray, lane: str
+    ) -> PolishResult | None:
+        """The accept gates for one candidate pose — E gain at the final
+        weights, the never-worse wirelength guard, and the all-at-once
+        (then partial) legality gate — applying the move on success.
+        ``None`` when a gate refuses; ``reason``/``refused``/``detail``
+        carry the cause as the inline cascade did."""
+        nonlocal reason, e1, refused, detail
+        e1 = final.value_grad(lay.pack_from(xs, ys, ths))[0]
+        if not e1 < e0:
+            return None
+        # Wirelength never-worse: spread/courtyard/well gains cannot pay
+        # for a longer ratsnest (POLISH_WIRELENGTH_WORSEN).
+        if _wirelength(xs, ys, ths) > wl0 * (1.0 + POLISH_WIRELENGTH_WORSEN):
+            reason = "wirelength_worse"
+            return None
+        old: list[tuple[float, float, float]] = []
+        new: list[tuple[float, float, float]] = []
+        moved: list[int] = []
+        refused = ()
+        for i in range(ir.n_instances):
+            r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
+            r_new = float(rot[i]) if lay.free_rot[i] else r_old
+            pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
+            pose_new = (float(xs[i]), float(ys[i]), r_new)
+            if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > 1e-6:
+                moved.append(i)
+                old.append(pose_old)
+                new.append(pose_new)
+        if not moved:
+            return None
+        proposals = [(i, p[0], p[1]) for i, p in zip(moved, new, strict=True)]
+        rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
+        in_outline = engine._outline_region is not None
+        if not engine._placement_is_legal(
+            proposals, rotations=rotations, in_outline=in_outline
+        ):
+            # Partial accept (gr503640): a gate failure refuses only the
+            # offending parts — revert them and keep the legal rest when
+            # it still lowers E. Refusal of the whole polish used to cost
+            # every good move alongside the few bad ones.
+            bad = _legality_violations(
+                engine, proposals, rotations, limit=ir.n_instances
+            )
+            bad_refdes = {
+                r for v in bad for r in v.split(":", 1)[1].strip().split("<>")
+            }
+            by_ref = {str(ir.instance_refdes[i]): i for i in moved}
+            drop = {by_ref[r] for r in bad_refdes if r in by_ref}
+            keep = [i for i in moved if i not in drop]
+            if not keep or not drop:
+                reason = "illegal"
+                refused = tuple(moved)
+                detail = "; ".join(bad[:4])
+                return None
+            kept = [new[moved.index(i)] for i in keep]
+            xk, yk, thk = x.copy(), y.copy(), th.copy()
+            for i, pose in zip(keep, kept, strict=True):
+                xk[i], yk[i], thk[i] = pose[0], pose[1], -math.radians(pose[2])
+            e1 = final.value_grad(lay.pack_from(xk, yk, thk))[0]
+            if not e1 < e0:
+                return None
+            if _wirelength(xk, yk, thk) > wl0 * (1.0 + POLISH_WIRELENGTH_WORSEN):
+                reason = "wirelength_worse"
+                return None
+            proposals = [(i, p[0], p[1]) for i, p in zip(keep, kept, strict=True)]
+            rotations = {i: p[2] for i, p in zip(keep, kept, strict=True)}
+            if not engine._placement_is_legal(
+                proposals, rotations=rotations, in_outline=in_outline
+            ):
+                reason = "illegal"
+                refused = tuple(keep)
+                detail = "; ".join(
+                    _legality_violations(engine, proposals, rotations, limit=4)
+                )
+                return None
+            old = [old[moved.index(i)] for i in keep]
+            detail = (
+                f"{lane}; partial: reverted "
+                f"{sorted(str(ir.instance_refdes[i]) for i in drop)}"
+            )
+            before = engine.total()
+            move = Move(MoveKind.TRANSLATE, tuple(keep), tuple(old), tuple(kept))
+            if not _apply_honouring_measures(move):
+                return None
+            return PolishResult(
+                True,
+                "applied",
+                e0,
+                e1,
+                tuple(keep),
+                f"{detail}; off-90 {_off90()}/{ir.n_instances}",
+                anneal_delta=engine.total() - before,
+            )
+        # The accept gate above is legality + field energy only (Reto
+        # 2026-10-21): the annealer's total() — its risk term prices
+        # margins the field path does not optimize and can jump ~10^3x on
+        # a moved part — is measured after the move and reported as
+        # anneal_delta, a comparison value, never a reason to undo
+        # (gr503458).
+        before = engine.total()
+        move = Move(MoveKind.TRANSLATE, tuple(moved), tuple(old), tuple(new))
+        if not _apply_honouring_measures(move):
+            return None
+        return PolishResult(
+            True,
+            "applied",
+            e0,
+            e1,
+            tuple(moved),
+            detail=f"{lane}; off-90 {_off90()}/{ir.n_instances}",
+            anneal_delta=engine.total() - before,
+        )
+
+    def _repair() -> PolishResult | None:
+        """The bounded repair descent ``repair_iter`` has always named
+        (the stage the lane cascade dropped): θ pinned at the raster+15°
+        snap's wells, x/y re-descend at :data:`REPAIR_LAMBDA_T4` to
+        re-open the gaps the descent or the snap closed, then the same
+        accept gates. A pose it cannot make legal is the same refuse the
+        cascade reached; `repair_iter` keeps its cost bounded on top of
+        :data:`POLISH_EVAL_BUDGET`."""
+        xs, ys, ths, rot = _snap(True, ROT_SNAP_DEG)
+        xs, ys, ths, rot = _resolve_tilts(xs, ys, ths, rot)
+        rep = energy(REPAIR_LAMBDA_T4, (t9, t10))
+        free = np.flatnonzero(lay.free_xy)
+        w0 = np.concatenate([xs[free], ys[free]])
+
+        def rep_fg(w: _Z) -> tuple[float, _Z]:
+            xx, yy = xs.copy(), ys.copy()
+            xx[free] = w[: w.size // 2]
+            yy[free] = w[w.size // 2 :]
+            v, g = rep.value_grad(lay.pack_from(xx, yy, ths.copy()))
+            return v, g[:n_xy]
+
+        w = minimize(
+            rep_fg,
+            w0,
+            jac=True,
+            method="L-BFGS-B",
+            bounds=xy_bounds[:n_xy],
+            options={"maxiter": repair_iter},
+        ).x
+        xr, yr = xs.copy(), ys.copy()
+        xr[free] = w[: w.size // 2]
+        yr[free] = w[w.size // 2 :]
+        return _accept(xr, yr, ths, rot, "repaired")
+
+    for do_xy, snap_deg in (
+        (True, ROT_SNAP_DEG),
+        (False, ROT_SNAP_DEG),
+        (False, 90.0),
+        (False, None),
+    ):
+        xs, ys, ths, rot = _snap(do_xy, snap_deg)
+        if snap_deg == ROT_SNAP_DEG:
+            xs, ys, ths, rot = _resolve_tilts(xs, ys, ths, rot)
+        applied = _accept(xs, ys, ths, rot, lanes[(do_xy, snap_deg)])
+        if applied is not None:
+            return applied
+    if reason == "illegal":
+        applied = _repair()
+        if applied is not None:
+            return applied
+    if reason == "illegal":
+        _LOG.warning("field_polish refused: illegal (%s)", detail)
+    return PolishResult(False, reason, e0, e1, refused, detail)

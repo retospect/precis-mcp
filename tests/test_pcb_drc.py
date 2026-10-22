@@ -825,6 +825,106 @@ def test_check_clearance_ignores_same_net_overlapping_pads():
     assert drc.check_clearance(model, _CAP4) == []
 
 
+def test_check_clearance_rotated_multi_pad_part_pads_stay_distinct():
+    """placer-h / gr nano seed 2: a multi-pad part at an oblique instance
+    rotation places every pad through ``place_footprint_pads``, which
+    records the total rotation as ``oblique_rot`` on a pad it cannot keep
+    axis-aligned (an SOIC-8-EP's exposed pad plus its row pins). The
+    clearance engine's shape function used to drop ``oblique_rot`` and
+    measure the unrotated w×h box — its corners reach past the true
+    rotated land, into the neighbouring pin's pad: five phantom
+    pad-vs-pad errors on the two nano bucks (U_B9/U_B15). The pads are
+    the same rigid set at every rotation, so they must stay distinct."""
+    from precis.pcb import padplace
+
+    raw_pads = [
+        # SOIC-8-EP stand-in: one gull-wing pin plus the centre exposed pad
+        # (same net layout as the fixture's TPS54360: EP is GND, the row
+        # pin next to its edge is a different net).
+        {
+            "number": "6",
+            "shape": "RECT",
+            "x": 2.9,
+            "y": -0.635,
+            "w": 2.2,
+            "h": 0.6,
+            "rot": 0.0,
+            "layer": "F.Cu",
+        },
+        {
+            "number": "9",
+            "shape": "RECT",
+            "x": 0.0,
+            "y": 0.0,
+            "w": 3.4,
+            "h": 2.4,
+            "rot": 0.0,
+            "layer": "F.Cu",
+        },
+    ]
+    pin_map = {"6": {"name": "COMP"}, "9": {"name": "GND"}}
+    pin_to_net = {"COMP": "COMP15", "GND": "GND"}
+    for rot in (15.0, 30.0, 45.0, 345.0):
+        placed, _ = padplace.place_footprint_pads(
+            raw_pads,
+            {"x": 50.0, "y": 40.0, "rot": rot, "refdes": "U_B15", "layer": "top"},
+            layers=["F.Cu"],
+            pin_map=pin_map,
+            pin_to_net=pin_to_net,
+        )
+        assert len(placed) == 2
+        assert all(p.get("oblique_rot") for p in placed), rot
+        model: dict[str, Any] = {"layers": ["F.Cu"], "copper": [], "pads": placed}
+        findings = [
+            f
+            for f in drc.check_clearance(model, _CAP4)
+            if f.severity == "error" and "pad[" in (f.where or "")
+        ]
+        assert findings == [], f"rot={rot}: {findings}"
+
+
+def test_copper_item_polygon_pad_honours_oblique_rot():
+    """The unit-level half of the same fix: a rect pad's recorded total
+    rotation rotates its measured outline — the 2×1 pad at 45° reads as
+    the diamond, not the axis-aligned box."""
+    pad = {
+        "ctype": "pad",
+        "shape": "rect",
+        "x": 0.0,
+        "y": 0.0,
+        "w": 2.0,
+        "h": 1.0,
+        "oblique_rot": 45.0,
+    }
+    poly = drc._copper_item_polygon(pad)
+    assert poly is not None
+    # CW 45°: corner (1.0, 0.5) -> (sqrt(2)*0.75, -sqrt(2)/4); the box's
+    # axis extent is 1.0607, NOT the unrotated 1.0 the old code reported.
+    ext = (2.0 * math.cos(math.radians(45)) + 1.0 * math.sin(math.radians(45))) / 1.0
+    ext /= 2.0
+    minx, miny, maxx, maxy = poly.bounds
+    assert maxx == pytest.approx(ext, abs=1e-6)
+    assert maxy == pytest.approx(ext, abs=1e-6)
+    assert minx == pytest.approx(-ext, abs=1e-6)
+    assert poly.area == pytest.approx(2.0, rel=1e-6)
+    # An obround at 90° is the same stadium stood on end.
+    obround = drc._copper_item_polygon(
+        {
+            "ctype": "pad",
+            "shape": "obround",
+            "x": 0.0,
+            "y": 0.0,
+            "w": 3.0,
+            "h": 1.0,
+            "oblique_rot": 90.0,
+        }
+    )
+    assert obround is not None
+    minx, miny, maxx, maxy = obround.bounds
+    assert (maxx - minx) == pytest.approx(1.0, abs=1e-3)
+    assert (maxy - miny) == pytest.approx(3.0, abs=1e-3)
+
+
 def test_copper_item_polygon_pad_shapes_are_geometrically_correct():
     """:func:`drc._copper_item_polygon` is the ONE shape function a pad's
     geometry goes through (no second circle/rect approximation for the

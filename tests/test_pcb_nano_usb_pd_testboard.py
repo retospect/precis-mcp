@@ -255,6 +255,85 @@ def _place_and_route(
     return pcb, ref.id, routed, failed
 
 
+def _seeded_nano_ir(store: Store, seed: int):
+    """The nano design's IR right after :func:`seed_placement` — the seed
+    alone, before anneal or polish. Mirrors pcb_place's hydration."""
+    import random
+
+    from precis.pcb import session as pcb_session
+    from precis.pcb.optimize import seed_placement
+
+    for lcsc, fp in fx.CATALOG_FOOTPRINTS.items():
+        store.part_footprint_put(lcsc, fp)
+    pcb = PcbHandler(hub=Hub(store=store))
+    slug = f"{SLUG}-seed-s{seed}"
+    assert "created" in pcb.put(id=slug, args=dict(fx.DESIGN)).body
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    features = store.pcb_features_list(ref.id)
+    ir = pcb_session.build_ir(
+        graph,
+        outline=pcb_session.outline_from_features(features),
+        mounting_holes=pcb_session.mounting_holes_from_features(features),
+        footprints_by_lcsc=store.pcb_footprints_for(ref.id),
+        local_footprints_by_name=store.pcb_local_footprints_for(ref.id),
+    )
+    seed_placement(ir, random.Random(seed))
+    return ir
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", [1, 2])
+def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
+    """gr503556: the seed must spread parts over the outline, not pile
+    them on the bottom edge. Measured as the share of total courtyard
+    area whose centre sits in each of five equal horizontal bands of the
+    usable outline (79 mm → ~16 mm bands): a band is ``>35 %`` only when
+    it hoards more than 1.75x its even share — the old pack put ~85 % of
+    the parts in one band, so this bounds the failure it caused.
+    The rigid header pair seeds in its own region: its members' centres
+    must land in the far-edge strip (x beyond the parts' region)."""
+    import numpy as np
+
+    from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM, outline_bbox
+    from precis.pcb.ir import (
+        COURTYARD_CLEARANCE_MM,
+        courtyard_bound_radius_mm,
+        instance_courtyard_polygons,
+    )
+
+    ir = _seeded_nano_ir(store, seed)
+    xs, ys = np.asarray(ir.inst_x), np.asarray(ir.inst_y)
+    assert np.isfinite(xs).all() and np.isfinite(ys).all()
+    ox0, oy0, ox1, oy1 = outline_bbox(ir.outline)
+    areas = (
+        np.pi
+        * courtyard_bound_radius_mm(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        )
+        ** 2
+    )
+    band_h = (oy1 - oy0) / 5.0
+    shares = (
+        np.array(
+            [areas[((ys - oy0) // band_h).clip(0, 4) == b].sum() for b in range(5)]
+        )
+        / areas.sum()
+    )
+    print(f"\nseed {seed} band area shares: {[round(float(s), 3) for s in shares]}")
+    assert shares.max() < 0.35, f"band hoards {shares.max():.0%} of part area"
+    # The authored rigid header group (J_N1/J_N2) packs in its own
+    # far-edge region, not interleaved on a shared shelf.
+    refs = [str(r) for r in ir.instance_refdes]
+    jx = [xs[refs.index(r)] for r in ("J_N1", "J_N2")]
+    assert min(jx) > (ox0 + ox1) / 2.0
+
+
 @pytest.mark.slow
 def test_nano_board_mean_routed_floor_over_seeds(store: Store) -> None:
     """Name kept for tests/shard_weights.json. No longer a floor (Reto

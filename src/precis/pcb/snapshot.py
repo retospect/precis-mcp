@@ -161,7 +161,9 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     optimize_defaults = _json_config(asdict(optimize))
     # Opt-in switches that default OFF stay out of the summary while off, so a
     # flag that changes nothing at its default cannot move a stored capture
-    # (field_polish, acea4bf12: flag-off behaviour is byte-identical).
+    # (pin_point_cost/centroid_jump are opt-in; field_polish defaults ON and
+    # stays in the summary — its default-flip commit is the provenance for
+    # captures made before it).
     for flag in ("field_polish", "pin_point_cost", "centroid_jump"):
         if not getattr(optimize, flag):
             optimize_defaults.pop(flag, None)
