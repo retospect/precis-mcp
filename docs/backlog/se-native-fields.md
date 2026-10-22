@@ -397,8 +397,9 @@ features}`; the server stages the named blocks as
   connects `bracket.aN—base.hN` / `bracket.pN—carriage.hN` emitted from
   the manifest (`out.connect`); declared measures re-checked on import;
   an optional BOM of 5 M5 screws with lengths from the bolt-axis rays;
-  stored rays (`bolt_axis` ×5, `tool_access` bundles ×5, `load_path`
-  ×2, `manufacturability`; structure-workspaces §Macro leg); recipe +
+  stored ray definitions (`bolt_axis` ×5, `tool_access` bundles ×5,
+  `load_path` ×2, `manufacturability`; anchored to the ports, events
+  recomputed on read; structure-workspaces §Macro leg); recipe +
   summary + final trace.
 - **later edit**: moving `base.h2` changes the context version → the
   bracket is stale → a plain rebuild follows the port; `search` runs
