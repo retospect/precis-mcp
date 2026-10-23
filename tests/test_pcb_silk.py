@@ -28,7 +28,11 @@ from precis.pcb import (
     silk,
     stroke_font,
 )
-from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.capabilities import (
+    CapabilityRow,
+    capability_for,
+    load_capabilities,
+)
 from precis.pcb.furniture import board_furniture
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import from_graph, instance_courtyard_polygon
@@ -1075,6 +1079,28 @@ def test_a_null_capability_field_falls_back_to_this_modules_own_constant():
     assert silk_clearance_mm(null_row, stroke_width_mm=0.15) == pytest.approx(
         silk_clearance_mm(None, stroke_width_mm=0.15)
     )
+
+
+def test_silk_chain_fields_are_verified_high_confidence():
+    """The two looked-up terms of :func:`silk_clearance_mm` size every
+    courtyard, so they may not sit at "medium" -- unverified -- forever.
+    Re-checked against the live JLCPCB capability page on 2026-10-21:
+    'Pad To Silkscreen' still publishes 0.15mm, while mask expansion is
+    now a '1:1' capability with no applied default at all, so 0.05mm
+    stands as a HOUSE design value (see that field's own
+    ``field_confidence`` entry). The values are pinned alongside the
+    confidence flag so a future page change cannot silently move a
+    courtyard while claiming verification."""
+    for process in ("2layer", "4layer"):
+        row = next(r for r in load_capabilities() if r.process == process)
+        assert row.jlc_min["soldermask_expansion_mm"] == pytest.approx(0.05)
+        assert row.house_default["soldermask_expansion_mm"] == pytest.approx(0.05)
+        assert row.jlc_min["silk_to_mask_clearance_mm"] == pytest.approx(0.15)
+        assert row.house_default["silk_to_mask_clearance_mm"] == pytest.approx(0.25)
+        for field in ("soldermask_expansion_mm", "silk_to_mask_clearance_mm"):
+            assert row.field_confidence[field].startswith("high"), (
+                f"{process}.{field}: {row.field_confidence[field]}"
+            )
 
 
 def test_silk_must_clear_the_mask_opening_not_merely_the_bare_copper():
