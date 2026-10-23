@@ -84,11 +84,16 @@ Package-level invariants (detail lives on the named module):
   query reports local vs acquired.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
   ``meta.fidelity_levels`` (screening→neb→verify) — seed time only.
-- **Bulk Pourbaix is diagnostic until the gate lands.** Dispatch requires
-  human-set ``operating_conditions`` and content-addresses geometry + inputs;
-  a successful current-input verdict is stamped as evidence, while every
-  Pourbaix field (including numeric ΔG) stays outside Pareto ranking
-  (``pourbaix``/``compute``/``frontier``).
+- **Bulk Pourbaix gates, never ranks.** Dispatch requires human-set
+  ``operating_conditions`` and content-addresses geometry + inputs; a
+  successful current-input verdict is stamped as evidence. A host-phase
+  result ``dissolved_everywhere`` across the quest's ``window`` (not a
+  dopant ``elemental`` sub-verdict, never an ``unmatched`` point) tags the
+  candidate ``ruled-out:pourbaix-dissolved`` with a ``dead-end`` logbook
+  entry; a later succeeded harvest under changed operating inputs that no
+  longer meets the rule lifts the tag with a ``note`` entry citing both
+  bases (``pourbaix``). Every Pourbaix field (including numeric ΔG) stays
+  outside Pareto ranking (``pourbaix``/``compute``/``frontier``).
 - **The surface-Pourbaix map is pure reads over stored job meta.**
   ``pourbaix_map`` folds a structure's ``surface_coverage_scan`` sweeps into
   the resting-state validity map (``view='pourbaix'`` on quest + structure,
