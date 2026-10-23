@@ -246,7 +246,7 @@ check their state first.
    autovacuum window, unfilled diagnostic) and the re-sized rollout
    (rehearsal step, 20–45 h paper pass, max_wal_size raise, RAM
    arithmetic) are on branch `kvs`, held for the window after the
-   verified prod backup (gr500071/gr496659). Reto chose option 1: fill
+   verified prod backup (gr500071/gr496659, both closed). Reto chose option 1: fill
    every kind, then reindex.
 
 ## Runbook

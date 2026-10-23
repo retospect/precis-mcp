@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`, gr488907) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`, gr488907 closed) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3; gr459928 is closed). The open-for-Reto on gr470905 (whether stored-mode surface deviation should score the H caps) lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -384,7 +384,7 @@ removed as met — the transport move it waited on happened 09-29)
          - This is the same crumple as the S3 tether-off rows, and the
            clash check catches it;
      - next rung after S4: per-annulus Gauss–Bonnet rows (2+2+2 / 1×6:
-       irregular hole + tube-wall surgery, gr459928), the route to
+       irregular hole + tube-wall surgery), the route to
        R ≳ 12 Å. At least 2 dev cycles (the grammar, then the rows), not
        yet scoped.
 
@@ -410,7 +410,8 @@ removed as met — the transport move it waited on happened 09-29)
    the new zero-code scene is a tube with two opposite sp3 strips.
    H-termination is shipped (Default behaviours above) and inherited.
 
-2. **gr459567 family: overlaps the clash check now reports.** The bud
+2. **The overlap family the clash check reports — residuals (gr459567
+   closed).** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
    and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
@@ -560,7 +561,8 @@ removed as met — the transport move it waited on happened 09-29)
      32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
      only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
      14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
-3. **gr459928 — graded bends, re-ranked behind the gr459567 family on 2026-10-02**
+3. **Graded bends — residuals (gr459928 closed), re-ranked behind the
+   overlap family on 2026-10-02**
    (C2 verdict). The far-rims-pinned relax put the graded corner one ring
    row ahead of the baseline, which is the resolution of the measurement:
 
@@ -645,7 +647,7 @@ removed as met — the transport move it waited on happened 09-29)
      came from whole-instance fits and are retracted. Recommendation,
      awaiting the verdict: don't rank tube-wall surgery on this. The
      decisive test is the 3-row (2+2+2) corner, which needs the irregular
-     hole; move this item behind the gr459567 family. Clean only at
+     hole; move this item behind the overlap family (item 2). Clean only at
      k ≡ 3 mod 4 on the washer seam; any other phase adds three 5-7
      pairs. The flare at the tube top is the foot construction again. A
      seam's phase decides whether corners line up, so the k ranking
@@ -684,23 +686,6 @@ removed as met — the transport move it waited on happened 09-29)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-6. **gr456641 + gr457997** — SHIPPED on branch `gripe-456641`
-   (2026-10-29): the measure-to-convergence ruling landed (grow one
-   period/step, far ends H-capped via `terminate:`, `RelaxResult.converged`
-   asserted per step, stable for two increments → `measure_len` stored
-   beside the value, `coverage="unstable"` past the 50 Å axial / 1100-atom
-   caps, `EnvKey` untouched). `_LEAK_THRESH["a"]` re-measured and re-pinned
-   2.9° → 2.3°. Two findings on the way in: pinning capped rims to seed
-   injects ~0.8° strain (don't), and C-H cap bonds must rest at `sigma_CH`
-   not uniform `sigma` (`_stick_relaxer`'s new kwargs) or the cap itself
-   is a strain source. `trust_measured` stays off — the converged armchair
-   seam radius (4) *exceeds* the pinned 2, so the pin understates decay;
-   that judgement call is Reto's per the ruling's precondition. Details:
-   `hexfold-integration.md` §Step 6 slice 1 "Built 2026-10-29".
-   - Reto ruled 2026-10-01 (td458117) that gr456641 belongs to this
-     thread, not the auto-fix lane.
-   - `DbCatalogueStore` still withholds measured rows unless
-     `trust_measured=True`, and nothing sets it. Leave it off.
 
 ## Horizon
 

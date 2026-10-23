@@ -129,7 +129,7 @@ gr346534, soft-deleted)
    gr472019 and gr476100; the router tracker binding shipped, what is left
    is the OTS batch 7 re-stamp). It ranks below 1–3 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
-5. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
+5. **backlog/db-exporters-role.md** (gr492114 closed; option (b) of gr465126) —
    the role shipped; waits on Reto's vault DSNs and `prometheus_reader`
    login (2026-10-22), then the deploy steps in that item. Ranks last
    because the gate already stops the false NodeDown/PostgresDown.

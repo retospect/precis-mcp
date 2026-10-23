@@ -104,8 +104,9 @@ Seams:
 Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed
   `backlog/se-feasibility-and-cost.md`, the far end all three serve.
-- nanobuds-paper's seam-topology cross-cite waits on hexfold Do-next 3
-  (gr456641 + gr457997, the `EnvKey` extent fix).
+- nanobuds-paper's seam-topology cross-cite waited on the `EnvKey`
+  extent fix (gr456641 + gr457997), which shipped; its remaining waits
+  live in its own thread file.
 - td344088 (se + hexfold paper) waits on the walker dogfood (chain
   Do-next 1) for its figure.
 
@@ -128,7 +129,7 @@ Seams:
 - roadmap-quest owns the quest loop that dispatches and consumes
   pathways; chemistry owns the engine's health and output contract and, since
   2026-10-01, the catalysis quests' content (qu164903 ticking, the qu202467
-  restart report, gr322060).
+  restart report).
 - catalysis-selectivity edits the ammonia network content and adds link
   fields (`added`/`removed`, typed `kind`); chemistry owns the engine
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
@@ -268,9 +269,9 @@ Seams:
   `job-scheduling-fairness.md`, factory/platform) decides which job runs;
   lanes decide which LLM call gets a slot; fillers are pull generators so
   no job is minted only to wait for a lane (seam recorded 2026-10-23).
-- `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
-  change) and the deploy session's render-tree lock are the same script;
-  no thread owns deploy, so gr457894 is ranked in plugin-split.
+- `scripts/deploy` — the restart-on-installed-file-change work (gr457894,
+  closed) and the deploy session's render-tree lock are the same script;
+  no thread owns deploy.
 - `scripts/main-ci-status` / check.yml — the monitors thread gates every other thread's "is main green"
   answer — and as of 2026-09-30 it answers: the stale-verdict read,
   the main-push lane range (now starting at the last sha with a real shard
@@ -279,11 +280,12 @@ Seams:
   instead of the next tree's author finding it.
 
 Waits:
-- plugin-split Horizon 2–4 wait on gr457894 (each extraction is a module
-  move that re-triggers the stale-worker break).
-- plugin-split Do-next 1 is now gr457894 itself; td457903 (the castor
-  restart) was withdrawn 2026-09-30 — the ImportError was a stale session
-  MCP, gr458061's shape, not prod. Nothing here waits on Reto.
+- plugin-split Horizon 2–4 waited on gr457894 (each extraction is a module
+  move that re-triggers the stale-worker break); it is closed, so they
+  are unblocked.
+- td457903 (the castor restart) was withdrawn 2026-09-30 — the ImportError
+  was a stale session MCP, gr458061's shape, not prod. Nothing here waits
+  on Reto.
 
 ## ingest — acquisition and extraction fidelity
 
@@ -315,8 +317,8 @@ its own programme above, the job-lifecycle cluster was ranked across
 moved to Python 3.13 to match the ship gate. The one below has a
 decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute.
 
-- **fleet capacity is unmeasured** — gr458727 (ranked in `local-compute.md`
-  Horizon 12, 2026-10-01). All 20 nursery detectors answer
+- **fleet capacity is unmeasured** — gr458727 (closed; was ranked in
+  `local-compute.md` Horizon 12, 2026-10-01). All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
   queue are invisible and indistinguishable from a healthy fleet, which is the
   one state Reto's local-compute goal is about. Not ranked in

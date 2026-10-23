@@ -192,8 +192,8 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 6. **backlog/skill-bundled-scripts.md**
 7. **backlog/turn-routing-and-context-dsl.md**
 8. **backlog/fisheye-context-eval-study.md** — the measurement tail
-   (the context-audit catalog lives in `scripts/context-audit/`; gr503440
-   render residuals: halt-reason + numeric-handle items shipped
+   (the context-audit catalog lives in `scripts/context-audit/`; gr503440,
+   closed — its render residuals: halt-reason + numeric-handle items shipped
    2026-10-21; quest-frontier objective and recency N-of-K items stay
    with `handlers/quest.py` / `runtime/search.py` owners).
 

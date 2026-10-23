@@ -190,8 +190,9 @@ graph-health-metrics, five parked gripes, and the seam with
 5. **Part refs: live, but inert until the prod catalog fills.** Shipped
    2026-10-02 and deployed in round 2 (63301c5c); the design is in the
    `precis.handlers.part` docstring. Prod read 2026-10-03:
-   - **The catalog is empty.** `parts` has 0 rows (pcb-platform thread,
-     gr458878), so nothing can mint.
+   - **The catalog was empty.** `parts` had 0 rows (pcb-platform thread,
+     gr458878 — closed), so nothing could mint. The walk has since filled
+     ~2.0M rows, so the item's "inert" premise needs re-checking.
    - **The backfill has nothing to do.** `precis pcb link-parts
      --dry-run` reports 2 boards, 0 mints, 0 edges, and 1 placed
      C-number not in the catalog. A real run is a no-op, so no command
@@ -308,7 +309,8 @@ graph-health-metrics, five parked gripes, and the seam with
 16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 7 (its part
     ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
-    knowledge-mesh-6); the pin table feeds gr458878's pad-map check.
+    knowledge-mesh-6); the pin table feeds the pad-map check from the
+    closed gr458878.
 17. **backlog/greenfield-schema-review.md** — file only (Reto,
     knowledge-mesh-6): what the schema would be designed today and the
     migration path there. A review, not a refactor; any time. It now

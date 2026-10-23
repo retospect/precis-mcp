@@ -373,7 +373,7 @@ task set.
    here (seam below).
 10. **backlog/dreaming.md**
 11. **backlog/llm-cost-accounting.md**
-12. **gr458727** — the capacity-idle monitor ("is the fleet working or
+12. **The capacity-idle monitor — residuals (gr458727 closed)** — ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned
     here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
     `llm-lane-scheduler.md`'s capacity controller consume it.

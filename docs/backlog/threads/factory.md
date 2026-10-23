@@ -49,7 +49,7 @@ quality-of-life and container items.
    shipped 2026-10-18, slice 2 (`inputs`, `code_ref`, a read-only MCP
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
    live until slice 4 lights castor + pollux, which first needs async
-   staging (gr496426) and the package allow-list review.
+   staging (gr496426, closed) and the package allow-list review.
 
 ## Horizon
 

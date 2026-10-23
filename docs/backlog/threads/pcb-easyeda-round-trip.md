@@ -166,12 +166,12 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    `taz15` with its source copper then routed 146 → **150/151** after
    the plane fan-out stopped drilling drop vias for pins the pour or a
    source via already serves (gr489924, fixed); the last
-   net is gr489175. `taz15-blank` from scratch: 138/151 as imported
+   net was gr489175 (closed). `taz15-blank` from scratch: 138/151 as imported
    (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
    3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
-   (gr489923; the escape stub that took this to 149/151 is held
-   because it changes routing across the nano board, gr491588; both close
-   with `backlog/pcb-vector-router.md` slice 3, which replaces the stub),
+   (gr489923 and gr491588, both closed; the escape stub that took this to
+   149/151 was held because it changes routing across the nano board, and
+   `backlog/pcb-vector-router.md` slice 3 replaces the stub),
    2 drop-via sites (GND/PV+), 2 search budget. The
    source's 7 `via_via_keepout` errors still need `force=True` on
    `taz15` (gr489914; the doubled via is deduped at import).
@@ -248,7 +248,7 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    the corpus `pcb/` root or the temp dir for all five export sites
    (the spec's four plus `_render_fab_package`), with `safe_stem` file
    stems and BadInput refusal otherwise.
-6. **backlog/pcb-epro-mcp-roundtrip.md** (gr495289) — verify, the
+6. **backlog/pcb-epro-mcp-roundtrip.md** — verify, the
    download route and `op='import_epro'` are built per Reto's rulings;
    left: real-board export timing, and gerber/fab downloads (go given
    2026-10-21, buildable).
@@ -280,7 +280,7 @@ export/fab if this file outgrows itself.
 7. **backlog/pcb-engine-plan.md** §5 — 2-layer and n-layer stackups; enqueue
    refuses len(stackup) != 4 while the processor already handles 2. Waits on
    nothing; removes the wall a colleague's 2-layer .epro2 hits at import.
-8. **gr451356 residue** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
+8. **edge_mate residue (from the closed gr451356)** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
    is authored per instance; shipped: placer snap + `edge_mating` DRC in
    `view='drc'`, the place and route jobs' pre-route check
    (`session.placement_drc_findings`) and the judged-mutation gate (moving

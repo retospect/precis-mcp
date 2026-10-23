@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 9 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
+- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 9 — mint outpaces fetch ~7:1, queue 8,085). The S2-acquire, DOI-addressing and embed_batch lock-contention fixes (gr483930, gr484234 — both closed) are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
 - **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder and verify the 10-14 gripe fixes on prod.
@@ -130,7 +130,8 @@ is verified done on prod.
      tell count, then the --apply batches resume.
    - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
-3. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured
+3. **The bodiless-paper policy pass (td461154; gr453860 closed)** — 947
+   papers have a PDF and no body. Measured
    2026-10-02:
    - 814 Elsevier not-entitled: the XML has no body and the PDF is the
      1-page preview. This is the same gap as item 5, now bodiless instead
@@ -223,10 +224,11 @@ is verified done on prod.
    service; deadline-aware limiter waits; an AST gate on bare calls.
    Absorbed `shared-rate-limiter.md` 2026-10-23 (the limiter itself is
    shipped; its rulings moved here). Ranks here
-   because every fetch leg above runs under it: CORE is unpaced
-   (gr507344), new hosts run unpaced past the 500-row cap (gr507345),
-   OpenRouter sits on the 1/s website bucket (gr507343, gr507340), and a
-   limiter wait eats the fetch ref-pass budget (gr506756). The g4-llm-route
+   because every fetch leg above runs under it: a limiter wait eats the
+   fetch ref-pass budget (gr506756, open), and the now-closed cases it
+   generalises — CORE unpaced (gr507344), new hosts unpaced past the
+   500-row cap (gr507345), OpenRouter on the 1/s website bucket
+   (gr507343, gr507340). The g4-llm-route
    and g4-workers point fixes land first; S1 generalises them. Its S3 gate
    is sequenced in `ship-gate-ci`. S2's deadline half shipped
    2026-10-23 (limiter/slot waits bound to the ambient deadline

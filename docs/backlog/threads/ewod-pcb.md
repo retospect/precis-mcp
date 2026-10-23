@@ -135,7 +135,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    capacities 40/47); the 0.5 mm tile capacity brackets the fine grid
    without locating it, so plan corridors wait on a connectivity-based
    capacity (`pcb-global-plan-probe.md` Part 4 — deleted with the grid router; git history).
-0b. **backlog/pcb-anneal-best-state-vs-routability.md** (gr464240) — after
+0b. **backlog/pcb-anneal-best-state-vs-routability.md** — after
    0: only if routed/55 stays low and `best_at` stays near 0, route the
    anneal's start/best/last states and keep the most-routed (Reto
    2026-10-12; no routability cost term).
@@ -202,8 +202,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    (2b3c62811, in R16): the `datasheet_pull` job (job_inproc), the
    put/EasyEDA-import trigger, `get(kind='part')` reasons. Unchecked: put a
    board in prod, read `get(kind='part')` for a C-number and judge the
-   ingested chunks. JLC's component API is erroring (gr464537), so expect
-   `jlc_api_error:500` until a datasheet_url exists in `parts`. The mesh
+   ingested chunks. JLC's component API 500 was ours (gr464537, closed:
+   the ms signing timestamp); re-check `jlc_api_error` on the prod pull.
+   The mesh
    half is knowledge-mesh's (review item ewod-pcb-2).
 4. **dogfood-6's 25 failed escapes are not corridor starvation.**
    New replay evidence (2026-10-07, td472840, mx456/mx457): the route warm
@@ -304,16 +305,16 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    **gr345859**: `ewod_pad_array` declares its five fabric invariants as
    `strength='invariant'` measures, evaluated by `view='measures'` and
    gating put/route through the always-valid gate; `hard` still steers.)
-   **gr458878** (filed on
-   Reto's word 2026-09-30) is the pin-level datasheet-provenance gap: a
+   **gr458878** (closed; filed on
+   Reto's word 2026-09-30) was the pin-level datasheet-provenance gap: a
    datasheet links to a PART, but no pin selector exists so no pin fact can
    cite the page it came from (ruled 2026-10-12: build `part:<C#>~<pin>`,
    reached from the argue pad handle — `datasheet-facts-mesh.md` log) — and the payoff is validation, since the
    footprint and the datasheet pin table are two independent statements of
    pad->function that we compare nowhere. Owned by pcb-platform, sequenced
-   behind pcb-component-model. That gripe also records the blocker found
-   while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
-   part can be SEARCHED for, only confirmed by C-number.
+   behind pcb-component-model. Its recorded blocker is also gone: the
+   prod `parts` catalog is no longer empty (~2.0M rows, low range
+   refilled by the Open API walk).
 5. **backlog/checklist-kind.md** — `ready/high`; the argued, invalidating
    ledger the seed items below instantiate (first instance: pcb
    pre-tapeout). Ranked beside its seed companion, not above 5: a ledger
@@ -338,11 +339,12 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-10. **backlog/pcb-ewod-mechanical-sheets.md** (gr451662) — mech2d v1
+10. **backlog/pcb-ewod-mechanical-sheets.md** — mech2d v1
     shipped; left: stencil bridges, channel-cutout variant, coating
     extent, `view='cutsheets'` (not `mechanical`, which is the fab view),
     generator-row persistence. Dimensions ruled 2026-10-21: items 1, 2, 4,
-    5 buildable; 3 waits on gr414481.
+    5 buildable; 3's wait on gr414481 is satisfied (closed), so it is
+    buildable too.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +

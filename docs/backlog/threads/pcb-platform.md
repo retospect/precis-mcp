@@ -155,8 +155,8 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   only) — with per-net "… unknown: ask the user" rows throughout. Slice
   1 (epro import keeps part identity) landed from `p1-epro` as
   `a7863eda3`; slice 5 waits on `datasheet-facts-mesh.md`.
-- **gr458878 — pin-level datasheet provenance + the two-source pin-name
-  cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
+- **Pin-level datasheet provenance + the two-source pin-name
+  cross-check (gr458878 closed).** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
   missing is a pin-level link target (links are
   `kind:identifier[~selector]` and pcb has no pin selector), an extraction
@@ -166,12 +166,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   "with provenance"; this is WHERE that provenance lives. Extend
   `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
   scheme.
-- **The prod `parts` catalog is EMPTY (0 rows)** — `precis pcb
-  refresh-parts` has never populated it, so `search(kind='part', ...)`
-  returns nothing and a C-number can only be CONFIRMED (via the EasyEDA
-  footprint path), never chosen on price/stock/assemblability. Blocks
-  anything in Do-next 3–5 that assumes part selection is a search. Recorded
-  in gr458878.
+- **The prod `parts` catalog was EMPTY** — recorded in gr458878 (closed);
+  the Open API walk has since populated ~2.0M rows and refills the low
+  range (ewod-pcb handoff item 4).
 
 - **preferred.py wells as an anneal cost term** — conditional leftover of
   the soft-pin/preferred-number snap item (shipped on `pcb-place`,

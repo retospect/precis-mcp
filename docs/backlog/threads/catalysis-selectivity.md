@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) and B1 anchors rung (meta.surface_anchors) LANDED 2026-10-13 — wave B complete; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
+- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121, closed; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) and B1 anchors rung (meta.surface_anchors) LANDED 2026-10-13 — wave B complete; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
   Wave A is done (A1/A2 engine 0.25.0, A3 slice 2, A4 slices 4+5, A5 slice-1 proof jo482106 + θ→0 vs pw455722, all in the SPSO doc). Wave B = quest wiring, in flight. Then the Pourbaix gate's R15
   proof, preserving failed before-job 468292, gate rule-out/lift,
   correction-set basis, and Pd-hydride precis-side fixes.
@@ -187,8 +187,8 @@ candidate, harvest sweep + θ→0, lift the `slab_extxyz` refusal), spso-b2
 (slice 3 staircase panel + `staircase_routes.py` adapter + slider bank),
 spso-b3 (window area / Shapley IPR / HER margin as Pareto measures,
 anchor-placement proposals, validity region per candidate). Decisions and
-the open paper-date collision: the item's §Rulings 2026-10-13. Open for
-Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
+the open paper-date collision: the item's §Rulings 2026-10-13. The
+gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
 
 **Worktree:** `catalysis-selectivity`
 **Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").
@@ -252,10 +252,8 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    thermo-only margins do not.
 6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
    spent; needs 5's `U_sel` to pick the decisive edges.
-7. *(Mixed NO+H coverage wiring: verified on prod r42, jo492859; gr489475
-   closed 2026-10-16.)*
-8. **backlog/crowded-surface-experiment.md** (gr482313, gr489182) — Reto's
-   crowded-surface ask; ranked after 7 and after the catpath 0.30.0 re-run
+7. **backlog/crowded-surface-experiment.md** — Reto's
+   crowded-surface ask; ranked last, after the catpath 0.30.0 re-run
    (spectator mode, NH2/NOH template fix), because the dilute-vs-1 ML table
    it starts from is uncertain until then.
 
@@ -322,7 +320,7 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    states and TS. Ranked with Horizon 5 because it supplies the energies
    that item and the KINETICS spec consume; its slices 1–2 are pure
    modules shippable behind `response: off`.
-7. **backlog/quest-batch-coverage-scan.md** (gr491442) — a quest-tier op to
+7. **backlog/quest-batch-coverage-scan.md** — a quest-tier op to
    scan a named list of candidates × models; convenience over the documented
    per-candidate put recipe, so it ranks below the experiments that use it.
 
