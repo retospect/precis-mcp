@@ -170,6 +170,113 @@ def test_plane_pour_merges_same_net_copper_and_antipads_foreign_net():
     )
 
 
+def test_plane_drop_via_keeps_out_of_a_neighbour_signal_pads_escape_lane():
+    """gr503666: the fan-out ran before any signal routed and its sweep
+    took the first legal site around the pin — on esp32c3 seed 3 that put
+    the 3V3 drop via 1.04 mm from U1.SDA, on SDA's only perpendicular exit
+    out of a 0.65 mm row, and SDA ``exhausted``. Here the GND pin is the
+    second of an 8-pin dual-row column, the pin above it unconnected and
+    the two below it signals, with a sliver of fixed copper straight out
+    from it and a foreign track down the part's middle: the straight
+    site and the reversal are illegal, the one-step diagonals too close
+    to the neighbour pads, and the sweep's first legal site is the
+    two-step diagonal DOWN — stub across the signal pad's exit and via
+    0.34 mm from its lane. The mirror diagonal UP is just as legal and
+    crosses nothing but the unconnected pad's side; the drop must take it
+    (:func:`realize._escape_lanes`)."""
+    from precis.pcb import realize as pcb_realize
+
+    pins = [("U1", str(n)) for n in range(1, 9)]
+    graph = {
+        "instances": [
+            {"refdes": "U1", "x": 10.0, "y": 10.0, "rot": 0.0},
+            {"refdes": "B2", "x": 3.0, "y": 11.0},
+            {"refdes": "C2", "x": 3.0, "y": 4.0},
+            {"refdes": "G2", "x": 30.0, "y": 10.0},
+        ],
+        "pin_order": pins,
+        "nets": [
+            {
+                "name": "GND",
+                "members": [{"refdes": "U1", "pin": "2"}, {"refdes": "G2", "pin": "1"}],
+            },
+            {
+                "name": "SIG_B",
+                "members": [{"refdes": "U1", "pin": "3"}, {"refdes": "B2", "pin": "1"}],
+            },
+            {
+                "name": "SIG_C",
+                "members": [{"refdes": "U1", "pin": "4"}, {"refdes": "C2", "pin": "1"}],
+            },
+        ],
+        "unconnected": [{"refdes": "U1", "pin": str(n)} for n in (1, 5, 6, 7, 8)],
+    }
+    outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    gnd = list(ir.net_name).index("GND")
+    ir.promote_plane(gnd, 3)  # GND on B.Cu: every GND pad needs a drop via
+    gnd_pin = next(
+        pid
+        for pid in range(ir.n_pins)
+        if int(ir.pin_net[pid]) == gnd
+        and str(ir.instance_refdes[ir.pin_instance[pid]]) == "U1"
+    )
+    gnd_point = pin_point(ir, gnd_pin)
+    assert gnd_point is not None
+    gx, gy = gnd_point
+    # A sliver of foreign copper straight out (-x) from the GND pad and a
+    # track down the part's middle: the perpendicular site and the
+    # between-the-columns reversal are illegal.
+    sliver = {
+        "ctype": "track",
+        "net": "X",
+        "layer": "F.Cu",
+        "width_mm": 0.1,
+        "segments": [
+            {
+                "shape": "line",
+                "start": [gx - 1.25, gy - 0.33],
+                "end": [gx - 1.25, gy + 0.33],
+            }
+        ],
+    }
+    spine = {
+        **sliver,
+        "segments": [{"shape": "line", "start": [10.0, 8.5], "end": [10.0, 11.5]}],
+    }
+    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config, fixed_copper=[sliver, spine])
+    drops = [v for v in result.vias if v.net_id == gnd and abs(v.x - gx) < 3.0]
+    assert len(drops) == 1, [(v.net_id, v.x, v.y) for v in result.vias]
+    via = drops[0]
+    rules = pcb_realize._resolve_track_rules(ir, gnd, PAD_LAYER, config)
+    assert rules.via_dia_mm is not None
+    lanes = pcb_realize._escape_lanes(
+        ir,
+        pad_geometry(ir, None),
+        {gnd},
+        {
+            n: pcb_realize._resolve_track_rules(ir, n, PAD_LAYER, config)
+            for n in range(ir.n_nets)
+        },
+        lane_len_mm=2.0,
+        outer_layers=range(len(ir.stackup)),
+    )
+    u1_lanes = [lane for lane in lanes if abs(lane[0][0] - gx) < 1e-6]
+    assert len(u1_lanes) == 2, lanes  # pins 3 and 4 — the two signal pads
+    assert all(b[0] < a[0] for a, b, _h, _l in u1_lanes), "lanes run outward (-x)"
+    assert via.y > gy, (
+        f"the drop must take the lane-free diagonal up, not ({via.x}, {via.y})"
+    )
+    clearance = config.clearance_mm
+    for a, b, half, _layer in u1_lanes:
+        gap = pcb_realize._seg_point_dist((via.x, via.y), a, b)
+        assert gap >= rules.via_dia_mm / 2.0 + clearance + half - 1e-9, (
+            f"GND drop via at ({via.x:.3f}, {via.y:.3f}) sits {gap:.3f} mm from the "
+            f"escape lane of the signal pad at {a} — it blocks that pad's only exit"
+        )
+
+
 def test_plane_pour_antipads_a_pad_that_has_no_track_or_via_at_all():
     """gr — a PAD is not a track or a via, and ``to_gerber_model``'s
     ``model["copper"]`` never carries one (pads are the separate

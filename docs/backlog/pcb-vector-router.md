@@ -691,6 +691,25 @@ failures: searches ended `exhausted` with every leg into the goal
 refused by other nets' copper on F.Cu — congestion at the pad entry,
 which the surcharge relieves by keeping the outer layers sparse.
 
+Re-measured 2026-10-22 after the field placer landed (29ed73add rotates
+U1 by 45° on some seeds): s3 10/11 (SDA), s4 11/11, s5 10/11 (SDA).
+Root cause (gf-pcb-route-1): the plane fan-out runs before any signal
+routes and `_drop_via_site` takes the first legal site around its pin,
+so the 3V3 drop via landed 1.04 mm from U1.SDA on SDA's only
+perpendicular exit out of the 0.65 mm row; TXD/RXD then closed the rest
+and SDA `exhausted` with every goal leg refused. Fix: `_escape_lanes`
+— every point-to-point-routed SMD pad in a fine-pitch row gets a lane
+(perpendicular to the row, away from the centroid, two via pitches
+long) and the sweep prices a via or stub in a lane ahead of ink and
+body (soft, least-bad fallback). Measured seeds 1–5: 10, 11, 10, 11, 11
+(was 10, 11, 10, 11, 10); s5's SDA routes, s3's SDA routes but SCL now
+fails. The remaining s1/s3 failures are the same shape one layer up:
+U1.SCL's goal legs are refused by SDA/TXD/RXD tracks and the GND/3V3
+drops — the shortest-first order routes SCL (the long header net) last,
+and the earlier signals' exits cut across its lane. That is a
+signal-vs-signal lane problem (an escape pass per dense part before the
+trunks, or lane-aware leg costs in the A*), not a fan-out one.
+
 Still-open scope (coordinator ruling 2026-10-18, adjusted to the
 vector-only world):
 

@@ -242,12 +242,18 @@ _RENDER_SEED = int(os.environ.get("PRECIS_PCB_RENDER_SEED", str(SEEDS[0])))
 #:    (``tests/test_pcb_reference_end_to_end.py``) holds hard ZEROS on
 #:    all five seeds — that is where the engine's quality claim lives;
 #:    this ledger is where its variance is recorded.
+#:
+#: 11. **2026-10-22 — seed 5 RESOLVED** (gr503666, gf-pcb-route-1): the
+#:    plane fan-out's drop via no longer takes a neighbouring signal pad's
+#:    straight exit (``realize._escape_lanes``); seed 5's SDA routes and
+#:    its ``connectivity``/``unrouted`` pair is gone. Every seed is held
+#:    at zero again.
 KNOWN_OPEN_DRC_ERRORS: dict[int, dict[str, int]] = {
     1: {},
     2: {},
     3: {},
     4: {},
-    5: {"connectivity": 1, "unrouted": 1},
+    5: {},
 }
 
 #: The films this board must produce with geometry on them. Listed

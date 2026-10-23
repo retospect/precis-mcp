@@ -2749,6 +2749,99 @@ class _FanoutPin:
     key: int = -1
 
 
+#: A routed pad's straight exit the drop-via sweep keeps clear of:
+#: ``(pad centre, lane end, lane half-width, pad layer)``.
+_Lane = tuple[Point, Point, float, int]
+
+#: A pad whose nearest same-instance pad is further than this has no row
+#: to escape perpendicular to (a 2.54 mm header is through-hole and
+#: reaches every layer anyway); the lane rule is for fine-pitch rows.
+_LANE_ROW_MAX_MM = 1.3
+
+
+def _escape_lanes(
+    ir: PcbIR,
+    pad_geoms: list[PadGeom],
+    plane_nets: set[int],
+    rules_by_net: dict[int, NetRules],
+    *,
+    lane_len_mm: float,
+    outer_layers: range,
+) -> list[_Lane]:
+    """Every point-to-point-routed SMD pad's straight exit — the corridor
+    :func:`_drop_via_site` prices a plane drop out of (gr503666).
+
+    **Why.** The fan-out runs before any signal routes and its sweep
+    takes the first legal site around the pin, so a drop via two pads
+    over used to land squarely in front of a signal pad: esp32c3 seed 3,
+    the 3V3 drop via 1.04 mm from U1.SDA on its only perpendicular exit,
+    TXD/RXD then closing the rest — SDA ``exhausted`` on every seed that
+    rotated U1 by 45°. A pad in a 0.65 mm row has exactly one exit, and
+    a 0.75 mm via beside it eats 1.2 mm of row.
+
+    A pad's row is its nearest same-instance pad within
+    :data:`_LANE_ROW_MAX_MM`; the exit is perpendicular to the row on
+    the side away from the instance centroid (a pad the centroid sits
+    level with — a two-pin passive — has no single side and gets no
+    lane). Through-hole pads reach every layer and need no lane; plane
+    pins get drops, not lanes."""
+    by_inst: dict[int, dict[int, Point]] = {}
+    for pid in range(ir.n_pins):
+        point = pin_point(ir, pid)
+        if point is not None:
+            by_inst.setdefault(int(ir.pin_instance[pid]), {})[pid] = point
+    lanes: list[_Lane] = []
+    for inst, pts in by_inst.items():
+        if len(pts) < 2:
+            continue
+        cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        for pid, p in pts.items():
+            net = int(ir.pin_net[pid])
+            if net == NO_NET or net in plane_nets or pad_geoms[pid].drill_mm:
+                continue
+            q = min(
+                (pt for other, pt in pts.items() if other != pid),
+                key=lambda pt: dist(p, pt),
+            )
+            row = dist(p, q)
+            if row <= 1e-9 or row > _LANE_ROW_MAX_MM:
+                continue
+            ux, uy = (q[0] - p[0]) / row, (q[1] - p[1]) / row
+            nx, ny = -uy, ux
+            side = nx * (p[0] - cx) + ny * (p[1] - cy)
+            if abs(side) < 1e-6:
+                continue
+            if side < 0:
+                nx, ny = -nx, -ny
+            half = float(rules_by_net[net].track_width_mm) / 2.0
+            layer = _side_layer(ir, inst, outer_layers)
+            lanes.append(
+                (p, (p[0] + nx * lane_len_mm, p[1] + ny * lane_len_mm), half, layer)
+            )
+    return lanes
+
+
+def _blocks_lane(
+    site: Point,
+    pad: Point,
+    via_radius_mm: float,
+    stub_half: float,
+    pad_layer: int,
+    clearance: float,
+    lanes: Sequence[_Lane],
+) -> bool:
+    """Would a drop via at ``site`` (stub from ``pad``) leave no room for
+    a track down any of ``lanes``?"""
+    for a, b, half, layer in lanes:
+        if _seg_point_dist(site, a, b) < via_radius_mm + clearance + half:
+            return True
+        if layer == pad_layer and _seg_seg_dist(pad, site, a, b) < (
+            stub_half + clearance + half
+        ):
+            return True
+    return False
+
+
 def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:
     """Net id -> its derived region (:attr:`PcbIR.plane_regions`) shrunk by
     its via radius, for every net poured inside a region."""
@@ -2788,7 +2881,10 @@ def _plane_fanout(
 
     ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
     :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
-    to-silk-softly preference.
+    to-silk-softly preference; the routed pads' escape lanes
+    (:func:`_escape_lanes`) are forwarded the same way, priced ahead of
+    ink — a via on a signal pad's only exit strands the signal, a via
+    under ink drops a silk line.
 
     One stub plus one drop via per PIN, not per segment. A net's segments
     are a spanning TREE over its pins (``ir.from_graph``), so per-segment
@@ -2849,6 +2945,24 @@ def _plane_fanout(
     floor_width = resolve_net_rules(
         "", layer_is_outer=True, fab_caps=config.fab_caps
     ).track_width_mm
+    # Long enough for a via to sit beside the pad on either side: the
+    # belt the neighbours' drops form is what the lane has to cross.
+    lane_len = 2.0 * max(
+        (
+            float(rules_by_net[n].via_dia_mm or 0.0)
+            + space.cl(str(ir.net_name[n]), PAD_LAYER)
+            for n in seg_of_net
+        ),
+        default=0.0,
+    )
+    lanes = _escape_lanes(
+        ir,
+        pad_geoms,
+        set(seg_of_net),
+        rules_by_net,
+        lane_len_mm=lane_len,
+        outer_layers=outer_layers,
+    )
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still
@@ -2982,6 +3096,7 @@ def _plane_fanout(
                 inside=pin.region_area,
                 held_legs=held_legs(),
                 held_sites=held_sites(),
+                lanes=lanes,
             )
             if site is not None:
                 return site, rules
@@ -3192,6 +3307,7 @@ def _drop_via_site(
     banned_sites: tuple[Point, ...] = (),
     held_sites: list[tuple[float, float, float]] | None = None,
     held_legs: list[tuple[Point, Point, float, int]] | None = None,
+    lanes: Sequence[_Lane] = (),
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
 
@@ -3214,14 +3330,23 @@ def _drop_via_site(
     **Defers to courtyard ink, softly.** ``ink_field``
     (:func:`_courtyard_ink_field`) — among every LEGAL candidate this
     sweep tries, the first one whose via annulus does not touch drawn
-    courtyard ink is returned; if none is ink-free, the first legal
-    candidate found is returned instead of failing the net.
+    courtyard ink is returned; if none is ink-free, the least-bad legal
+    candidate (the lane paragraph below) is returned instead of failing
+    the net.
 
     **Defers to courtyard BODIES the same soft way.** ``via_body_zones``
     (:func:`_via_body_zones`, the profile's ``via_body_cost_mm`` zones —
     gr502369): a legal candidate under a part's courtyard loses to a
     later legal one in the clear. Same fallback — a site under a body is
     never refused, only priced behind the free ones.
+
+    **And to routed pads' escape lanes, soft but first.** ``lanes``
+    (:func:`_escape_lanes`): a via or stub that leaves no track's room
+    down a signal pad's straight exit strands that signal (gr503666),
+    so among the candidates the sweep finds legal, the first one clear
+    of every lane, ink and body wins; when none is clear of all three,
+    the least-bad one — a lane intrusion counts worse than ink, ink
+    worse than a body — in sweep order. Still never a refusal.
 
     The via asks :meth:`vroute.Space.clears` with ``via_site=True`` on
     every layer its barrel spans — which is what makes it clear its OWN
@@ -3255,9 +3380,10 @@ def _drop_via_site(
     base = round(math.atan2(uy, ux) / (math.pi / 4.0)) % 8
     extra_sites = placed_via_sites + list(held_sites or ())
     extra_legs = list(held_legs or ())
-    # The first LEGAL site found, remembered as the fallback the ink
-    # preference below yields to when no legal candidate is ink-free.
-    fallback_site: Point | None = None
+    # The least-bad LEGAL site found so far, ``(penalty, site)`` — the
+    # fallback the soft preferences below yield to when no legal
+    # candidate is clear of them all; ties keep sweep order.
+    fallback: tuple[int, Point] | None = None
     for step in range(1, _DROP_SEARCH_STEPS + 1):
         reach = base_reach * step
         for offset in _DROP_SEARCH_OFFSETS:
@@ -3301,22 +3427,27 @@ def _drop_via_site(
                 for hx, hy, hr in extra_sites
             ):
                 continue
-            if fallback_site is None:
-                fallback_site = site
+            # The soft preferences, worst first: a routed pad's escape
+            # lane (gr503666), courtyard ink, then the profile's
+            # via-under-body cost (gr502369) — none a keep-out.
+            penalty = 0
+            if lanes and _blocks_lane(
+                site, pad, via_radius_mm, stub_half, pad_layer, clearance, lanes
+            ):
+                penalty += 4
             if ink_field is not None and ink_field.clips(
                 site[0], site[1], via_radius_mm
             ):
-                continue
-            # The profile's via-under-body soft cost (gr502369), the same
-            # shape as the ink deference above: a legal site out from
-            # under every courtyard wins over one inside — never a
-            # keep-out, the first-legal fallback still stands.
+                penalty += 2
             if via_body_zones and any(
                 zone.covers(_ShapelyPoint(*site)) for zone in via_body_zones
             ):
-                continue
-            return site
-    return fallback_site
+                penalty += 1
+            if penalty == 0:
+                return site
+            if fallback is None or penalty < fallback[0]:
+                fallback = (penalty, site)
+    return fallback[1] if fallback is not None else None
 
 
 # ── plane fragment stitching (gripe 270637) ───────────────────────────────
