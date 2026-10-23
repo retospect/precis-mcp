@@ -251,6 +251,27 @@ class DigiKeyAdapter:
             stage="search",
             detail=lambda r: self._detail(r, "search"),
         )
+        if (
+            response.status_code == 400
+            and parameters
+            and designation
+            and "Parametric Filtering" in response.text
+        ):
+            # Digi-Key quirk (gr503437): a keyword that intersects nothing
+            # inside the parametric category gets the same 400 as a
+            # parent-category request. The identical ParameterFilterRequest
+            # with empty Keywords is the semantically requested read —
+            # the category-filtered set. A genuine request defect 400s
+            # again and is reported by _check_status below.
+            body["Keywords"] = ""
+            response = polite_send(
+                lambda: httpx.post(
+                    _SEARCH_URL, json=body, headers=headers, timeout=timeout
+                ),
+                service="digikey",
+                stage="search",
+                detail=lambda r: self._detail(r, "search"),
+            )
         self._check_status(response, "search")
         payload: dict[str, Any] = response.json()
         if not isinstance(payload, dict) or not isinstance(

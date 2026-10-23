@@ -21,7 +21,17 @@ mismatch never hides a value (looser = fewer false positives):
 - ranges (``1-5%``: both ends, the unit of the last end is shared);
 - percent: ``16%`` matches ``0.16`` and ``16``;
 - SI prefixes on a recognised unit: ``1.9 nN`` matches ``1900 pN``;
-- spelled-out ``one``..``ten`` on the *source* side match digits.
+- spelled-out ``one``..``ten`` on the *source* side match digits;
+- HTML ``<sup>``/``<sub>`` markup folds to ``^``/``_`` like the unicode
+  runs (``10<sup>-</sup> <sup>4</sup>``, ``10-<sup>30</sup>``), a spaced
+  sign in a ``x 10 - 6`` exponent still counts, and ``\bullet`` reads
+  as ``x``;
+- slash-separated value lists (``123/160/196``, ``0.27/0.24 V``)
+  contribute every element on the source side — ``_NUM_RE``'s ``/``
+  lookbehind would keep only the first — while date fragments and DOI
+  stems stay out;
+- a parenthesised index glued to an alphanumeric token is never a
+  quantity: ``Au(111)``, ``RuO2(110)``, ``Fe2O3(1̅102)``.
 
 Superscript/subscript runs are given a boundary before translation
 (td244964: ``10⁵`` must not read as ``105``), and PDF-spaced exponent
@@ -49,11 +59,12 @@ _SUP_RUN_RE = re.compile("[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+")
 _SUB_RUN_RE = re.compile("[₀₁₂₃₄₅₆₇₈₉₊₋]+")
 _DASHES = "\u2010\u2011\u2012\u2013\u2014\u2212\ufe63\uff0d"
 #: Notation that carries digits but is not a quantity: nanotube index pairs
-#: ``(10,0)``, Miller indices after a symbol ``Au(111)``, charges ``(2-)``,
-#: and IUPAC locants ``1,8-diamino``.
+#: ``(10,0)``, Miller indices after a symbol ``Au(111)`` — also after a
+#: digit (formula ``RuO2(110)``, overlined ``Fe2O3(1̅102)``, gr503439) —,
+#: charges ``(2-)``, and IUPAC locants ``1,8-diamino``.
 _NON_QUANTITY_RE = re.compile(
     r"\(\s*\d+\s*,\s*-?\d+\s*\)"
-    r"|(?<=[A-Za-z)])\(\s*\d+\s*\)"
+    r"|(?<=[A-Za-z\d)])\(\s*[\d\u0300-\u036f]+\s*\)"
     r"|\(\d[+-]\)"
     r"|\b\d+(?:,\d+){1,8}-(?=[A-Za-z])"
 )
@@ -66,7 +77,7 @@ _NUM_RE = re.compile(
       |
         (?P<mant>\d{1,3}(?:[,\u202f\u2009\u00a0]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)
         (?:
-            \s*[×x*·]\s*10\s*\^?\s*(?P<exp>[+-]?\d+)
+            \s*[×x*·]\s*10\s*\^?\s*(?P<exp>[+-]?\s*\d+)
           | [eE](?P<e>[+-]?\d+)(?!\w)
         )?
     )
@@ -112,8 +123,19 @@ _SPACED_EXP_RE = re.compile(
 #: claim's standalone ``55`` matching only the name's ``55`` was reported
 #: absent (gr503439). Source-side widening only, same rule as
 #: ``_SPACE_GROUPED_RE``: the claim side can only lose a match, never gain
-#: a false hit.
-_NAME_DIGITS_RE = re.compile(r"(?<=[A-Za-z])\d+(?:\.\d+)?(?![\d.])")
+#: a false hit. ``[^\W\d_]`` is any Unicode letter — the same gap hits
+#: non-ASCII scripts (``为0.03``) and PDF glyph noise (``þ0.13``).
+_NAME_DIGITS_RE = re.compile(r"(?<=[^\W\d_])\d+(?:\.\d+)?(?![\d.])")
+#: A decimal after a word-dash is prose, not a name suffix:
+#: ``irradiation-12.7 times`` (gr503439). Integers stay blocked —
+#: ``UiO-66`` is a name. Source-side widening only.
+_DASH_VALUE_RE = re.compile(r"(?<=[^\W\d_]-)\d+\.\d+(?![\d.])")
+#: Slash-separated value lists (``123/160/196``, ``0.27/0.24 V``):
+#: ``_NUM_RE``'s ``/`` lookbehind keeps only the first element, so the
+#: rest would read as absent (gr503439). Source-side widening only, and
+#: guarded — a year-like element or an all-small-integer run means a
+#: date (``10/23/2020``), a leading ``10.xxx`` means a DOI stem.
+_SLASH_LIST_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)+")
 _SPELLED_RE = re.compile(r"\b(" + "|".join(_SPELLED) + r")\b", re.IGNORECASE)
 
 
@@ -125,9 +147,18 @@ def _prepare(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     for d in _DASHES:
         text = text.replace(d, "-")
-    text = re.sub(r"\\(?:times|cdot)\b", "×", text)
+    # ``<sup>``/``<sub>`` markup carries the same meaning as the unicode
+    # runs folded above (gr503439): ``10<sup>-</sup> <sup>4</sup>`` and
+    # ``10-<sup>30</sup>`` both mean ``10^-4``/``10^-30``. Reattach a sign
+    # stranded outside the caret and merge ``^- ^4``-style split tags.
+    text = re.sub(r"<sup>(.*?)</sup>", r"^\1", text, flags=re.DOTALL)
+    text = re.sub(r"<sub>(.*?)</sub>", r"_\1", text, flags=re.DOTALL)
+    text = re.sub(r"\^\s*([+-]?)\s*\^\s*(?=\d)", r"^\1", text)
+    text = re.sub(r"([+-])\s*\^\s*(?=\d)", r"^\1", text)
+    text = re.sub(r"\\(?:times|cdot|bullet)\b", "×", text)
     text = re.sub(r"\^\s*\{\s*([+-]?\d+)\s*\}", r"^\1", text)
     text = re.sub(r"[${}]|\\[,;]|\\mathrm", "", text)
+    text = text.replace(r"\*", "*")
     return text
 
 
@@ -144,7 +175,10 @@ def _unit_exp(word: str) -> int | None:
 
 def _exp(s: str) -> int | None:
     """Exponent of a numeral, ``None`` when absurd (|exp| > 400): such a
-    value is extraction garbage, and ``Decimal`` would overflow on it."""
+    value is extraction garbage, and ``Decimal`` would overflow on it.
+    A ``x 10 - 6`` spaced sign reaches here as ``"- 6"`` -- strip the
+    whitespace before validating."""
+    s = re.sub(r"\s+", "", s)
     digits = s.lstrip("+-")
     if len(digits) > 3 or not digits.isdigit():
         return None
@@ -256,6 +290,22 @@ def absent_numerals(sentence: str, source_text: str) -> list[str]:
         # what lets a claim's standalone ``55 subsets`` match it.
         if (named := _dec(m.group(0))) is not None:
             have.add(named)
+    for m in _DASH_VALUE_RE.finditer(_prepare(source_text)):
+        if (dashed := _dec(m.group(0))) is not None:
+            have.add(dashed)
+    for m in _SLASH_LIST_RE.finditer(_prepare(source_text)):
+        elems = m.group(0).split("/")
+        if re.fullmatch(r"10\.\d{3,}", elems[0]):
+            continue  # DOI stem (``10.1063/1.1840096``)
+        if any(e.isdigit() and 1900 <= int(e) <= 2100 for e in elems):
+            continue  # date fragments
+        if not any("." in e for e in elems) and all(
+            e.isdigit() and int(e) <= 31 for e in elems
+        ):
+            continue  # all-small-integer run (``10/23``)
+        for e in elems:
+            if (elem := _dec(e)) is not None:
+                have.add(elem)
     for m in _SPELLED_RE.finditer(source_text):
         have.add(_SPELLED[m.group(1).lower()])
     seen: set[str] = set()

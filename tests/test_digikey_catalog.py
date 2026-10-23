@@ -351,6 +351,59 @@ def _ladder_quote(adapter, monkeypatch, responder, **kwargs):
     return result, bodies
 
 
+def test_parametric_400_retries_same_filters_with_empty_keywords(adapter, monkeypatch):
+    """gr503437: a parametric 400 on a keyword that intersects nothing
+    inside the category retried once with ``Keywords=""`` — the wire
+    shape recorded from the live API: the same ParameterFilterRequest
+    returns the category-filtered set."""
+    bodies = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body["Keywords"] and "ParameterFilterRequest" in (
+            body.get("FilterOptionsRequest") or {}
+        ):
+            return httpx.Response(
+                400,
+                json={
+                    "detail": "Parametric Filtering Not Support at Parent Category Level."
+                },
+            )
+        return httpx.Response(200, json={"Products": [_product("SCREW (M4X16)")]})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        quotes = adapter.search(
+            "socket head cap screw M4X12",
+            category_id=572,
+            parameters={"121": ["370521"]},
+        )
+    assert len(bodies) == 2
+    first, retry = bodies
+    assert first["Keywords"] == "socket head cap screw M4X12"
+    assert retry["Keywords"] == ""
+    # the retried request is otherwise identical — no broadening
+    assert retry["FilterOptionsRequest"] == first["FilterOptionsRequest"]
+    assert [q.sku for q in quotes] == ["P1-ND"]
+
+
+def test_parametric_400_unrelated_message_does_not_retry(adapter, monkeypatch):
+    """A parametric 400 without the quirk message stays fatal — no
+    empty-keyword retry may paper over a different request defect."""
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(400, json={"detail": "unknown filter value"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        with pytest.raises(base.SupplierError, match="HTTP 400 at search"):
+            adapter.search("x", category_id=572, parameters={"1": ["v"]})
+    assert len(calls) == 1
+
+
 def test_ladder_falls_through_parent_category_400(adapter, monkeypatch):
     def respond(body):
         if "ParameterFilterRequest" in body.get("FilterOptionsRequest", {}):
@@ -363,7 +416,8 @@ def test_ladder_falls_through_parent_category_400(adapter, monkeypatch):
         return httpx.Response(200, json={"Products": [_product("SCREW,CAP (M4X12)")]})
 
     result, bodies = _ladder_quote(adapter, monkeypatch, respond)
-    assert len(bodies) == 2 and bodies[1]["Keywords"] == "socket head cap screw M4X12"
+    # parametric, its Keywords="" retry (also 400), then the keyword rung
+    assert len(bodies) == 3 and bodies[2]["Keywords"] == "socket head cap screw M4X12"
     assert result.outcomes[0].error is None and result.outcomes[0].count == 1
     assert result.quotes[0].match_confidence == "keyword"
     assert result.outcomes[0].parameters is None
