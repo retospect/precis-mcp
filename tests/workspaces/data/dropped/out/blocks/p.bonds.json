@@ -1,0 +1,5 @@
+{"schema": 1, "bonds": [
+  {"i": "aC1", "j": "aC2", "order": 1.0, "maker": 1},
+  {"i": "aC2", "j": "aC3", "order": 1.0, "maker": 2},
+  {"i": "aC3", "j": "aC4", "order": 1.0, "maker": 3}
+]}

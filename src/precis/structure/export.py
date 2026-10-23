@@ -129,11 +129,17 @@ def to_extxyz(scene: Scene, *, constraints: bool = False) -> str:
             pass  # no ASE → degrade to the constraint-free form below
     flat = " ".join(f"{x:.8f}" for x in np.asarray(scene.cell.lattice).flatten())
     pbc = " ".join("T" if p else "F" for p in scene.cell.pbc)
-    head = f'Lattice="{flat}" Properties=species:S:1:pos:R:3:label:S:1 pbc="{pbc}"'
-    lines = [str(len(scene.atoms)), head]
-    for label, a in scene.atoms.items():
+    atoms = list(scene.atoms.items())
+    has_maker = any(a.maker is not None for _l, a in atoms)
+    props = "species:S:1:pos:R:3:label:S:1" + (":maker:I:1" if has_maker else "")
+    head = f'Lattice="{flat}" Properties={props} pbc="{pbc}"'
+    lines = [str(len(atoms)), head]
+    for label, a in atoms:
         x, y, z = scene.cell.frac_to_cart(a.frac)
-        lines.append(f"{a.element} {x:.8f} {y:.8f} {z:.8f} {label}")
+        row = f"{a.element} {x:.8f} {y:.8f} {z:.8f} {label}"
+        if has_maker:
+            row += f" {a.maker if a.maker is not None else -1}"
+        lines.append(row)
     return "\n".join(lines) + "\n"
 
 

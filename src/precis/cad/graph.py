@@ -50,11 +50,14 @@ class Design:
         label: str,
         primitive: Primitive,
         xform: Transform | None = None,
+        *,
+        frame: int | None = None,
     ) -> Leaf:
-        """Register a placed primitive and return its leaf expression."""
+        """Register a placed primitive and return its leaf expression.
+        ``frame`` is the construction-trace creator id (workspaces)."""
         iid = self._new_iid()
         placed = Placed(prim=primitive, xform=xform or identity())
-        self.instances[iid] = Instance(iid=iid, placed=placed, label=label)
+        self.instances[iid] = Instance(iid=iid, placed=placed, label=label, frame=frame)
         return Leaf(iid)
 
     @staticmethod
@@ -76,6 +79,8 @@ class Design:
         label: str,
         primitive: Primitive,
         transforms: Iterable[Transform],
+        *,
+        frame: int | None = None,
     ) -> Union:
         """Expand a pattern to a union of labelled instances (``label#i``)."""
         leaves: list[Expr] = []
@@ -85,6 +90,7 @@ class Design:
                 iid=iid,
                 placed=Placed(prim=primitive, xform=xf),
                 label=f"{label}#{i}",
+                frame=frame,
             )
             leaves.append(Leaf(iid))
         return Union(parts=tuple(leaves))
@@ -108,6 +114,7 @@ class Design:
                         xform=xform.compose(src.placed.xform),
                     ),
                     label=src.label + suffix,
+                    frame=src.frame,
                 )
                 return Leaf(iid)
             if isinstance(e, Union):

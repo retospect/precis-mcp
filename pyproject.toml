@@ -655,7 +655,7 @@ override-dependencies = ["pillow>=12.3.0"]
 autocatpath = { git = "https://github.com/retospect/catpath", rev = "aeb3fa3f638a607eb4ecb9c9df56e257087948e9" }  # v0.32.0 + aeb3fa3 (legacy warnings fix)
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow", "src/precis_geom"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under

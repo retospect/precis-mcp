@@ -1,0 +1,117 @@
+{
+ "schema": 1,
+ "run": {
+  "workspace": "hcol-test",
+  "job": null,
+  "script_sha": null,
+  "lock_sha": null,
+  "started_utc": null,
+  "finished_utc": null,
+  "collapsed": 0,
+  "truncated": false
+ },
+ "frames": [
+  {
+   "id": 0,
+   "key": "ab9691805d3650fe",
+   "parent": null,
+   "qual": "main",
+   "file": "main.py",
+   "line": 1,
+   "occ": 0,
+   "kind": "root",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 1,
+   "key": "c1510c4cc05ff2d5",
+   "parent": "ab9691805d3650fe",
+   "qual": "prism",
+   "file": "main.py",
+   "line": 12,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {
+    "atoms": 4,
+    "bonds": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 2,
+   "key": "595728b65df0f4ba",
+   "parent": "ab9691805d3650fe",
+   "qual": "junction",
+   "file": "main.py",
+   "line": 20,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {
+    "bonds": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 3,
+   "key": "1ae62c7b0c878c03",
+   "parent": "ab9691805d3650fe",
+   "qual": "junction",
+   "file": "main.py",
+   "line": 20,
+   "occ": 1,
+   "kind": "core",
+   "args": {},
+   "made": {
+    "bonds": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 4,
+   "key": "116c578653e00c34",
+   "parent": "ab9691805d3650fe",
+   "qual": "build_plate",
+   "file": "main.py",
+   "line": 30,
+   "occ": 0,
+   "kind": "user",
+   "args": {},
+   "made": {
+    "instances": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 5,
+   "key": "630a7b4fcd481045",
+   "parent": "ab9691805d3650fe",
+   "qual": "out.instance",
+   "file": "main.py",
+   "line": 40,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {
+    "instances": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 6,
+   "key": "74b35836ebaaef7b",
+   "parent": "ab9691805d3650fe",
+   "qual": "out.connect",
+   "file": "main.py",
+   "line": 50,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  }
+ ]
+}

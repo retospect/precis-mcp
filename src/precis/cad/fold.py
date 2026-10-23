@@ -52,6 +52,10 @@ class Instance:
     iid: str
     placed: Placed
     label: str
+    #: Construction-trace provenance (structure workspaces): the run-local
+    #: id of the trace frame that created this instance. ``None`` when the
+    #: design was not workspace-built.
+    frame: int | None = None
 
 
 class Expr:

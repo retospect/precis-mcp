@@ -1,0 +1,557 @@
+"""Construction-trace capture — ``@traced`` on every public primitive.
+
+One ``Tracer`` is live per run (context-local — activate with
+:func:`start` / :func:`run`; :mod:`precis_ws.out` activates it in the
+sandbox). Each ``@traced`` call:
+
+1. walks ``sys._getframe()`` up the live Python stack and mints a *user*
+   frame for every ``/work/**`` function frame between the deepest live
+   traced frame and this call — library internals never appear (they
+   collapse into the public frame that called them), and
+   ``sys.setprofile`` is deliberately not used (it instruments every call,
+   2–5× on agent loops, and sees internals it would have to filter out);
+2. derives ``occ`` — the 0-based occurrence counter of ``(qual, line)``
+   under the current parent — and the stable ``key``
+   (``precis_geom.trace_schema.frame_key``);
+3. records ``args`` as a bounded digest (scalars verbatim, ``%.6g``
+   floats, ``<Class sha8>`` for objects);
+4. on exit pops itself; the frame stays in the tree under its parent.
+
+``record(made=…, touched=…)`` inside a traced function counts the
+entities it placed/changed on *its own* frame; ``leaf_id()`` is the stamp
+entities carry (``Instance.maker`` …). ``with trace("name"):`` mints a
+named user frame without a function boundary.
+
+``Tracer.dump()`` emits the schema-1 document (``trace_schema.dumps``),
+applying the sibling collapse (past ``COLLAPSE_SIBLINGS`` same-site
+childless siblings fold into one frame with an ``occ`` range) and the
+``MAX_FRAMES`` cap (``run.truncated``).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import functools
+import inspect
+import json
+import os
+import re
+import sys
+import types
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, TypeVar
+
+from precis_geom import trace_schema as ts
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+#: Staged sandbox infrastructure that lives under ``/work`` but is not
+#: user code — calls through it never mint user frames.
+_INFRA_FILES = frozenset({"precis_client.py"})
+
+_ACTIVE: ContextVar[Tracer | None] = ContextVar("precis_geom_trace", default=None)
+
+_ADDR_RE = re.compile(r"0x[0-9a-fA-F]+")
+
+
+def _utcnow() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(slots=True)
+class _Frame:
+    """One node of the trace tree; ``py`` is the live Python frame it was
+    minted from — held so its id cannot be recycled while the entry sits
+    on the active stack (id reuse would alias a stale stack entry)."""
+
+    id: int
+    key: str
+    parent_key: str | None
+    qual: str
+    file: str
+    line: int
+    occ: int
+    kind: str
+    args: dict[str, Any]
+    made: dict[str, int]
+    touched: dict[str, Any]
+    py: types.FrameType | None
+    children: list[_Frame] = field(default_factory=list)
+    _occ_next: dict[tuple[str, int], int] = field(default_factory=dict)
+
+
+class Tracer:
+    """The live trace of one run. ``stack`` is the active path (root →
+    innermost live frame); the tree hangs off ``root.children``."""
+
+    def __init__(self, work_root: str | os.PathLike[str] | None = None) -> None:
+        self.work_root = os.path.normpath(
+            str(work_root or os.environ.get("PRECIS_WS_WORK_DIR") or "/work")
+        )
+        self.root = _Frame(
+            id=0,
+            key=ts.sha8("precis-trace-root"),
+            parent_key=None,
+            qual="",
+            file="",
+            line=0,
+            occ=0,
+            kind="root",
+            args={},
+            made={},
+            touched={},
+            py=None,
+        )
+        self.stack: list[_Frame] = [self.root]
+        self._next_id = 1
+        self.started_utc = _utcnow()
+        self.run_meta: dict[str, Any] = {}
+
+    # -- frame minting -----------------------------------------------------
+
+    def _file_of(self, f: types.FrameType) -> str:
+        """The frame's file — ``work_root``-relative for user code, else
+        the caller's module name (library internals: kept for the key,
+        never rendered)."""
+        name = f.f_code.co_filename
+        rel = os.path.relpath(name, self.work_root)
+        if not rel.startswith("..") and not os.path.isabs(rel):
+            return rel.replace(os.sep, "/")
+        mod = f.f_globals.get("__name__")
+        return str(mod) if mod else os.path.basename(name)
+
+    def _is_user_frame(self, f: types.FrameType) -> bool:
+        if f.f_code.co_name == "<module>":
+            return False
+        if os.path.basename(f.f_code.co_filename) in _INFRA_FILES:
+            return False
+        rel = os.path.relpath(f.f_code.co_filename, self.work_root)
+        return not rel.startswith("..") and not os.path.isabs(rel)
+
+    def _push(
+        self,
+        *,
+        qual: str,
+        kind: str,
+        file: str,
+        line: int,
+        args: dict[str, Any],
+        py: types.FrameType | None,
+    ) -> _Frame:
+        parent = self.stack[-1]
+        occ_key = (qual, line)
+        occ = parent._occ_next.get(occ_key, 0)
+        parent._occ_next[occ_key] = occ + 1
+        fr = _Frame(
+            id=self._next_id,
+            key=ts.frame_key(parent.key, qual, line, occ),
+            parent_key=parent.key,
+            qual=qual,
+            file=file,
+            line=line,
+            occ=occ,
+            kind=kind,
+            args=args,
+            made={},
+            touched={},
+            py=py,
+        )
+        self._next_id += 1
+        parent.children.append(fr)
+        self.stack.append(fr)
+        return fr
+
+    def _sync(self, callsite: types.FrameType) -> None:
+        """Re-align ``self.stack`` with the live Python stack: drop entries
+        whose frames returned, then mint a ``user`` frame for every
+        ``/work`` function frame between the deepest live entry and this
+        call."""
+        live: list[types.FrameType] = []
+        f: types.FrameType | None = callsite
+        while f is not None:
+            live.append(f)
+            f = f.f_back
+        live_ids = {id(fr) for fr in live}
+        stack = self.stack
+        prefix = 1  # the synthetic root is always live
+        while (
+            prefix < len(stack)
+            and stack[prefix].py is not None
+            and id(stack[prefix].py) in live_ids
+        ):
+            prefix += 1
+        del stack[prefix:]
+        # Consume the surviving prefix in stack order, then mint /work
+        # frames deeper than it. Pushes grow ``stack`` but ``matched`` is
+        # counted against the frozen ``prefix``, so new frames mint freely.
+        matched = 1
+        for f in reversed(live):
+            if matched < prefix:
+                # Consecutive stack entries can share one Python frame
+                # (``with trace()`` inside a function minted as a user
+                # frame) — consume all of them for this live frame.
+                while matched < prefix and f is stack[matched].py:
+                    matched += 1
+                continue
+            if self._is_user_frame(f):
+                caller = f.f_back
+                self._push(
+                    qual=_user_qual(f),
+                    kind="user",
+                    file=self._file_of(caller) if caller else "",
+                    line=caller.f_lineno if caller else 0,
+                    args=_frame_args(f),
+                    py=f,
+                )
+
+    def _enter(
+        self,
+        qual: str,
+        kind: str,
+        args: dict[str, Any],
+        callsite: types.FrameType,
+        wrapper_frame: types.FrameType,
+    ) -> _Frame:
+        self._sync(callsite)
+        return self._push(
+            qual=qual,
+            kind=kind,
+            file=self._file_of(callsite),
+            line=callsite.f_lineno,
+            args=args,
+            py=wrapper_frame,
+        )
+
+    # -- serialization ------------------------------------------------------
+
+    def dump(self, run: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The schema-1 trace document (post-collapse, capped)."""
+        frames: list[dict[str, Any]] = []
+        collapsed = 0
+
+        def emit(fr: _Frame) -> None:
+            nonlocal collapsed
+            frames.append(
+                {
+                    "id": fr.id,
+                    "key": fr.key,
+                    "parent": fr.parent_key,
+                    "qual": fr.qual,
+                    "file": fr.file,
+                    "line": fr.line,
+                    "occ": fr.occ,
+                    "kind": fr.kind,
+                    "args": fr.args,
+                    "made": fr.made,
+                    "touched": fr.touched,
+                }
+            )
+            groups: dict[tuple[str, str, int], list[_Frame]] = {}
+            order: list[tuple[str, str, int]] = []
+            for ch in fr.children:
+                gk = (ch.qual, ch.file, ch.line)
+                if gk not in groups:
+                    groups[gk] = []
+                    order.append(gk)
+                groups[gk].append(ch)
+            for gk in order:
+                grp = groups[gk]
+                if len(grp) > ts.COLLAPSE_SIBLINGS and all(not c.children for c in grp):
+                    for c in grp[: ts.COLLAPSE_SIBLINGS]:
+                        emit(c)
+                    rest = grp[ts.COLLAPSE_SIBLINGS :]
+                    collapsed += len(rest)
+                    frames.append(
+                        {
+                            "id": rest[0].id,
+                            "id_end": rest[-1].id,
+                            "key": ts.frame_key(
+                                fr.key, grp[0].qual, grp[0].line, ts.COLLAPSE_SIBLINGS
+                            ),
+                            "parent": fr.key,
+                            "qual": grp[0].qual,
+                            "file": grp[0].file,
+                            "line": grp[0].line,
+                            "occ": ts.COLLAPSE_SIBLINGS,
+                            "occ_end": rest[-1].occ,
+                            "collapsed": len(rest),
+                            "kind": grp[0].kind,
+                            "args": rest[0].args,
+                            "made": _sum_counts(c.made for c in rest),
+                            "touched": _sum_counts(c.touched for c in rest),
+                        }
+                    )
+                else:
+                    for c in grp:
+                        emit(c)
+
+        emit(self.root)
+        truncated = False
+        if len(frames) > ts.MAX_FRAMES:
+            frames = frames[: ts.MAX_FRAMES]
+            truncated = True
+        meta = {
+            "workspace": None,
+            "job": None,
+            "script_sha": None,
+            "lock_sha": None,
+            "started_utc": self.started_utc,
+            "finished_utc": _utcnow(),
+            "collapsed": collapsed,
+            "truncated": truncated,
+        }
+        meta.update(self.run_meta)
+        if run:
+            meta.update(run)
+        return {"schema": ts.SCHEMA_VERSION, "run": meta, "frames": frames}
+
+
+def _sum_counts(dicts: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for d in dicts:
+        for k, v in d.items():
+            if isinstance(v, int):
+                out[k] = out.get(k, 0) + v
+            else:  # ordinal ranges: concatenate; bounded by the frame cap
+                out.setdefault(k, []).extend(v)
+    return out
+
+
+def _stable_repr(v: Any) -> str:
+    try:
+        r = repr(v)
+    except Exception:
+        r = f"<unrepr {type(v).__name__}>"
+    return _ADDR_RE.sub("0x…", r)[:4096]
+
+
+def _arg_digest(v: Any) -> Any:
+    """Bounded, deterministic digest of one call argument."""
+    if v is None or isinstance(v, (bool, int)):
+        return v
+    if isinstance(v, float):
+        return float(f"{v:.6g}")
+    if isinstance(v, str):
+        return v if len(v) <= 80 else f"<str {len(v)} {ts.sha8(v)}>"
+    if isinstance(v, (bytes, bytearray)):
+        return f"<bytes {len(v)} {ts.sha8(bytes(v).hex())}>"
+    if isinstance(v, (list, tuple, dict)):
+        try:
+            canon = json.dumps(v, sort_keys=True, default=_stable_repr)
+        except (TypeError, ValueError):
+            canon = _stable_repr(v)
+        return f"<{type(v).__name__} {len(v)} {ts.sha8(canon)}>"
+    return f"<{type(v).__name__} {ts.sha8(_stable_repr(v))}>"
+
+
+def _frame_args(f: types.FrameType) -> dict[str, Any]:
+    """Call arguments of a live user-code frame (names + digests)."""
+    try:
+        info = inspect.getargvalues(f)
+    except Exception:
+        return {}
+    out: dict[str, Any] = {}
+    names = list(info.args)
+    if info.varargs:
+        names.append(info.varargs)
+    if info.keywords:
+        names.append(info.keywords)
+    for name in names:
+        if name in info.locals:
+            out[name] = _arg_digest(info.locals[name])
+    return out
+
+
+def _user_qual(f: types.FrameType) -> str:
+    """``<file stem>.<co_qualname>`` — ``main.bundle`` — the shape the
+    python-kind ``ws-<slug>`` root resolves (spec §Join with python)."""
+    stem = os.path.splitext(os.path.basename(f.f_code.co_filename))[0]
+    return f"{stem}.{f.f_code.co_qualname}"
+
+
+def _core_qual(fn: Callable[..., Any]) -> str:
+    """Module-relative dotted name with the wheel's top package dropped:
+    ``precis.cad.graph.Design.prim`` → ``cad.graph.Design.prim``,
+    ``hexfold.sheetnet.junction`` → ``sheetnet.junction``."""
+    mod = getattr(fn, "__module__", "") or ""
+    parts = mod.split(".")
+    short = ".".join(parts[1:]) if len(parts) > 1 else mod
+    return f"{short}.{fn.__qualname__}" if short else fn.__qualname__
+
+
+def start(
+    *, work_root: str | os.PathLike[str] | None = None, **run_meta: Any
+) -> Tracer:
+    """Activate a tracer for this context (idempotent — returns the live
+    one if already active)."""
+    tr = _ACTIVE.get()
+    if tr is not None:
+        return tr
+    tr = Tracer(work_root)
+    tr.run_meta.update(run_meta)
+    _ACTIVE.set(tr)
+    return tr
+
+
+def stop() -> None:
+    _ACTIVE.set(None)
+
+
+@contextlib.contextmanager
+def run(
+    *, work_root: str | os.PathLike[str] | None = None, **run_meta: Any
+) -> Iterator[Tracer]:
+    """Activate a tracer for the block; restores the previous on exit."""
+    prev = _ACTIVE.get()
+    tr = Tracer(work_root)
+    tr.run_meta.update(run_meta)
+    _ACTIVE.set(tr)
+    try:
+        yield tr
+    finally:
+        _ACTIVE.set(prev)
+
+
+def current() -> Tracer | None:
+    return _ACTIVE.get()
+
+
+def dump(run: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    tr = _ACTIVE.get()
+    return tr.dump(run) if tr is not None else None
+
+
+def record(
+    *,
+    made: dict[str, int] | None = None,
+    touched: dict[str, Any] | None = None,
+) -> None:
+    """Count entities placed/changed on the innermost live frame. No-op
+    when no tracer is active (serve path, plain imports)."""
+    tr = _ACTIVE.get()
+    if tr is None:
+        return
+    fr = tr.stack[-1]
+    for k, v in (made or {}).items():
+        fr.made[k] = fr.made.get(k, 0) + int(v)
+    for k, v in (touched or {}).items():
+        if isinstance(v, int):
+            fr.touched[k] = fr.touched.get(k, 0) + v
+        else:
+            fr.touched.setdefault(k, []).extend(v)
+
+
+def leaf_id() -> int | None:
+    """The innermost live frame's run-local id — the ``maker`` stamp."""
+    tr = _ACTIVE.get()
+    return tr.stack[-1].id if tr is not None else None
+
+
+_SIG_CACHE: dict[int, inspect.Signature | None] = {}
+
+
+def _signature(f: Callable[..., Any]) -> inspect.Signature | None:
+    key = id(f)
+    if key not in _SIG_CACHE:
+        try:
+            _SIG_CACHE[key] = inspect.signature(f)
+        except (TypeError, ValueError):
+            _SIG_CACHE[key] = None
+    return _SIG_CACHE[key]
+
+
+def _call_args(
+    f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    sig = _signature(f)
+    if sig is None:
+        out = {f"_{i}": _arg_digest(a) for i, a in enumerate(args)}
+        out.update({k: _arg_digest(v) for k, v in kwargs.items()})
+        return out
+    try:
+        bound = sig.bind(*args, **kwargs)
+    except TypeError:
+        return {}
+    return {
+        k: _arg_digest(v)
+        for k, v in bound.arguments.items()
+        if k not in ("self", "cls")
+    }
+
+
+def traced(
+    fn: Callable[..., Any] | None = None,
+    *,
+    kind: str = "core",
+    name: str | None = None,
+) -> Any:
+    """Push a frame per call on a public primitive. ``kind`` is ``core``
+    for wheel functions; promoted agent modules use ``module``."""
+
+    def deco(f: Callable[..., Any]) -> Callable[..., Any]:
+        qual = name or _core_qual(f)
+
+        @functools.wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            tr = _ACTIVE.get()
+            if tr is None:
+                return f(*args, **kwargs)
+            tr._enter(
+                qual,
+                kind,
+                _call_args(f, args, kwargs),
+                sys._getframe(1),
+                sys._getframe(0),
+            )
+            try:
+                return f(*args, **kwargs)
+            finally:
+                tr.stack.pop()
+
+        return wrapper
+
+    return deco(fn) if fn is not None else deco
+
+
+@contextlib.contextmanager
+def trace(name: str) -> Iterator[None]:
+    """``with trace("bundle"):`` — a named user frame without a function
+    boundary (optional sugar; nothing requires it)."""
+    tr = _ACTIVE.get()
+    if tr is None:
+        yield
+        return
+    f = sys._getframe(1)
+    tr._sync(f)
+    fr = tr._push(
+        qual=name,
+        kind="user",
+        file=tr._file_of(f),
+        line=f.f_lineno,
+        args={},
+        py=f,
+    )
+    try:
+        yield
+    finally:
+        if tr.stack and tr.stack[-1] is fr:
+            tr.stack.pop()
+        elif fr in tr.stack:
+            tr.stack.remove(fr)
+
+
+__all__ = [
+    "Tracer",
+    "current",
+    "dump",
+    "leaf_id",
+    "record",
+    "run",
+    "start",
+    "stop",
+    "trace",
+    "traced",
+]

@@ -282,8 +282,8 @@ class StructureMixin:
                 row = conn.execute(
                     "INSERT INTO struct_atoms "
                     "(ref_id, label, element, fa, fb, fc, fixed, magmom, "
-                    " oxidation, charge, hybridization, added_version) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    " oxidation, charge, hybridization, maker, added_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (
                         ref.id,
                         atom.label,
@@ -296,6 +296,7 @@ class StructureMixin:
                         atom.oxidation,
                         atom.charge,
                         atom.hybridization,
+                        atom.maker,
                         version,
                     ),
                 ).fetchone()
@@ -304,8 +305,9 @@ class StructureMixin:
             for bond in scene.bonds:
                 conn.execute(
                     "INSERT INTO struct_bonds "
-                    "(ref_id, kind, bond_order, provenance, i, j, image, added_version) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "(ref_id, kind, bond_order, provenance, i, j, image, maker, "
+                    " added_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         ref.id,
                         bond.kind,
@@ -314,6 +316,7 @@ class StructureMixin:
                         idmap.get(bond.i),
                         idmap.get(bond.j),
                         list(bond.image),
+                        bond.maker,
                         version,
                     ),
                 )
@@ -690,12 +693,12 @@ class StructureMixin:
         with self.pool.connection() as conn:
             arows = conn.execute(
                 "SELECT id, label, element, fa, fb, fc, fixed, magmom, oxidation, "
-                "charge, hybridization FROM struct_atoms "
+                "charge, hybridization, maker FROM struct_atoms "
                 f"WHERE ref_id = %s AND {live} ORDER BY id ASC",
                 params,
             ).fetchall()
             brows = conn.execute(
-                "SELECT kind, bond_order, provenance, i, j, image FROM struct_bonds "
+                "SELECT kind, bond_order, provenance, i, j, image, maker FROM struct_bonds "
                 f"WHERE ref_id = %s AND {live} ORDER BY id ASC",
                 params,
             ).fetchall()
@@ -707,7 +710,20 @@ class StructureMixin:
             ).fetchall()
         handles: dict[str, int] = {}
         id_to_label: dict[int, str] = {}
-        for aid, label, element, fa, fb, fc, fixed, magmom, oxi, charge, hyb in arows:
+        for (
+            aid,
+            label,
+            element,
+            fa,
+            fb,
+            fc,
+            fixed,
+            magmom,
+            oxi,
+            charge,
+            hyb,
+            maker,
+        ) in arows:
             scene.atoms[str(label)] = Atom(
                 label=str(label),
                 element=str(element),
@@ -720,10 +736,11 @@ class StructureMixin:
                 # never surface as a phantom None charge.
                 charge=int(charge) if charge is not None else 0,
                 hybridization=hyb,
+                maker=int(maker) if maker is not None else None,
             )
             handles[str(label)] = int(aid)
             id_to_label[int(aid)] = str(label)
-        for kind, order, prov, i, j, image in brows:
+        for kind, order, prov, i, j, image, maker in brows:
             li, lj = id_to_label.get(i), id_to_label.get(j)
             if li is None or lj is None:
                 continue
@@ -735,6 +752,7 @@ class StructureMixin:
                     kind=str(kind),
                     provenance=str(prov),
                     image=as_image3(image),
+                    maker=int(maker) if maker is not None else None,
                 )
             )
         for mkind, direction, goal, strength, operands, embodiment, for_ in mrows:

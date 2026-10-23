@@ -91,6 +91,7 @@ from precis.structure.importers.cif import (
     cif_to_scene,
     fetch_cif_url,
 )
+from precis.structure.importers.extxyz import extxyz_to_scene
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
@@ -762,6 +763,7 @@ class StructureHandler(Handler):
                 "description",
                 "cif",
                 "cif_url",
+                "extxyz",
                 "source",
                 "config_id",
                 # mode='rerun' only: ladder-rung override (default: the
@@ -889,7 +891,9 @@ class StructureHandler(Handler):
 
         CIF import: ``args={'cif': <text>}`` or ``args={'cif_url': <url>}``
         (or a bare CIF body in ``text=``) builds the design from a CIF
-        instead of ops — see :meth:`_put_cif`.
+        instead of ops — see :meth:`_put_cif`. extXYZ import:
+        ``args={'extxyz': <text>}`` — the workspace atomic geometry format
+        (per-atom ``label``/``maker`` columns) — :meth:`_put_extxyz`.
 
         ``mode='rerun'`` does not touch the design at all — it asks the quest
         compute lane for a deliberate replay of this candidate's autocatpath
@@ -912,6 +916,14 @@ class StructureHandler(Handler):
                 title=title,
                 cif_text=cif_text,
                 cif_url=cif_url,
+                args=a,
+                normalize=normalize,
+            )
+        if a.get("extxyz") is not None:
+            return self._put_extxyz(
+                id=id,
+                title=title,
+                extxyz_text=a["extxyz"],
                 args=a,
                 normalize=normalize,
             )
@@ -1174,6 +1186,70 @@ class StructureHandler(Handler):
                 conn=conn,
             )
             record_revision(self.store, ref.id, rev=version, ops=[op], conn=conn)
+        _scene, handles = self.store.structure_load(ref.id)
+        return self._toc_response(
+            _scene, ref, handles, head_verb="created" if created else "updated"
+        )
+
+    def _put_extxyz(
+        self,
+        *,
+        id: str | int | None,
+        title: str | None,
+        extxyz_text: Any,
+        args: dict[str, Any],
+        normalize: bool = False,
+    ) -> Response:
+        """Create a design from extXYZ text — the workspace atomic
+        geometry format (structure-workspaces slice 0,
+        :func:`precis.structure.importers.extxyz.extxyz_to_scene`): the
+        ``label``/``maker`` per-atom columns land on the structure rows.
+        No ``source=``/URL path — this is the plain editable-design door
+        beside ``_put_cif``'s no-source half."""
+        if not isinstance(extxyz_text, str):
+            raise BadInput(
+                "args extxyz= must be the extXYZ text as a string",
+                next="put(kind='structure', id='<slug>', "
+                "args={'extxyz': '<extxyz text>'})",
+            )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure') with extXYZ requires id= (the design slug)",
+                next="put(kind='structure', id='<slug>', "
+                "args={'extxyz': '<extxyz text>'})",
+            )
+        scene = extxyz_to_scene(extxyz_text)
+        slug = str(id).strip()
+        existing = self.store.get_ref(kind="structure", id=slug)
+        if existing is not None and self._external_provenance(existing.id) is not None:
+            raise BadInput(
+                "this is an imported reference config (provenance:external) "
+                "— derive a variant instead of overwriting it in place",
+                next=f"derive(kind='structure', id={slug!r}, "
+                "to='<new-slug>', ops=[...])",
+            )
+        if normalize:
+            normalize_scene(scene)
+        version = (int(existing.meta.get("version", 0)) + 1) if existing else 1
+        desc = str(args.get("description") or "").strip()
+        ttl = (title or slug).strip() or slug
+        with self.store.tx() as conn:
+            ref, created = self.store.structure_save(
+                slug=slug,
+                title=ttl,
+                scene=scene,
+                version=version,
+                card_text=self._card_text(ttl, scene, desc),
+                description=desc,
+                conn=conn,
+            )
+            record_revision(
+                self.store,
+                ref.id,
+                rev=version,
+                ops=[{"op": "import_extxyz", "natoms": len(scene.atoms)}],
+                conn=conn,
+            )
         _scene, handles = self.store.structure_load(ref.id)
         return self._toc_response(
             _scene, ref, handles, head_verb="created" if created else "updated"

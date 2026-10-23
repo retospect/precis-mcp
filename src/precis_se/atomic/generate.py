@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -441,15 +442,41 @@ _GENERATED_RECORD_KEYS = (
 )
 
 
-def generated_record(gen_name: str, topology: dict[str, Any]) -> dict[str, Any]:
+#: ``meta["generated"]`` keys a *workspace* block's record carries instead
+#: of a generator's topology (structure-workspaces slice 0,
+#: docs/backlog/structure-workspaces.md §Import boundary): which agent,
+#: which workspace, which script made it.
+WORKSPACE_GENERATED_KEYS = (
+    "workspace",
+    "run_job",
+    "script_sha",
+    "lock_sha",
+    "image_digest",
+    "params",
+    "requested_by",
+    "trace",
+    "frame",
+    "relax",
+)
+
+
+def generated_record(
+    gen_name: str, topology: dict[str, Any], *, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """The trimmed, JSON-ready build record ``finish_generate`` persists on
     the structure ref (``meta["generated"]``): the generator's name plus
     the :data:`_GENERATED_RECORD_KEYS` it reported. Rendered by
-    ``view='block'`` (:func:`precis_se.handler._render_block`)."""
+    ``view='block'`` (:func:`precis_se.handler._render_block`).
+
+    ``extra`` merges caller-owned keys verbatim — the workspace importer's
+    provenance set (:data:`WORKSPACE_GENERATED_KEYS`), which come from the
+    run context rather than a generator's topology."""
     record: dict[str, Any] = {"generator": gen_name}
     for key in _GENERATED_RECORD_KEYS:
         if key in topology:
             record[key] = topology[key]
+    if extra:
+        record.update(extra)
     return record
 
 
@@ -475,7 +502,13 @@ def _topo_brief(value: object, limit: int = 80) -> str:
     return f"{text[:limit]}…({len(text)} chars)"
 
 
-def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> None:
+def finish_generate(
+    store: Store,
+    tree: SeTree,
+    pending: PendingGenerate,
+    *,
+    conn: Any = None,
+) -> None:
     """The store-touching half (:func:`prepare_generate`'s docstring) —
     called by :func:`precis_se.atomic.apply.apply_ops_with_atomic` only
     after every op in the whole list has validated cleanly, immediately
@@ -495,7 +528,12 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
     notice and clean up by hand. Skips entirely (no mint at all) if a
     *later* op in the same list already removed the block this pending
     write was for — never mint something the caller's own later op just
-    undid."""
+    undid.
+
+    ``conn`` joins the caller's transaction (the workspace importer's
+    ``tree_mutation``, structure-workspaces slice 0) — the mint then
+    commits with the tree write and the documented orphan window closes:
+    there is no second transaction to crash between."""
     node = tree.blocks.get(pending.block_name)
     if node is None:
         return
@@ -515,7 +553,7 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
 
         # Ref/cell/rows/receipt commit together. The separate SE-tree save
         # still has its documented possible orphan boundary (above).
-        with store.tx() as conn:
+        with nullcontext(conn) if conn is not None else store.tx() as conn:
             ref, _created = store.structure_save(**save_args, conn=conn)
             snapshot = store.structure_positions_snapshot(ref.id, conn=conn)
             if snapshot is None:
@@ -527,8 +565,8 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
             store.stamp_ref_meta(ref.id, {"generated": generated}, conn=conn)
             _tag_structure(store, ref.id, pending.tags, conn=conn)
     else:
-        ref, _created = store.structure_save(**save_args)
-        _tag_structure(store, ref.id, pending.tags)
+        ref, _created = store.structure_save(**save_args, conn=conn)
+        _tag_structure(store, ref.id, pending.tags, conn=conn)
     node.bound_kind = "structure"
     node.bound = pending.struct_slug
     for port_name, atom_label in pending.ports_map.items():

@@ -51,6 +51,12 @@ class Atom:
     #: DERIVED partial charge (a DFT/ML output, not stored on the Scene).
     charge: int = 0
     hybridization: str | None = None  # declared intent only
+    #: Construction-trace provenance (structure workspaces): the run-local
+    #: id of the trace frame that made this atom — the index into the run's
+    #: stored ``trace.json`` frames. ``None`` for hand-authored and
+    #: generator-built atoms. Persisted on ``struct_atoms.maker`` so it
+    #: rides relax versions like ``label`` does.
+    maker: int | None = None
 
 
 @dataclass
@@ -63,6 +69,8 @@ class Bond:
     kind: str = "pairwise"  # pairwise | aromatic | eta-n | 3c2e
     provenance: str = "declared"  # declared | inferred | dft
     image: ImageOffset = (0, 0, 0)
+    #: Construction-trace provenance — same contract as ``Atom.maker``.
+    maker: int | None = None
 
 
 @dataclass

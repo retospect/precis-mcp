@@ -1,0 +1,26 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "p",
+   "file": "blocks/p.extxyz",
+   "scale": "atomic",
+   "ports": [
+    {
+     "name": "tail",
+     "atom": "aC4",
+     "roles": [
+      "join"
+     ],
+     "expected_element": "C",
+     "frame": 2
+    }
+   ],
+   "desc": "carbon strip",
+   "frame": 1
+  }
+ ],
+ "instances": [],
+ "connects": [],
+ "notes": "fixture"
+}

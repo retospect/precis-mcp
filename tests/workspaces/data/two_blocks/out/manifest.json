@@ -1,0 +1,56 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "p",
+   "file": "blocks/p.extxyz",
+   "scale": "atomic",
+   "ports": [
+    {
+     "name": "tail",
+     "atom": "aC4",
+     "roles": [
+      "join"
+     ],
+     "expected_element": "C",
+     "frame": 2
+    }
+   ],
+   "desc": "carbon strip",
+   "frame": 1
+  },
+  {
+   "name": "plate",
+   "file": "blocks/plate.cad.json",
+   "scale": "macro",
+   "desc": "plate part",
+   "frame": 4,
+   "ports": [
+    {
+     "name": "top",
+     "roles": [
+      "mate"
+     ],
+     "frame": 5
+    }
+   ]
+  }
+ ],
+ "instances": [
+  {
+   "name": "pin",
+   "template": "plate",
+   "parent": "p",
+   "pose": "[0 0 10] nm",
+   "frame": 5
+  }
+ ],
+ "connects": [
+  {
+   "a": "p.tail",
+   "b": "pin.top",
+   "frame": 6
+  }
+ ],
+ "notes": "fixture"
+}

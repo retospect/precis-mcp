@@ -384,6 +384,11 @@ class NodeSpec:
     pattern: NodePattern | None = None
     #: smooth-min width (metres) for an ``add`` node; ``0`` = hard union.
     blend: float = 0.0
+    #: Construction-trace provenance (structure workspaces): the run-local
+    #: trace-frame id that created this node — carried on ``refs.meta``
+    #: ``frames`` (like ``blends``) and copied onto the built
+    #: :class:`~precis.cad.fold.Instance` rows by ``build_design``.
+    frame: int | None = None
 
     def to_meta(self) -> dict[str, Any]:
         """The ``chunks.meta`` payload for this node."""
@@ -398,6 +403,8 @@ class NodeSpec:
             m["pattern"] = dict(self.pattern)
         if self.blend > 0.0:
             m["blend"] = self.blend
+        if self.frame is not None:
+            m["frame"] = int(self.frame)
         return m
 
     @classmethod
@@ -405,6 +412,7 @@ class NodeSpec:
         """Reconstruct from a stored ``chunks.meta`` payload."""
         loc = [float(x) for x in meta.get("loc", [0, 0, 0])]
         rot = [float(x) for x in meta.get("rot", [0, 0, 0])]
+        frame = meta.get("frame")
         return cls(
             name=name,
             op=str(meta.get("op", "add")),
@@ -414,6 +422,7 @@ class NodeSpec:
             rot=(rot[0], rot[1], rot[2]),
             pattern=coerce_pattern(meta.get("pattern")),
             blend=float(meta.get("blend") or 0.0),
+            frame=int(frame) if frame is not None else None,
         )
 
 
@@ -2783,9 +2792,13 @@ def build_design(
     for node in spec.nodes:
         prim = build_config(node.config, field_loader=loader, hmap_loader=hm_loader)
         if node.pattern is not None:
-            node_expr: Expr = design.pattern(node.name, prim, _pattern_transforms(node))
+            node_expr: Expr = design.pattern(
+                node.name, prim, _pattern_transforms(node), frame=node.frame
+            )
         else:
-            node_expr = design.prim(node.name, prim, _node_xform(node.loc, node.rot))
+            node_expr = design.prim(
+                node.name, prim, _node_xform(node.loc, node.rot), frame=node.frame
+            )
 
         cur = per_component.get(node.component)
         if cur is None:

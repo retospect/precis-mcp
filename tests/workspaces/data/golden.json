@@ -1,0 +1,28 @@
+{
+ "blocks": {
+  "p": {
+   "atoms": 4,
+   "bonds": 3,
+   "coord_sha256": "431969c6015602475f15326217bdb5e399a812097517e9294d2d42a089739a63",
+   "makers": [
+    1,
+    1,
+    1,
+    1
+   ]
+  },
+  "plate": {
+   "nodes": 1
+  }
+ },
+ "findings": [],
+ "trace_keys": [
+  "ab9691805d3650fe",
+  "c1510c4cc05ff2d5",
+  "595728b65df0f4ba",
+  "1ae62c7b0c878c03",
+  "116c578653e00c34",
+  "630a7b4fcd481045",
+  "74b35836ebaaef7b"
+ ]
+}

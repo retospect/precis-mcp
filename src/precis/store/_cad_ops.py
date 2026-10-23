@@ -38,8 +38,10 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 from typing import Any
 
+from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.cad.dsl import FIELD_REF_MIN, FieldLoader, HmapLoader
@@ -126,6 +128,18 @@ def _blends_meta(spec: SceneSpec) -> dict[str, Any]:
     return meta
 
 
+def _frames_meta(meta: dict[str, Any], spec: SceneSpec) -> dict[str, Any]:
+    """``meta`` with ``frames`` derived from the nodes — the workspace
+    trace-frame ids, carried design-level exactly like ``blends`` (no
+    migration). Dropped when no node carries one."""
+    frames = {n.name: int(n.frame) for n in spec.nodes if n.frame is not None}
+    if frames:
+        meta["frames"] = frames
+    else:
+        meta.pop("frames", None)
+    return meta
+
+
 class CadMixin:
     pool: Any
     tx: Any
@@ -141,12 +155,17 @@ class CadMixin:
         title: str,
         spec: SceneSpec,
         card_text: str,
+        conn: Connection | None = None,
     ) -> tuple[Any, bool, int]:
-        """Create-or-replace a design. Returns ``(ref, created, n_nodes)``."""
-        existing = self.get_ref(kind="cad", id=slug)
+        """Create-or-replace a design. Returns ``(ref, created, n_nodes)``.
+
+        ``conn`` joins an outer transaction (the workspace importer's
+        ``tree_mutation``, the same seam ``structure_save`` already has):
+        the mint commits — or rolls back — with the caller's write."""
+        existing = self.get_ref(kind="cad", id=slug, conn=conn)
         created = existing is None
-        meta = _blends_meta(spec)
-        with self.tx() as conn:
+        meta = _frames_meta(_blends_meta(spec), spec)
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
             if created:
                 ref = self.insert_ref(
                     kind="cad",
@@ -223,6 +242,8 @@ class CadMixin:
             spec.meta = dict(ref.meta)
         blends_raw = spec.meta.pop("blends", None) or {}
         blends = {str(k): float(v) for k, v in dict(blends_raw).items()}
+        frames_raw = spec.meta.pop("frames", None) or {}
+        frames = {str(k): int(v) for k, v in dict(frames_raw).items()}
         handles: dict[str, int] = {}
         components: list[str] = []
         for node_id, name, component, op, config, loc, rot, pattern in rows:
@@ -236,6 +257,7 @@ class CadMixin:
                     rot=as_float3(rot),
                     pattern=coerce_pattern(pattern),
                     blend=blends.get(str(name), 0.0),
+                    frame=frames.get(str(name)),
                 )
             )
             handles[str(name)] = int(node_id)
