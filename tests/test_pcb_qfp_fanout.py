@@ -89,6 +89,7 @@ def test_small_member_routes_completely():
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(840)  # CI worst 335s x2.5 for runner variance (gr503084)
 def test_ewod_like_member_scoreboard():
     """The EWOD-shaped member (80 pads, 55 nets, 0.8 mm pitch, grid
     sources, In2+B.Cu) with and without the warm start. Floors only;

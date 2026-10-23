@@ -386,7 +386,7 @@ def test_unknown_identity_still_withholds_dependent_pathway_totals() -> None:
 
 def test_import_is_lazy() -> None:
     script = "import sys; import precis.thermo; assert not any(x in sys.modules for x in ['sympy','ase','numpy','scipy','chemicals','cantera']); from precis.thermo.data import _records; assert _records.cache_info().currsize == 0"
-    subprocess.run([__import__("sys").executable, "-c", script], check=True)
+    subprocess.run([__import__("sys").executable, "-c", script], check=True, timeout=60)
 
 
 @pytest.mark.parametrize(

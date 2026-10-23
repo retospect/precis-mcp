@@ -87,6 +87,7 @@ def test_excess_is_zero_inside_the_bars_and_sums_the_overshoot() -> None:
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("n", "radius", "k"), [(12, 8.0, 6), (6, 3.0, 4)])
+@pytest.mark.timeout(600)  # CI worst 217s x2.5 for runner variance (gr503084)
 def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
     # the regression anchors the planner verdict set (the pillar is (6,0)
     # R=3, the pill (24,0)): the narrowest frustum meets every bar where
@@ -101,6 +102,7 @@ def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(660)  # CI worst 249s x2.5 for runner variance (gr503084)
 def test_the_wide_24_0_frustum_meets_with_no_error_finding() -> None:
     # the (24,0) R=8 k=10 cell passed every bar but carried three
     # geom.seed_overlap ERRORs: the frustum seeded mirror-registered onto

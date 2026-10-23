@@ -31,6 +31,7 @@ def params(**over: Any) -> dict[str, Any]:
     return p
 
 
+@pytest.mark.timeout(600)  # CI worst 230s x2.5 for runner variance (gr503084)
 def test_stepped_rail_tunnel_builds() -> None:
     block = build_hexfold_scene(params())
     findings = block.topology["report"]["findings"]
@@ -70,6 +71,7 @@ def test_stepped_rail_tunnel_builds() -> None:
     } <= where
 
 
+@pytest.mark.timeout(600)  # CI worst 220s x2.5 for runner variance (gr503084)
 def test_stepped_sites_labelled_per_segment() -> None:
     block = build_hexfold_scene(params())
     sites = block.topology["sites"]["sites"]
@@ -115,6 +117,7 @@ def test_stepped_cone_refused_for_flat_symmetry() -> None:
         build_hexfold_scene(params(tube=tube))
 
 
+@pytest.mark.timeout(540)  # CI worst 215s x2.5 for runner variance (gr503084)
 def test_stepped_cone_18_to_12_builds() -> None:
     block = build_hexfold_scene(
         params(
@@ -234,6 +237,7 @@ def _gate_read(
         "Margins and bars are not widened to close it"
     ),
 )
+@pytest.mark.timeout(1440)  # CI worst 570s x2.5 for runner variance (gr503084)
 def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
     # pass (spec §"H2 cone gate follow-up"): both step seams under the
     # step.overstrained bars and a clean washer zone under step: cone;

@@ -354,6 +354,7 @@ def _drain_one_job(
 
 
 @pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.timeout(600)  # CI junit worst 139s x4 for CI variance (gr503084)
 def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     store: Store, seed: int
 ) -> None:

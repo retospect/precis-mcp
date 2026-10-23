@@ -104,6 +104,7 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
+@pytest.mark.timeout(660)  # CI worst 255s x2.5 for runner variance (gr503084)
 def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> None:
     with FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = json.load(fh)

@@ -794,6 +794,7 @@ def _drain_one_job(store, parent_id: int, *, unrouted_ok: bool = False) -> None:
 
 @pytest.mark.slow
 @pytest.mark.slow
+@pytest.mark.timeout(720)  # CI worst 269s x2.5 for runner variance (gr503084)
 def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
     """**The escape gap was a STACKUP problem, not a router problem.**
 
@@ -1026,6 +1027,7 @@ def _foreign_lands_on_authored_vias(pcb, store, slug: str) -> list[Any]:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(480)  # CI worst 175s x2.5 for runner variance (gr503084)
 def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
     """``op='place'`` must not park a part's solder lands on authored
     copper (docs/backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md).

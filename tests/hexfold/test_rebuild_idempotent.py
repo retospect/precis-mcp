@@ -21,6 +21,7 @@ _EXAMPLES = sorted(Path("hexfold/examples").glob("*.hx"))
 
 
 @pytest.mark.parametrize("path", _EXAMPLES, ids=[p.stem for p in _EXAMPLES])
+@pytest.mark.timeout(480)  # CI junit worst 112s x4 for CI variance (gr503084)
 def test_canonical_json_of_net_equals_canonical_json_of_text(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     net = build(text)

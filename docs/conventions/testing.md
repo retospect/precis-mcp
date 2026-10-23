@@ -182,6 +182,10 @@ What still covers it, so nothing is actually ungated:
   and every `ci/**` pre-merge gate runs the whole cluster.
 - The nightly full matrix runs it on 3.12 and macOS too.
 
+Every test carries a 300 s pytest-timeout (`[tool.pytest.ini_options]`).
+Known-long tests carry `@pytest.mark.timeout(N)` sized from CI worst times,
+so a hang fails by name instead of the shard being cancelled (gr503084).
+
 The trade, taken deliberately: a `slow`-cluster regression can reach the
 cluster via `/go` and be caught by CI minutes later, rather than being
 blocked before deploy. `scripts/ship --slow` (or `PRECIS_GATE_SLOW=1`)

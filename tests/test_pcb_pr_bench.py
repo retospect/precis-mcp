@@ -161,6 +161,7 @@ def test_slice1_bench_deterministic():
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(720)  # CI worst 284s x2.5 for runner variance (gr503084)
 def test_slice1_bench_main_vs_vroute():
     """Full slice-1 fixture vs vroute on the same IR (context only — no
     frozen-table row is 2-layer fixed-pad)."""

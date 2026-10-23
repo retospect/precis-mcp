@@ -531,6 +531,7 @@ def test_out_of_limits_state_is_bad_input(cad):
         )
 
 
+@pytest.mark.timeout(480)  # CI worst 173s x2.5 for runner variance (gr503084)
 def test_sweep_reports_collision_and_envelope(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
     cad.put(id="crank_rig", text=_CRANK_RIG)
@@ -606,6 +607,7 @@ gear a1 to a2 ratio:1
 """
 
 
+@pytest.mark.timeout(480)  # CI worst 179s x2.5 for runner variance (gr503084)
 def test_sweep_sees_gear_driven_collisions(cad):
     # finding-1 regression: sweeping the DRIVER must also score and
     # envelope the driven joint's parts — bar1 (r20) clears the post at

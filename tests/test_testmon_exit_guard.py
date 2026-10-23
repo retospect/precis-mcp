@@ -310,6 +310,7 @@ def test_main_prints_traceback_tail_and_log_path_and_signals_crash(
         encoding="utf-8",
         env={**os.environ, "PYTHONUTF8": "1"},
         check=False,
+        timeout=60,
     )
 
     assert proc.returncode == guard.TESTMON_CRASH_RC == 75

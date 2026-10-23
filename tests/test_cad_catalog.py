@@ -136,6 +136,7 @@ _ASSY = (
 )
 
 
+@pytest.mark.timeout(1020)  # CI worst 385s x2.5 for runner variance (gr503084)
 def test_bom_rolls_up_patterns_nesting_and_component_refs(cad, store):
     comp, _ = store.component_entity_upsert(
         slug="bearing-6202", title="6202 bearing", meta_patch={}

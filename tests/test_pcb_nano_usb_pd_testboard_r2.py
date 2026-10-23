@@ -324,6 +324,7 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1740)  # CI worst 678s x2.5 for runner variance (gr503084)
 def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     # The catalog footprints are the fixture's cache — seeded into the
     # test DB before the put so the catalog parts resolve to real pad

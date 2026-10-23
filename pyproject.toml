@@ -626,6 +626,10 @@ dev = [
     # scripts/mutate-diff its per-test contexts (--cov-context=test) so each
     # mutant runs only its covering tests. Not used by /land or scripts/test.
     "pytest-cov>=7.1.0",
+    # Per-test ceiling (``timeout`` in [tool.pytest.ini_options]): a hung
+    # test fails by name with a stack dump instead of stalling its CI shard
+    # until the job's timeout-minutes cancels it anonymously (gr503084).
+    "pytest-timeout>=2.4.0",
 ]
 
 # autocatpath is release-gated off PyPI past 0.13.0; resolve it from the
@@ -977,6 +981,15 @@ testpaths = ["tests"]
 # every test it ran (~1400 ERRORs + INTERNALERROR). With 0 the run stops
 # at once with one failure naming the crashed worker.
 addopts = "-n auto --max-worker-restart=0"
+# Hang diagnostics (gr503084): a CI shard used to stall silently behind -n's
+# dots. faulthandler dumps every thread's stack once a test passes 600s;
+# pytest-timeout fails a test at 300s (thread method: dumps stacks, then
+# ends the worker — works for C-level and lock hangs signal mode misses).
+# Known-long tests carry @pytest.mark.timeout(N) with their measured
+# worst case; don't raise the global to fit one (Reto-only).
+faulthandler_timeout = 600
+timeout = 300
+timeout_method = "thread"
 
 [tool.coverage.run]
 # relative_files: coverage runs INSIDE the gate container (/app) but

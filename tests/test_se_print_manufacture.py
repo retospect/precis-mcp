@@ -555,6 +555,7 @@ def _plates_ops(screw_slug: str, *, intent: str) -> list[dict[str, Any]]:
     ]
 
 
+@pytest.mark.timeout(420)  # CI junit worst 103s x4 for CI variance (gr503084)
 def test_fastener_across_fused_members_is_elided_but_model_still_prints_it(
     handler: SeHandler, hub: Hub, tmp_path: Path
 ) -> None:

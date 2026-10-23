@@ -215,6 +215,7 @@ def _drain_one_job(
 
 
 @pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.timeout(600)  # CI junit worst 136s x4 for CI variance (gr503084)
 def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     store: Store, seed: int, record_property: Any
 ) -> None:

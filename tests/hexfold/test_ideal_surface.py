@@ -163,6 +163,7 @@ _GOLDEN = json.loads(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("anchor", sorted(_GOLDEN))
+@pytest.mark.timeout(720)  # CI worst 274s x2.5 for runner variance (gr503084)
 def test_foot_anchor_reproduces(anchor: str) -> None:
     g = _GOLDEN[anchor]
     plan = af.plan_foot(g["n"], g["radius"], candidates=tuple(g["candidates"]))

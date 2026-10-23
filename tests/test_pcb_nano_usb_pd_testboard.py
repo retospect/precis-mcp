@@ -335,6 +335,8 @@ def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
 
 
 @pytest.mark.slow
+# CI worst 463s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("seed", NANO_SEEDS)
 def test_nano_board_routes_cleanly_per_seed(store: Store, seed: int) -> None:
     """Not a floor (Reto 2026-10-19): every seed's place and route job must
@@ -347,6 +349,7 @@ def test_nano_board_routes_cleanly_per_seed(store: Store, seed: int) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1380)  # CI worst 550s x2.5 for runner variance (gr503084)
 def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     pcb, ref_id, routed, failed = _place_and_route(store, SEED)
     fanout2_nets = {n for n, k in _fanout(fx.DESIGN["connections"]).items() if k >= 2}

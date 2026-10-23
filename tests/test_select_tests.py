@@ -99,6 +99,7 @@ def test_path_map_patterns_match_something() -> None:
         )
 
 
+@pytest.mark.timeout(480)  # CI worst 181s x2.5 for runner variance (gr503084)
 def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
     """Every repo path a test file reads must select that test when it
     changes — the snapshot/table/registry tests can never sit outside the

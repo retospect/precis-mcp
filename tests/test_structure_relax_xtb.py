@@ -85,6 +85,7 @@ def _dimer() -> StructScene:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1200)  # CI worst 474s x2.5 for runner variance (gr503084)
 def test_xtb_relaxes_the_pillar_neck() -> None:
     """GFN2-xTB on the fused tube→C60 neck: converges from the stick seed,
     the six seam C–C bonds land at 1.40 ± 0.02 Å (the 2026-10-11

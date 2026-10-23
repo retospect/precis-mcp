@@ -257,6 +257,7 @@ def test_range_param_normalizes() -> None:
 # ── prismatic: a slide into the post, reported in mm ────────────────────────
 
 
+@pytest.mark.timeout(600)  # CI worst 227s x2.5 for runner variance (gr503084)
 def test_prismatic_slide_reports_first_colliding_travel_in_length(
     handler: SeHandler,
 ) -> None:

@@ -375,6 +375,7 @@ def _island_terminals_offered(pcb, store, ref_id: int) -> tuple[int, int]:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1260)  # CI worst 491s x2.5 for runner variance (gr503084)
 def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
     pcb, store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
