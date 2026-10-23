@@ -6,7 +6,10 @@ once someone is actually building it, and `canonical` for a decided design
 rule that stays here as the spec of record while its implementation slices
 are filed separately — Reto's call, per item); optional `prio:` (`high` | `normal` |
 `low`, default `normal`) sorts the index and the autonomous fixer's pick
-order high-first.
+order high-first. `ready` means **unclaimed**: the laptop fixer builds any `ready`
+item, so whoever starts building a spec (fleet builder, Devin, a session)
+flips it to `in-progress` first, in its own commit to main (Reto 2026-10-23,
+after the fixer built dev-loop-scratch a second time).
 
 **`status:` and `pillar:` are mandatory.** A file without front matter is
 not untyped — it is rendered as `idea` by `scripts/docs-index`, i.e. it

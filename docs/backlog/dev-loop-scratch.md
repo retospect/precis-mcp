@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 title: Dev loop — scratch runs, a per-worktree MCP server, file-backed trace views
 pillar: 3d-design
 prio: high
