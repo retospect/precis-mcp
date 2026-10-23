@@ -109,6 +109,30 @@ def slug_for(orcid_id: str) -> str:
     return f"orcid:{orcid_id}"
 
 
+class RecordDead(NotFound):
+    """The upstream iD is a tombstone: deprecated (301 — ORCID merged the
+    record into ``replacement``) or deactivated (409). Terminal — unlike
+    a plain :class:`NotFound` (404: an iD never registered, which a
+    member-allocated iD may yet become), no retry can ever succeed, so a
+    caller must not back off and re-try; it records the end state
+    (``reason``) and moves on. Prod's orcid_enrich noise was almost all
+    this class: 82 dead iDs re-failed 966 times before the statuses were
+    split out of the generic ``Upstream`` branch (gr508687).
+    """
+
+    def __init__(
+        self,
+        cause: str,
+        *,
+        reason: str,
+        replacement: str | None = None,
+        next: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.replacement = replacement
+        super().__init__(cause, next=next)
+
+
 # ---------------------------------------------------------------------------
 # Token cache (client-credentials)
 # ---------------------------------------------------------------------------
@@ -236,12 +260,62 @@ def _api_get(path: str) -> dict[str, Any]:
             f"ORCID has no record at {path}",
             next="verify the iD on https://orcid.org",
         )
+    if resp.status_code in (301, 409):
+        raise _dead_error(path, resp)
     if resp.status_code != 200:
         raise Upstream(f"ORCID HTTP {resp.status_code} for {path}: {resp.text[:200]}")
     try:
         return resp.json()
     except Exception as exc:
         raise Upstream(f"ORCID returned non-JSON for {path}: {exc}") from exc
+
+
+#: A 301 developer-message names the surviving iD: ``... Please refer to
+#: account: https://orcid.org/<new iD>. ORCID https://orcid.org/<old iD>``.
+_REPLACEMENT_RE = re.compile(r"refer to account:\s*https?://orcid\.org/", re.I)
+
+
+def _dead_error(path: str, resp: Any) -> RecordDead:
+    """Map an ORCID tombstone status to :class:`RecordDead`.
+
+    301 means the iD was deprecated and merged into another record — the
+    developer-message names the replacement, extracted when parseable.
+    409 means the owner deactivated the record. Both are terminal:
+    raising ``Upstream`` here is what made orcid_enrich re-fail 82 dead
+    iDs on every capped backoff (gr508687).
+    """
+    requested = path.split("/", 1)[0]
+    dev_msg = ""
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            dev_msg = str(payload.get("developer-message") or "")
+    except Exception:
+        pass
+    if resp.status_code == 301:
+        replacement = None
+        m = _REPLACEMENT_RE.search(dev_msg)
+        if m is not None:
+            try:
+                replacement = normalize_orcid_id(dev_msg[m.end() :])
+            except BadInput:
+                replacement = None
+        if replacement is not None:
+            return RecordDead(
+                f"ORCID iD {requested} is deprecated — the record moved "
+                f"to {replacement}",
+                reason="deprecated",
+                replacement=replacement,
+                next=f"get(kind='orcid', id='{replacement}')",
+            )
+        return RecordDead(
+            f"ORCID iD {requested} is deprecated — ORCID merged it into another record",
+            reason="deprecated",
+        )
+    return RecordDead(
+        f"ORCID iD {requested} is deactivated — the record is gone for good",
+        reason="deactivated",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +484,7 @@ def fetch_works_only(orcid_id: str) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "RecordDead",
     "fetch_record",
     "fetch_works_only",
     "has_credentials",

@@ -227,6 +227,76 @@ class TestFailureBackoff:
         assert self._claimed(store) == []
 
 
+class TestDeadRecords:
+    """gr508687: a deprecated (301) or deactivated (409) record can never
+    succeed on retry, yet it was stamped like a transient failure and
+    re-claimed on every capped backoff — prod 2026-10-23: 82 dead iDs,
+    966 re-failures, ~all of the handler's ERROR rows. The
+    :class:`~precis.ingest.orcid.RecordDead` split makes the outcome a
+    terminal ``fetch_dead`` stamp instead: the node leaves the claimable
+    set for good and the pass counts it resolved (``ok``), not failed.
+    """
+
+    def test_deprecated_node_stamps_dead_and_leaves_the_claim_set(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_credentials(monkeypatch, present=True)
+        ref_id = _orcid_node(store)
+
+        def _dead(_oid: str) -> dict[str, Any]:
+            raise orcid_api.RecordDead(
+                "deprecated",
+                reason="deprecated",
+                replacement="0009-0001-0655-0359",
+            )
+
+        result = run_once(store, fetch_fn=_dead, sleep_fn=lambda _s: None)
+        assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+
+        ref = store.get_ref(kind="orcid", id=_SLUG)
+        assert ref is not None
+        meta = ref.meta or {}
+        assert meta.get("fetch_dead") == "deprecated"
+        assert meta.get("fetch_dead_at")
+        assert meta.get("orcid_replaced_by") == "0009-0001-0655-0359"
+        assert not meta.get("fetched_at")
+        assert not meta.get("fetch_failed_at")
+        assert orcid_enrich._claim_batch(store, limit=10) == []
+
+    def test_deactivated_node_stamps_dead_without_a_replacement(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_credentials(monkeypatch, present=True)
+        _orcid_node(store)
+
+        def _dead(_oid: str) -> dict[str, Any]:
+            raise orcid_api.RecordDead("deactivated", reason="deactivated")
+
+        result = run_once(store, fetch_fn=_dead, sleep_fn=lambda _s: None)
+        assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+
+        ref = store.get_ref(kind="orcid", id=_SLUG)
+        meta = (ref.meta or {}) if ref is not None else {}
+        assert meta.get("fetch_dead") == "deactivated"
+        assert "orcid_replaced_by" not in meta
+        assert orcid_enrich._claim_batch(store, limit=10) == []
+
+    def test_pre_stamped_dead_node_is_never_claimed(self, store: Store) -> None:
+        """The claim predicate itself excludes tombstones — including
+        rows stamped by an earlier deploy or by hand."""
+        ref_id = _orcid_node(store)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'fetch_dead', 'deactivated',"
+                "  'fetch_dead_at', now()::text) "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.commit()
+        assert orcid_enrich._claim_batch(store, limit=10) == []
+
+
 class TestCrossCheck:
     def test_matching_doi_verifies_and_overwrites_names(
         self, store: Store, monkeypatch: pytest.MonkeyPatch

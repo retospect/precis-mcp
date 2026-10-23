@@ -139,6 +139,59 @@ def test_orcid_404_not_retried_and_is_not_found(
     assert clock.sleeps == []
 
 
+def test_orcid_301_deprecated_is_record_dead_with_replacement(
+    server: Server, limiter: Limiter, clock: Clock, orcid_token: None
+) -> None:
+    """A deprecated iD is terminal (gr508687): RecordDead carries the
+    surviving iD from the developer-message so the worker can stamp it."""
+    server.script = [
+        (
+            301,
+            {},
+            {
+                "response-code": 301,
+                "developer-message": (
+                    "301 Moved Permanently: This account is deprecated. "
+                    "Please refer to account: "
+                    "https://orcid.org/0009-0001-0655-0359. "
+                    "ORCID https://orcid.org/0000-0001-9520-8813"
+                ),
+            },
+        )
+    ]
+    with pytest.raises(orcid.RecordDead) as ei:
+        orcid._api_get("0000-0001-9520-8813/person")
+    assert isinstance(ei.value, NotFound)
+    assert ei.value.reason == "deprecated"
+    assert ei.value.replacement == "0009-0001-0655-0359"
+    assert len(server.requests) == 1
+    assert clock.sleeps == []
+
+
+def test_orcid_409_deactivated_is_record_dead(
+    server: Server, limiter: Limiter, clock: Clock, orcid_token: None
+) -> None:
+    server.script = [
+        (
+            409,
+            {},
+            {
+                "response-code": 409,
+                "developer-message": (
+                    "409 Conflict: The ORCID record is deactivated and "
+                    "cannot be edited. Full validation error: "
+                    "0000-0002-4841-7206 is deactivated"
+                ),
+            },
+        )
+    ]
+    with pytest.raises(orcid.RecordDead) as ei:
+        orcid._api_get("0000-0002-4841-7206/person")
+    assert ei.value.reason == "deactivated"
+    assert ei.value.replacement is None
+    assert len(server.requests) == 1
+
+
 def test_orcid_exhausted_429_is_upstream_not_not_found(
     server: Server, limiter: Limiter, clock: Clock, orcid_token: None
 ) -> None:

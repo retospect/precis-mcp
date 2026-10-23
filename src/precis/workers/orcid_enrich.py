@@ -9,7 +9,8 @@ on-demand only, gated behind an LLM deciding to resolve it. This module
 is the gentle background sweep that drains that backlog on its own:
 
 * **Fetch.** Claims a batch of unvisited ``kind='orcid'`` nodes
-  (``meta.fetched_at IS NULL``), newest-linked-paper first, calls
+  (``meta.fetched_at IS NULL``; tombstone-stamped ``fetch_dead`` nodes
+  are out for good), newest-linked-paper first, calls
   :func:`precis.ingest.orcid.fetch_record` for each, and stores the
   record via :func:`precis.handlers.orcid.store_orcid_record` — the same
   storage path ``OrcidHandler.get()`` uses, so a background-fetched node
@@ -42,7 +43,8 @@ modules' docstrings for the detailed rationale):
   claimable for the next due pass (``fetch_oa._pass_wall_s`` is the same
   idiom).
 * Unlike those two, this pass carries no single-runner advisory lock —
-  its claim predicate (``meta.fetched_at IS NULL``) is naturally
+  its claim predicate (``meta.fetched_at IS NULL`` + ``fetch_dead IS
+  NULL``) is naturally
   converging (a node visited by any node never re-selects), so a rare
   double-claim across two racing cluster nodes just repeats one fetch,
   never corrupts anything.
@@ -102,8 +104,12 @@ _BATCH_ENV_VAR = "PRECIS_ORCID_ENRICH_BATCH"
 #: pass forever. Measured on prod 2026-09-26: 18 nodes failing 28× each in
 #: 24h = 501 of the fleet's 516 ERROR rows (97%), and 18 of every 100-node
 #: batch spent on rows already known to fail, against a 93k-node claimable
-#: backlog. A permanently-dead iD (deleted/withdrawn record) still costs
-#: one attempt per capped window instead of one per pass.
+#: backlog. Tombstone statuses (deprecated/deactivated —
+#: :class:`precis.ingest.orcid.RecordDead`) do better than a capped window:
+#: ``_record_dead`` stamps ``fetch_dead`` and the node is out for good
+#: (gr508687); the backoff below covers the *potentially transient*
+#: repeat failures — a never-registered iD (404) may be claimed later, a
+#: wedge may clear.
 _BACKOFF_STEP_HOURS = 6
 _MAX_BACKOFF_STEPS = 5
 
@@ -211,6 +217,9 @@ def _claim_batch(store: Store, *, limit: int) -> list[int]:
                             WHERE ri.ref_id = o.ref_id
                               AND ri.id_kind = 'cite_key'
                               AND ri.id_value LIKE 'orcid:%%'))
+           -- a terminal tombstone (deprecated/deactivated record —
+           -- ingest.orcid.RecordDead) can never succeed: out for good
+           AND o.meta->>'fetch_dead' IS NULL
            -- ...and the same reasoning for one that HAS failed: hold it
            -- back for a widening window instead of re-failing it every
            -- pass (see _BACKOFF_STEP_HOURS / _record_failure).
@@ -261,6 +270,26 @@ def _record_failure(store: Store, ref_id: int) -> None:
         )
     except Exception:
         log.exception("orcid_enrich: could not stamp failure on node %d", ref_id)
+
+
+def _record_dead(store: Store, ref_id: int, exc: orcid_api.RecordDead) -> None:
+    """Stamp a terminal tombstone so the node leaves the claimable set
+    for good (``fetch_dead`` + ``fetch_dead_at``, and the surviving iD as
+    ``orcid_replaced_by`` when ORCID named one). A deprecated/deactivated
+    record can never succeed on retry — without this stamp it was
+    re-failed on every capped backoff, which was ~all of the handler's
+    prod ERROR rows (gr508687). Best-effort like :func:`_record_failure`:
+    a failed stamp leaves the node claimable, so this never raises."""
+    meta: dict[str, Any] = {
+        "fetch_dead": exc.reason,
+        "fetch_dead_at": datetime.now(UTC).isoformat(),
+    }
+    if exc.replacement:
+        meta["orcid_replaced_by"] = exc.replacement
+    try:
+        store.stamp_ref_meta(ref_id, meta)
+    except Exception:
+        log.exception("orcid_enrich: could not stamp dead marker on node %d", ref_id)
 
 
 def _orcid_id_for_node(store: Store, ref_id: int) -> str | None:
@@ -347,12 +376,14 @@ def run_once(
     """Run the ORCID fetch + cross-check sweep if due; otherwise no-op.
 
     ``claimed`` counts nodes visited this pass; ``ok`` counts nodes
-    fetched + stored + cross-checked; ``failed`` counts nodes whose fetch
-    raised (including a fetch cut by its ``_NODE_FETCH_CAP_S``/remaining-
-    budget deadline) — logged, ``meta.fetched_at`` left unset, and the
-    node stamped (:func:`_record_failure`) so :func:`_claim_batch` holds
-    it back for a widening window rather than re-failing it on every
-    pass. The node loop stops starting new work once
+    fetched + stored + cross-checked *and* nodes classified terminal-dead
+    (``_record_dead``'s ``fetch_dead`` stamp takes them out of the
+    claimable set — a resolved tombstone, not a failure); ``failed``
+    counts nodes whose fetch raised transiently (including a fetch cut by
+    its ``_NODE_FETCH_CAP_S``/remaining-budget deadline) — logged,
+    ``meta.fetched_at`` left unset, and the node stamped
+    (:func:`_record_failure`) so :func:`_claim_batch` holds it back for a
+    widening window rather than re-failing it on every pass. The node loop stops starting new work once
     :func:`_pass_wall_s` is spent, leaving the rest of the batch
     claimable for the next due pass. Idle passes (no dsn, throttled, or
     missing credentials) return all zeros and claim nothing.
@@ -406,6 +437,20 @@ def run_once(
                 deadline_s=fetch_budget,
                 label=f"orcid fetch {orcid_id}",
             )
+        except orcid_api.RecordDead as exc:
+            # Terminal tombstone (301 deprecated / 409 deactivated) — the
+            # outcome is the fetch_dead stamp taking the node out of the
+            # claimable set, not a failure; counting it `failed` would
+            # keep heartbeat/health noise alive for a resolved node.
+            log.info(
+                "orcid_enrich: node %d (%s) is dead upstream: %s",
+                ref_id,
+                orcid_id,
+                exc.cause,
+            )
+            _record_dead(store, ref_id, exc)
+            ok += 1
+            continue
         except Exception:
             log.exception("orcid_enrich: node %d (%s) fetch failed", ref_id, orcid_id)
             _record_failure(store, ref_id)
