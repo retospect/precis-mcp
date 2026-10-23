@@ -1886,18 +1886,38 @@ def test_job_inproc_running_job_is_reclaimed_by_its_lane_not_swept(
     assert "STATUS:failed" not in job_tags
 
 
-def test_overqueued_garden_job_is_cancelled_with_reason(store: Store) -> None:
-    """gr506771: a graph_garden job still ``STATUS:queued`` past its
-    queue_ttl_s (4h = 2× the 2h recurring) is cancelled, not failed —
-    with the reason on the row. A fresh queued job is untouched."""
+def test_overqueued_reap_skips_ttl_exempt_job_types(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr506771 + gr508975: a queued job still ``STATUS:queued`` past its
+    job_type's queue_ttl_s is cancelled, not failed — with the reason on
+    the row — but a ``queue_ttl_exempt`` type is never reaped
+    (Reto 2026-10-23, gr508975 option (a)): it scans live graph state at
+    claim time, so a long wait leaves no stale input, and
+    ``dedupe_pending`` already bounds the backlog to one. A fresh
+    queued job is untouched either way."""
+    import dataclasses
+
+    from precis.workers import job_types
     from precis.workers.sweeper import _reap_overqueued
 
-    def _queued(status_age_h: float) -> int:
+    # No built-in type declares queue_ttl_s after gr508975 made
+    # graph_garden exempt; arm one on a real non-exempt type so the
+    # TTL arm stays covered.
+    spec = job_types.get_job_type("embed_batch")
+    assert spec is not None
+    monkeypatch.setitem(
+        job_types._REGISTRY,
+        "embed_batch",
+        dataclasses.replace(spec, queue_ttl_s=4 * 3600),
+    )
+
+    def _queued(job_type: str, status_age_h: float) -> int:
         ref = store.insert_ref(
             kind="job",
             slug=None,
-            title="stale garden job",
-            meta={"executor": "job_inproc", "job_type": "graph_garden", "params": {}},
+            title="queued job",
+            meta={"executor": "job_inproc", "job_type": job_type, "params": {}},
         )
         store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="system")
         with store.pool.connection() as conn:
@@ -1910,12 +1930,14 @@ def test_overqueued_garden_job_is_cancelled_with_reason(store: Store) -> None:
             conn.commit()
         return int(ref.id)
 
-    stale = _queued(9.4)
-    fresh = _queued(0.5)
+    garden_stale = _queued("graph_garden", 9.4)
+    stale = _queued("embed_batch", 9.4)
+    fresh = _queued("embed_batch", 0.5)
 
     n = _reap_overqueued(store, limit=10)
 
     assert n == 1
+    assert "STATUS:queued" in {str(t) for t in store.tags_for(garden_stale)}
     assert "STATUS:cancelled" in {str(t) for t in store.tags_for(stale)}
     assert "STATUS:queued" in {str(t) for t in store.tags_for(fresh)}
     meta = _query(store, "SELECT meta FROM refs WHERE ref_id = %s", (stale,))[0][0]

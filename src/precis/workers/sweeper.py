@@ -1456,15 +1456,16 @@ def _lane_sighting(
 def _queue_ttl_job_types() -> dict[str, int]:
     """job_type → its declared queued TTL in seconds
     (``JobTypeSpec.queue_ttl_s``) — the types whose queued rows
-    :func:`_reap_overqueued` may cancel."""
+    :func:`_reap_overqueued` may cancel. Stateless live-scan types
+    (``JobTypeSpec.queue_ttl_exempt``, gr508975) never appear."""
     from precis.workers.job_types import get_job_type, known_job_types
 
     out: dict[str, int] = {}
     for name in known_job_types():
         spec = get_job_type(name)
-        ttl = getattr(spec, "queue_ttl_s", None) if spec is not None else None
-        if ttl:
-            out[name] = int(ttl)
+        if spec is None or spec.queue_ttl_exempt or not spec.queue_ttl_s:
+            continue
+        out[name] = int(spec.queue_ttl_s)
     return out
 
 
@@ -1472,16 +1473,20 @@ def _reap_overqueued(store: Store, *, limit: int) -> int:
     """Cancel queued jobs sitting past their job_type's queue TTL
     (gr506771).
 
-    A queued run whose input has rotted — the gardener re-scanning graph
-    state from hours ago (one sat 9.4h) — is worse than a skipped tick:
+    A queued run whose input has rotted — re-scanning state from hours
+    ago (a garden job once sat 9.4h) — is worse than a skipped tick:
     ``dedupe_pending`` already keeps new ticks from piling on, but the
     stale queued job itself would still execute whenever its host came
     back. Types opt in via ``JobTypeSpec.queue_ttl_s``; past it the job
     ends ``STATUS:cancelled`` (not failed — no bubble, no retry count)
-    with the reason on the row and in a ``job_event`` chunk. Queued age
-    is read off the STATUS:queued tag's ``created_at``, so a re-queued
-    job's clock restarts exactly when it re-entered the queue. No
-    reservation refund needed: a queued job was never claimed.
+    with the reason on the row and in a ``job_event`` chunk. Stateless
+    live-scan types declare ``JobTypeSpec.queue_ttl_exempt`` instead
+    (Reto ruling 2026-10-23, gr508975 option (a) — graph_garden first):
+    they read live graph state at claim time, so a long wait leaves no
+    stale input. Queued age is read off the STATUS:queued tag's
+    ``created_at``, so a re-queued job's clock restarts exactly when it
+    re-entered the queue. No reservation refund needed: a queued job
+    was never claimed.
     """
     ttls = _queue_ttl_job_types()
     if not ttls:

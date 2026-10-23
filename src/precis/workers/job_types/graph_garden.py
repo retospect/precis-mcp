@@ -366,9 +366,13 @@ SPEC = JobTypeSpec(
     # gr503581: a failed run gets one bounded retry after a short
     # backoff; a second failure stays failed and visible.
     on_failed=_on_failed,
-    # gr506771: two cadences of the 2h recurring — a queued run older
-    # than that proposes over rotten graph state; the sweeper cancels it.
-    queue_ttl_s=4 * 3600,
+    # Reto ruling 2026-10-23, gr508975 option (a): stateless live-scan
+    # job types are exempt from the queue TTL. run_garden_tick reads
+    # live graph state at claim time, so a long STATUS:queued wait
+    # leaves no stale input to reap — the TTL only starved the cadence
+    # behind derived_drain, and dedupe_pending already bounds the
+    # backlog to one.
+    queue_ttl_exempt=True,
 )
 
 

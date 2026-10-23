@@ -193,6 +193,18 @@ class JobTypeSpec:
     #: re-scanning state from hours ago) is worse than a skipped tick.
     #: ``None`` (default): queued jobs wait indefinitely, as before.
     queue_ttl_s: int | None = None
+    #: Stateless live-scan exemption from ``queue_ttl_s`` (Reto ruling
+    #: 2026-10-23, gr508975 option (a)) — the explicit, named set of job
+    #: types the sweeper's overqueued reap never touches. A type whose
+    #: claim-time work scans live graph state has no enqueued input that
+    #: rots while it waits, and ``dedupe_pending`` already bounds its
+    #: backlog to one, so cancelling it past a TTL only starves the
+    #: cadence. Declared *instead of* ``queue_ttl_s`` — ``__post_init__``
+    #: refuses both together, so re-arming a TTL on an exempt type is a
+    #: reviewed flag removal here, not silent drift. Setting this on a
+    #: type whose enqueued input DOES rot is a correctness bug, not a
+    #: tuning choice.
+    queue_ttl_exempt: bool = False
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".
@@ -216,6 +228,12 @@ class JobTypeSpec:
         fall through to "no submit/poll or dispatch" too — just less
         obviously than an outright missing pair.
         """
+        if self.queue_ttl_exempt and self.queue_ttl_s is not None:
+            raise ValueError(
+                f"job_type {self.name!r}: queue_ttl_exempt and queue_ttl_s "
+                "are mutually exclusive — an exempt type declares no TTL "
+                "(gr508975)"
+            )
         if (self.submit is None) != (self.poll is None):
             raise ValueError(
                 f"job_type {self.name!r}: submit and poll must be set together "
