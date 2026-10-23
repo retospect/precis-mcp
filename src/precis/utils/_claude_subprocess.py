@@ -168,6 +168,7 @@ def run_claude(
     error_cls: type[ClaudeProcessError],
     env: dict[str, str] | None = None,
     stdin_devnull: bool = False,
+    stdin_data: bytes | None = None,
     cwd: str | None = None,
     bootstrap_oauth: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -194,6 +195,12 @@ def run_claude(
     that's supposed to auth some other way (e.g. ``ANTHROPIC_API_KEY``
     already baked into ``env``). A caller inheriting ``os.environ`` wants the
     bootstrap and leaves this at the default.
+
+    ``stdin_data`` pipes raw bytes to the child's stdin — how a vision call
+    delivers its image (``cat img.png | claude -p "…"``; the CLI attaches
+    piped image bytes as an image content block). Mutually exclusive with
+    ``stdin_devnull``; implies binary mode, so stdout/stderr are decoded to
+    ``str`` before the usual ``CompletedProcess[str]`` return.
     """
     # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
     # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
@@ -205,17 +212,33 @@ def run_claude(
     disarm_session_hooks(env)
     if bootstrap_oauth:
         ensure_oauth_token(env)
+    if stdin_data is not None and stdin_devnull:
+        raise ValueError("run_claude: stdin_data and stdin_devnull are exclusive")
     try:
-        res = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=timeout_s,
-            env=env,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL if stdin_devnull else None,
-        )
+        if stdin_data is not None:
+            # Binary stdin can't ride text=True — run raw and decode.
+            raw = subprocess.run(
+                argv,
+                input=stdin_data,
+                capture_output=True,
+                timeout=timeout_s,
+                env=env,
+                cwd=cwd,
+            )
+            res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
+                argv, raw.returncode, to_str(raw.stdout), to_str(raw.stderr)
+            )
+        else:
+            res = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout_s,
+                env=env,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL if stdin_devnull else None,
+            )
     except subprocess.TimeoutExpired as exc:
         raise error_cls(
             f"{label} timed out after {timeout_s}s",

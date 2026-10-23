@@ -209,6 +209,7 @@ def call_claude_p(
     timeout_s: float | None = None,
     extra_args: tuple[str, ...] = (),
     bare: bool = False,
+    images: tuple[Any, ...] = (),
 ) -> ClaudePResult:
     """Run ``claude -p <prompt>`` and parse the last JSON block from stdout.
 
@@ -236,6 +237,11 @@ def call_claude_p(
             **chain rung** (``{"transport": "claude_p", "bare": true}``
             in ``llm.chain.<tier>``), so moving one tier's spend onto the
             API key is an operator config change, not a code change.
+        images: Raster images (``LlmImage``-shaped: ``.data`` bytes +
+            ``.media_type``) to ground the call on — the FIRST image's
+            bytes pipe on stdin (``cat img.png | claude -p "…"`` attaches
+            piped image data as an image block); extras warn + drop.
+            Vision support for card_describe's figure slice (gr497688 S3).
 
     Returns:
         :class:`ClaudePResult` with the parsed dict.
@@ -325,6 +331,17 @@ def call_claude_p(
             )
 
     log.debug("claude_p: invoking model=%s max_usd=%.4f", model, max_usd)
+    stdin_kwargs: dict[str, Any] = {}
+    if images:
+        if len(images) > 1:
+            log.warning(
+                "claude_p: %d images on one call — the stdin lane carries "
+                "one; dropping %d",
+                len(images),
+                len(images) - 1,
+            )
+        # Passed conditionally: run_claude stubs in tests predate the kwarg.
+        stdin_kwargs["stdin_data"] = bytes(images[0].data)
     res = run_claude(
         args,
         binary=binary,
@@ -332,6 +349,7 @@ def call_claude_p(
         timeout_s=timeout_s,
         error_cls=ClaudePError,
         env=proc_env,
+        **stdin_kwargs,
     )
 
     payload, cost, usage = _unwrap_envelope(res.stdout or "")

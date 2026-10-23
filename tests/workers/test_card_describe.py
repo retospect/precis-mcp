@@ -328,17 +328,15 @@ def test_truncated_json_reply_fails_not_stored(store: Any, hub: Any) -> None:
     assert _desc_chunks(store, ref_id) == []
 
 
-# ── gr500371: a claude-less host defers the batch instead of failing rows ──
+# ── gr500371: emptied chain defers the batch, log names cli_unavailable ──
 
 
 def test_cli_unavailable_chain_defers_batch(
     store: Any, hub: Any, caplog: Any, tmp_path: Any, monkeypatch: Any
 ) -> None:
-    """A claude-less host: the BIG chain's claude rungs drop at the router's
-    availability gate (``_drop_unavailable_rungs``) → ``DispatchError``
-    with ``paused`` set → the pass defers the whole batch with zero failed
-    rows, writes nothing, and the WARNING names the host defect — the
-    pre-fix shape was 16 ERROR rows per cycle on balthazar."""
+    """A claude-less host: the BIG chain's only rung (claude_p) drops at the
+    availability gate → DispatchError(paused, cli_unavailable) → the pass
+    defers with zero failed rows and the log line names cli_unavailable."""
     import logging
 
     from precis.utils.llm.router import DispatchClient, Tier
@@ -357,7 +355,140 @@ def test_cli_unavailable_chain_defers_batch(
         r = run_card_describe_pass(store, client=client, batch_size=10)
 
     assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
+    assert r.get("deferred") == "cli_unavailable"
     assert _desc_chunks(store, ref_id) == []
-    paused = [m for m in caplog.messages if "dispatch paused" in m]
-    assert paused and "not found on this host" in paused[0]
-    assert not any("dispatch failed" in m for m in caplog.messages)
+    assert "cli_unavailable" in caplog.text
+
+
+# ── gr497688 S3: figure vision descriptions ─────────────────────────────
+
+_FIGURE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">'
+    '<rect x="10" y="10" width="80" height="50" fill="#cde"/>'
+    '<circle cx="50" cy="35" r="12" fill="#a33"/></svg>'
+)
+_FIGURE_SVG_2 = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">'
+    '<rect x="10" y="10" width="80" height="50" fill="#cde"/>'
+    '<ellipse cx="50" cy="35" rx="20" ry="10" fill="#3a3"/></svg>'
+)
+
+
+def _put_figure(hub: Any, slug: str = "fig1", svg: str = _FIGURE_SVG) -> int:
+    from precis.handlers.figure import FigureHandler
+
+    FigureHandler(hub=hub).put(id=slug, title="Band alignment sketch", text=svg)
+    ref = hub.store.get_ref(kind="figure", id=slug)
+    assert ref is not None
+    return int(ref.id)
+
+
+def _fake_raster(monkeypatch: Any) -> None:
+    import precis.workers.card_describe as cd
+
+    monkeypatch.setattr(cd, "_svg_to_png", lambda svg: b"\x89PNG-fake")
+
+
+def test_figure_gets_vision_description(store: Any, hub: Any, monkeypatch: Any) -> None:
+    import base64 as _b64
+
+    ref_id = _put_figure(hub)
+    _fake_raster(monkeypatch)
+    client = _FakeClient(
+        "A band-alignment sketch: a filled rectangle with a red disc "
+        "marking the alignment point, plausibly a device-stack schematic."
+    )
+
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    chunks = _desc_chunks(store, ref_id)
+    assert len(chunks) == 1
+    assert "band-alignment" in chunks[0][1]
+    # The request carried an image block, not the raw SVG text.
+    user = [m for m in client.calls[0] if m["role"] == "user"][0]
+    blocks = user["content"]
+    assert isinstance(blocks, list)
+    img = [b for b in blocks if b.get("type") == "image"]
+    assert len(img) == 1
+    assert img[0]["source"]["media_type"] == "image/png"
+    assert _b64.b64decode(img[0]["source"]["data"]) == b"\x89PNG-fake"
+    text = [b for b in blocks if b.get("type") == "text"][0]["text"]
+    assert "Band alignment sketch" in text
+
+
+def test_figure_edit_replaces_description(
+    store: Any, hub: Any, monkeypatch: Any
+) -> None:
+    from precis.handlers.figure import FigureHandler
+
+    ref_id = _put_figure(hub)
+    _fake_raster(monkeypatch)
+    run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    first = _desc_chunks(store, ref_id)[0]
+
+    FigureHandler(hub=hub).edit(id="fig1", text=_FIGURE_SVG_2)
+    client2 = _FakeClient(
+        "A band-alignment sketch with an ellipse overlay, plausibly a "
+        "revised device-stack schematic."
+    )
+    r = run_card_describe_pass(store, client=client2, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    chunks = _desc_chunks(store, ref_id)
+    assert len(chunks) == 1
+    assert chunks[0][0] != first[0]
+    assert chunks[0][2]["source_sha"] != first[2]["source_sha"]
+
+
+def test_empty_figure_canvas_not_claimed(store: Any, hub: Any) -> None:
+    """A birth canvas (no drawable element) is never described."""
+    ref_id = _put_figure(
+        hub,
+        slug="blank",
+        svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>',
+    )
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert r["claimed"] == 0
+    assert _desc_chunks(store, ref_id) == []
+
+
+# ── gr497688 S4: daily budget cap + dry-run counts ───────────────────────
+
+
+def test_daily_budget_cap_defers_pass(store: Any, hub: Any, monkeypatch: Any) -> None:
+    ref_id = _put_structure(hub)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, cost_usd, ts) "
+            "VALUES ('card_describe', 'big', 30.00, now())"
+        )
+        conn.commit()
+    monkeypatch.setenv("PRECIS_CARD_DESCRIBE_DAILY_USD", "25")
+
+    client = _FakeClient()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
+    assert r.get("deferred") == "budget"
+    assert client.calls == []
+    assert _desc_chunks(store, ref_id) == []
+
+
+def test_dry_run_counts_per_kind_and_writes_nothing(
+    store: Any, hub: Any, monkeypatch: Any
+) -> None:
+    from precis.workers.card_describe import claimable_counts
+
+    _put_structure(hub)
+    _put_figure(hub)
+    with store.pool.connection() as conn:
+        counts = claimable_counts(conn)
+    assert counts.get("structure") == 1
+    assert counts.get("figure") == 1
+    # Nothing described, nothing written.
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM chunks WHERE chunk_kind = 'card_description'"
+        ).fetchone()
+    assert n is not None and n[0] == 0

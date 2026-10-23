@@ -1,4 +1,4 @@
-"""card_describe — LLM narrative ``card_description`` chunks (gr497688, S1).
+"""card_describe — LLM narrative ``card_description`` chunks (gr497688, S1-S3).
 
 Non-text refs (structures first; cad/pcb/figure land in slices S2/S3)
 carry geometry plus a terse template ``card_combined`` — composition and
@@ -6,6 +6,22 @@ counts, no functional narrative — so hybrid search over them is starved.
 This pass writes one derived ``card_description`` chunk per ref (ord=-2)
 from the card text, the CLaC-style synthetic-narrative fix (pa497686):
 describe function, context and application, not only attributes.
+
+S3 (figure): a figure has no ``card_combined`` — its grounding is the
+``figure_node`` SVG source rasterised to PNG (the shared ``_svg_to_png``
+in ``utils/figure_source``, not a second rasteriser) and sent through the
+router as an image content block, grounded in the caption (title) plus
+the ``figure_notes`` text. Same watermark: only figures whose source node
+was minted after the ``card_description`` kind row landed are claimed —
+existing canvases are the Devin-agent backfill path.
+
+S4 (budget): a per-day dollar cap on this pass's LLM spend —
+``PRECIS_CARD_DESCRIBE_DAILY_USD`` (default per
+``docs/conventions/thresholds.md``'s $25 checkpoint), metered off
+``llm_call_log`` ``source='card_describe'`` over the last 24 h. Over cap
+the pass defers with ``reason='budget'``, the same shape as a
+``cli_unavailable`` pause. ``precis card-describe --dry-run`` prints the
+claimable count per kind without spending.
 
 Reto's rulings (gr497688 comment 2) this encodes:
 
@@ -34,8 +50,10 @@ connections, writes wrapped in :func:`retry_locked`.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -43,6 +61,7 @@ from psycopg.errors import DeadlockDetected, LockNotAvailable
 
 from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.db_retry import retry_locked
+from precis.utils.figure_source import _svg_to_png
 from precis.utils.llm.router import DispatchError
 
 if TYPE_CHECKING:
@@ -60,19 +79,41 @@ CARD_DESCRIBE_VERSION = "1.0"
 #: from its ``"chnk_kw\x00"`` key). ``"crd_dsc\x00"`` mapped signed.
 _LOCK_KEY = 0x63_72_64_5F_64_73_63_00 - 2**63
 
-#: Ref kinds this pass describes — S1 ``structure``, S2 ``cad`` + ``pcb``
-#: (S3 adds ``figure`` with a vision prompt). Each kind's grounding is
-#: its one ``card_combined`` chunk (``handlers/<kind>.py``'s card
-#: builder — ``card_text`` / ``CadHandler._card_text`` /
-#: ``_pcb_ops._pcb_card_text``).
-_DESCRIBED_KINDS: tuple[str, ...] = ("structure", "cad", "pcb")
+#: Ref kinds this pass describes — S1 ``structure``, S2 ``cad`` + ``pcb``,
+#: S3 ``figure`` (vision prompt). The card kinds' grounding is their one
+#: ``card_combined`` chunk (``handlers/<kind>.py``'s card builder —
+#: ``card_text`` / ``CadHandler._card_text`` / ``_pcb_ops._pcb_card_text``);
+#: a figure's grounding is its ``figure_node`` SVG source rasterised to PNG.
+_DESCRIBED_KINDS: tuple[str, ...] = ("structure", "cad", "pcb", "figure")
 
 #: Per-kind display label for the prompt's subject line.
 _KIND_LABEL: dict[str, str] = {
     "structure": "atomistic structure",
     "cad": "parametric CAD design",
     "pcb": "PCB design",
+    "figure": "figure",
 }
+
+#: Drawable-element check on a figure's SVG source — the birth canvas is a
+#: comment-only document (``figure_source._DRAWABLE_RE``); a figure with no
+#: drawable element has nothing for vision to describe, so the claim skips
+#: it until real markup lands (the source edit UPDATEs ``figure_node`` in
+#: place — the row stays watermark-eligible and re-claims then).
+_FIGURE_DRAWABLE_SQL = (
+    "<([a-zA-Z0-9_]+:)?(path|rect|circle|ellipse|line|polyline|polygon|text"
+    "|image|use)[ />]"
+)
+
+#: Daily LLM spend cap for this pass (S4). Env override
+#: ``PRECIS_CARD_DESCRIBE_DAILY_USD``; the default matches the $25
+#: paid-run checkpoint in ``docs/conventions/thresholds.md`` — the global
+#: budget breaker still applies on top (this is a per-pass guard, not a
+#: replacement).
+_DEFAULT_DAILY_USD = 25.0
+
+#: ``llm_call_log.source`` label the CLI pass registers under — the spend
+#: query keys on it.
+_SOURCE = "card_describe"
 
 #: A generation shorter than this is a model miss (refusal fragment,
 #: stray whitespace) — count it failed rather than indexing junk.
@@ -95,48 +136,149 @@ _SYSTEM = (
     '{"description": "<the narrative>"}'
 )
 
+#: Vision variant for figures (S3): the grounding is the rendered image
+#: itself, with the caption (ref title) + ``figure_notes`` as context.
+_FIGURE_SYSTEM = (
+    "You write search-index descriptions for a materials knowledge base. "
+    "Given a figure's rendered image plus its caption and implementation "
+    "notes, write a plain-text narrative of two to four sentences: what "
+    "the figure depicts and communicates (its marks, axes or shapes), and "
+    "the function or application context it plausibly serves. Ground every "
+    "claim in the image and the supplied text; mark plausible-but-unshown "
+    "interpretation as such rather than inventing values. No markdown. "
+    "Respond with EXACTLY ONE JSON object, nothing else: "
+    '{"description": "<the narrative>"}'
+)
+
+#: The card-kind claim leg (structure/cad/pcb): grounding is the ref's one
+#: ``card_combined`` chunk at ord=-1.
+_CARD_CLAIM_SQL = """
+    SELECT r.ref_id, r.kind, r.title, card.text
+      FROM refs r
+      JOIN chunk_kinds ck ON ck.slug = 'card_description'
+      JOIN chunks card
+        ON card.ref_id = r.ref_id
+       AND card.chunk_kind = 'card_combined'
+       AND card.ord = -1
+       AND card.created_at > ck.created_at
+      LEFT JOIN chunks d
+        ON d.ref_id = r.ref_id
+       AND d.chunk_kind = 'card_description'
+     WHERE r.kind = ANY(%s)
+       AND (
+            d.chunk_id IS NULL
+         OR (d.meta->>'source_sha') IS DISTINCT FROM
+            encode(digest(card.text, 'sha256'), 'hex')
+         OR (d.meta->>'version') IS DISTINCT FROM %s
+       )
+"""
+
+#: The figure claim leg (S3): grounding is the ref's FIRST live
+#: ``figure_node`` chunk — the SVG source document, ``figure_node`` being
+#: what a figure mints instead of a ``card_combined``. Same watermark and
+#: re-claim ident (``meta.source_sha`` hashes the SVG text, so an
+#: ``edit(text=…)`` on the canvas re-claims); an empty birth canvas
+#: (no drawable element — ``_FIGURE_DRAWABLE_SQL``) is never claimed.
+_FIGURE_CLAIM_SQL = """
+    SELECT r.ref_id, r.kind, r.title, src.text
+      FROM refs r
+      JOIN chunk_kinds ck ON ck.slug = 'card_description'
+      JOIN LATERAL (
+          SELECT c.text, c.created_at
+            FROM chunks c
+           WHERE c.ref_id = r.ref_id
+             AND c.chunk_kind = 'figure_node'
+             AND c.retired_at IS NULL
+           ORDER BY c.ord, c.chunk_id
+           LIMIT 1
+      ) src ON src.created_at > ck.created_at
+      LEFT JOIN chunks d
+        ON d.ref_id = r.ref_id
+       AND d.chunk_kind = 'card_description'
+     WHERE r.kind = 'figure'
+       AND src.text ~* %s
+       AND (
+            d.chunk_id IS NULL
+         OR (d.meta->>'source_sha') IS DISTINCT FROM
+            encode(digest(src.text, 'sha256'), 'hex')
+         OR (d.meta->>'version') IS DISTINCT FROM %s
+       )
+"""
+
+#: Shared trailer for both claim legs: oldest-first, claim-count cap, and
+#: the row lock (claim-commit-first — same idiom as ``chunk_keywords``).
+_CLAIM_TAIL = (
+    "     ORDER BY r.ref_id\n     LIMIT %s\n       FOR UPDATE OF r SKIP LOCKED\n"
+)
+
 
 def claim_refs_without_description(
     conn: Connection, *, limit: int
 ) -> list[tuple[int, str, str, str]]:
-    """Return up to ``limit`` ``(ref_id, kind, title, card_text)`` rows to
-    describe.
+    """Return up to ``limit`` ``(ref_id, kind, title, grounding)`` rows to
+    describe — ``grounding`` is the ``card_combined`` text for the card
+    kinds and the ``figure_node`` SVG source for ``figure``.
 
-    A ref is claimed when its ``card_combined`` chunk was minted after
-    the ``card_description`` kind was registered (the deploy stamp — see
-    the module docstring) AND either no ``card_description`` chunk
-    exists yet or the stored ``meta.source_sha`` no longer matches the
-    card text's sha256 (the card was edited since).
+    A ref is claimed when its grounding chunk was minted after the
+    ``card_description`` kind was registered (the deploy stamp — see the
+    module docstring) AND either no ``card_description`` chunk exists yet
+    or the stored ``meta.source_sha`` no longer matches the grounding
+    text's sha256 (the card/figure was edited since).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    sql = """
-        SELECT r.ref_id, r.kind, r.title, card.text
-          FROM refs r
-          JOIN chunk_kinds ck ON ck.slug = 'card_description'
-          JOIN chunks card
-            ON card.ref_id = r.ref_id
-           AND card.chunk_kind = 'card_combined'
-           AND card.ord = -1
-           AND card.created_at > ck.created_at
-          LEFT JOIN chunks d
-            ON d.ref_id = r.ref_id
-           AND d.chunk_kind = 'card_description'
-         WHERE r.kind = ANY(%s)
-           AND (
-                d.chunk_id IS NULL
-             OR (d.meta->>'source_sha') IS DISTINCT FROM
-                encode(digest(card.text, 'sha256'), 'hex')
-             OR (d.meta->>'version') IS DISTINCT FROM %s
-           )
-         ORDER BY r.ref_id
-         LIMIT %s
-           FOR UPDATE OF r SKIP LOCKED
-    """
-    rows = conn.execute(
-        sql, (list(_DESCRIBED_KINDS), CARD_DESCRIBE_VERSION, limit)
-    ).fetchall()
-    return [(int(r[0]), str(r[1]), str(r[2] or ""), str(r[3])) for r in rows]
+    rows: list[tuple[Any, ...]] = []
+    card_kinds = [k for k in _DESCRIBED_KINDS if k != "figure"]
+    if card_kinds:
+        rows.extend(
+            conn.execute(
+                _CARD_CLAIM_SQL + _CLAIM_TAIL,
+                (card_kinds, CARD_DESCRIBE_VERSION, limit),
+            ).fetchall()
+        )
+    if "figure" in _DESCRIBED_KINDS:
+        rows.extend(
+            conn.execute(
+                _FIGURE_CLAIM_SQL + _CLAIM_TAIL,
+                (_FIGURE_DRAWABLE_SQL, CARD_DESCRIBE_VERSION, limit),
+            ).fetchall()
+        )
+    rows.sort(key=lambda r: int(r[0]))
+    return [(int(r[0]), str(r[1]), str(r[2] or ""), str(r[3])) for r in rows[:limit]]
+
+
+def claimable_counts(conn: Connection) -> dict[str, int]:
+    """Per-kind count of claimable refs right now — the ``--dry-run`` view
+    (``precis card-describe``). Same claim predicates as
+    :func:`claim_refs_without_description`, unbounded and lock-free."""
+    counts: dict[str, int] = {}
+    legs: list[tuple[str, tuple[Any, ...]]] = []
+    card_kinds = [k for k in _DESCRIBED_KINDS if k != "figure"]
+    if card_kinds:
+        legs.append(
+            (
+                _CARD_CLAIM_SQL.replace(
+                    "SELECT r.ref_id, r.kind, r.title, card.text", "SELECT r.kind"
+                ),
+                (card_kinds, CARD_DESCRIBE_VERSION),
+            )
+        )
+    if "figure" in _DESCRIBED_KINDS:
+        legs.append(
+            (
+                _FIGURE_CLAIM_SQL.replace(
+                    "SELECT r.ref_id, r.kind, r.title, src.text", "SELECT r.kind"
+                ),
+                (_FIGURE_DRAWABLE_SQL, CARD_DESCRIBE_VERSION),
+            )
+        )
+    for sql, params in legs:
+        for kind, n in conn.execute(
+            f"SELECT t.kind, count(*) FROM ({sql}) t GROUP BY t.kind",
+            params,
+        ).fetchall():
+            counts[str(kind)] = int(n)
+    return counts
 
 
 def _extract_description(res: Any) -> str:
@@ -160,25 +302,68 @@ def _extract_description(res: Any) -> str:
     return text
 
 
+def _figure_notes(store: Store, ref_id: int) -> str:
+    """The figure's ``figure_notes`` text (the model's design log), or ""
+    when none — context grounding for the vision prompt."""
+    for c in store.drafts.reading_order(ref_id, kind="figure"):
+        if c.chunk_kind == "figure_notes":
+            return str(c.text or "")
+    return ""
+
+
 def describe_card(
-    client: Any, *, kind: str, title: str, card_text: str
+    client: Any,
+    *,
+    kind: str,
+    title: str,
+    card_text: str,
+    image: bytes | None = None,
+    notes: str = "",
 ) -> tuple[str, str]:
     """Generate one description; return ``(text, model)``.
 
     ``client`` is the injected ``DispatchClient`` (or a test fake with the
     same ``.complete(messages) -> LlmResult`` shape) — the tier/model pick
     is the caller's, never a literal here.
+
+    ``image`` is the PNG raster for ``kind='figure'`` (required there):
+    it rides the user message as an Anthropic ``image`` content block —
+    ``DispatchClient`` lifts it onto ``LlmRequest.images`` so the
+    Sonnet-class rungs attach it to the wire. ``notes`` is the figure's
+    ``figure_notes`` text, grounding context next to the caption.
     """
-    messages = [
-        {"role": "system", "content": _SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"{_KIND_LABEL.get(kind, kind).capitalize()}: {title}\n\n"
-                f"Card:\n{card_text}"
-            ),
-        },
-    ]
+    if kind == "figure":
+        if not image:
+            raise ValueError("figure describe needs a rendered PNG")
+        content: Any = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(image).decode("ascii"),
+                },
+            },
+            {
+                "type": "text",
+                "text": f"Figure: {title}\n\nNotes:\n{notes or '(none)'}",
+            },
+        ]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _FIGURE_SYSTEM},
+            {"role": "user", "content": content},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": _SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"{_KIND_LABEL.get(kind, kind).capitalize()}: {title}\n\n"
+                    f"Card:\n{card_text}"
+                ),
+            },
+        ]
     res = client.complete(messages)
     text = _extract_description(res)
     if len(text) < _MIN_DESC_CHARS:
@@ -223,9 +408,45 @@ def _source_sha(card_text: str) -> str:
     return hashlib.sha256(card_text.encode("utf-8")).hexdigest()
 
 
+def _daily_cap_usd() -> float:
+    """``PRECIS_CARD_DESCRIBE_DAILY_USD`` or the $25 default; a malformed
+    value reads as the default, never as unlimited."""
+    raw = os.environ.get("PRECIS_CARD_DESCRIBE_DAILY_USD")
+    if not raw:
+        return _DEFAULT_DAILY_USD
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "card_describe: bad PRECIS_CARD_DESCRIBE_DAILY_USD=%r — using %.2f",
+            raw,
+            _DEFAULT_DAILY_USD,
+        )
+        return _DEFAULT_DAILY_USD
+
+
+def _daily_spend_usd(conn: Connection) -> float:
+    """USD this pass has billed over the last 24 h — ``llm_call_log``
+    ``source='card_describe'``, billable rows only (``placement`` 'local'
+    is priced-but-free, matching the ``llm_call_log_billable_ts_idx``
+    predicate)."""
+    row = conn.execute(
+        """
+        SELECT coalesce(sum(cost_usd), 0)
+          FROM llm_call_log
+         WHERE source = %s
+           AND ts > now() - interval '24 hours'
+           AND cost_usd IS NOT NULL
+           AND placement IS DISTINCT FROM 'local'
+        """,
+        (_SOURCE,),
+    ).fetchone()
+    return float(row[0]) if row else 0.0
+
+
 def _run_card_describe_batch(
     store: Store, client: Any, *, batch_size: int
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Claim + per-ref describe + write. Runs under the caller's
     single-runner advisory lock; every DB access goes through ``store``'s
     pool in short transactions (claim-commit-first, like
@@ -238,9 +459,24 @@ def _run_card_describe_batch(
     ok = failed = 0
     for ref_id, kind, title, card_text in rows:
         try:
-            text, model = describe_card(
-                client, kind=kind, title=title, card_text=card_text
-            )
+            if kind == "figure":
+                # S3: describe the RENDERED figure, not its markup — reuse
+                # the export path's rasteriser, never a second one.
+                png = _svg_to_png(card_text)
+                if png is None:
+                    raise RuntimeError("figure_node SVG failed to rasterise")
+                text, model = describe_card(
+                    client,
+                    kind=kind,
+                    title=title,
+                    card_text=card_text,
+                    image=png,
+                    notes=_figure_notes(store, ref_id),
+                )
+            else:
+                text, model = describe_card(
+                    client, kind=kind, title=title, card_text=card_text
+                )
 
             def _write(
                 ref_id: int = ref_id,
@@ -262,13 +498,22 @@ def _run_card_describe_batch(
             # branch. A genuine dispatch failure fails this one row; the
             # ref stays claimable (nothing was written).
             if exc.paused:
+                # ``cli_unavailable`` names the host-config defect
+                # (gr500371) so the defer is distinguishable in logs from a
+                # self-clearing window pause.
+                reason = "cli_unavailable" if exc.cli_unavailable else str(exc)
                 log.warning(
                     "card_describe: dispatch paused (%s); "
                     "deferring %d remaining refs this pass",
-                    exc,
+                    reason,
                     claimed - ok,
                 )
-                return {"claimed": 0, "ok": 0, "failed": 0}
+                return {
+                    "claimed": 0,
+                    "ok": 0,
+                    "failed": 0,
+                    "deferred": reason,
+                }
             log.exception("card_describe: ref_id=%s dispatch failed", ref_id)
             failed += 1
         except (LockNotAvailable, DeadlockDetected) as exc:
@@ -287,25 +532,41 @@ def _run_card_describe_batch(
 
 def run_card_describe_pass(
     store: Store, client: Any, *, batch_size: int = 16
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """One pass over the card_describe queue, single-runner across the
     fleet — same lock shape as :func:`run_chunk_keywords_pass` (the
     pass runs on every system-profile host on the same tick; the
     transaction-scoped advisory lock keeps the whole pass on one host's
     backend, pgbouncer-safe). A lock-acquire miss is a graceful
     ``claimed=0`` skip."""
-    idle: dict[str, int] = {"claimed": 0, "ok": 0, "failed": 0}
+    idle: dict[str, Any] = {"claimed": 0, "ok": 0, "failed": 0}
     if not store.dsn:
         return idle
     with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
         if not got:
             return idle
+        # S4 daily cap: read this pass's own 24 h spend first — over cap
+        # the whole pass defers (reason ``budget``, the same defer shape
+        # as a ``cli_unavailable`` pause) rather than claiming rows it
+        # must not spend on.
+        cap = _daily_cap_usd()
+        with store.pool.connection() as conn:
+            spent = _daily_spend_usd(conn)
+        if spent >= cap:
+            log.warning(
+                "card_describe: budget — 24 h spend $%.2f ≥ cap $%.2f "
+                "(PRECIS_CARD_DESCRIBE_DAILY_USD); deferring pass",
+                spent,
+                cap,
+            )
+            return {**idle, "deferred": "budget"}
         return _run_card_describe_batch(store, client, batch_size=batch_size)
 
 
 __all__ = [
     "CARD_DESCRIBE_VERSION",
     "claim_refs_without_description",
+    "claimable_counts",
     "describe_card",
     "run_card_describe_pass",
     "write_card_description",

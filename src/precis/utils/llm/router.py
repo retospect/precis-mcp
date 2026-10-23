@@ -38,6 +38,7 @@ the tool-using cloud tiers.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
@@ -1141,6 +1142,67 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
 # ── the request + route seam ────────────────────────────────────────────
 
 
+@dataclass(frozen=True, slots=True)
+class LlmImage:
+    """One raster image a request grounds on (gr497688 S3 — figure
+    descriptions are vision calls). ``data`` is the encoded image
+    (PNG today); ``media_type`` its mime. Only the ``claude_p`` rung
+    attaches images to the wire — ``claude -p`` reads the bytes piped on
+    stdin; every other transport (``claude_agent``, OSS, local) drops
+    them (text-only degrade — vision is a Sonnet-class feature)."""
+
+    data: bytes
+    media_type: str = "image/png"
+
+
+def _content_text(content: Any) -> str:
+    """Message ``content`` → its text: a ``str`` passes through; an
+    Anthropic content-block list joins its ``text`` blocks (image blocks
+    carry no text)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content)
+
+
+def _content_images(content: Any) -> tuple[LlmImage, ...]:
+    """The Anthropic ``image`` blocks in a block-list ``content``,
+    normalized to :class:`LlmImage` (base64 ``source.data`` decoded)."""
+    if not isinstance(content, list):
+        return ()
+    out: list[LlmImage] = []
+    for b in content:
+        if not isinstance(b, dict) or b.get("type") != "image":
+            continue
+        src = b.get("source") or {}
+        raw = src.get("data")
+        if isinstance(raw, str):
+            data = base64.b64decode(raw)
+        elif isinstance(raw, (bytes, bytearray)):
+            data = bytes(raw)
+        else:
+            continue
+        out.append(
+            LlmImage(data=data, media_type=str(src.get("media_type") or "image/png"))
+        )
+    return tuple(out)
+
+
+def _text_only_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten block-list ``content`` to plain text for the OSS/local
+    wires — ``/v1/chat/completions`` takes ``str`` content (or OpenAI
+    ``image_url`` blocks, which the Sonnet-class-only vision feature
+    never needs), so Anthropic ``image`` blocks would 400 the call."""
+    if all(isinstance(m.get("content"), str) for m in messages):
+        return messages
+    return [dict(m, content=_content_text(m.get("content"))) for m in messages]
+
+
 @dataclass
 class LlmRequest:
     """One routed LLM call. ``tier`` + ``tools_needed`` pick the
@@ -1150,11 +1212,16 @@ class LlmRequest:
     is unset, the local transport as a single user turn); ``messages``
     is the OpenAI-shaped alternative for the local transport. ``model``
     overrides :func:`resolve_model` when a caller pins one explicitly.
+    ``messages`` content may be a ``str`` or an Anthropic content-block
+    list — :class:`DispatchClient` splits the block list into prompt
+    text (``_content_text``) plus ``images``; the claude transports attach
+    them, the OSS/local wires read text only (:func:`_text_only_messages`).
     """
 
     tier: Tier
     prompt: str = ""
-    messages: list[dict[str, str]] | None = None
+    messages: list[dict[str, Any]] | None = None
+    images: tuple[LlmImage, ...] = ()
     tools_needed: bool = False
     model: str | None = None
     max_usd: float | None = None
@@ -1412,6 +1479,7 @@ class ClaudePProvider:
                 timeout_s=req.timeout_s,
                 extra_args=req.extra_args,
                 bare=self._bare,
+                images=req.images,
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
@@ -3111,6 +3179,9 @@ class DispatchError(RuntimeError):
     ``retry_at`` mirrors :attr:`LlmResult.retry_at`: the earliest sensible
     retry instant for a pause (``None`` when the window names none), so a
     job lane can park until it instead of guessing a horizon.
+    ``cli_unavailable`` mirrors :attr:`LlmResult.cli_unavailable`: the pause
+    is a host-config defect (no claude binary/credential here), not a
+    window that rolls off — a batch pass names it in its defer log line.
     """
 
     def __init__(
@@ -3119,10 +3190,12 @@ class DispatchError(RuntimeError):
         *,
         paused: bool = False,
         retry_at: datetime | None = None,
+        cli_unavailable: bool = False,
     ) -> None:
         super().__init__(message)
         self.paused = paused
         self.retry_at = retry_at
+        self.cli_unavailable = cli_unavailable
 
 
 @dataclass
@@ -3201,16 +3274,27 @@ class DispatchClient:
         # reads these, not ``messages``) works too — harmless for the local/
         # openai-compat transports, which prefer ``messages`` when set.
         system_prompt = "\n\n".join(
-            str(m.get("content", "")) for m in messages if m.get("role") == "system"
+            _content_text(m.get("content", ""))
+            for m in messages
+            if m.get("role") == "system"
         )
         prompt = "\n\n".join(
-            str(m.get("content", "")) for m in messages if m.get("role") != "system"
+            _content_text(m.get("content", ""))
+            for m in messages
+            if m.get("role") != "system"
+        )
+        # Anthropic ``image`` content blocks ride ``LlmRequest.images``;
+        # the claude transports attach them (Sonnet-class vision), the
+        # OSS/local wires strip them via ``_text_only_messages``.
+        images = tuple(
+            img for m in messages for img in _content_images(m.get("content"))
         )
         res = route(
             LlmRequest(
                 tier=self.tier,
                 messages=messages,
                 prompt=prompt,
+                images=images,
                 system_prompt=system_prompt or None,
                 tools_needed=self.tools_needed,
                 model=self.model,
@@ -3226,7 +3310,12 @@ class DispatchClient:
             )
         )
         if res.error is not None:
-            raise DispatchError(res.error, paused=res.paused, retry_at=res.retry_at)
+            raise DispatchError(
+                res.error,
+                paused=res.paused,
+                retry_at=res.retry_at,
+                cli_unavailable=res.cli_unavailable,
+            )
         return res
 
 
@@ -3249,7 +3338,9 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
 
     prompt_chars = len(req.prompt or "")
     if req.messages:
-        prompt_chars += sum(len(str(m.get("content", ""))) for m in req.messages)
+        prompt_chars += sum(
+            len(_content_text(m.get("content", ""))) for m in req.messages
+        )
     feats: dict[str, Any] = {
         "prompt_chars": prompt_chars,
         "tier": req.tier.value,
@@ -3497,7 +3588,8 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         cfg = replace(cfg, timeout=req.timeout_s)
     elif req.tier is Tier.SMALL:
         cfg = replace(cfg, timeout=min(cfg.timeout, _SMALL_LOCAL_TIMEOUT_S))
-    messages = req.messages or [{"role": "user", "content": req.prompt}]
+    messages = _text_only_messages(req.messages) if req.messages else None
+    messages = messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
     try:
         if req.local_reasoning_effort is not None:
@@ -3702,7 +3794,8 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     # hosted OpenRouter wire's no-thinking directive IS confirmed
     # (`reasoning.enabled`, see openrouter_routing), applied via extra_body.
     cfg = replace(cfg, temperature=req.temperature)
-    messages = req.messages or [{"role": "user", "content": req.prompt}]
+    messages = _text_only_messages(req.messages) if req.messages else None
+    messages = messages or [{"role": "user", "content": req.prompt}]
     # SMALL-tier judges never want a reasoning trace — a reasoning-capable
     # model left thinking on spends its whole max_tokens on reasoning and
     # returns empty content. `thinking` (False by the SMALL tier default)

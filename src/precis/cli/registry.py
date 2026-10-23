@@ -77,6 +77,11 @@ COMMANDS: tuple[Command, ...] = (
         "anki_sync",
         "Sync precis anki cards to AnkiWeb + read decay stats back.",
     ),
+    _c(
+        "card-describe",
+        "card_describe",
+        "Generate or preview LLM card_description chunks for non-text refs.",
+    ),
     _c("migrate", "migrate", "Apply pending DB migrations."),
     _c(
         "doctor",
