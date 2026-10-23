@@ -6,6 +6,7 @@ only indirectly through ``jlc_api``. Every test injects ``sleep``/``now``/
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from precis.pcb._http import (
     reset_circuit,
     with_backoff,
 )
+from precis.utils.http import redact_url
 
 
 @pytest.fixture(autouse=True)
@@ -603,3 +605,97 @@ def test_message_never_includes_response_headers():
         )
     assert "secret-session" not in str(excinfo.value)
     assert "abc123" not in str(excinfo.value)
+
+
+# ── query-credential redaction (gr502250) ───────────────────────────
+#
+# The OpenAlex content key rides in ``?api_key=`` — a refusal line or a
+# VendorError that composes the request URL must never carry it.
+
+
+def test_redact_url_masks_credential_named_params():
+    key = "SECRET" + "KEY01"
+    out = redact_url(
+        "https://content.openalex.org/works/W1.pdf"
+        f"?api_key={key}&filter=doi&" + "mail" + "to=a%40b.c"
+    )
+    assert out is not None
+    assert key not in out
+    assert "api_key=REDACTED" in out
+    assert "mailto=REDACTED" in out
+    assert "filter=doi" in out
+
+
+@pytest.mark.parametrize("name", ["token", "key", "secret", "sig", "callInfo.apiKey"])
+def test_redact_url_covers_credential_name_rule(name):
+    out = redact_url(f"https://x.example/r?{name}=S3CR3TVAL&page=2")
+    assert out is not None
+    assert "S3CR3TVAL" not in out
+    assert "page=2" in out
+
+
+def test_redact_url_passes_keyless_input_through_untouched():
+    url = "https://api.example/things?filter=doi&page=3#frag"
+    assert redact_url(url) == url
+    assert redact_url("not a url at all") == "not a url at all"
+    assert redact_url(None) is None
+
+
+def test_fatal_refusal_log_and_error_carry_no_query_secret(caplog):
+    """A keyed request URL must not compose into the refusal WARNING (the
+    limiter-side line that survives the httpx quieting) or the raised
+    VendorError — masking at composition, not only at the sink."""
+    clock = FakeClock()
+    key = "SECRET" + "KEY02"
+    url = f"https://content.openalex.org/works/W1.pdf?api_key={key}&filter=doi"
+
+    def send():
+        return _resp(403, text="forbidden", url=url)
+
+    with caplog.at_level(logging.WARNING, logger="precis.utils.http"):
+        with pytest.raises(VendorError) as excinfo:
+            with_backoff(
+                send,
+                service="openalex-content",
+                sleep=clock.sleep,
+                now=clock.now,
+                rng=_fixed_rng(),
+            )
+    err = excinfo.value
+    assert key not in str(err)
+    refusal = [
+        r.getMessage() for r in caplog.records if "refused HTTP" in r.getMessage()
+    ]
+    assert refusal
+    assert all(key not in m for m in refusal)
+    assert any("api_key=REDACTED" in m for m in refusal)
+
+
+def test_exhausted_retries_carry_redacted_url():
+    """The ``url=`` on a retries-exhausted VendorUnavailable is redacted
+    the same way — it is the same diagnostic slot."""
+    clock = FakeClock()
+    key = "SECRET" + "KEY03"
+    policy = Policy(attempts=2, base=0.0, cap=0.0, breaker_threshold=100)
+
+    def send():
+        return _resp(
+            500,
+            text="server error",
+            url=f"https://content.openalex.org/w.pdf?api_key={key}&page=1",
+        )
+
+    with pytest.raises(VendorUnavailable) as excinfo:
+        with_backoff(
+            send,
+            service="openalex-content-retry",
+            policy=policy,
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    assert excinfo.value.url is not None
+    assert key not in str(excinfo.value)
+    assert key not in excinfo.value.url
+    assert "api_key=REDACTED" in excinfo.value.url
+    assert "page=1" in excinfo.value.url

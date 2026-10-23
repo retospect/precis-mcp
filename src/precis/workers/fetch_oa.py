@@ -115,10 +115,12 @@ from precis.utils.http import (
     call_with_backoff,
     http_client,
     polite_user_agent,
+    redact_url,
 )
 from precis.utils.rate_limit import RateLimited
 from precis.utils.rate_limit import observe_timing as observe_rate_limit_timing
 from precis.utils.rate_limit import require as require_rate_limit
+from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers import activity
 
 if TYPE_CHECKING:
@@ -679,6 +681,12 @@ def _timed_event(
 ) -> None:
     trace = _current_ref_timing()
     measured_leg = timing or (trace.active_leg if trace is not None else None)
+    # Every recorded payload passes here — mask credential spans (a keyed or
+    # presigned fetch URL, a keyed error string) so ``ref_events`` is clean
+    # no matter which leg or future source composed it (gr502250).
+    payload = event.get("payload")
+    if payload is not None:
+        event["payload"] = mask_secrets_deep(payload)
     if trace is None and timing is None:
         store.append_event(ref_id, **event)
         return
@@ -1509,7 +1517,12 @@ def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
     try:
         remaining = _query_openalex_credits_remaining(api_key)
     except Exception as exc:  # best-effort telemetry, never break the pass
-        log.warning("fetch_oa: OpenAlex balance poll failed: %s", str(exc)[:200])
+        # The keyed ``/rate-limit?api_key=`` URL can ride inside the httpx
+        # exception text — mask before it reaches a log line.
+        log.warning(
+            "fetch_oa: OpenAlex balance poll failed: %s",
+            mask_secrets(str(exc)[:200], warn=False),
+        )
 
     floor = _openalex_min_credits()
     if remaining is not None and remaining <= floor:
@@ -1578,7 +1591,9 @@ def _try_publisher(
         try:
             size_bytes = _download_pdf(url, target, deadline=deadline)
         except Exception as exc:
-            errors.append(f"{url}: {str(exc)[:120]}")
+            errors.append(
+                f"{redact_url(url)}: {mask_secrets(str(exc)[:120], warn=False)}"
+            )
             continue
         return FetchOutcome(
             event="fetch_ok",
@@ -2194,9 +2209,12 @@ def _try_openalex_content(
         return _local_rate_limited(stub, t0, provider="openalex-content")
     except Exception as exc:
         # httpx folds the *full* request URL — with ``api_key=<key>`` — into its
-        # error message, so scrub the key before it lands in ``ref_events`` /
-        # the CLI. The recorded ``url`` is the clean keyless one.
-        err = str(exc).replace(api_key, "***") if api_key else str(exc)
+        # error message, so scrub before it lands in ``ref_events`` / the CLI:
+        # the targeted key replace plus the shared credential-param mask for
+        # any other credential shape. The recorded ``url`` is the clean
+        # keyless one.
+        err = str(exc)
+        err = mask_secrets(err.replace(api_key, "***") if api_key else err, warn=False)
         signal = _payment_quota_signal(exc)
         if signal is not None and store is not None:
             # Reactive trigger (gr162141): the paid content download itself
@@ -2465,7 +2483,9 @@ def _download_first(
                 url, target, extra_headers=extra_headers, deadline=deadline
             )
         except Exception as exc:
-            errors.append(f"{url}: {str(exc)[:120]}")
+            errors.append(
+                f"{redact_url(url)}: {mask_secrets(str(exc)[:120], warn=False)}"
+            )
             continue
         return FetchOutcome(
             event="fetch_ok",

@@ -555,11 +555,48 @@ def _body_prefix(resp: httpx.Response) -> str | None:
     return text[:_BODY_PREFIX_LIMIT] if text else None
 
 
-def _url_of(resp: httpx.Response) -> str | None:
-    """The request URL a failing response belongs to, if one was attached
-    (a bare test-double :class:`httpx.Response` may not have one)."""
+def redact_url(url: str | None) -> str | None:
+    """``url`` with credential-named query param values masked (``REDACTED``).
+
+    Diagnostic text only — never feed the result back into a request. The
+    one name rule is :func:`~precis.utils.secret_scan.is_credential_param`
+    (``api_key``/``token``/``key``/``secret``/``sig``/``mailto``/dotted
+    envelopes like ``callInfo.apiKey``) and the mask token is
+    :data:`~precis.utils.secret_scan.CREDENTIAL_MASK`, so a URL redacted here
+    re-scans clean under :func:`mask_secrets` and reads identically to a line
+    the record-creation scrub or the DB-write mask rewrote. A URL holding no
+    credential param comes back byte-identical; input that does not parse as
+    a URL is handed to :func:`mask_secrets` instead of being trusted through
+    (gr502250: the OpenAlex content key rides in ``?api_key=``, and a log
+    line that composes the request URL must never carry it).
+    """
+    if url is None:
+        return None
+    from precis.utils.secret_scan import (
+        CREDENTIAL_MASK,
+        is_credential_param,
+        mask_secrets,
+    )
+
     try:
-        return str(resp.request.url)
+        parsed = require_httpx().URL(url)
+    except Exception:
+        return mask_secrets(url, warn=False)
+    names = {n for n in parsed.params if is_credential_param(n)}
+    if not names:
+        return url
+    for name in names:
+        parsed = parsed.copy_set_param(name, CREDENTIAL_MASK)
+    return str(parsed)
+
+
+def _url_of(resp: httpx.Response) -> str | None:
+    """The request URL a failing response belongs to, redacted for
+    diagnostics (a bare test-double :class:`httpx.Response` may not have
+    one). Query credentials never compose into a log line or an exception
+    message — everything that renders a request URL routes through here."""
+    try:
+        return redact_url(str(resp.request.url))
     except (RuntimeError, AttributeError):
         return None
 
@@ -836,15 +873,21 @@ def with_backoff(
         try:
             resp = send()
         except httpx.HTTPError as exc:
+            from precis.utils.secret_scan import mask_secrets
+
+            # A ``raise_for_status`` inside ``send()`` folds the full request
+            # URL — query credentials included — into the exception text;
+            # mask before it composes into the error/log line.
+            exc_text = mask_secrets(str(exc), warn=False)
             if not idempotent and not _is_connect_failure(exc):
                 _trip(circuit, policy, now)
                 raise VendorError(
                     service,
                     "transport error after the request may have been sent, "
                     "not retried (non-idempotent; check the account for a "
-                    f"created order before re-sending): {exc}",
+                    f"created order before re-sending): {exc_text}",
                 ) from exc
-            last_detail = f"transport error: {exc}"
+            last_detail = f"transport error: {exc_text}"
             last_status = None
             last_body = None
             last_url = None
@@ -1440,6 +1483,7 @@ __all__ = [
     "policy_for",
     "polite_safe_get",
     "polite_user_agent",
+    "redact_url",
     "request_with_deadline",
     "require_httpx",
     "reset_circuit",

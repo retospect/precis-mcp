@@ -345,6 +345,39 @@ def test_row_masks_credentials_in_exception_payload(
         h.close()
 
 
+def test_refusal_log_record_never_stores_api_key(
+    fake_psycopg: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The politeness core's refusal WARNING composes a redacted request
+    URL at the source — so both the captured LogRecord and the
+    ``worker_logs`` row it becomes carry ``api_key=REDACTED``, never the
+    secret (gr502250)."""
+    import httpx
+
+    from precis.utils import http as http_utils
+
+    key = "FAKE" + "KEY10"
+    request = httpx.Request(
+        "GET",
+        f"https://content.openalex.org/works/W1.pdf?api_key={key}&filter=doi",
+    )
+    resp = httpx.Response(403, text="denied", request=request)
+    h = _make_handler(fake_psycopg)
+    try:
+        with caplog.at_level(logging.WARNING, logger="precis.utils.http"):
+            http_utils._log_refusal("openalex-content", resp)
+        rec = next(r for r in caplog.records if "refused HTTP" in r.getMessage())
+        assert key not in rec.getMessage()
+        assert "api_key=REDACTED" in rec.getMessage()
+        assert "filter=doi" in rec.getMessage()
+        row = h._record_to_row(rec)
+        assert key not in row[5]
+        assert "api_key=REDACTED" in row[5]
+    finally:
+        h.close()
+
+
 def test_attach_quiets_http_client_loggers() -> None:
     saved = {n: logging.getLogger(n).level for n in ("httpx", "httpcore", "httpcore2")}
     try:
