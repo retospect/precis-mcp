@@ -2,7 +2,7 @@
 id: precis-gardener-help
 family: memory
 title: precis — the graph gardener (proposals-only graph upkeep)
-summary: scheduled, bounded maintenance over graph nodes/edges/tags that files review-ledger proposals — never auto-applies
+summary: scheduled, bounded maintenance over graph nodes/edges/tags that files review-ledger proposals; a consumer step prunes dangling edges and has Opus apply or reject merges
 answers:
   - what is the graph_garden job and what does it change?
   - where do gardener merge/split/relink/prune/tag proposals land?
@@ -42,7 +42,10 @@ siblings|paper-identity`, one name or a list, default `all`):
   an opening line, so titles put distinct memories at distance 0. Taxon
   pairs with a dimension clash (both `dimension_kind` set and different,
   or both `si` with different `si_vector`) are never candidates —
-  different units are not dupes.
+  different units are not dupes. A taxon/concept pair's evidence keeps
+  names and definitions apart: `name_overlap`, `definition_overlap`,
+  `definition_template` (both definitions are one placeholder with a
+  different name in front) and `siblings_under` (the shared parents).
 - **paper-identity** — duplicate papers; see *Paper identity* below.
 - **relink** — a `taxon` reaching no start node gets a
   `specialises`-edge proposal naming the nearest start node by card
@@ -126,9 +129,43 @@ pending, nor after a `rejected` verdict while the target is unchanged
 `meta.garden.skipped_rejected`). Editing the target, or an `approved`
 verdict, re-opens the key.
 
-## Applying a proposal
+A candidate the proposer turns down also gets a `rejected` row
+(`actor='graph-garden'`, `garden.proposer_reject: true`, `garden.prompt`
+= the proposer's prompt version), so the next run skips it instead of
+asking again. It blocks only under the same prompt version: a new
+prompt re-asks once. These rows answer no proposal and are not in
+`precis garden proposals`.
 
-Never automatic. The explicit door is `precis garden apply <review_id>`
+## The consumer (after every run)
+
+Reto's 2026-10-23 ruling (gr506044): each `graph_garden` run ends with
+a consumer step (`params.consume`, default on; `review_limit` Opus
+verdicts per run, default 10):
+
+- **Auto-prune** — a pending `dangling_edge` proposal whose link still
+  touches a retired ref, is not human-authored and is not provenance is
+  applied: the link is deleted and the proposal resolved `approved`
+  with `garden.applied='prune'` and the deleted row in `garden.link`.
+- **Opus review** (`graph_garden:consume`, FRONTIER) of pending merge
+  and relink proposals. Approve on a merge applies it through the merge
+  door below (`actor='garden-consumer'`, undoable). Reject writes a
+  terminal `rejected` row with `garden.reason`: `distinct_terms`,
+  `specialisation`, `placeholder_definition`, `wrong_target`,
+  `insufficient_evidence` or `other`. An approved relink is recorded
+  but not applied (machine `specialises` edges are refused at the link
+  gate); it stays pending for a human.
+- **Short-sibling rule** — a taxon merge between two siblings under
+  one parent, each named in at most two content words, sharing no name
+  word (Pedal/Wheel, Height/Width, Hose/Pipe) is rejected without a
+  model call, reason `sibling_distinct_names`, both in the run's
+  proposer step and by the consumer.
+
+`precis garden stats` lists reject reasons per detector. The ledger
+has no `applied` verdict, so applied = `approved` + `garden.applied`.
+
+## Applying a proposal by hand
+
+The explicit door is `precis garden apply <review_id>`
 — merge only for now: it repoints every link off the loser onto the
 winner (each repointed edge keeps `meta.garden_merge`), folds the loser's
 name into the winner's aliases, stamps `meta.superseded_by`, retires the

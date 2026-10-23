@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["lexical_overlap"]
+__all__ = ["content_words", "lexical_overlap"]
 
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = frozenset(
@@ -54,10 +54,15 @@ _STOP = frozenset(
 )
 
 
-def _content_words(text: str) -> frozenset[str]:
+def content_words(text: str) -> frozenset[str]:
+    """The lowercased words longer than two letters that are not stop
+    words — the units :func:`lexical_overlap` compares."""
     return frozenset(
         w for w in _WORD.findall((text or "").lower()) if len(w) > 2 and w not in _STOP
     )
+
+
+_content_words = content_words
 
 
 def lexical_overlap(a: str, b: str) -> float:

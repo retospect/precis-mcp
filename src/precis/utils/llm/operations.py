@@ -290,6 +290,23 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "model as `graph_garden:review` degenerates the check."
         ),
     ),
+    "graph_garden:consume": OpDefault(
+        tier=Tier.FRONTIER,
+        model=None,
+        label="Graph gardener proposal consumer",
+        description=(
+            "The terminal review step after each `graph_garden` run "
+            "(gr506044): an approve/reject verdict with a reason code on "
+            "each pending merge/relink proposal. Approve applies a merge "
+            "through the undoable apply door; reject closes the proposal "
+            "with a machine-readable reason."
+        ),
+        note=(
+            "FRONTIER (Opus) by Reto's 2026-10-23 ruling — this verdict "
+            "applies merges, so it gets the strongest default. Bounded by "
+            "the job's `review_limit` (default 10 per run)."
+        ),
+    ),
     "llm_summarize": OpDefault(
         tier=Tier.SMALL,
         model=None,

@@ -214,6 +214,7 @@ def _review(args: argparse.Namespace, store: Store) -> None:
 
 
 def _stats(args: argparse.Namespace, store: Store) -> None:
+    from precis.graph.garden.consumer import reject_reasons
     from precis.graph.garden.proposals import pending_proposals
     from precis.graph.garden.reviewer import agreement_stats
 
@@ -221,7 +222,8 @@ def _stats(args: argparse.Namespace, store: Store) -> None:
     for p in pending_proposals(store, limit=1000):
         pending[p.detector] = pending.get(p.detector, 0) + 1
     stats = agreement_stats(store)
-    detectors = sorted(set(stats) | set(pending))
+    reasons = reject_reasons(store)
+    detectors = sorted(set(stats) | set(pending) | set(reasons))
     if not detectors:
         print("no garden proposals or reviewer rows")
         return
@@ -233,6 +235,12 @@ def _stats(args: argparse.Namespace, store: Store) -> None:
             f"{det}: pending={pending.get(det, 0)} "
             f"sampled={s.get('sampled', 0)} approval={rate} "
             f"fable={s.get('fable_sampled', 0)} opus-fable={frate}"
+            + (
+                " rejects="
+                + ",".join(f"{k}:{v}" for k, v in sorted(reasons[det].items()))
+                if det in reasons
+                else ""
+            )
         )
 
 

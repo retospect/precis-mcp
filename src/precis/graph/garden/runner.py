@@ -1,9 +1,10 @@
 """The garden tick — detectors → proposer → proposals.
 
 :func:`run_garden_tick` is the whole pass the ``graph_garden`` job runs:
-collect candidates (bounded), skip keys already pending, ask the
-proposer, emit accepted proposals. It never touches the graph — the only
-writes are ``reviews`` rows.
+collect candidates (bounded), skip keys already pending or already
+rejected, ask the proposer, emit accepted proposals and record rejected
+ones (so the next run does not re-ask; gr506046). It never touches the
+graph — the only writes are ``reviews`` rows.
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
@@ -26,12 +27,14 @@ from typing import TYPE_CHECKING, Any
 from precis.graph.garden.candidates import (
     DETECTOR_DEADLINE_S,
     GARDEN_KINDS,
+    SIBLING_REJECT_REASON,
     STALE_DAYS,
     GardenCandidate,
     run_detectors,
+    short_sibling_pair,
 )
-from precis.graph.garden.proposals import emit_proposal, key_block
-from precis.graph.garden.proposer import Verdict, propose_llm
+from precis.graph.garden.proposals import emit_proposal, key_block, record_rejection
+from precis.graph.garden.proposer import PROMPT_VERSION, Verdict, propose_llm
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -54,11 +57,18 @@ class GardenOutcome:
     candidates: int = 0
     proposals: int = 0
     skipped_pending: int = 0
-    #: Candidates whose key was rejected and whose target is unchanged
-    #: since — not re-asked (gr504843).
+    #: Candidates whose key was rejected (by a judge, or by the proposer
+    #: under the current prompt) and whose target is unchanged since —
+    #: not re-asked (gr504843, gr506046).
     skipped_rejected: int = 0
     rejected: int = 0
+    #: Rejected by the short-sibling rule before any model call
+    #: (``reason='sibling_distinct_names'`` on the row; gr504843).
+    rule_rejected: int = 0
     llm_errors: int = 0
+    #: The share of ``llm_errors`` cut on the completion-length cap
+    #: (gr504896) — a cap too small for the model's reasoning.
+    llm_truncated: int = 0
     paused: bool = False
     detectors: list[str] = field(default_factory=list)
     #: Detectors skipped on their timeout/budget this tick (gr503580) —
@@ -117,12 +127,33 @@ def run_garden_tick(
     def _one(cand: GardenCandidate) -> bool:
         """Propose one candidate; True when a proposal row was written.
         Sets ``out.paused`` on a window-scoped pause."""
-        block = key_block(store, cand.target_kind, cand.target_id, cand.key)
+        block = key_block(
+            store,
+            cand.target_kind,
+            cand.target_id,
+            cand.key,
+            prompt_version=PROMPT_VERSION,
+        )
         if block == "rejected":
             out.skipped_rejected += 1
             return False
         if block is not None:
             out.skipped_pending += 1
+            return False
+        if (
+            cand.detector == "dup_pair"
+            and cand.other_id
+            and short_sibling_pair(store, cand.target_id, int(cand.other_id))
+        ):
+            # Deterministic, no model call (gr504843: 8288/8300/8302).
+            out.rule_rejected += 1
+            record_rejection(
+                store,
+                cand,
+                rationale="short sibling taxa under one parent share no name word",
+                prompt_version=PROMPT_VERSION,
+                reason=SIBLING_REJECT_REASON,
+            )
             return False
         try:
             verdict = propose(store, cand)
@@ -137,9 +168,17 @@ def run_garden_tick(
             return False
         if verdict.error is not None:
             out.llm_errors += 1
+            out.llm_truncated += int(verdict.truncated)
             return False
         if not verdict.accept:
             out.rejected += 1
+            record_rejection(
+                store,
+                cand,
+                rationale=verdict.rationale,
+                prompt_version=PROMPT_VERSION,
+                model=verdict.model,
+            )
             return False
         # The proposer may refine the action/payload; the dedup key stays
         # the deterministic candidate key.

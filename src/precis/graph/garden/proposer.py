@@ -11,6 +11,14 @@ and placement live. No host or model is pinned in code.
 
 A ``paused`` verdict (window-scoped quota/budget trip, not a defect) is
 handed back to the runner — the job defers rather than failing.
+
+The call pins no ``max_tokens``: a caller-pinned cap beats the op
+chain's rung cap (:class:`~precis.utils.llm.router.FailoverProvider`),
+and the proposer's old 400 silently overrode the operator's 4000 on the
+castor gpt-oss rung, which then spent the 400 on reasoning and returned
+nothing (gr504896). The cap is the op row's call. A reply cut on the
+length cap is counted apart from other errors (``Verdict.truncated``)
+so a too-small cap shows up as itself.
 """
 
 from __future__ import annotations
@@ -36,6 +44,11 @@ OP_SOURCE = "graph_garden:propose"
 #: the prompt budget.
 EXCERPT_CHARS = 600
 
+#: Stamped on every proposer rejection row; a rejection blocks a re-ask
+#: only under the same version. Bump it with any change to the prompt or
+#: to the evidence the prompt shows, so the new judge re-asks once.
+PROMPT_VERSION = "garden-propose.v2"
+
 _PROMPT_HEAD = """You are the graph gardener's proposal judge for a knowledge graph
 (refs = typed nodes, links = typed edges, tags = closed namespaces).
 
@@ -57,6 +70,18 @@ signal is a hint (evidence.hint=true), accept only if the node's own
 shape supports it; when unsure, accept=false. "excerpts" holds each
 named ref's own text: a merge needs the excerpts to say the same thing,
 not only similar titles or shared opening words.
+
+dup_pair merges: distance and the overlaps are computed on card text,
+which shared boilerplate inflates for distinct terms. name_overlap
+compares the names and aliases; definition_overlap the definitions;
+definition_template=true means both definitions are one placeholder
+sentence with a different name in front, which is no evidence at all.
+Accept only when the two names denote the same thing; names that denote
+different things (width vs height, pedal vs wheel, donor vs acceptor
+count) are distinct whatever the scores say. siblings_under means both
+were minted as distinct children of that parent: accept only when the
+excerpts define the same thing. One term narrower than the other (cost
+per unit mass under unit cost) is a relink, not a merge: reject.
 """
 
 
@@ -71,6 +96,13 @@ class Verdict:
     model: str | None = None
     paused: bool = False  # window-scoped — the job should park, not fail
     error: str | None = None
+    #: The reply stopped on the completion-length cap (empty, or JSON cut
+    #: off) — an error, counted apart so a too-small cap is visible.
+    truncated: bool = False
+
+
+#: ``LlmResult.stop_reason`` values meaning the length cap ended the reply.
+_LENGTH_STOPS = frozenset({"length", "max_tokens"})
 
 
 def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
@@ -169,18 +201,21 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
             prompt=_prompt_for(candidate, ref_excerpts(store, _excerpt_ids(candidate))),
             source=OP_SOURCE,
             ref_id=candidate.target_id if candidate.target_kind == "ref" else None,
-            max_tokens=400,
             log_blobs=False,
         )
     )
     if getattr(result, "paused", False):
         return Verdict(accept=False, paused=True, error=result.error)
+    truncated = getattr(result, "stop_reason", None) in _LENGTH_STOPS
     if result.error is not None:
-        return Verdict(accept=False, error=str(result.error))
+        return Verdict(accept=False, error=str(result.error), truncated=truncated)
     body = _parse_verdict(result.text or "")
     if body is None:
         return Verdict(
-            accept=False, error="proposer returned no JSON object", model=result.model
+            accept=False,
+            error="proposer returned no JSON object",
+            model=result.model,
+            truncated=truncated,
         )
     overrides = body.get("payload_overrides")
     return Verdict(
@@ -194,4 +229,11 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
     )
 
 
-__all__ = ["EXCERPT_CHARS", "OP_SOURCE", "Verdict", "propose_llm", "ref_excerpts"]
+__all__ = [
+    "EXCERPT_CHARS",
+    "OP_SOURCE",
+    "PROMPT_VERSION",
+    "Verdict",
+    "propose_llm",
+    "ref_excerpts",
+]

@@ -103,6 +103,16 @@ graph-health-metrics, five parked gripes, and the seam with
   `meta.garden.cursors`, `redundant_link` probes neighbours batched under
   a 40 s budget, and a `paper-identity` merge detector proposes (no
   auto-apply).
+- **g4-gardener-yield built (2026-10-23):** the proposer leaves its
+  completion cap to the op chain (gr504896) and records each rejection
+  as a `rejected` row keyed on its prompt version, so an unchanged
+  candidate is asked once, not every run (gr506046). dup_pair evidence
+  keeps names and definitions apart and a short-sibling rule rejects
+  Pedal/Wheel-shaped pairs without a model call (gr504843). Each run
+  ends in the proposal consumer: dangling-edge prunes apply, Opus
+  approves (undoable merge) or rejects with a reason code (gr506044).
+  Open: relink approvals are recorded, not applied (machine
+  `specialises` writes are refused at the link gate).
 
 ## Do next
 

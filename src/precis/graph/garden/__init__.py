@@ -11,7 +11,8 @@ one ``reviews`` row (migration 0185) with ``verdict='proposed'``,
 ``actor='graph-garden'`` and a JSON payload in ``note`` (action,
 evidence, reversal hints) for a human or frontier-model judge. Apply
 is a separate explicit verb — :mod:`precis.graph.garden.apply`, reached
-through ``precis garden apply`` — never invoked by a pass. A pass over
+through ``precis garden apply`` or the consumer (step 5), never by a
+detector or the proposer. A pass over
 a clean graph writes nothing: no reviews, no chunks, no log spam.
 
 **Pipeline** (:mod:`precis.graph.garden.runner`):
@@ -40,7 +41,9 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 3. Persistence (:mod:`precis.graph.garden.proposals`) — accepted
    verdicts become ``reviews`` rows, deduplicated against pending
    proposals with the same proposal key and against a rejection of the
-   target's unchanged content. The tick's ``max_proposals`` is shared
+   target's unchanged content. A proposer rejection is a ``rejected``
+   row too, so an unchanged candidate is asked once per prompt version,
+   not every run (gr506046). The tick's ``max_proposals`` is shared
    round-robin across the detectors that produced candidates.
 4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
    ``precis garden review``) — a FRONTIER-tier burn-down over open
@@ -49,6 +52,11 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    row (the proposal stays open for a human; merge remains the only
    apply path). The per-detector agreement rate is the proposer's
    quality bar — ``precis garden stats``, reporting only.
+5. The consumer (:mod:`precis.graph.garden.consumer`, gr506044, Reto's
+   2026-10-23 ruling) — the one place a pass applies anything. Run by
+   the job after each tick: dangling-edge prunes apply; Opus approves
+   (merge applied through the undoable door) or rejects (terminal row
+   with a reason code) pending merge/relink proposals.
 
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector

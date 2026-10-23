@@ -3,9 +3,14 @@
 The job runs :func:`precis.graph.garden.runner.run_garden_tick` —
 deterministic detectors, then one routed LLM verdict per candidate
 (``graph_garden:propose`` op, steerable via ``llm.op.*``), then
-``verdict='proposed'`` rows into the ``reviews`` ledger. It writes
-NOTHING else: no merges, splits, prunes, relinks or tags — proposals
-wait for a human (or a separate, explicit apply verb) to act.
+``verdict='proposed'`` rows into the ``reviews`` ledger (plus a
+``rejected`` row per candidate the proposer turned down, so the next run
+does not re-ask it). It writes NOTHING else: no merges, splits, prunes,
+relinks or tags. After the tick the proposal consumer
+(:mod:`precis.graph.garden.consumer`, gr506044) prunes dangling edges and
+has Opus approve (merge applied, undoable) or reject (with a reason
+code) the pending merge/relink proposals; ``params.consume=false`` turns
+it off.
 
 Who mints it: an operator-seeded recurring todo under Watches —
 ``meta.schedule`` + ``meta.executor='job_inproc'`` +
@@ -23,7 +28,9 @@ run it.
 
 Outcome contract (the cooling streak reads this): ``meta.garden`` on the
 job row carries ``{candidates, proposals, skipped_pending, rejected,
-llm_errors, skipped_detectors, proposals_by_detector}`` — plus
+llm_errors, llm_truncated, skipped_detectors, proposals_by_detector}``
+— ``llm_truncated`` is the share of ``llm_errors`` cut on the length
+cap (gr504896) — plus
 ``skipped`` on a gate-skipped
 run; a tick that proposes nothing writes no chunks — "zero proposals
 and zero log entries" for a clean graph. A tick that skipped a detector
@@ -78,6 +85,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # detector — provisional input until term-taxonomy v1.5 lands
         # axis declarations on the graph.
         "exclusive_axes": {"type": "array", "items": {"type": "string"}},
+        # The proposal consumer after the tick (gr506044): off with
+        # false; review_limit bounds the Opus verdicts per run.
+        "consume": {"type": "boolean"},
+        "review_limit": {"type": "integer", "minimum": 1},
     },
     "additionalProperties": False,
 }
@@ -98,7 +109,9 @@ def _gate_skip(ctx: Any, reason: str) -> None:
             "skipped_pending": 0,
             "skipped_rejected": 0,
             "rejected": 0,
+            "rule_rejected": 0,
             "llm_errors": 0,
+            "llm_truncated": 0,
             "skipped_detectors": [],
             "proposals_by_detector": {},
         }
@@ -170,21 +183,35 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         cursors=prev_cursors,
         propose=propose_llm,
     )
-    ctx.set_meta(
-        garden={
-            "candidates": outcome.candidates,
-            "proposals": outcome.proposals,
-            "skipped_pending": outcome.skipped_pending,
-            "skipped_rejected": outcome.skipped_rejected,
-            "rejected": outcome.rejected,
-            "llm_errors": outcome.llm_errors,
-            "skipped_detectors": list(outcome.skipped_detectors),
-            "proposals_by_detector": dict(outcome.proposals_by_detector),
-            # Carried forward: a run over a subset of kinds/passes keeps
-            # the other windows where the last run left them.
-            "cursors": {**prev_cursors, **outcome.cursors},
-        }
-    )
+    garden: dict[str, Any] = {
+        "candidates": outcome.candidates,
+        "proposals": outcome.proposals,
+        "skipped_pending": outcome.skipped_pending,
+        "skipped_rejected": outcome.skipped_rejected,
+        "rejected": outcome.rejected,
+        "rule_rejected": outcome.rule_rejected,
+        "llm_errors": outcome.llm_errors,
+        "llm_truncated": outcome.llm_truncated,
+        "skipped_detectors": list(outcome.skipped_detectors),
+        "proposals_by_detector": dict(outcome.proposals_by_detector),
+        # Carried forward: a run over a subset of kinds/passes keeps
+        # the other windows where the last run left them.
+        "cursors": {**prev_cursors, **outcome.cursors},
+    }
+    ctx.set_meta(garden=garden)
+    consumed = None
+    if not outcome.paused and params.get("consume", True) is not False:
+        # The proposal consumer (gr506044, Reto 2026-10-23): auto-prune
+        # dangling edges, then the Opus review of merge/relink proposals.
+        from precis.graph.garden import consumer
+
+        consumed = consumer.consume_proposals(
+            ctx.store,
+            review=consumer.consume_llm,
+            review_limit=_ints("review_limit", consumer.DEFAULT_REVIEW_LIMIT),
+        )
+        garden["consumed"] = consumed.as_meta()
+        ctx.set_meta(garden=garden)
     if outcome.paused:
         # Window-scoped LLM pause — park the job (STATUS:waiting_time)
         # so the whole tick re-runs when the window reopens; candidates
@@ -211,11 +238,23 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
             f"written to reviews, {outcome.skipped_pending} already pending, "
             f"{outcome.rejected} rejected, {outcome.llm_errors} proposer error(s)"
         )
+        if outcome.llm_truncated:
+            summary += f" ({outcome.llm_truncated} cut on the length cap)"
         if outcome.skipped_detectors:
             summary += "; skipped detectors (timed out): " + ", ".join(
                 outcome.skipped_detectors
             )
         ctx.append_chunk("job_summary", summary)
+    if consumed is not None and (
+        consumed.pruned or consumed.applied or consumed.rejected or consumed.errors
+    ):
+        ctx.append_chunk(
+            "job_summary",
+            f"graph_garden consumer — {consumed.pruned} dangling edge(s) "
+            f"pruned, {consumed.applied} merge(s) applied, {consumed.rejected} "
+            f"proposal(s) rejected {consumed.reasons}, {consumed.errors} "
+            "review error(s)",
+        )
 
 
 #: Bounded retry backoff (gr503581): a failed run mints ONE sibling job,

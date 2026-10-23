@@ -27,6 +27,7 @@ this layer must not import handlers).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
-from precis.utils.lexical import lexical_overlap
+from precis.utils.lexical import content_words, lexical_overlap
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -66,6 +67,13 @@ DUP_VECTOR_CHUNK: dict[str, str] = {"memory": "memory_body"}
 #: Content-word Jaccard on card text for the lexical leg — the
 #: nearest-sibling refusal's fallback bar (``SIBLING_MIN_OVERLAP``).
 DUP_MIN_LEXICAL = 0.7
+
+#: Name length bound of :func:`short_sibling_pair`, in content words.
+SHORT_SIBLING_MAX_WORDS = 2
+
+#: The reject reason that rule records — machine-readable, counted per
+#: detector by ``precis garden stats``.
+SIBLING_REJECT_REASON = "sibling_distinct_names"
 
 #: Relink-narrowing floor (graph-gardener-value §3, 2026-10-21 ruling).
 #: An orphan taxon whose nearest start node sits *inside* this card-cosine
@@ -200,12 +208,107 @@ def _ref_terms(meta: dict[str, Any], title: str) -> frozenset[str]:
     return frozenset(t for t in terms if t)
 
 
-def _card_text(meta: dict[str, Any], title: str) -> str:
-    """The text the lexical leg compares: name + definition when the node
-    carries one, else the title."""
-    definition = str(meta.get("definition") or "")
-    name = str(meta.get("name") or title)
-    return f"{name} {definition}".strip()
+def _names(meta: dict[str, Any], title: str) -> list[str]:
+    """A node's raw names: title, ``meta.name`` and aliases."""
+    raw = [title, meta.get("name"), *(meta.get("aliases") or [])]
+    return list(dict.fromkeys(str(n) for n in raw if isinstance(n, str) and n))
+
+
+_WORDS = re.compile(r"[a-z0-9]+")
+
+
+def _without_names(text: str, names: list[str]) -> str:
+    """``text`` lowercased with the node's own names cut out, as a word
+    string — what is left of a definition once its name is removed."""
+    out = text.lower()
+    for name in sorted(names, key=len, reverse=True):
+        out = out.replace(name.lower(), " ")
+    return " ".join(_WORDS.findall(out))
+
+
+def _text_evidence(
+    ta: str, ma: dict[str, Any], tb: str, mb: dict[str, Any]
+) -> dict[str, Any]:
+    """Name and definition evidence for a taxon/concept pair, kept apart
+    (gr504843). The old single ``lexical_overlap`` ran on name +
+    definition, so legacy placeholder definitions ("Pedal: a component
+    category, carried over from the legacy … registry") scored Pedal and
+    Wheel 0.833 and the proposer read it as name agreement.
+
+    ``name_overlap`` compares titles/names/aliases; ``definition_overlap``
+    the definitions; ``definition_template`` marks two definitions that
+    are the same text once each node's own name is cut out while the
+    names share no term — a placeholder, evidence of nothing."""
+    na, nb = _names(ma, ta), _names(mb, tb)
+    ev: dict[str, Any] = {
+        "name_overlap": round(lexical_overlap(" ".join(na), " ".join(nb)), 3)
+    }
+    da, db = str(ma.get("definition") or ""), str(mb.get("definition") or "")
+    if da and db:
+        ev["definition_overlap"] = round(lexical_overlap(da, db), 3)
+        rest = _without_names(da, na)
+        if (
+            rest
+            and rest == _without_names(db, nb)
+            and _ref_terms(ma, ta).isdisjoint(_ref_terms(mb, tb))
+        ):
+            ev["definition_template"] = True
+    return ev
+
+
+def short_sibling_pair(store: Store, a: int, b: int) -> bool:
+    """The short-sibling rule (gr504843): True when ``a`` and ``b`` are
+    taxa under one parent, each named in at most
+    :data:`SHORT_SIBLING_MAX_WORDS` content words, with no word shared
+    across their names and aliases — distinct children of one family,
+    not one term minted twice. Reviews 8288 (Pedal/Wheel), 8300
+    (Height/Width) and 8302 (Hose/Pipe) are this shape; their cards embed
+    0.15-0.18 apart because family siblings share definition wording.
+
+    Why the word bound: the one embedding-only sibling merge a judge
+    approved on prod (460157 "Price per gram" into 460129 "Cost per unit
+    mass") has 2 and 3 content words; requiring both names short keeps
+    it a candidate. Same-name duplicates share a word and never match."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, title, meta FROM refs "
+            "WHERE ref_id = ANY(%s) AND kind = 'taxon'",
+            ([a, b],),
+        ).fetchall()
+    if len(rows) != 2:
+        return False
+    nodes = {int(r[0]): (str(r[1] or ""), r[2] or {}) for r in rows}
+    parents = _taxon_parents(store, [a, b])
+    if not parents.get(a, set()) & parents.get(b, set()):
+        return False
+    words = []
+    for rid in (a, b):
+        title, meta = nodes[rid]
+        head = content_words(str(meta.get("name") or title))
+        if not head or len(head) > SHORT_SIBLING_MAX_WORDS:
+            return False
+        words.append(
+            frozenset().union(*(content_words(n) for n in _names(meta, title)))
+        )
+    return words[0].isdisjoint(words[1])
+
+
+def _taxon_parents(store: Store, ids: list[int]) -> dict[int, set[int]]:
+    """``{taxon: its live parents}`` over the specialises/generalises
+    edges, for the ``siblings_under`` evidence."""
+    if not ids:
+        return {}
+    from precis.store._taxon_ops import _EDGES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"WITH {_EDGES} SELECT child, parent FROM e WHERE child = ANY(%s)",
+            (sorted(set(ids)),),
+        ).fetchall()
+    out: dict[int, set[int]] = {}
+    for child, parent in rows:
+        out.setdefault(int(child), set()).add(int(parent))
+    return out
 
 
 def _cosine(a: Any, b: Any) -> float:
@@ -525,17 +628,22 @@ def duplicate_candidates(
                 (ids,),
             ).fetchall()
         }
+    parents = _taxon_parents(
+        store, [i for pair, ev in pairs.items() if ev["kind"] == "taxon" for i in pair]
+    )
     out: list[GardenCandidate] = []
     for (a, b), ev in pairs.items():
         ta, ma = nodes.get(a, ("", {}))
         tb, mb = nodes.get(b, ("", {}))
         ev.setdefault("titles", [ta, tb])
-        if ev["kind"] != "memory":
-            overlap = lexical_overlap(_card_text(ma, ta), _card_text(mb, tb))
-            if overlap:
-                ev["lexical_overlap"] = round(overlap, 3)
         if ev["kind"] == "taxon" and dimension_clash(ma, mb):
             continue  # hard gate — never a candidate
+        if ev["kind"] != "memory":
+            ev.update(_text_evidence(ta, ma, tb, mb))
+        if ev["kind"] == "taxon":
+            shared = sorted(parents.get(a, set()) & parents.get(b, set()))
+            if shared:
+                ev["siblings_under"] = shared
         out.append(
             GardenCandidate(
                 detector="dup_pair",
@@ -1477,6 +1585,8 @@ __all__ = [
     "PRUNE_MAX_DISTANCE",
     "PRUNE_TOP_K",
     "RELINK_MIN_DISTANCE",
+    "SHORT_SIBLING_MAX_WORDS",
+    "SIBLING_REJECT_REASON",
     "STALE_DAYS",
     "DetectorRun",
     "GardenCandidate",
@@ -1490,6 +1600,7 @@ __all__ = [
     "polysemy_candidates",
     "redundant_link_candidates",
     "run_detectors",
+    "short_sibling_pair",
     "sibling_confusion_candidates",
     "stale_candidates",
     "untagged_candidates",
