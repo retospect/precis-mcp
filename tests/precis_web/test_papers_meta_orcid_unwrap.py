@@ -107,3 +107,19 @@ def test_unwrap_button_markup_present_on_meta_tab(client) -> None:
     # dependency, just inline JS.
     assert "window.__paperUnwrapAbstract" in resp.text
     assert "querySelector('[name=\"abstract\"]')" in resp.text
+
+
+def test_unwrap_handler_drops_certain_line_break_hyphens(client) -> None:
+    """gr509439: hard-wrapped PDF text hyphenates words across line breaks
+    ("under-\\nstanding"). The join drops a line-final hyphen only between
+    two lowercase letters — the same "certain" rule as
+    ``precis.ingest.marker._clean_text`` — so real compounds (``Z-scheme``,
+    ``Cu-MOF``) keep theirs. A line-final soft hyphen is a wrap artifact
+    by definition and folds unconditionally."""
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    # lowercase + '-' before the break, lowercase after — the join-bare gate
+    assert r"/[a-z]-$/" in resp.text
+    assert r"/^[a-z]/" in resp.text
+    # soft hyphen at EOL folds; any remaining mid-text SHY strips
+    assert r"\u00ad[ \t]*\n" in resp.text
