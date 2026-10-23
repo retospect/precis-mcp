@@ -60,7 +60,10 @@ def _normalize(
     if tube[0] % 2:
         raise GeneratorError(
             "rail-tube tube rows must be even so each arc's top zigzag rim "
-            "lands in phase with the seam lattice"
+            "lands in phase with the seam lattice",
+            code="rail_tube.rows.odd",
+            fix=f"tube: rows is {tube[0]} (odd) — nearest legal: "
+            f"tube=[{tube[0] - 1}, ...] or [{tube[0] + 1}, ...]",
         )
     features = params.get("features")
     if (

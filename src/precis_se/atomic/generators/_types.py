@@ -38,7 +38,19 @@ class GeneratorError(ValueError):
     (1,1) cage, C60 — a different atom count needs the general Goldberg
     construction, a later round). Always names the violated constraint and
     its valid range/formula — "theorems failing loudly"
-    (docs/backlog/nm-kind.md "Generators"), never a silent clamp."""
+    (docs/backlog/nm-kind.md "Generators"), never a silent clamp.
+
+    ``code``/``fix`` (gr503030): an optional machine-branchable reason
+    code (rendered into the message as ``[code]``) and the concrete fix
+    the caller can apply — :func:`precis_se.atomic.generate.prepare_generate`
+    forwards ``fix`` as the surfaced refusal's ``next=``."""
+
+    def __init__(
+        self, message: str, *, code: str | None = None, fix: str | None = None
+    ) -> None:
+        super().__init__(f"[{code}] {message}" if code else message)
+        self.code = code
+        self.fix = fix
 
 
 @dataclass

@@ -80,6 +80,34 @@ def test_prism_invalid_input_refuses_before_build(
         build_hexfold_scene({**params(), **change})
 
 
+def test_odd_rows_refusal_carries_code_and_fix() -> None:
+    """gr503030: the odd-row refusal names a branchable code and the fix."""
+    with pytest.raises(GeneratorError, match=r"\[prism\.rows\.odd\]") as exc:
+        build_hexfold_scene(params(feature=dict(HEX6, rows=5)))
+    assert exc.value.code == "prism.rows.odd"
+    assert exc.value.fix == "rows is odd — nearest legal: rows=4 or rows=6"
+
+
+def test_odd_rows_refusal_surfaces_next(store: Store, hub_no_embedder: Hub) -> None:
+    """The same refusal crossing the se handler keeps the fix in next=."""
+    with pytest.raises(BadInput, match=r"\[prism\.rows\.odd\]") as exc:
+        SeHandler(hub=hub_no_embedder).put(
+            id="hexfold-prism-odd",
+            args={
+                "ops": [
+                    {
+                        "op": "generate",
+                        "generator": "hexfold_scene",
+                        "name": "p",
+                        "params": params(feature=dict(HEX6, rows=5)),
+                    }
+                ]
+            },
+        )
+    assert exc.value.next == "rows is odd — nearest legal: rows=4 or rows=6"
+    assert store.get_ref(kind="se", id="hexfold-prism-odd") is None
+
+
 def test_net_turn_and_open_polygon_refused_by_name() -> None:
     with pytest.raises(GeneratorError, match=r"prism\.closure: net turn 180°"):
         build_hexfold_scene(params(feature=dict(HEX6, seams="++-++-++-")))

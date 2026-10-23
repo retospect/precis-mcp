@@ -54,7 +54,10 @@ def _normalize(
     if tube[0] % 2:
         raise GeneratorError(
             "channel wall rows must be even so each arc's top zigzag rim "
-            "lands in phase with the seam lattice"
+            "lands in phase with the seam lattice",
+            code="channel.rows.odd",
+            fix=f"tube: rows is {tube[0]} (odd) — nearest legal: "
+            f"tube=[{tube[0] - 1}, ...] or [{tube[0] + 1}, ...]",
         )
     if tube[1] % 2:
         raise GeneratorError(

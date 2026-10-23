@@ -224,7 +224,13 @@ def prepare_generate(
     try:
         block = builder(params)
     except GeneratorError as exc:
-        raise BadInput(f"generate({gen_name!r}): {exc}") from exc
+        # gr503030: a generator refusal that carries a code/fix (e.g. an
+        # odd-row input: ``[prism.rows.odd]``) survives surfaced — the
+        # code in the message lets an agent branch, ``next=`` names the
+        # concrete fix; generators without one forward unchanged.
+        raise BadInput(
+            f"generate({gen_name!r}): {exc}", next=getattr(exc, "fix", None)
+        ) from exc
 
     # Dry-run (``block.dry_run``, e.g. the hexfold generator's check-only
     # mode): the block carries the rendered report as its provenance and

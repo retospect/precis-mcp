@@ -89,10 +89,17 @@ def _normalize(
     if not isinstance(name, str) or not name.strip():
         raise GeneratorError("prism feature name must be nonempty")
     rows = feature["rows"]
+    odd_rows = _is_int(rows) and 4 <= rows <= 40 and rows % 2 == 1
     if not _is_int(rows) or not 4 <= rows <= 40 or rows % 2:
         raise GeneratorError(
             "prism rows must be an even integer in [4,40] so each wall's "
-            "top zigzag rim lands in phase with the seam lattice"
+            "top zigzag rim lands in phase with the seam lattice",
+            code="prism.rows.odd" if odd_rows else "prism.rows",
+            fix=(
+                f"rows is odd — nearest legal: rows={rows - 1} or rows={rows + 1}"
+                if odd_rows
+                else "rows: an even integer in [4,40]"
+            ),
         )
     periods = feature["periods"]
     if not _is_int(periods) or not 2 <= periods <= 60:
