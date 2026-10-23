@@ -153,7 +153,8 @@ comment, uncapped; with a selector it is body + the window.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —
-`get(kind='gripe', id=[42, 43], view='comments')` (or `'links'`, `'log'`).
+`get(kind='gripe', id=[42, 43], view='comments')` (or `'body'`, `'full'`,
+`'links'`, `'log'`).
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
 `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in

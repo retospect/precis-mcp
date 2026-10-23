@@ -240,7 +240,11 @@ class GripeHandler(NumericRefHandler):
                 body=resp.body
                 + f"\nfallback: search(kind='gripe', status='{view}', page_size=100)",
             )
-        return resp
+        return replace(
+            resp,
+            body=resp.body
+            + "\nbatch-read: get(kind='gripe', id=[<ids>], view='body'|'full')",
+        )
 
     def _list_summary(
         self,

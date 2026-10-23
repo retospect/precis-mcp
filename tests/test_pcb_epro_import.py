@@ -1275,52 +1275,6 @@ def test_a_real_board_imports_at_full_scale(store) -> None:
         assert min(ys) - 1.0 <= p["y"] <= max(ys) + 1.0, f"{p['refdes']} off board"
 
 
-@pytest.mark.slow
-@pytest.mark.skipif(
-    not os.environ.get("PRECIS_EPRO_FIXTURE"),
-    reason="set PRECIS_EPRO_FIXTURE=/path/to/real.epro2 to run",
-)
-@pytest.mark.parametrize(
-    ("freeze_all", "iters", "cells_per_axis"),
-    [(False, 200, None), (True, 200, None), (True, 2000, None), (True, 200, 2000)],
-    ids=["as-imported-200", "frozen-200", "frozen-2000", "frozen-200-fine-grid"],
-)
-class _FakeRouteCtx:
-    """The minimum the ``pcb_route`` job dispatch reads — the same shape
-    ``tests/workers/test_pcb_route.py::_FakeCtx`` uses, restated rather
-    than imported across test modules (importing another module's private
-    helper couples two suites that have no reason to move together)."""
-
-    def __init__(self, store, params: dict[str, object]) -> None:
-        self.store = store
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
-            title="epro route trial",
-            meta={"executor": "job_inproc", "job_type": "pcb_route"},
-        )
-        self.ref_id = int(ref.id)
-        self.title = "epro route trial"
-        self.meta: dict[str, object] = {"params": params}
-        self.failures: list[tuple[str, str | None]] = []
-        self.summaries: list[tuple[str, str]] = []
-
-    def record_failure(self, reason: str, *, failure_class: str | None = None) -> None:
-        self.failures.append((reason, failure_class))
-
-    def append_chunk(self, kind: str, text: str) -> None:
-        self.summaries.append((kind, text))
-
-    def set_status(self, value: str) -> None:
-        pass
-
-    def set_meta(self, **_kw: object) -> None:
-        pass
-
-    def is_cancel_requested(self) -> bool:
-        return False
-
-
 def test_an_import_measures_the_source_copper_against_its_pads(imported) -> None:
     """Slice 1c: the import's copper is measured, not kept. Read back from
     the DB, so the pads closing the gaps are the ones every later reader

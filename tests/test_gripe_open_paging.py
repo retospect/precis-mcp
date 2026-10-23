@@ -35,3 +35,5 @@ def test_open_list_pages_through_args(
     assert "get(kind='gripe', id='/open', args={'page': 2})" in p1
     assert "search(kind='gripe', status='open', page_size=100)" in p1
     assert "page 2 of 2 · 25 total · last page" in p2
+    assert "batch-read: get(kind='gripe', id=[<ids>], view='body'|'full')" in p1
+    assert "batch-read: get(kind='gripe', id=[<ids>], view='body'|'full')" in p2
