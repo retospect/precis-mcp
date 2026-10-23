@@ -50,6 +50,10 @@ quality-of-life and container items.
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
    live until slice 4 lights castor + pollux, which first needs async
    staging (gr496426, closed) and the package allow-list review.
+5. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
+   budget so a checkpointed long relax gives the lane a turn; in
+   progress on `worktree-g8-relax-slices`, flag-gated off until r91
+   shows a real checkpoint resume on prod.
 
 ## Horizon
 
