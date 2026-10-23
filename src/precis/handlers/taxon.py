@@ -854,13 +854,17 @@ class TaxonHandler(NumericRefHandler):
         # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
         # the base dispatch; declared so the extras gate accepts it here.
         since: str | int | None = None,
+        # ``id='/coverage'``'s review window (``args={'days': N}``);
+        # declared so the extras gate accepts it on this verb.
+        days: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='path'`` / ``view='facets'`` (``args={'sort': …, 'cross':
         […]}``) / ``view='meta'`` (one row per node — id, name, slug,
         display_unit, required_conditions, axis — over a single node, an
         ``id=[…]`` list, or every descendant of ``under=``) on a concrete
-        node; otherwise the generic numeric-ref get."""
+        node; ``id='/coverage'`` (the review-window stamp coverage by
+        kind); otherwise the generic numeric-ref get."""
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if view == "meta":
@@ -869,6 +873,13 @@ class TaxonHandler(NumericRefHandler):
             raise BadInput(
                 "under= applies to get(kind='taxon', view='meta') only",
                 next="get(kind='taxon', under='tn42', view='meta')",
+            )
+        if isinstance(id, str) and id == "/coverage":
+            return self._render_coverage(days=days, page=_kw.get("page"))
+        if days is not None:
+            raise BadInput(
+                "days= applies to get(kind='taxon', id='/coverage') only",
+                next="get(kind='taxon', id='/coverage', args={'days': 30})",
             )
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
@@ -903,7 +914,47 @@ class TaxonHandler(NumericRefHandler):
         return super().get(id=id, view=view, q=q, since=since, **_kw)
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "unrooted", "unmapped")
+        return ("recent", "unrooted", "unmapped", "coverage")
+
+    def _render_coverage(self, *, days: Any = None, page: Any = None) -> Response:
+        """``id='/coverage'`` — the share of each kind's live refs whose
+        stamp reads considered on a consider act inside the review window
+        (``args={'days': N}``, default
+        :data:`~precis.graph.garden.candidates.CONSIDERED_DAYS`), broken
+        down by reviewing model."""
+        from precis.graph.garden.candidates import CONSIDERED_DAYS
+
+        if page is not None and str(page) != "1":
+            raise BadInput(
+                "id='/coverage' has no pages",
+                next="get(kind='taxon', id='/coverage', args={'days': 30})",
+            )
+        try:
+            window = CONSIDERED_DAYS if days is None else int(days)
+        except (TypeError, ValueError):
+            window = 0
+        if window < 1:
+            raise BadInput(
+                f"days must be a positive integer, got {days!r}",
+                next="get(kind='taxon', id='/coverage', args={'days': 30})",
+            )
+        rows = self.store.considered_coverage(window)
+        lines = [f"# review coverage — refs considered in the last {window} day(s)"]
+        if not rows:
+            lines.append("no live refs")
+            return Response(body="\n".join(lines), result_count=0)
+        for r in rows:
+            models = (
+                "  ".join(f"{m}: {n}" for m, n in r["by_model"].items())
+                if r["by_model"]
+                else "—"
+            )
+            lines.append(
+                f"{r['kind']:<14} live {r['live']:>5}  "
+                f"considered {r['considered']:>4}  "
+                f"{100 * r['share']:5.1f}%  {models}"
+            )
+        return Response(body="\n".join(lines), result_count=len(rows))
 
     def _list_view(self, view: str) -> Response | None:
         if view == "unrooted":

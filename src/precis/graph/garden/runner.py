@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import (
+    CONSIDERED_DAYS,
     DETECTOR_DEADLINE_S,
     GARDEN_KINDS,
     SIBLING_REJECT_REASON,
@@ -61,6 +62,10 @@ class GardenOutcome:
     #: under the current prompt) and whose target is unchanged since —
     #: not re-asked (gr504843, gr506046).
     skipped_rejected: int = 0
+    #: Candidates dropped before the proposer because their target was
+    #: considered-and-unchanged inside the review window
+    #: (:data:`~precis.graph.garden.candidates.CONSIDERED_DAYS`).
+    skipped_considered: int = 0
     rejected: int = 0
     #: Rejected by the short-sibling rule before any model call
     #: (``reason='sibling_distinct_names'`` on the row; gr504843).
@@ -94,6 +99,7 @@ def run_garden_tick(
     max_proposals: int = DEFAULT_MAX_PROPOSALS,
     detector_deadline_s: float = DETECTOR_DEADLINE_S,
     cursors: dict[str, int] | None = None,
+    considered_days: int = CONSIDERED_DAYS,
     propose: ProposerFn | None = None,
 ) -> GardenOutcome:
     """One bounded tick. Returns the outcome; writes only reviews rows.
@@ -116,10 +122,12 @@ def run_garden_tick(
         exclusive_axes=exclusive_axes,
         detector_deadline_s=detector_deadline_s,
         cursors=cursors,
+        considered_days=considered_days,
     )
     candidates = run.candidates
     out = GardenOutcome(
         candidates=len(candidates),
+        skipped_considered=run.skipped_considered,
         skipped_detectors=list(run.skipped),
         cursors=dict(run.cursors),
     )

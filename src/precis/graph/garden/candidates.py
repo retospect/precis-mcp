@@ -138,6 +138,11 @@ HISTORY_KINDS: frozenset[str] = frozenset({"agentlog", "todo", "job"})
 #: short titles ("Editorial", "Introduction") say nothing about identity.
 PAPER_MIN_TITLE_CHARS = 20
 
+#: A node considered-and-unchanged within this many days is left out of
+#: candidate sets — a fresh review stamp supersedes re-proposal (the
+#: ``kg-review:<model>:<date>:<verdict>`` stamp on the trust ledger;
+#: ``0`` disables the skip).
+CONSIDERED_DAYS = 30
 #: Per-detector wall-clock budget inside :func:`run_detectors`
 #: (gr503580). Past it the detector is *abandoned* — the daemon thread
 #: keeps running until its queries hit the role's ``statement_timeout``
@@ -405,6 +410,54 @@ def _start_node_ids(store: Store) -> list[int]:
                 "ORDER BY ref_id"
             ).fetchall()
         ]
+
+
+def freshly_considered(
+    store: Store,
+    ref_ids: list[int],
+    link_ids: list[int],
+    *,
+    days: int = CONSIDERED_DAYS,
+) -> set[tuple[str, int]]:
+    """``{(target_kind, target_id)}`` of the given refs/links that were
+    considered within ``days`` and have not changed since — a ``consider``
+    act in the window whose ``expected_sha`` equals the target's content
+    sha now, while the stamp still reads ``considered`` (a demote or a
+    content edit re-opens the node).
+
+    The review's date is the stamp's ``payload.kg_review.date`` when the
+    act carries one — a reviewer may stamp a review older than the act's
+    recording time — else the revision's ``at``.
+    """
+    if not ref_ids and not link_ids:
+        return set()
+    fresh = (
+        "coalesce((a->'payload'->'kg_review'->>'date')::date, "
+        "(r.at AT TIME ZONE 'UTC')::date) "
+        ">= ((now() - make_interval(days => %(days)s)) "
+        "     AT TIME ZONE 'UTC')::date"
+    )
+    out: set[tuple[str, int]] = set()
+    with store.pool.connection() as conn:
+        for kind, table, pk, ids in (
+            ("ref", "refs", "ref_id", ref_ids),
+            ("link", "links", "link_id", link_ids),
+        ):
+            if not ids:
+                continue
+            rows = conn.execute(
+                f"SELECT DISTINCT r.target_id FROM revisions r "
+                f"JOIN {table} t ON t.{pk} = r.target_id "
+                f"CROSS JOIN LATERAL jsonb_array_elements(r.trust_acts) a "
+                f"WHERE r.target_kind = '{kind}' AND r.target_id = ANY(%(ids)s) "
+                f"  AND t.trust_confidence = 'considered' "
+                f"  AND a->>'action' = 'consider' "
+                f"  AND a->>'expected_sha' = precis_target_sha('{kind}', r.target_id) "
+                f"  AND {fresh}",
+                {"ids": list(ids), "days": days},
+            ).fetchall()
+            out.update((kind, int(r[0])) for r in rows)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1574,12 +1627,15 @@ class DetectorRun:
     """One :func:`run_detectors` pass: the concatenated candidates plus
     ``skipped`` — the names of detectors that hit their statement timeout
     or wall-clock budget and were skipped so the rest could still run —
-    and ``cursors``, the scan positions to save for the next run (only
-    from detectors that finished)."""
+    ``cursors``, the scan positions to save for the next run (only from
+    detectors that finished) — and ``skipped_considered``, candidates
+    dropped because their target was considered-and-unchanged inside the
+    review window."""
 
     candidates: list[GardenCandidate] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     cursors: dict[str, int] = field(default_factory=dict)
+    skipped_considered: int = 0
 
 
 def run_detectors(
@@ -1595,6 +1651,7 @@ def run_detectors(
     exclusive_axes: tuple[str, ...] = (),
     detector_deadline_s: float = DETECTOR_DEADLINE_S,
     cursors: dict[str, int] | None = None,
+    considered_days: int = CONSIDERED_DAYS,
 ) -> DetectorRun:
     """Run the detectors selected by ``passes`` and concatenate their
     candidates (each detector already bounded by ``limit``).
@@ -1700,10 +1757,21 @@ def run_detectors(
             continue
         out.candidates += found
         out.cursors.update(nxt)
+    if considered_days > 0 and out.candidates:
+        fresh = freshly_considered(
+            store,
+            [c.target_id for c in out.candidates if c.target_kind == "ref"],
+            [c.target_id for c in out.candidates if c.target_kind == "link"],
+            days=considered_days,
+        )
+        kept = [c for c in out.candidates if (c.target_kind, c.target_id) not in fresh]
+        out.skipped_considered = len(out.candidates) - len(kept)
+        out.candidates = kept
     return out
 
 
 __all__ = [
+    "CONSIDERED_DAYS",
     "DETECTOR_DEADLINE_S",
     "DUP_MAX_DISTANCE",
     "DUP_MIN_LEXICAL",
@@ -1727,6 +1795,7 @@ __all__ = [
     "dup_pair_qualifies",
     "dup_window_size",
     "duplicate_candidates",
+    "freshly_considered",
     "orphan_taxon_candidates",
     "paper_identity_candidates",
     "polysemy_candidates",

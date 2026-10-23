@@ -127,6 +127,11 @@ shown. `get(kind="taxon", id="/unrooted")` lists every node that reaches no
 start node, or says none do. `get(kind="taxon", id="/unmapped")` lists the
 nodes seeded from the legacy registries whose dimension could not be mapped
 (`dimension_kind` empty), so a curator can set it.
+`get(kind="taxon", id="/coverage")` reports review coverage by kind —
+each kind's live refs, the share `considered` inside the last
+`args={'days': N}` (default 30) on their current content sha, broken
+down by reviewing model (`kg-review:<model>:<date>:ok|fixed` stamps;
+see `precis-edit-help` §Mark a node considered).
 
 ## Meta table over many nodes
 
@@ -175,7 +180,7 @@ and never starting with one: `measurand/temperature` means a node
 `temperature` whose parent is `measurand`. A lone `temperature` is a plain
 term lookup. Several matches are refused with each candidate's handle and
 path; no match lists near candidates. A leading `/` is a list view
-(`/unrooted`, `/unmapped`, `/recent`). A link from another kind
+(`/unrooted`, `/unmapped`, `/recent`, `/coverage`). A link from another kind
 (`rel='instance-of'`) and create-time `put(link=)` take the id only.
 
 ## Search

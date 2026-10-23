@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from psycopg.errors import QueryCanceled
@@ -641,6 +641,146 @@ class TestDetectorBounds:
         run = cand.run_detectors(store, passes=("tag-sweep",), detector_deadline_s=0.05)
         assert run.skipped == ["untagged"]
         assert run.candidates == []
+
+
+# ── considered-fresh skip: a reviewed, unchanged target is not a candidate ──
+
+
+def _consider(
+    store: Store, kind: Literal["ref", "link"], target_id: int, reason: str = "checked"
+) -> None:
+    """A ``consider`` act on the target's content sha now — what
+    ``edit(mode='trust')`` records."""
+    from precis.store.revision_context import TrustAct
+
+    state = store.trust_state(kind, target_id)
+    assert state is not None
+    store.record_trust_act(
+        TrustAct(
+            action="consider",
+            target_kind=kind,
+            target_id=target_id,
+            expected_sha=state.sha,
+            reason=reason,
+        ),
+        actor="reviewer",
+        actor_type="agent",
+    )
+
+
+def _stale_ref(store: Store, kind: str = "concept") -> int:
+    """A lone, ancient ref the ``stale`` detector flags."""
+    rid = _ref(store, kind, "forgotten thing")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '400 days' "
+            "WHERE ref_id = %s",
+            (rid,),
+        )
+    return rid
+
+
+class TestConsideredSkip:
+    def test_fresh_considered_target_is_skipped(self, store: Store) -> None:
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        run = cand.run_detectors(store, passes=("prune",))
+        assert run.candidates == []
+        assert run.skipped_considered == 1
+
+    def test_freshly_considered_reports_the_target(self, store: Store) -> None:
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        assert cand.freshly_considered(store, [rid], [], days=30) == {("ref", rid)}
+        assert cand.freshly_considered(store, [rid], [], days=0) == {("ref", rid)}
+
+    def test_changed_after_review_reopens(self, store: Store) -> None:
+        """A content edit after the stamp drops the confidence and moves
+        the sha — the node is a candidate again."""
+        from precis.store.revision_context import revision_context
+
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        with revision_context(
+            "reword", trust_origin="generated", trust_actor_type="agent"
+        ):
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET title = 'reworded thing' WHERE ref_id = %s",
+                    (rid,),
+                )
+        run = cand.run_detectors(store, passes=("prune",))
+        assert [c.target_id for c in run.candidates] == [rid]
+        assert run.skipped_considered == 0
+
+    def test_demote_reopens(self, store: Store) -> None:
+        from precis.store.revision_context import TrustAct
+
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        state = store.trust_state("ref", rid)
+        assert state is not None
+        store.record_trust_act(
+            TrustAct(
+                action="demote",
+                target_kind="ref",
+                target_id=rid,
+                expected_sha=state.sha,
+                confidence="hunch",
+                reason="second thoughts",
+            ),
+            actor="reviewer",
+            actor_type="agent",
+        )
+        run = cand.run_detectors(store, passes=("prune",))
+        assert [c.target_id for c in run.candidates] == [rid]
+
+    def test_backdated_stamp_is_outside_the_window(self, store: Store) -> None:
+        """The stamp's ``kg_review`` date — not the act's recording time —
+        decides freshness: a review stamped years back does not skip."""
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid, reason="kg-review:m1:2020-01-01:ok")
+        run = cand.run_detectors(store, passes=("prune",))
+        assert [c.target_id for c in run.candidates] == [rid]
+
+    def test_considered_days_zero_disables(self, store: Store) -> None:
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        run = cand.run_detectors(store, passes=("prune",), considered_days=0)
+        assert [c.target_id for c in run.candidates] == [rid]
+        assert run.skipped_considered == 0
+
+    def test_considered_link_target_is_skipped(self, store: Store) -> None:
+        a = _ref(store, "concept", "link a")
+        b = _ref(store, "concept", "link b")
+        lid = int(store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to").id)
+        store.retire_ref(b)
+        _consider(store, "link", lid)
+        run = cand.run_detectors(store, passes=("prune",))
+        assert run.candidates == []
+        assert run.skipped_considered == 1
+
+    def test_dispatch_stamps_skipped_considered(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The job param arrives and the count lands on meta.garden."""
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        _lit_service(store)
+        rid = _stale_ref(store)
+        _consider(store, "ref", rid)
+        calls: list[int] = []
+
+        def _spy(s: Store, c: GardenCandidate) -> Verdict:
+            calls.append(1)
+            return _accept(s, c)
+
+        monkeypatch.setattr("precis.graph.garden.proposer.propose_llm", _spy)
+        ctx = TestDispatchGlue._Ctx(store, {"pass": "prune"})
+        _dispatch(ctx, SPEC)
+        g = ctx.meta["garden"]
+        assert g["skipped_considered"] == 1 and g["proposals"] == 0
+        assert calls == []
 
 
 # ── dispatch glue: gates per run, outcome contract, dedup across runs ──

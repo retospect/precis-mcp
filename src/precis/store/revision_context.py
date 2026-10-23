@@ -41,11 +41,13 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
+from datetime import date
 from typing import Literal, ParamSpec, TypeVar, get_args
 
 import psycopg
@@ -74,6 +76,31 @@ TRUST_ACTOR_TYPES: tuple[str, ...] = get_args(TrustActorType)
 TrustAction = Literal["consider", "demote", "correct-origin", "legacy-import", "carry"]
 TRUST_ACTIONS: tuple[str, ...] = get_args(TrustAction)
 
+#: A knowledge-graph review stamp: ``kg-review:<model>:<YYYY-MM-DD>:ok|fixed``
+#: — the reviewer's model and the review date as machine-readable fields
+#: (they land on the recorded act under ``payload.kg_review``, not only in
+#: the reason's prose). A reason that opens with the prefix but does not
+#: match in full is refused.
+KG_REVIEW_PREFIX = "kg-review:"
+KG_REVIEW_RE = re.compile(
+    r"^kg-review:(?P<model>[A-Za-z0-9][A-Za-z0-9._-]*)"
+    r":(?P<date>\d{4}-\d{2}-\d{2}):(?P<verdict>ok|fixed)$"
+)
+
+
+def parse_kg_review(reason: str) -> dict[str, str] | None:
+    """The structured stamp a ``kg-review:`` reason carries
+    (``{model, date, verdict}``), or None when ``reason`` is not a
+    well-formed stamp — including a real-calendar-date check."""
+    m = KG_REVIEW_RE.fullmatch(reason.strip())
+    if m is None:
+        return None
+    try:
+        date.fromisoformat(m["date"])
+    except ValueError:
+        return None
+    return {"model": m["model"], "date": m["date"], "verdict": m["verdict"]}
+
 
 @dataclass(frozen=True, slots=True)
 class TrustAct:
@@ -97,6 +124,7 @@ class TrustAct:
     origin: str | None = None
     confidence: str | None = None
     carry_from: int | None = None
+    kg_review: dict[str, str] | None = None
     op_id: str = ""
 
     def __post_init__(self) -> None:
@@ -134,6 +162,16 @@ class TrustAct:
             raise ValueError(
                 "legacy-import cannot mint considered; record a consider act"
             )
+        parsed = parse_kg_review(self.reason)
+        if parsed is None and self.reason.strip().startswith(KG_REVIEW_PREFIX):
+            raise ValueError(
+                "a kg-review reason is 'kg-review:<model>:<YYYY-MM-DD>:ok|fixed'"
+                f", got {self.reason!r}"
+            )
+        if self.kg_review is not None and self.kg_review != parsed:
+            raise ValueError("kg_review must match the reason's kg-review stamp")
+        if parsed is not None:
+            object.__setattr__(self, "kg_review", parsed)
         if not self.op_id:
             object.__setattr__(self, "op_id", uuid.uuid4().hex)
 

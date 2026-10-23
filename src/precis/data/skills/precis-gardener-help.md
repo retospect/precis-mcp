@@ -118,6 +118,24 @@ that found candidates: each gets `max_proposals // n` first, and a
 share a detector leaves unspent goes to the others.
 `meta.garden.proposals_by_detector` records the split.
 
+**Freshly reviewed targets are skipped.** A candidate whose target was
+`considered` inside the last `considered_days` (default 30) is dropped
+before the proposer — provided the node is unchanged: the consider
+act's `expected_sha` must still equal the node's content sha and the
+stamp must still read `considered` (a demote or a content edit re-opens
+it). Reviewers stamp with the structured `kg-review:<model>:
+<YYYY-MM-DD>:ok|fixed` reason on `edit(mode='trust')` — the stamp's
+date decides freshness (a backdated review stays old), absent it the
+act's recording time. The tick reports the drop count as
+`meta.garden.skipped_considered`. `considered_days: 0` disables the
+skip.
+
+**Review coverage.** `get(kind='taxon', id='/coverage',
+args={'days': 30})` reports per kind: live refs, how many were
+considered inside the window on their current sha, the share, and the
+breakdown by reviewing model — the answer to "how much of the graph has
+a reviewer actually looked at, and who".
+
 ## The ledger row
 
 Pending proposals are readable by operator CLI (`precis garden
@@ -252,7 +270,8 @@ judging runs without a redeploy.
 Job params: `pass` (a name or a list), `limit` (candidates per
 detector, default 50), `scan_cap` (refs per kind per window, default
 2000), `max_proposals` (writes per tick, default 20, shared across
-detectors), `stale_days`, `kinds`, `tag_namespaces`, `tag_kinds`,
+detectors), `stale_days`, `considered_days` (fresh-review skip window,
+default 30, 0 disables), `kinds`, `tag_namespaces`, `tag_kinds`,
 `exclusive_axes`.
 
 ## The machine-edge write rule

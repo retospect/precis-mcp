@@ -79,6 +79,11 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # skip-and-continue; gr503580).
         "detector_deadline_s": {"type": "integer", "minimum": 1},
         "stale_days": {"type": "integer", "minimum": 1},
+        # Review-window skip: a candidate whose target was considered and
+        # is unchanged (the consider act's expected_sha is its sha now)
+        # inside this many days is dropped before the proposer
+        # (candidates.CONSIDERED_DAYS; 0 disables).
+        "considered_days": {"type": "integer", "minimum": 0},
         "kinds": {"type": "array", "items": {"type": "string"}},
         "tag_namespaces": {"type": "array", "items": {"type": "string"}},
         "tag_kinds": {"type": "array", "items": {"type": "string"}},
@@ -109,6 +114,7 @@ def _gate_skip(ctx: Any, reason: str) -> None:
             "proposals": 0,
             "skipped_pending": 0,
             "skipped_rejected": 0,
+            "skipped_considered": 0,
             "rejected": 0,
             "rule_rejected": 0,
             "llm_errors": 0,
@@ -146,7 +152,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     else:
         passes = tuple(str(p) for p in raw_pass)
 
-    from precis.graph.garden.candidates import DETECTOR_DEADLINE_S
+    from precis.graph.garden.candidates import CONSIDERED_DAYS, DETECTOR_DEADLINE_S
     from precis.graph.garden.runner import (
         DEFAULT_LIMIT,
         DEFAULT_MAX_PROPOSALS,
@@ -156,6 +162,12 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     def _ints(key: str, default: int) -> int:
         try:
             return max(1, int(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _nonneg(key: str, default: int) -> int:
+        try:
+            return max(0, int(params.get(key, default)))
         except (TypeError, ValueError):
             return default
 
@@ -182,6 +194,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         max_proposals=_ints("max_proposals", DEFAULT_MAX_PROPOSALS),
         detector_deadline_s=_ints("detector_deadline_s", int(DETECTOR_DEADLINE_S)),
         cursors=prev_cursors,
+        considered_days=_nonneg("considered_days", CONSIDERED_DAYS),
         propose=propose_llm,
     )
     garden: dict[str, Any] = {
@@ -189,6 +202,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "proposals": outcome.proposals,
         "skipped_pending": outcome.skipped_pending,
         "skipped_rejected": outcome.skipped_rejected,
+        "skipped_considered": outcome.skipped_considered,
         "rejected": outcome.rejected,
         "rule_rejected": outcome.rule_rejected,
         "llm_errors": outcome.llm_errors,

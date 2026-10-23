@@ -569,6 +569,74 @@ class ReviewsMixin:
             replayed=prior is not None and prior[0] is not None,
         )
 
+    def considered_coverage(
+        self, days: int = 30, *, conn: Connection | None = None
+    ) -> list[dict[str, Any]]:
+        """Per-kind review coverage for the ``/coverage`` view: every ref
+        kind's live count, and how many of those refs were considered
+        within ``days`` — a ``consider`` act in the window whose
+        ``expected_sha`` is the ref's content sha now, while the stamp
+        still reads ``considered`` — broken down by the reviewing model
+        (the act's recorded ``model``, else its ``kg_review`` stamp's,
+        else ``(unattributed)``).
+
+        The review's date is the stamp's ``payload.kg_review.date`` when
+        the act carries one, else the revision's ``at``. Rows come back
+        ``{kind, live, considered, share, by_model: {model: n}}`` sorted
+        least-covered first so the gaps lead.
+        """
+        with self._review_conn(conn) as c:
+            live = {
+                str(r[0]): int(r[1])
+                for r in c.execute(
+                    "SELECT kind, count(*) FROM refs "
+                    "WHERE retired_at IS NULL GROUP BY kind"
+                ).fetchall()
+            }
+            rows = c.execute(
+                "SELECT f.kind, coalesce(latest.model, '(unattributed)'), "
+                "       count(*) FROM refs f "
+                "JOIN LATERAL ("
+                "  SELECT coalesce(a->>'model', "
+                "                  a->'payload'->'kg_review'->>'model') AS model"
+                "    FROM revisions r,"
+                "         jsonb_array_elements(r.trust_acts) WITH ORDINALITY"
+                "           AS t(a, o) "
+                "   WHERE r.target_kind = 'ref' AND r.target_id = f.ref_id "
+                "     AND a->>'action' = 'consider' "
+                "     AND a->>'expected_sha' = precis_target_sha('ref', f.ref_id) "
+                "     AND coalesce((a->'payload'->'kg_review'->>'date')::date, "
+                "                  (r.at AT TIME ZONE 'UTC')::date) "
+                "         >= ((now() - make_interval(days => %(days)s)) "
+                "              AT TIME ZONE 'UTC')::date "
+                "   ORDER BY r.at DESC, r.revision_id DESC, t.o DESC LIMIT 1"
+                ") latest ON true "
+                "WHERE f.retired_at IS NULL AND f.trust_confidence = 'considered' "
+                "GROUP BY 1, 2",
+                {"days": days},
+            ).fetchall()
+        by_kind: dict[str, dict[str, int]] = {}
+        for kind, model, n in rows:
+            models = by_kind.setdefault(str(kind), {})
+            models[str(model)] = models.get(str(model), 0) + int(n)
+        out = []
+        for kind, n_live in live.items():
+            models = by_kind.get(kind, {})
+            n_considered = sum(models.values())
+            out.append(
+                {
+                    "kind": kind,
+                    "live": n_live,
+                    "considered": n_considered,
+                    "share": round(n_considered / n_live, 4),
+                    "by_model": dict(
+                        sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
+                    ),
+                }
+            )
+        out.sort(key=lambda r: (r["share"], r["kind"]))
+        return out
+
     def trust_compat_report(self, *, conn: Connection | None = None) -> dict[str, Any]:
         """The compatibility-window measurement (slice 1 cutover step 3).
 

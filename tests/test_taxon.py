@@ -593,6 +593,57 @@ class TestPathAndIntegrity:
         assert f"tn{rooted} " not in body and f"tn{root} " not in body
 
 
+class TestCoverage:
+    def _consider(self, store: Any, ref_id: int, reason: str = "checked") -> None:
+        from precis.store.revision_context import TrustAct
+
+        state = store.trust_state("ref", ref_id)
+        store.record_trust_act(
+            TrustAct(
+                action="consider",
+                target_kind="ref",
+                target_id=ref_id,
+                expected_sha=state.sha,
+                reason=reason,
+            ),
+            actor="reviewer",
+            actor_type="agent",
+            model="review-model" if not reason.startswith("kg-review:") else None,
+        )
+
+    def test_coverage_reports_share_by_kind_and_model(self, store: Any) -> None:
+        reviewed = _mk(store, "cov reviewed")
+        _mk(store, "cov unreviewed")
+        _created_memory(store, "cov memory")
+        self._consider(
+            store, reviewed, reason="kg-review:claude-opus-4-8:2026-10-22:ok"
+        )
+        body = _handler(store).get(id="/coverage").body
+        assert "30 day(s)" in body
+        taxon_row = next(l for l in body.splitlines() if l.startswith("taxon"))
+        assert "live     2" in taxon_row and "considered    1" in taxon_row
+        assert "50.0%" in taxon_row and "claude-opus-4-8: 1" in taxon_row
+        memory_row = next(l for l in body.splitlines() if l.startswith("memory"))
+        assert "considered    0" in memory_row and "0.0%" in memory_row
+
+    def test_coverage_honours_the_days_arg_and_a_stamped_date(self, store: Any) -> None:
+        reviewed = _mk(store, "cov stamped")
+        self._consider(store, reviewed, reason="kg-review:m1:2020-01-01:ok")
+        body = _handler(store).get(id="/coverage", days=30).body
+        assert "claude" not in body and "m1" not in body
+        wide = _handler(store).get(id="/coverage", days=10000).body
+        assert "m1: 1" in wide
+
+    def test_coverage_refuses_bad_args(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="days"):
+            h.get(id="/coverage", days="forever")
+        with pytest.raises(BadInput, match="no pages"):
+            h.get(id="/coverage", page=2)
+        with pytest.raises(BadInput, match="/coverage"):
+            h.get(id="tn1", days=5)
+
+
 class TestTaxonOps:
     def _tree(self, store: Any) -> dict[str, int]:
         root = _start(store, "ops root")

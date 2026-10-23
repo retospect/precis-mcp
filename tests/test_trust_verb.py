@@ -331,3 +331,145 @@ def test_unconverted_edit_of_a_stamped_ref_is_a_bad_input(
     refusal = trust_refusal(exc.value)
     assert refusal is not None and "version 1" in refusal.cause
     assert refusal.next and "revision_context(trust_origin" in str(refusal.next)
+
+
+# ── kg-review stamps — a reviewer's structured consider mark ────────────
+
+
+def test_kg_review_stamp_records_model_and_date_structured(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A reviewer marks a node considered with
+    ``kg-review:<model>:<YYYY-MM-DD>:ok|fixed`` — reviewer and date land
+    queryable (the act's ``model`` / ``payload.kg_review`` and the
+    revision row's ``model``), not only in the reason's prose."""
+    mid = _put_memory(runtime_with_store, "reviewed and stamped")
+    sha = _sha(store, "ref", mid)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "mode": "trust",
+            "__extras__": {
+                "trust": {
+                    "confidence": "considered",
+                    "reason": "kg-review:claude-opus-4-8:2026-10-22:ok",
+                    "expected_sha": sha,
+                }
+            },
+        },
+    )
+    assert "hunch -> considered" in out, out
+    (review,) = [
+        a for a in store.trust_acts_for("ref", mid) if a["action"] == "consider"
+    ]
+    assert review["model"] == "claude-opus-4-8"
+    assert review["payload"]["kg_review"] == {
+        "model": "claude-opus-4-8",
+        "date": "2026-10-22",
+        "verdict": "ok",
+    }
+    models = [r.model for r in store.revisions_for("ref", mid) if r.model]
+    assert models[-1] == "claude-opus-4-8"
+
+
+def test_kg_review_stamp_on_put_marks_the_reviewer(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The create-time consider act takes the same stamp: ``kg_review``
+    on the act payload and the write context's ``model``."""
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "created considered",
+            "__extras__": {
+                "trust": {
+                    "confidence": "considered",
+                    "reason": "kg-review:fable-1:2026-10-21:fixed",
+                }
+            },
+        },
+    )
+    m = re.search(r"\bme(\d+)\b", out)
+    assert m, out
+    (act,) = store.trust_acts_for("ref", int(m.group(1)))
+    assert act["payload"]["kg_review"] == {
+        "model": "fable-1",
+        "date": "2026-10-21",
+        "verdict": "fixed",
+    }
+    assert act["model"] == "fable-1"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "kg-review:",
+        "kg-review:opus",
+        "kg-review:opus:2026-10-22",
+        "kg-review:opus:2026-10-22:maybe",
+        "kg-review:opus:2026-13-40:ok",
+        "kg-review::2026-10-22:ok",
+        "kg-review:opus:2026-10-22:ok and I checked it",
+    ],
+)
+def test_kg_review_reason_format_is_refused(
+    runtime_with_store: PrecisRuntime, store: Store, reason: str
+) -> None:
+    """A reason that opens with ``kg-review:`` but does not match the
+    stamp format in full is refused — a malformed stamp must not land as
+    prose."""
+    mid = _put_memory(runtime_with_store, "format probe")
+    sha = _sha(store, "ref", mid)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "mode": "trust",
+            "__extras__": {
+                "trust": {
+                    "confidence": "considered",
+                    "reason": reason,
+                    "expected_sha": sha,
+                }
+            },
+        },
+    )
+    assert "kg-review:<model>:<YYYY-MM-DD>:ok|fixed" in out, out
+    assert _stamp(store, "ref", mid) == ("generated", "hunch", 1)
+
+
+def test_kg_review_format_is_refused_on_put(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "bad stamp",
+            "__extras__": {
+                "trust": {
+                    "confidence": "considered",
+                    "reason": "kg-review:opus",
+                }
+            },
+        },
+    )
+    assert "kg-review:<model>:<YYYY-MM-DD>:ok|fixed" in out, out
+
+
+def test_trust_act_refuses_a_malformed_kg_review() -> None:
+    """Every door shares the check: a malformed stamp is a ValueError at
+    TrustAct construction (the operator CLI's refusal), while the MCP
+    path refuses earlier with BadInput."""
+    from precis.store.revision_context import TrustAct
+
+    with pytest.raises(ValueError, match="kg-review"):
+        TrustAct(
+            action="consider",
+            target_kind="ref",
+            target_id=1,
+            expected_sha="x",
+            reason="kg-review:opus",
+        )

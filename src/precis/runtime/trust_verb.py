@@ -33,9 +33,11 @@ from typing import Any, Literal
 from precis.errors import BadInput, NotFound
 from precis.response import Response
 from precis.store.revision_context import (
+    KG_REVIEW_PREFIX,
     TRUST_ORIGINS,
     RevisionContext,
     TrustAct,
+    parse_kg_review,
 )
 
 #: Keys the ``trust`` payload accepts.
@@ -90,6 +92,14 @@ def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] |
             "considered is an explicit act: give a reason",
             next="args={'trust': {'confidence': 'considered', 'reason': 'why'}}",
         )
+    reason = str(payload.get("reason") or "").strip()
+    if reason.startswith(KG_REVIEW_PREFIX) and parse_kg_review(reason) is None:
+        raise BadInput(
+            f"a kg-review reason is 'kg-review:<model>:<YYYY-MM-DD>:ok|fixed'"
+            f", got {reason!r}",
+            next="reason='kg-review:claude-opus-4-8:2026-10-22:ok' "
+            "(reviewer model, UTC review date, ok|fixed)",
+        )
     return payload
 
 
@@ -142,6 +152,9 @@ def producer_kwargs(
                 next="add args={'trust': {'origin': 'generated', ...}}",
             )
         kwargs["trust_act"] = act
+        review = parse_kg_review(act.reason)
+        if review is not None:
+            kwargs["model"] = review["model"]
     return kwargs
 
 
@@ -268,7 +281,13 @@ def edit_trust(
         reason=reason,
     )
     actor_type = (outer.trust_actor_type if outer is not None else None) or "agent"
-    receipt = store.record_trust_act(act, actor=actor, actor_type=actor_type)
+    review = parse_kg_review(reason)
+    receipt = store.record_trust_act(
+        act,
+        actor=actor,
+        actor_type=actor_type,
+        model=review["model"] if review is not None else None,
+    )
     before = receipt.act.get("before") or {}
     lines = [
         f"trust: {target_kind} {target_id} {before.get('confidence', '?')} -> "

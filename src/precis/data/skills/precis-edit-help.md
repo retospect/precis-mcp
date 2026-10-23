@@ -330,6 +330,16 @@ stale sha is refused, so re-read and decide again. On `put`,
 the node considered, and `{'origin': 'extracted'}` marks a verbatim
 quotation. You cannot assert `human` origin.
 
+**Review stamps.** When a reviewer marks a node considered as part of a
+graph review pass, the reason is the structured stamp
+`kg-review:<model>:<YYYY-MM-DD>:ok|fixed` — the reviewing model, the UTC
+review date, and `ok` (checked, nothing to change) or `fixed` (the
+reviewer changed something first). A reason starting `kg-review:` that
+does not match in full is refused. Reviewer and date land queryable —
+the recorded act carries `model` and `payload.kg_review` — so coverage
+(`get(kind='taxon', id='/coverage')`) and the gardener's fresh-review
+skip (`precis-gardener-help`) read them without parsing prose.
+
 ## See also
 
 - [[precis-files-help]] — shared address grammar (`~L`, `~N`, qualnames).
