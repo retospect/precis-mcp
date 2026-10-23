@@ -167,7 +167,18 @@ def test_link_whitelist_then_live_read_stored_bulk_and_error(
     ref = store.get_ref(kind="component", id=slug)
     link = ref.meta["supplier_links"][0]
     assert set(link) == set(LINK_FIELDS)
-    assert "description" not in str(ref.meta) and "12000" not in str(ref.meta)
+    # Supplier payload fields (description, prices, stock) must not persist:
+    # assert meta keys and link values directly — a str(meta) substring check
+    # flakes when first_linked_at microseconds happen to match (gr508912).
+    assert set(ref.meta) == {"mpn", "category", "supplier_links"}
+    assert link["supplier"] == supplier
+    assert link["supplier_part_number"] == "SKU1"
+    assert link["manufacturer"] == "Maker" and link["mpn"] == "MPN1"
+    assert link["product_url"].startswith("https://") and link["product_url"].endswith(
+        "/SKU1"
+    )
+    assert link["datasheet_url"] == "https://maker.example/data.pdf"
+    assert link["match_confidence"] == "confirmed_supplier_part_number"
     assert store.component_values_for_ref(ref.id) == []
     assert jobs[0]["params"] == {
         "component_ref_id": ref.id,
