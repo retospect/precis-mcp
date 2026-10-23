@@ -1834,6 +1834,22 @@ class TestTryCore:
         assert out is not None
         assert out.event == "api_error"
 
+    def test_rate_limit_refusal_is_not_an_api_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _refuse(provider: str) -> None:
+            raise fetch_oa.RateLimited(provider)
+
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+        out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
+        assert out is not None
+        assert out.event == "rate_limited"
+        assert out.payload == {
+            "doi": "10.1234/x",
+            "provider": "core",
+            "limiter": "shared",
+        }
+
 
 class TestQueryCorePdfUrls:
     """Unit tests for :func:`_query_core_fulltext_urls` validation and field choice."""
@@ -1842,6 +1858,11 @@ class TestQueryCorePdfUrls:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from precis.workers.fetch_oa import _query_core_fulltext_urls
+
+        limited: list[str] = []
+        monkeypatch.setattr(
+            fetch_oa, "require_rate_limit", lambda provider: limited.append(provider)
+        )
 
         class FakeResp:
             status_code = 200
@@ -1891,6 +1912,7 @@ class TestQueryCorePdfUrls:
         monkeypatch.setattr(httpx, "Client", FakeClient)
 
         urls = _query_core_fulltext_urls("10.1234/example", api_key="K")
+        assert limited == ["core"]
         # The rec-1 fullText ``paper.txt`` is dropped (clearly non-PDF); the
         # rec-3 fullText ``fulltext.pdf`` is kept (its downloadUrl is an
         # invalid ftp:// URL). Bare-id / non-URL / wrong-DOI recs are skipped.

@@ -2273,6 +2273,12 @@ def _try_core(
     t0 = time.perf_counter()
     try:
         pdf_urls = _query_core_fulltext_urls(stub.doi, api_key=api_key)
+    except RateLimited as exc:
+        return FetchOutcome(
+            event="rate_limited",
+            payload={"doi": stub.doi, "provider": exc.provider, "limiter": "shared"},
+            duration_ms=_ms(t0),
+        )
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -3804,6 +3810,10 @@ def _looks_non_pdf_url(href: str) -> bool:
 def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
     """Return CORE full-text URLs (PDF-preferred) for an exact DOI match.
 
+    Takes a shared ``core`` limiter token before the API request; a refusal
+    is returned as ``rate_limited`` by :func:`_try_core`, not mistaken for
+    an API failure or counted as provider traffic.
+
     Only results whose own ``doi`` equals the query DOI are kept (CORE
     fuzzy-matches, so a bare topical hit must not be mistaken for the
     paper).
@@ -3816,6 +3826,7 @@ def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
     a bare CORE work id (``"587670336"``), which the SSRF guard rejected. The
     name reflects the output: full-text links, not guaranteed-PDF ones.
     """
+    require_rate_limit("core")
     params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _user_agent_header()}
     with http_client(timeout=_API_TIMEOUT_S, headers=headers) as client:
