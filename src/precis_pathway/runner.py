@@ -249,6 +249,35 @@ def _analysis_payloads(
     return summary, nx.node_link_data(an.graph, edges="links")
 
 
+def _stamp_endpoint_tol(results: Results) -> None:
+    """Fold the endpoint-agreement tolerance the engine applied into each
+    ``endpoint_agreement`` trust record's evidence (``tol_eV``, eV).
+
+    ``autocatpath.trust.endpoint_agreement`` fails a run whose endpoint
+    energy sits more than ``ENDPOINT_TOL_EV`` above the (model, state)
+    group minimum — today an engine-side constant the artifact never
+    recorded, so a ``fail``'s ``delta_meV`` arrived uninterpretable
+    (gr508948: a near-universal endpoint-mismatch pattern is only
+    diagnosable as chemistry-vs-tolerance-artifact when the reader can see
+    the line the deltas were judged against). ``setdefault`` keeps an
+    engine that starts minting its own per-call tolerance authoritative; a
+    silent no-op where the constant does not exist — the records still
+    carry verdict + delta.
+    """
+    from autocatpath import trust as _trust_mod
+
+    tol = getattr(_trust_mod, "ENDPOINT_TOL_EV", None)
+    if isinstance(tol, bool) or not isinstance(tol, (int, float)):
+        return
+    for rec in getattr(results, "trust", None) or ():
+        if (
+            isinstance(rec, dict)
+            and rec.get("check") == "endpoint_agreement"
+            and isinstance(rec.get("evidence"), dict)
+        ):
+            rec["evidence"].setdefault("tol_eV", float(tol))
+
+
 def _atoms_to_extxyz(atoms: Any) -> str:
     """One relaxed ASE ``Atoms`` → an extxyz string (lossless: cell, pbc,
     per-atom info). The wire form the precis ``structure`` seam ingests."""
@@ -315,6 +344,7 @@ def run_pathway(
     effective = cfg.to_dict()
     prepared = _stamp_slab(cfg, slab_extxyz)
     results = run(prepared.cfg, log=log)
+    _stamp_endpoint_tol(results)
 
     results_json, graph_json = _analysis_payloads(prepared.cfg, results)
     return {
@@ -1332,6 +1362,7 @@ def aggregate_seed_partials(
 
     partials = [r["partial"] for r in seed_results]
     results = aggregate_partials(prepared.cfg, partials)
+    _stamp_endpoint_tol(results)
     lattice: dict[str, float] = {}
     for r in seed_results:
         lattice.update(r.get("lattice") or {})

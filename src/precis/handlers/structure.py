@@ -767,8 +767,10 @@ class StructureHandler(Handler):
                 "source",
                 "config_id",
                 # mode='rerun' only: ladder-rung override (default: the
-                # candidate's highest completed rung).
+                # candidate's highest completed rung), and the dispatch-time
+                # seed list (default: the reaction config's pinned seeds).
                 "tier",
+                "seeds",
             }
         ),
         "edit": ArgsSpec({"ops"}),
@@ -1027,7 +1029,11 @@ class StructureHandler(Handler):
         nonce-salted job tree linked to the earlier result; refuses while a
         run is in flight). ``args={'tier': 'screening'|'neb'|'verify'}``
         overrides the rung; default is the candidate's highest completed
-        rung. The design itself is untouched — no cell/ops accepted here."""
+        rung. ``args={'seeds': [<ints>]}`` picks the seed set this
+        evaluation runs (gr508948 — multi-seed at dispatch time, e.g. fresh
+        endpoint-agreement evidence); default is the reaction config's
+        pinned seeds. The design itself is untouched — no cell/ops accepted
+        here."""
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='structure', mode='rerun') requires id= (the "
@@ -1039,7 +1045,11 @@ class StructureHandler(Handler):
         from precis.quest.compute import request_rerun
 
         note = request_rerun(
-            self.store, int(ref.id), hub=self.hub, tier=str(tier) if tier else None
+            self.store,
+            int(ref.id),
+            hub=self.hub,
+            tier=str(tier) if tier else None,
+            seeds=(args or {}).get("seeds"),
         )
         return Response(body=note)
 

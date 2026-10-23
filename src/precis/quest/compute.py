@@ -1681,6 +1681,7 @@ def dispatch_autocatpath(
     load: dict[str, int] | None = None,
     rerun_nonce: str | None = None,
     rerun_of: int | None = None,
+    seeds: Sequence[int] | None = None,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
@@ -1720,6 +1721,14 @@ def dispatch_autocatpath(
     (its evidence still ranks until the replay lands, which is the point of
     the comparison) — and the new pathway carries ``meta.rerun_of`` naming
     the prior pathway plus a ``derived-from`` link to it.
+
+    ``seeds``, when given, replaces ``config.search.seeds`` AFTER the tier
+    overlay — the dispatch-time multi-seed mode (gr508948: a rerun can pick
+    its own seed set, e.g. ``[3, 4]`` for fresh endpoint-agreement evidence,
+    instead of re-running the config's pinned list). An explicit caller list
+    wins over the verify tier's insufficient-samples widening: the caller
+    named exactly the seeds it wanted, and the artifact records them
+    (``meta.results.seeds``).
 
     §B-1 (gr180096): exports the candidate's relaxed geometry as extxyz,
     ensures a `pathway` ref for the write-back, then mints a **job tree**
@@ -1789,6 +1798,14 @@ def dispatch_autocatpath(
             f"autocatpath skipped: no reaction config for structure {structure_ref_id}"
         )
     config = _apply_tier_config(config, tier)
+    if seeds is not None:
+        config = {
+            **config,
+            "search": {
+                **(config.get("search") or {}),
+                "seeds": [int(s) for s in seeds],
+            },
+        }
     refs = store.fetch_refs_by_ids({structure_ref_id})
     ref = refs.get(structure_ref_id)
     if ref is None or ref.slug is None:
@@ -4414,12 +4431,49 @@ def _live_computing_pathway(store: Store, structure_ref_id: int) -> int | None:
     return None
 
 
+#: Upper bound on a rerun's explicit ``seeds`` list (gr508948): each seed
+#: is a full network evaluation (one ``autocatpath_seed`` job per
+#: ``(model, seed)`` cell), so a deliberate multi-seed rerun stays bounded
+#: like ``reruns`` itself is (``MAX_RERUNS_PER_TICK``). A bigger seed set is
+#: a quest-config change, not a rerun.
+_RERUN_MAX_SEEDS = 8
+
+
+def _validate_rerun_seeds(seeds: Any) -> list[int]:
+    """The dispatch-time seed list for :func:`request_rerun`: a non-empty
+    list of distinct non-negative ints, at most ``_RERUN_MAX_SEEDS`` of
+    them. Anything else raises ``BadInput`` — ``apply_reruns`` catches it as
+    a refused entry, the handler surfaces it verbatim."""
+    if not isinstance(seeds, (list, tuple)) or not seeds:
+        raise BadInput(
+            f"seeds must be a non-empty list of ints, got {seeds!r}",
+            next="pass e.g. seeds=[3, 4] — each seeds one full network evaluation",
+        )
+    out: list[int] = []
+    for s in seeds:
+        if isinstance(s, bool) or not isinstance(s, int) or s < 0:
+            raise BadInput(
+                f"seeds entries must be non-negative ints, got {s!r}",
+                next="pass e.g. seeds=[3, 4]",
+            )
+        if s not in out:
+            out.append(s)
+    if len(out) > _RERUN_MAX_SEEDS:
+        raise BadInput(
+            f"seeds lists at most {_RERUN_MAX_SEEDS} seeds, got {len(out)} — "
+            "a bigger seed set is a quest reaction_config change, not a rerun",
+            next="pick the most informative seeds; the list order is preserved",
+        )
+    return out
+
+
 def request_rerun(
     store: Store,
     structure_ref_id: int,
     *,
     hub: Any | None = None,
     tier: str | None = None,
+    seeds: Sequence[int] | None = None,
     by: str = "agent",
 ) -> str:
     """Request a deliberate rerun of a candidate's autocatpath evaluation.
@@ -4448,7 +4502,11 @@ def request_rerun(
     ``meta.reaction_config`` (no autocatpath lane exists to re-run).
     ``tier`` overrides the rung — default the candidate's own highest
     completed rung (:func:`_redispatch_tier`), i.e. the rung whose result a
-    rerun reproduces.
+    rerun reproduces. ``seeds`` (gr508948) overrides the config's
+    ``search.seeds`` at dispatch time — multi-seed-on-demand: name exactly
+    the seed set this evaluation runs (validated by
+    :func:`_validate_rerun_seeds`), e.g. ``[3, 4]`` for a fresh
+    endpoint-agreement comparison instead of replaying the pinned list.
 
     Raises (mcp-authoring contract — the handler surfaces these verbatim):
     ``NotFound`` on an unknown/foreign-structure id; ``BadInput`` with
@@ -4491,6 +4549,7 @@ def request_rerun(
             next="omit tier= to rerun at the candidate's highest completed rung",
         )
     rung = tier or _redispatch_tier(store, quest_id, ref)
+    seed_list = _validate_rerun_seeds(seeds) if seeds is not None else None
     live = _live_computing_pathway(store, structure_ref_id)
     if live is not None:
         from precis.utils import handle_registry
@@ -4512,6 +4571,7 @@ def request_rerun(
         tier=rung,
         rerun_nonce=nonce,
         rerun_of=prior,
+        seeds=seed_list,
     )
     if not note.startswith("autocatpath["):
         # dispatch's own refusal/skip vocabulary (suspended lane, no live
@@ -4522,7 +4582,8 @@ def request_rerun(
             next="fix what the message names, then retry the same call",
         )
     prior_note = f"rerun-of pw{prior}" if prior is not None else "no prior result"
-    ack = f"{note}; {prior_note} [{nonce}]"
+    seeds_note = f"; seeds={seed_list}" if seed_list is not None else ""
+    ack = f"{note}; {prior_note}{seeds_note} [{nonce}]"
     try:
         append_entry(
             store,
@@ -4551,12 +4612,13 @@ def apply_reruns(
     deliberately re-running one named candidate's sim (gr499904; the same
     door as ``put(kind='structure', id=N, mode='rerun')``).
 
-    Each entry is ``{"structure": "<st<id> or slug>", "why": ...}``; entries
-    past ``cap`` (the prompt's ``rerun_cap``), malformed entries, and
-    per-candidate refusals (unknown id, in-flight eval, lane off) each land
-    as an ``observation`` logbook note the next tick reads — a dropped or
-    refused rerun is never silent, and a bad entry never fails the tick.
-    Returns the number of reruns actually queued.
+    Each entry is ``{"structure": "<st<id> or slug>", "why": ...,
+    "seeds": [<ints>] (optional)}``; entries past ``cap`` (the prompt's
+    ``rerun_cap``), malformed entries, and per-candidate refusals (unknown
+    id, in-flight eval, lane off, invalid seeds) each land as an
+    ``observation`` logbook note the next tick reads — a dropped or refused
+    rerun is never silent, and a bad entry never fails the tick. Returns
+    the number of reruns actually queued.
     """
     if not isinstance(entries, list):
         return 0
@@ -4575,7 +4637,7 @@ def apply_reruns(
             continue
         try:
             ref = resolve_live_slug_ref(store, kind="structure", id=ident)
-            request_rerun(store, int(ref.id), hub=hub, by=by)
+            request_rerun(store, int(ref.id), hub=hub, seeds=e.get("seeds"), by=by)
             queued += 1
         except PrecisError as exc:
             # exc.headline carries the message + next=/options= hint.

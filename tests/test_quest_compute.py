@@ -7499,6 +7499,80 @@ class TestRequestRerun(TestDispatchAutocatpath):
         assert any("rerun requested" in t for t in logs)
         assert any("rerun refused" in t and "nope" in t for t in logs)
 
+    def test_seeds_override_mints_the_requested_set(self, store: Any) -> None:
+        """gr508948 — multi-seed at dispatch time: ``seeds=[3, 4]`` replaces
+        the reaction config's pinned ``[0, 1, 2]`` for this evaluation."""
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        note = compute_mod.request_rerun(store, sid, seeds=[3, 4])
+        assert note.startswith("autocatpath[") and "seeds=[3, 4]" in note
+        jobs = self._seed_jobs(store, sid)
+        assert len(jobs) == 3 + 2  # the settled tree's 3 + the rerun's 2
+        new = {m["params"]["seed"] for _jid, m in jobs[3:]}
+        assert new == {3, 4}
+        # The aggregate's recorded config carries the dispatch-time seeds —
+        # the same effective config the engine will see.
+        (agg_id,) = [t for t in self._agg_todo_ids(store, sid)][1:]
+        agg = store.fetch_refs_by_ids({agg_id})[agg_id]
+        assert agg.meta["params"]["config"]["search"]["seeds"] == [3, 4]
+
+    def test_seeds_validation_refuses_bad_lists(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        bad: Any
+        for bad in ([], [-1], [0, True], list(range(9)), "3", 3):
+            with pytest.raises(BadInput):
+                compute_mod.request_rerun(store, sid, seeds=bad)
+        assert len(self._seed_jobs(store, sid)) == 3  # nothing minted
+
+    def test_seeds_deduped(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        compute_mod.request_rerun(store, sid, seeds=[7, 7, 7])
+        jobs = self._seed_jobs(store, sid)
+        assert len(jobs) == 3 + 1
+        assert jobs[-1][1]["params"]["seed"] == 7
+
+    def test_apply_reruns_seeds_passthrough_and_refusal(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        queued = compute_mod.apply_reruns(
+            store,
+            qid,
+            [
+                {"structure": ref.slug, "why": "fresh basin", "seeds": [5]},
+                {"structure": ref.slug, "why": "bad", "seeds": ["x"]},
+            ],
+        )
+        assert queued == 1
+        jobs = self._seed_jobs(store, sid)
+        assert len(jobs) == 3 + 1
+        assert jobs[-1][1]["params"]["seed"] == 5
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("rerun refused" in t and "non-negative ints" in t for t in logs)
+
+    def test_handler_mode_rerun_seeds_arg(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        resp = StructureHandler(hub=Hub(store=store)).put(
+            id=ref.slug, mode="rerun", args={"seeds": [2]}
+        )
+        assert "autocatpath[" in resp.body
+        jobs = self._seed_jobs(store, sid)
+        assert len(jobs) == 3 + 1
+        assert jobs[-1][1]["params"]["seed"] == 2
+
 
 class TestReactionCoDispatch:
     """A barrier quest (``meta.reaction_config`` set) co-dispatches autocatpath with

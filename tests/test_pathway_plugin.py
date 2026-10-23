@@ -23,6 +23,7 @@ import copy
 import io
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -272,6 +273,55 @@ def test_seed_fanout_matches_monolith_run() -> None:
     from precis_pathway._dispatch_common import summarize
 
     assert summarize(fanout) == summarize(monolith)
+
+
+def test_endpoint_agreement_records_carry_tol() -> None:
+    """gr508948: every ``endpoint_agreement`` trust record in the persisted
+    artifact carries ``evidence.tol_eV`` — the tolerance the engine judged
+    ``delta_meV`` against — so a fail is interpretable without reading
+    engine source. Other checks are untouched."""
+    from autocatpath import trust as trust_mod
+
+    cfg = _yaml_dict(FANOUT)
+    seed_results = [runner.run_seed_partial(cfg, seed, 0) for seed in (0, 1)]
+    fanout = runner.aggregate_seed_partials(cfg, seed_results)
+
+    trust = fanout["results_json"].get("trust") or []
+    recs = [r for r in trust if r.get("check") == "endpoint_agreement"]
+    assert recs, "expected endpoint_agreement records in a 2-seed fan-out"
+    assert all(
+        r["evidence"]["tol_eV"] == float(trust_mod.ENDPOINT_TOL_EV) for r in recs
+    )
+    others = [r for r in trust if r.get("check") != "endpoint_agreement"]
+    assert all("tol_eV" not in (r.get("evidence") or {}) for r in others)
+
+
+def test_stamp_endpoint_tol_respects_engine_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_stamp_endpoint_tol`` is additive: an engine that already minted a
+    per-call ``tol_eV`` keeps its own value; a missing constant or a
+    non-endpoint record is a no-op."""
+    from autocatpath import trust as trust_mod
+
+    results = SimpleNamespace(
+        trust=[
+            {"check": "endpoint_agreement", "evidence": {"tol_eV": 0.2}},
+            {"check": "endpoint_agreement", "evidence": {"delta_meV": 1.0}},
+            {"check": "saddle_verified", "evidence": {}},
+        ]
+    )
+    runner._stamp_endpoint_tol(results)
+    assert results.trust[0]["evidence"]["tol_eV"] == 0.2  # engine's own wins
+    assert results.trust[1]["evidence"]["tol_eV"] == float(trust_mod.ENDPOINT_TOL_EV)
+    assert "tol_eV" not in results.trust[2]["evidence"]
+
+    # An engine without the constant (older/newer) stamps nothing — the
+    # record still carries its verdict + delta, never a fabricated value.
+    monkeypatch.delattr(trust_mod, "ENDPOINT_TOL_EV")
+    results2 = SimpleNamespace(trust=[{"check": "endpoint_agreement", "evidence": {}}])
+    runner._stamp_endpoint_tol(results2)
+    assert "tol_eV" not in results2.trust[0]["evidence"]
 
 
 def test_run_kinetics_missing_module_sets_kinetics_error(

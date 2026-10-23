@@ -1938,7 +1938,9 @@ it would unblock>"}}
   ],
   "reruns": [
     {{"structure": "<st<id> or slug of an EXISTING candidate>", \
-"why": "<what the repeat measurement is testing>"}}
+"why": "<what the repeat measurement is testing>", "seeds": \
+"<optional list of seed ints, e.g. [3, 4] — the seed set this evaluation \
+runs>"}}
   ],
   "read": [
     {{"ref": "<fi<id>, pa<id> or pc<id> of a held item you want text of>", \
@@ -1960,7 +1962,11 @@ at a time (a request for one already running is refused). Use it to \
 deliberately re-test a credited pass's reproducibility instead of waiting \
 for whichever rerun the system schedules on its own. It re-measures, never \
 revises — a changed reaction or geometry is a `proposals` entry, not a \
-rerun. \
+rerun. An optional `"seeds"` list names the seed set the rerun dispatches \
+(each seed is a full network evaluation, at most 8; fresh seed numbers \
+give the endpoint_agreement trust check new basins to compare — read \
+`get(kind='pathway', view='trust')` for the per-state `delta_meV` versus \
+the recorded `tol_eV`). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper or `[pc<id>]` paper \
 chunk from the context above; the finding claims and abstract snippets are \
