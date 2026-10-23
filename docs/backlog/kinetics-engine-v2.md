@@ -1156,6 +1156,9 @@ where the paper gives them and records `theta0` otherwise.
    the rate builder.
 9. **TPD validation + `tpd_corrected`.** `tpd.py` (MF ramp; KMC ramp when
    slice 6 is in), the reference fixture set, `TPDCorrectedProvider`,
+   (literature dataset already extracted:
+   `tests/fixtures/kinetics/tpd_reference.json` + chunk snapshot +
+   README, landed 2026-10-23; convert to the per-adsorbate YAML below),
    `view='tpd'`. Acceptance: CO/Pd(111) at β = 0.5 K s⁻¹ reports the
    uncorrected `ΔT_p`, the corrected one is within 15 K and at least 2×
    smaller, and one of the three β values is held out of the fit and
