@@ -64,6 +64,8 @@ from precis.utils.optional_deps import require_optional
 if TYPE_CHECKING:
     import httpx
 
+    from precis.utils import outbound_policy
+
 log = logging.getLogger(__name__)
 
 #: Default User-Agent for precis outbound requests. Individual callers
@@ -304,19 +306,10 @@ TRACE_ID_HEADER = "J-Trace-ID"
 
 #: Limiter row seeded on first use for a host with no row of its own
 #: (``host:<netloc>``): ``(capacity, refill_per_sec)``, one request a second.
+#: An ``llm-api``-class row keeps this same seed — its tokens are unused
+#: (the class is rate-less) and the row exists to carry ``parked_until``
+#: and the override columns (docs/backlog/outbound-policy.md D1).
 DEFAULT_HOST_ROW = (1, 1.0)
-
-#: Limiter row seeded for an LLM API host (the ``openai-tools`` policy —
-#: OpenRouter and other OpenAI-wire endpoints). A metered API, not a scraped
-#: website: the provider paces us itself with 429 + ``Retry-After``, which
-#: :func:`_park` writes to this same row so every host honours it. The
-#: bucket is wide enough that the fleet's thread-pool bursts never queue on
-#: it (the ~40k calls/day workload averages 0.5/s; gr507343 — the 1/s
-#: website default refused ~20k calls/day before any request went out).
-#: The point fix ahead of ``docs/backlog/outbound-policy.md`` S1, whose
-#: ``llm-api`` class has no token lane at all (a ``parked_until`` column
-#: carries the park) and caps concurrency with a shared slot hold.
-LLM_HOST_ROW = (32, 16.0)
 
 
 class VendorError(Exception):
@@ -387,13 +380,28 @@ class Policy:
     #: shared limiter unless the caller passes ``url=`` (then the
     #: ``host:<netloc>`` row).
     provider: str | None = None
-    #: Longest wait for a limiter token before ``RateLimited``.
+    #: Longest wait for a limiter token before ``RateLimited``. The
+    #: resolver's code-layer ``max_wait_s`` when ``max_wait_s`` is unset.
     limiter_wait_s: float = 30.0
     #: ``(capacity, refill_per_sec)`` seeded for a ``host:<netloc>`` row this
     #: policy creates (``provider`` unset, ``url=`` passed). The website
-    #: politeness default unless the policy names a metered API
-    #: (:data:`LLM_HOST_ROW`).
+    #: politeness default; a rate-less class's row is a state carrier only.
     host_row: tuple[int, float] = DEFAULT_HOST_ROW
+    #: Outbound policy class (``scraped-host``/``provider-api``/``llm-api``/
+    #: ``llm-local``/``internal``); ``None`` = infer from provider/url —
+    #: see :mod:`precis.utils.outbound_policy`.
+    cls: str | None = None
+    #: Admission-wait override feeding the resolved ``max_wait_s``;
+    #: ``None`` inherits (``limiter_wait_s`` then the class default).
+    max_wait_s: float | None = None
+    #: Per-phase/overall timeout overrides; ``None`` = caller's timeout.
+    connect_s: float | None = None
+    read_s: float | None = None
+    total_s: float | None = None
+    #: ``wait``/``defer``/``fail`` override; ``None`` = class default.
+    on_refuse: str | None = None
+    #: ``resource_slots`` resource to hold for the call; ``None`` = inherit.
+    concurrency: str | None = None
 
 
 DEFAULT_POLICY = Policy()
@@ -450,14 +458,16 @@ POLICIES: dict[str, Policy] = {
     # A live agent waits on these two: few attempts, short cap. A 429 backs
     # off here and is never raised to the agent as a rate-limit error.
     "perplexity": Policy(attempts=4, base=2.0, cap=30.0, label="Perplexity"),
-    # LLM APIs are metered, not scraped: a wide host row the provider's own
-    # 429/Retry-After parks, instead of the 1 req/s website default (gr507343).
+    # LLM APIs are metered, not scraped (gr507343): the ``llm-api`` class
+    # has no token lane — the provider's own 429/Retry-After parks the
+    # host row's ``parked_until`` and a shared slot hold caps in-flight
+    # concurrency (docs/backlog/outbound-policy.md D1/D2).
     "openai-tools": Policy(
         attempts=2,
         base=2.0,
         cap=30.0,
         label="OpenAI-style API",
-        host_row=LLM_HOST_ROW,
+        cls="llm-api",
     ),
     "remarkable": Policy(
         attempts=4,
@@ -659,16 +669,43 @@ def _circuit_for(service: str, policy: Policy) -> _Circuit:
     return _CIRCUITS.setdefault(service, _Circuit())
 
 
+def _resolve_effective(
+    service: str, policy: Policy, row: str | None, url: str | None
+) -> outbound_policy.EffectivePolicy | None:
+    """Resolve this call's :class:`EffectivePolicy` (docs/backlog/
+    outbound-policy.md): class, token lane, concurrency hold and wait
+    bound in one cached view. ``None`` on a resolver fault — the caller
+    falls back to the row + ``limiter_wait_s`` path exactly as before."""
+    try:
+        from precis.utils import outbound_policy
+
+        return outbound_policy.resolve_for(service, policy, row, url)
+    except Exception:  # pragma: no cover — resolve() itself is fail-open
+        log.debug("http: outbound policy resolution failed", exc_info=True)
+        return None
+
+
 def _take_token(
-    provider: str | None, policy: Policy, seed: tuple[int, float] | None
+    provider: str | None,
+    policy: Policy,
+    seed: tuple[int, float] | None,
+    effective: outbound_policy.EffectivePolicy | None = None,
 ) -> None:
     """One limiter token for ``provider``; raises ``RateLimited`` on a
-    refusal. Fails open (and logs) when the limiter store is unavailable."""
+    refusal. Fails open (and logs) when the limiter store is unavailable.
+    A resolved rate-less class (``llm-api``/``internal``/``llm-local``)
+    takes no token — admission is the ``parked_until`` gate and/or a
+    concurrency hold (docs/backlog/outbound-policy.md D1)."""
     if provider is None:
         return
+    wait_s = policy.limiter_wait_s
+    if effective is not None:
+        if effective.rate is None:
+            return
+        wait_s = effective.max_wait_s
     from precis.utils import rate_limit
 
-    rate_limit.require(provider, max_wait_s=policy.limiter_wait_s, seed_row=seed)
+    rate_limit.require(provider, max_wait_s=wait_s, seed_row=seed)
 
 
 def _park(provider: str | None, seconds: float | None) -> None:
@@ -678,6 +715,12 @@ def _park(provider: str | None, seconds: float | None) -> None:
     from precis.utils import rate_limit
 
     rate_limit.park(provider, seconds)
+    try:
+        from precis.utils import outbound_policy
+
+        outbound_policy.record_park(provider, seconds)
+    except Exception:  # pragma: no cover — write-through is best-effort
+        pass
 
 
 def _enter(
@@ -755,6 +798,7 @@ def with_backoff(
     uniform = (rng or random.Random()).uniform
     do_sleep = sleep if sleep is not None else _default_sleep
     row, seed = _resolve_provider(provider, policy, url)
+    effective = _resolve_effective(service, policy, row, url)
     circuit = _circuit_for(service, policy)
     _enter(service, policy, circuit, now=now, sleep=do_sleep, uniform=uniform)
 
@@ -776,7 +820,7 @@ def with_backoff(
                 url=last_url,
             ) from last_exc
         try:
-            _take_token(row, policy, seed)
+            _take_token(row, policy, seed, effective)
         except Exception as refused:
             if not attempt:
                 raise
@@ -913,12 +957,13 @@ def call_with_backoff[T](
     policy = policy or policy_for(service)
     do_sleep = sleep if sleep is not None else _default_sleep
     row, seed = _resolve_provider(provider, policy, url)
+    effective = _resolve_effective(service, policy, row, url)
     circuit = _circuit_for(service, policy)
     _enter(service, policy, circuit, now=now, sleep=do_sleep, uniform=uniform)
     last_exc: BaseException | None = None
     for attempt in range(policy.attempts):
         try:
-            _take_token(row, policy, seed)
+            _take_token(row, policy, seed, effective)
         except Exception:
             if last_exc is None:
                 raise
@@ -984,6 +1029,7 @@ async def async_call_with_backoff[T](
     run out. ``policy.min_interval`` is not applied here."""
     policy = policy or policy_for(service)
     row, seed = _resolve_provider(provider, policy, url)
+    effective = _resolve_effective(service, policy, row, url)
     circuit = _circuit_for(service, policy)
     _enter(
         service,
@@ -994,7 +1040,7 @@ async def async_call_with_backoff[T](
         uniform=random.uniform,
     )
     for attempt in range(policy.attempts):
-        await asyncio.to_thread(_take_token, row, policy, seed)
+        await asyncio.to_thread(_take_token, row, policy, seed, effective)
         try:
             result = await fn()
         except Exception as exc:
@@ -1053,6 +1099,7 @@ class _PacedHost:
     seed: tuple[int, float] | None
     policy: Policy
     user_agent: str | None
+    service: str
 
 
 _PACED_LOCK = threading.Lock()
@@ -1080,7 +1127,12 @@ def _paced_send(session: Any, request: Any, **kwargs: Any) -> Any:
         "python-requests"
     ):
         request.headers["User-Agent"] = entry.user_agent
-    _take_token(entry.row, entry.policy, entry.seed)
+    _take_token(
+        entry.row,
+        entry.policy,
+        entry.seed,
+        _resolve_effective(entry.service, entry.policy, entry.row, str(request.url)),
+    )
     resp = orig(session, request, **kwargs)
     if resp.status_code in (429, 503):
         _park(entry.row, retry_after_seconds(resp.headers))
@@ -1095,7 +1147,7 @@ def limiter_pacer(service: str, *, policy: Policy | None = None) -> Callable[[],
     row, seed = _resolve_provider(_UNSET, policy, None)
 
     def pace() -> None:
-        _take_token(row, policy, seed)
+        _take_token(row, policy, seed, _resolve_effective(service, policy, row, None))
 
     return pace
 
@@ -1128,7 +1180,7 @@ def paced_requests(
     policy = policy or policy_for(service)
     url = f"https://{host}/"
     row, seed = _resolve_provider(provider, policy, url)
-    entry = _PacedHost(host.lower(), row, seed, policy, user_agent)
+    entry = _PacedHost(host.lower(), row, seed, policy, user_agent, service)
     global _PACED_ORIG_SEND
     with _PACED_LOCK:
         if not _PACED_HOSTS:

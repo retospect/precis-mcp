@@ -497,6 +497,17 @@ erDiagram
         integer daily_cap
         integer day_used
         date day_start
+        text class
+        numeric max_wait_s
+        numeric connect_s
+        numeric read_s
+        numeric total_s
+        text on_refuse
+        text concurrency
+        timestamp_with_time_zone parked_until
+        timestamp_with_time_zone last_used_at
+        integer refused_today
+        timestamp_with_time_zone last_refused_at
     }
     host_heartbeat {
         text host PK
@@ -1931,7 +1942,7 @@ erDiagram
 | `email_account` | 10 | account |
 | `email_scan` | 10 | account, folder, uidvalidity, uid |
 | `embedders` | 6 | name |
-| `external_rate_limits` | 8 | provider |
+| `external_rate_limits` | 19 | provider |
 | `host_heartbeat` | 7 | host |
 | `host_heartbeat_log` | 11 | — |
 | `kind_provider` | 4 | slug, host, process |

@@ -23,13 +23,18 @@ or DB:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import os
+import socket
+import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from precis.utils.http import (
     POLICIES,
@@ -38,6 +43,8 @@ from precis.utils.http import (
     netloc_provider,
     polite_user_agent,
 )
+
+log = logging.getLogger(__name__)
 
 # ── tool schema shaping ────────────────────────────────────────────────
 
@@ -187,10 +194,13 @@ def _post_read(url: str, data: bytes, headers: dict[str, str], timeout: float) -
 
 def _polite[T](send: Callable[[], T], url: str) -> T:
     """Run ``send`` under the politeness core when ``url`` names a third
-    party (OpenRouter, OpenAI-compatible hosts): a limiter token on
-    ``host:<netloc>``, jittered backoff on 429/5xx with ``Retry-After``,
-    401/403 never retried, an honest User-Agent. A cluster or LAN endpoint
-    (:func:`is_internal_host`, decided per call) goes straight through."""
+    party (OpenRouter, OpenAI-compatible hosts): the ``openai-tools``
+    policy resolves to the rate-less ``llm-api`` class — no token lane,
+    the provider's own 429/``Retry-After`` parks ``parked_until`` — with
+    jittered backoff on 429/5xx and 401/403 never retried. A cluster or
+    LAN endpoint (:func:`is_internal_host`, decided per call) goes
+    straight through. Concurrency is capped by :func:`_llm_api_hold` at
+    the request-method level, outside this retry loop."""
     if is_internal_host(url):
         return send()
     return call_with_backoff(
@@ -199,6 +209,197 @@ def _polite[T](send: Callable[[], T], url: str) -> T:
         policy=POLICIES["openai-tools"],
         url=url,
     )
+
+
+# ── llm-api concurrency hold (outbound-policy D2) ──────────────────────
+#
+# One hold per logical LLM call: a `resource_slots` unit on
+# ('api', 'llm-api:<provider>') — 'api' is an accounting label, so one row
+# caps the whole fleet — taken outside `_polite`/`call_with_backoff` so
+# retries reuse it and a streamed body is read inside it. TTL = the
+# client's hard timeout + 60 s, so a crashed holder's unit returns in
+# minutes (the epoch reaper reclaims sooner when the identity is
+# replaced). DB down → a per-process semaphore capped at
+# PRECIS_OUTBOUND_FALLBACK_CONCURRENCY (default 4).
+
+_FALLBACK_CONCURRENCY_DEFAULT = 4
+_fallback_sem: threading.BoundedSemaphore | None = None
+_fallback_sem_n = 0
+_fallback_lock = threading.Lock()
+
+#: Poll cadence while a full slot row is waited on (same as
+#: local_serving's _WAIT_POLL_S).
+_SLOT_POLL_S = 0.5
+
+
+def _fallback_semaphore() -> threading.BoundedSemaphore:
+    """The per-process cap used when the slot DB is unreachable."""
+    global _fallback_sem, _fallback_sem_n
+    raw = os.environ.get("PRECIS_OUTBOUND_FALLBACK_CONCURRENCY")
+    try:
+        n = int(raw) if raw else _FALLBACK_CONCURRENCY_DEFAULT
+    except ValueError:
+        n = _FALLBACK_CONCURRENCY_DEFAULT
+    n = max(1, n)
+    with _fallback_lock:
+        if _fallback_sem is None or n != _fallback_sem_n:
+            _fallback_sem = threading.BoundedSemaphore(n)
+            _fallback_sem_n = n
+        return _fallback_sem
+
+
+@contextlib.contextmanager
+def _fallback_slot(resource: str, budget: float) -> Iterator[None]:
+    """The DB-down cap: a per-process semaphore. Bounded by the same wait
+    budget as the slot poll; a timeout refuses like a full row."""
+    from precis.utils import rate_limit
+
+    sem = _fallback_semaphore()
+    if not sem.acquire(timeout=max(0.0, budget)):
+        raise rate_limit.RateLimited(resource)
+    try:
+        yield
+    finally:
+        sem.release()
+
+
+@contextlib.contextmanager
+def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
+    """Hold one ``llm-api`` concurrency slot for this call, then release.
+
+    Internal hosts and non-``llm-api`` resolutions pass straight through;
+    a provider with no seeded ``resource_slots`` row runs unheld (warned
+    via ``_warn_unpaced``); a full row is polled up to
+    ``min(max_wait_s, deadline)`` and then handled per ``on_refuse``
+    (default ``defer`` → :class:`rate_limit.RateLimited`, which the
+    router/classify requeue path already catches). A ``parked_until`` on
+    the provider's row gates BEFORE the hold so a long park never sleeps
+    on a held slot.
+    """
+    if is_internal_host(url):
+        yield
+        return
+    from precis.utils import outbound_policy, rate_limit
+
+    effective = outbound_policy.resolve("openai-tools", url=url)
+    if effective.cls != "llm-api" or effective.concurrency is None:
+        yield
+        return
+
+    from precis.budget import meter
+
+    store = meter.active_store()
+    if store is None:
+        # No store bound (CLI/script) is not a DB outage — run unheld,
+        # like local_serving's dark path. The fallback semaphore is only
+        # for a bound store that fails mid-hold.
+        yield
+        return
+
+    resource = effective.concurrency
+    budget = effective.max_wait_s
+    remaining = outbound_policy.deadline_remaining()
+    if remaining is not None:
+        budget = min(budget, remaining)
+
+    # The touch runs per call and RETURNS the fresh parked_until — a park
+    # another process wrote seconds ago is honoured by this call (the
+    # snapshot copy can be up to 30 s stale).
+    try:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                fresh_park = outbound_policy.touch_rateless_row(
+                    effective, conn, POLICIES["openai-tools"].host_row
+                )
+    except Exception:
+        rate_limit._warn_fail_open(resource, "llm-api pre-call check")
+        with _fallback_slot(resource, budget):
+            yield
+        return
+
+    outbound_policy.parked_gate(effective, parked_until=fresh_park)
+
+    wait_deadline = time.monotonic() + max(0.0, budget)
+    hold_id: int | None = None
+    holder = (
+        f"{os.environ.get('PRECIS_HOST_NAME') or socket.gethostname()}:{os.getpid()}"
+    )
+    while True:
+        row_exists = True
+        try:
+            with store.pool.connection() as conn:
+                with conn.transaction():
+                    from precis.store._resource_slots_ops import (
+                        insert_slot_hold,
+                        reserve_resource_slots,
+                    )
+
+                    if reserve_resource_slots(conn, "api", {resource: 1}):
+                        from precis.liveness import worker_identity
+
+                        hold_id = insert_slot_hold(
+                            conn,
+                            "api",
+                            resource,
+                            1,
+                            holder,
+                            timeout_s + 60.0,
+                            holder_identity=worker_identity(),
+                        )
+                    else:
+                        # Reserve failing means the row is full OR missing —
+                        # distinguish in the same connection's round trip.
+                        row_exists = (
+                            conn.execute(
+                                "SELECT 1 FROM resource_slots "
+                                "WHERE host = 'api' AND resource = %s",
+                                (resource,),
+                            ).fetchone()
+                            is not None
+                        )
+        except Exception:
+            hold_id = None  # commit failed — the tx rolled back, nothing held
+            rate_limit._warn_fail_open(resource, "llm-api slot reserve")
+            with _fallback_slot(resource, budget):
+                yield
+            return
+        if hold_id is not None:
+            break
+        if not row_exists:
+            rate_limit._warn_unpaced(
+                resource,
+                "no resource_slots row — running without a concurrency hold",
+            )
+            yield
+            return
+        if effective.on_refuse == "fail" or time.monotonic() >= wait_deadline:
+            if effective.on_refuse == "wait":
+                yield
+                return
+            raise rate_limit.RateLimited(resource)
+        from precis.liveness import drain_sleep
+
+        if drain_sleep(min(_SLOT_POLL_S, wait_deadline - time.monotonic())):
+            raise rate_limit.RateLimited(resource)  # draining — defer
+
+    try:
+        yield
+    finally:
+        try:
+            with store.pool.connection() as conn:
+                with conn.transaction():
+                    from precis.store._resource_slots_ops import (
+                        delete_slot_hold,
+                        release_resource_slots,
+                    )
+
+                    if delete_slot_hold(conn, hold_id):
+                        release_resource_slots(conn, "api", {resource: 1})
+        except Exception:  # pragma: no cover — the TTL reaper reclaims it
+            log.warning(
+                "openai_tools: llm-api hold release failed; TTL reaper reclaims",
+                exc_info=True,
+            )
 
 
 class _UrllibTransport:
@@ -214,7 +415,9 @@ class _UrllibTransport:
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         try:
-            raw = _polite(lambda: _post_read(url, data, headers, timeout), url)
+            # One llm-api slot hold covers the whole call, retries included.
+            with _llm_api_hold(url, timeout):
+                raw = _polite(lambda: _post_read(url, data, headers, timeout), url)
         except urllib.error.HTTPError as exc:
             # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
             # upstream's rejection reason (e.g. an OpenRouter provider's "this
@@ -460,57 +663,73 @@ class ToolChatClient:
                 drained=drained,
             )
 
+        # The llm-api slot hold wraps the whole streamed read, TTL'd by the
+        # client's hard wall ceiling — not post_sse's shorter idle timeout.
         try:
-            for event in sse(
-                self._url, payload, headers=headers, idle_timeout=self._idle_timeout
+            with (
+                _llm_api_hold(self._url, self._timeout),
+                contextlib.closing(
+                    cast(
+                        "Generator[dict[str, Any], None, None]",
+                        sse(
+                            self._url,
+                            payload,
+                            headers=headers,
+                            idle_timeout=self._idle_timeout,
+                        ),
+                    )
+                ) as events,
             ):
-                if self._abort_check is not None and self._abort_check():
-                    raise _abort(
-                        "worker draining: stream aborted between chunks (partial kept)",
-                        drained=True,
-                    )
-                usage = event.get("usage") or {}
-                if isinstance(usage.get("total_tokens"), int):
-                    total = usage["total_tokens"]
-                if isinstance(usage.get("cost"), int | float):
-                    cost = float(usage["cost"])
-                choices = event.get("choices") or []
-                if choices and isinstance(choices[0], dict):
-                    choice = choices[0]
-                    if choice.get("finish_reason"):
-                        finish_reason = str(choice["finish_reason"])
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content")
-                    if isinstance(piece, str):
-                        content_parts.append(piece)
-                    thought = delta.get("reasoning") or delta.get("reasoning_content")
-                    if isinstance(thought, str):
-                        reasoning_parts.append(thought)
-                    for tc in delta.get("tool_calls") or []:
-                        if not isinstance(tc, dict):
-                            continue
-                        idx = tc.get("index")
-                        idx = idx if isinstance(idx, int) else 0
-                        slot = calls_by_index.setdefault(
-                            idx,
-                            {
-                                "id": None,
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            },
+                for event in events:
+                    if self._abort_check is not None and self._abort_check():
+                        raise _abort(
+                            "worker draining: stream aborted between chunks (partial kept)",
+                            drained=True,
                         )
-                        if tc.get("id"):
-                            slot["id"] = tc["id"]
-                        fn = tc.get("function") or {}
-                        if isinstance(fn.get("name"), str):
-                            slot["function"]["name"] += fn["name"]
-                        if isinstance(fn.get("arguments"), str):
-                            slot["function"]["arguments"] += fn["arguments"]
-                if self._timeout and (time.monotonic() - started) > self._timeout:
-                    raise _abort(
-                        f"streamed completion exceeded the {self._timeout:.0f}s "
-                        "hard ceiling (still generating — partial kept)"
-                    )
+                    usage = event.get("usage") or {}
+                    if isinstance(usage.get("total_tokens"), int):
+                        total = usage["total_tokens"]
+                    if isinstance(usage.get("cost"), int | float):
+                        cost = float(usage["cost"])
+                    choices = event.get("choices") or []
+                    if choices and isinstance(choices[0], dict):
+                        choice = choices[0]
+                        if choice.get("finish_reason"):
+                            finish_reason = str(choice["finish_reason"])
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content")
+                        if isinstance(piece, str):
+                            content_parts.append(piece)
+                        thought = delta.get("reasoning") or delta.get(
+                            "reasoning_content"
+                        )
+                        if isinstance(thought, str):
+                            reasoning_parts.append(thought)
+                        for tc in delta.get("tool_calls") or []:
+                            if not isinstance(tc, dict):
+                                continue
+                            idx = tc.get("index")
+                            idx = idx if isinstance(idx, int) else 0
+                            slot = calls_by_index.setdefault(
+                                idx,
+                                {
+                                    "id": None,
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                },
+                            )
+                            if tc.get("id"):
+                                slot["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if isinstance(fn.get("name"), str):
+                                slot["function"]["name"] += fn["name"]
+                            if isinstance(fn.get("arguments"), str):
+                                slot["function"]["arguments"] += fn["arguments"]
+                    if self._timeout and (time.monotonic() - started) > self._timeout:
+                        raise _abort(
+                            f"streamed completion exceeded the {self._timeout:.0f}s "
+                            "hard ceiling (still generating — partial kept)"
+                        )
         except StreamTimeout:
             raise
         except TimeoutError as exc:

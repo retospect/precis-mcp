@@ -583,15 +583,16 @@ def test_resolve_provider_direct():
     assert http._resolve_provider(http._UNSET, Policy(), None) == (None, None)
 
 
-def test_llm_api_policy_seeds_the_metered_host_row(limiter):
-    """gr507343: an LLM API host (the ``openai-tools`` policy, what
-    ``openai_tools._polite`` routes OpenRouter through) is seeded with
-    ``LLM_HOST_ROW`` — a wide bucket the provider's 429/Retry-After parks —
-    not the 1 req/s website default; a scraped host keeps the default."""
-    assert http.LLM_HOST_ROW[1] > DEFAULT_HOST_ROW[1]
+def test_llm_api_policy_takes_no_token(limiter):
+    """outbound-policy S1: an LLM API host (the ``openai-tools`` policy,
+    what ``openai_tools._polite`` routes OpenRouter through) resolves to
+    the rate-less ``llm-api`` class — no limiter token is taken at all.
+    The host row is still resolved (as a ``parked_until``/override
+    carrier) at the default website seed; a scraped host keeps it too."""
+    assert POLICIES["openai-tools"].cls == "llm-api"
     assert http._resolve_provider(
         http._UNSET, POLICIES["openai-tools"], "https://openrouter.ai/api/v1/x"
-    ) == ("host:openrouter.ai", http.LLM_HOST_ROW)
+    ) == ("host:openrouter.ai", DEFAULT_HOST_ROW)
     assert http._resolve_provider(
         http._UNSET, POLICIES["web-fetch"], "https://openrouter.ai/docs"
     ) == ("host:openrouter.ai", DEFAULT_HOST_ROW)
@@ -604,9 +605,7 @@ def test_llm_api_policy_seeds_the_metered_host_row(limiter):
         sleep=clock.sleep,
         now=clock.now,
     )
-    assert [(r["provider"], r["seed_row"]) for r in limiter.requires] == [
-        ("host:openrouter.ai", http.LLM_HOST_ROW)
-    ]
+    assert limiter.requires == []  # rate-less: no token lane
 
 
 def test_netloc_provider():
@@ -828,9 +827,12 @@ class _FakeConn:
             return _Cursor(self._state.pop(0) if self._state else None)
         if sql == rate_limit._SEED_SQL:
             return _Cursor(self._seed.pop(0) if self._seed else None)
-        if sql == rate_limit._EVICT_IDLE_HOST_SQL:
+        if sql in (rate_limit._EVICT_IDLE_HOST_SQL, rate_limit._EVICT_IDLE_HOST_SQL_S1):
             return _Cursor(self._evict.pop(0) if self._evict else None)
-        if sql == rate_limit.HOST_ROW_OCCUPANCY_SQL:
+        if sql in (
+            rate_limit.HOST_ROW_OCCUPANCY_SQL,
+            rate_limit.HOST_ROW_OCCUPANCY_SQL_S1,
+        ):
             return _Cursor(self._occupancy.pop(0) if self._occupancy else None)
         return _Cursor(None)
 
@@ -840,6 +842,11 @@ def rl_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("PRECIS_RATE_LIMIT", raising=False)
     monkeypatch.setattr(rate_limit, "_fail_open_warned", {})
     monkeypatch.setattr(rate_limit, "_silent_warned", {})
+    # The fake conn never raises on the S1 probe → detection resolves
+    # True and the S1 statements run; reset the detection cache so each
+    # test probes fresh.
+    monkeypatch.setattr(rate_limit, "_has_s1_cols", None)
+    monkeypatch.setattr(rate_limit, "_s1_cols_at", 0.0)
 
 
 def test_acquire_seeds_missing_row_once_then_reconsumes(monkeypatch, rl_env):
@@ -851,13 +858,14 @@ def test_acquire_seeds_missing_row_once_then_reconsumes(monkeypatch, rl_env):
 
     sqls = [s for s, _ in conn.executed]
     assert sqls == [
+        rate_limit._S1_COLS_PROBE,
         rate_limit._CONSUME_SQL,
         rate_limit._SELECT_STATE_SQL,
         rate_limit._SEED_SQL,
         rate_limit._CONSUME_SQL,
     ]
     assert "ON CONFLICT (provider) DO NOTHING" in rate_limit._SEED_SQL
-    assert conn.executed[2][1] == (
+    assert conn.executed[3][1] == (
         "host:a.b",
         1,
         1.0,
@@ -883,14 +891,15 @@ def test_seed_at_the_cap_evicts_idle_host_rows_then_seeds(monkeypatch, rl_env, c
 
     sqls = [s for s, _ in conn.executed]
     assert sqls == [
+        rate_limit._S1_COLS_PROBE,
         rate_limit._CONSUME_SQL,
         rate_limit._SELECT_STATE_SQL,
         rate_limit._SEED_SQL,
-        rate_limit._EVICT_IDLE_HOST_SQL,
+        rate_limit._EVICT_IDLE_HOST_SQL_S1,
         rate_limit._SEED_SQL,
         rate_limit._CONSUME_SQL,
     ]
-    assert conn.executed[3][1] == (
+    assert conn.executed[4][1] == (
         float(rate_limit.HOST_ROW_IDLE_EVICT_S),
         rate_limit._EVICT_BATCH,
     )
@@ -921,7 +930,7 @@ def test_seed_at_a_cap_full_of_live_rows_warns_once_and_fails_open(
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "host-row cap full" in warnings[0] and str(cap) in warnings[0]
-    evicts = [s for s, _ in conn.executed if s == rate_limit._EVICT_IDLE_HOST_SQL]
+    evicts = [s for s, _ in conn.executed if s == rate_limit._EVICT_IDLE_HOST_SQL_S1]
     assert len(evicts) == 2  # tried, found nothing idle, deleted nothing
     assert rate_limit.HOST_ROW_IDLE_EVICT_S >= 3600  # a park (<=15 min) has lapsed
 
@@ -947,7 +956,10 @@ def test_park_executes_update_with_seconds_and_provider(monkeypatch, rl_env):
     conn = _FakeConn()
     monkeypatch.setattr(rate_limit, "_get_conn", lambda: conn)
     rate_limit.park("s2", 30)
-    assert conn.executed == [(rate_limit._PARK_SQL, (30.0, "s2"))]
+    assert conn.executed == [
+        (rate_limit._S1_COLS_PROBE, None),
+        (rate_limit._PARK_SQL, (30.0, 30.0, "s2")),
+    ]
     assert rate_limit._PARK_SQL.lstrip().startswith("UPDATE external_rate_limits")
 
 

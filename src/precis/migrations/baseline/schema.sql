@@ -3,7 +3,7 @@
 -- DO NOT EDIT BY HAND. Regenerate with `precis db dump-schema`
 -- (or `scripts/bump`, which does it at every version bump).
 --
--- Baked-in migration head: 0227_card_description_chunk_kind
+-- Baked-in migration head: 0233_outbound_policy
 --
 -- This is the migration chain compiled to one file: a fresh
 -- `precis migrate` loads this instead of replaying every numbered
@@ -25,7 +25,7 @@ CREATE SCHEMA IF NOT EXISTS public;
 
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
--- Dumped by pg_dump version 18.6
+-- Dumped by pg_dump version 17.11 (Debian 17.11-1.pgdg12+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -2317,6 +2317,49 @@ $$;
 
 
 --
+-- Name: refs_retire_event_trail(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.refs_retire_event_trail() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public', 'pg_temp'
+    AS $$
+DECLARE
+    ev text;
+BEGIN
+    IF OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL THEN
+        ev := 'retired';
+    ELSIF OLD.retired_at IS NOT NULL AND NEW.retired_at IS NULL THEN
+        ev := 'restored';
+    ELSE
+        RETURN NULL;
+    END IF;
+    -- One trail row per transition — unless this transaction already
+    -- logged one for this ref (a handler's own `append_event`; `now()`
+    -- is transaction-stable, so its ts equals this transaction's).
+    IF NOT EXISTS (
+        SELECT 1 FROM ref_events e
+         WHERE e.ref_id = NEW.ref_id AND e.ts = now()
+    ) THEN
+        INSERT INTO ref_events (ref_id, source, event, payload)
+        VALUES (
+            NEW.ref_id,
+            'db',
+            ev,
+            jsonb_build_object(
+                'kind', NEW.kind,
+                'db_user', session_user,
+                'application_name',
+                    current_setting('application_name', true)
+            )
+        );
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+
+--
 -- Name: _hint(text); Type: FUNCTION; Schema: vault; Owner: -
 --
 
@@ -4033,7 +4076,20 @@ CREATE TABLE public.external_rate_limits (
     last_refill timestamp with time zone DEFAULT now() NOT NULL,
     daily_cap integer,
     day_used integer DEFAULT 0 NOT NULL,
-    day_start date DEFAULT CURRENT_DATE NOT NULL
+    day_start date DEFAULT CURRENT_DATE NOT NULL,
+    class text,
+    max_wait_s numeric,
+    connect_s numeric,
+    read_s numeric,
+    total_s numeric,
+    on_refuse text,
+    concurrency text,
+    parked_until timestamp with time zone,
+    last_used_at timestamp with time zone,
+    refused_today integer DEFAULT 0 NOT NULL,
+    last_refused_at timestamp with time zone,
+    CONSTRAINT external_rate_limits_class_check CHECK ((class = ANY (ARRAY['scraped-host'::text, 'provider-api'::text, 'llm-api'::text, 'llm-local'::text, 'internal'::text]))),
+    CONSTRAINT external_rate_limits_on_refuse_check CHECK ((on_refuse = ANY (ARRAY['wait'::text, 'defer'::text, 'fail'::text])))
 );
 
 
@@ -4063,7 +4119,12 @@ CREATE TABLE public.host_heartbeat_log (
     temp_c double precision,
     load1 double precision,
     load5 double precision,
-    load15 double precision
+    load15 double precision,
+    serving_running double precision,
+    serving_queued double precision,
+    serving_kv_usage double precision,
+    serving_retractions_total double precision,
+    swap_in_pages_total double precision
 );
 
 
@@ -4072,6 +4133,48 @@ CREATE TABLE public.host_heartbeat_log (
 --
 
 COMMENT ON TABLE public.host_heartbeat_log IS 'Append-only per-beat sensor history (load + temp). Written by the heartbeat pass alongside the host_heartbeat snapshot UPSERT; pruned to PRECIS_HEARTBEAT_HISTORY_DAYS. Read by precis stats --utilization.';
+
+
+--
+-- Name: COLUMN host_heartbeat_log.serving_running; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.host_heartbeat_log.serving_running IS 'SGLang sglang:num_running_reqs (vLLM num_requests_running) at scrape
+    time; NULL when no serving endpoint answered.';
+
+
+--
+-- Name: COLUMN host_heartbeat_log.serving_queued; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.host_heartbeat_log.serving_queued IS 'SGLang sglang:num_queue_reqs (vLLM num_requests_waiting) at scrape
+    time; NULL when no serving endpoint answered.';
+
+
+--
+-- Name: COLUMN host_heartbeat_log.serving_kv_usage; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.host_heartbeat_log.serving_kv_usage IS 'KV cache pool utilisation 0..1 (SGLang sglang:token_usage, vLLM
+    gpu_cache_usage_perc); NULL when no serving endpoint answered.';
+
+
+--
+-- Name: COLUMN host_heartbeat_log.serving_retractions_total; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.host_heartbeat_log.serving_retractions_total IS 'Monotonic requests-retracted counter (SGLang
+    sglang:num_retracted_requests_total, vLLM num_preemptions_total);
+    deltas are the signal — resets read as zero.';
+
+
+--
+-- Name: COLUMN host_heartbeat_log.swap_in_pages_total; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.host_heartbeat_log.swap_in_pages_total IS 'Monotonic /proc/vmstat pswpin (pages swapped in since boot). On
+    unified-memory serving boxes host swap-in IS model pressure. Linux
+    only; NULL elsewhere.';
 
 
 --
@@ -6390,7 +6493,8 @@ CREATE TABLE public.struct_atoms (
     added_version integer NOT NULL,
     retired_version integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    charge smallint DEFAULT 0 NOT NULL
+    charge smallint DEFAULT 0 NOT NULL,
+    maker integer
 );
 
 
@@ -6406,6 +6510,13 @@ COMMENT ON TABLE public.struct_atoms IS 'ADR 0043 §4/§12: a design''s atoms �
 --
 
 COMMENT ON COLUMN public.struct_atoms.charge IS 'Declared formal/net charge (intent) — e.g. a quaternary ammonium N+ or a carboxylate O-. Distinct from struct_runs.charges (DERIVED per-atom partial charge from a DFT/ML run). Feeds validate.py''s charge-aware valence budget (elements._CHARGED_VALENCE, gr285775).';
+
+
+--
+-- Name: COLUMN struct_atoms.maker; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.struct_atoms.maker IS 'Run-local id (index into the run''s stored trace.json frames) of the construction-trace frame that created this atom — structure-workspaces provenance. NULL for hand-authored and generator-built atoms.';
 
 
 --
@@ -6448,8 +6559,16 @@ CREATE TABLE public.struct_bonds (
     image integer[] DEFAULT '{0,0,0}'::integer[] NOT NULL,
     added_version integer NOT NULL,
     retired_version integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    maker integer
 );
+
+
+--
+-- Name: COLUMN struct_bonds.maker; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.struct_bonds.maker IS 'Run-local trace frame id that created this bond — same contract as struct_atoms.maker.';
 
 
 --
@@ -10395,6 +10514,13 @@ CREATE TRIGGER refs_hub_refine_mirror AFTER UPDATE ON public.refs FOR EACH ROW W
 
 
 --
+-- Name: refs refs_retire_event_trail; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_retire_event_trail AFTER UPDATE OF retired_at ON public.refs FOR EACH ROW WHEN ((((old.retired_at IS NULL) AND (new.retired_at IS NOT NULL)) OR ((old.retired_at IS NOT NULL) AND (new.retired_at IS NULL)))) EXECUTE FUNCTION public.refs_retire_event_trail();
+
+
+--
 -- Name: refs refs_revision_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -11684,7 +11810,7 @@ ALTER TABLE ONLY public.web_ref_views
 
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
--- Dumped by pg_dump version 18.6
+-- Dumped by pg_dump version 17.11 (Debian 17.11-1.pgdg12+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -11707,9 +11833,9 @@ agent	LLM-mediated tool call	2026-05-21 20:06:05.179981+00
 user	Direct human invocation (CLI, ops)	2026-05-21 20:06:05.179981+00
 system	Server-side automation: sweeps, derived state, defaults	2026-05-21 20:06:05.179981+00
 chase	Citation-chase worker — automated agent that traces findings to their primary sources and flags misattributions along the chain. See docs/design/finding-chase.md.	2026-05-30 21:33:14.261241+00
-dream	Dreaming worker — mints speculative acquisitions from existing findings/claims for later review.	2026-10-20 15:57:12.691698+00
-weave	Quest weave pass — automated quest-graph maintenance and stitching.	2026-10-20 15:57:12.691698+00
-orcid	ORCID author-discovery stub minter — creates stub author records from ORCID lookups.	2026-10-20 15:57:12.691698+00
+dream	Dreaming worker — mints speculative acquisitions from existing findings/claims for later review.	2026-10-23 13:36:30.231771+00
+weave	Quest weave pass — automated quest-graph maintenance and stitching.	2026-10-23 13:36:30.231771+00
+orcid	ORCID author-discovery stub minter — creates stub author records from ORCID lookups.	2026-10-23 13:36:30.231771+00
 \.
 
 
@@ -11789,40 +11915,42 @@ research_report_citation	f	Research-report citation entry	\N	2026-05-21 20:06:05
 finding_body	f	Finding claim text (the measured value plus its bare conditions)	\N	2026-05-30 21:33:14.261241+00
 finding_context	f	Finding setup envelope (instrument, electrode, ambient, technique, geometry)	\N	2026-05-30 21:33:14.261241+00
 table	f	Markdown table emitted by Marker (skip RAKE).	\N	2026-06-04 19:55:50.15863+00
-gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-10-20 15:57:12.341243+00
-job_event	f	Job worker telemetry (forensics, not search)	\N	2026-10-20 15:57:12.341243+00
-job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-10-20 15:57:12.341243+00
-pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-10-20 15:57:12.352512+00
-cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-10-20 15:57:12.358903+00
-message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-10-20 15:57:12.358903+00
+gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-10-23 13:36:30.090923+00
+job_event	f	Job worker telemetry (forensics, not search)	\N	2026-10-23 13:36:30.090923+00
+job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-10-23 13:36:30.090923+00
+pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-10-23 13:36:30.094318+00
+cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-10-23 13:36:30.095521+00
+message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-10-23 13:36:30.095521+00
 flashcard_claim	f	Flashcard claim side	\N	2026-05-21 20:06:05.179981+00
 flashcard_evidence	f	Flashcard evidence side	\N	2026-05-21 20:06:05.179981+00
-job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-10-20 15:57:12.384925+00
-tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-10-20 15:57:12.384925+00
-aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-10-20 15:57:12.416915+00
-listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-10-20 15:57:12.416915+00
-term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-10-20 15:57:12.416915+00
-ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-10-20 15:57:12.433731+00
-olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-10-20 15:57:12.433731+00
-item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-10-20 15:57:12.433731+00
-edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-10-20 15:57:12.491273+00
-figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-10-20 15:57:12.501927+00
-figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-10-20 15:57:12.501927+00
-figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-20 15:57:12.501927+00
-figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-10-20 15:57:12.504193+00
-card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-10-20 15:57:12.518338+00
-quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-10-20 15:57:12.5246+00
-mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-10-20 15:57:12.526761+00
-mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-10-20 15:57:12.526761+00
-mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-10-20 15:57:12.526761+00
-mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-20 15:57:12.526761+00
-llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-10-20 15:57:12.538082+00
-claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-10-20 15:57:12.567218+00
-run_log	f	Per-seed autocatpath run-log chunk — the tail of the compute child's captured stdout/stderr for one (model, seed) run. Forensics/provenance, not a search card (mirrors job_event / job_summary).	\N	2026-10-20 15:57:12.669118+00
-step	f	One make-tree step (kind=make): an assembly/synthesis action whose conditions (fixture/torque; reagents/temperature) ride chunk meta; addressed mk<chunk_id>, aligned to blocks via made-by links.	\N	2026-10-20 15:57:12.791288+00
-field	f	Sampled signed-distance grid of a cad field:<sha256> leaf. text = the one-line summary (shape, pitch, origin, source); meta.field = the payload header; the float32 samples live in chunk_blobs, content-addressed by sha256. Written by Store.put_field, never updated in place. See docs/backlog/cad-sdf-rounding-and-field-export.md.	\N	2026-10-20 15:57:12.86158+00
-todo_comment	f	Todo comment / append-only timeline entry	\N	2026-10-20 15:57:12.964654+00
-card_description	t	LLM-generated narrative description of a non-text ref (one per ref)	\N	2026-10-20 15:57:13.069026+00
+job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-10-23 13:36:30.102466+00
+tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-10-23 13:36:30.102466+00
+aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-10-23 13:36:30.111371+00
+listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-10-23 13:36:30.111371+00
+term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-10-23 13:36:30.111371+00
+ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-10-23 13:36:30.118891+00
+olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-10-23 13:36:30.118891+00
+item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-10-23 13:36:30.118891+00
+edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-10-23 13:36:30.151685+00
+figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-10-23 13:36:30.154591+00
+figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-10-23 13:36:30.154591+00
+figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-23 13:36:30.154591+00
+figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-10-23 13:36:30.154989+00
+card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-10-23 13:36:30.159791+00
+quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-10-23 13:36:30.161205+00
+mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-10-23 13:36:30.162651+00
+mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-10-23 13:36:30.162651+00
+mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-10-23 13:36:30.162651+00
+mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-23 13:36:30.162651+00
+llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-10-23 13:36:30.166842+00
+claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-10-23 13:36:30.188513+00
+run_log	f	Per-seed autocatpath run-log chunk — the tail of the compute child's captured stdout/stderr for one (model, seed) run. Forensics/provenance, not a search card (mirrors job_event / job_summary).	\N	2026-10-23 13:36:30.226757+00
+step	f	One make-tree step (kind=make): an assembly/synthesis action whose conditions (fixture/torque; reagents/temperature) ride chunk meta; addressed mk<chunk_id>, aligned to blocks via made-by links.	\N	2026-10-23 13:36:30.295106+00
+field	f	Sampled signed-distance grid of a cad field:<sha256> leaf. text = the one-line summary (shape, pitch, origin, source); meta.field = the payload header; the float32 samples live in chunk_blobs, content-addressed by sha256. Written by Store.put_field, never updated in place. See docs/backlog/cad-sdf-rounding-and-field-export.md.	\N	2026-10-23 13:36:30.383876+00
+todo_comment	f	Todo comment / append-only timeline entry	\N	2026-10-23 13:36:30.449635+00
+card_description	t	LLM-generated narrative description of a non-text ref (one per ref)	\N	2026-10-23 13:36:30.487824+00
+ws_trace	f	A workspace run's construction trace (trace.json): the frame tree entity `maker` columns index into. Stored once per run.	\N	2026-10-23 13:36:30.493316+00
+ws_manifest	f	A workspace run's manifest.json: the imported block list plus the se block/port/connect frame ids.	\N	2026-10-23 13:36:30.493316+00
 \.
 
 
@@ -11831,18 +11959,18 @@ card_description	t	LLM-generated narrative description of a non-text ref (one pe
 --
 
 COPY public.component_categories (category_id, name, status, description, created_at, spec_roles) FROM stdin;
-fastener	Fastener	core	Bolts, screws, nuts, washers, rivets.	2026-10-20 15:57:12.592858+00	{}
-hose	Hose	core	Flexible fluid/gas conveyance.	2026-10-20 15:57:12.592858+00	{}
-pipe	Pipe	core	Rigid fluid/gas conveyance.	2026-10-20 15:57:12.592858+00	{}
-profile	Profile	core	Structural beams / extrusions.	2026-10-20 15:57:12.592858+00	{}
-electronic	Electronic	core	Discrete or module-level electronic components.	2026-10-20 15:57:12.592858+00	{}
-adhesive	Adhesive	core	Bonding compounds / tapes.	2026-10-20 15:57:12.592858+00	{}
-seal	Seal	core	Gaskets, o-rings, packings.	2026-10-20 15:57:12.592858+00	{}
-bearing	Bearing	core	Ball/roller/plain bearings, bushings.	2026-10-20 15:57:12.592858+00	{}
-fitting	Fitting	core	Pipe/hose connectors, adapters, unions.	2026-10-20 15:57:12.592858+00	{}
-laminate	Laminate	core	Layered composite sheet/panel material (measured specs only in v1 - no layer-structure model, see the proposal's deferrals).	2026-10-20 15:57:12.592858+00	{}
-resistor	Resistor	core	Discrete resistors (through-hole and SMD).	2026-10-20 15:57:12.991572+00	{"jlcparts": {"tool": {"package": {"kind": "reflow"}}, "match": "Resistor", "params": {"Tolerance": {"envelope": {"rule": "at_most"}}, "Resistance": {"free": true}, "Power(Watts)": {"envelope": {"rule": "at_least"}}}, "identity": ["package"]}}
-capacitor	Capacitor	core	Discrete capacitors (through-hole and SMD).	2026-10-20 15:57:12.991572+00	{"jlcparts": {"tool": {"package": {"kind": "reflow"}}, "match": "Capacitor", "params": {"Tolerance": {"envelope": {"rule": "at_most"}}, "Capacitance": {"free": true}, "Rated Voltage": {"envelope": {"rule": "at_least"}}}, "identity": ["package"]}}
+fastener	Fastener	core	Bolts, screws, nuts, washers, rivets.	2026-10-23 13:36:30.197291+00	{}
+hose	Hose	core	Flexible fluid/gas conveyance.	2026-10-23 13:36:30.197291+00	{}
+pipe	Pipe	core	Rigid fluid/gas conveyance.	2026-10-23 13:36:30.197291+00	{}
+profile	Profile	core	Structural beams / extrusions.	2026-10-23 13:36:30.197291+00	{}
+electronic	Electronic	core	Discrete or module-level electronic components.	2026-10-23 13:36:30.197291+00	{}
+adhesive	Adhesive	core	Bonding compounds / tapes.	2026-10-23 13:36:30.197291+00	{}
+seal	Seal	core	Gaskets, o-rings, packings.	2026-10-23 13:36:30.197291+00	{}
+bearing	Bearing	core	Ball/roller/plain bearings, bushings.	2026-10-23 13:36:30.197291+00	{}
+fitting	Fitting	core	Pipe/hose connectors, adapters, unions.	2026-10-23 13:36:30.197291+00	{}
+laminate	Laminate	core	Layered composite sheet/panel material (measured specs only in v1 - no layer-structure model, see the proposal's deferrals).	2026-10-23 13:36:30.197291+00	{}
+resistor	Resistor	core	Discrete resistors (through-hole and SMD).	2026-10-23 13:36:30.457996+00	{"jlcparts": {"tool": {"package": {"kind": "reflow"}}, "match": "Resistor", "params": {"Tolerance": {"envelope": {"rule": "at_most"}}, "Resistance": {"free": true}, "Power(Watts)": {"envelope": {"rule": "at_least"}}}, "identity": ["package"]}}
+capacitor	Capacitor	core	Discrete capacitors (through-hole and SMD).	2026-10-23 13:36:30.457996+00	{"jlcparts": {"tool": {"package": {"kind": "reflow"}}, "match": "Capacitor", "params": {"Tolerance": {"envelope": {"rule": "at_most"}}, "Capacitance": {"free": true}, "Rated Voltage": {"envelope": {"rule": "at_least"}}}, "identity": ["package"]}}
 \.
 
 
@@ -11851,43 +11979,43 @@ capacitor	Capacitor	core	Discrete capacitors (through-hole and SMD).	2026-10-20 
 --
 
 COPY public.component_specs (spec_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, category_id, created_at, spec_roles) FROM stdin;
-mass	Mass	kg	mass	quantity	\N	\N	core	\N	Mass of one unit of the component.	\N	2026-10-20 15:57:12.592858+00	{}
-unit_cost	Unit cost	USD	currency	quantity	\N	\N	core	\N	Cost per unit (each/m/kg/... per uom=); pair with as_of and, for price breaks, conditions={"qty_break": 100}.	\N	2026-10-20 15:57:12.592858+00	{}
-length_overall	Overall length	m	length	quantity	\N	\N	core	\N	Overall length of one unit of the component.	\N	2026-10-20 15:57:12.592858+00	{}
-bore_diameter	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner (through-bore) diameter.	hose	2026-10-20 15:57:12.592858+00	{}
-max_working_pressure	Maximum working pressure	MPa	pressure/stress	quantity	\N	\N	core	\N	Rated continuous working pressure.	hose	2026-10-20 15:57:12.592858+00	{}
-min_bend_radius	Minimum bend radius	mm	length	quantity	\N	\N	core	\N	Smallest radius the hose may be bent to without kinking/damage.	hose	2026-10-20 15:57:12.592858+00	{}
-temperature_max	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature. Absolute scale (Kelvin).	hose	2026-10-20 15:57:12.592858+00	{}
-bore_diameter_bearing	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner-ring bore diameter.	bearing	2026-10-20 15:57:12.592858+00	{}
-dynamic_load_rating	Dynamic load rating	N	force	quantity	\N	\N	core	\N	Basic dynamic load rating (rated fatigue life at constant load).	bearing	2026-10-20 15:57:12.592858+00	{}
-finish	Surface finish	\N	categorical	categorical	["plain", "zinc-plated", "black-oxide", "anodized"]	\N	proposed	\N	Surface treatment/coating.	fastener	2026-10-20 15:57:12.592858+00	{}
-is_reinforced	Is reinforced	\N	categorical	boolean	\N	\N	proposed	\N	Whether the hose carries a reinforcing braid/wire.	hose	2026-10-20 15:57:12.592858+00	{}
-outer_diameter	Outer diameter	mm	length	quantity	\N	\N	core	\N	Nominal outside diameter of the part's round envelope — screw shank, pipe/tube OD, washer OD, bearing outer race.	\N	2026-10-20 15:57:12.786904+00	{}
-inner_diameter	Inner diameter	mm	length	quantity	\N	\N	core	\N	Nominal through-hole diameter — washer ID, pipe bore, bearing bore. The geometric hole, distinct from the category-scoped functional bores (bore_diameter, bore_diameter_bearing).	\N	2026-10-20 15:57:12.786904+00	{}
-wall_thickness	Wall thickness	mm	length	quantity	\N	\N	core	\N	Wall thickness of a hollow section (tube, pipe, extruded profile).	\N	2026-10-20 15:57:12.786904+00	{}
-thickness	Thickness	mm	length	quantity	\N	\N	core	\N	Thickness of a flat part — sheet, plate, washer, shim. For stock sheet this is the discrete series value a cut part is realized at.	\N	2026-10-20 15:57:12.786904+00	{}
-width	Width	mm	length	quantity	\N	\N	core	\N	Width of the part's bounding extent across its section (rectangular profile, bearing width, strap).	\N	2026-10-20 15:57:12.786904+00	{}
-height	Height	mm	length	quantity	\N	\N	core	\N	Height of the part's bounding extent across its section, perpendicular to width.	\N	2026-10-20 15:57:12.786904+00	{}
-head_diameter	Head diameter	mm	length	quantity	\N	\N	core	\N	Outside diameter of a fastener head (cap-screw head, washer face). What a counterbore must clear.	\N	2026-10-20 15:57:12.786904+00	{}
-head_height	Head height	mm	length	quantity	\N	\N	core	\N	Head height along the fastener axis — the protrusion above the clamped face, and the counterbore depth that would bury it.	\N	2026-10-20 15:57:12.786904+00	{}
-head_angle	Head angle	deg	angle	quantity	\N	\N	core	\N	Included angle of a countersunk head — 90 for the metric ISO families, 82 for the imperial ones. The angle the stamped countersink is cut at; absent on any other head form.	\N	2026-10-20 15:57:12.835033+00	{}
-drive_code	Drive code	\N	text	text	\N	\N	core	\N	The tool interface by its trade designation — T25, T30 for hexalobular/Torx. Pairs with drive_size (the millimetre extent) and drive_type (the family); this is the one you ask for in a shop.	\N	2026-10-20 15:57:12.835033+00	{}
-resistance	Resistance	ohm	resistance	quantity	\N	\N	core	\N	Nominal resistance of the part.	resistor	2026-10-20 15:57:12.991572+00	{"free": true}
-capacitance	Capacitance	F	capacitance	quantity	\N	\N	core	\N	Nominal capacitance of the part.	capacitor	2026-10-20 15:57:12.991572+00	{"free": true}
-power_rating	Power rating	W	power	quantity	\N	\N	core	\N	Maximum continuous dissipation the part is rated for.	\N	2026-10-20 15:57:12.991572+00	{"envelope": {"rule": "at_least"}}
-voltage_rating	Voltage rating	V	voltage	quantity	\N	\N	core	\N	Maximum working voltage the part is rated for.	\N	2026-10-20 15:57:12.991572+00	{"envelope": {"rule": "at_least"}}
-tolerance	Tolerance	%	ratio	quantity	\N	\N	core	\N	Worst-case deviation from the nominal value, percent.	\N	2026-10-20 15:57:12.991572+00	{"envelope": {"rule": "at_most"}}
-package	Package	\N	categorical	text	\N	\N	core	\N	Physical package / footprint designation (0603, SOT-23, ...).	\N	2026-10-20 15:57:12.991572+00	{"tool": {"kind": "reflow"}, "identity": true}
-pin_count	Pin count	\N	count	quantity	\N	\N	core	\N	Number of electrical terminals on the part.	\N	2026-10-20 15:57:12.991572+00	{"identity": true}
-thread_size	Thread size	\N	categorical	categorical	["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20", "ST2.9", "ST3.5", "ST4.2", "ST4.8", "ST5.5", "ST6.3"]	\N	core	\N	Nominal metric thread designation.	fastener	2026-10-20 15:57:12.592858+00	{"tool": {"kind": "tap"}, "identity": true}
-thread_pitch	Thread pitch	mm	length	quantity	\N	\N	core	\N	Distance between adjacent thread crests.	fastener	2026-10-20 15:57:12.592858+00	{"identity": true}
-grade	Grade	\N	categorical	categorical	["4.8", "8.8", "10.9", "12.9", "A2", "A4"]	\N	core	\N	Strength/corrosion-resistance class marking.	fastener	2026-10-20 15:57:12.592858+00	{"identity": true}
-drive_size	Drive size	mm	length	quantity	\N	\N	core	\N	Size of the internal tool interface — hex-key across flats, Torx nominal. Pairs with drive_type; distinct from across_flats, which is the external hex.	\N	2026-10-20 15:57:12.786904+00	{"identity": true}
-point_type	Point type	\N	categorical	categorical	["machine", "tapping-c", "tapping-f", "thread-forming", "insert"]	\N	core	\N	How a fastener's far end engages: machine = a formed thread meeting a nut or a tapped hole; tapping-c = ISO 1478 sharp point, cuts/forms its own thread in a core hole; tapping-f = blunt/flat point; thread-forming = rolls a thread in thermoplastic without cutting; insert = not a screw, a threaded insert the screw meets.	\N	2026-10-20 15:57:12.835033+00	{"identity": true}
-length	Length	mm	length	quantity	\N	\N	core	\N	Fastener shank/overall length.	fastener	2026-10-20 15:57:12.592858+00	{"free": true, "envelope": {"rule": "at_least"}}
-head_form	Head form	\N	categorical	categorical	["cap", "countersunk", "button", "pan", "hex", "flange", "none"]	\N	core	\N	Shape of a fastener head, which decides what the near member gets: countersunk => a cone, cap/pan/button => a counterbore or plain head clearance, none => a set screw with no head at all.	\N	2026-10-20 15:57:12.835033+00	{"free": true}
-drive_type	Drive type	\N	categorical	categorical	["hex", "socket", "phillips", "slotted", "torx", "allen"]	\N	core	\N	Tool interface for driving the fastener.	fastener	2026-10-20 15:57:12.592858+00	{"tool": {"kind": "driver"}}
-across_flats	Across flats	mm	length	quantity	\N	\N	core	\N	Wrench size — distance between opposing flats of an external hex (bolt head, nut). The spanner/socket the joint needs.	\N	2026-10-20 15:57:12.786904+00	{"tool": {"kind": "spanner"}}
+mass	Mass	kg	mass	quantity	\N	\N	core	\N	Mass of one unit of the component.	\N	2026-10-23 13:36:30.197291+00	{}
+unit_cost	Unit cost	USD	currency	quantity	\N	\N	core	\N	Cost per unit (each/m/kg/... per uom=); pair with as_of and, for price breaks, conditions={"qty_break": 100}.	\N	2026-10-23 13:36:30.197291+00	{}
+length_overall	Overall length	m	length	quantity	\N	\N	core	\N	Overall length of one unit of the component.	\N	2026-10-23 13:36:30.197291+00	{}
+bore_diameter	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner (through-bore) diameter.	hose	2026-10-23 13:36:30.197291+00	{}
+max_working_pressure	Maximum working pressure	MPa	pressure/stress	quantity	\N	\N	core	\N	Rated continuous working pressure.	hose	2026-10-23 13:36:30.197291+00	{}
+min_bend_radius	Minimum bend radius	mm	length	quantity	\N	\N	core	\N	Smallest radius the hose may be bent to without kinking/damage.	hose	2026-10-23 13:36:30.197291+00	{}
+temperature_max	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature. Absolute scale (Kelvin).	hose	2026-10-23 13:36:30.197291+00	{}
+bore_diameter_bearing	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner-ring bore diameter.	bearing	2026-10-23 13:36:30.197291+00	{}
+dynamic_load_rating	Dynamic load rating	N	force	quantity	\N	\N	core	\N	Basic dynamic load rating (rated fatigue life at constant load).	bearing	2026-10-23 13:36:30.197291+00	{}
+finish	Surface finish	\N	categorical	categorical	["plain", "zinc-plated", "black-oxide", "anodized"]	\N	proposed	\N	Surface treatment/coating.	fastener	2026-10-23 13:36:30.197291+00	{}
+is_reinforced	Is reinforced	\N	categorical	boolean	\N	\N	proposed	\N	Whether the hose carries a reinforcing braid/wire.	hose	2026-10-23 13:36:30.197291+00	{}
+outer_diameter	Outer diameter	mm	length	quantity	\N	\N	core	\N	Nominal outside diameter of the part's round envelope — screw shank, pipe/tube OD, washer OD, bearing outer race.	\N	2026-10-23 13:36:30.294016+00	{}
+inner_diameter	Inner diameter	mm	length	quantity	\N	\N	core	\N	Nominal through-hole diameter — washer ID, pipe bore, bearing bore. The geometric hole, distinct from the category-scoped functional bores (bore_diameter, bore_diameter_bearing).	\N	2026-10-23 13:36:30.294016+00	{}
+wall_thickness	Wall thickness	mm	length	quantity	\N	\N	core	\N	Wall thickness of a hollow section (tube, pipe, extruded profile).	\N	2026-10-23 13:36:30.294016+00	{}
+thickness	Thickness	mm	length	quantity	\N	\N	core	\N	Thickness of a flat part — sheet, plate, washer, shim. For stock sheet this is the discrete series value a cut part is realized at.	\N	2026-10-23 13:36:30.294016+00	{}
+width	Width	mm	length	quantity	\N	\N	core	\N	Width of the part's bounding extent across its section (rectangular profile, bearing width, strap).	\N	2026-10-23 13:36:30.294016+00	{}
+height	Height	mm	length	quantity	\N	\N	core	\N	Height of the part's bounding extent across its section, perpendicular to width.	\N	2026-10-23 13:36:30.294016+00	{}
+head_diameter	Head diameter	mm	length	quantity	\N	\N	core	\N	Outside diameter of a fastener head (cap-screw head, washer face). What a counterbore must clear.	\N	2026-10-23 13:36:30.294016+00	{}
+head_height	Head height	mm	length	quantity	\N	\N	core	\N	Head height along the fastener axis — the protrusion above the clamped face, and the counterbore depth that would bury it.	\N	2026-10-23 13:36:30.294016+00	{}
+head_angle	Head angle	deg	angle	quantity	\N	\N	core	\N	Included angle of a countersunk head — 90 for the metric ISO families, 82 for the imperial ones. The angle the stamped countersink is cut at; absent on any other head form.	\N	2026-10-23 13:36:30.369635+00	{}
+drive_code	Drive code	\N	text	text	\N	\N	core	\N	The tool interface by its trade designation — T25, T30 for hexalobular/Torx. Pairs with drive_size (the millimetre extent) and drive_type (the family); this is the one you ask for in a shop.	\N	2026-10-23 13:36:30.369635+00	{}
+resistance	Resistance	ohm	resistance	quantity	\N	\N	core	\N	Nominal resistance of the part.	resistor	2026-10-23 13:36:30.457996+00	{"free": true}
+capacitance	Capacitance	F	capacitance	quantity	\N	\N	core	\N	Nominal capacitance of the part.	capacitor	2026-10-23 13:36:30.457996+00	{"free": true}
+power_rating	Power rating	W	power	quantity	\N	\N	core	\N	Maximum continuous dissipation the part is rated for.	\N	2026-10-23 13:36:30.457996+00	{"envelope": {"rule": "at_least"}}
+voltage_rating	Voltage rating	V	voltage	quantity	\N	\N	core	\N	Maximum working voltage the part is rated for.	\N	2026-10-23 13:36:30.457996+00	{"envelope": {"rule": "at_least"}}
+tolerance	Tolerance	%	ratio	quantity	\N	\N	core	\N	Worst-case deviation from the nominal value, percent.	\N	2026-10-23 13:36:30.457996+00	{"envelope": {"rule": "at_most"}}
+package	Package	\N	categorical	text	\N	\N	core	\N	Physical package / footprint designation (0603, SOT-23, ...).	\N	2026-10-23 13:36:30.457996+00	{"tool": {"kind": "reflow"}, "identity": true}
+pin_count	Pin count	\N	count	quantity	\N	\N	core	\N	Number of electrical terminals on the part.	\N	2026-10-23 13:36:30.457996+00	{"identity": true}
+thread_size	Thread size	\N	categorical	categorical	["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20", "ST2.9", "ST3.5", "ST4.2", "ST4.8", "ST5.5", "ST6.3"]	\N	core	\N	Nominal metric thread designation.	fastener	2026-10-23 13:36:30.197291+00	{"tool": {"kind": "tap"}, "identity": true}
+thread_pitch	Thread pitch	mm	length	quantity	\N	\N	core	\N	Distance between adjacent thread crests.	fastener	2026-10-23 13:36:30.197291+00	{"identity": true}
+grade	Grade	\N	categorical	categorical	["4.8", "8.8", "10.9", "12.9", "A2", "A4"]	\N	core	\N	Strength/corrosion-resistance class marking.	fastener	2026-10-23 13:36:30.197291+00	{"identity": true}
+drive_size	Drive size	mm	length	quantity	\N	\N	core	\N	Size of the internal tool interface — hex-key across flats, Torx nominal. Pairs with drive_type; distinct from across_flats, which is the external hex.	\N	2026-10-23 13:36:30.294016+00	{"identity": true}
+point_type	Point type	\N	categorical	categorical	["machine", "tapping-c", "tapping-f", "thread-forming", "insert"]	\N	core	\N	How a fastener's far end engages: machine = a formed thread meeting a nut or a tapped hole; tapping-c = ISO 1478 sharp point, cuts/forms its own thread in a core hole; tapping-f = blunt/flat point; thread-forming = rolls a thread in thermoplastic without cutting; insert = not a screw, a threaded insert the screw meets.	\N	2026-10-23 13:36:30.369635+00	{"identity": true}
+length	Length	mm	length	quantity	\N	\N	core	\N	Fastener shank/overall length.	fastener	2026-10-23 13:36:30.197291+00	{"free": true, "envelope": {"rule": "at_least"}}
+head_form	Head form	\N	categorical	categorical	["cap", "countersunk", "button", "pan", "hex", "flange", "none"]	\N	core	\N	Shape of a fastener head, which decides what the near member gets: countersunk => a cone, cap/pan/button => a counterbore or plain head clearance, none => a set screw with no head at all.	\N	2026-10-23 13:36:30.369635+00	{"free": true}
+drive_type	Drive type	\N	categorical	categorical	["hex", "socket", "phillips", "slotted", "torx", "allen"]	\N	core	\N	Tool interface for driving the fastener.	fastener	2026-10-23 13:36:30.197291+00	{"tool": {"kind": "driver"}}
+across_flats	Across flats	mm	length	quantity	\N	\N	core	\N	Wrench size — distance between opposing flats of an external hex (bolt head, nut). The spanner/socket the joint needs.	\N	2026-10-23 13:36:30.294016+00	{"tool": {"kind": "spanner"}}
 \.
 
 
@@ -11896,9 +12024,9 @@ across_flats	Across flats	mm	length	quantity	\N	\N	core	\N	Wrench size — dista
 --
 
 COPY public.design_load_cases (case_id, name, family, standard, spec, description, created_at) FROM stdin;
-std_shock	Handling shock	shock	t	{"pulse": "half_sine", "peak_g": 25.0, "duration_s": 0.011}	A dropped or knocked assembly. Half-sine pulse, applied along each principal axis in turn.	2026-10-20 15:57:12.821606+00
-std_vibration	Transport vibration	vibration	t	{"grms": 1.5, "band_hz": [5.0, 500.0]}	Broadband transport vibration — the case that finds resonances a static check cannot see.	2026-10-20 15:57:12.821606+00
-std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary": 0.25}	A quarter of the primary load applied off the intended line of action. Catches designs that only work in one direction.	2026-10-20 15:57:12.821606+00
+std_shock	Handling shock	shock	t	{"pulse": "half_sine", "peak_g": 25.0, "duration_s": 0.011}	A dropped or knocked assembly. Half-sine pulse, applied along each principal axis in turn.	2026-10-23 13:36:30.329746+00
+std_vibration	Transport vibration	vibration	t	{"grms": 1.5, "band_hz": [5.0, 500.0]}	Broadband transport vibration — the case that finds resonances a static check cannot see.	2026-10-23 13:36:30.329746+00
+std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary": 0.25}	A quarter of the primary load applied off the intended line of action. Catches designs that only work in one direction.	2026-10-23 13:36:30.329746+00
 \.
 
 
@@ -11907,9 +12035,9 @@ std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary
 --
 
 COPY public.design_service_environments (env_id, name, lifetime_checks, expected_lifetime_s, temp_min_k, temp_max_k, pressure_pa, humidity_pct, vibration_grms, vibration_spectrum, cycle_count, duty_cycle, chemical_exposure, status, description, created_at) FROM stdin;
-bench_week	Bench, one week	f	604800	288	303	\N	\N	\N	\N	1000	0.05	{}	core	A prototype that lives on a bench for a week. lifetime_checks FALSE drops corrosion, creep and fatigue entirely — they are not what kills this design.	2026-10-20 15:57:12.821606+00
-indoor_5yr	Indoor service, five years	t	157680000	283	313	\N	\N	\N	\N	100000	0.2	{}	core	Ordinary indoor service. Fatigue and creep matter; corrosion is mild.	2026-10-20 15:57:12.821606+00
-general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	0.4	{salt,uv}	core	Outdoor-capable general service: the lifetime families all run, and salt plus UV exposure are declared.	2026-10-20 15:57:12.821606+00
+bench_week	Bench, one week	f	604800	288	303	\N	\N	\N	\N	1000	0.05	{}	core	A prototype that lives on a bench for a week. lifetime_checks FALSE drops corrosion, creep and fatigue entirely — they are not what kills this design.	2026-10-23 13:36:30.329746+00
+indoor_5yr	Indoor service, five years	t	157680000	283	313	\N	\N	\N	\N	100000	0.2	{}	core	Ordinary indoor service. Fatigue and creep matter; corrosion is mild.	2026-10-23 13:36:30.329746+00
+general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	0.4	{salt,uv}	core	Outdoor-capable general service: the lifetime families all run, and salt plus UV exposure are declared.	2026-10-23 13:36:30.329746+00
 \.
 
 
@@ -11918,9 +12046,9 @@ general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	
 --
 
 COPY public.design_scenarios (scenario_id, name, quantity, objective_weights, service_env_id, status, description, created_at) FROM stdin;
-prototype	Prototype	1	{"cost": 0.3, "mass": 0.1, "lead_time": 0.6}	bench_week	core	One-off. Getting it in hand beats getting it light or cheap; the lifetime families are off.	2026-10-20 15:57:12.821606+00
-small_batch	Small batch	100	{"cost": 0.4, "mass": 0.3, "lead_time": 0.3}	indoor_5yr	core	Tens to hundreds. Per-unit cost starts to bite and the parts have to last; tooling still does not pay for itself.	2026-10-20 15:57:12.821606+00
-mass_production	Mass production	100000	{"cost": 0.6, "mass": 0.3, "lead_time": 0.1}	general_10yr	core	Tooling amortises, so unit cost dominates and lead time barely registers. Full lifetime physics.	2026-10-20 15:57:12.821606+00
+prototype	Prototype	1	{"cost": 0.3, "mass": 0.1, "lead_time": 0.6}	bench_week	core	One-off. Getting it in hand beats getting it light or cheap; the lifetime families are off.	2026-10-23 13:36:30.329746+00
+small_batch	Small batch	100	{"cost": 0.4, "mass": 0.3, "lead_time": 0.3}	indoor_5yr	core	Tens to hundreds. Per-unit cost starts to bite and the parts have to last; tooling still does not pay for itself.	2026-10-23 13:36:30.329746+00
+mass_production	Mass production	100000	{"cost": 0.6, "mass": 0.3, "lead_time": 0.1}	general_10yr	core	Tooling amortises, so unit cost dominates and lead time barely registers. Full lifetime physics.	2026-10-23 13:36:30.329746+00
 \.
 
 
@@ -11937,31 +12065,31 @@ bge-m3	1024	t	BAAI/bge-m3, dense; 1024-dim; multilingual	\N	2026-05-21 20:06:05.
 -- Data for Name: external_rate_limits; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.external_rate_limits (provider, capacity, refill_per_sec, tokens, last_refill, daily_cap, day_used, day_start) FROM stdin;
-s2	2	1.0	2	2026-10-20 15:57:12.673105+00	\N	0	2026-10-20
-openalex	10	8.0	10	2026-10-20 15:57:12.673105+00	100000	0	2026-10-20
-unpaywall	5	5.0	5	2026-10-20 15:57:12.673105+00	100000	0	2026-10-20
-arxiv	1	0.34	1	2026-10-20 15:57:12.673105+00	\N	0	2026-10-20
-jlcpcb	1	1.0	1	2026-10-20 15:57:13.055004+00	\N	0	2026-10-20
-jlcpcb-web	1	1.0	1	2026-10-20 15:57:13.055004+00	\N	0	2026-10-20
-crossref	1	1.0	1	2026-10-20 15:57:12.673105+00	\N	0	2026-10-20
-crossref-list	1	1.0	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-openalex-content	2	2.0	2	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-europepmc	5	5.0	5	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-core	1	0.5	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-datacite	5	5.0	5	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-orcid	8	8.0	8	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-pubchem	5	5.0	5	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-opsin	1	1.0	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-cir	1	1.0	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-sec	5	5.0	5	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-google-patents	1	0.5	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-nanopub-registry	2	2.0	2	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-materialsproject	5	5.0	5	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-easyeda	1	0.5	1	2026-10-20 15:57:13.060378+00	\N	0	2026-10-20
-digikey	2	2.0	2	2026-10-20 15:57:13.060378+00	1000	0	2026-10-20
-mouser	1	0.5	1	2026-10-20 15:57:13.060378+00	1000	0	2026-10-20
-farnell	2	2.0	2	2026-10-20 15:57:13.060378+00	1000	0	2026-10-20
+COPY public.external_rate_limits (provider, capacity, refill_per_sec, tokens, last_refill, daily_cap, day_used, day_start, class, max_wait_s, connect_s, read_s, total_s, on_refuse, concurrency, parked_until, last_used_at, refused_today, last_refused_at) FROM stdin;
+s2	2	1.0	2	2026-10-23 13:36:30.227025+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+openalex	10	8.0	10	2026-10-23 13:36:30.227025+00	100000	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+unpaywall	5	5.0	5	2026-10-23 13:36:30.227025+00	100000	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+arxiv	1	0.34	1	2026-10-23 13:36:30.227025+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+jlcpcb	1	1.0	1	2026-10-23 13:36:30.483601+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+jlcpcb-web	1	1.0	1	2026-10-23 13:36:30.483601+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+crossref	1	1.0	1	2026-10-23 13:36:30.227025+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+crossref-list	1	1.0	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+openalex-content	2	2.0	2	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+europepmc	5	5.0	5	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+core	1	0.5	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+datacite	5	5.0	5	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+orcid	8	8.0	8	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+pubchem	5	5.0	5	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+opsin	1	1.0	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+cir	1	1.0	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+sec	5	5.0	5	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+google-patents	1	0.5	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+nanopub-registry	2	2.0	2	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+materialsproject	5	5.0	5	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+easyeda	1	0.5	1	2026-10-23 13:36:30.48475+00	\N	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+digikey	2	2.0	2	2026-10-23 13:36:30.48475+00	1000	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+mouser	1	0.5	1	2026-10-23 13:36:30.48475+00	1000	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
+farnell	2	2.0	2	2026-10-23 13:36:30.48475+00	1000	0	2026-10-23	\N	\N	\N	\N	\N	\N	\N	\N	\N	0	\N
 \.
 
 
@@ -11995,44 +12123,44 @@ markdown	f	Markdown file	Read / write .md / .markdown files under a configured r
 plaintext	f	Plaintext file	Read / write .txt / .org / .rst files under a configured root. The shared file-kind base; markdown and tex are subclasses. See src/precis/handlers/plaintext.py.	\N	2026-06-04 19:55:50.290874+00	\N
 tex	f	LaTeX file	Read / write .tex files under a configured root. Inherits the plaintext file-kind machinery; adds tex-aware block parsing + input-resolution. See src/precis/handlers/tex.py.	\N	2026-06-04 19:55:50.290874+00	\N
 websearch	f	Web search	Cached perplexity-style web search response. Slug derived from the canonical query + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
-job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-10-20 15:57:12.341243+00	\N
-pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-10-20 15:57:12.352512+00	\N
-cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-10-20 15:57:12.358903+00	\N
-message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-10-20 15:57:12.358903+00	\N
+job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-10-23 13:36:30.090923+00	\N
+pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-10-23 13:36:30.094318+00	\N
+cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-10-23 13:36:30.095521+00	\N
+message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-10-23 13:36:30.095521+00	\N
 flashcard	t	Flashcard	Spaced-repetition flashcard	\N	2026-05-21 20:06:05.179981+00	\N
 perplexity-reasoning	f	Think	Cached perplexity ``think`` (chain-of-thought) response. Slug derived from the question + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
 perplexity-research	f	Research report	Cached perplexity ``research`` (deep-research) response. Slug derived from the prompt + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
-wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-10-20 15:57:12.40287+00	\N
-alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-10-20 15:57:12.411469+00	\N
-draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-10-20 15:57:12.416915+00	\N
-news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-10-20 15:57:12.422992+00	\N
-agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-10-20 15:57:12.426354+00	\N
+wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-10-23 13:36:30.106927+00	\N
+alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-10-23 13:36:30.110439+00	\N
+draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-10-23 13:36:30.111371+00	\N
+news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-10-23 13:36:30.113285+00	\N
+agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-10-23 13:36:30.114813+00	\N
 finding	t	Finding	A retrievable empirical claim with explicit setup context and a provenance chain back to its primary source. Synthesised by the citation-chase worker; never externally citable (see docs/design/finding-chase.md).	\N	2026-05-30 21:33:14.261241+00	{scope,caveats}
 memory	t	Memory	Note, decision, idea, claim	\N	2026-05-21 20:06:05.179981+00	{rule,warrant,hook}
-orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-10-20 15:57:12.442006+00	\N
-cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-10-20 15:57:12.445754+00	\N
-structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-10-20 15:57:12.448961+00	\N
-pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-10-20 15:57:12.465968+00	\N
-part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-10-20 15:57:12.465968+00	\N
-datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-10-20 15:57:12.465968+00	\N
-folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-10-20 15:57:12.477259+00	\N
-edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-10-20 15:57:12.491273+00	\N
-plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-10-20 15:57:12.499806+00	\N
-figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-10-20 15:57:12.501927+00	\N
-anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-10-20 15:57:12.511855+00	\N
-quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-10-20 15:57:12.5246+00	\N
-mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-10-20 15:57:12.526761+00	\N
-llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-10-20 15:57:12.538082+00	\N
-material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-10-20 15:57:12.588514+00	\N
-component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-10-20 15:57:12.592858+00	\N
-cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-10-20 15:57:12.658492+00	\N
-make	f	Make	A make-tree: assembly/synthesis order for a design — first-class step nodes on the draft chunk-tree substrate, each carrying its conditions (fixture/torque; reagents/temperature) in chunk meta. Blocks align to steps via made-by links written from the design side. Named ref; steps addressed mk<chunk_id>. See precis-cad-help.	\N	2026-10-20 15:57:12.791288+00	\N
-rxn	f	Reaction	A sourced reaction-fact store: a transformation (reaction SMILES) plus per-property sourced values (yield, temperature, time, catalyst loading, ...) in a typed, growable registry. Many rows per (reaction, property) is the point — the spread across sources and conditions IS the answer. Named `rxn` not `reaction` to avoid colliding with the pathway graph's `reaction` edge kind. See precis-rxn-help.	\N	2026-10-20 15:57:12.798769+00	\N
-checklist	f	Checklist	A named, versioned check ledger — Checklist-Manifesto-style argued gates for LLM agents. Items are judgment tasks or bridges to a domain's own encoded rules (DRC/ERC); per-target verdicts accumulate instead of restarting, and staleness (item revised, target changed) is rendered honestly rather than silently dropped. See precis-checklist-help.	\N	2026-10-20 15:57:12.804007+00	\N
-concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-10-20 15:57:12.520444+00	{name,aliases,definition}
+orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-10-23 13:36:30.119971+00	\N
+cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-10-23 13:36:30.120533+00	\N
+structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-10-23 13:36:30.12206+00	\N
+pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-10-23 13:36:30.134393+00	\N
+part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-10-23 13:36:30.134393+00	\N
+datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-10-23 13:36:30.134393+00	\N
+folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-10-23 13:36:30.147576+00	\N
+edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-10-23 13:36:30.151685+00	\N
+plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-10-23 13:36:30.154265+00	\N
+figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-10-23 13:36:30.154591+00	\N
+anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-10-23 13:36:30.157941+00	\N
+quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-10-23 13:36:30.161205+00	\N
+mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-10-23 13:36:30.162651+00	\N
+llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-10-23 13:36:30.166842+00	\N
+material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-10-23 13:36:30.1932+00	\N
+component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-10-23 13:36:30.197291+00	\N
+cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-10-23 13:36:30.223007+00	\N
+make	f	Make	A make-tree: assembly/synthesis order for a design — first-class step nodes on the draft chunk-tree substrate, each carrying its conditions (fixture/torque; reagents/temperature) in chunk meta. Blocks align to steps via made-by links written from the design side. Named ref; steps addressed mk<chunk_id>. See precis-cad-help.	\N	2026-10-23 13:36:30.295106+00	\N
+rxn	f	Reaction	A sourced reaction-fact store: a transformation (reaction SMILES) plus per-property sourced values (yield, temperature, time, catalyst loading, ...) in a typed, growable registry. Many rows per (reaction, property) is the point — the spread across sources and conditions IS the answer. Named `rxn` not `reaction` to avoid colliding with the pathway graph's `reaction` edge kind. See precis-rxn-help.	\N	2026-10-23 13:36:30.296595+00	\N
+checklist	f	Checklist	A named, versioned check ledger — Checklist-Manifesto-style argued gates for LLM agents. Items are judgment tasks or bridges to a domain's own encoded rules (DRC/ERC); per-target verdicts accumulate instead of restarting, and staleness (item revised, target changed) is rendered honestly rather than silently dropped. See precis-checklist-help.	\N	2026-10-23 13:36:30.301416+00	\N
+concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-10-23 13:36:30.160285+00	{name,aliases,definition}
 citation	t	Citation	Verified claim → source pointer. Written by the citation-fill workflow after the verifier confirms the source quote supports the claim.	\N	2026-05-31 14:47:51.530091+00	{claim,source_quote,char_offset,source_handle}
-taxon	t	Taxon	A node in the term taxonomy: a named term with an embeddable definition, an earned status (proposed / systematic), an optional dimension (dimension_kind + si_vector) and, on start nodes, a required-key contract. Body is '<name> - <definition>'. See term-taxonomy.md.	\N	2026-10-20 15:57:12.868664+00	{name,aliases,definition,status,value_type,dimension_kind,canonical_unit,allowed_values,higher_is_better,applies_to_ref,si_vector,required_conditions,display_unit}
-chem	f	Chemical identifier resolver	Resolve a chemical name, CAS number or lab abbreviation to canonical SMILES + InChIKey. Every answer names its source; ambiguous identifiers are refused with candidates listed. Cached 30 days. See ``precis-chem-help``.	\N	2026-10-20 15:57:13.029338+00	\N
+taxon	t	Taxon	A node in the term taxonomy: a named term with an embeddable definition, an earned status (proposed / systematic), an optional dimension (dimension_kind + si_vector) and, on start nodes, a required-key contract. Body is '<name> - <definition>'. See term-taxonomy.md.	\N	2026-10-23 13:36:30.384815+00	{name,aliases,definition,status,value_type,dimension_kind,canonical_unit,allowed_values,higher_is_better,applies_to_ref,si_vector,required_conditions,display_unit}
+chem	f	Chemical identifier resolver	Resolve a chemical name, CAS number or lab abbreviation to canonical SMILES + InChIKey. Every answer names its source; ambiguous identifiers are refused with candidates listed. Cached 30 days. See ``precis-chem-help``.	\N	2026-10-23 13:36:30.472057+00	\N
 \.
 
 
@@ -12041,25 +12169,25 @@ chem	f	Chemical identifier resolver	Resolve a chemical name, CAS number or lab a
 --
 
 COPY public.material_properties (prop_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, created_at) FROM stdin;
-density	Density	kg/m3	mass/volume	quantity	\N	\N	core	\N	Mass per unit volume.	2026-10-20 15:57:12.588514+00
-tensile_strength_yield	Tensile yield strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Stress at the onset of plastic deformation (0.2% offset).	2026-10-20 15:57:12.588514+00
-tensile_strength_ultimate	Ultimate tensile strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Maximum engineering stress before necking/fracture.	2026-10-20 15:57:12.588514+00
-youngs_modulus	Young's modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic (tensile/compressive) stiffness.	2026-10-20 15:57:12.588514+00
-shear_modulus	Shear modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic shear stiffness.	2026-10-20 15:57:12.588514+00
-poissons_ratio	Poisson's ratio	\N	dimensionless	ratio	\N	\N	core	\N	Negative ratio of transverse to axial strain.	2026-10-20 15:57:12.588514+00
-elongation_at_break	Elongation at break	%	dimensionless	ratio	\N	\N	core	\N	Engineering strain at fracture in a tensile test.	2026-10-20 15:57:12.588514+00
-hardness_vickers	Vickers hardness	HV	hardness (non-convertible scale)	quantity	\N	\N	core	\N	Indentation hardness on the Vickers scale.	2026-10-20 15:57:12.588514+00
-thermal_conductivity	Thermal conductivity	W/(m*K)	power/(length*temperature)	quantity	\N	\N	core	\N	Rate of heat transfer through a unit thickness per unit temperature gradient.	2026-10-20 15:57:12.588514+00
-specific_heat_capacity	Specific heat capacity	J/(kg*K)	energy/(mass*temperature)	quantity	\N	\N	core	\N	Heat required to raise unit mass by one kelvin.	2026-10-20 15:57:12.588514+00
-thermal_expansion_coeff	Coefficient of thermal expansion	1/K	1/temperature	quantity	\N	\N	core	\N	Fractional length change per kelvin (linear CTE).	2026-10-20 15:57:12.588514+00
-melting_point	Melting point	K	temperature	quantity	\N	\N	core	\N	Solid-to-liquid transition temperature. Absolute scale (Kelvin).	2026-10-20 15:57:12.588514+00
-max_service_temperature	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature before properties degrade. Absolute scale.	2026-10-20 15:57:12.588514+00
-electrical_resistivity	Electrical resistivity	ohm*m	resistance*length	quantity	\N	\N	core	\N	Bulk resistivity to electrical current.	2026-10-20 15:57:12.588514+00
-dielectric_strength	Dielectric strength	MV/m	voltage/length	quantity	\N	\N	core	\N	Maximum electric field before insulation breakdown.	2026-10-20 15:57:12.588514+00
-relative_permittivity	Relative permittivity	\N	dimensionless	ratio	\N	\N	core	\N	Permittivity relative to vacuum (dielectric constant).	2026-10-20 15:57:12.588514+00
-cost_per_mass	Cost per unit mass	USD/kg	currency/mass	quantity	\N	\N	core	\N	Market cost per unit mass; pair with as_of (load-bearing for cost).	2026-10-20 15:57:12.588514+00
-crystal_structure	Crystal structure	\N	categorical	categorical	["FCC", "BCC", "HCP"]	\N	proposed	\N	Crystallographic lattice type.	2026-10-20 15:57:12.588514+00
-is_magnetic	Is magnetic	\N	categorical	boolean	\N	\N	proposed	\N	Whether the material is ferro/ferrimagnetic at room temperature.	2026-10-20 15:57:12.588514+00
+density	Density	kg/m3	mass/volume	quantity	\N	\N	core	\N	Mass per unit volume.	2026-10-23 13:36:30.1932+00
+tensile_strength_yield	Tensile yield strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Stress at the onset of plastic deformation (0.2% offset).	2026-10-23 13:36:30.1932+00
+tensile_strength_ultimate	Ultimate tensile strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Maximum engineering stress before necking/fracture.	2026-10-23 13:36:30.1932+00
+youngs_modulus	Young's modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic (tensile/compressive) stiffness.	2026-10-23 13:36:30.1932+00
+shear_modulus	Shear modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic shear stiffness.	2026-10-23 13:36:30.1932+00
+poissons_ratio	Poisson's ratio	\N	dimensionless	ratio	\N	\N	core	\N	Negative ratio of transverse to axial strain.	2026-10-23 13:36:30.1932+00
+elongation_at_break	Elongation at break	%	dimensionless	ratio	\N	\N	core	\N	Engineering strain at fracture in a tensile test.	2026-10-23 13:36:30.1932+00
+hardness_vickers	Vickers hardness	HV	hardness (non-convertible scale)	quantity	\N	\N	core	\N	Indentation hardness on the Vickers scale.	2026-10-23 13:36:30.1932+00
+thermal_conductivity	Thermal conductivity	W/(m*K)	power/(length*temperature)	quantity	\N	\N	core	\N	Rate of heat transfer through a unit thickness per unit temperature gradient.	2026-10-23 13:36:30.1932+00
+specific_heat_capacity	Specific heat capacity	J/(kg*K)	energy/(mass*temperature)	quantity	\N	\N	core	\N	Heat required to raise unit mass by one kelvin.	2026-10-23 13:36:30.1932+00
+thermal_expansion_coeff	Coefficient of thermal expansion	1/K	1/temperature	quantity	\N	\N	core	\N	Fractional length change per kelvin (linear CTE).	2026-10-23 13:36:30.1932+00
+melting_point	Melting point	K	temperature	quantity	\N	\N	core	\N	Solid-to-liquid transition temperature. Absolute scale (Kelvin).	2026-10-23 13:36:30.1932+00
+max_service_temperature	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature before properties degrade. Absolute scale.	2026-10-23 13:36:30.1932+00
+electrical_resistivity	Electrical resistivity	ohm*m	resistance*length	quantity	\N	\N	core	\N	Bulk resistivity to electrical current.	2026-10-23 13:36:30.1932+00
+dielectric_strength	Dielectric strength	MV/m	voltage/length	quantity	\N	\N	core	\N	Maximum electric field before insulation breakdown.	2026-10-23 13:36:30.1932+00
+relative_permittivity	Relative permittivity	\N	dimensionless	ratio	\N	\N	core	\N	Permittivity relative to vacuum (dielectric constant).	2026-10-23 13:36:30.1932+00
+cost_per_mass	Cost per unit mass	USD/kg	currency/mass	quantity	\N	\N	core	\N	Market cost per unit mass; pair with as_of (load-bearing for cost).	2026-10-23 13:36:30.1932+00
+crystal_structure	Crystal structure	\N	categorical	categorical	["FCC", "BCC", "HCP"]	\N	proposed	\N	Crystallographic lattice type.	2026-10-23 13:36:30.1932+00
+is_magnetic	Is magnetic	\N	categorical	boolean	\N	\N	proposed	\N	Whether the material is ferro/ferrimagnetic at room temperature.	2026-10-23 13:36:30.1932+00
 \.
 
 
@@ -12106,11 +12234,11 @@ rxn_properties	catalyst_loading	mol%	1	0.01	0
 --
 
 COPY public.news_sources (source_id, url, title, source_slug, category, default_tags, max_items, enabled, etag, last_modified, last_polled_at, last_status, consecutive_errors, created_at) FROM stdin;
-1	https://feeds.bbci.co.uk/news/world/rss.xml	BBC News — World	bbc	world	{}	50	t	\N	\N	\N	\N	0	2026-10-20 15:57:12.422992+00
-2	https://feeds.npr.org/1001/rss.xml	NPR — News	npr	world	{}	50	t	\N	\N	\N	\N	0	2026-10-20 15:57:12.422992+00
-3	https://www.theguardian.com/world/rss	The Guardian — World	guardian	world	{}	50	t	\N	\N	\N	\N	0	2026-10-20 15:57:12.422992+00
-4	https://feeds.arstechnica.com/arstechnica/index	Ars Technica	arstechnica	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-20 15:57:12.422992+00
-5	https://hnrss.org/frontpage	Hacker News — Front Page	hn	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-20 15:57:12.422992+00
+1	https://feeds.bbci.co.uk/news/world/rss.xml	BBC News — World	bbc	world	{}	50	t	\N	\N	\N	\N	0	2026-10-23 13:36:30.113285+00
+2	https://feeds.npr.org/1001/rss.xml	NPR — News	npr	world	{}	50	t	\N	\N	\N	\N	0	2026-10-23 13:36:30.113285+00
+3	https://www.theguardian.com/world/rss	The Guardian — World	guardian	world	{}	50	t	\N	\N	\N	\N	0	2026-10-23 13:36:30.113285+00
+4	https://feeds.arstechnica.com/arstechnica/index	Ars Technica	arstechnica	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-23 13:36:30.113285+00
+5	https://hnrss.org/frontpage	Hacker News — Front Page	hn	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-23 13:36:30.113285+00
 \.
 
 
@@ -12133,13 +12261,13 @@ local	Local computation / no external source	\N	2026-05-21 20:06:05.179981+00
 retraction_watch	Retraction Watch dataset (CC-BY via Crossref)	\N	2026-05-30 16:07:11.520836+00
 web	Direct web fetch / trafilatura extraction	\N	2026-05-31 18:20:12.906601+00
 epo_ops	European Patent Office Open Patent Services REST API	\N	2026-06-04 20:02:44.133862+00
-wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-10-20 15:57:12.40287+00
-news	RSS / Atom news feeds (news_sources registry)	\N	2026-10-20 15:57:12.422992+00
-orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-10-20 15:57:12.442006+00
-sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-10-20 15:57:12.491273+00
-sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-10-20 15:57:12.491273+00
-markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-10-20 15:57:12.533922+00
-chem	Chemical identifier resolution (PubChem PUG REST, OPSIN, NCI/CADD CIR)	\N	2026-10-20 15:57:13.029338+00
+wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-10-23 13:36:30.106927+00
+news	RSS / Atom news feeds (news_sources registry)	\N	2026-10-23 13:36:30.113285+00
+orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-10-23 13:36:30.119971+00
+sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-10-23 13:36:30.151685+00
+sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-10-23 13:36:30.151685+00
+markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-10-23 13:36:30.165509+00
+chem	Chemical identifier resolution (PubChem PUG REST, OPSIN, NCI/CADD CIR)	\N	2026-10-23 13:36:30.472057+00
 \.
 
 
@@ -12170,79 +12298,88 @@ supports	f	supported-by	Source provides evidence for target	\N	2026-05-31 18:20:
 supported-by	f	supports	Source is supported by target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
 generalises	f	specialises	Source is a generalisation of target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
 see-also	f	\N	One-way "for context" pointer (no inverse)	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
-fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-10-20 15:57:12.344291+00	\N	\N	f	f	f
-fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-10-20 15:57:12.344291+00	\N	\N	f	f	f
-has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-10-20 15:57:12.420924+00	\N	\N	f	f	f
-snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-10-20 15:57:12.420924+00	\N	\N	f	f	f
-has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-10-20 15:57:12.420924+00	\N	\N	f	f	f
-touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-10-20 15:57:12.426354+00	\N	\N	f	f	f
-plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-10-20 15:57:12.435525+00	\N	\N	f	f	f
-plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-10-20 15:57:12.435525+00	\N	\N	f	f	f
-authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-10-20 15:57:12.439966+00	\N	\N	f	f	f
-authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-10-20 15:57:12.439966+00	\N	\N	f	f	f
-has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-10-20 15:57:12.443861+00	\N	\N	f	f	f
-requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-10-20 15:57:12.443861+00	\N	\N	f	f	f
-requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-10-20 15:57:12.463986+00	\N	\N	f	f	f
-requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-10-20 15:57:12.463986+00	\N	\N	f	f	f
-datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-10-20 15:57:12.494079+00	\N	\N	f	f	f
-has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-10-20 15:57:12.494079+00	\N	\N	f	f	f
-has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-10-20 15:57:12.499806+00	\N	\N	f	f	f
-figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-10-20 15:57:12.501927+00	\N	\N	f	f	f
-has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-10-20 15:57:12.501927+00	\N	\N	f	f	f
-prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	f	f
-analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	f	f
-contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	f	f
-represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	f	f
-represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	f	f
-depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-10-20 15:57:12.522511+00	\N	\N	f	f	f
-depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-10-20 15:57:12.522511+00	\N	\N	f	f	f
-served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-10-20 15:57:12.5246+00	\N	\N	f	f	f
-mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-10-20 15:57:12.526761+00	\N	\N	f	f	f
-has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-10-20 15:57:12.526761+00	\N	\N	f	f	f
-has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-10-20 15:57:12.529159+00	\N	\N	f	f	f
-entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-10-20 15:57:12.561086+00	\N	\N	f	f	f
-entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-10-20 15:57:12.561086+00	\N	\N	f	f	f
-qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-10-20 15:57:12.561086+00	\N	\N	f	f	f
-qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-10-20 15:57:12.561086+00	\N	\N	f	f	f
-cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-10-20 15:57:12.573033+00	\N	\N	f	f	f
-superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-10-20 15:57:12.573033+00	\N	\N	f	f	f
-off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-10-20 15:57:12.573033+00	\N	\N	f	f	f
-copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-10-20 15:57:12.579787+00	\N	\N	f	f	f
-has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-10-20 15:57:12.579787+00	\N	\N	f	f	f
-paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-10-20 15:57:12.581728+00	\N	\N	f	f	f
-has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-10-20 15:57:12.581728+00	\N	\N	f	f	f
-made-of	f	used-in	Source component is made of target material.	\N	2026-10-20 15:57:12.592858+00	\N	\N	f	f	f
-used-in	f	made-of	Source material is used in target component.	\N	2026-10-20 15:57:12.592858+00	\N	\N	f	f	f
-part-of	f	contains	Source component is structurally part of target component.	\N	2026-10-20 15:57:12.600846+00	\N	\N	f	f	f
-refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-20 15:57:12.612969+00	\N	\N	f	f	f
-awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-10-20 15:57:12.625777+00	\N	\N	f	f	f
-same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-10-20 15:57:12.653307+00	\N	\N	f	f	f
-conjunct-of	f	\N	Source claim hub is one atomic conjunct of the target compound claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-20 15:57:12.688216+00	\N	\N	f	f	f
-motivated-by	f	\N	Source hypothesis claim hub was provoked by the target artifact (paper, patent, or claim hub) — taproot advisory link; motivation, NOT evidence, and no evidence flows along it.	\N	2026-10-20 15:57:12.722834+00	\N	\N	f	f	f
-tests	f	\N	Source measurement artifact (computed pathway) executed the target hypothesis finding's pre-registered discriminating experiment — quest dialectic measurement-ruling edge; NOT evidence, and no evidence flows along it (sim rulings settle internal hypotheses only).	\N	2026-10-20 15:57:12.752681+00	\N	\N	f	f	f
-disputes	f	\N	Source artifact appears to conflict with the target — a non-blocking open question, free to file, resolved only by adjudication (which alone may derive a blocking `contradicts`).	\N	2026-10-20 15:57:12.783841+00	\N	\N	f	f	f
-analyzed-by	f	analysis-of	Source design/block is analyzed by the target result (finding/estimate with fidelity + validity scope); links.meta {sha, at} pins the analyzed design version.	\N	2026-10-20 15:57:12.789173+00	\N	\N	f	f	f
-analysis-of	f	analyzed-by	Source analysis result describes the target design/block.	\N	2026-10-20 15:57:12.789173+00	\N	\N	f	f	f
-made-by	f	makes	Source design/block is produced by the target make-tree (ref-level) or make-step (chunk-scoped); many-to-many — make-order need not align with design structure.	\N	2026-10-20 15:57:12.791288+00	\N	\N	f	f	f
-makes	f	made-by	Source make-tree/step produces the target design/block.	\N	2026-10-20 15:57:12.791288+00	\N	\N	f	f	f
-realized-by	f	realizes	Source ref is made real by the target (e.g. a cad design's catalog part -> the procurable component that realizes it)	\N	2026-10-20 15:57:12.796432+00	\N	\N	f	f	f
-realizes	f	realized-by	Source ref makes the target real (e.g. a procurable component -> the design that calls for it)	\N	2026-10-20 15:57:12.796432+00	\N	\N	f	f	f
-instance-of	f	has-instance	Source ref is a member of the target taxon (e.g. a material, a measured value -> the term it instantiates).	\N	2026-10-20 15:57:12.868664+00	\N	\N	f	f	f
-has-instance	f	instance-of	Source taxon has the target ref as a member.	\N	2026-10-20 15:57:12.868664+00	\N	\N	f	f	f
+fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-10-23 13:36:30.091615+00	\N	\N	f	f	f
+fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-10-23 13:36:30.091615+00	\N	\N	f	f	f
+has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-10-23 13:36:30.112966+00	\N	\N	f	f	f
+snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-10-23 13:36:30.112966+00	\N	\N	f	f	f
+has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-10-23 13:36:30.112966+00	\N	\N	f	f	f
+touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-10-23 13:36:30.114813+00	\N	\N	f	f	f
+plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-10-23 13:36:30.119203+00	\N	\N	f	f	f
+plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-10-23 13:36:30.119203+00	\N	\N	f	f	f
+authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-10-23 13:36:30.119705+00	\N	\N	f	f	f
+authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-10-23 13:36:30.119705+00	\N	\N	f	f	f
+has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-10-23 13:36:30.120312+00	\N	\N	f	f	f
+requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-10-23 13:36:30.120312+00	\N	\N	f	f	f
+requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-10-23 13:36:30.134062+00	\N	\N	f	f	f
+requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-10-23 13:36:30.134062+00	\N	\N	f	f	f
+datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-10-23 13:36:30.152037+00	\N	\N	f	f	f
+has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-10-23 13:36:30.152037+00	\N	\N	f	f	f
+has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-10-23 13:36:30.154265+00	\N	\N	f	f	f
+figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-10-23 13:36:30.154591+00	\N	\N	f	f	f
+has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-10-23 13:36:30.154591+00	\N	\N	f	f	f
+prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	f	f
+analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	f	f
+contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	f	f
+represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	f	f
+represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	f	f
+depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-10-23 13:36:30.160922+00	\N	\N	f	f	f
+depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-10-23 13:36:30.160922+00	\N	\N	f	f	f
+served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-10-23 13:36:30.161205+00	\N	\N	f	f	f
+mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-10-23 13:36:30.162651+00	\N	\N	f	f	f
+has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-10-23 13:36:30.162651+00	\N	\N	f	f	f
+has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-10-23 13:36:30.163206+00	\N	\N	f	f	f
+entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-10-23 13:36:30.186078+00	\N	\N	f	f	f
+entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-10-23 13:36:30.186078+00	\N	\N	f	f	f
+qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-10-23 13:36:30.186078+00	\N	\N	f	f	f
+qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-10-23 13:36:30.186078+00	\N	\N	f	f	f
+cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-10-23 13:36:30.189698+00	\N	\N	f	f	f
+superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-10-23 13:36:30.189698+00	\N	\N	f	f	f
+off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-10-23 13:36:30.189698+00	\N	\N	f	f	f
+copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-10-23 13:36:30.191251+00	\N	\N	f	f	f
+has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-10-23 13:36:30.191251+00	\N	\N	f	f	f
+paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-10-23 13:36:30.191517+00	\N	\N	f	f	f
+has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-10-23 13:36:30.191517+00	\N	\N	f	f	f
+made-of	f	used-in	Source component is made of target material.	\N	2026-10-23 13:36:30.197291+00	\N	\N	f	f	f
+used-in	f	made-of	Source material is used in target component.	\N	2026-10-23 13:36:30.197291+00	\N	\N	f	f	f
+part-of	f	contains	Source component is structurally part of target component.	\N	2026-10-23 13:36:30.203332+00	\N	\N	f	f	f
+refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-23 13:36:30.208309+00	\N	\N	f	f	f
+awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-10-23 13:36:30.210831+00	\N	\N	f	f	f
+same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-10-23 13:36:30.221892+00	\N	\N	f	f	f
+conjunct-of	f	\N	Source claim hub is one atomic conjunct of the target compound claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-23 13:36:30.231432+00	\N	\N	f	f	f
+motivated-by	f	\N	Source hypothesis claim hub was provoked by the target artifact (paper, patent, or claim hub) — taproot advisory link; motivation, NOT evidence, and no evidence flows along it.	\N	2026-10-23 13:36:30.254681+00	\N	\N	f	f	f
+tests	f	\N	Source measurement artifact (computed pathway) executed the target hypothesis finding's pre-registered discriminating experiment — quest dialectic measurement-ruling edge; NOT evidence, and no evidence flows along it (sim rulings settle internal hypotheses only).	\N	2026-10-23 13:36:30.278647+00	\N	\N	f	f	f
+disputes	f	\N	Source artifact appears to conflict with the target — a non-blocking open question, free to file, resolved only by adjudication (which alone may derive a blocking `contradicts`).	\N	2026-10-23 13:36:30.292484+00	\N	\N	f	f	f
+analyzed-by	f	analysis-of	Source design/block is analyzed by the target result (finding/estimate with fidelity + validity scope); links.meta {sha, at} pins the analyzed design version.	\N	2026-10-23 13:36:30.294784+00	\N	\N	f	f	f
+analysis-of	f	analyzed-by	Source analysis result describes the target design/block.	\N	2026-10-23 13:36:30.294784+00	\N	\N	f	f	f
+made-by	f	makes	Source design/block is produced by the target make-tree (ref-level) or make-step (chunk-scoped); many-to-many — make-order need not align with design structure.	\N	2026-10-23 13:36:30.295106+00	\N	\N	f	f	f
+makes	f	made-by	Source make-tree/step produces the target design/block.	\N	2026-10-23 13:36:30.295106+00	\N	\N	f	f	f
+realized-by	f	realizes	Source ref is made real by the target (e.g. a cad design's catalog part -> the procurable component that realizes it)	\N	2026-10-23 13:36:30.296357+00	\N	\N	f	f	f
+realizes	f	realized-by	Source ref makes the target real (e.g. a procurable component -> the design that calls for it)	\N	2026-10-23 13:36:30.296357+00	\N	\N	f	f	f
+instance-of	f	has-instance	Source ref is a member of the target taxon (e.g. a material, a measured value -> the term it instantiates).	\N	2026-10-23 13:36:30.384815+00	\N	\N	f	f	f
+has-instance	f	instance-of	Source taxon has the target ref as a member.	\N	2026-10-23 13:36:30.384815+00	\N	\N	f	f	f
 contradicts	f	contradicted-by	Source contradicts target. Claim-graph contradicts is adjudication-derived and cannot be filed manually — file rel='disputes' instead (free, non-blocking). Only memory-to-memory contradicts is fileable.	\N	2026-05-21 20:06:05.179981+00	{memory}	{memory}	f	f	f
-draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-10-20 15:57:12.420924+00	\N	\N	t	f	f
-plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-10-20 15:57:12.499806+00	\N	\N	t	f	f
-dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-10-20 15:57:12.529159+00	\N	\N	t	f	f
-establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-10-20 15:57:12.598405+00	{datasheet,edgar,paper,patent,pathway}	{finding}	f	f	f
-corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-10-20 15:57:12.573033+00	{datasheet,edgar,paper,patent,pathway}	{draft,finding}	f	f	f
+draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-10-23 13:36:30.112966+00	\N	\N	t	f	f
+plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-10-23 13:36:30.154265+00	\N	\N	t	f	f
+dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-10-23 13:36:30.163206+00	\N	\N	t	f	f
+establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-10-23 13:36:30.202469+00	{datasheet,edgar,paper,patent,pathway}	{finding}	f	f	f
+corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-10-23 13:36:30.189698+00	{datasheet,edgar,paper,patent,pathway}	{draft,finding}	f	f	f
 specialises	f	generalises	Source is a specialisation of target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	t	t
-has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-10-20 15:57:12.520444+00	\N	\N	f	t	t
-serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-10-20 15:57:12.5246+00	\N	\N	f	t	t
-contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-10-20 15:57:12.600846+00	\N	\N	f	t	t
-quantifies	f	quantified-by	Source paper (chunk-scoped) states a number for the target measurand taxon. One shared edge per (chunk, measurand); each measure keeps its own anchor_scheme + span on its row, and measures.primary_link_id points at the edge.	\N	2026-10-20 15:57:12.912023+00	\N	\N	f	f	f
-quantified-by	f	quantifies	Source measurand taxon is quantified by the target paper chunk.	\N	2026-10-20 15:57:12.912023+00	\N	\N	f	f	f
-explains	f	\N	Source claim hub is the mechanism/cause that explains the target claim hub (taproot claim→claim advisory link from an "X because Y" decomposition; no evidence flow).	\N	2026-10-20 15:57:12.98656+00	\N	\N	f	f	f
-kept-distinct	t	\N	Both refs name parts that look mergeable but were deliberately kept separate; links.meta.reason carries the human's why. Suppresses the BOM consolidation nudge for the pair.	\N	2026-10-20 15:57:12.991572+00	\N	\N	f	f	f
+has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-10-23 13:36:30.160285+00	\N	\N	f	t	t
+serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-10-23 13:36:30.161205+00	\N	\N	f	t	t
+contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-10-23 13:36:30.203332+00	\N	\N	f	t	t
+quantifies	f	quantified-by	Source paper (chunk-scoped) states a number for the target measurand taxon. One shared edge per (chunk, measurand); each measure keeps its own anchor_scheme + span on its row, and measures.primary_link_id points at the edge.	\N	2026-10-23 13:36:30.415234+00	\N	\N	f	f	f
+quantified-by	f	quantifies	Source measurand taxon is quantified by the target paper chunk.	\N	2026-10-23 13:36:30.415234+00	\N	\N	f	f	f
+explains	f	\N	Source claim hub is the mechanism/cause that explains the target claim hub (taproot claim→claim advisory link from an "X because Y" decomposition; no evidence flow).	\N	2026-10-23 13:36:30.456611+00	\N	\N	f	f	f
+kept-distinct	t	\N	Both refs name parts that look mergeable but were deliberately kept separate; links.meta.reason carries the human's why. Suppresses the BOM consolidation nudge for the pair.	\N	2026-10-23 13:36:30.457996+00	\N	\N	f	f	f
+\.
+
+
+--
+-- Data for Name: resource_slots; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.resource_slots (host, resource, capacity, free, kind, updated_at) FROM stdin;
+api	llm-api:openrouter	16	16	hard	2026-10-23 13:36:30.500039+00
 \.
 
 
@@ -12251,16 +12388,16 @@ kept-distinct	t	\N	Both refs name parts that look mergeable but were deliberatel
 --
 
 COPY public.rxn_properties (prop_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, created_at) FROM stdin;
-yield	Yield	%	dimensionless	ratio	\N	\N	core	t	Fraction of theoretical product obtained. Isolated vs assay/NMR yield is a conditions key, not a separate property.	2026-10-20 15:57:12.798769+00
-temperature	Temperature	K	temperature	quantity	\N	\N	core	\N	Reaction temperature. Absolute scale (Kelvin).	2026-10-20 15:57:12.798769+00
-time	Reaction time	s	time	quantity	\N	\N	core	f	Elapsed reaction time.	2026-10-20 15:57:12.798769+00
-pressure	Pressure	Pa	pressure	quantity	\N	\N	core	\N	Reaction pressure.	2026-10-20 15:57:12.798769+00
-catalyst_loading	Catalyst loading	mol%	dimensionless	ratio	\N	\N	core	f	Catalyst charge relative to limiting reagent.	2026-10-20 15:57:12.798769+00
-scale	Scale	mol	amount	quantity	\N	\N	core	\N	Amount of limiting reagent. A yield at 1 mmol and at 1 mol are different claims.	2026-10-20 15:57:12.798769+00
-ee	Enantiomeric excess	%	dimensionless	ratio	\N	\N	core	t	Enantiomeric excess of the product.	2026-10-20 15:57:12.798769+00
-atom_economy	Atom economy	%	dimensionless	ratio	\N	\N	core	t	Mass of desired product over summed mass of reactants. Computable from stoichiometry alone.	2026-10-20 15:57:12.798769+00
-solvent	Solvent	\N	dimensionless	text	\N	\N	core	\N	Reaction solvent. Text in v1; a solvent entity is a later refinement.	2026-10-20 15:57:12.798769+00
-price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase price of a buyable compound. A price is a property of (compound, vendor, pack size, date) — vendor and pack size belong in conditions, the date in as_of, and the source licence in source_licence.	2026-10-20 15:57:12.798769+00
+yield	Yield	%	dimensionless	ratio	\N	\N	core	t	Fraction of theoretical product obtained. Isolated vs assay/NMR yield is a conditions key, not a separate property.	2026-10-23 13:36:30.296595+00
+temperature	Temperature	K	temperature	quantity	\N	\N	core	\N	Reaction temperature. Absolute scale (Kelvin).	2026-10-23 13:36:30.296595+00
+time	Reaction time	s	time	quantity	\N	\N	core	f	Elapsed reaction time.	2026-10-23 13:36:30.296595+00
+pressure	Pressure	Pa	pressure	quantity	\N	\N	core	\N	Reaction pressure.	2026-10-23 13:36:30.296595+00
+catalyst_loading	Catalyst loading	mol%	dimensionless	ratio	\N	\N	core	f	Catalyst charge relative to limiting reagent.	2026-10-23 13:36:30.296595+00
+scale	Scale	mol	amount	quantity	\N	\N	core	\N	Amount of limiting reagent. A yield at 1 mmol and at 1 mol are different claims.	2026-10-23 13:36:30.296595+00
+ee	Enantiomeric excess	%	dimensionless	ratio	\N	\N	core	t	Enantiomeric excess of the product.	2026-10-23 13:36:30.296595+00
+atom_economy	Atom economy	%	dimensionless	ratio	\N	\N	core	t	Mass of desired product over summed mass of reactants. Computable from stoichiometry alone.	2026-10-23 13:36:30.296595+00
+solvent	Solvent	\N	dimensionless	text	\N	\N	core	\N	Reaction solvent. Text in v1; a solvent entity is a later refinement.	2026-10-23 13:36:30.296595+00
+price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase price of a buyable compound. A price is a property of (compound, vendor, pack size, date) — vendor and pack size belong in conditions, the date in as_of, and the source licence in source_licence.	2026-10-23 13:36:30.296595+00
 \.
 
 
@@ -12270,7 +12407,7 @@ price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase
 
 COPY public.summarizers (name, prompt_template, config, is_default, description, deprecated_at, created_at) FROM stdin;
 rake-lemma	\N	{"model": "en_core_sci_sm", "lemmatizer": "scispacy", "max_keywords": 50, "max_phrase_words": 4, "min_phrase_words": 1}	t	RAKE phrase extraction + scispacy lemmatisation	\N	2026-05-21 20:06:05.179981+00
-llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-10-20 15:57:12.400968+00
+llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-10-23 13:36:30.106655+00
 \.
 
 
@@ -12515,4 +12652,10 @@ COPY public._migrations (version, applied_at, checksum, plugin) FROM stdin;
 0225_outbound_limiter_rows	1970-01-01 00:00:00+00	b6f4edf41247ea1fc1c625893373cee970dff8c70536495818fc0802e708df8b	precis
 0226_chunk_embeddings_kind_ann	1970-01-01 00:00:00+00	a0b67d63e370feb998ea3b3e2f85e56f21dce9affd578ed47583bf5643a07231	precis
 0227_card_description_chunk_kind	1970-01-01 00:00:00+00	28a9f162c227516d22daed0c84f56f96ab20a0a01e89284884f9b4bbf0fc2e3f	precis
+0228_se_measurands_esp_binding	1970-01-01 00:00:00+00	327e3cfc7b9304c0a7f5cc55e3998f6a8aa8b2a706fc948a4c4cfa11a4f4920f	precis
+0229_refs_retire_event_trail	1970-01-01 00:00:00+00	3f3574ee543a24d9658966ecdb8b6003a85aaa24aebce49c59b74bbae8407824	precis
+0230_workspace_trace_maker	1970-01-01 00:00:00+00	a1ced385c65d4e22a84588638f77e756af92889e318bd996af01fa6e1d815387	precis
+0231_se_species_measurands	1970-01-01 00:00:00+00	a66237d22c3b7ba3ce9a9082279689f975f7d7a11f7ccb648828f2a766c6dcae	precis
+0232_local_serving_metrics	1970-01-01 00:00:00+00	5cfb14d7845c327bf9513e3562c2cc41b43c3397906c9e9b0236838515c0c40a	precis
+0233_outbound_policy	1970-01-01 00:00:00+00	0db89d81016dbeb8d9fd76476bdd003c1087f0ef585a2a13eff8fa300740ad41	precis
 \.

@@ -149,8 +149,11 @@ _lock = threading.Lock()
 #: ``last_refill``) then, in the same statement, consume ``n`` tokens and
 #: ``n`` quota-units IF both lanes have room. A returned row means granted;
 #: no row means either lane refused (or the provider doesn't exist — the
-#: caller runs :data:`_SELECT_STATE_SQL` to tell those apart).
-_CONSUME_SQL = """
+#: caller runs :data:`_SELECT_STATE_SQL` to tell those apart). The same
+#: grant stamps ``last_used_at`` (the rate-less/pre-call counterpart is
+#: :func:`precis.utils.outbound_policy.touch_rateless_row`) and rolls
+#: ``refused_today`` over with ``day_used`` on the ``day_start`` rollover.
+_CONSUME_SQL_LEGACY = """
 WITH cur AS (
   SELECT provider, capacity, refill_per_sec, daily_cap,
          LEAST(capacity, tokens + refill_per_sec * EXTRACT(EPOCH FROM (now() - last_refill))) AS avail,
@@ -162,6 +165,28 @@ UPDATE external_rate_limits e
        last_refill = now(),
        day_used = cur.used_today + %s,
        day_start = CURRENT_DATE
+  FROM cur
+ WHERE e.provider = cur.provider
+   AND cur.avail >= %s
+   AND (cur.daily_cap IS NULL OR cur.used_today + %s <= cur.daily_cap)
+RETURNING e.tokens
+"""
+
+_CONSUME_SQL = """
+WITH cur AS (
+  SELECT provider, capacity, refill_per_sec, daily_cap,
+         LEAST(capacity, tokens + refill_per_sec * EXTRACT(EPOCH FROM (now() - last_refill))) AS avail,
+         CASE WHEN day_start < CURRENT_DATE THEN 0 ELSE day_used END AS used_today,
+         CASE WHEN day_start < CURRENT_DATE THEN 0 ELSE refused_today END AS refused_now
+    FROM external_rate_limits WHERE provider = %s FOR UPDATE
+)
+UPDATE external_rate_limits e
+   SET tokens = cur.avail - %s,
+       last_refill = now(),
+       day_used = cur.used_today + %s,
+       day_start = CURRENT_DATE,
+       last_used_at = now(),
+       refused_today = cur.refused_now
   FROM cur
  WHERE e.provider = cur.provider
    AND cur.avail >= %s
@@ -342,6 +367,24 @@ DELETE FROM external_rate_limits
 RETURNING provider
 """
 
+#: S1 variant: "idle" is the later of the token-lane's ``last_refill``
+#: and the rate-less ``last_used_at`` touch, and a row carrying any
+#: non-NULL override column is never evicted.
+_EVICT_IDLE_HOST_SQL_S1 = """
+DELETE FROM external_rate_limits
+ WHERE provider IN (
+       SELECT provider FROM external_rate_limits
+        WHERE provider LIKE 'host:%%'
+          AND GREATEST(last_refill, COALESCE(last_used_at, last_refill))
+              < now() - make_interval(secs => %s)
+          AND "class" IS NULL AND max_wait_s IS NULL AND connect_s IS NULL
+          AND read_s IS NULL AND total_s IS NULL AND on_refuse IS NULL
+          AND concurrency IS NULL
+        ORDER BY GREATEST(last_refill, COALESCE(last_used_at, last_refill))
+        LIMIT %s)
+RETURNING provider
+"""
+
 #: Host-row occupancy: ``(count, idle_count)`` — how full the cap is and how
 #: many rows an eviction could retire right now. Read by the
 #: ``limiter-host-cap`` condition (:mod:`precis.workers.conditions`).
@@ -352,14 +395,25 @@ SELECT count(*) AS n,
  WHERE provider LIKE 'host:%%'
 """
 
+HOST_ROW_OCCUPANCY_SQL_S1 = """
+SELECT count(*) AS n,
+       count(*) FILTER (
+           WHERE GREATEST(last_refill, COALESCE(last_used_at, last_refill))
+                 < now() - make_interval(secs => %(idle_s)s)
+             AND "class" IS NULL AND max_wait_s IS NULL AND connect_s IS NULL
+             AND read_s IS NULL AND total_s IS NULL AND on_refuse IS NULL
+             AND concurrency IS NULL) AS idle
+  FROM external_rate_limits
+ WHERE provider LIKE 'host:%%'
+"""
+
 
 def _evict_idle_host_rows(conn: Any) -> int:
     """Retire up to :data:`_EVICT_BATCH` ``host:`` rows idle past
     :data:`HOST_ROW_IDLE_EVICT_S`; returns how many went. Logged at INFO
     so a churning cap is visible without flooding."""
-    gone = conn.execute(
-        _EVICT_IDLE_HOST_SQL, (float(HOST_ROW_IDLE_EVICT_S), _EVICT_BATCH)
-    ).fetchall()
+    sql = _EVICT_IDLE_HOST_SQL_S1 if _s1_columns(conn) else _EVICT_IDLE_HOST_SQL
+    gone = conn.execute(sql, (float(HOST_ROW_IDLE_EVICT_S), _EVICT_BATCH)).fetchall()
     if gone:
         log.info(
             "rate_limit: host-row cap (%d) reached — evicted %d row(s) idle "
@@ -382,8 +436,11 @@ def _seed_host_row(conn: Any, provider: str, seed_row: tuple[int, float]) -> boo
         return True
     if _evict_idle_host_rows(conn) and conn.execute(_SEED_SQL, params).fetchone():
         return True
+    occupancy_sql = (
+        HOST_ROW_OCCUPANCY_SQL_S1 if _s1_columns(conn) else HOST_ROW_OCCUPANCY_SQL
+    )
     occupancy = conn.execute(
-        HOST_ROW_OCCUPANCY_SQL, {"idle_s": float(HOST_ROW_IDLE_EVICT_S)}
+        occupancy_sql, {"idle_s": float(HOST_ROW_IDLE_EVICT_S)}
     ).fetchone()
     if occupancy is not None and int(occupancy[0]) >= MAX_SEEDED_HOST_ROWS:
         _warn_unpaced(
@@ -395,10 +452,14 @@ def _seed_host_row(conn: Any, provider: str, seed_row: tuple[int, float]) -> boo
     return False
 
 
-#: Park a row for a server's Retry-After: drive its tokens negative so the
-#: refill takes ``seconds`` to bring them back to zero, for every host.
-#: ``LEAST`` keeps an already-longer park.
-_PARK_SQL = """
+#: Park a row for a server's Retry-After. Two writes in one statement
+#: (outbound-policy D1): ``parked_until`` rises to
+#: ``GREATEST(existing, now() + seconds)`` on EVERY row so a rate-less
+#: class (``llm-api``) still parks cross-host, and the existing
+#: negative-token write — drive tokens negative so the refill takes
+#: ``seconds`` to bring them back — applies only ``WHERE refill_per_sec
+#: > 0`` via the CASE arms (``LEAST`` keeps an already-longer park).
+_PARK_SQL_LEGACY = """
 UPDATE external_rate_limits
    SET tokens = LEAST(
            LEAST(capacity, tokens + refill_per_sec * EXTRACT(EPOCH FROM (now() - last_refill))),
@@ -406,6 +467,59 @@ UPDATE external_rate_limits
        last_refill = now()
  WHERE provider = %s AND refill_per_sec > 0
 """
+
+_PARK_SQL = """
+UPDATE external_rate_limits
+   SET parked_until = GREATEST(COALESCE(parked_until, now()),
+                               now() + make_interval(secs => %s)),
+       tokens = CASE WHEN refill_per_sec > 0 THEN LEAST(
+           LEAST(capacity, tokens + refill_per_sec * EXTRACT(EPOCH FROM (now() - last_refill))),
+           -refill_per_sec * %s)
+           ELSE tokens END,
+       last_refill = CASE WHEN refill_per_sec > 0 THEN now() ELSE last_refill END
+ WHERE provider = %s
+"""
+
+#: The outbound-policy S1 columns (migration 0233): detected once — a
+#: deploy whose code is ahead of the migration falls back to the pre-S1
+#: statements rather than disabling limiting fleet-wide. ``UndefinedColumn``
+#: caches ``False``; a ``True`` result is permanent. While ``False`` (or
+#: probing failed), the probe retires every :data:`_S1_REPROBE_S` seconds so
+#: a process started before the migration picks the columns up.
+_has_s1_cols: bool | None = None
+_s1_cols_at: float = 0.0
+_S1_REPROBE_S = 60.0
+
+_S1_COLS_PROBE = (
+    "SELECT parked_until, last_used_at, refused_today, last_refused_at, "
+    '"class", max_wait_s, connect_s, read_s, total_s, on_refuse, concurrency '
+    "FROM external_rate_limits LIMIT 0"
+)
+
+
+def _s1_columns(conn: Any) -> bool:
+    global _has_s1_cols, _s1_cols_at
+    if _has_s1_cols is True:
+        return True
+    if _s1_cols_at != 0.0 and time.monotonic() - _s1_cols_at < _S1_REPROBE_S:
+        return False
+    try:
+        conn.execute(_S1_COLS_PROBE)
+    except Exception as exc:
+        _s1_cols_at = time.monotonic()
+        if isinstance(exc, psycopg.errors.UndefinedColumn):
+            _has_s1_cols = False
+        return False
+    _has_s1_cols = True
+    _s1_cols_at = time.monotonic()
+    return True
+
+
+def s1_columns_present(conn: Any) -> bool:
+    """Whether the outbound-policy S1 columns exist (migration 0233) —
+    for callers that pick between pre-S1 and S1 statements."""
+    return _s1_columns(conn)
+
 
 #: Seconds between two fail-open warnings for one provider, so a dead
 #: limiter store is visible in the logs without flooding them.
@@ -553,7 +667,8 @@ def acquire(
                 return True
             started = time.perf_counter() if observer is not None else None
             try:
-                granted = conn.execute(_CONSUME_SQL, (provider, n, n, n, n)).fetchone()
+                sql = _CONSUME_SQL if _s1_columns(conn) else _CONSUME_SQL_LEGACY
+                granted = conn.execute(sql, (provider, n, n, n, n)).fetchone()
             finally:
                 _report_timing(observer, provider, "db", started)
             if granted is not None:
@@ -665,7 +780,13 @@ def park(provider: str, seconds: float) -> None:
         conn = _get_conn()
         if conn is None:
             return
-        conn.execute(_PARK_SQL, (float(seconds), provider))
+        sql = _PARK_SQL if _s1_columns(conn) else _PARK_SQL_LEGACY
+        params = (
+            (float(seconds), float(seconds), provider)
+            if sql is _PARK_SQL
+            else (float(seconds), provider)
+        )
+        conn.execute(sql, params)
     except Exception:
         _warn_fail_open(provider, "park")
 
@@ -679,4 +800,5 @@ __all__ = [
     "park",
     "refusal_counts",
     "require",
+    "s1_columns_present",
 ]

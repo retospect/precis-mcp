@@ -108,6 +108,10 @@ SEED_TABLES: tuple[str, ...] = (
     "design_load_cases",
     # per-provider outbound rate-limit config (0121): standalone.
     "external_rate_limits",
+    # shared concurrency capacity registry (0233): standalone — the
+    # seeded ('api','llm-api:openrouter') slot is contract a fresh
+    # install needs for the llm-api hold.
+    "resource_slots",
     # default RSS/Atom feed registry (0033): standalone.
     "news_sources",
 )

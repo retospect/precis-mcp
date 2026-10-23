@@ -837,6 +837,14 @@ SELECT l.provider, l.last_refill, t.n
  WHERE l.last_refill < now() - interval '24 hours'
 """
 
+#: S1 variant: "last consumed" = the later of the token-lane's
+#: ``last_refill`` and the rate-less ``last_used_at`` touch.
+_LIMITER_BYPASS_SQL_S1 = _LIMITER_BYPASS_SQL.replace(
+    "l.last_refill < now() - interval '24 hours'",
+    "GREATEST(l.last_refill, COALESCE(l.last_used_at, l.last_refill)) "
+    "< now() - interval '24 hours'",
+)
+
 
 def _probe_limiter_bypassed(store: Store) -> list[ConditionFinding]:
     """A fetcher is calling its provider but the provider's shared limiter
@@ -845,9 +853,16 @@ def _probe_limiter_bypassed(store: Store) -> list[ConditionFinding]:
     politeness and the daily quota are not in force."""
     import json
 
+    from precis.utils import rate_limit
+
     with store.pool.connection() as conn:
+        sql = (
+            _LIMITER_BYPASS_SQL_S1
+            if rate_limit.s1_columns_present(conn)
+            else _LIMITER_BYPASS_SQL
+        )
         rows = conn.execute(
-            _LIMITER_BYPASS_SQL,
+            sql,
             {
                 "events": list(_LIMITER_TRAFFIC_EVENTS),
                 "fetchers": json.dumps(_LIMITER_FETCHERS),
@@ -877,8 +892,13 @@ def _probe_limiter_host_cap(store: Store) -> list[ConditionFinding]:
     from precis.utils import rate_limit
 
     with store.pool.connection() as conn:
+        occupancy_sql = (
+            rate_limit.HOST_ROW_OCCUPANCY_SQL_S1
+            if rate_limit.s1_columns_present(conn)
+            else rate_limit.HOST_ROW_OCCUPANCY_SQL
+        )
         row = conn.execute(
-            rate_limit.HOST_ROW_OCCUPANCY_SQL,
+            occupancy_sql,
             {"idle_s": float(rate_limit.HOST_ROW_IDLE_EVICT_S)},
         ).fetchone()
     if row is None:

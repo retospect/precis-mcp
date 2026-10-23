@@ -282,7 +282,9 @@ def test_openai_transport_polite_for_external_only(
     url = "https://openrouter.ai/api/v1/chat/completions"
     plan[:] = [err(429, url), b"{}"]
     assert ot._UrllibTransport().post_json(url, {}, headers={}, timeout=5) == {}
-    assert rec.requires == ["host:openrouter.ai"] * 2
+    # outbound-policy S1: openrouter resolves to the rate-less llm-api
+    # class — no token lane; the 429 still parks the shared row.
+    assert rec.requires == []
     assert rec.parks == [("host:openrouter.ai", 4.0)]
 
     plan[:] = [err(401, url), b"{}"]
