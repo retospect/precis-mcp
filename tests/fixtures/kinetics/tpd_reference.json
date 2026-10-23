@@ -1,0 +1,699 @@
+{
+  "dataset": "tpd_reference",
+  "version": 1,
+  "generated_utc": "2026-10-23",
+  "spec": "docs/backlog/kinetics-engine-v2.md (D11, slice 9)",
+  "quest": "qu500066",
+  "comment": "Literature TPD and adsorption measurements for the kinetics-v2 validation set. Every numeric value carries `printed` (the verbatim substring as it appears in the cited chunk, OCR artifacts included) and `chunk` (a pc handle). Values are stored in the units printed in the paper; `value` is the interpreted number, `printed` is the evidence. A value with no chunk citation does not go in. `source_role`: primary = measured in the citing paper; quoted = the paper reports another work's value; reanalysis = this paper re-derives parameters from published spectra; review-compiled = compiled in a review; simulated = forward-simulated TPD, not a measurement.",
+  "measurements": [
+    {
+      "id": "co-pd111-pa498699",
+      "adsorbate": "CO",
+      "surface": "Pd(111)",
+      "paper": "pa498699",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "Initial isosteric adsorption energy; constant to ~2/3 of saturation, then drops stepwise by 2 kcal/mol at unit-cell compression. No dissociation.",
+      "values": {
+        "e_des_initial": {"value": 34, "unit": "kcal/mol", "printed": "34 kcal/moie", "chunk": "pc5145909", "note": "OCR 'moie' for 'mole'"},
+        "e_des_step_drop": {"value": 2, "unit": "kcal/mol", "printed": "2 kcal/mole", "chunk": "pc5145912"}
+      }
+    },
+    {
+      "id": "co-pd100-pa498699",
+      "adsorbate": "CO",
+      "surface": "Pd(100)",
+      "paper": "pa498699",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "Initial adsorption energy decreases continuously with coverage; a further ~7 kcal/mol drop at c(4x2)R45 compression. Max coverage ~0.65 ML at RT.",
+      "values": {
+        "e_des_initial": {"value": 36, "unit": "kcal/mol", "printed": "36 kcal/mole", "chunk": "pc5145915"},
+        "e_des_compression_drop": {"value": 7, "unit": "kcal/mol", "printed": "about 7 kcal/mole", "chunk": "pc5145916"}
+      }
+    },
+    {
+      "id": "co-pd110-pa498699",
+      "adsorbate": "CO",
+      "surface": "Pd(110)",
+      "paper": "pa498699",
+      "source_role": "primary",
+      "method": "isosteric+flash",
+      "note": "c(2x2) completed at 1.2 L; second flash-desorption state ~5 kcal/mol weaker than the first; metastable 2x1 state binds at 27 kcal/mol.",
+      "values": {
+        "e_des_second_state_offset": {"value": -5, "unit": "kcal/mol", "printed": "5 kcal/mole lower", "chunk": "pc5145924"},
+        "e_des_2x1": {"value": 27, "unit": "kcal/mol", "printed": "27 kcal/mole", "chunk": "pc5145925", "note": "from earlier LEED work cited therein"}
+      }
+    },
+    {
+      "id": "co-pd210-pa498699",
+      "adsorbate": "CO",
+      "surface": "Pd(210)",
+      "paper": "pa498699",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "Single flash-desorption peak shifting to lower T with coverage, reflecting continuous E_ad decrease.",
+      "values": {
+        "e_des_initial": {"value": 35, "unit": "kcal/mol", "printed": "35 kcal/mole", "chunk": "pc5145934"}
+      }
+    },
+    {
+      "id": "co-pd311-pa498699",
+      "adsorbate": "CO",
+      "surface": "Pd(311)",
+      "paper": "pa498699",
+      "source_role": "primary",
+      "method": "isosteric+flash",
+      "note": "Two flash-desorption states separated by ~4 kcal/mol, consistent with isosteric heats.",
+      "values": {
+        "e_des_state_splitting": {"value": 4, "unit": "kcal/mol", "printed": "about 4 kcal/mole", "chunk": "pc5145941"}
+      }
+    },
+    {
+      "id": "h2-pd110-pa498700",
+      "adsorbate": "H2",
+      "surface": "Pd(110)",
+      "paper": "pa498700",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Recombinative (2nd order) desorption of chemisorbed H; a second broad peak from bulk-dissolved H sits at higher T. E* derived from Tp with assumed nu and theta.",
+      "values": {
+        "t_p_K": {"value": 368, "unit": "K", "printed": "368 K", "chunk": "pc5145991"},
+        "beta_K_s": {"value": 17.4, "unit": "K/s", "printed": "17.4 K/set", "chunk": "pc5145991"},
+        "theta0": {"value": 0.5, "unit": "ML", "printed": "24.7x lOi atoms", "chunk": "pc5145991", "note": "theta=1/2, ~4.7e14 atoms/cm2; OCR garbled"},
+        "order": {"value": 2, "unit": null, "printed": "second order desorption kinetics", "chunk": "pc5145991"},
+        "nu_prefactor": {"value": 0.08, "unit": "cm2/(particle s)", "printed": "8 x 10e2 cm'/particles", "chunk": "pc5145991", "note": "assumed, from Ni(100)/H work; OCR '10e2' is 10^-2"},
+        "e_des": {"value": 23, "unit": "kcal/mol", "printed": "23 kcal/mole", "chunk": "pc5145991"}
+      }
+    },
+    {
+      "id": "h2-pd110-pa498700-isosteric",
+      "adsorbate": "H2",
+      "surface": "Pd(110)",
+      "paper": "pa498700",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "Initial heat of H2 adsorption, constant to >=1/2 saturation; absolute error ~1 kcal/mol.",
+      "values": {
+        "e_ads_initial": {"value": 24.4, "unit": "kcal/mol", "printed": "24.4 kcal/mole", "chunk": "pc5145975"},
+        "e_ads_error": {"value": 1, "unit": "kcal/mol", "printed": "f 1 kcal/mole", "chunk": "pc5145998"}
+      }
+    },
+    {
+      "id": "d2-pd110-pa498700-isosteric",
+      "adsorbate": "D2",
+      "surface": "Pd(110)",
+      "paper": "pa498700",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "D2 initial heat ~1.5 kcal/mol below H2.",
+      "values": {
+        "e_ads_initial": {"value": 22.8, "unit": "kcal/mol", "printed": "22.8 kcal/mole", "chunk": "pc5145998"}
+      }
+    },
+    {
+      "id": "h2-pd111-pa498700",
+      "adsorbate": "H2",
+      "surface": "Pd(111)",
+      "paper": "pa498700",
+      "source_role": "primary",
+      "method": "isosteric+flash",
+      "note": "TPD peak below 100 C plus a ~400 C feature from bulk-dissolved hydrogen.",
+      "values": {
+        "e_ads_initial": {"value": 20.8, "unit": "kcal/mol", "printed": "20.8 kcal/mole", "chunk": "pc5145975"},
+        "t_p_low_C": {"value": 100, "unit": "degC", "printed": "100°C", "chunk": "pc5146000", "note": "peak below 100 C"},
+        "t_p_bulk_C": {"value": 400, "unit": "degC", "printed": "4OO\"C", "chunk": "pc5146000", "note": "OCR '4OO' is 400; bulk-H reservoir, not a surface state"}
+      }
+    },
+    {
+      "id": "h2-pd111stepped-pa498700",
+      "adsorbate": "H2",
+      "surface": "Pd(S)-[9(111)x(111)]",
+      "paper": "pa498700",
+      "source_role": "primary",
+      "method": "isosteric",
+      "note": "E_ad matches Pd(111) at medium coverage and rises ~3 kcal/mol at low coverage (stronger step sites).",
+      "values": {
+        "e_ads_low_theta_boost": {"value": 3, "unit": "kcal/mol", "printed": "about 3 kcal/mole", "chunk": "pc5145975"}
+      }
+    },
+    {
+      "id": "h2-pd111-pa498701-beta",
+      "adsorbate": "H2",
+      "surface": "Pd(111)",
+      "paper": "pa498701",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "beta state = recombinative desorption of chemisorbed H, second order; Tp shifts 370 K (low theta) to 310 K (saturation). Fig-1 series beta=5.8 K/s.",
+      "values": {
+        "t_p_K_sat": {"value": 310, "unit": "K", "printed": "310 K", "chunk": "pc5145844"},
+        "t_p_K_low_theta": {"value": 370, "unit": "K", "printed": "370 K", "chunk": "pc5145854"},
+        "beta_K_s": {"value": 5.8, "unit": "K/s", "printed": "5.8 K/s", "chunk": "pc5145855"},
+        "order": {"value": 2, "unit": null, "printed": "second-order recombinative desorption", "chunk": "pc5145844"},
+        "theta0_dose_K": {"value": 80, "unit": "K", "printed": "80 K", "chunk": "pc5145844", "note": "dosing temperature Ts, not coverage"}
+      }
+    },
+    {
+      "id": "h2-pd111-pa498701-alpha",
+      "adsorbate": "H2",
+      "surface": "Pd(111)",
+      "paper": "pa498701",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "alpha state = decomposition of near-surface palladium hydride; appears for Ts 90-140 K after >20 L; does not saturate to 10000 L; near-zeroth order. NOT a clean surface-state reference (subsurface reservoir).",
+      "values": {
+        "t_p_K_initial": {"value": 150, "unit": "K", "printed": "150 K", "chunk": "pc5145856"},
+        "t_p_K_abstract": {"value": 170, "unit": "K", "printed": "170 K", "chunk": "pc5145844", "note": "appears initially near 170 K"},
+        "beta_K_s": {"value": 3.5, "unit": "K/s", "printed": "3.5 K/s", "chunk": "pc5145857"},
+        "order": {"value": 0, "unit": null, "printed": "near-zeroth-order desorption kinetics", "chunk": "pc5145844"}
+      }
+    },
+    {
+      "id": "h2-pd111-pa498701-solidsolution",
+      "adsorbate": "H2",
+      "surface": "Pd(111)",
+      "paper": "pa498701",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "Broad feature near 800 K from hydrogen in solid solution (bulk reservoir).",
+      "values": {
+        "t_p_K": {"value": 800, "unit": "K", "printed": "800 K", "chunk": "pc5145845"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498705",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498705",
+      "source_role": "primary",
+      "method": "arrhenius-isothermal+tst",
+      "note": "Velocity-resolved isothermal desorption rates 620-800 K; cleanest NO/Pd binding energy in the set. Not a TPD measurement (no ramp).",
+      "values": {
+        "e_a_arrhenius": {"value": 1.71, "unit": "eV", "uncertainty": 0.03, "printed": "1.71 ± 0.03 eV", "chunk": "pc4490932"},
+        "nu_prefactor": {"value": "10^15.65", "unit": "s-1", "uncertainty": 0.2, "printed": "1015.65±0.20 s–1", "chunk": "pc4490932", "note": "10^15.65 s-1; superscripts flattened in text"},
+        "e_des_tst": {"value": 1.766, "unit": "eV", "uncertainty": 0.024, "printed": "1.766 ± 0.024", "chunk": "pc4490988", "note": "terrace binding energy, TST fit"},
+        "e_diffusion": {"value": 0.29, "unit": "eV", "uncertainty": 0.11, "printed": "0.29 ± 0.11", "chunk": "pc4490988"}
+      }
+    },
+    {
+      "id": "no-pd332-pa498705",
+      "adsorbate": "NO",
+      "surface": "Pd(332)",
+      "paper": "pa498705",
+      "source_role": "primary",
+      "method": "arrhenius-isothermal+tst",
+      "note": "Stepped analogue; terrace binding energy identical, step-terrace stabilisation -0.030+0.015 eV.",
+      "values": {
+        "e_a_arrhenius": {"value": 1.73, "unit": "eV", "uncertainty": 0.02, "printed": "1.73 ± 0.02 eV", "chunk": "pc4490932"},
+        "nu_prefactor": {"value": "10^15.8", "unit": "s-1", "uncertainty": 0.15, "printed": "1015.80±0.15 s–1", "chunk": "pc4490932"},
+        "e_des_tst": {"value": 1.766, "unit": "eV", "uncertainty": 0.024, "printed": "1.766 ± 0.024", "chunk": "pc4490988"},
+        "delta_est": {"value": -0.03, "unit": "eV", "uncertainty": 0.015, "printed": "–0.030+0.015", "chunk": "pc4490988"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498706",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498706",
+      "source_role": "primary",
+      "method": "ttpd-complete",
+      "note": "Molecular desorption near 500 K; E_des and nu strongly coverage dependent (E-nu compensation). Dosed at 300 K.",
+      "values": {
+        "t_p_K": {"value": 500, "unit": "K", "printed": "500 K", "chunk": "pc4490743"},
+        "beta_K_s": {"value": 4.0, "unit": "K/s", "printed": "4.0 K/s", "chunk": "pc4490752"},
+        "e_des_theta_lo": {"value": 180, "unit": "kJ/mol", "printed": "180 kJ/mol", "chunk": "pc4490765"},
+        "e_des_theta_hi": {"value": 90, "unit": "kJ/mol", "printed": "90 kJ/mol", "chunk": "pc4490765"},
+        "nu_theta_lo": {"value": "10^17", "unit": "s-1", "printed": "1Or7 s-l", "chunk": "pc4490765", "note": "OCR '1Or7' is 10^17"},
+        "nu_theta_hi": {"value": "10^13", "unit": "s-1", "printed": "10' s-l", "chunk": "pc4490765", "note": "OCR '10'' is 10^13"}
+      }
+    },
+    {
+      "id": "no-pd112-pa498706",
+      "adsorbate": "NO",
+      "surface": "Pd(112)",
+      "paper": "pa498706",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "Substantial dissociation on heating; N2 and N2O desorb in the 450-550 K range alongside molecular NO. Complication: dissociation channel.",
+      "values": {
+        "beta_K_s": {"value": 2.0, "unit": "K/s", "printed": "2.0 K/s", "chunk": "pc4490752"},
+        "product_window_K": {"value": "450-550", "unit": "K", "printed": "450-550", "chunk": "pc4490881", "note": "N2/N2O desorption window"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498707-beta3",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498707",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "beta3 state: first order with coverage-dependent E_des; nu=1e16 s-1 assumed (as suggested for NO). Tp 540 K at 0.02 ML, 510 K at 0.43 ML (saturated).",
+      "values": {
+        "t_p_K_low_theta": {"value": 540, "unit": "K", "printed": "540 K", "chunk": "pc5145082"},
+        "t_p_K_sat": {"value": 510, "unit": "K", "printed": "510 K", "chunk": "pc5145082"},
+        "theta0_low_ML": {"value": 0.02, "unit": "ML", "printed": "0.02 ML", "chunk": "pc5145082"},
+        "theta0_sat_ML": {"value": 0.43, "unit": "ML", "printed": "0.43 ML", "chunk": "pc5145082"},
+        "beta_K_s": {"value": 7.9, "unit": "K/s", "printed": "7.9 K/s", "chunk": "pc5145077"},
+        "e_des": {"value": 38, "unit": "kcal/mol", "printed": "38 kcal mol", "chunk": "pc5145084"},
+        "nu_prefactor": {"value": "10^16", "unit": "s-1", "printed": "1 X 1Ol6 s-l", "chunk": "pc5145080", "note": "assumed for first-order NO; OCR '1Ol6' is 10^16"},
+        "order": {"value": 1, "unit": null, "printed": "first-order process", "chunk": "pc5145083"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498707-beta2-beta1",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498707",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Low-temperature states filled sequentially to saturation (0.75 ML total NO coverage): beta2 at 290 K, beta1 at 270 K.",
+      "values": {
+        "t_p_K_beta2": {"value": 290, "unit": "K", "printed": "290", "chunk": "pc5145082"},
+        "t_p_K_beta1": {"value": 270, "unit": "K", "printed": "270 K", "chunk": "pc5145082"},
+        "e_des_beta2": {"value": 21, "unit": "kcal/mol", "printed": "21, and 38", "chunk": "pc5145084", "note": "beta1, beta2, beta3 = 20, 21, 38 kcal/mol"},
+        "e_des_beta1": {"value": 20, "unit": "kcal/mol", "printed": "20, 21", "chunk": "pc5145084"},
+        "theta_sat_ML": {"value": 0.75, "unit": "ML", "printed": "0.75 ML", "chunk": "pc5145081"},
+        "beta_K_s": {"value": 7.9, "unit": "K/s", "printed": "7.9 K/s", "chunk": "pc5145077"}
+      }
+    },
+    {
+      "id": "no2-pd111-pa498707",
+      "adsorbate": "NO2",
+      "surface": "Pd(111)",
+      "paper": "pa498707",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Molecular NO2 (mu-N,O nitrito) at 110 K; dissociates at 180 K below 0.25 ML (irreversible). Reversible states delta (280->230 K, 16 kcal/mol) and gamma (240 K, 14 kcal/mol); N2O4 multilayer at 140 K.",
+      "values": {
+        "theta_irreversible_ML": {"value": 0.25, "unit": "ML", "printed": "0.25 ML", "chunk": "pc5145068"},
+        "t_dissociation_K": {"value": 180, "unit": "K", "printed": "180 K", "chunk": "pc5145068"},
+        "t_p_K_delta": {"value": 280, "unit": "K", "printed": "280 K", "chunk": "pc5145092"},
+        "t_p_K_gamma": {"value": 240, "unit": "K", "printed": "240 K", "chunk": "pc5145092"},
+        "e_des_delta": {"value": 16, "unit": "kcal/mol", "printed": "16 and 14 kcal mol", "chunk": "pc5145094"},
+        "e_des_gamma": {"value": 14, "unit": "kcal/mol", "printed": "14 kcal mol", "chunk": "pc5145094"},
+        "t_p_K_multilayer": {"value": 140, "unit": "K", "printed": "140 K", "chunk": "pc5145093"},
+        "beta_K_s": {"value": 7.9, "unit": "K/s", "printed": "7.9 K/s", "chunk": "pc5145077"}
+      }
+    },
+    {
+      "id": "o2-pd111-pa498707",
+      "adsorbate": "O2",
+      "surface": "Pd(111)",
+      "paper": "pa498707",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Recombinative O2 desorption from O(a) produced by NO2 exposure; second order, Tp 860->790 K over 0.6-2.8 L; E_des 49 kcal/mol for theta_O 0-0.4 ML.",
+      "values": {
+        "t_p_K_low": {"value": 860, "unit": "K", "printed": "860 K", "chunk": "pc5145088"},
+        "t_p_K_high": {"value": 790, "unit": "K", "printed": "790 K", "chunk": "pc5145088"},
+        "e_des": {"value": 49, "unit": "kcal/mol", "printed": "49 kcal mol", "chunk": "pc5145088"},
+        "order": {"value": 2, "unit": null, "printed": "second-order kinetics", "chunk": "pc5145088"},
+        "theta0_ML": {"value": "0.0-0.4", "unit": "ML", "printed": "0.0-0.4 ML", "chunk": "pc5145088"},
+        "beta_K_s": {"value": 7.9, "unit": "K/s", "printed": "7.9 K/s", "chunk": "pc5145077"}
+      }
+    },
+    {
+      "id": "no-pd111stepped-pa498708",
+      "adsorbate": "NO",
+      "surface": "Pd(111) stepped",
+      "paper": "pa498708",
+      "source_role": "primary",
+      "method": "isothermal+isosteric-rates",
+      "note": "Desorption kinetics from isothermal and isosteric desorption rates (not Redhead). Low-coverage binding energy 1.52 eV with strong lateral interactions; saturation 1 ML below 200 K; heating rates variable 1-100 K/s; dissociation only at steps above 400 K (E_diss=1.2 eV, nu_diss=4x10^11 s-1).",
+      "values": {
+        "e_des_theta_lo": {"value": 1.52, "unit": "eV", "printed": "1.52 eV", "chunk": "pc5145466"},
+        "nu_prefactor": {"value": "2.6e16", "unit": "s-1", "printed": "2.6 x lOI s-l", "chunk": "pc5145466", "note": "exponent OCR-garbled ('lOI'); consistent with 10^16 s-1"},
+        "e_diss": {"value": 1.2, "unit": "eV", "printed": "1.2 eV", "chunk": "pc5145383"},
+        "nu_diss": {"value": "4e11", "unit": "s-1", "printed": "4 **x** IO\" s- '", "chunk": "pc5145383", "note": "OCR 'IO\"' is 10^11"},
+        "beta_K_s_range": {"value": "1-100", "unit": "K/s", "printed": "1 and 100 K/s", "chunk": "pc5145394"},
+        "theta_sat_ML": {"value": 1.0, "unit": "ML", "printed": "one monolayer", "chunk": "pc5145382"}
+      }
+    },
+    {
+      "id": "nh3-pd111-pa498709-alpha1",
+      "adsorbate": "NH3",
+      "surface": "Pd(111)",
+      "paper": "pa498709",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "alpha1 = low-coverage chemisorbed NH3, Tp 279 K, broadens/shifts to lower T with coverage (274->232 K); molecular desorption, no decomposition products detected. Dosed at 90 K, beta=1 K/s.",
+      "values": {
+        "t_p_K": {"value": 279, "unit": "K", "printed": "279 K", "chunk": "pc4515417"},
+        "t_p_shift_K": {"value": "274-232", "unit": "K", "printed": "274 to 232 K", "chunk": "pc4515447"},
+        "beta_K_s": {"value": 1, "unit": "K/s", "printed": "1 K·s", "chunk": "pc4515434"},
+        "dose_T_K": {"value": 90, "unit": "K", "printed": "90 K", "chunk": "pc4515417"}
+      }
+    },
+    {
+      "id": "nh3-pd111-pa498709-alpha2",
+      "adsorbate": "NH3",
+      "surface": "Pd(111)",
+      "paper": "pa498709",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "alpha2 = second submonolayer state (H-bonded NH3), appears around 0.6 MLE, Tp ~164 K. alpha3 = multilayer (no Tp stated in text).",
+      "values": {
+        "t_p_K": {"value": 164, "unit": "K", "printed": "164 K", "chunk": "pc4515417"},
+        "theta_appear_MLE": {"value": 0.6, "unit": "MLE", "printed": "0.6 MLE", "chunk": "pc4515417"},
+        "beta_K_s": {"value": 1, "unit": "K/s", "printed": "1 K·s", "chunk": "pc4515434"}
+      }
+    },
+    {
+      "id": "co-pd111-pa498703",
+      "adsorbate": "CO",
+      "surface": "Pd(111)",
+      "paper": "pa498703",
+      "source_role": "primary",
+      "method": "calorimetry",
+      "note": "Single-crystal adsorption microcalorimetry at 300 K. Initial heat 149+-4 kJ/mol falling to a non-zero steady-state 75+-9 kJ/mol near 0.5 ML. The D11 anchor for CO/Pd(111).",
+      "values": {
+        "e_ads_initial": {"value": 149, "unit": "kJ/mol", "uncertainty": 4, "printed": "149 4 kJ mol", "chunk": "pc4491126", "note": "text renders '149 4' with the ± dropped"},
+        "e_ads_steady_state": {"value": 75, "unit": "kJ/mol", "uncertainty": 9, "printed": "75 9 kJ mol", "chunk": "pc4491126"},
+        "theta_sat_ML": {"value": 0.5, "unit": "ML", "printed": "0.5 ML", "chunk": "pc4491126"}
+      }
+    },
+    {
+      "id": "co-pd111-o-pa498703",
+      "adsorbate": "CO",
+      "surface": "Pd(111)/O-precovered",
+      "paper": "pa498703",
+      "source_role": "primary",
+      "method": "calorimetry",
+      "note": "Oxygen pre-coverage lowers the initial CO heat by ~45 kJ/mol.",
+      "values": {
+        "e_ads_initial": {"value": 104, "unit": "kJ/mol", "uncertainty": 4, "printed": "104 4 kJ mol", "chunk": "pc4491161"}
+      }
+    },
+    {
+      "id": "o2-pd111-pa498703",
+      "adsorbate": "O2",
+      "surface": "Pd(111)",
+      "paper": "pa498703",
+      "source_role": "primary",
+      "method": "calorimetry",
+      "note": "Initial differential adsorption heat per O2 molecule on pristine Pd(111); Pd nanoparticles reach ~280 kJ/mol.",
+      "values": {
+        "e_ads_initial": {"value": 205, "unit": "kJ/mol", "printed": "205 kJ mol", "chunk": "pc4491149"}
+      }
+    },
+    {
+      "id": "co-pd-nanoparticle-pa498703",
+      "adsorbate": "CO",
+      "surface": "Pd nanoparticles (Fe3O4-supported)",
+      "paper": "pa498703",
+      "source_role": "primary",
+      "method": "calorimetry",
+      "note": "Initial heat decreases with particle size: 126+-3 (8 nm) to 106+-1 (2 nm); O-precovered particles 95+-2 kJ/mol.",
+      "values": {
+        "e_ads_8nm": {"value": 126, "unit": "kJ/mol", "uncertainty": 3, "printed": "126 3 kJ mol", "chunk": "pc4491129"},
+        "e_ads_2nm": {"value": 106, "unit": "kJ/mol", "uncertainty": 1, "printed": "106 1 kJ mol", "chunk": "pc4491129"},
+        "e_ads_o_precovered": {"value": 95, "unit": "kJ/mol", "uncertainty": 2, "printed": "95 2 kJ mol", "chunk": "pc4491161"}
+      }
+    },
+    {
+      "id": "co-pd-nanoparticle-pa498809",
+      "adsorbate": "CO",
+      "surface": "Pd nanoparticles (Fe3O4-supported)",
+      "paper": "pa498809",
+      "source_role": "primary",
+      "method": "calorimetry",
+      "note": "Same system, earlier report: initial heat 126+-7 (8 nm) to 106+-2 (smallest 1.8 nm); steady-state levels at 75+-9 kJ/mol at 0.6 ML. One-page source; ± dropped in extraction ('1267' = 126+-7).",
+      "values": {
+        "e_ads_8nm": {"value": 126, "unit": "kJ/mol", "uncertainty": 7, "printed": "1267 kJ mol", "chunk": "pc4489438"},
+        "e_ads_1_8nm": {"value": 106, "unit": "kJ/mol", "uncertainty": 2, "printed": "1062 kJ mol", "chunk": "pc4489434"},
+        "e_ads_steady_state": {"value": 75, "unit": "kJ/mol", "uncertainty": 9, "printed": "759 kJ mol", "chunk": "pc4489434"},
+        "theta_sat_ML": {"value": 0.6, "unit": "ML", "printed": "0.6 ML", "chunk": "pc4489434"},
+        "e_ads_pd111_ref": {"value": 149, "unit": "kJ/mol", "printed": "149 kJ mol", "chunk": "pc4489438"}
+      }
+    },
+    {
+      "id": "h2-pd111-pa498704",
+      "adsorbate": "H2",
+      "surface": "Pd(111)",
+      "paper": "pa498704",
+      "source_role": "primary",
+      "method": "isothermal-vrk",
+      "note": "Velocity-resolved kinetics + absorption enthalpies fitted with a recombination-diffusion model. Isotope-independent classical dissociative adsorption energy; ZPE-corrected per isotopologue. Not TPD.",
+      "values": {
+        "e_ads_dissociative": {"value": 1.02, "unit": "eV", "uncertainty": 0.03, "printed": "1.02 ± 0.03 eV", "chunk": "pc4491050", "note": "per H2, classical"},
+        "e_ads_h2_zpe": {"value": 0.98, "unit": "eV", "printed": "0.98", "chunk": "pc4491050"},
+        "e_ads_d2_zpe": {"value": 1.00, "unit": "eV", "printed": "1.00", "chunk": "pc4491050"},
+        "e_abs_bulk": {"value": -0.093, "unit": "eV", "uncertainty": 0.005, "printed": "– 0.093 ± 0.005 eV", "chunk": "pc4491050", "note": "gas->bulk absorption, classical"},
+        "e_surf_to_bulk": {"value": 0.46, "unit": "eV", "uncertainty": 0.01, "printed": "0.46 ± 0.01 eV", "chunk": "pc4491050"}
+      }
+    },
+    {
+      "id": "co-saa-pa498711",
+      "adsorbate": "CO",
+      "surface": "Pd/Au(111), Pd/Cu(111), Pd/Ag(111) SAAs",
+      "paper": "pa498711",
+      "source_role": "simulated",
+      "method": "kmc-sim",
+      "note": "Zacros-simulated CO TPD on SAAs, 1 K/s ramp; Pd-doped SAAs drop Tp >220 K (Au,Cu hosts) and 185 K (Ag) below pure Pd. Method template, not a measurement.",
+      "values": {
+        "beta_K_s": {"value": 1, "unit": "K/s", "printed": "1 K s−1", "chunk": "pc4490657"},
+        "tp_drop_au_cu_K": {"value": 220, "unit": "K", "printed": "220 K", "chunk": "pc4490660"},
+        "tp_drop_ag_K": {"value": 185, "unit": "K", "printed": "185 K", "chunk": "pc4490660"}
+      }
+    },
+    {
+      "id": "h2-pdau111-pa498712",
+      "adsorbate": "H2",
+      "surface": "PdAu(111) surface alloy (20-40% Pd)",
+      "paper": "pa498712",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "Two desorption peaks at 235 K and 325 K for Pd surface concentrations 20-40%; high-T peak assigned to separated Pd3 hollow ensembles, low-T to Pd2Au or compact-Pd4 sites. Glyph-damaged source.",
+      "values": {
+        "t_p_K": {"value": "235,325", "unit": "K", "printed": "235 K and 325 K", "chunk": "pc4490583"},
+        "pd_surface_pct": {"value": "20-40", "unit": "%", "printed": "20–40%", "chunk": "pc4490583"}
+      }
+    },
+    {
+      "id": "h2-pdau-saa-pa498715",
+      "adsorbate": "H2",
+      "surface": "Pd/Au(111) SAA (0.01-0.05 ML Pd)",
+      "paper": "pa498715",
+      "source_role": "primary",
+      "method": "tpd",
+      "note": "Isolated Pd atoms dissociate H2 at 85 K dosing; recombinative desorption from single Pd atoms at 175 K; a 110 K feature is H spilled onto Au.",
+      "values": {
+        "t_p_K_pd": {"value": 175, "unit": "K", "printed": "175 K", "chunk": "pc4490322"},
+        "t_p_K_au": {"value": 110, "unit": "K", "printed": "110 K", "chunk": "pc4490322"},
+        "pd_loading_ML": {"value": "0.01-0.05", "unit": "ML", "printed": "0.01 and 0.05 ML", "chunk": "pc4490322"},
+        "dose_T_K": {"value": 85, "unit": "K", "printed": "85 K", "chunk": "pc4490322"}
+      }
+    },
+    {
+      "id": "h2-w110-pa498687",
+      "adsorbate": "H2",
+      "surface": "W(110)",
+      "paper": "pa498687",
+      "source_role": "review-compiled",
+      "method": "two-state analysis (compiled)",
+      "note": "King review: two beta peaks, second order each, equal saturation coverages; saturation 1.4e15 H atoms/cm2 ~ W surface density.",
+      "values": {
+        "e_des_beta1": {"value": 113, "unit": "kJ/mol", "printed": "113 and 138 kJ mol", "chunk": "pc5145283"},
+        "e_des_beta2": {"value": 138, "unit": "kJ/mol", "printed": "138 kJ mol", "chunk": "pc5145283"},
+        "order": {"value": 2, "unit": null, "printed": "second order kinetics", "chunk": "pc5145283"}
+      }
+    },
+    {
+      "id": "h2-w100-pa498687",
+      "adsorbate": "H2",
+      "surface": "W(100)",
+      "paper": "pa498687",
+      "source_role": "review-compiled",
+      "method": "two-state analysis (compiled)",
+      "note": "beta1 first order 135 kJ/mol, beta2 second order 106 kJ/mol; saturation 2 H per W, beta1:beta2 = 2:1.",
+      "values": {
+        "e_des_beta1": {"value": 135, "unit": "kJ/mol", "printed": "135 kJ mol-l", "chunk": "pc5145288"},
+        "e_des_beta2": {"value": 106, "unit": "kJ/mol", "printed": "106 kJ mol-l", "chunk": "pc5145288"},
+        "order_beta2": {"value": 2, "unit": null, "printed": "second order", "chunk": "pc5145288"}
+      }
+    },
+    {
+      "id": "co-ni110-pa498688",
+      "adsorbate": "CO",
+      "surface": "Ni(110)",
+      "paper": "pa498688",
+      "source_role": "reanalysis",
+      "method": "peak-shape invariants",
+      "note": "Chan-Aris-Weinberg reanalysis of Falconer-Madix spectra (theta=0.041, 0.013): Ed=30.0 kcal/mol, nu=4e14 s-1; original analysis 33+-1 kcal/mol, 8.5e15 s-1. First order.",
+      "values": {
+        "e_des": {"value": 30.0, "unit": "kcal/mol", "printed": "30.0 kcal/mole", "chunk": "pc5144967"},
+        "nu_prefactor": {"value": "4e14", "unit": "s-1", "printed": "4 X 1014", "chunk": "pc5144967", "note": "OCR '1014' is 10^14"},
+        "e_des_original": {"value": 33, "unit": "kcal/mol", "uncertainty": 1, "printed": "33 ±1 kcal/mole", "chunk": "pc5144967"},
+        "nu_original": {"value": "8.5e15", "unit": "s-1", "printed": "8.5 X 1015", "chunk": "pc5144967"},
+        "theta0": {"value": "0.041,0.013", "unit": "ML", "printed": "0.041", "chunk": "pc5144966"},
+        "order": {"value": 1, "unit": null, "printed": "first-order desorption kinetics", "chunk": "pc5144966"}
+      }
+    },
+    {
+      "id": "co-pt110-pa498688",
+      "adsorbate": "CO",
+      "surface": "Pt(110)",
+      "paper": "pa498688",
+      "source_role": "reanalysis",
+      "method": "peak-shape invariants",
+      "note": "Reanalysis of McCabe-Schmidt spectra: low-θ peak W1/2=50 K at Tp=460 K; Ed=19.2-1.9*theta kcal/mol, nu=3.8e11 s-1. Original: Ed=26.0-2.5*theta, nu=1e13 s-1.",
+      "values": {
+        "t_p_K": {"value": 460, "unit": "K", "printed": "460 K", "chunk": "pc5144970"},
+        "fwhm_K": {"value": 50, "unit": "K", "printed": "50 K", "chunk": "pc5144970"},
+        "e_des_low_theta": {"value": 19.5, "unit": "kcal/mol", "printed": "19.5 kcal/mole", "chunk": "pc5144970"},
+        "e_des_theta_form": {"value": "19.2-1.9*theta", "unit": "kcal/mol", "printed": "19.2 — 1.90", "chunk": "pc5144970"},
+        "e_des_original_form": {"value": "26.0-2.5*theta", "unit": "kcal/mol", "printed": "26.0 — 2.5", "chunk": "pc5144969"},
+        "nu_prefactor": {"value": "3.8e11", "unit": "s-1", "printed": "3.8 X l0~s", "chunk": "pc5144970", "note": "OCR 'l0~s' is 10^11 s-1"}
+      }
+    },
+    {
+      "id": "xe-w111-pa498688",
+      "adsorbate": "Xe",
+      "surface": "W(111)",
+      "paper": "pa498688",
+      "source_role": "reanalysis",
+      "method": "peak-shape invariants",
+      "note": "Dresser-Madey-Yates data; large pumping time constant (tau=1.3 s) distorts the spectrum; beta=5.15 K/s, theta=0.134, first order.",
+      "values": {
+        "beta_K_s": {"value": 5.15, "unit": "K/s", "printed": "5.15 K/s", "chunk": "pc5144973"},
+        "pumping_tau_s": {"value": 1.3, "unit": "s", "printed": "1.3 s", "chunk": "pc5144973"},
+        "theta0": {"value": 0.134, "unit": "ML", "printed": "0.134", "chunk": "pc5144973"},
+        "order": {"value": 1, "unit": null, "printed": "first order", "chunk": "pc5144973"}
+      }
+    },
+    {
+      "id": "co-co10m10-pa498689",
+      "adsorbate": "CO",
+      "surface": "Co(10-10)",
+      "paper": "pa498689",
+      "source_role": "primary",
+      "method": "leading-edge",
+      "note": "Habenschaden-Kuppers leading-edge (ln p vs 1/T) evaluation of their own CO flash spectra; E coverage-independent within scatter.",
+      "values": {
+        "e_des": {"value": 25, "unit": "kcal/mol", "printed": "25 kcal/mol", "chunk": "pc5146331"},
+        "e_des_error": {"value": 1, "unit": "kcal/mol", "printed": "1 kcal/mol", "chunk": "pc5146331"},
+        "beta_K_s": {"value": 5, "unit": "K/s", "printed": "5 K s", "chunk": "pc5146328"},
+        "order": {"value": 1, "unit": null, "printed": "first order desorption", "chunk": "pc5146332"}
+      }
+    },
+    {
+      "id": "o2-pt111-pa498693",
+      "adsorbate": "O2",
+      "surface": "Pt(111)",
+      "paper": "pa498693",
+      "source_role": "primary",
+      "method": "dft-scaled-peak-family-fit",
+      "note": "Measured O2 TPD at 2 K/s dosed at 100 K (theta_sat=0.25 ML) fitted by simulated spectra with a DFT-derived coverage-dependent barrier scaled by a BEP relation (alpha=-0.47, kappa=0.01). DFT adsorption-energy polynomial at theta->0 gives E_ads=-4.1488 eV. Tp values are in the figure only.",
+      "values": {
+        "beta_K_s": {"value": 2, "unit": "K/s", "printed": "2 K/s", "chunk": "pc5146048"},
+        "theta_sat_ML": {"value": 0.25, "unit": "ML", "printed": "0.25 ML", "chunk": "pc5146050"},
+        "dose_T_K": {"value": 100, "unit": "K", "printed": "100 K", "chunk": "pc5146047"},
+        "e_ads_theta0_intercept": {"value": -4.1488, "unit": "eV", "printed": "4.1488", "chunk": "pc5146083", "note": "4th-order polynomial intercept; sign per E_ads convention"},
+        "bep_alpha": {"value": -0.47, "unit": null, "printed": "a =-0.47", "chunk": "pc5146091"},
+        "bep_kappa": {"value": 0.01, "unit": null, "printed": "j = 0.01", "chunk": "pc5146091"},
+        "order": {"value": 2, "unit": null, "printed": "secondorder simulated", "chunk": "pc5146066"}
+      }
+    },
+    {
+      "id": "o2-pd111-pa498693-quoted",
+      "adsorbate": "O2",
+      "surface": "Pd(111)",
+      "paper": "pa498693",
+      "source_role": "quoted",
+      "method": "redhead-2nd-order",
+      "note": "Literature O2/Pd(111) barriers quoted: 2.18 eV (Zheng-Altman) and 2.3 eV (Conrad et al.), second-order Redhead with nu=1e13 ML-1 s-1.",
+      "values": {
+        "e_des_a": {"value": 2.18, "unit": "eV", "printed": "2.18 eV", "chunk": "pc5146112"},
+        "e_des_b": {"value": 2.3, "unit": "eV", "printed": "2.3 eV", "chunk": "pc5146112"},
+        "nu_prefactor": {"value": "1e13", "unit": "ML-1 s-1", "printed": "10<sup>13</sup>", "chunk": "pc5146112"},
+        "order": {"value": 2, "unit": null, "printed": "second-order Redhead", "chunk": "pc5146112"}
+      }
+    },
+    {
+      "id": "o2-rh111-pa498693-quoted",
+      "adsorbate": "O2",
+      "surface": "Rh(111)",
+      "paper": "pa498693",
+      "source_role": "quoted",
+      "method": "redhead / coverage-dependent analysis",
+      "note": "Root et al. 3.69 eV; Peterlinz-Sibener coverage-dependent: 2.43 eV low-θ, 1.26 eV high-θ.",
+      "values": {
+        "e_des_root": {"value": 3.69, "unit": "eV", "printed": "3.69 eV", "chunk": "pc5146112"},
+        "e_des_low_theta": {"value": 2.43, "unit": "eV", "printed": "2.43 eV", "chunk": "pc5146112"},
+        "e_des_high_theta": {"value": 1.26, "unit": "eV", "printed": "1.26 eV", "chunk": "pc5146112"}
+      }
+    },
+    {
+      "id": "co-znpd111-pa498714",
+      "adsorbate": "CO",
+      "surface": "ZnPd surface alloy / Pd(111)",
+      "paper": "pa498714",
+      "source_role": "primary",
+      "method": "tpd (card abstract only)",
+      "note": "TPD on the ZnPd surface alloy (formed >300 K): much weaker CO binding than clean Pd; E_des=71+-2 kJ/mol at low coverage, theta_sat=0.5 ML (1 CO per surface Pd). Card-only source.",
+      "values": {
+        "e_des_low_theta": {"value": 71, "unit": "kJ/mol", "uncertainty": 2, "printed": "71±2 kJ mol−1", "chunk": "pc4479672"},
+        "theta_sat_ML": {"value": 0.5, "unit": "ML", "printed": "0.5 ML", "chunk": "pc4479672"}
+      }
+    },
+    {
+      "id": "co-pd111-pa498800",
+      "adsorbate": "CO",
+      "surface": "Pd(111)",
+      "paper": "pa498800",
+      "source_role": "primary",
+      "method": "thermal desorption spectroscopy (card abstract only)",
+      "note": "Coverage-dependent effective desorption parameters: zero-coverage E_d=35.5 kcal/mol, nu0=10^13.5 s-1; strong E-nu compensation Tc=519 K; Ed(theta) tracks LEED structure stages at T_ads=200 K. Card-only source.",
+      "values": {
+        "e_des_theta0": {"value": 35.5, "unit": "kcal/mol", "printed": "35.5 kcal/mol", "chunk": "pc4480599"},
+        "nu_prefactor_theta0": {"value": "10^13.5", "unit": "s-1", "printed": "1013.5 s−1", "chunk": "pc4480599", "note": "10^13.5 s-1, superscripts flattened"},
+        "t_compensation_K": {"value": 519, "unit": "K", "printed": "519 K", "chunk": "pc4480599"},
+        "t_ads_range_K": {"value": "87-200", "unit": "K", "printed": "87 to 200 K", "chunk": "pc4480599"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498804",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498804",
+      "source_role": "primary",
+      "method": "isothermal molecular beam (card abstract only)",
+      "note": "Isothermal kinetics, not TPD: s0(NO)=0.5 at 300-350 K to ~70-80% coverage; N2 production from 425 K, max 475-500 K; subsurface O diffusion from ~475 K.",
+      "values": {
+        "s0": {"value": 0.5, "unit": null, "printed": "0.5", "chunk": "pc4480635"},
+        "t_n2_onset_K": {"value": 425, "unit": "K", "printed": "425 K", "chunk": "pc4480635"},
+        "t_n2_max_K": {"value": "475-500", "unit": "K", "printed": "475 and 500 K", "chunk": "pc4480635"},
+        "t_measure_range_K": {"value": "300-525", "unit": "K", "printed": "300 and 525 K", "chunk": "pc4480635"}
+      }
+    },
+    {
+      "id": "nbutane-mgo100-pa498880",
+      "adsorbate": "n-butane",
+      "surface": "MgO(100)",
+      "paper": "pa498880",
+      "source_role": "primary",
+      "method": "inversion-complete (card abstract only)",
+      "note": "High-quality TPD series (theta 0-3.70 ML, beta 0.3-10 K/s) inverted with a coverage-independent prefactor determined variationally: nu=10^(15.7+-1.6) s-1; Ed(0.5 ML)=34.9+-3.4 kJ/mol; Ed(theta)=34.5+0.566*theta+8.37*exp(-theta/0.101).",
+      "values": {
+        "nu_prefactor": {"value": "10^15.7", "unit": "s-1", "uncertainty": 1.6, "printed": "10(15.7+/-1.6)", "chunk": "pc4480634"},
+        "e_des_half_ml": {"value": 34.9, "unit": "kJ/mol", "uncertainty": 3.4, "printed": "34.9+/-3.4 kJ/mol", "chunk": "pc4480634"},
+        "e_des_theta_form": {"value": "34.5+0.566*theta+8.37*exp(-theta/0.101)", "unit": "kJ/mol", "printed": "34.5+0.566theta+8.37 exp(-theta/0.101)", "chunk": "pc4480634"},
+        "beta_K_s_range": {"value": "0.3-10", "unit": "K/s", "printed": "0.3-10 K/s", "chunk": "pc4480634"},
+        "theta0_range_ML": {"value": "0-3.70", "unit": "ML", "printed": "0-3.70 ML", "chunk": "pc4480634"}
+      }
+    },
+    {
+      "id": "nh3-h2o-ruo2-110-pa498731",
+      "adsorbate": "NH3, H2O",
+      "surface": "RuO2(110)",
+      "paper": "pa498731",
+      "source_role": "simulated",
+      "method": "dft-microkinetic TPD simulation (card abstract only)",
+      "note": "Forward-simulated TPD; temperature-dependent prefactors 10^14-10^17 s-1 (vs empirical 10^13). Method template, not a measurement.",
+      "values": {
+        "nu_range": {"value": "10^14-10^17", "unit": "s-1", "printed": "10 14 to 10 17 s –1", "chunk": "pc4480624"},
+        "nu_empirical_ref": {"value": "10^13", "unit": "s-1", "printed": "10 13 s –1", "chunk": "pc4480624"}
+      }
+    }
+  ]
+}
