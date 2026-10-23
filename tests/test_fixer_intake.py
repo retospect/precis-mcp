@@ -166,6 +166,114 @@ def test_pick_next_blocked_by_does_not_affect_unblocked_items() -> None:
     assert picked is not None and picked.slug == "free"
 
 
+# ── claim check (gr509461) ──────────────────────────────────────────
+
+
+def test_pick_next_skips_item_a_live_tree_claims() -> None:
+    items = [_item("one"), _item("two")]
+    picked = pick_next(
+        items,
+        lambda _b: False,
+        claimed=lambda it: "fleet-tree" if it.slug == "one" else None,
+    )
+    assert picked is not None and picked.slug == "two"
+
+
+def test_pick_next_none_when_everything_is_claimed() -> None:
+    items = [_item("one")]
+    picked = pick_next(items, lambda _b: False, claimed=lambda _it: "tree-x")
+    assert picked is None
+
+
+def test_pick_next_unclaimed_item_is_picked() -> None:
+    items = [_item("one")]
+    picked = pick_next(items, lambda _b: False, claimed=lambda _it: None)
+    assert picked is not None and picked.slug == "one"
+
+
+def _row(**kw: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "name": "",
+        "branch": "",
+        "bucket": "live_session",
+        "purpose": "",
+    }
+    row.update(kw)
+    return row
+
+
+def test_claimed_by_matches_fix_slug_branch() -> None:
+    rows = [_row(name="fix_dev-loop-scratch", branch="fix/dev-loop-scratch")]
+    assert intake_mod.claimed_by("dev-loop-scratch", rows) == "fix_dev-loop-scratch"
+
+
+def test_claimed_by_matches_worktree_slug_branch() -> None:
+    rows = [_row(name="dev-loop-scratch", branch="worktree-dev-loop-scratch")]
+    assert intake_mod.claimed_by("dev-loop-scratch", rows) == "dev-loop-scratch"
+
+
+def test_claimed_by_matches_slug_in_purpose_line() -> None:
+    # The gr509461 acceptance case: a fleet tree with an arbitrary name —
+    # the claim travels only in its purpose line.
+    rows = [
+        _row(
+            name="dl-d0",
+            branch="worktree-dl-d0",
+            purpose="dl-d0: building docs/backlog/dev-loop-scratch.md",
+        )
+    ]
+    assert intake_mod.claimed_by("dev-loop-scratch", rows) == "dl-d0"
+
+
+def test_claimed_by_purpose_match_is_token_bounded() -> None:
+    rows = [_row(name="x", branch="worktree-x", purpose="x: dev-loop-scratched up")]
+    assert intake_mod.claimed_by("dev-loop-scratch", rows) is None
+
+
+def test_claimed_by_ignores_done_rows() -> None:
+    # safe_remove / base are stale evidence, not live claims: a landed
+    # tree's leftover purpose line must not starve the fixer.
+    rows = [
+        _row(
+            name="done",
+            branch="worktree-taken",
+            bucket="safe_remove",
+            purpose="done: took taken",
+        ),
+        _row(name="main", branch="worktree-taken", bucket="base"),
+    ]
+    assert intake_mod.claimed_by("taken", rows) is None
+
+
+def test_claimed_by_stranded_fix_branch_still_claims() -> None:
+    rows = [_row(name="fix/taken", branch="fix/taken", bucket="stranded")]
+    assert intake_mod.claimed_by("taken", rows) == "fix/taken"
+
+
+def test_claimed_by_no_match() -> None:
+    rows = [_row(name="dl-d0", branch="worktree-dl-d0", purpose="d0: other")]
+    assert intake_mod.claimed_by("free-spec", rows) is None
+
+
+def test_pick_next_skips_via_fake_inflight_row() -> None:
+    """The acceptance shape: a fake inflight row naming the slug makes
+    pick_next skip the item."""
+    items = [_item("dev-loop-scratch"), _item("other")]
+    rows = [
+        _row(
+            name="dl-d0",
+            branch="worktree-dl-d0",
+            purpose="dl-d0: on docs/backlog/dev-loop-scratch.md",
+        )
+    ]
+    picked = pick_next(
+        items,
+        lambda _b: False,
+        claimed=lambda it: intake_mod.claimed_by(it.slug, rows),
+    )
+    assert picked is not None and picked.slug == "other"
+
+
 # ── gripe intake: pure helpers ───────────────────────────────────────
 
 _TE = intake_mod._TimelineEntry

@@ -41,7 +41,9 @@
 #                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
 #                               #   has_unmerged_work  real commits ahead of base, informational
 #                               # plus a repo-wide stashCount (stash is one ref shared by every
-#                               # worktree, so it's reported once, not per-row).
+#                               # worktree, so it's reported once, not per-row) and a per-row
+#                               # `purpose` (the full, untruncated first purpose line — the
+#                               # fixer's claim check reads it; the table shows it at 58).
 #
 # See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
 set -uo pipefail
@@ -130,20 +132,22 @@ verdict_field() { # verdict_field <head> <branch>
   if [ "$unmerged" = 0 ]; then printf 'in-main↓%s' "$behind"; else printf '↑%s↓%s' "$unmerged" "$behind"; fi
 }
 
-purpose_field() { # purpose_field <path> <head> <branch>
-  local path=$1 head=$2 branch=$3 pf line s files
+purpose_field() { # purpose_field <path> <head> <branch> [max] — display
+  # purpose, truncated to <max> (default 58; --json asks for the full line
+  # so a claim check sees a slug anywhere in it).
+  local path=$1 head=$2 branch=$3 max=${4:-58} pf line s files
   pf="$path/.claude/purpose"
   if [ -s "$pf" ]; then
     line=$(grep -m1 -v '^[[:space:]]*$' "$pf" 2>/dev/null)
-    [ -n "$line" ] && { trunc "$line" 58; return; }
+    [ -n "$line" ] && { trunc "$line" "$max"; return; }
   fi
   if [ "$branch" != "$BASE" ] && ! git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then
     s=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
-    [ -n "$s" ] && { trunc "$s" 58; return; }
+    [ -n "$s" ] && { trunc "$s" "$max"; return; }
   fi
   files=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null \
             | awk '{print $NF}' | while read -r f; do basename "$f"; done | head -2 | paste -sd, -)
-  [ -n "$files" ] && { trunc "(editing ${files}…)" 58; return; }
+  [ -n "$files" ] && { trunc "(editing ${files}…)" "$max"; return; }
   [ "$branch" = "$BASE" ] && { printf '—'; return; }
   printf '(no purpose set)'
 }
@@ -156,7 +160,7 @@ JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render ti
 emit() { # emit <path> <head> <branch> <locked>
   local path=$1 head=$2 branch=$3 locked=$4
   [ -z "$path" ] && return
-  local name sess dirty untr dirtyf verd purp last mark task_id agent_tree
+  local name sess dirty untr dirtyf verd purp purpj last mark task_id agent_tree
   if [ "$branch" = "$BASE" ]; then name=$BASE; else name=$(basename "$path"); fi
   mark=' '; [ "$path" = "$HERE" ] && mark='*'
   sess=$(session_field "$locked")
@@ -176,9 +180,11 @@ emit() { # emit <path> <head> <branch> <locked>
     [ "$untr" != 0 ] && dirtyf="${dirtyf}+${untr}u"
   fi
   verd=$(verdict_field "$head" "$branch")
-  purp=$(purpose_field "$path" "$head" "$branch")
+  # Full-length purpose once, truncated only for the table — --json carries
+  # the whole first line (a claim check needs the slug wherever it sits).
+  purp=$(purpose_field "$path" "$head" "$branch" 4000)
   last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
-  ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
+  ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|$(trunc "$purp" 58)|${last}")
   # overlap-relevant: current tree, live session/task, dirty, or ahead of main
   if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* ]] \
      || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
@@ -209,7 +215,9 @@ emit() { # emit <path> <head> <branch> <locked>
     elif [ "$verd" = 'merged' ] || [[ "$verd" == in-main* ]]; then bucket='safe_remove'
     else bucket='has_unmerged_work'
     fi
-    JSONROWS+=("${name}"$'\x1f'"${path}"$'\x1f'"${branch}"$'\x1f'"${bucket}"$'\x1f'"${sess}"$'\x1f'"${dirtyf}"$'\x1f'"${verd}"$'\x1f'"${diffstat}")
+    # \x1f/\x1e/newline in a purpose line would corrupt the record framing.
+    purpj=$(printf '%s' "$purp" | tr '\036\037\n' '   ')
+    JSONROWS+=("${name}"$'\x1f'"${path}"$'\x1f'"${branch}"$'\x1f'"${bucket}"$'\x1f'"${sess}"$'\x1f'"${dirtyf}"$'\x1f'"${verd}"$'\x1f'"${diffstat}"$'\x1f'"${purpj}")
   fi
 }
 
@@ -244,9 +252,8 @@ emit_branch() { # emit_branch <branch> <head> — a local branch git's own
   verd=$(verdict_field "$head" "$branch")
   purp=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
   [ -z "$purp" ] && purp='(no purpose set)'
-  purp=$(trunc "$purp" 58)
   last=$(trunc "$(git log -1 --format='%cr — %s' "$branch" 2>/dev/null)" 46)
-  ROWS+=("(no worktree) ${branch}|—|—|${verd}|${purp}|${last}")
+  ROWS+=("(no worktree) ${branch}|—|—|${verd}|$(trunc "$purp" 58)|${last}")
   if [[ "$verd" == ↑* ]]; then SHOW+=(1); else SHOW+=(0); fi
 
   # 0 unmerged commits vs $BASE = safe to `git branch -D`; anything else is
@@ -255,7 +262,8 @@ emit_branch() { # emit_branch <branch> <head> — a local branch git's own
 
   if [ "$JSON_MODE" = 1 ]; then
     local sep=$'\x1f'
-    JSONROWS+=("${branch}${sep}${sep}${branch}${sep}${bucket}${sep}—${sep}—${sep}${verd}${sep}")
+    purp=$(printf '%s' "$purp" | tr '\036\037\n' '   ')
+    JSONROWS+=("${branch}${sep}${sep}${branch}${sep}${bucket}${sep}—${sep}—${sep}${verd}${sep}${sep}${purp}")
   fi
 }
 
@@ -300,8 +308,8 @@ raw = sys.stdin.read()
 worktrees = []
 for rec in raw.split("\x1e") if raw else []:
     fields = rec.split("\x1f")
-    fields += [""] * (8 - len(fields))
-    name, path, branch, bucket, session, dirty, verdict, diffstat = fields[:8]
+    fields += [""] * (9 - len(fields))
+    name, path, branch, bucket, session, dirty, verdict, diffstat, purpose = fields[:9]
     entry = {
         "name": name,
         "path": path,
@@ -314,6 +322,9 @@ for rec in raw.split("\x1e") if raw else []:
         # path (no worktree to have one); every real worktree rows own path
         # doubles as its "worktree" value. null is the sole "no worktree" tell.
         "worktree": path or None,
+        # additive: the full first purpose line (untruncated; the table
+        # shows the same text clipped to 58). Fixer-claim checks read this.
+        "purpose": purpose,
     }
     if diffstat:
         entry["diffstat"] = diffstat

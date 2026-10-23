@@ -45,7 +45,12 @@ approval quote for the tier, with its UTC time).
    `--devin` for `scripts/devin-tree` (Devins always launch
    `--permission-mode dangerous` — Reto's always-bypass ruling; both modes
    live in `fleet_panes.LAUNCH_PERMISSION_MODE`). `--dry-run` prints the
-   argv. Launch fails if a footer placeholder is unfilled.
+   argv. Launch fails if a footer placeholder is unfilled. When the brief
+   names a `docs/backlog/<slug>.md` spec, launch claims it for the tree:
+   `status: ready` → `in-progress` + `claimed-by: NAME` in one pushed
+   commit on main, the tree's `.claude/purpose` seeded with the claim,
+   and a row in `$FLEET_STATE/claims.tsv` (gr509461). `close` flips the
+   claim back to `ready` when the tree is removed or already gone.
 5. **Watch.** Run `scripts/fleet-wave watch-done NAME...` and
    `scripts/fleet-wave stuck-watch` under the Monitor tool: one line per
    finish (`<tree> at <sha>` in `.claude/purpose`), per permission

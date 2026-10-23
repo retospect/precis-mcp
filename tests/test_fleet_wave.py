@@ -638,3 +638,198 @@ def test_approve_refuses_without_coordinator_tree_or_known_sha(
     proc = _run(env, "approve", "t1", "0" * 40)
     assert proc.returncode == 2 and "unknown sha" in proc.stderr
     assert not _ledger(env).exists()
+
+
+# ── spec claims (gr509461) ──────────────────────────────────────────
+
+
+def _fills(env: dict[str, str]) -> dict[str, str]:
+    return {
+        **env,
+        "FLEET_COORDINATOR": "coord",
+        "FLEET_RELEASE_OWNER": "rel",
+        "FLEET_APPROVAL": "approved",
+    }
+
+
+def _bare_origin(env: dict[str, str]) -> None:
+    """A real (local, bare) origin remote so claim commits exercise push."""
+    repo = Path(env["CWD"])
+    bare = repo.parent / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=repo, check=True)
+
+
+def _spec(env: dict[str, str], slug: str, status: str = "ready") -> Path:
+    """Commit a docs/backlog/<slug>.md spec on main; returns its path."""
+    repo = Path(env["CWD"])
+    path = repo / "docs" / "backlog" / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nstatus: {status}\ntitle: {slug}\npillar: platform\n---\n\n# {slug}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", str(path.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"spec {slug}"], cwd=repo, check=True)
+    pushed = subprocess.run(
+        ["git", "push", "-q", "origin", "main"], cwd=repo, check=False
+    )
+    if pushed.returncode:
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+            cwd=repo,
+            check=True,
+        )
+    return path
+
+
+def _claims(env: dict[str, str]) -> str:
+    path = Path(env["FLEET_STATE"]) / "claims.tsv"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _launch(env: dict[str, str], tmp_path: Path, name: str, brief_text: str) -> None:
+    _windows(env, {})
+    brief = tmp_path / f"{name}.brief"
+    brief.write_text(brief_text, encoding="utf-8")
+    proc = _run(env, "launch", name, "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_launch_claims_ready_backlog_spec(env: dict[str, str], tmp_path: Path) -> None:
+    env = _fills(env)
+    _bare_origin(env)
+    spec = _spec(env, "my-spec")
+    _launch(env, tmp_path, "b1", "Build docs/backlog/my-spec.md please.\n")
+    text = spec.read_text(encoding="utf-8")
+    assert "status: in-progress" in text
+    assert "claimed-by: b1" in text
+    repo = Path(env["CWD"])
+    subject = subprocess.run(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert subject == "chore(backlog): claim my-spec for b1"
+    # The claim reached origin/main — an unpushed claim would diverge local
+    # main and break scripts/ship's ff.
+    remote_tip = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert (
+        remote_tip
+        == subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+    )
+    claims = _claims(env)
+    assert "\tclaim\tb1\tdocs/backlog/my-spec.md" in claims
+    # Purpose seed: inflight's PURPOSE column shows the claim immediately.
+    purpose = (Path(env["FLEET_WORKTREES"]) / "b1" / ".claude" / "purpose").read_text(
+        encoding="utf-8"
+    )
+    assert "my-spec" in purpose
+
+
+def test_launch_leaves_non_ready_and_dirty_specs_alone(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _fills(env)
+    draft = _spec(env, "draft-spec", status="draft")
+    dirty = _spec(env, "dirty-spec")
+    dirty.write_text(dirty.read_text(encoding="utf-8") + "\nwip\n", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    _launch(
+        env,
+        tmp_path,
+        "b2",
+        "Do docs/backlog/draft-spec.md and docs/backlog/dirty-spec.md.\n",
+    )
+    assert "status: draft" in draft.read_text(encoding="utf-8")
+    assert "status: ready" in dirty.read_text(encoding="utf-8")
+    assert _claims(env) == ""
+    # No claim commit landed either.
+    assert (
+        head
+        == subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=env["CWD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+    )
+
+
+def test_launch_dry_run_claims_nothing(env: dict[str, str], tmp_path: Path) -> None:
+    env = _fills(env)
+    spec = _spec(env, "dry-spec")
+    _windows(env, {})
+    brief = tmp_path / "d.brief"
+    brief.write_text("Build docs/backlog/dry-spec.md.\n", encoding="utf-8")
+    proc = _run(env, "launch", "d1", "--brief", str(brief), "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    assert "status: ready" in spec.read_text(encoding="utf-8")
+    assert _claims(env) == ""
+
+
+def test_close_releases_claimed_spec(env: dict[str, str], tmp_path: Path) -> None:
+    env = _fills(env)
+    _bare_origin(env)
+    spec = _spec(env, "rel-spec")
+    _launch(env, tmp_path, "w1", "Build docs/backlog/rel-spec.md.\n")
+    assert "in-progress" in spec.read_text(encoding="utf-8")
+    _windows(env, {"claude-w1": IDLE})
+    proc = _run(env, "close", "w1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    text = spec.read_text(encoding="utf-8")
+    assert "status: ready" in text
+    assert "claimed-by" not in text
+    assert "\trelease\tw1\tdocs/backlog/rel-spec.md" in _claims(env)
+
+
+def test_close_on_gone_tree_releases_its_claim(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """The abandoned/reaped-unmerged path: the tree is already gone when
+    close runs — the spec must still be freed."""
+    env = _fills(env)
+    _bare_origin(env)
+    spec = _spec(env, "gone-spec")
+    _launch(env, tmp_path, "w2", "Build docs/backlog/gone-spec.md.\n")
+    tree = Path(env["FLEET_WORKTREES"]) / "w2"
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(tree)],
+        cwd=env["CWD"],
+        check=True,
+    )
+    subprocess.run(["git", "branch", "-D", "worktree-w2"], cwd=env["CWD"], check=True)
+    _windows(env, {"claude-w2": IDLE})
+    proc = _run(env, "close", "w2")
+    assert "no tree: w2" in proc.stdout
+    text = spec.read_text(encoding="utf-8")
+    assert "status: ready" in text
+    assert "claimed-by" not in text
+    assert "\trelease\tw2\tdocs/backlog/gone-spec.md" in _claims(env)

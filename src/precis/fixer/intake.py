@@ -12,6 +12,17 @@ Three risky small bits flagged at design time live here:
   re-builds the same thing forever. Skip is a ``branch_exists``
   predicate (local branch / worktree / remote head), injected so the
   pure pick logic stays unit-testable.
+* **Claim check.** ``ready`` means *unclaimed* (docs/backlog/README.md):
+  a live tree that is already building a spec must stop the fixer
+  building it too (gr509461 — the fleet built dev-loop-scratch while
+  the fixer did). :func:`pick_next` takes a second injected predicate,
+  ``claimed``, resolved by the caller from ``scripts/inflight --json``
+  via :func:`claimed_by` — a tree claims a slug when its branch is
+  ``fix/<slug>`` or ``worktree-<slug>`` or its purpose line names it.
+  The durable half of the same convention is the ``status: in-progress``
+  flip ``scripts/fleet-wave`` commits at launch; this check is the
+  backstop for claims the flip never recorded (hand-rolled trees, a
+  spec the fleet claimed before the flip landed).
 * **Gripe intake, behind a dial.** ``PRECIS_FIXER_GRIPE_DB`` (a
   Postgres URL) gates a second source: *promoted* open gripes — tag
   ``auto-fix`` + a ``DIAGNOSIS``-prefixed timeline comment (minted by
@@ -153,8 +164,9 @@ def ready_items(backlog_dir: Path) -> list[WorkItem]:
 def pick_next(
     items: Iterable[WorkItem],
     branch_exists: Callable[[str], bool],
+    claimed: Callable[[WorkItem], str | None] | None = None,
 ) -> WorkItem | None:
-    """First item whose branch does not already exist (idempotent).
+    """First unclaimed item whose branch does not already exist (idempotent).
 
     The re-firing loop must not re-pick something it already branched;
     ``branch_exists`` encapsulates the git check (local/worktree/remote)
@@ -163,13 +175,53 @@ def pick_next(
     still exists — the check is against ``branch_exists`` alone, not
     against the predecessor still being present in ``items`` (it may
     have already shipped and dropped out of ``ready_items``).
+
+    ``claimed`` (optional) returns the name of a live tree already
+    building the item, or ``None``; a claimed item is skipped with a
+    log line naming the claiming tree (gr509461). Callers resolve it
+    from ``scripts/inflight --json`` via :func:`claimed_by`.
     """
     for item in items:
         if branch_exists(item.branch):
             continue
         if item.blocked_by and branch_exists(f"fix/{item.blocked_by}"):
             continue
+        if claimed is not None and (tree := claimed(item)):
+            log.info("skipping %s — claimed by %s", item.slug, tree)
+            continue
         return item
+    return None
+
+
+#: inflight buckets that cannot hold a claim: ``base`` is the primary
+#: checkout itself; ``safe_remove`` is merged + clean + sessionless — a
+#: purpose line or branch name there is stale evidence of landed work,
+#: not a live claim (a reaped-soon tree must not starve the fixer).
+_UNCLAIMABLE_BUCKETS = frozenset({"base", "safe_remove"})
+
+
+def claimed_by(slug: str, rows: Iterable[dict[str, Any]]) -> str | None:
+    """The tree claiming ``slug`` per ``inflight --json`` rows, or ``None``.
+
+    A row claims a slug when its branch is exactly ``fix/<slug>`` or
+    ``worktree-<slug>``, or its purpose line contains the slug as a
+    token — the shapes the fixer's own worktrees (``fix/<slug>``), a
+    hand-rolled ``claude -w <slug>`` (``worktree-<slug>``) and a
+    fleet-wave launch's seeded purpose line all take (gr509461).
+    ``_UNCLAIMABLE_BUCKETS`` rows are skipped; everything else counts,
+    including ``stranded`` (a branchless ``fix/<slug>`` is still real
+    unmerged work) and ``has_unmerged_work``.
+    """
+    want_branches = (f"fix/{slug}", f"worktree-{slug}")
+    token = re.compile(r"(?<![\w-])" + re.escape(slug.lower()) + r"(?![\w-])")
+    for row in rows:
+        if row.get("bucket") in _UNCLAIMABLE_BUCKETS:
+            continue
+        branch = str(row.get("branch") or "")
+        if branch in want_branches:
+            return str(row.get("name") or branch)
+        if token.search(str(row.get("purpose") or "").lower()):
+            return str(row.get("name") or branch or "(unnamed)")
     return None
 
 

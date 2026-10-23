@@ -1,6 +1,6 @@
 """One tick of the laptop fixer loop.
 
-    pick (ready-gated proposals + promoted gripes) → build (Claude, host OAuth) → gate
+    pick (ready-gated, claim-checked proposals + promoted gripes) → build (Claude, host OAuth) → gate
       → [ship → deploy → look-at-prod → fix-forward]   (autonomy≥ship/full)
       → report (by exception) → gripe write-back (comment + STATUS, gripe items only)
 
@@ -31,6 +31,7 @@ OAuth (``~/.claude``) — *not* ``--bare``/API-key like the container
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -38,8 +39,9 @@ import sys
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
-from precis.fixer.intake import WorkItem, all_items, pick_next
+from precis.fixer.intake import WorkItem, all_items, claimed_by, pick_next
 from precis.fixer.report import Report, ReportStatus, emit_report
 from precis.fixer.writeback import gripe_writeback
 
@@ -142,6 +144,35 @@ def branch_exists(repo: Path, branch: str) -> bool:
         return True
     remote = _git(repo, "ls-remote", "--heads", "origin", branch, check=False).stdout
     return bool(remote.strip())
+
+
+def _inflight_rows(repo: Path) -> list[dict[str, Any]]:
+    """``scripts/inflight --json`` worktree rows — the claim check's data.
+
+    Read-only and best-effort: a failed run or unparseable blob degrades
+    to ``[]`` (no claims — the pre-gr509461 behaviour) with a warning,
+    never crashes the tick.
+    """
+    try:
+        proc = subprocess.run(
+            [str(repo / "scripts" / "inflight"), "--json"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0:
+            log.warning(
+                "inflight --json exited %s — claim check skipped", proc.returncode
+            )
+            return []
+        rows = json.loads(proc.stdout).get("worktrees", [])
+        return [r for r in rows if isinstance(r, dict)]
+    except Exception as exc:
+        log.warning("inflight --json unreadable (%s) — claim check skipped", exc)
+        return []
 
 
 def _worktree_add(repo: Path, path: Path, branch: str) -> None:
@@ -426,9 +457,16 @@ def run_tick(cfg: FixerConfig) -> TickResult:
     """Execute one tick. Returns what happened (for tests + the CLI)."""
     result = TickResult()
     items = all_items(cfg.backlog_dir, cfg.gripe_db_url)
-    item = pick_next(items, lambda b: branch_exists(cfg.repo_root, b))
+    rows = _inflight_rows(cfg.repo_root)
+    item = pick_next(
+        items,
+        lambda b: branch_exists(cfg.repo_root, b),
+        claimed=lambda it: claimed_by(it.slug, rows),
+    )
     if item is None:
-        result.notes.append(f"nothing to do ({len(items)} ready, all branched)")
+        result.notes.append(
+            f"nothing to do ({len(items)} ready, all branched, claimed or blocked)"
+        )
         return result
     result.picked = item
 

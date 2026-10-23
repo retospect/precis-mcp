@@ -24,7 +24,23 @@ The thread-session fleet (one window per roadmap thread) is
 
 WIN is a window name (``claude-x``) or a wave NAME (resolved to its
 ``claude-``/``devin-`` window). tmux is always called with an argument
-list, never a shell string. Nothing is stored in the repo.
+list, never a shell string. Nothing is stored in the repo except the
+spec-claim commit described next.
+
+Spec claims (gr509461). ``ready`` in docs/backlog means *unclaimed*, so
+``launch`` enforces the convention where the fleet starts work: every
+``docs/backlog/<slug>.md`` the brief names and whose front matter is
+still ``status: ready`` is flipped to ``status: in-progress`` +
+``claimed-by: <name>``, committed on main in the primary checkout and
+pushed — the laptop fixer reads those files on this machine. The new
+tree's ``.claude/purpose`` is seeded with the claim so ``inflight``'s
+PURPOSE column shows it before the builder writes its own line. The
+claim history is an append-only TSV at ``$FLEET_STATE/claims.tsv``.
+``close`` releases: a removed tree's claimed specs flip back to
+``ready`` the same way (also when the tree is already gone — the
+abandoned/reaped-unmerged path). A spec that is dirty in the primary,
+not ``ready``, or claimed by another tree is left alone; a flip that
+can't be pushed is rolled back rather than left diverging local main.
 
 Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
 ``readonly`` and ``qland`` are aliases for R and W. Launch creates the
@@ -479,6 +495,278 @@ def _apply_authority(tier: str, tree: Path) -> str:
     return flags[-1].removeprefix("codex-flags: ") if flags else ""
 
 
+# --- spec claims (gr509461) ------------------------------------------------
+
+#: ``docs/backlog/<slug>.md`` mentions in a brief — direct children only:
+#: ``threads/`` files sequence work, they are never a builder's spec.
+_SPEC_REF_RE = re.compile(r"docs/backlog/([A-Za-z0-9][A-Za-z0-9._-]*)\.md")
+_NON_SPEC_STEMS = frozenset({"readme", "template", "index"})
+#: Leading ``--- … ---`` front-matter block (same shape as the fixer's
+#: intake parser — kept local, fleet-wave is a standalone script).
+_FM_RE = re.compile(r"\A(---\s*\n)(.*?)(\n---\s*\n)", re.DOTALL)
+
+
+def _git_rc(*argv: str, cwd: Path) -> int:
+    """rc-only git call — :func:`git` can't tell empty stdout from failure."""
+    return subprocess.run(
+        ["git", *argv],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd,
+        check=False,
+    ).returncode
+
+
+def _spec_slugs(brief: str) -> list[str]:
+    """docs/backlog spec slugs a brief names, deduped in mention order."""
+    out: list[str] = []
+    for m in _SPEC_REF_RE.finditer(brief):
+        slug = m.group(1)
+        if slug.lower() not in _NON_SPEC_STEMS and slug not in out:
+            out.append(slug)
+    return out
+
+
+def _claimed_by(text: str) -> str | None:
+    """The ``claimed-by:`` front-matter value, or None."""
+    m = _FM_RE.match(text)
+    if not m:
+        return None
+    for ln in m.group(2).splitlines():
+        key, _, value = ln.partition(":")
+        if key.strip().lower() == "claimed-by":
+            return value.strip() or None
+    return None
+
+
+def _flip_spec(text: str, name: str, *, claim: bool) -> str | None:
+    """Rewrite a spec's front matter for a claim (or unclaim); None if n/a.
+
+    Claim: ``status: ready`` → ``status: in-progress`` with a
+    ``claimed-by: <name>`` line right under it — the file is the claim's
+    source of truth (the claims.tsv ledger is history only). Unclaim:
+    only when ``status: in-progress`` AND ``claimed-by: <name>`` both
+    hold — a spec re-claimed to someone else, re-stated by hand, or
+    otherwise touched is left exactly as found.
+    """
+    m = _FM_RE.match(text)
+    if not m:
+        return None
+    lines = m.group(2).splitlines()
+    status_i = next(
+        (i for i, ln in enumerate(lines) if ln.split(":")[0].strip() == "status"),
+        -1,
+    )
+    if status_i < 0:
+        return None
+    status = lines[status_i].split(":", 1)[1].strip().strip("'\"")
+    if claim:
+        if status != "ready":
+            return None
+        lines[status_i] = "status: in-progress"
+        lines.insert(status_i + 1, f"claimed-by: {name}")
+    else:
+        claimed_i = next(
+            (
+                i
+                for i, ln in enumerate(lines)
+                if ln.partition(":")[0].strip().lower() == "claimed-by"
+                and ln.partition(":")[2].strip() == name
+            ),
+            -1,
+        )
+        if status != "in-progress" or claimed_i < 0:
+            return None
+        lines[status_i] = "status: ready"
+        del lines[claimed_i]
+    return m.group(1) + "\n".join(lines) + m.group(3) + text[m.end() :]
+
+
+def _claims_ledger(f: Fleet) -> Path:
+    return f.state / "claims.tsv"
+
+
+def _ledger_append(f: Fleet, action: str, name: str, slug: str) -> None:
+    path = _claims_ledger(f)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            "\t".join([utc_stamp(), action, _tsv(name), f"docs/backlog/{slug}.md"])
+            + "\n"
+        )
+
+
+def _sync_main(f: Fleet, what: str) -> bool:
+    """Bring the primary's local main forward to origin/main; False if unsafe.
+
+    Claim commits must be cut on the current tip — committing on a stale
+    local main could revert upstream edits to the same spec, and pushing
+    would carry any unpushed local commits along.
+    """
+    main = f.main
+    if git("symbolic-ref", "--quiet", "--short", "HEAD", cwd=main).strip() != "main":
+        print(f"fleet-wave: primary not on main — {what} skipped", file=sys.stderr)
+        return False
+    _git_rc("fetch", "-q", "origin", "main", cwd=main)
+    if not git("rev-parse", "--verify", "-q", "origin/main", cwd=main).strip():
+        return True  # no origin/main ref (a remote-less repo): local main is the tip
+    if _git_rc("merge", "--ff-only", "-q", "origin/main", cwd=main) != 0:
+        print(
+            f"fleet-wave: local main not fast-forwardable — {what} skipped",
+            file=sys.stderr,
+        )
+        return False
+    if git("rev-list", "--count", "origin/main..HEAD", cwd=main).strip() != "0":
+        print(
+            f"fleet-wave: local main has unpushed commits — {what} skipped",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _commit_to_main(f: Fleet, rel_paths: list[str], msg: str) -> bool:
+    """Stage ``rel_paths`` in the primary checkout, commit on main, push.
+
+    The flip must reach origin/main: left unpushed it would diverge local
+    main (breaking scripts/ship's ``merge --ff-only`` sync) and stay
+    invisible to other checkouts. Local-only when no ``origin`` remote is
+    configured (tests). A push that loses a race gets one fetch + rebase
+    + retry; on failure the commit AND the worktree edits are rolled
+    back — local main is never left ahead or dirty from a claim.
+    """
+    main = f.main
+    if _git_rc("add", "--", *rel_paths, cwd=main) != 0 or _git_rc(
+        "commit", "-q", "-m", msg, cwd=main
+    ) != 0:
+        print(f"fleet-wave: nothing committed for {msg!r}", file=sys.stderr)
+        return False
+    if not git("remote", "get-url", "origin", cwd=main).strip():
+        return True
+    if _git_rc("push", "-q", "origin", "HEAD:main", cwd=main) == 0:
+        return True
+    if (
+        _git_rc("fetch", "-q", "origin", "main", cwd=main) == 0
+        and _git_rc("rebase", "-q", "origin/main", cwd=main) == 0
+        and _git_rc("push", "-q", "origin", "HEAD:main", cwd=main) == 0
+    ):
+        return True
+    _git_rc("rebase", "--abort", cwd=main)
+    _git_rc("reset", "-q", "--mixed", "HEAD~1", cwd=main)
+    _git_rc("checkout", "-q", "--", *rel_paths, cwd=main)
+    print(f"fleet-wave: push to main failed — {msg!r} rolled back", file=sys.stderr)
+    return False
+
+
+def _claim_specs(f: Fleet, name: str, brief: str) -> list[str]:
+    """Flip brief-named ``ready`` specs to ``in-progress`` + ``claimed-by``.
+
+    One commit on main per launch (pushed), plus claims.tsv rows. A spec
+    that is missing, not ``ready``, or dirty in the primary checkout is
+    skipped — a failed claim warns but never blocks the launch (the
+    inflight purpose/branch check in the fixer still covers the tree).
+    """
+    if not _sync_main(f, "spec claim"):
+        return []
+    flips: list[tuple[str, str, str]] = []  # (slug, rel path, new text)
+    for slug in _spec_slugs(brief):
+        rel = f"docs/backlog/{slug}.md"
+        path = f.main / "docs" / "backlog" / f"{slug}.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        flipped = _flip_spec(text, name, claim=True)
+        if flipped is None:
+            continue
+        if git("status", "--porcelain", "--", rel, cwd=f.main).strip():
+            print(f"fleet-wave: {rel} dirty in primary — not claimed", file=sys.stderr)
+            continue
+        flips.append((slug, rel, flipped))
+    if not flips:
+        return []
+    for slug, rel, flipped in flips:
+        (f.main / "docs" / "backlog" / f"{slug}.md").write_text(
+            flipped, encoding="utf-8"
+        )
+    rels = [rel for _slug, rel, _flipped in flips]
+    msg = f"chore(backlog): claim {', '.join(s for s, _r, _f in flips)} for {name}"
+    if not _commit_to_main(f, rels, msg):
+        _git_rc("checkout", "-q", "--", *rels, cwd=f.main)
+        return []
+    for slug, _rel, _flipped in flips:
+        _ledger_append(f, "claim", name, slug)
+    print(f"claimed for {name}: {', '.join(s for s, _r, _f in flips)}")
+    return [s for s, _r, _f in flips]
+
+
+def _release_claims(f: Fleet, name: str) -> list[str]:
+    """Flip ``name``'s claimed specs back to ``ready``; the un-claim half.
+
+    Driven by the files themselves (``claimed-by: <name>`` + still
+    ``in-progress``), not the ledger — a spec that shipped (deleted) or
+    moved on is simply absent. Called from ``close`` on both removal
+    paths: the tree got reaped by hand (``no tree``) or was just removed
+    here (an abandoned builder lands nothing, so its claim must not
+    starve the fixer and later waves forever).
+    """
+    if not _sync_main(f, "spec unclaim"):
+        return []
+    flips: list[tuple[str, str, str]] = []
+    for path in sorted((f.main / "docs" / "backlog").glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _claimed_by(text) != name:
+            continue
+        flipped = _flip_spec(text, name, claim=False)
+        if flipped is None:
+            continue
+        rel = f"docs/backlog/{path.name}"
+        if git("status", "--porcelain", "--", rel, cwd=f.main).strip():
+            print(f"fleet-wave: {rel} dirty in primary — not released", file=sys.stderr)
+            continue
+        flips.append((path.stem, rel, flipped))
+    if not flips:
+        return []
+    for _slug, rel, flipped in flips:
+        (f.main / rel).write_text(flipped, encoding="utf-8")
+    rels = [rel for _slug, rel, _flipped in flips]
+    slugs = [s for s, _r, _f in flips]
+    msg = f"chore(backlog): unclaim {', '.join(slugs)} ({name} closed)"
+    if not _commit_to_main(f, rels, msg):
+        _git_rc("checkout", "-q", "--", *rels, cwd=f.main)
+        return []
+    for slug in slugs:
+        _ledger_append(f, "release", name, slug)
+    print(f"unclaimed {name}: {', '.join(slugs)}")
+    return slugs
+
+
+def _mark_claim_purpose(f: Fleet, name: str, claimed: list[str]) -> None:
+    """Seed the new tree's ``.claude/purpose`` with the claim.
+
+    The inflight PURPOSE column — and through it the fixer's claim check
+    — sees the claim from the moment the tree exists, before the builder
+    writes its own purpose line. Never overwrites an existing purpose
+    (a reused tree's own line wins); a tree that doesn't exist yet
+    (legacy-footer launches) is skipped.
+    """
+    if not claimed:
+        return
+    tree = f.worktrees / name
+    purpose = tree / ".claude" / "purpose"
+    if not tree.is_dir() or purpose.exists():
+        return
+    purpose.parent.mkdir(parents=True, exist_ok=True)
+    specs = ", ".join(f"docs/backlog/{s}.md" for s in claimed)
+    purpose.write_text(
+        f"{name}: building {specs} (fleet-wave claim)\n", encoding="utf-8"
+    )
+
+
 def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     name = a.name
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
@@ -505,6 +793,8 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         print(f"fleet-authority apply --tier {tier} --to {f.worktrees / name} --yes")
     elif not _legacy_footers():
         codex = _apply_authority(tier, _ensure_tree(f, name))
+    if not a.dry_run:
+        _mark_claim_purpose(f, name, _claim_specs(f, name, brief))
     if a.devin:
         argv = [
             str(f.repo / "scripts" / "devin-tree"),
@@ -632,6 +922,8 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
                     f.tmux("kill-window", "-t", f.target(p + name), check=False)
                     print(f"window closed: {p}{name}")
             print(f"no tree: {name}")
+            # Gone by hand or reaped unmerged — free any spec it claimed.
+            _release_claims(f, name)
             continue
         if task_id := _active_subagent_task(tree):
             print(f"REFUSED {name}: active subagent task {task_id}; tree kept")
@@ -708,6 +1000,7 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
             f"removed: {name} at {sha}"
             + (f"; branch deleted: {dropped}" if dropped else "")
         )
+        _release_claims(f, name)
     return rc
 
 

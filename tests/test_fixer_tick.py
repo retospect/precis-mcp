@@ -414,3 +414,96 @@ def test_run_tick_skips_writeback_when_gripe_db_url_unset(
     tick_mod.run_tick(cfg)
 
     assert calls == []
+
+
+# ── run_tick: claim check via inflight rows (gr509461) ──────────────
+
+
+def test_inflight_rows_degrades_to_empty_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _boom(*a: Any, **k: Any) -> types.SimpleNamespace:
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="x")
+
+    monkeypatch.setattr(tick_mod.subprocess, "run", _boom)
+    assert tick_mod._inflight_rows(tmp_path) == []
+
+
+def test_inflight_rows_degrades_to_empty_on_garbage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _garbage(*a: Any, **k: Any) -> types.SimpleNamespace:
+        return types.SimpleNamespace(returncode=0, stdout="not json", stderr="")
+
+    monkeypatch.setattr(tick_mod.subprocess, "run", _garbage)
+    assert tick_mod._inflight_rows(tmp_path) == []
+
+
+def test_run_tick_skips_item_claimed_by_live_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ready proposal a live tree already claims (here via a purpose
+    line, the dev-loop-scratch shape) is not picked — the tick reports
+    nothing to do instead of double-building it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT)
+    item = _item()  # slug "do-the-thing"
+
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+    monkeypatch.setattr(
+        tick_mod,
+        "_inflight_rows",
+        lambda repo: [
+            {
+                "name": "dl-d0",
+                "branch": "worktree-dl-d0",
+                "bucket": "live_session",
+                "purpose": "dl-d0: building docs/backlog/do-the-thing.md",
+            }
+        ],
+    )
+    spawn_calls: list[Any] = []
+    monkeypatch.setattr(tick_mod, "_spawn_claude", lambda *a: spawn_calls.append(a))
+
+    result = tick_mod.run_tick(cfg)
+
+    assert result.picked is None
+    assert result.notes and "nothing to do" in result.notes[0]
+    assert spawn_calls == []
+
+
+def test_run_tick_picks_unclaimed_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    cfg = _cfg(tmp_path, repo, Autonomy.REPORT)
+    item = _item()
+
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
+    monkeypatch.setattr(
+        tick_mod,
+        "_inflight_rows",
+        lambda repo: [
+            {
+                "name": "dl-d0",
+                "branch": "worktree-dl-d0",
+                "bucket": "live_session",
+                "purpose": "dl-d0: building something else entirely",
+            }
+        ],
+    )
+    monkeypatch.setattr(tick_mod, "_spawn_claude", _fake_spawn_claude)
+    monkeypatch.setattr(tick_mod, "_autofix_lint", lambda worktree: None)
+    monkeypatch.setattr(
+        tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
+    )
+
+    result = tick_mod.run_tick(cfg)
+
+    assert result.picked is item

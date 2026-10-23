@@ -127,6 +127,27 @@ def test_inflight_json_reports_unmerged_branchless_branch_with_worktree_null(
     assert entry["bucket"] == "stranded", entry
     assert entry["verdict"].startswith("↑"), entry
     assert entry["session"] == "—", entry
+    # The branchless purpose is the newest branch-unique commit subject.
+    assert entry["purpose"] == "feat/stray work"
+
+
+def test_inflight_json_purpose_is_the_full_first_line(repo: Path) -> None:
+    """``purpose`` in --json carries the whole first line of
+    .claude/purpose — the table clips it at 58, but a claim check
+    (gr509461) needs the slug wherever it sits in the line."""
+    wt = repo.parent / "wt-purpose"
+    _git(repo, "worktree", "add", "-q", "-b", "feat/purp", str(wt))
+    (wt / ".claude").mkdir()
+    long_line = "wt-purpose: building docs/backlog/" + "x" * 80 + ".md"
+    (wt / ".claude" / "purpose").write_text(
+        long_line + "\nsecond line ignored\n", encoding="utf-8"
+    )
+
+    json_out = _run([str(repo / "scripts" / "inflight"), "--json"], repo).stdout
+    entry = _entry_for(json_out, "feat/purp")
+
+    assert entry["purpose"] == long_line
+    assert len(entry["purpose"]) > 58
 
 
 def test_inflight_json_marks_squash_merged_branchless_branch_safe_remove(
