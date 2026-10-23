@@ -11,9 +11,14 @@ the TPD/adsorption papers linked by quest `qu500066`.
 
 - `tpd_reference.json` — the table. `measurements[]` has one row per
   measurement (or per state within a spectrum).
-- `tpd_reference_chunks.json` — snapshot of every cited chunk's text,
-  exported read-only from prod. `tests/test_tpd_reference_fixtures.py`
-  checks the table against it, so CI needs no prod access.
+- `tpd_reference_chunks.json` — provenance snapshot of every cited
+  chunk, exported read-only from prod. Each entry is
+  `{sha256, printeds}`: the sha256 of the full chunk text (checkable
+  against prod) and the verbatim `printed` snippets cited from it.
+  `tests/test_tpd_reference_fixtures.py` checks the table against it,
+  so CI needs no prod access. **Standing rule (Reto 2026-10-23): never
+  commit paper chunk text into this public repo — fixtures carry ids,
+  hashes and numbers, not prose.**
 
 ## Row shape
 
@@ -42,20 +47,30 @@ TPD — a method template, not a measurement).
   `%`, `cm2/(particle s)`, `ML-1 s-1`, or null.
 - `uncertainty` — when the paper prints one (same unit as `value`).
 - `printed` — the verbatim substring as it appears in the cited chunk,
-  OCR artifacts included. The test requires `printed` to occur in the
-  chunk text after normalisation (NFKC, dashes→`-`, tags/whitespace
-  stripped, `×`→`x`, emphasis `*` removed). A value with no chunk does
-  not go in.
+  OCR artifacts included: the number plus a few words of label at most,
+  never a prose window. The test requires `printed` to be recorded
+  under the cited chunk in the snapshot, and that its leading number
+  equals `value` unless the row sits in the test's reasoned exemption
+  list (OCR-garbled digits, dropped `±`, orders printed as words). A
+  `printed` under ~6 characters must carry the unit or a label —
+  lengthen it from the source rather than storing a bare number. A
+  value with no chunk does not go in.
 - `chunk` — the `pc…` handle carrying the number.
+- `dimension` — on every `nu*` (prefactor) quantity: `first_order`
+  (units `s-1`) or `second_order` (units `cm2/(particle s)`,
+  `ML-1 s-1`), so slice 9's converter cannot mix the two rate-law
+  dimensions.
 
 Quantity names: `t_p_K` (plus `t_p_K_sat`, `t_p_K_low_theta`, state
-suffixes, `t_p_low_C`/`t_p_bulk_C` when printed in °C), `fwhm_K`,
+suffixes, `t_p_K_initial_abstract` for an abstract-stated initial Tp,
+`t_p_low_C`/`t_p_bulk_C` when printed in °C), `fwhm_K`,
 `beta_K_s` (or `beta_K_s_range`), `theta0`/`theta0_ML`/`theta_sat_ML`,
-`order`, `e_des`/`e_ads` (plus `_initial`, `_low_theta`, `_theta_lo`,
+`dose_T_K` (dosing temperature, not coverage), `order`,
+`e_des`/`e_ads` (plus `_initial`, `_low_theta`, `_theta_lo`,
 `_theta_hi`, `_diss`, state suffixes; `e_des_theta_form` for printed
 coverage-dependent forms), `nu_prefactor` (or `nu_theta_lo`,
 `nu_diss`), and paper-specific extras (`e_diffusion`, `delta_est`,
-`s0`, `bep_alpha`, `t_compensation_K`, `pumping_tau_s`, dose temperatures).
+`s0`, `bep_alpha`, `t_compensation_K`, `pumping_tau_s`).
 
 ## Units and conventions
 

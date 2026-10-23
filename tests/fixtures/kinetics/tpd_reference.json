@@ -80,9 +80,9 @@
       "values": {
         "t_p_K": {"value": 368, "unit": "K", "printed": "368 K", "chunk": "pc5145991"},
         "beta_K_s": {"value": 17.4, "unit": "K/s", "printed": "17.4 K/set", "chunk": "pc5145991"},
-        "theta0": {"value": 0.5, "unit": "ML", "printed": "24.7x lOi atoms", "chunk": "pc5145991", "note": "theta=1/2, ~4.7e14 atoms/cm2; OCR garbled"},
+        "theta0": {"value": 0.5, "unit": "ML", "printed": "8=&(24.7x lOi atoms~cm2)", "chunk": "pc5145991", "note": "interpreted: OCR '8=&' is theta=1/2 (~4.7e14 atoms/cm2)"},
         "order": {"value": 2, "unit": null, "printed": "second order desorption kinetics", "chunk": "pc5145991"},
-        "nu_prefactor": {"value": 0.08, "unit": "cm2/(particle s)", "printed": "8 x 10e2 cm'/particles", "chunk": "pc5145991", "note": "assumed, from Ni(100)/H work; OCR '10e2' is 10^-2"},
+        "nu_prefactor": {"value": 0.08, "unit": "cm2/(particle s)", "dimension": "second_order", "printed": "v=8 x 10e2 cm'/particles", "chunk": "pc5145991", "note": "interpreted: OCR '10e2' is 10^-2, so nu=8e-2; assumed, from Ni(100)/H work"},
         "e_des": {"value": 23, "unit": "kcal/mol", "printed": "23 kcal/mole", "chunk": "pc5145991"}
       }
     },
@@ -150,7 +150,7 @@
         "t_p_K_low_theta": {"value": 370, "unit": "K", "printed": "370 K", "chunk": "pc5145854"},
         "beta_K_s": {"value": 5.8, "unit": "K/s", "printed": "5.8 K/s", "chunk": "pc5145855"},
         "order": {"value": 2, "unit": null, "printed": "second-order recombinative desorption", "chunk": "pc5145844"},
-        "theta0_dose_K": {"value": 80, "unit": "K", "printed": "80 K", "chunk": "pc5145844", "note": "dosing temperature Ts, not coverage"}
+        "dose_T_K": {"value": 80, "unit": "K", "printed": "80 K", "chunk": "pc5145844", "note": "dosing temperature Ts, not coverage"}
       }
     },
     {
@@ -163,7 +163,7 @@
       "note": "alpha state = decomposition of near-surface palladium hydride; appears for Ts 90-140 K after >20 L; does not saturate to 10000 L; near-zeroth order. NOT a clean surface-state reference (subsurface reservoir).",
       "values": {
         "t_p_K_initial": {"value": 150, "unit": "K", "printed": "150 K", "chunk": "pc5145856"},
-        "t_p_K_abstract": {"value": 170, "unit": "K", "printed": "170 K", "chunk": "pc5145844", "note": "appears initially near 170 K"},
+        "t_p_K_initial_abstract": {"value": 170, "unit": "K", "printed": "170 K", "chunk": "pc5145844", "note": "appears initially near 170 K"},
         "beta_K_s": {"value": 3.5, "unit": "K/s", "printed": "3.5 K/s", "chunk": "pc5145857"},
         "order": {"value": 0, "unit": null, "printed": "near-zeroth-order desorption kinetics", "chunk": "pc5145844"}
       }
@@ -190,7 +190,7 @@
       "note": "Velocity-resolved isothermal desorption rates 620-800 K; cleanest NO/Pd binding energy in the set. Not a TPD measurement (no ramp).",
       "values": {
         "e_a_arrhenius": {"value": 1.71, "unit": "eV", "uncertainty": 0.03, "printed": "1.71 ± 0.03 eV", "chunk": "pc4490932"},
-        "nu_prefactor": {"value": "10^15.65", "unit": "s-1", "uncertainty": 0.2, "printed": "1015.65±0.20 s–1", "chunk": "pc4490932", "note": "10^15.65 s-1; superscripts flattened in text"},
+        "nu_prefactor": {"value": "10^15.65", "unit": "s-1", "dimension": "first_order", "uncertainty": 0.2, "printed": "1015.65±0.20 s–1", "chunk": "pc4490932", "note": "10^15.65 s-1; superscripts flattened in text"},
         "e_des_tst": {"value": 1.766, "unit": "eV", "uncertainty": 0.024, "printed": "1.766 ± 0.024", "chunk": "pc4490988", "note": "terrace binding energy, TST fit"},
         "e_diffusion": {"value": 0.29, "unit": "eV", "uncertainty": 0.11, "printed": "0.29 ± 0.11", "chunk": "pc4490988"}
       }
@@ -205,7 +205,7 @@
       "note": "Stepped analogue; terrace binding energy identical, step-terrace stabilisation -0.030+0.015 eV.",
       "values": {
         "e_a_arrhenius": {"value": 1.73, "unit": "eV", "uncertainty": 0.02, "printed": "1.73 ± 0.02 eV", "chunk": "pc4490932"},
-        "nu_prefactor": {"value": "10^15.8", "unit": "s-1", "uncertainty": 0.15, "printed": "1015.80±0.15 s–1", "chunk": "pc4490932"},
+        "nu_prefactor": {"value": "10^15.8", "unit": "s-1", "dimension": "first_order", "uncertainty": 0.15, "printed": "1015.80±0.15 s–1", "chunk": "pc4490932"},
         "e_des_tst": {"value": 1.766, "unit": "eV", "uncertainty": 0.024, "printed": "1.766 ± 0.024", "chunk": "pc4490988"},
         "delta_est": {"value": -0.03, "unit": "eV", "uncertainty": 0.015, "printed": "–0.030+0.015", "chunk": "pc4490988"}
       }
@@ -223,8 +223,8 @@
         "beta_K_s": {"value": 4.0, "unit": "K/s", "printed": "4.0 K/s", "chunk": "pc4490752"},
         "e_des_theta_lo": {"value": 180, "unit": "kJ/mol", "printed": "180 kJ/mol", "chunk": "pc4490765"},
         "e_des_theta_hi": {"value": 90, "unit": "kJ/mol", "printed": "90 kJ/mol", "chunk": "pc4490765"},
-        "nu_theta_lo": {"value": "10^17", "unit": "s-1", "printed": "1Or7 s-l", "chunk": "pc4490765", "note": "OCR '1Or7' is 10^17"},
-        "nu_theta_hi": {"value": "10^13", "unit": "s-1", "printed": "10' s-l", "chunk": "pc4490765", "note": "OCR '10'' is 10^13"}
+        "nu_theta_lo": {"value": "10^17", "unit": "s-1", "dimension": "first_order", "printed": "1Or7 s-l", "chunk": "pc4490765", "note": "OCR '1Or7' is 10^17"},
+        "nu_theta_hi": {"value": "10^13", "unit": "s-1", "dimension": "first_order", "printed": "10' s-l", "chunk": "pc4490765", "note": "OCR '10'' is 10^13"}
       }
     },
     {
@@ -255,7 +255,7 @@
         "theta0_sat_ML": {"value": 0.43, "unit": "ML", "printed": "0.43 ML", "chunk": "pc5145082"},
         "beta_K_s": {"value": 7.9, "unit": "K/s", "printed": "7.9 K/s", "chunk": "pc5145077"},
         "e_des": {"value": 38, "unit": "kcal/mol", "printed": "38 kcal mol", "chunk": "pc5145084"},
-        "nu_prefactor": {"value": "10^16", "unit": "s-1", "printed": "1 X 1Ol6 s-l", "chunk": "pc5145080", "note": "assumed for first-order NO; OCR '1Ol6' is 10^16"},
+        "nu_prefactor": {"value": "10^16", "unit": "s-1", "dimension": "first_order", "printed": "1 X 1Ol6 s-l", "chunk": "pc5145080", "note": "assumed for first-order NO; OCR '1Ol6' is 10^16"},
         "order": {"value": 1, "unit": null, "printed": "first-order process", "chunk": "pc5145083"}
       }
     },
@@ -268,7 +268,7 @@
       "method": "redhead",
       "note": "Low-temperature states filled sequentially to saturation (0.75 ML total NO coverage): beta2 at 290 K, beta1 at 270 K.",
       "values": {
-        "t_p_K_beta2": {"value": 290, "unit": "K", "printed": "290", "chunk": "pc5145082"},
+        "t_p_K_beta2": {"value": 290, "unit": "K", "printed": "290, and &amp;, at 270 K", "chunk": "pc5145082"},
         "t_p_K_beta1": {"value": 270, "unit": "K", "printed": "270 K", "chunk": "pc5145082"},
         "e_des_beta2": {"value": 21, "unit": "kcal/mol", "printed": "21, and 38", "chunk": "pc5145084", "note": "beta1, beta2, beta3 = 20, 21, 38 kcal/mol"},
         "e_des_beta1": {"value": 20, "unit": "kcal/mol", "printed": "20, 21", "chunk": "pc5145084"},
@@ -322,9 +322,9 @@
       "note": "Desorption kinetics from isothermal and isosteric desorption rates (not Redhead). Low-coverage binding energy 1.52 eV with strong lateral interactions; saturation 1 ML below 200 K; heating rates variable 1-100 K/s; dissociation only at steps above 400 K (E_diss=1.2 eV, nu_diss=4x10^11 s-1).",
       "values": {
         "e_des_theta_lo": {"value": 1.52, "unit": "eV", "printed": "1.52 eV", "chunk": "pc5145466"},
-        "nu_prefactor": {"value": "2.6e16", "unit": "s-1", "printed": "2.6 x lOI s-l", "chunk": "pc5145466", "note": "exponent OCR-garbled ('lOI'); consistent with 10^16 s-1"},
+        "nu_prefactor": {"value": "2.6e16", "unit": "s-1", "dimension": "first_order", "printed": "2.6 x lOI s-l", "chunk": "pc5145466", "note": "exponent OCR-garbled ('lOI'); consistent with 10^16 s-1"},
         "e_diss": {"value": 1.2, "unit": "eV", "printed": "1.2 eV", "chunk": "pc5145383"},
-        "nu_diss": {"value": "4e11", "unit": "s-1", "printed": "4 **x** IO\" s- '", "chunk": "pc5145383", "note": "OCR 'IO\"' is 10^11"},
+        "nu_diss": {"value": "4e11", "unit": "s-1", "dimension": "first_order", "printed": "4 **x** IO\" s- '", "chunk": "pc5145383", "note": "OCR 'IO\"' is 10^11"},
         "beta_K_s_range": {"value": "1-100", "unit": "K/s", "printed": "1 and 100 K/s", "chunk": "pc5145394"},
         "theta_sat_ML": {"value": 1.0, "unit": "ML", "printed": "one monolayer", "chunk": "pc5145382"}
       }
@@ -436,8 +436,8 @@
       "note": "Velocity-resolved kinetics + absorption enthalpies fitted with a recombination-diffusion model. Isotope-independent classical dissociative adsorption energy; ZPE-corrected per isotopologue. Not TPD.",
       "values": {
         "e_ads_dissociative": {"value": 1.02, "unit": "eV", "uncertainty": 0.03, "printed": "1.02 ± 0.03 eV", "chunk": "pc4491050", "note": "per H2, classical"},
-        "e_ads_h2_zpe": {"value": 0.98, "unit": "eV", "printed": "0.98", "chunk": "pc4491050"},
-        "e_ads_d2_zpe": {"value": 1.00, "unit": "eV", "printed": "1.00", "chunk": "pc4491050"},
+        "e_ads_h2_zpe": {"value": 0.98, "unit": "eV", "printed": "0.980.991.00", "chunk": "pc4491050", "note": "flattened Table-1 E0,ads row: H2/HD/D2 = 0.98/0.99/1.00 eV"},
+        "e_ads_d2_zpe": {"value": 1.00, "unit": "eV", "printed": "0.980.991.00", "chunk": "pc4491050", "note": "flattened Table-1 E0,ads row; D2 is the third entry"},
         "e_abs_bulk": {"value": -0.093, "unit": "eV", "uncertainty": 0.005, "printed": "– 0.093 ± 0.005 eV", "chunk": "pc4491050", "note": "gas->bulk absorption, classical"},
         "e_surf_to_bulk": {"value": 0.46, "unit": "eV", "uncertainty": 0.01, "printed": "0.46 ± 0.01 eV", "chunk": "pc4491050"}
       }
@@ -522,10 +522,10 @@
       "note": "Chan-Aris-Weinberg reanalysis of Falconer-Madix spectra (theta=0.041, 0.013): Ed=30.0 kcal/mol, nu=4e14 s-1; original analysis 33+-1 kcal/mol, 8.5e15 s-1. First order.",
       "values": {
         "e_des": {"value": 30.0, "unit": "kcal/mol", "printed": "30.0 kcal/mole", "chunk": "pc5144967"},
-        "nu_prefactor": {"value": "4e14", "unit": "s-1", "printed": "4 X 1014", "chunk": "pc5144967", "note": "OCR '1014' is 10^14"},
+        "nu_prefactor": {"value": "4e14", "unit": "s-1", "dimension": "first_order", "printed": "4 X 1014", "chunk": "pc5144967", "note": "OCR '1014' is 10^14"},
         "e_des_original": {"value": 33, "unit": "kcal/mol", "uncertainty": 1, "printed": "33 ±1 kcal/mole", "chunk": "pc5144967"},
-        "nu_original": {"value": "8.5e15", "unit": "s-1", "printed": "8.5 X 1015", "chunk": "pc5144967"},
-        "theta0": {"value": "0.041,0.013", "unit": "ML", "printed": "0.041", "chunk": "pc5144966"},
+        "nu_original": {"value": "8.5e15", "unit": "s-1", "dimension": "first_order", "printed": "8.5 X 1015", "chunk": "pc5144967"},
+        "theta0": {"value": "0.041,0.013", "unit": "ML", "printed": "coverage of 0.041", "chunk": "pc5144966"},
         "order": {"value": 1, "unit": null, "printed": "first-order desorption kinetics", "chunk": "pc5144966"}
       }
     },
@@ -543,7 +543,7 @@
         "e_des_low_theta": {"value": 19.5, "unit": "kcal/mol", "printed": "19.5 kcal/mole", "chunk": "pc5144970"},
         "e_des_theta_form": {"value": "19.2-1.9*theta", "unit": "kcal/mol", "printed": "19.2 — 1.90", "chunk": "pc5144970"},
         "e_des_original_form": {"value": "26.0-2.5*theta", "unit": "kcal/mol", "printed": "26.0 — 2.5", "chunk": "pc5144969"},
-        "nu_prefactor": {"value": "3.8e11", "unit": "s-1", "printed": "3.8 X l0~s", "chunk": "pc5144970", "note": "OCR 'l0~s' is 10^11 s-1"}
+        "nu_prefactor": {"value": "3.8e11", "unit": "s-1", "dimension": "first_order", "printed": "3.8 X l0~s", "chunk": "pc5144970", "note": "OCR 'l0~s' is 10^11 s-1"}
       }
     },
     {
@@ -557,7 +557,7 @@
       "values": {
         "beta_K_s": {"value": 5.15, "unit": "K/s", "printed": "5.15 K/s", "chunk": "pc5144973"},
         "pumping_tau_s": {"value": 1.3, "unit": "s", "printed": "1.3 s", "chunk": "pc5144973"},
-        "theta0": {"value": 0.134, "unit": "ML", "printed": "0.134", "chunk": "pc5144973"},
+        "theta0": {"value": 0.134, "unit": "ML", "printed": "coverage of 0.134", "chunk": "pc5144973"},
         "order": {"value": 1, "unit": null, "printed": "first order", "chunk": "pc5144973"}
       }
     },
@@ -588,7 +588,7 @@
         "beta_K_s": {"value": 2, "unit": "K/s", "printed": "2 K/s", "chunk": "pc5146048"},
         "theta_sat_ML": {"value": 0.25, "unit": "ML", "printed": "0.25 ML", "chunk": "pc5146050"},
         "dose_T_K": {"value": 100, "unit": "K", "printed": "100 K", "chunk": "pc5146047"},
-        "e_ads_theta0_intercept": {"value": -4.1488, "unit": "eV", "printed": "4.1488", "chunk": "pc5146083", "note": "4th-order polynomial intercept; sign per E_ads convention"},
+        "e_ads_theta0_intercept": {"value": 4.1488, "unit": "eV", "printed": "4.1488", "chunk": "pc5146083", "note": "stored as printed; the polynomial term is '- 4.1488', i.e. E_ads(theta->0) = -4.1488 eV under the bound-is-negative E_ads convention"},
         "bep_alpha": {"value": -0.47, "unit": null, "printed": "a =-0.47", "chunk": "pc5146091"},
         "bep_kappa": {"value": 0.01, "unit": null, "printed": "j = 0.01", "chunk": "pc5146091"},
         "order": {"value": 2, "unit": null, "printed": "secondorder simulated", "chunk": "pc5146066"}
@@ -605,7 +605,7 @@
       "values": {
         "e_des_a": {"value": 2.18, "unit": "eV", "printed": "2.18 eV", "chunk": "pc5146112"},
         "e_des_b": {"value": 2.3, "unit": "eV", "printed": "2.3 eV", "chunk": "pc5146112"},
-        "nu_prefactor": {"value": "1e13", "unit": "ML-1 s-1", "printed": "10<sup>13</sup>", "chunk": "pc5146112"},
+        "nu_prefactor": {"value": "1e13", "unit": "ML-1 s-1", "dimension": "second_order", "printed": "10<sup>13</sup>", "chunk": "pc5146112"},
         "order": {"value": 2, "unit": null, "printed": "second-order Redhead", "chunk": "pc5146112"}
       }
     },
@@ -646,7 +646,7 @@
       "note": "Coverage-dependent effective desorption parameters: zero-coverage E_d=35.5 kcal/mol, nu0=10^13.5 s-1; strong E-nu compensation Tc=519 K; Ed(theta) tracks LEED structure stages at T_ads=200 K. Card-only source.",
       "values": {
         "e_des_theta0": {"value": 35.5, "unit": "kcal/mol", "printed": "35.5 kcal/mol", "chunk": "pc4480599"},
-        "nu_prefactor_theta0": {"value": "10^13.5", "unit": "s-1", "printed": "1013.5 s−1", "chunk": "pc4480599", "note": "10^13.5 s-1, superscripts flattened"},
+        "nu_prefactor_theta0": {"value": "10^13.5", "unit": "s-1", "dimension": "first_order", "printed": "1013.5 s−1", "chunk": "pc4480599", "note": "10^13.5 s-1, superscripts flattened"},
         "t_compensation_K": {"value": 519, "unit": "K", "printed": "519 K", "chunk": "pc4480599"},
         "t_ads_range_K": {"value": "87-200", "unit": "K", "printed": "87 to 200 K", "chunk": "pc4480599"}
       }
@@ -660,7 +660,7 @@
       "method": "isothermal molecular beam (card abstract only)",
       "note": "Isothermal kinetics, not TPD: s0(NO)=0.5 at 300-350 K to ~70-80% coverage; N2 production from 425 K, max 475-500 K; subsurface O diffusion from ~475 K.",
       "values": {
-        "s0": {"value": 0.5, "unit": null, "printed": "0.5", "chunk": "pc4480635"},
+        "s0": {"value": 0.5, "unit": null, "printed": "s(NO) of 0.5", "chunk": "pc4480635"},
         "t_n2_onset_K": {"value": 425, "unit": "K", "printed": "425 K", "chunk": "pc4480635"},
         "t_n2_max_K": {"value": "475-500", "unit": "K", "printed": "475 and 500 K", "chunk": "pc4480635"},
         "t_measure_range_K": {"value": "300-525", "unit": "K", "printed": "300 and 525 K", "chunk": "pc4480635"}
@@ -675,7 +675,7 @@
       "method": "inversion-complete (card abstract only)",
       "note": "High-quality TPD series (theta 0-3.70 ML, beta 0.3-10 K/s) inverted with a coverage-independent prefactor determined variationally: nu=10^(15.7+-1.6) s-1; Ed(0.5 ML)=34.9+-3.4 kJ/mol; Ed(theta)=34.5+0.566*theta+8.37*exp(-theta/0.101).",
       "values": {
-        "nu_prefactor": {"value": "10^15.7", "unit": "s-1", "uncertainty": 1.6, "printed": "10(15.7+/-1.6)", "chunk": "pc4480634"},
+        "nu_prefactor": {"value": "10^15.7", "unit": "s-1", "dimension": "first_order", "uncertainty": 1.6, "printed": "10(15.7+/-1.6)", "chunk": "pc4480634"},
         "e_des_half_ml": {"value": 34.9, "unit": "kJ/mol", "uncertainty": 3.4, "printed": "34.9+/-3.4 kJ/mol", "chunk": "pc4480634"},
         "e_des_theta_form": {"value": "34.5+0.566*theta+8.37*exp(-theta/0.101)", "unit": "kJ/mol", "printed": "34.5+0.566theta+8.37 exp(-theta/0.101)", "chunk": "pc4480634"},
         "beta_K_s_range": {"value": "0.3-10", "unit": "K/s", "printed": "0.3-10 K/s", "chunk": "pc4480634"},
@@ -691,8 +691,8 @@
       "method": "dft-microkinetic TPD simulation (card abstract only)",
       "note": "Forward-simulated TPD; temperature-dependent prefactors 10^14-10^17 s-1 (vs empirical 10^13). Method template, not a measurement.",
       "values": {
-        "nu_range": {"value": "10^14-10^17", "unit": "s-1", "printed": "10 14 to 10 17 s –1", "chunk": "pc4480624"},
-        "nu_empirical_ref": {"value": "10^13", "unit": "s-1", "printed": "10 13 s –1", "chunk": "pc4480624"}
+        "nu_range": {"value": "10^14-10^17", "unit": "s-1", "dimension": "first_order", "printed": "10 14 to 10 17 s –1", "chunk": "pc4480624"},
+        "nu_empirical_ref": {"value": "10^13", "unit": "s-1", "dimension": "first_order", "printed": "10 13 s –1", "chunk": "pc4480624"}
       }
     }
   ]
