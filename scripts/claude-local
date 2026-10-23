@@ -54,4 +54,40 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
-exec claude --model "$model" "$@"
+
+# gr506125: pin the lane to its task tree. The re-pilot aimed every Edit at
+# the MAIN checkout's absolute path and stalled on refusals. Two layers:
+# PRECIS_CASTOR_LANE tells guard-worktree-path.py to deny file-tool paths
+# outside the session's tree (instead of leaving them to the classifier),
+# and --append-system-prompt states the root so the model aims inside it
+# from the first turn. `-w NAME` resolves to <main>/.claude/worktrees/NAME
+# (the same convention `claude -w` and scripts/devin-tree share).
+export PRECIS_CASTOR_LANE=1
+pin_tree=""
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+if [ -n "$common_dir" ]; then
+    case "$common_dir" in /*) ;; *) common_dir="$PWD/$common_dir" ;; esac
+    # normalize: resolve . and .. so the printed task-tree path is absolute
+    main_root="$(cd "${common_dir%/.git}" 2>/dev/null && pwd || true)"
+fi
+if [ -n "${main_root:-}" ]; then
+    wt_name=""
+    prev=""
+    for arg in "$@"; do
+        case "$prev" in -w | --worktree) wt_name="$arg" ;; esac
+        prev="$arg"
+    done
+    if [ -n "$wt_name" ]; then
+        pin_tree="$main_root/.claude/worktrees/$wt_name"
+    else
+        pin_tree="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+fi
+extra=()
+if [ -n "$pin_tree" ] && [[ "$*" != *--append-system-prompt* ]]; then
+    extra+=(
+        --append-system-prompt
+        "You run in the castor lane. Your task tree is $pin_tree — use absolute paths under it only; file tools refuse paths outside it."
+    )
+fi
+exec claude --model "$model" ${extra[@]+"${extra[@]}"} "$@"

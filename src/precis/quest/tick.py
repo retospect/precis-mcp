@@ -812,40 +812,127 @@ def _literature_section(store: Store, quest_id: int) -> str:
 #: reads_section` — full-text, not snippet, but still bounded against a
 #: pathological chunk.
 _READ_TEXT_CHARS = 6000
-#: A ref-level read joins at most this many body chunks.
+#: A ref-level read joins at most this many body chunks — one ``page`` of
+#: a paginated read (gr505186).
 _READ_MAX_CHUNKS = 8
+#: Distinct section names a read's navigation hint lists.
+_READ_SECTION_NAMES_MAX = 12
 
 
-def _read_ref_text(store: Store, handle: str) -> str:
+def _read_body_chunks(store: Store, ref_id: int) -> list[Any]:
+    """A ref's non-heading, non-empty body chunks in ``ord`` order."""
+    try:
+        blocks = store.chunks.list_chunks_for_ref(ref_id)
+    except Exception:
+        return []
+    return [b for b in blocks if b.chunk_kind != "heading" and (b.text or "").strip()]
+
+
+def _section_path(chunk: Any) -> list[str]:
+    sp = (getattr(chunk, "meta", None) or {}).get("section_path")
+    return [str(s) for s in sp] if isinstance(sp, (list, tuple)) else []
+
+
+def _section_names(body: list[Any]) -> list[str]:
+    """Distinct ``section_path`` tails, in first-appearance order — the
+    section vocabulary a ``read`` can name."""
+    seen: list[str] = []
+    for b in body:
+        sp = _section_path(b)
+        if sp and sp[-1].strip() and sp[-1].strip() not in seen:
+            seen.append(sp[-1].strip())
+    return seen
+
+
+def _section_match(chunk: Any, needle: str) -> bool:
+    return any(needle in " ".join(s.lower().split()) for s in _section_path(chunk))
+
+
+def _read_nav_hint(
+    total: int, shown: int, page: int, names: list[str], section: str | None
+) -> str:
+    """One trailer line telling the model what the read did NOT reach —
+    how to page deeper or target a section. A bare read otherwise looks
+    like the whole body (gr505186: read() repeated the front chunk)."""
+    pages = max(1, -(-total // _READ_MAX_CHUNKS))
+    bits = [f"page {page}/{pages}", f"{shown}/{total} chunks"]
+    if section:
+        bits.append(f"section {section!r}")
+    hint = "; ".join(bits)
+    if names:
+        hint += "; sections: " + ", ".join(names[:_READ_SECTION_NAMES_MAX])
+        if len(names) > _READ_SECTION_NAMES_MAX:
+            hint += f", +{len(names) - _READ_SECTION_NAMES_MAX} more"
+    hint += ' — "page": <n> or "section": "<name>" reads further'
+    return f"\n\n({hint})"
+
+
+def _read_ref_text(
+    store: Store, handle: str, *, section: str | None = None, page: int = 1
+) -> str:
     """The full text a ``read`` request pulls into context: the chunk's own
-    text for a chunk handle (``pc<id>``), the ref's first body chunks joined
-    for a record handle (``fi<id>``/``pa<id>``) — bounded at
-    :data:`_READ_TEXT_CHARS`."""
+    text for a bare chunk handle (``pc<id>``), the ref's body chunks for a
+    record handle (``fi<id>``/``pa<id>``) — bounded at
+    :data:`_READ_TEXT_CHARS`.
+
+    Selectors (gr505186/gr507189): ``section`` restricts to body chunks
+    whose ``section_path`` mentions the name (case-insensitive substring);
+    ``page`` (1-based) windows the selection by :data:`_READ_MAX_CHUNKS`
+    chunks. Either selector on a ``pc<id>`` chunk handle reads the owning
+    ref's body — a chunk id is just the anchor into its paper. A section
+    that matches nothing answers with the held section names instead of
+    silence, so the next tick can aim again."""
     resolved = store.resolve_handle(handle)
     if resolved is None:
         return "(no longer resolvable — the ref is gone or the handle is wrong)"
-    if resolved.chunk_id is not None:
+    if resolved.chunk_id is not None and section is None and page <= 1:
         text = store.chunks.chunk_text_by_id(resolved.chunk_id) or ""
-        return excerpt(
+        out = excerpt(
             text.strip() or "(empty chunk)",
             limit=_READ_TEXT_CHARS,
             collapse_whitespace=False,
         )
-    try:
-        blocks = store.chunks.list_chunks_for_ref(resolved.ref_id)
-    except Exception:
-        blocks = []
-    parts = []
-    for b in blocks:
-        if b.chunk_kind == "heading":
-            continue
-        t = (b.text or "").strip()
-        if t:
-            parts.append(t)
-        if len(parts) >= _READ_MAX_CHUNKS:
-            break
-    text = "\n\n".join(parts).strip() or "(no body chunks held)"
-    return excerpt(text, limit=_READ_TEXT_CHARS, collapse_whitespace=False)
+        body = _read_body_chunks(store, resolved.ref_id)
+        if len(body) > 1:
+            ord_s = (
+                f"ord {resolved.chunk_ord} of "
+                if resolved.chunk_ord is not None
+                else ""
+            )
+            names = _section_names(body)
+            sec = (
+                f"; sections: {', '.join(names[:_READ_SECTION_NAMES_MAX])}"
+                if names
+                else ""
+            )
+            out += (
+                f"\n\n(one chunk, {ord_s}{len(body)} body chunks on the owning "
+                f'ref{sec} — "page": <n> or "section": "<name>" reads deeper)'
+            )
+        return out
+    body = _read_body_chunks(store, resolved.ref_id)
+    if not body:
+        return "(no body chunks held)"
+    names = _section_names(body)
+    selected = body
+    if section:
+        needle = " ".join(str(section).lower().split())
+        selected = [b for b in body if _section_match(b, needle)]
+        if not selected:
+            listing = ", ".join(names[:_READ_SECTION_NAMES_MAX]) or "(none held)"
+            return (
+                f"(no section matching {section!r} — sections held: {listing}; "
+                '"page": <n> windows the whole body instead)'
+            )
+    pages = max(1, -(-len(selected) // _READ_MAX_CHUNKS))
+    if page > pages:
+        return f"(page {page} out of {pages} — {len(selected)} chunks selected)"
+    window = selected[(page - 1) * _READ_MAX_CHUNKS : page * _READ_MAX_CHUNKS]
+    text = "\n\n".join((b.text or "").strip() for b in window)
+    out = excerpt(text, limit=_READ_TEXT_CHARS, collapse_whitespace=False)
+    if len(selected) > len(window) or section:
+        out += _read_nav_hint(len(selected), len(window), page, names, section)
+    return out
 
 
 def _requested_reads_section(store: Store, quest: Ref) -> str:
@@ -867,7 +954,23 @@ def _requested_reads_section(store: Store, quest: Ref) -> str:
             continue
         why = str(e.get("why") or "").strip()
         why_s = f" — why: {why}" if why else ""
-        lines.append(f"### {ref_s}{why_s}\n{_read_ref_text(store, ref_s)}")
+        sel = []
+        if e.get("section"):
+            sel.append(f'section "{e["section"]}"')
+        page = e.get("page")
+        page_n = page if isinstance(page, int) and not isinstance(page, bool) else 1
+        if page_n > 1:
+            sel.append(f"page {page_n}")
+        sel_s = f" ({', '.join(sel)})" if sel else ""
+        lines.append(
+            f"### {ref_s}{sel_s}{why_s}\n"
+            + _read_ref_text(
+                store,
+                ref_s,
+                section=e.get("section"),
+                page=page_n,
+            )
+        )
     if len(lines) == 1:
         return ""
     return "\n".join(lines) + "\n"
@@ -1838,8 +1941,9 @@ it would unblock>"}}
 "why": "<what the repeat measurement is testing>"}}
   ],
   "read": [
-    {{"ref": "<fi<id> or pc<id> of a held item you want the full text of>", \
-"why": "<what you are looking for>"}}
+    {{"ref": "<fi<id>, pa<id> or pc<id> of a held item you want text of>", \
+"why": "<what you are looking for>", "section": "<optional heading name>", \
+"page": "<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -1857,10 +1961,14 @@ deliberately re-test a credited pass's reproducibility instead of waiting \
 for whichever rerun the system schedules on its own. It re-measures, never \
 revises — a changed reaction or geometry is a `proposals` entry, not a \
 rerun. \
-`read` (0–{read_cap}) pulls a held item's FULL text into the NEXT tick's \
-context — name a `[fi<id>]` finding or a `[pc<id>]` paper chunk from the \
-context above; the finding claims and abstract snippets are otherwise all \
-you see, so use this when the numbers live deeper than the snippet. \
+`read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
+context — name a `[fi<id>]` finding, `[pa<id>]` paper or `[pc<id>]` paper \
+chunk from the context above; the finding claims and abstract snippets are \
+otherwise all you see, so use this when the numbers live deeper than the \
+snippet. A bare read returns the body's front page — add `"section": \
+"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
+or `"page": <n>` to page deeper into the body; a `pc` handle with a \
+selector reads its owning paper. \
 `fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
 the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
 fetch is already queued); acquisition runs out of band, and once the paper \
@@ -1871,7 +1979,11 @@ state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
 words in `dossier_text` — but that's a target, not a hard cap: growth is \
 fine when it reflects genuinely new evidence (a ruling, a result), not when \
-it's restated history. A rewrite that grows well past its previous length \
+it's restated history. Never carry running tallies in the dossier — a \
+cumulative spend list or a parked-papers list is bookkeeping, not \
+understanding: every tick already writes its spend as a `cost` logbook \
+entry, and deferred papers stay visible in your served-literature list. \
+A rewrite that grows well past its previous length \
 with nothing new to show for it gets bounced back to you to compress.
 
 `proposals` (0–{proposal_cap} — the loop dispatches at most {proposal_cap} \
@@ -2046,8 +2158,9 @@ does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
   ],
   "read": [
-    {{"ref": "<fi<id> or pc<id> of a held item you want the full text of>", \
-"why": "<what you are looking for>"}}
+    {{"ref": "<fi<id>, pa<id> or pc<id> of a held item you want text of>", \
+"why": "<what you are looking for>", "section": "<optional heading name>", \
+"page": "<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -2057,10 +2170,14 @@ it would unblock>"}}
 
 If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
-`read` (0–{read_cap}) pulls a held item's FULL text into the NEXT tick's \
-context — name a `[fi<id>]` finding or a `[pc<id>]` paper chunk from the \
-context above; the finding claims and abstract snippets are otherwise all \
-you see, so use this when the numbers live deeper than the snippet. \
+`read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
+context — name a `[fi<id>]` finding, `[pa<id>]` paper or `[pc<id>]` paper \
+chunk from the context above; the finding claims and abstract snippets are \
+otherwise all you see, so use this when the numbers live deeper than the \
+snippet. A bare read returns the body's front page — add `"section": \
+"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
+or `"page": <n>` to page deeper into the body; a `pc` handle with a \
+selector reads its owning paper. \
 `fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
 the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
 fetch is already queued); acquisition runs out of band, and once the paper \
@@ -2071,7 +2188,11 @@ state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
 words in `dossier_text` — but that's a target, not a hard cap: growth is \
 fine when it reflects genuinely new evidence (a ruling, a result), not when \
-it's restated history. A rewrite that grows well past its previous length \
+it's restated history. Never carry running tallies in the dossier — a \
+cumulative spend list or a parked-papers list is bookkeeping, not \
+understanding: every tick already writes its spend as a `cost` logbook \
+entry, and deferred papers stay visible in your served-literature list. \
+A rewrite that grows well past its previous length \
 with nothing new to show for it gets bounced back to you to compress."""
 
 

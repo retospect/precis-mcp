@@ -657,6 +657,12 @@ def run_search_step(
 # a served abstract stub's full text via ``PaperHandler.acquire``
 # (idempotent identifier-collapse — the request re-pins the stub at the
 # head of the fetch_oa queue, never a second mint).
+#
+# A `read` entry may carry two optional selectors (gr505186/gr507189 — a
+# bare read only ever reached the front matter): ``section`` names a
+# heading from the ref's ``section_path`` structure and ``page`` picks a
+# later window of the body, so the model can reach results sections and
+# other deep content instead of re-reading chunk 0 forever.
 
 #: Quest meta key the ``read`` field parks its requests under — rewritten
 #: wholesale each apply (the batch rendered into this tick's prompt came
@@ -701,7 +707,9 @@ def apply_reads(
     """Execute a tick payload's ``read`` — park the held items the model
     wants full text of so the NEXT tick's prompt renders them (gr502680).
 
-    Each entry is ``{"ref": "<universal handle>", "why": ...}``; entries
+    Each entry is ``{"ref": "<universal handle>", "why": ...}`` plus the
+    optional selectors ``{"section": "<heading words>", "page": <n>}``
+    (gr505186 — a bare read only reaches the body's front page). Entries
     past ``cap``, malformed entries, and refs that don't resolve each land
     as an ``observation`` logbook note — never silent, never a tick
     failure. ``meta.pending_reads`` is REWRITTEN each call: it is exactly
@@ -709,7 +717,7 @@ def apply_reads(
     tick's prompt, so a re-sent ref is a fresh request). Returns the
     number of reads queued.
     """
-    requests: list[dict[str, str]] = []
+    requests: list[dict[str, Any]] = []
     refused: list[str] = []
     if isinstance(entries, list):
         for e in entries[:cap]:
@@ -724,7 +732,30 @@ def apply_reads(
             if _resolve_read_ref(store, ident) is None:
                 refused.append(f"{ident}: does not resolve to a held ref/chunk")
                 continue
-            requests.append({"ref": ident, "why": why})
+            req: dict[str, Any] = {"ref": ident, "why": why}
+            section = e.get("section")
+            if section is not None:
+                if not isinstance(section, (str, int, float)) or isinstance(
+                    section, bool
+                ):
+                    refused.append(f"{ident}: `section` is not a heading name")
+                    continue
+                section = str(section).strip()[:120]
+                if section:
+                    req["section"] = section
+            page = e.get("page")
+            if page is not None:
+                try:
+                    page = int(page)
+                except (TypeError, ValueError):
+                    refused.append(f"{ident}: `page` is not a number")
+                    continue
+                if isinstance(e.get("page"), bool) or page < 1 or page > 999:
+                    refused.append(f"{ident}: `page` out of range (1..999)")
+                    continue
+                if page > 1:
+                    req["page"] = page
+            requests.append(req)
         if len(entries) > cap:
             refused.append(
                 f"{len(entries) - cap} entr(ies) over the per-tick cap of {cap}"

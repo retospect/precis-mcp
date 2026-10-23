@@ -512,7 +512,9 @@ def test_dropped_call_reason(shim, finish, matched, content, reasoning, tools, d
 
 def test_complete_retry_recovers_tool_call(shim):
     upstream, logged = _Upstream(DROPPED, TOOL), []
-    msg = shim.complete_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    msg = shim.complete_with_retry(
+        upstream, "m", 3, lambda *a: logged.append(a), None, ["Bash"]
+    )
     assert upstream.calls == 2
     assert msg["stop_reason"] == "tool_use"
     assert [b["type"] for b in msg["content"]] == ["thinking", "tool_use"]
@@ -525,7 +527,9 @@ def test_complete_retry_recovers_tool_call(shim):
 def test_complete_retry_exhausted_raises(shim):
     upstream, logged = _Upstream(DROPPED), []
     with pytest.raises(shim.DroppedToolCall, match="4 attempts"):
-        shim.complete_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+        shim.complete_with_retry(
+            upstream, "m", 3, lambda *a: logged.append(a), None, ["Bash"]
+        )
     assert upstream.calls == 4
     assert [(e, d[:3]) for e, d in logged] == [("retry", f"{n}/3") for n in (1, 2, 3)]
 
@@ -540,9 +544,25 @@ def test_complete_normal_turn_untouched(shim, chat):
     assert {**msg, "id": ""} == {**plain, "id": ""}
 
 
+def test_complete_no_tools_turn_is_not_retried(shim):
+    # gr506125: Claude Code's auto-mode classifier sends requests with no
+    # tools and gets an analysis-only answer; with nothing offered there is
+    # no call to drop, so the retry/salvage loop must not burn on it.
+    upstream, raw, logged = _Upstream(DROPPED), _Upstream(RAW_DROPPED), []
+    msg = shim.complete_with_retry(
+        upstream, "m", 3, lambda *a: logged.append(a), raw, ()
+    )
+    assert upstream.calls == 1 and raw.calls == 0 and logged == []
+    assert msg["stop_reason"] == "end_turn"
+
+
 def test_stream_retry_recovers_tool_call(shim):
     upstream, logged = _Upstream(DROPPED_STREAM, TOOL_STREAM), []
-    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a)))
+    ev = list(
+        shim.stream_with_retry(
+            upstream, "m", 3, lambda *a: logged.append(a), None, ["Bash"]
+        )
+    )
     assert upstream.calls == 2 and len(logged) == 1
     # the dropped attempt never reaches the client: one message, one tool_use
     assert [e for e, _ in ev].count("message_start") == 1
@@ -568,14 +588,16 @@ def test_stream_leaked_call_in_content_is_retried(shim):
         },
     ]
     upstream = _Upstream(leaked, TOOL_STREAM)
-    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: None))
+    ev = list(shim.stream_with_retry(upstream, "m", 3, lambda *a: None, None, ["Bash"]))
     assert upstream.calls == 2
     assert not any(d.get("delta", {}).get("type") == "text_delta" for _, d in ev)
 
 
 def test_stream_retry_exhausted_raises_before_any_event(shim):
     upstream, logged = _Upstream(DROPPED_STREAM), []
-    events = shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a))
+    events = shim.stream_with_retry(
+        upstream, "m", 3, lambda *a: logged.append(a), None, ["Bash"]
+    )
     with pytest.raises(shim.DroppedToolCall):
         next(events)
     assert upstream.calls == 4 and len(logged) == 3
@@ -590,6 +612,19 @@ def test_stream_normal_turn_untouched(shim, chunks):
     # identical apart from the per-translator random message id
     assert [(e, d.get("type")) for e, d in ev] == [(e, d.get("type")) for e, d in plain]
     assert ev[1:] == plain[1:]
+
+
+def test_stream_no_tools_turn_streams_through(shim):
+    # gr506125: a dropped-looking reply on a no-tools request is a complete
+    # answer — stream it, never retry into a 502.
+    upstream, raw, logged = _Upstream(DROPPED_STREAM), _Upstream(RAW_DROPPED), []
+    ev = list(
+        shim.stream_with_retry(upstream, "m", 3, lambda *a: logged.append(a), raw, ())
+    )
+    assert upstream.calls == 1 and raw.calls == 0 and logged == []
+    assert [e for e, _ in ev].count("message_start") == 1
+    md = [d for e, d in ev if e == "message_delta"]
+    assert [d["delta"]["stop_reason"] for d in md] == ["end_turn"]
 
 
 # --- salvage: dropped call read back from raw harmony ----------------------------

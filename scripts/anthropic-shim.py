@@ -23,7 +23,10 @@ tool on turn 1 in 4/5 requests with a system message vs 2/5 folded; after a
 tool result both dropped every call (the drop below, not a system-role stall).
 Chat mode also retries a turn whose tool call SGLang dropped (gpt-oss wrote
 it on the analysis channel; the turn ends on ``<|call|>`` with no
-tool_calls) up to ``ANTHROPIC_SHIM_DROPPED_CALL_RETRIES`` (3) times. With
+tool_calls) up to ``ANTHROPIC_SHIM_DROPPED_CALL_RETRIES`` (3) times — except
+requests that offer no tools at all: an analysis-only reply there is the
+whole answer, not a dropped call (Claude Code's auto-mode classifier calls
+burned the retry budget and 502'd, gr506125). With
 salvage on (``--salvage``, env ``ANTHROPIC_SHIM_SALVAGE``: ``auto`` = on
 for gpt-oss) each retry asks for raw harmony and turns the dropped call into
 a tool_use. When retries run dry the client gets a non-retryable 502 instead
@@ -754,7 +757,14 @@ def complete_with_retry(
     ``send`` returns one upstream chat/completions body. With ``send_raw``
     (a raw-harmony request) each retry salvages from it instead of re-sending
     ``send``. Raises :class:`DroppedToolCall` once ``retries`` retries failed.
+
+    A request offering no tools cannot drop a tool call — an analysis-only
+    reply IS the answer (Claude Code's no-tools classifier probes burned the
+    retry budget and surfaced a 502, gr506125), so the loop does not run.
     """
+    tool_names = tuple(tool_names)
+    if not tool_names:
+        return to_anthropic_response(send(), model)
     reason = ""
     for attempt in range(retries + 1):
         if attempt:
@@ -788,7 +798,17 @@ def stream_with_retry(
     ``send_raw`` when given, else ``open_stream`` again). Nothing is yielded
     before that decision, so :class:`DroppedToolCall` (and any error from
     ``open_stream``) raises before the first event.
+
+    No-tools requests skip the hold-back entirely (gr506125): with nothing
+    offered there is no call to drop, so events stream straight through.
     """
+    tool_names = tuple(tool_names)
+    if not tool_names:
+        translator = ChatStreamTranslator(model)
+        for chunk in open_stream():
+            yield from translator.feed(chunk)
+        yield from translator.close()
+        return
     reason = ""
     for attempt in range(retries + 1):
         if attempt:

@@ -3994,6 +3994,135 @@ class TestReadField:
         assert any("over the per-tick cap" in t for t in texts)
 
 
+def _mk_paper_body(store: Any, title: str, sections: list[tuple[str, int]]) -> int:
+    """A held paper: ``sections`` = (section_path tail, n_chunks) pairs laid
+    out in ord order; chunk text carries its ord and section name."""
+    from precis.store.types import ChunkInsert
+
+    pid = _mk_paper_stub(store, title)
+    inserts = []
+    ord_ = 0
+    for tail, n in sections:
+        for _ in range(n):
+            inserts.append(
+                ChunkInsert(
+                    ord=ord_,
+                    text=f"{title} / {tail} chunk {ord_}",
+                    meta={"section_path": [tail]},
+                )
+            )
+            ord_ += 1
+    store.chunks.insert_chunks(pid, inserts)
+    return pid
+
+
+class TestReadSelectors:
+    """gr505186 / gr507189 — a bare read only reached the body's front page;
+    ``section`` and ``page`` target deeper content."""
+
+    def test_section_read_returns_that_section(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest reading a section")
+        pid = _mk_paper_body(
+            store,
+            "Pd paper",
+            [("Front matter", 2), ("Methods", 3), ("Results", 4)],
+        )
+        payload = {
+            "logbook": [],
+            "read": [
+                {"ref": f"pa{pid}", "section": "results", "why": "rate constants"}
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert 'section "results"' in prompt
+        assert "Results chunk 5" in prompt
+        assert "Front matter chunk 0" not in prompt
+
+    def test_page_read_reaches_deeper_chunks(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest paging a paper")
+        pid = _mk_paper_body(store, "Deep paper", [("Body", 12)])
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"pa{pid}", "page": 2, "why": "later chunks"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "page 2" in prompt
+        assert "chunk 8" in prompt
+        assert "chunk 0" not in prompt
+
+    def test_pc_handle_with_selector_reads_owning_paper(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest anchored on a chunk")
+        pid = _mk_paper_body(store, "Anchored", [("Intro", 2), ("Measurements", 3)])
+        cid = int(store.chunks.list_chunks_for_ref(pid)[0].id)
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"pc{cid}", "section": "measurements"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Measurements chunk 2" in prompt
+        assert "Intro chunk 0" not in prompt
+
+    def test_unknown_section_lists_held_sections(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest mis-naming a section")
+        pid = _mk_paper_body(store, "Sectioned", [("Methods", 3), ("Results", 3)])
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"pa{pid}", "section": "kinetic theory"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "no section matching" in prompt
+        assert "Results" in prompt  # the held sections are listed back
+
+    def test_out_of_range_page_says_so(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest over-paging")
+        pid = _mk_paper_body(store, "Short paper", [("Body", 4)])
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"pa{pid}", "page": 5}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "page 5 out of 1" in prompt
+
+    def test_bare_read_shows_nav_hint(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest reading the front page")
+        pid = _mk_paper_body(store, "Long paper", [("Intro", 9), ("Results", 5)])
+        payload = {"logbook": [], "read": [{"ref": f"pa{pid}"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Intro chunk 0" in prompt
+        assert "page 1/2" in prompt
+        assert "Results" in prompt  # sections advertised in the hint
+
+    def test_bad_selectors_are_refused_not_fatal(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest with malformed selectors")
+        pid = _mk_paper_body(store, "Paper", [("Body", 2)])
+        payload = {
+            "logbook": [],
+            "read": [
+                {"ref": f"pa{pid}", "page": "many"},
+                {"ref": f"pa{pid}", "section": ["not", "a", "name"]},
+                {"ref": f"pa{pid}", "page": 0},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 0
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("`page` is not a number" in t for t in texts)
+        assert any("`section` is not a heading name" in t for t in texts)
+        assert any("`page` out of range" in t for t in texts)
+
+
 class TestFetchField:
     def test_fetch_requests_fulltext_and_marks_requested(
         self, store: Any, monkeypatch: Any

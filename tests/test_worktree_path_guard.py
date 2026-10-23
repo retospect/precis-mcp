@@ -194,3 +194,79 @@ def test_main_no_op_when_no_correction_needed(monkeypatch, capsys) -> None:
     rc, out = _run_main(monkeypatch, payload, capsys)
     assert rc == 0
     assert out is None
+
+
+class TestCastorLane:
+    """gr506125: with PRECIS_CASTOR_LANE set (scripts/claude-local), file
+    tools refuse paths outside the session's task tree — the gpt-oss
+    re-pilot aimed every Edit at the main checkout and stalled on refusals
+    it could not read."""
+
+    def _git_stub(self, cwd, *args):
+        return WT if args == ("rev-parse", "--show-toplevel") else f"{MAIN}/.git"
+
+    def _run(self, monkeypatch, capsys, path, *, twin=None):
+        monkeypatch.setenv("PRECIS_CASTOR_LANE", "1")
+        monkeypatch.setattr(_mod, "_git", self._git_stub)
+        monkeypatch.setattr(_mod, "evaluate", lambda *a, **k: twin)
+        return _run_main(
+            monkeypatch,
+            {
+                "cwd": WT,
+                "tool_name": "Edit",
+                "tool_input": {"file_path": path},
+            },
+            capsys,
+        )
+
+    def test_main_only_path_without_twin_is_denied(self, monkeypatch, capsys):
+        # evaluate() left it alone (a deliberate main-only path in a normal
+        # session); the castor lane denies instead.
+        rc, out = self._run(monkeypatch, capsys, f"{MAIN}/src/new.py")
+        assert rc == 0
+        hso = out["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "deny"
+        assert WT in hso["permissionDecisionReason"]
+
+    def test_external_root_is_denied(self, monkeypatch, capsys):
+        rc, out = self._run(monkeypatch, capsys, "/elsewhere/repo/x.py")
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_sibling_worktree_is_denied(self, monkeypatch, capsys):
+        rc, out = self._run(
+            monkeypatch, capsys, f"{MAIN}/.claude/worktrees/other/src/x.py"
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_relative_escape_is_denied(self, monkeypatch, capsys):
+        rc, out = self._run(monkeypatch, capsys, "../other/src/x.py")
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_in_tree_paths_pass(self, monkeypatch, capsys):
+        for path in (f"{WT}/src/x.py", "src/x.py", "./src/x.py"):
+            rc, out = self._run(monkeypatch, capsys, path)
+            assert rc == 0 and out is None
+
+    def test_twin_redirect_still_beats_deny(self, monkeypatch, capsys):
+        twin = f"{WT}/src/precis/handlers/x.py"
+        rc, out = self._run(
+            monkeypatch, capsys, f"{MAIN}/src/precis/handlers/x.py", twin=twin
+        )
+        hso = out["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "allow"
+        assert hso["updatedInput"]["file_path"] == twin
+
+    def test_unset_env_keeps_normal_behavior(self, monkeypatch, capsys):
+        monkeypatch.delenv("PRECIS_CASTOR_LANE", raising=False)
+        monkeypatch.setattr(_mod, "_git", self._git_stub)
+        monkeypatch.setattr(_mod, "evaluate", lambda *a, **k: None)
+        rc, out = _run_main(
+            monkeypatch,
+            {
+                "cwd": WT,
+                "tool_name": "Edit",
+                "tool_input": {"file_path": f"{MAIN}/src/new.py"},
+            },
+            capsys,
+        )
+        assert rc == 0 and out is None

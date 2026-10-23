@@ -25,6 +25,15 @@ Wired in ``.claude/settings.json`` (PreToolUse, matcher
 under ``file_path``; ``NotebookEdit`` uses ``notebook_path`` instead, which
 this hook also inspects. See the ``worktree_edit_path_trap`` memory (the
 original backlog write-up lives in git history).
+
+Castor-lane strict mode (gr506125): when ``PRECIS_CASTOR_LANE`` is set
+(``scripts/claude-local`` exports it), the lane's model can't be trusted to
+stay inside its task tree — the gpt-oss re-pilot aimed every Edit at the
+main checkout's absolute path and stalled. On top of the twin redirect
+(which still runs first — a fix beats a refusal), any remaining path that
+resolves outside the session's worktree root — a main-only path, a sibling
+worktree, an external root, or a relative path that escapes cwd — is DENIED
+with a reason naming the tree root, so the next attempt lands inside it.
 """
 
 from __future__ import annotations
@@ -94,6 +103,32 @@ def evaluate(
     return None
 
 
+def _castor_check(file_path: str, wt_root: str, cwd: str) -> dict | None:
+    """Castor-lane containment: the JSON to emit when ``file_path`` escapes
+    the session's tree, else ``None``. Runs after :func:`evaluate`, so only
+    paths the twin-redirect could not fix reach here."""
+    root = os.path.realpath(wt_root)
+    fp = (
+        os.path.realpath(file_path)
+        if os.path.isabs(file_path)
+        else os.path.realpath(os.path.join(cwd, file_path))
+    )
+    if fp == root or fp.startswith(root + os.sep):
+        return None
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "castor lane (PRECIS_CASTOR_LANE): file tools only write "
+                f"inside this session's task tree {root}; "
+                f"{fp} is outside it — retry with a path under the tree "
+                "(a relative path resolves against it)"
+            ),
+        }
+    }
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -126,6 +161,10 @@ def main() -> int:
         main_root,
     )
     if twin is None:
+        if os.environ.get("PRECIS_CASTOR_LANE"):
+            denied = _castor_check(file_path, wt_root, cwd)
+            if denied is not None:
+                print(json.dumps(denied))
         return 0
     print(
         json.dumps(
