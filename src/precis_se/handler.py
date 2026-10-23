@@ -128,6 +128,7 @@ from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis.utils.text import slugify
 from precis.utils.units import (
     Dimension,
     capture_used_units,
@@ -858,12 +859,37 @@ class SeHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput(
-                "put(kind='se') requires id= (the design slug)",
-                next="put(kind='se', id='caster1', "
-                'text=\'{"ops":[{"op":"add_block","name":"fork",'
-                '"envelope":"box:w0.04d0.02h0.08"}]}\')',
-            )
+            # gr503029: like the other kinds, a title-driven put derives
+            # its slug — but never silently OVERWRITES the design that
+            # slug names (put is a full replace; pass id= deliberately
+            # when the address is known).
+            if title is not None and str(title).strip():
+                slug = slugify(str(title).strip(), max_len=64)
+                if not slug:
+                    raise BadInput(
+                        "put(kind='se') cannot derive a slug: title= has no "
+                        "alphanumeric characters",
+                        next="put(kind='se', id='<slug>', title=..., ...) with "
+                        "an explicit design slug",
+                    )
+                if self.store.get_ref(kind="se", id=slug) is not None:
+                    raise BadInput(
+                        f"put(kind='se'): the slug {slug!r} derived from "
+                        f"title={title!r} already names a design — put is a "
+                        "full replace, so deriving it here is a clobber",
+                        next=f"put(kind='se', id={slug!r}, ...) deliberately, "
+                        "or change title=",
+                    )
+                id = slug
+            else:
+                raise BadInput(
+                    "put(kind='se') requires id= (the design slug) or "
+                    "title= (the slug is derived from it)",
+                    next="put(kind='se', id='caster1', "
+                    'text=\'{"ops":[{"op":"add_block","name":"fork",'
+                    '"envelope":"box:w0.04d0.02h0.08"}]}\') — or '
+                    "put(kind='se', title='Caster 1', text='...')",
+                )
         slug = str(id).strip()
         payload = _payload(text, args)
         _vet_put_payload(payload)

@@ -111,6 +111,36 @@ def test_empty_design_reads_as_unfilled(handler: SeHandler) -> None:
     assert "unfilled" in toc.body
 
 
+# ── put: title-derived slug (gr503029) ────────────────────────────────
+
+
+def test_put_derives_slug_from_title(handler: SeHandler) -> None:
+    resp = handler.put(title="Caster One", text=_CASTER)
+    assert "# se design 'caster-one' created" in resp.body
+    assert "fork" in handler.get(id="caster-one").body
+    # The derived address takes an explicit id= replace like any other.
+    handler.put(id="caster-one", text=_CASTER)
+
+
+def test_put_derived_slug_never_clobbers(handler: SeHandler) -> None:
+    handler.put(title="Caster One", text=_CASTER)
+    with pytest.raises(BadInput, match="already names a design") as exc:
+        handler.put(title="Caster One", text=_CASTER)
+    assert "id='caster-one'" in (exc.value.next or "")
+
+
+def test_put_without_id_or_title_names_both(handler: SeHandler) -> None:
+    with pytest.raises(BadInput, match="requires id=.*title=") as exc:
+        handler.put(text=_CASTER)
+    assert exc.value.next and "id='caster1'" in exc.value.next
+
+
+def test_put_unslugifiable_title_refuses(handler: SeHandler) -> None:
+    with pytest.raises(BadInput, match="cannot derive a slug") as exc:
+        handler.put(title="!§$%&", text=_CASTER)
+    assert exc.value.next
+
+
 def test_get_block_view(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     block = handler.get(id="caster1", view="block", args={"name": "hub"})

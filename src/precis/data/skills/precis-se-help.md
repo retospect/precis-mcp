@@ -84,7 +84,9 @@ FRET links between blocks — see `precis-se-fret-help`.
 
 ## put vs edit — put is a full REPLACE
 
-`put(kind='se', id=…, text=<json>)` **replaces the whole design**. Its
+`put(kind='se', id=…, text=<json>)` **replaces the whole design** (or
+pass `title=…` alone on a create: the slug is derived from it — a
+collision refuses rather than replacing; pass `id=` deliberately). Its
 only top-level keys are `description`, `ops`, `scenario` and `prefunits` (anything else
 is rejected). An empty op list is refused while the design has blocks —
 ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires the
