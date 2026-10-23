@@ -117,7 +117,16 @@ legitimate edit, use the Edit/Write file tools instead of a shell script.
 
 5-day audit (gr456287): 308 refusals across 97 of 99 sessions. The guard
 fails closed whenever it cannot prove from the command text that git stays
-in this worktree. Write the plain shape:
+in this worktree — anything it cannot fully parse statically is refused,
+so write the plain shape first rather than after the refusal.
+
+The accepted shape is **one plain Bash command per call**: a single literal
+command line — no loops, no `$(...)`, no `&&`/`;`/`||` chains, no heredocs,
+no pipes around `git`, no variable assignments. A command that genuinely
+needs one of those goes in a file: write the script with the Write tool,
+then run it as one plain command (this does not launder a refused
+operation — see the routing-around paragraph above). Independent commands
+go out as parallel Bash calls.
 
 | Refused | Accepted |
 |---|---|
@@ -127,6 +136,7 @@ in this worktree. Write the plain shape:
 | `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
 | `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
+| `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
 | `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
 
 `github`, `git_sha` and similar word-boundary near-misses pass. The guard
