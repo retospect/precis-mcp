@@ -47,8 +47,12 @@ clearance halos wall the pad in (fine-pitch IC rows), so
 - **In1 routable** at a per-layer cost of about 2–3x the base step, tuned
   from slice 1's table. "High cost does not need to be massively high."
 - **Thermal reliefs:** solid by default; reliefs per class opt-in with a
-  starved-thermal check. A board-wide `prototype` flag is a separate idea
-  item: [pcb-board-profile-prototype](pcb-board-profile-prototype.md).
+  starved-thermal check. The board-wide `prototype` flag that turns
+  reliefs on was a separate item, `pcb-board-profile-prototype` — shipped
+  (gr495399) and deleted; `planes.ThermalSpec`/`_thermal_reliefs`/
+  `drc.check_starved_thermal` are the record. Left to this item's slice
+  10: the class key's schema/validation and `'relief'` as a `prod`
+  opt-in.
 - **Bare pour islands are stitched to their net, not dropped**; drop only
   when no via site reaches a same-net plane, and report it. Owned by
   [pcb-floating-pour-island](pcb-floating-pour-island.md).
@@ -431,8 +435,8 @@ place/route; both are measured before landing.
 
 - [pcb-floating-pour-island](pcb-floating-pour-island.md) — island
   stitching (Reto: stitch, not drop).
-- [pcb-board-profile-prototype](pcb-board-profile-prototype.md) — ready; sets
-  the default for slice 10's thermal key.
+- `pcb-board-profile-prototype` — shipped and deleted; set the default
+  for slice 10's thermal key (prototype on, prod off).
 - [pcb-keepout-does-not-bind](pcb-keepout-does-not-bind.md) — closed by
   slice 5.
 - [pcb-missing-constraint-classes](pcb-missing-constraint-classes.md) §B

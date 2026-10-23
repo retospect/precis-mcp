@@ -82,11 +82,6 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 10. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
-11. **backlog/pcb-board-profile-prototype.md** — `ready/normal`, promoted
-    2026-10-18 (gr495399); key, data, accessor and summary line
-    shipped; next is the capability overlay + DRC strictness slice, then
-    router cost/checks/silk; the thermal-relief slice lands after
-    `pcb-stackup-regions.md` slice 10.
 
 ## Horizon
 

@@ -372,10 +372,12 @@ profile; the board summary prints `profile: prototype` only when it is not
 `prod`. The profile's rules are data in `pcb_profiles.json`. On
 `prototype` the DRC raises the trace width, spacing and annular-ring house
 tier and reports a shortfall as an error, not a warning; the drill floor is
-set but no check reads it yet. `prototype` also adds three DRC rules
-(`via_density`, `via_under_part`, `fine_pitch_pad`;
-[[precis-pcb-check-help]]) and a 1.2mm silk refdes (prod 1.0mm). Every
-route job summary prints `vias_under_part: N`.
+set but no check reads it yet. `prototype` also adds four DRC rules
+(`via_density`, `via_under_part`, `fine_pitch_pad`, `starved_thermal`;
+[[precis-pcb-check-help]]) and a 1.2mm silk refdes (prod 1.0mm). Pour pads
+on `prototype` get a thermal relief (spokes, not solid-tied) unless the
+pad's class forces `thermal: 'solid'`. Every route job summary prints
+`vias_under_part: N`.
 
 ## Argue with the design — the board page's text box, `view='notes'`
 
