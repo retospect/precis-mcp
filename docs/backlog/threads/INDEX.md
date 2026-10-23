@@ -255,6 +255,10 @@ Seams:
 - `security-hardening` ↔ `session-mcp-shared-server` —
   `backlog/db-role-enforce-pgbouncer.md` and the shared-server's role
   isolation (Horizon 1) are one boundary.
+- `ship-gate-ci` ↔ `ingest-and-fetch` — `backlog/outbound-policy.md`:
+  ingest-and-fetch ranks the policy layer (S1, S2, S4), ship-gate-ci its
+  S3 enforcement gate; `local-compute` ranks `llm-lane-scheduler.md`,
+  the `llm-local` class of the same policy (seam recorded 2026-10-23).
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
   change) and the deploy session's render-tree lock are the same script;
   no thread owns deploy, so gr457894 is ranked in plugin-split.

@@ -84,6 +84,13 @@ nightly — the diff-cover verdict is still open.
    nightly stays at 05:23Z (measured quietest, 0% at-cap). Left: verify on
    the first main pushes after landing that run→first-job delay is back to
    single-digit minutes.
+2. **`backlog/outbound-policy.md` S3** — the AST ratchet that refuses a
+   bare outbound call, a `subprocess` without `timeout=` or an asyncio
+   wait without a deadline, run by the pre-qland lint and every gate; it
+   absorbs gr503084's parts B and C (the release-time timeout checker
+   Reto asked for 2026-10-21), gr503084 keeps part A (CI hang
+   debuggability, with p0-ci). Ranks after 1 because 1 is live starvation;
+   above the rest because a new hang class lands unseen without it.
 
 3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and

@@ -325,7 +325,12 @@ task set.
    deferrable feed. After
    Slice 0 (4b) and Slice 1 serving. This and the queue are the path that
    puts castor to work (Reto 2026-10-03).
-7. **Embedder capacity — decided** (Reto 2026-10-02, td461158; item closed
+7. **backlog/llm-lane-scheduler.md** — class lanes on each local
+   endpoint: user first (up to 4), classify and the gardener floored at 2,
+   the gardener soaking every idle slot (Reto 2026-10-23). Directly after
+   6 because 6 sets the slot count and this divides it; without it the
+   first background flood takes every castor slot from a live session.
+8. **Embedder capacity — decided** (Reto 2026-10-02, td461158; item closed
    2026-10-21): this thread holds aggregate embedder capacity, owned by the
    embedder service (`src/precis/embedder_service.py`); host-level admission
    and a shared vector cache declined. The N-client load test rides with 5

@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 8 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
+- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 9 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
 - **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder and verify the 10-14 gripe fixes on prod.
@@ -210,19 +210,28 @@ is verified done on prod.
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
-4. **No-OA stubs** — of 13,874 stubs, ~3,926 have been tried and every leg
+4. **`backlog/outbound-policy.md`** — one resolved policy (rate, wait,
+   timeouts, on_refuse) per outbound call, DB-overridable per service;
+   deadline-aware limiter waits; an AST gate on bare calls. Ranks here
+   because every fetch leg above runs under it: CORE is unpaced
+   (gr507344), new hosts run unpaced past the 500-row cap (gr507345),
+   OpenRouter sits on the 1/s website bucket (gr507343, gr507340), and a
+   limiter wait eats the fetch ref-pass budget (gr506756). The g4-llm-route
+   and g4-workers point fixes land first; S1 generalises them. Its S3 gate
+   is sequenced in `ship-gate-ci`.
+5. **No-OA stubs** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
    (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
    acquire re-stamp guard (`ACQUIRE_REARM_DAYS`). Still open: the /drive
    "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
    set in, and the stub-readout remainder.
-5. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
+6. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
    body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.
-6. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
+7. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
-7. **S2 venue re-arm** — 4,313 S2-enriched papers have no venue. Reto approved
+8. **S2 venue re-arm** — 4,313 S2-enriched papers have no venue. Reto approved
    the re-arm 2026-10-02 on condition of gentleness. The enrich lane
    (`stub_rank`) claims stubs only, so it reaches 3,119 of them; the live
    `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
@@ -236,7 +245,7 @@ is verified done on prod.
    lane re-enriches. Both need the Crossref fallback
    (`backlog/crossref-enrichment.md`); the held papers could also take a
    held-paper S2 pass.
-8. **Stub-queue depth (policy, not a defect)** — measured 2026-10-14:
+9. **Stub-queue depth (policy, not a defect)** — measured 2026-10-14:
    8,085 no-PDF stubs queued; citation-expansion/stub_rank mints ~366/day
    while the fetch lane gains ~52 bodies/day (~370 attempts/day, mostly
    no-OA). The backlog therefore grows ~300/day and a fresh unranked stub
@@ -249,7 +258,7 @@ is verified done on prod.
    re-queue is NOT recommended: an `oa_requeued` stamp gives each stub
    one front-of-queue bypass, and stamping 8k refs only reorders them
    against the same drain rate.
-9. **Post-deploy verification of the 10-14 fixes (do not run now)** —
+10. **Post-deploy verification of the 10-14 fixes (do not run now)** —
    once `worktree-ingest-fix` lands:
    - `put|paper` / `get|paper` error rates in `tool_calls` should drop
      to ~0 (`status='error'` count by tool name, 24 h before vs after).
