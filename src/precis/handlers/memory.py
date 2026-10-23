@@ -1662,7 +1662,10 @@ class MemoryHandler(NumericRefHandler):
         """One ``'op': 'append'`` dict — tack ``text`` onto the body end."""
         text = raw.get("text")
         if not isinstance(text, str) or not text.strip():
-            raise BadInput("'op': 'append' requires 'text' (the text to tack on)")
+            raise BadInput(
+                "'op': 'append' requires 'text' (the text to tack on)",
+                next="edit(kind='memory', id=N, args={'ops': [{'op': 'append', 'text': '...'}]})",
+            )
         text = mask_secrets(text)
         anchored = [
             k for k in ("find", "before", "after", "where", "nth") if raw.get(k)
@@ -1671,6 +1674,10 @@ class MemoryHandler(NumericRefHandler):
             raise BadInput(
                 f"'op': 'append' takes no anchors ({'/'.join(anchored)} "
                 "given) — it always writes at the end of the body",
+                next=(
+                    "drop the anchors, or use 'op': 'insert' with 'find' and "
+                    "'where' to write at a position"
+                ),
             )
         new_buffer = (
             f"{buffer.rstrip()}\n\n{text.strip()}" if buffer.strip() else text.strip()
@@ -1691,12 +1698,20 @@ class MemoryHandler(NumericRefHandler):
         if not isinstance(find, str) or not find:
             raise BadInput(
                 f"'op': {op_kind!r} requires 'find' (the exact text to locate)",
+                next=(
+                    "edit(kind='memory', id=N, args={'ops': [{'op': 'find-replace', "
+                    "'find': 'old text', 'text': 'new text'}]})"
+                ),
             )
         text = raw.get("text")
         if not isinstance(text, str):
             raise BadInput(
                 f"'op': {op_kind!r} requires 'text' — pass 'text': '' to "
                 "delete the matched span",
+                next=(
+                    "edit(kind='memory', id=N, args={'ops': [{'op': 'find-replace', "
+                    "'find': 'old text', 'text': 'new text'}]})"
+                ),
             )
         before = raw.get("before", "")
         after = raw.get("after", "")
@@ -1710,9 +1725,15 @@ class MemoryHandler(NumericRefHandler):
             ("match", match),
         ):
             if val is not None and not isinstance(val, str):
-                raise BadInput(f"'{key}' must be a string")
+                raise BadInput(
+                    f"'{key}' must be a string",
+                    next=f"pass '{key}' as a string, or leave it out",
+                )
         if nth is not None and not isinstance(nth, int):
-            raise BadInput("'nth' must be an int")
+            raise BadInput(
+                "'nth' must be an int",
+                next="pass 'nth' as an int with 'match': 'nth', or leave it out",
+            )
         op = EditOp(
             op="edit" if op_kind == "find-replace" else "insert",
             find=mask_secrets(find),
