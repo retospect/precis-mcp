@@ -32,6 +32,7 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -394,6 +395,37 @@ MACHINE_EDGE_STRUCTURAL: frozenset[str] = frozenset(
     }
 )
 
+#: The ``links.meta`` key a garden-applied relink edge carries —
+#: ``{"relink_id", "proposal", "review", "at"}``, where ``review`` is
+#: the approved reviews row that opened the structural door for exactly
+#: this edge (:func:`_reviewed_structural_edge`, gr507641). The undo
+#: path finds the edge by ``meta->'garden_relink'->>'relink_id'``.
+GARDEN_RELINK_META = "garden_relink"
+
+#: Who may approve a reviewed structural write — an allowlist, not a
+#: deny-list: the garden consumer's identity, or a human. The review
+#: schema's own convention marks human rows ``model IS NULL``
+#: (:meth:`Store.record_target_review`); a row carrying a model name or
+#: a machine ledger/worker slug is not an approver.
+_NON_HUMAN_ACTORS: frozenset[str] = frozenset(
+    {
+        "agent",
+        "system",
+        "chase",
+        "dream",
+        "weave",
+        "orcid",
+        "graph-garden",
+        "garden-reviewer",
+        "garden-reviewer-fable",
+    }
+)
+
+#: Set while :func:`precis.graph.garden.apply.apply_relink` performs its
+#: gated write — the door resolved the proposal in this transaction, so
+#: the inner ``add_link`` may carry the ``garden_relink`` stamp.
+_RELINK_DOOR: ContextVar[bool] = ContextVar("precis_relink_door", default=False)
+
 #: The stance/provenance relations a machine edge may carry (the
 #: 2026-10-21 list): stance and provenance are exactly what retrieval
 #: cannot recompute, so these skip the co-retrieval distance check.
@@ -425,6 +457,18 @@ MACHINE_EDGE_META_KEYS: tuple[str, ...] = ("model", "prompt_version", "run_id", 
 #: write — the door already ran the claim-hub and cycle checks, so the
 #: inner ``add_link`` must not route the edge back into it.
 _CLAIM_LINK_DOOR: ContextVar[bool] = ContextVar("precis_claim_link_door", default=False)
+
+
+@contextmanager
+def relink_apply_door() -> Iterator[None]:
+    """Mark the enclosed ``add_link`` call as the relink apply door's own
+    write — the only place a machine structural edge is admitted and
+    the only place ``meta.garden_relink`` is accepted."""
+    token = _RELINK_DOOR.set(True)
+    try:
+        yield
+    finally:
+        _RELINK_DOOR.reset(token)
 
 
 @contextmanager
@@ -517,6 +561,96 @@ def _require_machine_annotation(meta: dict[str, Any] | None) -> None:
         )
 
 
+def _reviewed_structural_edge(
+    c: Connection,
+    *,
+    relation: str,
+    src_ref_id: int,
+    dst_ref_id: int,
+    meta: dict[str, Any] | None,
+) -> bool:
+    """The one admitted machine structural write (gr507641), bound to
+    *this* approval: the write must come from the apply door itself
+    (:data:`_RELINK_DOOR` — a crafted ``meta`` elsewhere never enters
+    here), ``meta.garden_relink.review`` must name an ``approved``
+    garden resolution row written by an approver (the consumer or a
+    human — never a ledger machine identity), the stamp's ``relink_id``
+    must equal that approval's recorded ``garden.applied``, the resolved
+    proposal must be a relink naming exactly this edge, and the stamp
+    is single-use — a live link carrying it, or an ``undone`` tombstone
+    row recording it, refuses. Any mismatch returns False and the
+    caller keeps refusing."""
+    if not _RELINK_DOOR.get():
+        return False
+    stamp = (meta or {}).get(GARDEN_RELINK_META)
+    review_id = stamp.get("review") if isinstance(stamp, dict) else None
+    relink_id = stamp.get("relink_id") if isinstance(stamp, dict) else None
+    if not isinstance(review_id, int) or not isinstance(relink_id, str):
+        return False
+    row = c.execute(
+        "SELECT actor, model, note FROM reviews WHERE review_id = %s AND verdict = 'approved'",
+        (review_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    actor, model = str(row[0]), row[1]
+    human = model is None and actor not in _NON_HUMAN_ACTORS
+    if actor != "garden-consumer" and not human:
+        return False
+    try:
+        decided = (json.loads(row[2] or "") or {}).get("garden") or {}
+    except (TypeError, ValueError):
+        return False
+    if decided.get("applied") != relink_id:
+        return False
+    proposal_id = decided.get("resolves")
+    if not isinstance(proposal_id, int):
+        return False
+    # Single-use: the relink edge or its undo tombstone already exists.
+    if (
+        c.execute(
+            "SELECT 1 FROM links WHERE meta->'garden_relink'->>'relink_id' = %s "
+            "LIMIT 1",
+            (relink_id,),
+        ).fetchone()
+        is not None
+    ):
+        return False
+    if (
+        c.execute(
+            "SELECT 1 FROM reviews WHERE note LIKE %s AND note ~ %s LIMIT 1",
+            ('%"undone"%', f'"undone": "{relink_id}"[^0-9]'),
+        ).fetchone()
+        is not None
+    ):
+        return False
+    from precis.graph.garden.proposals import GARDEN_ACTOR  # above store
+
+    prop = c.execute(
+        "SELECT target_kind, target_id, note FROM reviews "
+        "WHERE review_id = %s AND actor = %s AND verdict = 'proposed'",
+        (proposal_id, GARDEN_ACTOR),
+    ).fetchone()
+    if prop is None:
+        return False
+    try:
+        garden = (json.loads(prop[2] or "") or {}).get("garden") or {}
+    except (TypeError, ValueError):
+        return False
+    if garden.get("action") != "relink" or str(prop[0]) != "ref":
+        return False
+    payload = garden.get("payload") or {}
+    child = payload.get("child")
+    if not isinstance(child, int):
+        child = int(prop[1])
+    parent = payload.get("parent")
+    return (
+        child == src_ref_id
+        and parent == dst_ref_id
+        and relation == str(payload.get("relation") or "specialises")
+    )
+
+
 def _machine_edge_admission(
     store: LinksMixin,
     c: Connection,
@@ -587,6 +721,18 @@ def _machine_edge_admission(
             f"({', '.join(sorted(MACHINE_EDGE_STANCE - {'explains'}))})",
         )
     if relation in MACHINE_EDGE_STRUCTURAL:
+        if _reviewed_structural_edge(
+            c,
+            relation=relation,
+            src_ref_id=src_ref_id,
+            dst_ref_id=dst_ref_id,
+            meta=meta,
+        ):
+            # The policy's own unblock condition: a recorded review
+            # approved this exact edge. The review row carries the
+            # model and the why, so the evidence-pin/annotation/distance
+            # rules below do not apply.
+            return None
         raise BadInput(
             f"machine-edge-structural: a machine writer may not write "
             f"'{relation}' directly — structural edges from machines are "
@@ -914,6 +1060,20 @@ class LinksMixin:
                         "use different src_pos/dst_pos if linking chunks "
                         "within one ref, or pick a different target"
                     ),
+                )
+
+            # The garden_relink stamp is the apply door's own ledger —
+            # a caller-supplied one (the `link` verb forwards meta= on
+            # opted-in kinds) would fake the undo record and the gate
+            # key, so outside the door it is refused outright.
+            if (meta or {}).get(GARDEN_RELINK_META) is not None and not (
+                _RELINK_DOOR.get()
+            ):
+                raise BadInput(
+                    f"machine-edge-relink-stamp: meta.{GARDEN_RELINK_META} "
+                    "is written by the relink apply door only",
+                    next="apply a reviewed relink proposal through "
+                    "precis.graph.garden.apply.apply_relink",
                 )
 
             # A quest endpoint takes `serves` only — never a stance edge.

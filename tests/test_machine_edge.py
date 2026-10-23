@@ -24,6 +24,7 @@ from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.graph.garden.apply import apply_merge
 from precis.store import Store
+from precis.store._links_ops import GARDEN_RELINK_META
 from precis.store.revision_context import revision_context, trust_producer
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
@@ -142,7 +143,10 @@ class TestRefusals:
             store.add_link(src_ref_id=a, dst_ref_id=b, relation="see-also")
 
     def test_structural_direct_write_is_refused(self, store: Store) -> None:
-        a, b = _ref(store, "taxon", "a"), _ref(store, "taxon", "b")
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
         with _machine():
             with pytest.raises(BadInput) as exc:
                 store.add_link(
@@ -549,3 +553,280 @@ def test_merge_repointing_is_not_a_new_machine_edge(store: Store) -> None:
     moved = _link_row(store, other, winner, "related-to")
     assert moved is not None
     assert moved[3]["garden_merge"] == rec.merge_id
+
+
+# ── the reviewed structural door (gr507641) ──────────────────────────────
+
+
+def _relink_proposal(store: Store, child: int, parent: int) -> int:
+    """An orphan-detector-shaped pending relink proposal."""
+    from precis.graph.garden.candidates import GardenCandidate
+    from precis.graph.garden.proposals import emit_proposal
+
+    rid = emit_proposal(
+        store,
+        GardenCandidate(
+            detector="orphan",
+            action="relink",
+            target_kind="ref",
+            target_id=child,
+            other_id=parent,
+            title="orphan relink",
+            evidence={},
+            payload={
+                "child": child,
+                "parent": parent,
+                "relation": "specialises",
+            },
+        ),
+        rationale="orphan taxon, nearest start node",
+    )
+    assert rid is not None
+    return rid
+
+
+def _relink_meta(review: int) -> dict[str, Any]:
+    return {GARDEN_RELINK_META: {"relink_id": "garden-relink:t", "review": review}}
+
+
+class TestReviewedStructuralDoor:
+    def test_apply_relink_under_a_machine_writer_is_admitted(
+        self, store: Store
+    ) -> None:
+        """The whole door under a machine context: the apply resolves
+        the proposal, the gate admits the edge keyed on the approved
+        review row, no evidence pins or annotation are needed — the
+        review row is the record."""
+        from precis.graph.garden.apply import apply_relink
+
+        child = _ref(store, "taxon", "child")
+        parent = _ref(store, "taxon", "parent", meta={"start": "true"})
+        rid = _relink_proposal(store, child, parent)
+        with _machine():
+            rec = apply_relink(store, rid, actor="garden-consumer")
+        row = _link_row(store, child, parent, "specialises")
+        assert row is not None and int(row[0]) == rec.link_id
+        stamp = row[3][GARDEN_RELINK_META]
+        assert stamp["review"] == rec.review and stamp["proposal"] == rid
+        assert row[1] == "generated"  # trust stamp from the write context
+
+    def test_structural_write_without_a_review_still_refused(
+        self, store: Store
+    ) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        with _machine():
+            for meta in (None, _meta()):  # annotated, but no review named
+                with pytest.raises(BadInput, match="machine-edge-structural"):
+                    store.add_link(
+                        src_ref_id=a,
+                        dst_ref_id=b,
+                        relation="specialises",
+                        meta=meta,
+                    )
+            # A caller-supplied garden_relink stamp outside the door is
+            # refused outright — it would fake the undo record.
+            with pytest.raises(BadInput, match="machine-edge-relink-stamp"):
+                store.add_link(
+                    src_ref_id=a,
+                    dst_ref_id=b,
+                    relation="specialises",
+                    meta=_relink_meta(999999),
+                )
+
+    def test_stamp_meta_is_door_only_for_human_writes_too(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        with pytest.raises(BadInput, match="machine-edge-relink-stamp"):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="specialises",
+                meta=_relink_meta(999999),
+            )
+
+    def test_wrong_actor_approval_is_refused(self, store: Store) -> None:
+        """A resolution written by a ledger identity (graph-garden)
+        is not an approver — the stamp does not open the door."""
+        from precis.graph.garden.proposals import resolve_proposal
+        from precis.store._links_ops import relink_apply_door
+
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        rid = _relink_proposal(store, a, b)
+        resolved = resolve_proposal(
+            store,
+            rid,
+            actor="graph-garden",
+            verdict="approved",
+            extra={"applied": "garden-relink:x:y:z"},
+        )
+        with (
+            _machine(),
+            relink_apply_door(),
+            pytest.raises(BadInput, match="machine-edge-structural"),
+        ):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="specialises",
+                meta={
+                    GARDEN_RELINK_META: {
+                        "relink_id": "garden-relink:x:y:z",
+                        "review": int(resolved.review_id),
+                    }
+                },
+            )
+
+    def test_crafted_approval_naming_a_pending_proposal_is_refused(
+        self, store: Store
+    ) -> None:
+        """A non-terminal ``garden_review`` approve note is not a
+        resolution — a stamp keyed on it is refused inside the door."""
+        from precis.store._links_ops import relink_apply_door
+
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        rid = _relink_proposal(store, a, b)
+        crafted = store.record_target_review(
+            "ref",
+            a,
+            actor="reto",
+            verdict="approved",
+            note=f'{{"garden_review": {{"proposal": {rid}, "verdict": "approve"}}}}',
+        )
+        with (
+            _machine(),
+            relink_apply_door(),
+            pytest.raises(BadInput, match="machine-edge-structural"),
+        ):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="specialises",
+                meta={
+                    GARDEN_RELINK_META: {
+                        "relink_id": "garden-relink:x:y:z",
+                        "review": int(crafted.review_id),
+                    }
+                },
+            )
+
+    def test_replayed_stamp_after_undo_is_refused(self, store: Store) -> None:
+        """Single-use: after undo deletes the edge, the ``undone``
+        tombstone keeps the same stamp from minting a new link."""
+        from precis.graph.garden.apply import apply_relink, undo_relink
+        from precis.store._links_ops import relink_apply_door
+
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        rid = _relink_proposal(store, a, b)
+        with _machine():
+            rec = apply_relink(store, rid, actor="garden-consumer")
+        undo_relink(store, rec.relink_id, actor="reto")
+        with (
+            _machine(),
+            relink_apply_door(),
+            pytest.raises(BadInput, match="machine-edge-structural"),
+        ):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="specialises",
+                meta={
+                    GARDEN_RELINK_META: {
+                        "relink_id": rec.relink_id,
+                        "review": rec.review,
+                    }
+                },
+            )
+        # And while the edge is live, the same stamp cannot write twice —
+        # re-apply is refused before the door: the proposal is decided.
+        rid2 = _relink_proposal(
+            store,
+            _ref(store, "taxon", "c"),
+            _ref(store, "taxon", "d", meta={"start": "true"}),
+        )
+        rec2 = apply_relink(store, rid2, actor="test")
+        with (
+            _machine(),
+            relink_apply_door(),
+            pytest.raises(BadInput, match="machine-edge-structural"),
+        ):
+            store.add_link(
+                src_ref_id=rec2.child,
+                dst_ref_id=rec2.parent,
+                relation="specialises",
+                meta={
+                    GARDEN_RELINK_META: {
+                        "relink_id": rec2.relink_id,
+                        "review": rec2.review,
+                    }
+                },
+            )
+
+
+class TestApproverAllowlist:
+    def test_human_approval_admits(self, store: Store) -> None:
+        """A resolution written by a human (model NULL, non-worker
+        actor) is an approver — the door admits the stamped edge."""
+        from precis.graph.garden.apply import apply_relink
+
+        child = _ref(store, "taxon", "child")
+        parent = _ref(store, "taxon", "parent", meta={"start": "true"})
+        rid = _relink_proposal(store, child, parent)
+        with _machine():
+            rec = apply_relink(store, rid, actor="reto")
+        row = _link_row(store, child, parent, "specialises")
+        assert row is not None and int(row[0]) == rec.link_id
+
+    def test_worker_and_model_rows_do_not_approve(self, store: Store) -> None:
+        """The allowlist is names, not just verdicts: a worker slug
+        (``agent``) and a model-attributed row are not approvers even
+        with a matching resolution payload."""
+        from precis.graph.garden.proposals import resolve_proposal
+        from precis.store._links_ops import relink_apply_door
+
+        for actor, model in (("agent", None), ("reto", "opus-x")):
+            a = _ref(store, "taxon", f"a-{actor}-{model}")
+            b = _ref(store, "taxon", f"b-{actor}-{model}", meta={"start": "true"})
+            rid = _relink_proposal(store, a, b)
+            resolved = resolve_proposal(
+                store,
+                rid,
+                actor=actor,
+                verdict="approved",
+                extra={"applied": "garden-relink:x:y:z"},
+            )
+            if model is not None:
+                with store.pool.connection() as conn:
+                    conn.execute(
+                        "UPDATE reviews SET model = %s WHERE review_id = %s",
+                        (model, int(resolved.review_id)),
+                    )
+            with (
+                _machine(),
+                relink_apply_door(),
+                pytest.raises(BadInput, match="machine-edge-structural"),
+            ):
+                store.add_link(
+                    src_ref_id=a,
+                    dst_ref_id=b,
+                    relation="specialises",
+                    meta={
+                        GARDEN_RELINK_META: {
+                            "relink_id": "garden-relink:x:y:z",
+                            "review": int(resolved.review_id),
+                        }
+                    },
+                )

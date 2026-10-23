@@ -953,7 +953,7 @@ def orphan_taxon_candidates(
     orphan_vecs = _card_vectors(store, unrooted)
     start_vecs = _card_vectors(store, starts)
 
-    out: list[GardenCandidate] = []
+    kept: list[tuple[int, int | None, float | None]] = []
     for rid in unrooted:
         vec = orphan_vecs.get(rid)
         parent: int | None = None
@@ -968,6 +968,14 @@ def orphan_taxon_candidates(
             if dist <= min_distance:
                 continue  # retrieval already surfaces this parent
             parent = best[0]
+        kept.append((rid, parent, dist))
+
+    # Pin each endpoint's sha so the relink apply door can tell the pair
+    # the judge saw is the pair it would link (gr507641, same convention
+    # as the merge detectors).
+    shas = _ref_shas(store, [i for rid, parent, _d in kept for i in (rid, parent) if i])
+    out: list[GardenCandidate] = []
+    for rid, parent, dist in kept:
         ev: dict[str, Any] = {"start_nodes": starts}
         if parent is not None and dist is not None:
             ev["candidate_parent_distance"] = round(dist, 4)
@@ -980,7 +988,16 @@ def orphan_taxon_candidates(
                 other_id=parent,
                 title=f"taxon {rid} reaches no start node",
                 evidence=ev,
-                payload={"parent": parent, "relation": "specialises"},
+                payload={
+                    "child": rid,
+                    "parent": parent,
+                    "relation": "specialises",
+                    "shas": {
+                        str(i): shas[i]
+                        for i in (rid, parent)
+                        if i is not None and i in shas
+                    },
+                },
             )
         )
     return out

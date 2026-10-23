@@ -111,8 +111,11 @@ graph-health-metrics, five parked gripes, and the seam with
   Pedal/Wheel-shaped pairs without a model call (gr504843). Each run
   ends in the proposal consumer: dangling-edge prunes apply, Opus
   approves (undoable merge) or rejects with a reason code (gr506044).
-  Open: relink approvals are recorded, not applied (machine
-  `specialises` writes are refused at the link gate).
+  gr507641 built (g4-relink): approved relinks apply through
+  `apply_relink` — the machine-edge gate admits the structural edge
+  keyed on the approved review row (`links.meta.garden_relink`), and
+  `precis garden undo <relink_id>` deletes it; pre-door recorded
+  approvals are applied by the consumer each tick.
 
 ## Do next
 

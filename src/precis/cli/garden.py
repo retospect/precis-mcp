@@ -13,10 +13,12 @@ acts:
   v1 supports ``action=merge`` proposals only: the loser's links
   repoint onto the winner, the loser retires as an alias, and the
   proposal flips to ``approved`` (the second bar) — all one
-  transaction. Other actions are still manual work; the proposal
-  carries the evidence either way.
-* ``precis garden undo <merge_id>`` — reverse an applied merge from the
-  reversal record on the loser (``meta.garden_merge``).
+  transaction. Relink proposals apply through the consumer's reviewed
+  door (gr507641), not this verb; other actions are still manual work.
+* ``precis garden undo <merge_id|relink_id>`` — reverse an applied
+  merge from the reversal record on the loser (``meta.garden_merge``),
+  or delete the edge a relink wrote (``links.meta.garden_relink``,
+  ids ``garden-relink:…``).
 * ``precis garden review [--per-day N] [--min-age-days N]`` — the
   sampled reviewer burn-down: a frontier-tier model verdict on the
   oldest open proposals, recorded as non-terminal ``garden-reviewer``
@@ -72,8 +74,8 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
         (
             "undo",
-            "Undo an applied merge by its merge_id.",
-            "merge_id",
+            "Undo an applied merge or relink by its recorded id.",
+            "apply_id",
         ),
     ):
         sp = gp.add_parser(name, help=helptext)
@@ -185,11 +187,16 @@ def _reject(args: argparse.Namespace, store: Store) -> None:
 
 
 def _undo(args: argparse.Namespace, store: Store) -> None:
-    from precis.graph.garden.apply import undo_merge
+    from precis.graph.garden.apply import undo_merge, undo_relink
 
-    counts = undo_merge(store, args.merge_id)
+    apply_id = args.apply_id
+    if apply_id.startswith("garden-relink:"):
+        counts = undo_relink(store, apply_id, actor=_actor(args))
+        print(f"undid {apply_id}: {counts['links_deleted']} link(s) deleted")
+        return
+    counts = undo_merge(store, apply_id)
     print(
-        f"undid {args.merge_id}: {counts['links_restored']} link(s) "
+        f"undid {apply_id}: {counts['links_restored']} link(s) "
         f"restored, {counts['links_deleted']} merge-made deleted, "
         f"{counts['aliases_removed']} alias(es) removed"
     )

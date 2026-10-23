@@ -49,14 +49,16 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    ``precis garden review``) — a FRONTIER-tier burn-down over open
    proposals older than a few days: one approve/reject verdict per
    sampled proposal, recorded as a NON-TERMINAL ``garden-reviewer``
-   row (the proposal stays open for a human; merge remains the only
-   apply path). The per-detector agreement rate is the proposer's
+   row (the proposal stays open for a human; apply doors exist for
+   merge and relink). The per-detector agreement rate is the proposer's
    quality bar — ``precis garden stats``, reporting only.
 5. The consumer (:mod:`precis.graph.garden.consumer`, gr506044, Reto's
    2026-10-23 ruling) — the one place a pass applies anything. Run by
    the job after each tick: dangling-edge prunes apply; Opus approves
-   (merge applied through the undoable door) or rejects (terminal row
-   with a reason code) pending merge/relink proposals.
+   or rejects (terminal row with a reason code) pending merge/relink
+   proposals, and an approve applies through the undoable door
+   (merge repointing, or the reviewed structural write for a relink —
+   gr507641).
 
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector

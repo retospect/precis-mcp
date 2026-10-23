@@ -40,6 +40,15 @@ both run by the ``graph_garden`` job right after its tick
    aliases, and the reversal record makes ``precis garden undo`` exact. A
    reject is a terminal ``rejected`` row carrying ``garden.reason``, one
    of :data:`REJECT_REASONS`, plus ``garden.why``.
+3. **Relink apply** (gr507641). An approved relink applies through
+   :func:`~precis.graph.garden.apply.apply_relink`, which resolves the
+   proposal ``approved`` and writes the proposed structural edge in the
+   same transaction — the approved review row is the key the machine-edge
+   gate admits on — recording it on ``links.meta.garden_relink`` so
+   ``precis garden undo`` deletes it. Proposals carrying an approval
+   recorded before the apply door existed (``garden_review`` rows) are
+   applied by the same door after the review pass, bounded by
+   ``review_limit`` per tick.
 
 **Verdict values.** The ruling names ``verdict='applied'``; the
 ``reviews`` CHECK (migration 0185) allows only proposed/approved/rejected,
@@ -54,12 +63,15 @@ or ``placeholder_definition`` is producing sibling noise, which is the
 pattern the dup_pair evidence fields (``name_overlap``,
 ``definition_template``, ``siblings_under``) now name.
 
-**Relink is reviewed, not applied.** A machine-written ``specialises``
-edge is refused by the machine-edge gate (structural edges stay
-proposals; ``store._links_ops._machine_edge_admission``) and no relink
-apply door exists, so an approved relink gets a non-terminal
-``garden_review`` row and stays pending for a human; it is not
-re-reviewed. A reject closes it like a merge reject.
+**Relink applies through the reviewed door.** Before gr507641 a
+machine-written ``specialises`` edge was refused unconditionally by the
+machine-edge gate, so an approved relink got a non-terminal
+``garden_review`` row and stayed pending for a human. The gate now
+admits the edge an approved proposal names
+(``store._links_ops._reviewed_structural_edge``), apply resolves the
+proposal and writes it in one transaction, and undo is the plain edge
+delete (:func:`~precis.graph.garden.apply.undo_relink`). A reject
+closes it like a merge reject.
 
 ``review=`` is the test seam: ``(store, proposal) -> ConsumerVerdict``.
 """
@@ -123,6 +135,9 @@ REJECT_REASONS: dict[str, str] = {
     "stale": "an endpoint changed since the proposal was filed",
     "human_edge": "the edge is human-authored — a machine consumer does not prune it",
     "apply_refused": "the apply door refused the approved action",
+    "cycle": "the edge would close a cycle",
+    "undone": "a human undid the applied action",
+    "apply_error": "the apply door raised an unexpected error — left pending",
 }
 
 #: The reasons the model may give (the consumer's own are not offered).
@@ -166,6 +181,7 @@ class ConsumeReport:
     paused: bool = False
     reasons: dict[str, int] = field(default_factory=dict)
     merges: list[str] = field(default_factory=list)
+    relinks: list[str] = field(default_factory=list)
 
     def as_meta(self) -> dict[str, Any]:
         return asdict(self)
@@ -297,7 +313,9 @@ def auto_prune(
 
 _PROMPT_HEAD = """You review ONE pending maintenance proposal for a knowledge
 graph (refs = typed nodes, links = typed edges). Your verdict is final:
-an approved merge is applied (undoable), a rejected proposal is closed.
+an approved merge folds the loser into the winner; an approved relink
+writes the proposed structural `specialises` edge (child → parent).
+Both apply (undoable); a rejected proposal is closed.
 A cheaper proposer accepted it; you are the bar, not a cheerleader.
 
 Respond with a single JSON object:
@@ -384,10 +402,11 @@ def consume_llm(store: Store, prop: GardenProposal) -> ConsumerVerdict:
 
 
 def _consumer_reviewed_ids(store: Store) -> set[int]:
-    """review_ids of proposals the consumer already verdicted — today
-    the approved-but-unapplied relinks, which stay pending until the
-    relink apply-door ruling (gr507641). One query per tick, not one
-    ``reviews_for`` per pending relink per tick. The note parses in
+    """review_ids of proposals carrying a consumer ``garden_review`` row
+    — the approved relinks recorded while no apply door existed
+    (gr507641). They are skipped by the reviewer and picked up by
+    :func:`apply_recorded_relinks`. One query per pass, not one
+    ``reviews_for`` per pending relink. The note parses in
     Python: a ``note::jsonb`` cast can be planned before the LIKE and
     blow up on a plain-text review note."""
     with store.pool.connection() as conn:
@@ -426,7 +445,7 @@ def _note_approved_relink(
                     "detector": prop.detector,
                     "verdict": "approve",
                     "why": v.why,
-                    "apply": "by hand (no relink apply door)",
+                    "apply": "by hand (no apply door for this action)",
                 }
             },
             ensure_ascii=False,
@@ -438,7 +457,13 @@ def _note_approved_relink(
 def _apply_approved(
     store: Store, prop: GardenProposal, v: ConsumerVerdict, report: ConsumeReport
 ) -> None:
+    if prop.action == "relink":
+        _apply_relink(store, prop, report, why=v.why, model=v.model)
+        return
     if prop.action != "merge":
+        # Approve on an action with no apply door yet — recorded, not
+        # applied (the pre-gr507641 relink shape, kept for the next
+        # action that lands a reviewer before a door).
         _note_approved_relink(store, prop, v)
         report.approved_unapplied += 1
         return
@@ -488,6 +513,79 @@ def _apply_approved(
     report.merges.append(rec.merge_id)
 
 
+def _apply_relink(
+    store: Store,
+    prop: GardenProposal,
+    report: ConsumeReport,
+    *,
+    why: str,
+    model: str | None,
+) -> None:
+    """Apply one approved relink through the reviewed door —
+    :func:`~precis.graph.garden.apply.apply_relink` re-verifies the
+    proposal inside its transaction; a refusal closes the proposal with
+    the recorded reason, like a merge refusal."""
+    from precis.graph.garden.apply import MergeRefused, apply_relink
+
+    try:
+        rec = apply_relink(store, prop.review_id, actor=CONSUMER_ACTOR)
+    except MergeRefused as exc:
+        _close(
+            store,
+            prop,
+            actor=CONSUMER_ACTOR,
+            reason=exc.reason,
+            why=f"approved ({why}) but at apply: {exc}",
+            model=model,
+            report=report,
+        )
+        return
+    except (BadInput, NotFound) as exc:
+        _close(
+            store,
+            prop,
+            actor=CONSUMER_ACTOR,
+            reason="apply_refused",
+            why=f"approved ({why}) but the apply door refused: {exc}",
+            model=model,
+            report=report,
+        )
+        return
+    except Exception as exc:
+        # A per-proposal fault (deadlock, FK race) must not abort the
+        # pass — count it and leave the proposal pending for next tick.
+        log.warning("garden consumer: relink apply raised on %s: %s", prop.key, exc)
+        report.errors += 1
+        report.reasons["apply_error"] = report.reasons.get("apply_error", 0) + 1
+        return
+    report.applied += 1
+    report.relinks.append(rec.relink_id)
+
+
+def apply_recorded_relinks(
+    store: Store,
+    props: list[GardenProposal],
+    report: ConsumeReport,
+    *,
+    limit: int,
+) -> None:
+    """Apply relink proposals carrying a recorded approval — the
+    ``garden_review`` rows the consumer wrote before the apply door
+    existed (gr507641): those stayed pending, so the door now picks them
+    up. Bounded by ``limit`` per tick like the review attempts; a
+    refusal closes the proposal with the recorded reason rather than
+    leaving it in the pending window."""
+    approved = _consumer_reviewed_ids(store)
+    applied = 0
+    for prop in props:
+        if applied >= limit:
+            return
+        if prop.action != "relink" or prop.review_id not in approved:
+            continue
+        applied += 1
+        _apply_relink(store, prop, report, why="recorded approval", model=None)
+
+
 def _short_siblings(store: Store, prop: GardenProposal) -> bool:
     """A pending merge the short-sibling rule rejects — decided without a
     model call, also for proposals filed before the rule existed (8288,
@@ -511,7 +609,9 @@ def _reviewable(prop: GardenProposal) -> bool:
         return isinstance(prop.payload.get("loser"), int) and isinstance(
             prop.payload.get("winner"), int
         )
-    return prop.action == "relink"
+    # A relink without a concrete ``payload.parent`` names nothing to
+    # write — it stays pending for a human, never reaching the model.
+    return prop.action == "relink" and isinstance(prop.payload.get("parent"), int)
 
 
 def _sha_pinned(prop: GardenProposal) -> bool:
@@ -560,7 +660,9 @@ def review_pending(
         if not prop.current:
             continue
         if prop.review_id in reviewed_ids:
-            continue  # verdicted already (an approved-but-unapplied relink)
+            # Recorded a verdict already — apply_recorded_relinks picks
+            # up the approved relinks; never re-review.
+            continue
         if _short_siblings(store, prop):
             _close(
                 store,
@@ -609,7 +711,7 @@ def consume_proposals(
     review: ReviewFn | None = None,
     review_limit: int = DEFAULT_REVIEW_LIMIT,
 ) -> ConsumeReport:
-    """Both parts, prune first. Returns the tallies."""
+    """All three parts, prune first. Returns the tallies."""
     report = ConsumeReport()
     auto_prune(store, pending_proposals(store, action="prune", limit=500), report)
     review_pending(
@@ -618,6 +720,15 @@ def consume_proposals(
         report,
         review=review or consume_llm,
         limit=review_limit,
+    )
+    apply_recorded_relinks(
+        store,
+        pending_proposals(store, action="relink", limit=500),
+        report,
+        # One budget per tick: the backlog applies share the review
+        # attempts' bound, so a saturated review starves the backlog
+        # rather than doubling the per-tick work.
+        limit=max(0, review_limit - report.attempts),
     )
     return report
 
@@ -664,6 +775,7 @@ __all__ = [
     "ConsumeReport",
     "ConsumerVerdict",
     "ReviewFn",
+    "apply_recorded_relinks",
     "auto_prune",
     "consume_llm",
     "consume_proposals",

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from precis.embedder import MockEmbedder
+from precis.errors import NotFound
 from precis.graph.garden import consumer
 from precis.graph.garden.apply import undo_merge
 from precis.graph.garden.candidates import SIBLING_REJECT_REASON, GardenCandidate
@@ -126,6 +127,48 @@ def _merge_proposal(
     )
     assert rid is not None
     return rid
+
+
+def _relink_proposal(
+    store: Store, child: int, parent: int, *, pin_shas: bool = True
+) -> int:
+    """File an orphan-detector-shaped relink proposal (gr507641)."""
+    payload: dict[str, Any] = {
+        "child": child,
+        "parent": parent,
+        "relation": "specialises",
+    }
+    if pin_shas:
+        payload["shas"] = {
+            str(child): _sha(store, child),
+            str(parent): _sha(store, parent),
+        }
+    rid = emit_proposal(
+        store,
+        GardenCandidate(
+            detector="orphan",
+            action="relink",
+            target_kind="ref",
+            target_id=child,
+            other_id=parent,
+            title="orphan relink",
+            evidence={},
+            payload=payload,
+        ),
+        rationale="orphan taxon, nearest start node",
+    )
+    assert rid is not None
+    return rid
+
+
+def _edge_id(store: Store, src: int, dst: int, relation: str) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT link_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = %s",
+            (src, dst, relation),
+        ).fetchone()
+    return None if row is None else int(row[0])
 
 
 def _note(store: Store, review_id: int) -> dict[str, Any]:
@@ -604,34 +647,44 @@ class TestReviewFilters:
         assert report.rejected == 0 and report.applied == 0
         assert [p.review_id for p in pending_proposals(store)] == [rid]
 
-    def test_approved_relink_is_recorded_once_then_filtered(self, store: Store) -> None:
-        """An approved relink stays pending (gr507641, no apply door)
-        but is never re-reviewed: the SQL filter drops it before the
-        reviewer is consulted."""
+    def test_approved_relink_is_applied_not_left_pending(self, store: Store) -> None:
+        """gr507641: an approved relink writes the proposed structural
+        edge through the reviewed door and resolves the proposal —
+        the 'approved but pending forever' state is gone."""
         orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
-        parent = _ref(store, "taxon", "parent", meta={"name": "parent"})
-        rid = emit_proposal(
-            store,
-            GardenCandidate(
-                detector="orphan",
-                action="relink",
-                target_kind="ref",
-                target_id=orphan,
-                other_id=parent,
-                title="orphan relink",
-                evidence={},
-                payload={"child": orphan, "parent": parent},
-            ),
-            rationale="orphan taxon, nearest start node",
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
         )
-        assert rid is not None
+        rid = _relink_proposal(store, orphan, parent)
         judge = _Judge("approve")
         first = consume_proposals(store, review=judge)
-        assert judge.seen == [rid] and first.approved_unapplied == 1
+        assert judge.seen == [rid] and first.applied == 1
+        assert len(first.relinks) == 1
+        relink_id = first.relinks[0]
+        g = _note(store, rid)
+        assert (g["verdict"], g["applied"]) == ("approved", relink_id)
+        assert g["link"] == {
+            "src_ref_id": orphan,
+            "dst_ref_id": parent,
+            "relation": "specialises",
+        }
+        # The edge exists and carries the reversal record keyed on the
+        # approved review row.
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT link_id, meta FROM links WHERE src_ref_id = %s "
+                "AND dst_ref_id = %s AND relation = 'specialises'",
+                (orphan, parent),
+            ).fetchone()
+        assert row is not None
+        stamp = row[1]["garden_relink"]
+        assert stamp["relink_id"] == relink_id and stamp["proposal"] == rid
+        assert isinstance(stamp["review"], int) and stamp["review"] != rid
+        assert pending_proposals(store) == []
+        # Second tick: nothing pending, nothing re-reviewed.
         second = consume_proposals(store, review=judge)
-        assert second.attempts == 0 and len(judge.seen) == 1
-        # And the proposal is still pending — for a human, per the ruling gap.
-        assert [p.review_id for p in pending_proposals(store)] == [rid]
+        assert (second.attempts, second.applied) == (0, 0)
+        assert len(judge.seen) == 1
 
 
 class TestApplyRecheck:
@@ -777,3 +830,252 @@ class TestApplyRecheck:
         g = _note(store, rid)
         assert (g["verdict"], g["reason"]) == ("rejected", "stale")
         assert _live(store, a) and _live(store, b)
+
+
+# ── the relink apply door (gr507641) ──────────────────────────────────────
+
+
+class TestRelinkApply:
+    def test_recorded_approval_applies_without_a_model_call(self, store: Store) -> None:
+        """The pre-door backlog shape: a pending relink carrying the
+        consumer's ``garden_review`` approve row applies on the tick —
+        the reviewer is never asked again."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        prop = next(p for p in pending_proposals(store) if p.review_id == rid)
+        consumer._note_approved_relink(
+            store, prop, ConsumerVerdict(verdict="approve", why="y", model="opus")
+        )
+        judge = _Judge("reject", "distinct_terms")
+        report = consume_proposals(store, review=judge)
+        assert judge.seen == []  # the recorded approval decided it
+        assert (report.applied, len(report.relinks)) == (1, 1)
+        assert _edge_id(store, orphan, parent, "specialises") is not None
+        g = _note(store, rid)
+        assert (g["verdict"], g["applied"]) == ("approved", report.relinks[0])
+        assert pending_proposals(store) == []
+        # And the next tick is a no-op.
+        second = consume_proposals(store, review=judge)
+        assert (second.attempts, second.applied, second.rejected) == (0, 0, 0)
+
+    def test_unpinned_relink_still_applies(self, store: Store) -> None:
+        """A pre-pinning proposal carries only the target's content_sha —
+        the apply re-check verifies that and the endpoints' liveness."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent, pin_shas=False)
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert report.applied == 1
+        assert _edge_id(store, orphan, parent, "specialises") is not None
+        assert _note(store, rid)["verdict"] == "approved"
+
+    def test_parent_sha_drift_closes_stale(self, store: Store) -> None:
+        """The parent is not the review target, so the proposal row
+        stays current — the payload sha pin is what catches the drift."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = 'parent (renamed)' WHERE ref_id = %s",
+                (parent,),
+            )
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, rid)
+        assert (g["verdict"], g["reason"]) == ("rejected", "stale")
+        assert _edge_id(store, orphan, parent, "specialises") is None
+
+    def test_existing_edge_closes_apply_refused(self, store: Store) -> None:
+        """The edge materialised between proposal and apply — the door
+        refuses rather than recording an apply that wrote nothing."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        store.add_link(src_ref_id=orphan, dst_ref_id=parent, relation="specialises")
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        assert _note(store, rid)["reason"] == "apply_refused"
+
+    def test_undo_relink_deletes_the_edge_and_sticks(self, store: Store) -> None:
+        """Undo is the plain edge delete plus a tombstone: the rejected
+        ``undone`` row on the proposal key keeps the detector from
+        re-proposing and the stamp from replaying."""
+        from precis.graph.garden.apply import undo_relink
+
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        _relink_proposal(store, orphan, parent)
+        report = consume_proposals(store, review=_Judge("approve"))
+        relink_id = report.relinks[0]
+        assert _edge_id(store, orphan, parent, "specialises") is not None
+        counts = undo_relink(store, relink_id, actor="reto")
+        assert counts["links_deleted"] == 1
+        assert _edge_id(store, orphan, parent, "specialises") is None
+        # The proposal key is blocked: re-filing the same candidate is a
+        # no-op, and a fresh consume applies nothing.
+        assert (
+            emit_proposal(
+                store,
+                GardenCandidate(
+                    detector="orphan",
+                    action="relink",
+                    target_kind="ref",
+                    target_id=orphan,
+                    other_id=parent,
+                    title="orphan relink",
+                    evidence={},
+                    payload={
+                        "child": orphan,
+                        "parent": parent,
+                        "relation": "specialises",
+                    },
+                ),
+                rationale="same orphan",
+            )
+            is None
+        )
+        second = consume_proposals(store, review=_Judge("approve"))
+        assert (second.attempts, second.applied, second.rejected) == (0, 0, 0)
+        with pytest.raises(NotFound, match="no relink record"):
+            undo_relink(store, relink_id, actor="reto")
+
+    def test_relink_with_no_parent_never_reaches_the_judge(self, store: Store) -> None:
+        """payload.parent=None names nothing to write — skipped before
+        review (no model call, not a rejection), stays pending."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        rid = emit_proposal(
+            store,
+            GardenCandidate(
+                detector="orphan",
+                action="relink",
+                target_kind="ref",
+                target_id=orphan,
+                title="orphan relink, no candidate",
+                evidence={},
+                payload={"relation": "specialises"},
+            ),
+            rationale="orphan, no start close enough",
+        )
+        assert rid is not None
+        judge = _Judge("approve")
+        report = consume_proposals(store, review=judge)
+        assert judge.seen == []
+        assert (report.applied, report.rejected, report.reviewed) == (0, 0, 0)
+        assert [p.review_id for p in pending_proposals(store)] == [rid]
+
+    def test_recorded_approval_stale_target_closes_stale(self, store: Store) -> None:
+        """The backlog path re-verifies the proposal's content_sha — a
+        child edited since the approve closes ``stale``, not applied."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        prop = next(p for p in pending_proposals(store) if p.review_id == rid)
+        consumer._note_approved_relink(
+            store, prop, ConsumerVerdict(verdict="approve", why="y", model="opus")
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = 'orphan (renamed)' WHERE ref_id = %s",
+                (orphan,),
+            )
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, rid)
+        assert (g["verdict"], g["reason"]) == ("rejected", "stale")
+        assert _edge_id(store, orphan, parent, "specialises") is None
+
+    def test_recorded_approval_retired_parent_closes_gone(self, store: Store) -> None:
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        prop = next(p for p in pending_proposals(store) if p.review_id == rid)
+        consumer._note_approved_relink(
+            store, prop, ConsumerVerdict(verdict="approve", why="y", model="opus")
+        )
+        store.retire_ref(parent)
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, rid)
+        assert (g["verdict"], g["reason"]) == ("rejected", "target_gone")
+
+    def test_orphan_recheck_closes_stale(self, store: Store) -> None:
+        """The orphan bar recomputed at apply: the child is no longer
+        unrooted, the parent no start node, and identical card text puts
+        the pair inside RELINK_MIN_DISTANCE — the recorded approval no
+        longer qualifies."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        rid = _relink_proposal(store, orphan, parent)
+        prop = next(p for p in pending_proposals(store) if p.review_id == rid)
+        consumer._note_approved_relink(
+            store, prop, ConsumerVerdict(verdict="approve", why="y", model="opus")
+        )
+        _card_vec(store, orphan, "same text")
+        _card_vec(store, parent, "same text")
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        assert _note(store, rid)["reason"] == "stale"
+        assert _edge_id(store, orphan, parent, "specialises") is None
+
+    def test_cycle_is_refused_at_apply(self, store: Store) -> None:
+        """add_link does not run the acyclic constraint (it lives at the
+        verb doors) — the door checks: parent already specialises child,
+        so child→parent would close a cycle."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(
+            store, "taxon", "parent", meta={"name": "parent", "start": "true"}
+        )
+        store.add_link(src_ref_id=parent, dst_ref_id=orphan, relation="specialises")
+        rid = _relink_proposal(store, orphan, parent)
+        prop = next(p for p in pending_proposals(store) if p.review_id == rid)
+        consumer._note_approved_relink(
+            store, prop, ConsumerVerdict(verdict="approve", why="y", model="opus")
+        )
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        assert _note(store, rid)["reason"] == "cycle"
+        assert _edge_id(store, orphan, parent, "specialises") is None
+
+    def test_merge_repoint_drops_the_relink_stamp(self, store: Store) -> None:
+        """A merged-away child repoints its edges — the copy carries
+        ``garden_merge``, NOT ``garden_relink``; undo_relink must not be
+        able to reach the merged row."""
+        from precis.graph.garden.apply import apply_merge, undo_relink
+
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(store, "taxon", "parent", meta={"start": "true"})
+        winner = _ref(store, "taxon", "winner", meta={"name": "winner"})
+        _relink_proposal(store, orphan, parent)
+        report = consume_proposals(store, review=_Judge("approve"))
+        relink_id = report.relinks[0]
+        apply_merge(store, orphan, winner, actor="reto")
+        # The repointed edge exists under the winner, unstamped.
+        rid2 = _edge_id(store, winner, parent, "specialises")
+        assert rid2 is not None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM links WHERE link_id = %s", (rid2,)
+            ).fetchone()
+        assert row is not None
+        meta = row[0]
+        assert "garden_relink" not in meta and meta.get("garden_merge")
+        with pytest.raises(NotFound, match="no relink record"):
+            undo_relink(store, relink_id, actor="reto")

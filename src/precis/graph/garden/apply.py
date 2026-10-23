@@ -1,10 +1,12 @@
 """The apply door — explicit, human-invoked, never called by a pass.
 
 This module exists so an *accepted* proposal can be applied cleanly and
-undone — the gardener itself never calls it. Only merges are supported:
-repointing every link off the loser onto the winner, folding the loser's
-name into the winner's aliases, retiring the loser with
-``meta.superseded_by`` set. Split/relink/prune/tag proposals are for a
+undone — the gardener itself never calls it. Two shapes are supported:
+merges repoint every link off the loser onto the winner, fold the
+loser's name into the winner's aliases, and retire the loser with
+``meta.superseded_by`` set; relinks (gr507641) write the structural edge
+an approved proposal names — child → parent, ``specialises`` or another
+of the gated structural relations. Split/prune/tag proposals are for a
 human to carry out by hand today; the apply surface is deliberately
 narrower than the proposal space.
 
@@ -15,7 +17,18 @@ carries ``meta.garden_merge`` + ``meta.prior_ref_id`` so SQL alone can
 tell merge-made edges from pre-existing ones. ``undo_merge`` replays
 that record: delete the merge-made copies, restore the originals
 (``ON CONFLICT DO NOTHING`` — an edge that re-materialised since is left
-alone), un-retire the loser, drop the alias the merge added.
+alone), un-retire the loser, drop the alias the merge added. A relink
+mints exactly one edge, so its record lives on the edge itself
+(``links.meta.garden_relink``) and ``undo_relink`` is a plain delete.
+
+A relink writes through ``store.add_link`` — the same admission every
+edge takes. The machine-edge gate admits exactly this door, keyed on
+the approved review row the apply writes first in the same transaction
+(``store._links_ops._reviewed_structural_edge``); every other machine
+structural write stays refused. Before resolving, the proposal is
+re-verified like a merge: still current on the target, both endpoints
+live, the ``payload.shas`` pins (written by the orphan detector for new
+proposals) hold where present, and the edge does not already exist.
 
 The measures guard mirrors ``store.migrate_links``: a loser carrying
 live ``measures`` rows (subject, measurand, or a quantifies-anchored
@@ -28,15 +41,22 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
+from precis.store._links_ops import (
+    GARDEN_RELINK_META,
+    MACHINE_EDGE_STRUCTURAL,
+    relink_apply_door,
+)
 from precis.store.revision_context import trust_door
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.store.types import Relation
 
 log = logging.getLogger(__name__)
 
@@ -276,6 +296,10 @@ def apply_merge(
             new_meta = dict(lmeta or {})
             new_meta[META_MERGE] = merge_id
             new_meta[META_PRIOR_REF] = loser_id
+            # A relink stamp belongs to the edge the door wrote, not to
+            # its repointed copy — drop it or undo_relink would delete
+            # the merged row too (gr507641).
+            new_meta.pop(GARDEN_RELINK_META, None)
             cur = conn.execute(
                 "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
                 "  dst_chunk_id, relation, set_by, meta) "
@@ -420,11 +444,337 @@ def undo_merge(store: Store, merge_id: str) -> dict[str, int]:
     }
 
 
+# ── relinks ──────────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class RelinkRecord:
+    """What an applied relink wrote — the edge's own
+    ``links.meta.garden_relink`` is the reversal record, so undo needs
+    nothing beyond ``relink_id``."""
+
+    relink_id: str
+    proposal: int
+    review: int  # the approved reviews row the edge is keyed on
+    child: int
+    parent: int
+    relation: str
+    at: str
+    link_id: int | None = None
+
+
+def _relink_edge(
+    garden: dict[str, Any], target_kind: str, target_id: int, review_id: int
+) -> tuple[int, int, str]:
+    """The ``(child, parent, relation)`` a relink proposal's payload
+    names — the child is the proposal's target ref (``payload.child``
+    is an explicit restatement of it)."""
+    if target_kind != "ref":
+        raise BadInput(
+            f"relink proposal {review_id} targets {target_kind}:{target_id} "
+            "— a relink attaches ref → ref"
+        )
+    payload = garden.get("payload") or {}
+    child = payload.get("child", target_id)
+    if not isinstance(child, int) or child != target_id:
+        raise BadInput(
+            f"relink proposal {review_id} names child {child!r} — the "
+            f"proposal's target is ref {target_id}"
+        )
+    parent = payload.get("parent")
+    if not isinstance(parent, int):
+        raise BadInput(
+            f"relink proposal {review_id} names no parent ref — nothing "
+            "to apply (the judge saw a candidate-parent list, not a pick)"
+        )
+    if child == parent:
+        raise BadInput(f"relink proposal {review_id} is a self-loop on {child}")
+    relation = str(payload.get("relation") or "specialises")
+    if relation not in MACHINE_EDGE_STRUCTURAL:
+        raise BadInput(
+            f"relink proposal {review_id} names relation {relation!r} — "
+            "this door writes structural edges only "
+            f"({', '.join(sorted(MACHINE_EDGE_STRUCTURAL))})"
+        )
+    return child, parent, relation
+
+
+@trust_door("generated")
+def apply_relink(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    relink_id: str | None = None,
+) -> RelinkRecord:
+    """Apply a reviewed relink proposal: write the edge it names.
+
+    The proposal must be a pending garden ``relink`` row; the approved
+    review row this writes (``resolve_proposal``) lands in the same
+    transaction before the edge, and the edge goes through
+    ``store.add_link`` carrying ``meta.garden_relink.review`` — the key
+    the machine-edge gate admits on. A bare machine write naming a
+    missing, unapproved or mismatched review stays refused.
+
+    Re-checks inside the transaction (``FOR UPDATE`` on both refs):
+    the proposal is still current on the target, both endpoints are
+    live, every ``payload.shas`` pin present still holds, and the edge
+    does not already exist. Refusals raise :class:`MergeRefused` (the
+    reason codes the consumer records: ``stale``, ``target_gone``,
+    ``apply_refused``); a malformed proposal raises :class:`BadInput`,
+    a missing/already-decided one :class:`NotFound`.
+    """
+    from precis.graph.garden.proposals import GARDEN_ACTOR, resolve_proposal
+
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT target_kind, target_id, note, "
+            "  content_sha = precis_target_sha(target_kind, target_id) "
+            "FROM reviews WHERE review_id = %s AND actor = %s "
+            "  AND verdict = 'proposed'",
+            (review_id, GARDEN_ACTOR),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no pending garden proposal review_id={review_id}")
+        target_kind, target_id = str(row[0]), int(row[1])
+        try:
+            garden = (json.loads(row[2] or "") or {}).get("garden") or {}
+        except (TypeError, ValueError):
+            garden = {}
+        if garden.get("action") != "relink":
+            raise BadInput(
+                f"review {review_id} is a {garden.get('action')!r} proposal "
+                "— the relink door handles relinks"
+            )
+        child, parent, relation = _relink_edge(
+            garden, target_kind, target_id, review_id
+        )
+        if not row[3]:
+            raise MergeRefused("stale", "the target changed since the proposal")
+        # Both endpoints, locked in id order (same discipline as the
+        # merge door's FOR UPDATE pair): live, and matching whatever
+        # sha pins the proposal carries. Proposals filed before endpoint
+        # pinning hold only the target's content_sha — checked above.
+        now = {
+            int(r[0]): (bool(r[1]), None if r[2] is None else str(r[2]))
+            for r in conn.execute(
+                "SELECT ref_id, retired_at IS NULL, "
+                "  precis_target_sha('ref', ref_id) "
+                "FROM refs WHERE ref_id = ANY(%s) "
+                "ORDER BY ref_id FOR UPDATE",
+                ([child, parent],),
+            ).fetchall()
+        }
+        for rid, label in ((child, "child"), (parent, "parent")):
+            state = now.get(rid)
+            if state is None:
+                raise MergeRefused(
+                    "target_gone", f"the {label} ref {rid} no longer exists"
+                )
+            if not state[0]:
+                raise MergeRefused("target_gone", f"the {label} ref {rid} is retired")
+        shas = (garden.get("payload") or {}).get("shas")
+        if isinstance(shas, dict):
+            for rid, label in ((child, "child"), (parent, "parent")):
+                pin = shas.get(str(rid))
+                if pin is not None and str(pin) != now[rid][1]:
+                    raise MergeRefused(
+                        "stale",
+                        f"the {label} ref {rid} changed since the proposal",
+                    )
+        dup = conn.execute(
+            "SELECT link_id FROM links WHERE src_ref_id = %s "
+            "  AND src_chunk_id IS NULL AND dst_ref_id = %s "
+            "  AND dst_chunk_id IS NULL AND relation = %s",
+            (child, parent, relation),
+        ).fetchone()
+        if dup is not None:
+            raise MergeRefused(
+                "apply_refused",
+                f"a {relation!r} edge {child}→{parent} already exists "
+                f"(link {int(dup[0])})",
+            )
+        # The add-mode link doors do not run the acyclic constraint
+        # (``check_relation_constraints`` lives at the verb doors), so
+        # the door re-checks here: a ``child → parent`` edge closes a
+        # cycle when ``parent`` already reaches ``child`` along the
+        # relation.
+        if parent in store.ancestors(relation, child, conn=conn):
+            raise MergeRefused(
+                "cycle",
+                f"a {relation!r} edge {child}→{parent} would close a cycle",
+            )
+        # The orphan detector's bar, recomputed like the merge door's
+        # dup floor: the child must still reach no start node, the
+        # parent must still be one, and the pair must sit past
+        # RELINK_MIN_DISTANCE (no card vector = nothing to measure).
+        if str(garden.get("detector") or "") == "orphan":
+            from precis.graph.garden.candidates import (
+                RELINK_MIN_DISTANCE,
+                _card_vectors,
+                _cosine,
+                _start_node_ids,
+            )
+
+            if child not in store.taxon_unrooted():
+                raise MergeRefused(
+                    "stale", f"the child {child} reaches a start node now"
+                )
+            if parent not in _start_node_ids(store):
+                raise MergeRefused(
+                    "stale", f"the parent {parent} is no longer a start node"
+                )
+            vecs = _card_vectors(store, [child, parent])
+            if child in vecs and parent in vecs:
+                dist = _cosine(
+                    np.asarray(vecs[child], dtype=float),
+                    np.asarray(vecs[parent], dtype=float),
+                )
+                if dist <= RELINK_MIN_DISTANCE:
+                    raise MergeRefused(
+                        "stale",
+                        f"child {child} and parent {parent} now sit "
+                        f"{dist:.3f} apart, inside the relink floor "
+                        f"({RELINK_MIN_DISTANCE}) — retrieval already "
+                        "surfaces it",
+                    )
+        if relink_id is None:
+            stamp = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+            relink_id = f"garden-relink:{child}:{parent}:{stamp}"
+        # Resolve BEFORE the edge write so the ledger sha matches the
+        # state the apply verified — and so the approved review row is
+        # visible when the link admission gate runs in this transaction.
+        resolved = resolve_proposal(
+            store,
+            review_id,
+            actor=actor,
+            verdict="approved",
+            extra={
+                "applied": relink_id,
+                "link": {
+                    "src_ref_id": child,
+                    "dst_ref_id": parent,
+                    "relation": relation,
+                },
+            },
+            conn=conn,
+        )
+        if resolved is None:
+            raise NotFound(
+                f"no pending garden proposal review_id={review_id} "
+                "(already decided, or not a garden row)"
+            )
+        record = RelinkRecord(
+            relink_id=relink_id,
+            proposal=int(review_id),
+            review=int(resolved.review_id),
+            child=child,
+            parent=parent,
+            relation=relation,
+            at=f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}",
+        )
+        with relink_apply_door():
+            link = store.add_link(
+                src_ref_id=child,
+                dst_ref_id=parent,
+                relation=cast("Relation", relation),
+                # links.set_by FKs to actors — the coarse slug vocabulary,
+                # not the free-text reviews.actor that recorded the verdict.
+                set_by="agent",
+                meta={
+                    GARDEN_RELINK_META: {
+                        "relink_id": relink_id,
+                        "proposal": int(review_id),
+                        "review": record.review,
+                        "at": record.at,
+                    }
+                },
+                conn=conn,
+            )
+        record.link_id = int(link.id)
+    log.info(
+        "garden: relinked ref %d → %d (%s, %s)",
+        child,
+        parent,
+        relation,
+        relink_id,
+    )
+    return record
+
+
+@trust_door("generated")
+def undo_relink(store: Store, relink_id: str, *, actor: str) -> dict[str, int]:
+    """Reverse an applied relink — delete the edge it wrote. Returns
+    ``{links_deleted}``.
+
+    Looks the edge up by its ``meta.garden_relink.relink_id`` record: a
+    relink mints one new edge, so undo is a plain delete (unlike merge
+    there is nothing to restore). The delete is made sticky: a
+    ``rejected`` garden row carrying ``reason='undone'`` and the
+    ``relink_id`` is written on the proposal's target+key, so the
+    detector does not re-propose the edge and the gate refuses a
+    replayed stamp.
+    """
+    from precis.graph.garden.proposals import GARDEN_VERSION
+
+    with store.tx() as conn:
+        rows = conn.execute(
+            "SELECT link_id, meta->'garden_relink' FROM links "
+            "WHERE meta->'garden_relink'->>'relink_id' = %s",
+            (relink_id,),
+        ).fetchall()
+        if not rows:
+            raise NotFound(f"no relink record for relink_id={relink_id!r}")
+        proposal_id = (rows[0][1] or {}).get("proposal")
+        pid = proposal_id if isinstance(proposal_id, int) else 0
+        prop = (
+            conn.execute(
+                "SELECT target_kind, target_id, note FROM reviews WHERE review_id = %s",
+                (pid,),
+            ).fetchone()
+            if pid
+            else None
+        )
+        deleted = store.delete_links([int(r[0]) for r in rows], conn=conn)
+        if prop is not None:
+            try:
+                g = (json.loads(prop[2] or "") or {}).get("garden") or {}
+            except (TypeError, ValueError):
+                g = {}
+            if g.get("key"):
+                store.record_target_review(
+                    str(prop[0]),
+                    int(prop[1]),
+                    actor=actor,
+                    verdict="rejected",
+                    version=GARDEN_VERSION,
+                    note=json.dumps(
+                        {
+                            "garden": {
+                                "v": 1,
+                                "key": g["key"],
+                                "resolves": pid,
+                                "undone": relink_id,
+                                "reason": "undone",
+                            }
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    conn=conn,
+                )
+    log.info("garden: undid relink %s: %d link(s) deleted", relink_id, deleted)
+    return {"links_deleted": deleted}
+
+
 __all__ = [
     "META_MERGE",
     "META_PRIOR_REF",
     "MergeRecord",
     "MergeRefused",
+    "RelinkRecord",
     "apply_merge",
+    "apply_relink",
     "undo_merge",
+    "undo_relink",
 ]

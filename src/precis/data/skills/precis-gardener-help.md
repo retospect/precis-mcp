@@ -156,12 +156,19 @@ verdicts per run, default 10):
   detectors) — unpinned ones close `stale` without a call. Approve on
   a merge re-verifies the pins and the dup floor inside the apply
   transaction, then applies through the merge
-  door below (`actor='garden-consumer'`, undoable). Reject writes a
+  door below (`actor='garden-consumer'`, undoable). Approve on a
+  relink applies through `apply_relink` (gr507641): the resolution row
+  lands first in the same transaction and the edge — child → parent,
+  `specialises` or another structural relation — goes through
+  `store.add_link` keyed on that approved review row (the one door the
+  machine-edge gate admits for structural rels), carrying
+  `meta.garden_relink` so `precis garden undo <relink_id>` deletes it.
+  Relink proposals approved before the door existed (the recorded
+  `garden_review` rows) are applied by the consumer each tick, bounded
+  by `review_limit`. Reject writes a
   terminal `rejected` row with `garden.reason`: `distinct_terms`,
   `specialisation`, `placeholder_definition`, `wrong_target`,
-  `insufficient_evidence` or `other`. An approved relink is recorded
-  but not applied (machine `specialises` edges are refused at the link
-  gate); it stays pending for a human.
+  `insufficient_evidence` or `other`.
 - **Short-sibling rule** — a taxon merge between two siblings under
   one parent, each named in at most two content words, sharing no name
   word (Pedal/Wheel, Height/Width, Hose/Pipe) is rejected without a
@@ -179,8 +186,10 @@ winner (each repointed edge keeps `meta.garden_merge`), folds the loser's
 name into the winner's aliases, stamps `meta.superseded_by`, retires the
 loser, and records an `approved` review row. `precis garden undo
 <merge_id>` restores both nodes and every repointed edge — the loser's
-`meta.garden_merge` carries the full reversal record. Split, prune and
-relink proposals today are for human follow-through (the apply paths are
+`meta.garden_merge` carries the full reversal record; `precis garden
+undo <relink_id>` deletes the edge a reviewed relink wrote
+(`links.meta.garden_relink`). Split, prune and tag proposals today are
+for human follow-through (the apply paths are
 deliberately narrower than the proposal space).
 
 ## The sampled reviewer
@@ -256,7 +265,9 @@ rule. In short: no `related-to`/`see-also`, no direct structural writes
 `meta.evidence` chunk pins and the `meta.{model,prompt_version,run_id,
 why}` annotation, and non-stance rels must join endpoints past the
 `+recall` distance floor. Merge repointing (`precis garden apply`/`undo`)
-is exempt — it moves existing edges, it does not mint new ones.
+is exempt — it moves existing edges, it does not mint new ones — and a
+relink apply mints one structural edge admitted on the approved review
+row the proposal resolved under (`meta.garden_relink.review`).
 
 ## If you land on a garden proposal while working
 
