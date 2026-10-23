@@ -154,6 +154,45 @@ class JobTypeSpec:
     #: ``dispatch``) so a type's configured internal timeout cannot exceed
     #: the outer runner's bound or the initial lease.
     wall_seconds: Callable[[], float] | None = None
+    #: Optional ``service_config`` *placement* pin (gr506045, Reto ruling
+    #: 2026-10-23). When set, a host-scoped ``service_config`` row for this
+    #: service with ``prio > 0`` pins the job type's claims to that host:
+    #: ``claim_executor_jobs`` skips the row on every other host, so the
+    #: job waits ``STATUS:queued`` (never fails) while its host is down.
+    #: The identity is the *heartbeat* host (``reserve_host()`` /
+    #: ``lease_host`` — the same key ``service_config.host`` rows are
+    #: written under), deliberately distinct from the ``PRECIS_NODE``
+    #: ``target_node`` capability-lane pin, whose "pin goes stale → reap
+    #: as infra" lifecycle does not apply here. Several enabled host rows
+    #: pin to the whole set; zero host-scoped enabled rows (a dark
+    #: service or only a ``'*'`` row) means no pin — host-agnostic.
+    service_pin: str | None = None
+    #: Optional dispatch-time coalescing (gr506771). When ``True``, the
+    #: dispatch pass refuses to mint a second job of this type while a
+    #: non-terminal one (``queued`` / ``running`` / ``waiting_*``)
+    #: already exists fleet-wide — a recurring tick whose earlier job is
+    #: still pending is *skipped* (the spawned todo is closed with
+    #: ``meta.skipped='previous pending'``) instead of enqueueing a
+    #: duplicate that would re-run over the same state. For job types
+    #: whose runs are whole-graph passes where a second concurrent run
+    #: adds nothing.
+    dedupe_pending: bool = False
+    #: Optional post-failure hook, ``on_failed(ctx)``, invoked once by
+    #: ``job_inproc`` after a job ends ``STATUS:failed`` *through the
+    #: dispatch path* (a ``record_failure`` the dispatcher called itself,
+    #: or an exception out of ``dispatch``). NOT called on lease-loss
+    #: (the row belongs to the new claimant) or on the
+    #: ``poison_guard``/sweeper terminal paths, which never reach
+    #: dispatch — a crash-looping job must not side-effect here. The
+    #: hook owns whatever bounded recovery the job_type wants; keep it
+    #: cheap (it runs inside the claiming pass) and never raise.
+    on_failed: Callable[[Any], None] | None = None
+    #: Optional queue TTL in seconds (gr506771). A job of this type
+    #: still ``STATUS:queued`` past it is *cancelled* by the sweeper with
+    #: a reason — a run whose input has rotted (a whole-graph pass
+    #: re-scanning state from hours ago) is worse than a skipped tick.
+    #: ``None`` (default): queued jobs wait indefinitely, as before.
+    queue_ttl_s: int | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".

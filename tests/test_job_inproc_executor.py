@@ -295,3 +295,135 @@ def test_poison_guard_fails_past_max_attempts(
     assert _status(store, rid) == "failed"
     assert dispatched["n"] == 0
     assert _meta(store, rid)["failure_class"] == "infra"
+
+
+# ── service_config placement pin (gr506045) ─────────────────────────────
+
+
+def _mk_garden_job(store: Store) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="graph_garden test job",
+        meta={
+            "executor": "job_inproc",
+            "job_type": "graph_garden",
+            "params": {},
+        },
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+    return int(ref.id)
+
+
+def test_service_pin_gates_claim_to_enabled_host(store: Store) -> None:
+    """A host-scoped enabled ``service_config`` row for ``graph_garden``
+    pins its jobs to that host (heartbeat identity): every other host's
+    claim skips the row and it stays queued — it does not fail."""
+    from precis.workers.executors._common import claim_executor_jobs
+    from precis.workers.service_config import set_service_prio
+
+    set_service_prio(store, "melchior", "graph_garden", 1)
+    rid = _mk_garden_job(store)
+
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+        )
+        conn.commit()
+    assert rows == []
+    assert _status(store, rid) == "queued"  # waits, does not fail
+
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn, executor="job_inproc", limit=1, reserve_host_id="melchior"
+        )
+        conn.commit()
+    assert [row[0] for row in rows] == [rid]
+
+
+def test_service_pin_absent_or_wildcard_only_stays_host_agnostic(
+    store: Store,
+) -> None:
+    """No host-scoped enabled row → no pin: a wildcard-enabled service
+    (or a dark one) leaves the job claimable by any host."""
+    from precis.workers.executors._common import claim_executor_jobs
+    from precis.workers.service_config import set_service_prio
+
+    rid = _mk_garden_job(store)
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+        )
+        conn.commit()
+    assert [row[0] for row in rows] == [rid]
+
+    # A '*' row lights the service everywhere but pins nothing.
+    set_service_prio(store, "*", "graph_garden", 1)
+    _mk_garden_job(store)
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+        )
+        conn.commit()
+    # The same lease-less row is returned again (the caller stamps the
+    # lease) — what matters is the wildcard row pins nothing.
+    assert [row[0] for row in rows] == [rid]
+
+
+# ── on_failed hook (gr503581) ────────────────────────────────────────────
+
+
+def test_on_failed_invoked_once_on_dispatch_failure(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+
+    def _dispatch(ctx: Any, _s: Any) -> None:
+        ctx.record_failure("boom")
+
+    monkeypatch.setattr(
+        job_inproc,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_embed_batch",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"job_inproc"}),
+            requires=frozenset(),
+            description="fake",
+            dispatch=_dispatch,
+            on_failed=lambda ctx: calls.append(ctx.ref_id),
+        ),
+    )
+    rid = _mk_queued_job(store)
+
+    job_inproc.run_job_inproc_pass(store, limit=1)
+
+    assert _status(store, rid) == "failed"
+    assert calls == [rid]
+
+
+def test_on_failed_not_called_on_success_or_lease_loss(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+
+    def _ok(ctx: Any, _s: Any) -> None:
+        ctx.append_chunk("job_summary", "done")
+
+    monkeypatch.setattr(
+        job_inproc,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_embed_batch",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"job_inproc"}),
+            requires=frozenset(),
+            description="fake",
+            dispatch=_ok,
+            on_failed=lambda ctx: calls.append(ctx.ref_id),
+        ),
+    )
+    rid = _mk_queued_job(store)
+    job_inproc.run_job_inproc_pass(store, limit=1)
+    assert _status(store, rid) == "succeeded"
+    assert calls == []

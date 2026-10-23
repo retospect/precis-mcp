@@ -9,9 +9,10 @@ orphan: its claimer is presumed dead, leaving the parent todo's
 :func:`claim_executor_jobs` (``executors/_common.py``) uses for reclaim,
 so a live lease is never swept out from under its worker.
 
-**Exclusion.** ``ssh_node``/``claude_inproc``/``claude_docker`` opt into
-``reclaim_stale_running`` (boot-epoch + expiry self-heal, no external
-timeout needed) and :func:`_enumerate_orphans` excludes their rows.
+**Exclusion.** ``ssh_node``/``claude_inproc``/``claude_docker``/
+``job_inproc`` opt into ``reclaim_stale_running`` (boot-epoch + expiry
+self-heal, no external timeout needed) and :func:`_enumerate_orphans`
+excludes their rows.
 ``coordinator`` does NOT opt in (no reclaim path of its own) — this
 wall-clock sweep is its only crash recovery. ``_reap_dead_node_orphans``
 is the narrower complement for ``ssh_node``: fires only when
@@ -148,10 +149,15 @@ _UNSCHEDULABLE_SCAN_CAP = 500
 #: (boot epoch + epoch-aware
 #: reclaim + generalized attempt cap) — :func:`_enumerate_orphans`
 #: excludes their rows from the generic wall-clock sweep (see its
-#: docstring). ``coordinator`` is deliberately absent: it doesn't opt
+#: docstring). ``job_inproc`` is in the set (gr506045): it reclaims
+#: stale running rows itself, so a swept→failed here would race — and
+#: could win — its own reclaim, producing two owners for one row.
+#: ``coordinator`` is deliberately absent: it doesn't opt
 #: into ``reclaim_stale_running`` and has no reclaim path of its own, so
 #: it still depends on this wall-clock sweep as its only crash recovery.
-_LEASE_OWNING_EXECUTORS = frozenset({"ssh_node", "claude_inproc", "claude_docker"})
+_LEASE_OWNING_EXECUTORS = frozenset(
+    {"ssh_node", "claude_inproc", "claude_docker", "job_inproc"}
+)
 
 log = logging.getLogger(__name__)
 
@@ -831,6 +837,7 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # path (no lease to expire, not STATUS:running) and its idem_key blocks
     # re-mints forever. Same deadness predicate, same terminal shape.
     _reap_dead_node_queued(store, limit=limit)
+    _reap_overqueued(store, limit=limit)
     # Live host, executor pass gone (gr493226): a pinned job the host-death
     # predicate above can't see, because the node still heartbeats.
     _reap_off_lane_pinned(store, limit=limit)
@@ -888,7 +895,8 @@ def _enumerate_orphans(
     ``ref_tags.created_at`` is the claim timestamp.
 
     **Lease-owning executors are excluded (§H piece 6).** ``ssh_node``,
-    ``claude_inproc`` and ``claude_docker`` all reclaim their own
+    ``claude_inproc``, ``claude_docker`` and ``job_inproc`` all reclaim
+    their own
     expired-lease running jobs (epoch-aware lease-steal + generalized
     attempt cap, ``executors/_common.py``'s ``claim_executor_jobs`` /
     ``poison_guard``), so a swept→failed here would race — and could win —
@@ -1436,6 +1444,100 @@ def _lane_sighting(
     if row is None:
         return None
     return _LaneSighting(last_seen=row[0], process=row[1], silent=bool(row[2]))
+
+
+def _queue_ttl_job_types() -> dict[str, int]:
+    """job_type → its declared queued TTL in seconds
+    (``JobTypeSpec.queue_ttl_s``) — the types whose queued rows
+    :func:`_reap_overqueued` may cancel."""
+    from precis.workers.job_types import get_job_type, known_job_types
+
+    out: dict[str, int] = {}
+    for name in known_job_types():
+        spec = get_job_type(name)
+        ttl = getattr(spec, "queue_ttl_s", None) if spec is not None else None
+        if ttl:
+            out[name] = int(ttl)
+    return out
+
+
+def _reap_overqueued(store: Store, *, limit: int) -> int:
+    """Cancel queued jobs sitting past their job_type's queue TTL
+    (gr506771).
+
+    A queued run whose input has rotted — the gardener re-scanning graph
+    state from hours ago (one sat 9.4h) — is worse than a skipped tick:
+    ``dedupe_pending`` already keeps new ticks from piling on, but the
+    stale queued job itself would still execute whenever its host came
+    back. Types opt in via ``JobTypeSpec.queue_ttl_s``; past it the job
+    ends ``STATUS:cancelled`` (not failed — no bubble, no retry count)
+    with the reason on the row and in a ``job_event`` chunk. Queued age
+    is read off the STATUS:queued tag's ``created_at``, so a re-queued
+    job's clock restarts exactly when it re-entered the queue. No
+    reservation refund needed: a queued job was never claimed.
+    """
+    ttls = _queue_ttl_job_types()
+    if not ttls:
+        return 0
+    oldest = min(ttls.values())
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta->>'job_type' AS jt
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'queued'
+               AND r.meta->>'job_type' = ANY(%s)
+               AND rt.created_at < now() - make_interval(secs => %s)
+             ORDER BY r.ref_id
+             LIMIT %s
+               FOR UPDATE OF r SKIP LOCKED
+            """,
+            (sorted(ttls), oldest, limit),
+        ).fetchall()
+        n = 0
+        for ref_id, jt in rows:
+            ttl = ttls[str(jt)]
+            # Rows older than the *smallest* TTL were fetched; re-check
+            # this row's own bound inside the lock.
+            age = conn.execute(
+                "SELECT extract(epoch from now() - rt.created_at) "
+                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = 'STATUS' "
+                "AND t.value = 'queued'",
+                (ref_id,),
+            ).fetchone()
+            if age is None or float(age[0]) < ttl:
+                continue
+            reason = (
+                f"sweeper: cancelled queued run — STATUS:queued for "
+                f"{float(age[0]) / 3600:.1f}h, past job_type queue_ttl_s "
+                f"{ttl}s (gr506771)"
+            )
+            store.add_tag(
+                int(ref_id),
+                Tag.closed("STATUS", "cancelled"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            set_meta(conn, int(ref_id), error=reason)
+            append_chunk(store, int(ref_id), JOB_EVENT_KIND, reason, conn=conn)
+            store.append_event(
+                int(ref_id),
+                source="sweeper",
+                event="job-reaped",
+                payload={"cause": "overqueued", "queue_ttl_s": ttl},
+                conn=conn,
+            )
+            log.info("sweeper: job #%d cancelled (overqueued, jt=%s)", ref_id, jt)
+            n += 1
+        conn.commit()
+    return n
 
 
 def _off_lane_since(

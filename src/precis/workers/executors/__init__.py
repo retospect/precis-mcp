@@ -66,13 +66,13 @@ Claim substrate (``_common.py``)
   view's ``ran_on:`` line, so a job ≠ session-container mismatch is
   visible). With
   ``reclaim_stale_running=True`` (``ssh_node``, ``claude_inproc``,
-  ``claude_docker``) a ``STATUS:running`` row is reclaimable on lease
+  ``claude_docker``, ``job_inproc``) a ``STATUS:running`` row is reclaimable on lease
   **expiry** or on **epoch** mismatch (the holder was provably replaced,
   e.g. a deploy bounce) — a live holder is never stolen. ``poison_guard``
   counts epoch and expiry reclaims alike: an epoch mismatch cannot
   distinguish a deploy from a job killing its worker. At the cap the job
   fails (``failure_class='infra'``); ``meta.reclaims[].why`` keeps the reason.
-  These three lanes are excluded from the sweeper's wall-clock backstop
+  These lanes are excluded from the sweeper's wall-clock backstop
   (racing it would strand results as ``failed``); ``coordinator`` has no
   reclaim path and deliberately keeps the sweeper.
 * **Kill paths** — ``precis jobs kill`` stamps ``meta.kill_requested``;

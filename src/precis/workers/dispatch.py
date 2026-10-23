@@ -278,7 +278,7 @@ def _served_model_requirement(
 
 def _halt_bad_dispatch(
     store: Store, conn: Any, ref_id: int, detail: str
-) -> tuple[int, bool]:
+) -> tuple[int, bool, bool]:
     """Self-halt a mis-configured parent so it stops re-warning forever.
 
     A parent whose ``executor`` / ``job_type`` is invalid can never mint
@@ -297,7 +297,7 @@ def _halt_bad_dispatch(
     """
     store.add_tag(ref_id, Tag.open("halt:bad-dispatch"), set_by="system", conn=conn)
     log.warning("dispatch: parent #%d %s; halted (halt:bad-dispatch)", ref_id, detail)
-    return (1, False)
+    return (1, False, False)
 
 
 def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
@@ -386,7 +386,7 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
             if parent_id not in exempt_ids:
                 continue
         try:
-            claimed, minted = _claim_and_dispatch(store, parent_id)
+            claimed, minted, skipped = _claim_and_dispatch(store, parent_id)
         except Exception:
             log.exception("dispatch: failed to process parent todo id=%d", parent_id)
             n_failed += 1
@@ -397,7 +397,7 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
             # Bump tick count so the next sweep sees the increment;
             # caps land on the next candidate enumeration.
             planner_guardrails.bump_tick_count(store, parent_id)
-        elif claimed:
+        elif claimed and not skipped:
             n_failed += 1
     return BatchResult(handler="dispatch", claimed=n_claimed, ok=n_ok, failed=n_failed)
 
@@ -681,15 +681,43 @@ def _carry_fixes_link(
 # ── per-parent locked mint ────────────────────────────────────────
 
 
-def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
+def _pending_job_of_type_exists(conn: Any, job_type: str) -> bool:
+    """A live ``kind='job'`` of this type already exists anywhere.
+
+    Non-terminal only — ``queued`` / ``running`` / ``waiting_*`` / an
+    untagged row all count as pending work; ``succeeded`` / ``failed`` /
+    ``cancelled`` settle it. Used by ``JobTypeSpec.dedupe_pending``
+    (gr506771) to coalesce a recurring tick while an earlier run of the
+    same type is still in flight.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM refs r
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'job_type' = %s
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                 'open'
+               ) NOT IN ('succeeded', 'failed', 'cancelled')
+         LIMIT 1
+        """,
+        (job_type,),
+    ).fetchone()
+    return row is not None
+
+
+def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool, bool]:
     """Lock one parent todo and mint its child job.
 
-    Returns ``(claimed, minted)``:
+    Returns ``(claimed, minted, skipped)``:
 
     * ``claimed`` = 1 if we locked the parent, 0 if another worker
       held the row.
     * ``minted`` = True if we wrote the child job, False if we
-      rejected (bad executor / job_type / etc).
+      rejected (bad executor / job_type / etc) or deduped.
+    * ``skipped`` = True if a ``dedupe_pending`` coalescing resolved
+      the parent without a mint — a handled skip, not a failure.
     """
     with store.tx() as conn:
         row = conn.execute(
@@ -772,7 +800,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             # Another worker holds it, or the parent's state changed
             # between enumeration and lock (status flipped, child
             # job was just minted by a race). Either way, no-op.
-            return (0, False)
+            return (0, False, False)
         ref_id = int(row[0])
         executor = row[1]
         job_type = row[2]
@@ -837,7 +865,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                 ref_id,
                 job_type,
             )
-            return (0, False)
+            return (0, False, False)
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on
@@ -898,6 +926,40 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                     ref_id,
                     f"{err} (set meta.llm_tier or params.model on the todo)",
                 )
+
+        # ``dedupe_pending`` coalescing (gr506771): while a non-terminal
+        # job of this type exists, a new tick would only pile a duplicate
+        # onto the queue to re-run over the same state. Resolve the
+        # spawned todo instead of minting — the pending job is the run
+        # this tick wanted. Checked under the parent row's lock.
+        if spec.dedupe_pending and _pending_job_of_type_exists(conn, job_type):
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                "jsonb_build_object('skipped', 'previous pending') "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            store.add_tag(
+                ref_id,
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            store.append_event(
+                ref_id,
+                source="minter",
+                event="dispatch-skipped",
+                payload={"reason": "previous pending", "job_type": job_type},
+                conn=conn,
+            )
+            log.info(
+                "dispatch: parent #%d skipped (dedupe_pending=%s: a "
+                "non-terminal job already pending)",
+                ref_id,
+                job_type,
+            )
+            return (1, False, True)
 
         # Auto-inject ``auto_check`` if the writer didn't set one, so a
         # deterministic job's parent resolves on the child's success.
@@ -1001,7 +1063,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             job_type,
             executor,
         )
-        return (1, True)
+        return (1, True, False)
 
 
 __all__ = ["run_dispatch_pass"]

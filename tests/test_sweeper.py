@@ -1841,3 +1841,82 @@ def test_unstamped_latch_stays_final(
     tags = {str(t) for t in store.tags_for(rid)}
     assert "child-failed-final" in tags
     assert "child-failed:999" in tags
+
+
+def test_job_inproc_running_job_is_reclaimed_by_its_lane_not_swept(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr506045: ``job_inproc`` opts into ``reclaim_stale_running`` but was
+    missing from the sweeper's lease-owner exclusion — the generic sweep
+    could race its own reclaim of the same row (two owners). Now excluded:
+    the sweeper leaves the row, the lane's own claim reclaims it, and the
+    sweeper still leaves it after — one owner per reclaim."""
+    from precis.workers.executors._common import claim_executor_jobs
+
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        lease_offset_hours=-0.5,
+        executor="job_inproc",
+        job_type="embed_batch",
+    )
+
+    # Sweeper must not own it.
+    result = run_sweeper_pass(store, limit=10)
+    assert result.claimed == 0
+
+    # The lane's own claim path does (expiry arm — stale running row).
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn,
+            executor="job_inproc",
+            limit=1,
+            reclaim_stale_running=True,
+        )
+        conn.commit()
+    assert [row[0] for row in rows] == [job_id]
+
+    # Sweeper still leaves it alone after the reclaim.
+    result = run_sweeper_pass(store, limit=10)
+    assert result.claimed == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" not in job_tags
+
+
+def test_overqueued_garden_job_is_cancelled_with_reason(store: Store) -> None:
+    """gr506771: a graph_garden job still ``STATUS:queued`` past its
+    queue_ttl_s (4h = 2× the 2h recurring) is cancelled, not failed —
+    with the reason on the row. A fresh queued job is untouched."""
+    from precis.workers.sweeper import _reap_overqueued
+
+    def _queued(status_age_h: float) -> int:
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="stale garden job",
+            meta={"executor": "job_inproc", "job_type": "graph_garden", "params": {}},
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="system")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags SET created_at = now() - %s::interval "
+                "WHERE ref_id = %s AND tag_id IN ("
+                "  SELECT tag_id FROM tags WHERE namespace='STATUS' AND value='queued')",
+                (f"{status_age_h} hours", int(ref.id)),
+            )
+            conn.commit()
+        return int(ref.id)
+
+    stale = _queued(9.4)
+    fresh = _queued(0.5)
+
+    n = _reap_overqueued(store, limit=10)
+
+    assert n == 1
+    assert "STATUS:cancelled" in {str(t) for t in store.tags_for(stale)}
+    assert "STATUS:queued" in {str(t) for t in store.tags_for(fresh)}
+    meta = _query(store, "SELECT meta FROM refs WHERE ref_id = %s", (stale,))[0][0]
+    assert "queue_ttl_s" in meta["error"]

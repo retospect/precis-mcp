@@ -803,3 +803,134 @@ class TestRecurringMintPath:
         assert meta["executor"] == "job_inproc"
         assert meta["params"] == {"pass": "all"}
         assert meta["spawned_for_tick"] is not None
+
+
+# ── dispatch dedupe (gr506771) and bounded retry (gr503581) ─────────────
+
+
+def _mk_garden_job(store: Store, status: str = "queued", **meta_extra: Any) -> int:
+    meta: dict[str, Any] = {
+        "executor": "job_inproc",
+        "job_type": "graph_garden",
+        "params": {},
+    }
+    meta.update(meta_extra)
+    ref = store.insert_ref(kind="job", slug=None, title="garden job", meta=meta)
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return int(ref.id)
+
+
+def _mk_tick_todo(handler: TodoHandler) -> int:
+    resp = handler.put(
+        text="garden tick",
+        meta={"executor": "job_inproc", "job_type": "graph_garden"},
+    )
+    return _id_of(resp.body)
+
+
+def test_dispatch_skips_tick_while_garden_job_pending(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr506771: a recurring tick must not enqueue a second graph_garden
+    job while an earlier one is still queued/running — the spawned todo
+    is resolved 'skipped: previous pending', not minted."""
+    from precis.workers.dispatch import _claim_and_dispatch
+
+    _mk_garden_job(store, status="queued")
+    tid = _mk_tick_todo(handler)
+
+    claimed, minted, skipped = _claim_and_dispatch(store, tid)
+
+    assert (claimed, minted, skipped) == (1, False, True)
+    tags = {str(t) for t in store.tags_for(tid)}
+    assert "STATUS:done" in tags
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (tid,)
+        ).fetchone()
+        assert meta_row is not None
+        meta = meta_row[0]
+        jobs_row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind='job' "
+            "AND meta->>'job_type' = 'graph_garden' AND retired_at IS NULL"
+        ).fetchone()
+        assert jobs_row is not None
+        jobs = jobs_row[0]
+    assert meta["skipped"] == "previous pending"
+    assert jobs == 1  # still just the pending one
+
+
+def test_dispatch_mints_normally_when_no_pending_job(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Control: with every earlier job terminal, the tick mints as before."""
+    from precis.workers.dispatch import _claim_and_dispatch
+
+    _mk_garden_job(store, status="failed")
+    tid = _mk_tick_todo(handler)
+
+    claimed, minted, skipped = _claim_and_dispatch(store, tid)
+
+    assert (claimed, minted, skipped) == (1, True, False)
+
+
+class _FakeCtx:
+    def __init__(self, store: Store, ref_id: int, meta: dict[str, Any]) -> None:
+        self.store = store
+        self.ref_id = ref_id
+        self.meta = meta
+
+
+def test_failed_run_mints_one_bounded_retry(store: Store) -> None:
+    """gr503581: a failed graph_garden job mints ONE sibling retry, parked
+    ``waiting_time`` for the backoff; the retry itself carries
+    ``meta.retry_of`` so a second failure mints nothing."""
+    from precis.workers.job_types.graph_garden import _on_failed
+
+    job_id = _mk_garden_job(store, status="failed")
+    _on_failed(_FakeCtx(store, job_id, {"params": {"pass": "all"}}))
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind='job' "
+            "AND meta->>'retry_of' = %s AND retired_at IS NULL",
+            (str(job_id),),
+        ).fetchall()
+    assert len(rows) == 1
+    retry_id, retry_meta = int(rows[0][0]), dict(rows[0][1])
+    assert retry_meta["job_type"] == "graph_garden"
+    assert retry_meta["wake_when"]["kind"] == "at_time"
+    tags = {str(t) for t in store.tags_for(retry_id)}
+    assert "STATUS:waiting_time" in tags
+
+    # The retry's own failure mints nothing — the bound.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (f'{{"retry_of": {job_id}}}', retry_id),
+        )
+        conn.commit()
+    _on_failed(_FakeCtx(store, retry_id, {"retry_of": job_id, "params": {}}))
+    assert _retry_count(store) == 1
+
+
+def _retry_count(store: Store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind='job' "
+            "AND meta->>'retry_of' IS NOT NULL AND retired_at IS NULL"
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_failed_run_no_retry_while_another_job_pending(store: Store) -> None:
+    """A queued garden job already covers the next run — a failure does
+    not stack a retry on top of it."""
+    from precis.workers.job_types.graph_garden import _on_failed
+
+    _mk_garden_job(store, status="queued")
+    job_id = _mk_garden_job(store, status="failed")
+    _on_failed(_FakeCtx(store, job_id, {"params": {}}))
+
+    assert _retry_count(store) == 0

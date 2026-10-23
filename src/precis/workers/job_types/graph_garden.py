@@ -218,6 +218,84 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         ctx.append_chunk("job_summary", summary)
 
 
+#: Bounded retry backoff (gr503581): a failed run mints ONE sibling job,
+#: parked ``STATUS:waiting_time`` for this long before the wake_runner
+#: re-queues it — a statement-timeout / transient death costs ~this much
+#: time, not a full cadence tick. The retry row carries ``meta.retry_of``
+#: so its own failure never re-mints: a second failure stays failed,
+#: where the cadence watchdog (``watchdog:cadence/graph_garden``) reads
+#: stale and surfaces it.
+RETRY_BACKOFF_S = 30 * 60
+
+
+def _on_failed(ctx: Any) -> None:
+    """Mint the ONE bounded retry for a failed run (gr503581).
+
+    Called by ``job_inproc`` when this job ended ``STATUS:failed`` via
+    its own dispatch. No-op when this job IS already a retry
+    (``meta.retry_of`` set — the bound) or when another graph_garden job
+    is still pending (a queued tick already covers the next run). The
+    retry is a fresh row parented like the failed one, parked
+    ``waiting_time`` for :data:`RETRY_BACKOFF_S` — the failed run stays
+    failed and visible either way; only the *work* retries.
+    """
+    if ctx.meta.get("retry_of") is not None:
+        return
+    from datetime import UTC, datetime, timedelta
+
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _pending_job_of_type_exists
+    from precis.workers.executors._common import WAITING_TIME
+
+    wake = datetime.now(UTC) + timedelta(seconds=RETRY_BACKOFF_S)
+    with ctx.store.tx() as conn:
+        if _pending_job_of_type_exists(conn, SPEC.name):
+            return
+        row = conn.execute(
+            "SELECT parent_id, prio FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+        ).fetchone()
+        parent_id = int(row[0]) if row and row[0] is not None else None
+        prio = row[1] if row else None
+        meta = {
+            "job_type": SPEC.name,
+            "executor": "job_inproc",
+            "params": dict(ctx.meta.get("params") or {}),
+            "retry_of": ctx.ref_id,
+            "wake_when": {"kind": "at_time", "payload": {"ts": int(wake.timestamp())}},
+        }
+        if ctx.meta.get("dispatched_from_todo") is not None:
+            meta["dispatched_from_todo"] = ctx.meta["dispatched_from_todo"]
+        ref = ctx.store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"graph_garden (retry of job:{ctx.ref_id})",
+            meta=meta,
+            parent_id=parent_id,
+            prio=prio,
+            conn=conn,
+        )
+        ctx.store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", WAITING_TIME),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        ctx.store.append_event(
+            ctx.ref_id,
+            source="job_inproc",
+            event="retry-minted",
+            payload={"retry_job_id": int(ref.id), "backoff_s": RETRY_BACKOFF_S},
+            conn=conn,
+        )
+    log.info(
+        "graph_garden: job %d failed — minted bounded retry job %d in %ds",
+        ctx.ref_id,
+        ref.id,
+        RETRY_BACKOFF_S,
+    )
+
+
 SPEC = JobTypeSpec(
     name="graph_garden",
     params_schema=PARAMS_SCHEMA,
@@ -233,6 +311,21 @@ SPEC = JobTypeSpec(
         "streak cools the pass."
     ),
     dispatch=_dispatch,
+    # Reto ruling (gr506045, 2026-10-23): a host-scoped enabled
+    # ``service_config`` row for ``graph_garden`` is a placement pin, not
+    # only the activation gate — claims resolve to that host, and while
+    # it is down the job waits ``STATUS:queued`` rather than failing.
+    service_pin="graph_garden",
+    # gr506771: a tick must not enqueue a second run while an earlier
+    # graph_garden job is still queued/running — every run proposes
+    # over the same graph state, so the backlog only grows.
+    dedupe_pending=True,
+    # gr503581: a failed run gets one bounded retry after a short
+    # backoff; a second failure stays failed and visible.
+    on_failed=_on_failed,
+    # gr506771: two cadences of the 2h recurring — a queued run older
+    # than that proposes over rotten graph state; the sweeper cancels it.
+    queue_ttl_s=4 * 3600,
 )
 
 

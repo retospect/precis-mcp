@@ -471,6 +471,51 @@ def release_job_reservation(conn: Connection, ref_id: int) -> None:
 # ── Claim ─────────────────────────────────────────────────────────
 
 
+def _service_pinned_hosts(conn: Connection) -> dict[str, frozenset[str]]:
+    """service → the set of hosts a host-scoped ``prio > 0``
+    ``service_config`` row enables it on (``'*'`` wildcard excluded —
+    a wildcard row lights the service everywhere, it doesn't pin it).
+
+    The *placement* read of ``service_config`` (gr506045): a job_type
+    declaring ``JobTypeSpec.service_pin`` may only be claimed on a host
+    in this set, so its jobs wait queued while the pinned host is down
+    instead of drifting to any live lane or failing. The host identity
+    is the heartbeat key (``reserve_host()``), matching what the
+    ``precis service`` CLI writes — NOT ``PRECIS_NODE``, which names a
+    capability lane, not a machine.
+    """
+    rows = conn.execute(
+        "SELECT service, host FROM service_config WHERE prio > 0 AND host <> '*'"
+    ).fetchall()
+    out: dict[str, set[str]] = {}
+    for service, host in rows:
+        out.setdefault(str(service), set()).add(str(host))
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def _service_pin_hosts_for(
+    meta: dict[str, Any], pinned: dict[str, frozenset[str]]
+) -> frozenset[str] | None:
+    """The enabled-host set this job row's ``service_pin`` resolves to.
+
+    ``None`` when the job_type declares no ``service_pin``, is unknown,
+    or the named service has no host-scoped enabled row right now — an
+    unpinned job stays host-agnostic (a dark service gate-skips at
+    dispatch anyway)."""
+    job_type = meta.get("job_type")
+    if not job_type:
+        return None
+    # Lazy: workers.job_types must not be a module-level import here —
+    # job_type modules themselves import from executors land (cycle).
+    from precis.workers.job_types import get_job_type
+
+    spec = get_job_type(str(job_type))
+    if spec is None or not spec.service_pin:
+        return None
+    hosts = pinned.get(spec.service_pin)
+    return hosts if hosts else None
+
+
 def _aged_prio_sql(
     queued_since_sql: str, queued_since_params: tuple[Any, ...], age_step_s: float
 ) -> tuple[str, tuple[Any, ...]]:
@@ -742,6 +787,7 @@ def claim_executor_jobs(
     # through the exact same reservation/stamp path (§ starvation-bound
     # reclaim pre-pass, docstring).
     default_host = reserve_host_id or reserve_host()
+    service_pinned = _service_pinned_hosts(conn)
     advertised = _advertised_by_host(conn)
     pressured = _mem_pressured_hosts(conn)
     lease_boot_id, lease_process, lease_host = _this_worker_lease_identity()
@@ -847,6 +893,20 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        pin_hosts = _service_pin_hosts_for(meta, service_pinned)
+        if pin_hosts is not None and default_host not in pin_hosts:
+            # Placement pin (gr506045): the service's host-scoped enabled
+            # rows name the host(s) this job_type may run on. Every other
+            # host skips it — the row stays queued, it does not fail; the
+            # lock frees at commit so it re-gates next cycle.
+            log.debug(
+                "claim: skip job %s on %s — service_pin=%s pins to %s",
+                ref_id,
+                default_host,
+                meta.get("job_type"),
+                sorted(pin_hosts),
+            )
+            return None
         if check_job_type_requires and not _coordinator_capability_ok(
             meta, advertised, default_host
         ):

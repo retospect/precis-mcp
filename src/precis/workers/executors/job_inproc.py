@@ -199,11 +199,11 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     ok = 0
     failed = poisoned
     for ref_id, title, meta in to_run:
+        # Built once here (not re-derived downstream) — the single
+        # (store, ref_id, title, meta) cluster this job needs, threaded
+        # onward as one object rather than four positional args.
+        ctx = _build_dispatch_context(store, ref_id, title, meta)
         try:
-            # Built once here (not re-derived downstream) — the single
-            # (store, ref_id, title, meta) cluster this job needs, threaded
-            # onward as one object rather than four positional args.
-            ctx = _build_dispatch_context(store, ref_id, title, meta)
             _run_one(ctx)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
@@ -228,7 +228,34 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                     conn.commit()
             except Exception:  # pragma: no cover
                 log.warning("job_inproc: failed to record failure", exc_info=True)
+        _fire_on_failed(store, ctx, meta)
     return {"claimed": len(rows), "ok": ok, "failed": failed}
+
+
+def _fire_on_failed(store: Store, ctx: DispatchContext, meta: dict[str, Any]) -> None:
+    """Invoke the job_type's ``on_failed`` hook once when the job ended
+    ``STATUS:failed`` through its own dispatch (gr503581).
+
+    Skipped when the job's lease was lost mid-dispatch (the row belongs
+    to the new claimant — it may not even be failed) and when the row
+    isn't actually terminal-failed (a defer parked it ``waiting_*``, or
+    it succeeded). The hook's own boundedness is the job_type's call —
+    this is only the single, uniform invocation seam.
+    """
+    if meta.get(_LEASE_LOST_META_KEY):
+        return
+    spec = get_job_type(str(meta.get("job_type") or ""))
+    if spec is None or spec.on_failed is None:
+        return
+    try:
+        with store.pool.connection() as conn:
+            if _current_status(conn, ctx.ref_id) != _FAILED:
+                return
+        spec.on_failed(ctx)
+    except Exception:  # pragma: no cover — the hook must not kill the pass
+        log.warning(
+            "job_inproc: on_failed hook raised for job %d", ctx.ref_id, exc_info=True
+        )
 
 
 _COUNT_KEYS = ("drained", "embedded", "n")
