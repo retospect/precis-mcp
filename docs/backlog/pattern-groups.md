@@ -7,6 +7,12 @@ pillar: 3d-design
 
 # Pattern groups — symmetric repetition as a first-class tree node
 
+> **Superseded as a tree node (Reto 2026-10-23, "tiling as recommended").**
+> Repetition is owned by the workspace assembly API's `pga.tile`
+> (structure-workspaces.md). This file stays as the source for what
+> `pga.tile` must carry: the linear/polar generators, (uid, index)
+> element addressing and orbit-deduped checks. Do not build the node.
+
 Reto 2026-09-12: design one unit, repeat — linear arrays along 1/2/3
 axes (arbitrary basis vectors, so angled planes come free), rotational
 n-fold about an arbitrary axis, hierarchically composable (a unit made

@@ -53,7 +53,7 @@ design-review: yes
 
 ## Parked
 
-- **OPEN QUESTION — repetition owner: [pattern-groups](../pattern-groups.md) vs `pga.tile`.** pattern-groups (`repeat=linear/polar`, orbit-deduped checks) and the assembly API's `pga.tile` (packed and fused copies) both own "one unit repeated". UNDECIDED whether ops or the assembly API own repetition; unparks when Reto rules. Until then structure slice 2a's `array_block` rewiring stays unstarted and pattern-groups is not built.
+- **Repetition owner: `pga.tile` (Reto 2026-10-23, "tiling as recommended").** The assembly API owns "one unit repeated"; [pattern-groups](../pattern-groups.md) is not built as a design-tree node. Its check-once-and-multiply idea (orbit-deduped DRC/cost/BOM, edit-one-edits-all) folds into `pga.tile` as metadata the checks read (linear and polar generators, element addressing by (uid, index)). Structure slice 2a's `array_block` rewiring targets `pga.tile`. PCB boards built by code repeat the same way (a loop or tile over a block).
 
 ## No action needed
 
