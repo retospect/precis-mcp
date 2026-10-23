@@ -177,7 +177,7 @@ def test_overlap_is_not_silently_assigned_and_explicit_sheet_is_valid() -> None:
     assert "sheet" in text and "0.4" in text
 
 
-def test_get_dispatch_and_args_gate_are_read_only(
+def test_name_alias_still_selects_block_with_deprecation_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = ReadStore([[4.1, 0, 2]])
@@ -188,6 +188,24 @@ def test_get_dispatch_and_args_gate_are_read_only(
     body = handler.get(
         id="stored", view="surface_deviation", args={"name": "tube", "target": TARGET}
     ).body
+    row = next(
+        line.split("\t") for line in body.splitlines() if line.startswith("tube\t")
+    )
+    assert row[:2] == ["tube", "1"]
+    assert "args={'name': ...} is a deprecated alias" in body
+
+
+def test_get_dispatch_and_args_gate_are_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ReadStore([[4.1, 0, 2]])
+    tree = SeTree()
+    tree.blocks["tube"] = node()
+    monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
+    handler = SeHandler(hub=cast(Hub, SimpleNamespace(store=store, embedder=None)))
+    body = handler.get(
+        id="stored", view="surface_deviation", args={"block": "tube", "target": TARGET}
+    ).body
     assert "authored-surface deviation" in body
     row = body.splitlines()[-1].split("\t")
     assert row[:2] == ["tube", "1"]
@@ -196,7 +214,7 @@ def test_get_dispatch_and_args_gate_are_read_only(
         handler.get(id="stored", view="surface_deviation", args={"target": TARGET})
     for key in ("state", "rotation", "scale"):
         with pytest.raises(BadInput):
-            _vet_view_args("surface_deviation", {"name": "tube", key: 0})
+            _vet_view_args("surface_deviation", {"block": "tube", key: 0})
 
 
 @pytest.mark.parametrize("offset", [True, "2", np.inf, np.nan])
@@ -331,7 +349,7 @@ def test_public_get_stored_target_actual_radius_and_reflected_map(
     # read only from the atom snapshot, never from this separately fetched ref.
     store.ref.meta = {"version": 99, "generated": {"surface_target": None}}
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     distances, owners = surface_distance(points, features, ds=1)
     expected = summary(distances, owners, features)
@@ -447,7 +465,7 @@ def test_public_get_invalid_stored_receipt_is_unavailable(
         receipt["binding"]["ref_id"] = 7.0
     monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snap)
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "unknown: no stored or spec-derivable authored target" in body
     assert "target.features" in body and "structure-local Å" in body
@@ -466,21 +484,21 @@ def test_public_get_stored_mode_null_offset_and_explicit_override(
             kind="se",
             id="source-design",
             view="surface_deviation",
-            args={"name": "tube", "target": None},
+            args={"block": "tube", "target": None},
         )
     with pytest.raises(BadInput, match="nonzero z_offset_A") as caught:
         fn(
             kind="se",
             id="source-design",
             view="surface_deviation",
-            args={"name": "tube", "z_offset_A": 1},
+            args={"block": "tube", "z_offset_A": 1},
         )
     assert "explicit" in str(caught.value) and "target" in str(caught.value.next)
     body = fn(
         kind="se",
         id="source-design",
         view="surface_deviation",
-        args={"name": "tube", "target": {"features": []}, "z_offset_A": 1},
+        args={"block": "tube", "target": {"features": []}, "z_offset_A": 1},
     )
     assert "caller-authored request" in body and "sheet\t4\t" in body
 
@@ -497,7 +515,7 @@ def test_public_get_nonfinite_stored_evaluation_is_unknown(
         lambda *_a, **_kw: (np.full(4, distance), np.zeros(4, dtype=int)),
     )
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert (
         "unknown: stored target evaluation is nonfinite" in body
@@ -521,11 +539,11 @@ def test_public_get_receipt_and_atoms_stay_on_same_snapshot(
 
     monkeypatch.setattr(store, "structure_positions_snapshot", interleaved)
     first = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "generated-exact" in first and "{region" in first
     second = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "unknown: no stored or spec-derivable authored target" in second
 
@@ -616,7 +634,7 @@ def test_public_get_spec_derived_target_for_receiptless_scene(
         store, "structure_positions_snapshot", lambda _id: copy.deepcopy(snapshot)
     )
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "{region" in body and "spec-derived" in body
     assert "generated-exact" not in body
@@ -647,7 +665,7 @@ def test_public_get_spec_derived_refuses_a_non_scene_frame(
     snapshot, _framed = derived_fixture(sheet=(8, 8), at=(4, 4))
     monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snapshot)
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "unknown: no stored or spec-derivable authored target" in body
     assert "not the scene frame" in body and "target.features" in body
@@ -662,7 +680,7 @@ def test_public_get_spec_derived_refuses_reordered_or_replaced_rows(
     snapshot["elements"][0] = "N"
     monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snapshot)
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "unknown: no stored or spec-derivable authored target" in body
     assert "atoms in order" in body and "{region" not in body
@@ -724,7 +742,7 @@ def test_persisted_row_receipt_rejects_same_version_replacement(
         reader, "structure_positions_snapshot", store.structure_positions_snapshot
     )
     before_body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert (
         "generated-exact receipt format=1" in before_body and "version=1" in before_body
@@ -766,7 +784,7 @@ def test_persisted_row_receipt_rejects_same_version_replacement(
     with pytest.raises(ValueError, match="binding is stale"):
         stored_target(new)
     after_body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert (
         "unknown: no stored or spec-derivable authored target" in after_body
@@ -823,7 +841,7 @@ def test_ambiguous_sheet_feature_preserves_generation_but_read_is_unknown(
         reader, "structure_positions_snapshot", store.structure_positions_snapshot
     )
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert tree.blocks["tube"].bound == pending.struct_slug
     assert "unknown: no stored or spec-derivable authored target" in body
@@ -1046,7 +1064,7 @@ def test_public_get_missing_design_rejects_deviation_only(
     public_get: Any, selector: Any
 ) -> None:
     fn, store = public_get
-    args = {"name": "tube", "target": {"features": []}}
+    args = {"block": "tube", "target": {"features": []}}
     with pytest.raises(BadInput, match="specific SE design id") as caught:
         fn(kind="se", id=selector, view=" Surface_Deviation ", args=args)
     correction = str(caught.value.next)
@@ -1054,7 +1072,7 @@ def test_public_get_missing_design_rejects_deviation_only(
         token in correction
         for token in [
             "id='<design>'",
-            "'name'",
+            "'block'",
             "'target'",
             "'features'",
             "view='surface_deviation'",
@@ -1104,7 +1122,7 @@ def test_public_get_stable_version_and_design_uid_provenance(public_get: Any) ->
         kind="se",
         id="source-design",
         view="surface_deviation",
-        args={"name": "#41", "target": {"features": []}},
+        args={"block": "#41", "target": {"features": []}},
     )
     assert "source: se:source-design" in body and "block UID=#41" in body
     assert "version=4" in body
@@ -1133,7 +1151,7 @@ def test_public_get_interleaved_cell_atoms_or_identity_is_unknown(
         kind="se",
         id="source-design",
         view="surface_deviation",
-        args={"name": "tube", "target": {"features": []}},
+        args={"block": "tube", "target": {"features": []}},
     )
     assert "unknown:" in body and "retry this read" in body
     assert "version=4" not in body and "version=5" not in body
@@ -1168,7 +1186,7 @@ def test_public_get_one_snapshot_across_versioned_and_same_version_rewrites(
         kind="se",
         id="source-design",
         view="surface_deviation",
-        args={"name": "tube", "target": {"features": []}},
+        args={"block": "tube", "target": {"features": []}},
     )
     assert f"version={version}" in body
     row = next(
@@ -1202,7 +1220,7 @@ def test_public_get_stored_target_scores_carbon_only_and_reports_h_caps(
         store, "structure_positions_snapshot", lambda _id: copy.deepcopy(snapshot)
     )
     body = fn(
-        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+        kind="se", id="source-design", view="surface_deviation", args={"block": "tube"}
     )
     assert "H caps excluded: 2" in body.splitlines()
     distances, owners = surface_distance(points[:2], features, ds=1)
