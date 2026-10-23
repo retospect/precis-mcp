@@ -17,9 +17,11 @@ override layer never touches them:
 - **router-bypassers** — ``fix_gripe`` calls ``resolve_model`` + a raw ``claude -p``
   subprocess, never ``route()``; an ``llm.op.fix_gripe`` override would be a
   silent no-op (routing it through ``route()`` is a named follow-up).
-- **functional pins** — ``classify`` / ``classify_topics`` pin ``model="summarizer"``
-  to hit the *local-serving* alias (``glm-fleet-flip-safety.md`` Part 1); a blanket
-  override beating that pin would reopen the empty-response bug it fixed.
+- **functional pins** — ``classify_topics`` pins ``model="summarizer"`` to hit
+  the *local-serving* alias (``glm-fleet-flip-safety.md`` Part 1), and
+  ``classify:escalate`` pins ``PRECIS_CLASSIFY_ESCALATE_MODEL`` because the pin
+  is the point (the Tier-2 re-judge must be a *different* model than tier 1);
+  a blanket override beating those pins would silently change semantics.
 
 Both are surfaced **read-only, with the reason**, in the UI (Phase 2); the resolver
 here returns ``None`` for any non-registered source, so today's path is byte-identical
@@ -323,6 +325,29 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "byte-identical routing."
         ),
     ),
+    "classify": OpDefault(
+        tier=Tier.SMALL,
+        model=None,
+        label="Chunk classifier (junk→role3)",
+        description=(
+            "The per-chunk `classify` cascade — a `junk` gate then the "
+            "own/background/furniture `role3` call — the fleet's "
+            "highest-volume LLM lane (the ~1.3M-chunk corpus drain). Lite "
+            "call-log rows."
+        ),
+        env="PRECIS_CLASSIFY_MODEL",
+        note=(
+            "Was the canonical EXCLUDED op: call sites pinned "
+            '`model="summarizer"` against a thinking-model empty-response bug '
+            "(glm-fleet-flip-safety.md). The worker pass has since moved to "
+            "the SMALL tier chain — non-thinking rungs — so the pin is gone "
+            "and the hazard with it. Registered so an `llm.op.classify` chain "
+            "(e.g. castor's local gpt-oss-120b) steers the drain without a "
+            "deploy. The Tier-2 escalate client runs as `classify:escalate` "
+            "(unregistered) so its PRECIS_CLASSIFY_ESCALATE_MODEL pin survives "
+            "— the re-judge must be a different model than tier 1."
+        ),
+    ),
 }
 
 #: Observed operations deliberately NOT steerable, with why. The override layer
@@ -331,8 +356,9 @@ EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     "fix_gripe": ExcludedOp(
         "bypasses the router — agentic `call_claude_agent` chokepoint, not route()"
     ),
-    "classify": ExcludedOp(
-        "model pinned in code for correctness (local-serving `summarizer` alias)"
+    "classify:escalate": ExcludedOp(
+        "model pinned for correctness — the Tier-2 re-judge must run a "
+        "*different* model than the tier-1 `classify` chain"
     ),
     "classify_topics": ExcludedOp(
         "model pinned in code for correctness (local-serving `summarizer` alias)"

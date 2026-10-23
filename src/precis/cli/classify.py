@@ -140,11 +140,16 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
         print("classify role3: no papers matched scope")
         return
 
-    # Mirrors cli/worker.py's `classify` pass wiring exactly (the LLM routing seam
-    # dispatch seam + the Tier 2 escalate-client shape).
+    # Mirrors cli/worker.py's `classify` pass wiring exactly (the dispatch
+    # seam + the Tier 2 escalate-client shape). `classify` is a registered
+    # op, so the model is owned by the registry + any `llm.op.classify`
+    # override — the SMALL chain by default (which resolves `summarizer`
+    # on a host with no OSS backend anyway); PRECIS_CLASSIFY_MODEL survives
+    # as the op's env hatch. The escalate client's `classify:escalate`
+    # source is unregistered on purpose, so its PRECIS_CLASSIFY_ESCALATE_MODEL
+    # pin still beats the op row (the re-judge must differ from tier 1).
     client = DispatchClient(
         tier=Tier.SMALL,
-        model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
         source="classify",
         log_call=True,
         log_blobs=False,
@@ -154,7 +159,7 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
         DispatchClient(
             tier=Tier.SMALL,
             model=escalate_model,
-            source="classify",
+            source="classify:escalate",
             log_call=True,
             log_blobs=False,
         )

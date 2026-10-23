@@ -56,7 +56,8 @@ Resolution, per dispatch (in order)
    ``planner_rung0_model``), which still show the tier chain. A saturated
    local rung 0 that pins its own model advances to the chain's next rung
    (its own pinned model) rather than re-pointing at the hosted endpoint. Excluded on purpose: functional pins
-   (``classify``→``summarizer``) and router-bypassers (``fix_gripe``).
+   (``classify_topics``→``summarizer``, ``classify:escalate``→its Tier-2
+   re-judge model) and router-bypassers (``fix_gripe``).
 3. **Model** — :func:`resolve_model`: ``llm.model.<tier>`` DB override →
    ``PRECIS_MODEL_*`` env → compiled default. Backend-aware: under an
    effective ANTHROPIC backend, an OSS override on a claude-bound tier

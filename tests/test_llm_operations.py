@@ -6,7 +6,7 @@ set (:data:`EXCLUDED_OPERATIONS`); :func:`resolve_op` layers a runtime
 ``app_settings`` override (``live_config.op_override``) over a legacy
 ``PRECIS_*_MODEL`` env hatch over the registry literal, but ONLY for a
 *registered* source — an unregistered source (a router-bypasser or a
-functional pin like ``classify``) is untouched, so today's call-site
+functional pin like ``classify_topics``) is untouched, so today's call-site
 behavior survives byte-identical.
 
 Covered here, mapped to the proposal's acceptance criteria:
@@ -14,7 +14,7 @@ Covered here, mapped to the proposal's acceptance criteria:
 - AC1 — ships dark (no override row → registry default; unregistered → None)
 - AC2 — model pin via override
 - AC3 — tier remap via override
-- AC4/AC8 — classify-not-clobbered (the load-bearing non-registered case)
+- AC4/AC8 — classify_topics-not-clobbered (the load-bearing non-registered case)
 - AC6 — registry well-formedness / drift guard
 - AC7 — env hatch precedence + cast call sites migrated off ``model=``
 
@@ -129,7 +129,9 @@ def test_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
-@pytest.mark.parametrize("source", ["dream", "classify", "figure", None, ""])
+@pytest.mark.parametrize(
+    "source", ["dream", "classify_topics", "classify:escalate", "figure", None, ""]
+)
 def test_unregistered_source_returns_none(
     monkeypatch: pytest.MonkeyPatch, source: str | None
 ) -> None:
@@ -197,18 +199,83 @@ def test_db_override_beats_env_hatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "db-model")
 
 
-# ── AC4/AC8: classify-not-clobbered ─────────────────────────────────────
+# ── classify: registered (steerable), escalate stays pinned ────────────
 
 
-def test_classify_untouched_even_with_a_stray_override_row(
+def test_classify_default_with_no_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`classify` is not in the registry, so `resolve_op` returns None even
-    if an `llm.op.classify` row somehow exists — the override layer must
-    never reach a non-registered source, or it would silently reopen the
-    `classify` -> `"summarizer"` functional pin's empty-response bug."""
+    """Ships dark: `classify` resolves (SMALL, None) — model=None means
+    ``route()`` runs ``resolve_model(SMALL)`` (the ``summarizer`` default),
+    exactly the pre-registration call-site resolution."""
+    _bind(monkeypatch, {})
+    assert operations.resolve_op("classify") == (Tier.SMALL, None)
+    assert (
+        operations.resolve_op_chain(
+            "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+        )
+        is None
+    )
+
+
+def test_classify_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registration's point: an `llm.op.classify` row steers the op —
+    here a model pin; the tier stays the registry default."""
     _set_op_override(monkeypatch, "classify", {"model": "some-other-model"})
-    assert operations.resolve_op("classify") is None
+    assert operations.resolve_op("classify") == (Tier.SMALL, "some-other-model")
+
+
+def test_classify_op_chain_can_pin_castor_local_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`llm.op.classify` carrying a `chain` resolves to that chain — the
+    castor gpt-oss-120b rung shape the lane move writes (max_tokens 512,
+    timeout 300, reasoning_effort low)."""
+    chain = [
+        {
+            "transport": "local",
+            "model": "openai/gpt-oss-120b",
+            "placement": "local",
+            "max_tokens": 512,
+            "timeout_s": 300,
+            "reasoning_effort": "low",
+        }
+    ]
+    _set_op_override(monkeypatch, "classify", {"chain": chain})
+    rungs = operations.resolve_op_chain(
+        "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+    )
+    assert rungs is not None and len(rungs) == 1
+    assert rungs[0].transport is llm_router.Transport.LOCAL
+    assert rungs[0].model == "openai/gpt-oss-120b"
+    assert rungs[0].max_tokens == 512
+    assert rungs[0].reasoning_effort == "low"
+
+
+def test_classify_env_hatch_still_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`PRECIS_CLASSIFY_MODEL` survives registration as the op's env hatch —
+    below the DB row, above the registry literal (the pre-registration
+    call-site `os.environ.get(...)` behaviour)."""
+    _bind(monkeypatch, {})
+    monkeypatch.setenv("PRECIS_CLASSIFY_MODEL", "env-pinned-model")
+    assert operations.resolve_op("classify") == (Tier.SMALL, "env-pinned-model")
+
+
+def test_classify_escalate_untouched_even_with_an_op_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Tier-2 re-judge runs `source="classify:escalate"`, deliberately
+    unregistered: a `req.model` pin (PRECIS_CLASSIFY_ESCALATE_MODEL) must
+    survive or the "escalate" silently re-runs the tier-1 chain's model —
+    and `llm.op.classify` must not steer it."""
+    _set_op_override(monkeypatch, "classify", {"model": "some-other-model"})
+    assert operations.resolve_op("classify:escalate") is None
+    assert operations.is_steerable("classify:escalate") is False
+    reason = operations.excluded_reason("classify:escalate")
+    assert reason is not None and "different" in reason
+
+
+# ── AC4/AC8: classify_topics-not-clobbered ──────────────────────────────
 
 
 def test_classify_topics_untouched_even_with_a_stray_override_row(
@@ -216,13 +283,6 @@ def test_classify_topics_untouched_even_with_a_stray_override_row(
 ) -> None:
     _set_op_override(monkeypatch, "classify_topics", {"tier": "big"})
     assert operations.resolve_op("classify_topics") is None
-
-
-def test_classify_is_excluded_with_reason() -> None:
-    assert "classify" in EXCLUDED_OPERATIONS
-    reason = operations.excluded_reason("classify")
-    assert reason is not None
-    assert "summarizer" in reason or "pinned" in reason
 
 
 def test_classify_topics_is_excluded_with_reason() -> None:
@@ -546,12 +606,12 @@ def test_resolve_op_chain_non_registered_is_none(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://x/v1")
     _set_op_override(
         monkeypatch,
-        "classify",
+        "classify_topics",
         {"chain": [{"transport": "openai_compat", "model": "a"}]},
     )
     assert (
         operations.resolve_op_chain(
-            "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+            "classify_topics", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
         )
         is None
     )

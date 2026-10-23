@@ -206,9 +206,12 @@ def test_set_op_override_excluded_source_is_noop(store: Any) -> None:
     """AC8 — a non-steerable source (excluded or unregistered) must never
     get a row, even via a direct write attempt (defense-in-depth; the
     template also never renders a form for it)."""
-    budget_settings.clear_setting(store, live_config.op_key("classify"))
-    _set_op_override(store, "classify", "pinned", "claude-opus-4-8")
-    assert budget_settings.get_setting(store, live_config.op_key("classify")) is None
+    budget_settings.clear_setting(store, live_config.op_key("classify_topics"))
+    _set_op_override(store, "classify_topics", "pinned", "claude-opus-4-8")
+    assert (
+        budget_settings.get_setting(store, live_config.op_key("classify_topics"))
+        is None
+    )
 
 
 def test_set_op_override_unregistered_source_is_noop(store: Any) -> None:
@@ -253,15 +256,18 @@ def test_post_llm_op_route_excluded_source_writes_nothing(
     monkeypatch: pytest.MonkeyPatch, store: Any
 ) -> None:
     monkeypatch.setattr(factory_routes, "get_store", lambda request: store)
-    budget_settings.clear_setting(store, live_config.op_key("classify"))
+    budget_settings.clear_setting(store, live_config.op_key("classify_topics"))
 
     resp = asyncio.run(
         set_llm_op(
             request=cast(Any, None),
-            source="classify",
+            source="classify_topics",
             tier="pinned",
             model="claude-opus-4-8",
         )
     )
     assert resp.status_code == 303
-    assert budget_settings.get_setting(store, live_config.op_key("classify")) is None
+    assert (
+        budget_settings.get_setting(store, live_config.op_key("classify_topics"))
+        is None
+    )

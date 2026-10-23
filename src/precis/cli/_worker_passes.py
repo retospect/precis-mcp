@@ -663,27 +663,29 @@ def build_ref_passes(
         ref_passes.append(_llm_summarize_pass)
 
     # classify — chunk-axis cascade (junk-gate -> role3), writing
-    # ROLE3 chunk tags via the litellm `summarizer` alias. Default-OFF
+    # ROLE3 chunk tags through the SMALL-tier chain (a registered op —
+    # `llm.op.classify` steers it live). Default-OFF
     # (`service prio` or --only classify — §L retired
     # PRECIS_CLASSIFY_ENABLED as the live gate): a 1.3M-chunk
     # backfill is a deliberate, node-targeted batch, like llm_summarize.
-    # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
-    # empty — it's a thinking model). See workers/classify.py +
-    # scripts/classify/EVAL_RESULTS.md.
+    # The SMALL chain's non-thinking rungs retired the old forced
+    # model=`summarizer` pin (a thinking model returns empty).
+    # See workers/classify.py + scripts/classify/EVAL_RESULTS.md.
     if _register("classify"):
         from precis.utils.llm.router import DispatchClient as _DispatchClient
         from precis.utils.llm.router import Tier as _Tier
         from precis.workers.runner import BatchResult as _ClsBatchResult
 
-        # Resolve via the SMALL-tier chain (`llm.chain.small`)
-        # rather than pinning the legacy `summarizer` litellm alias. The
-        # chain's rungs (glm-4.7-flash → summarizer) are non-thinking small
-        # models, so the empty-return hazard the old pin guarded against no
-        # longer applies. PRECIS_CLASSIFY_MODEL still overrides (pin / tests).
-        # Per-chunk high volume ⇒ a lite row (metadata, no replay blob).
+        # `classify` is a registered op (`utils/llm/operations.py`): the
+        # default resolves the SMALL-tier chain (`llm.chain.small`), whose
+        # rungs (glm-4.7-flash → summarizer) are non-thinking small models,
+        # so the empty-return hazard the old `summarizer` pin guarded
+        # against no longer applies — and an `llm.op.classify` row steers
+        # it live (e.g. onto castor). PRECIS_CLASSIFY_MODEL still overrides
+        # via the registry's env hatch. Per-chunk high volume ⇒ a lite row
+        # (metadata, no replay blob).
         _cls_client = _DispatchClient(
             tier=_Tier.SMALL,
-            model=os.environ.get("PRECIS_CLASSIFY_MODEL") or None,
             source="classify",
             log_call=True,
             log_blobs=False,
@@ -691,13 +693,17 @@ def build_ref_passes(
         # Tier 2: a re-judge-only client bound to the
         # escalate model — must be a *distinct* client from `_cls_client`
         # (mirrors inject_scan's identical gate/escalate shape), else the
-        # "escalate" call silently re-runs the same model twice.
+        # "escalate" call silently re-runs the same model twice. Source is
+        # `classify:escalate`, deliberately NOT the registered `classify`
+        # op: a registered source's model is owned by the registry +
+        # `llm.op.*` override, which would drop this env pin and steer the
+        # re-judge onto the tier-1 chain — the same-model-twice hazard.
         _cls_escalate_model = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
         _cls_escalate_client = (
             _DispatchClient(
                 tier=_Tier.SMALL,
                 model=_cls_escalate_model,
-                source="classify",
+                source="classify:escalate",
                 log_call=True,
                 log_blobs=False,
             )

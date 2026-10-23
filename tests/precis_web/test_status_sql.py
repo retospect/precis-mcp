@@ -330,21 +330,21 @@ def test_llm_ops_ctx_ignores_stale_override_on_non_steerable_source(store: Any) 
     from precis.budget import settings as budget_settings
     from precis.utils.llm import live_config
 
-    # "classify" is excluded (a functional model pin) — simulate a stale
-    # override row somehow present under it.
+    # "classify_topics" is excluded (a functional model pin) — simulate a
+    # stale override row somehow present under it.
     budget_settings.set_setting(
-        store, live_config.op_key("classify"), '{"model": "stale-ghost-model"}'
+        store, live_config.op_key("classify_topics"), '{"model": "stale-ghost-model"}'
     )
     try:
         ctx = _llm_ops_ctx(store)
         by_source = {r["source"]: r for r in ctx["rows"]}
-        row = by_source["classify"]
+        row = by_source["classify_topics"]
         assert row["steerable"] is False
         assert row["override"] is None
         assert "stale-ghost-model" not in row["effective"]
         assert row["effective"] == "—"
     finally:
-        budget_settings.clear_setting(store, live_config.op_key("classify"))
+        budget_settings.clear_setting(store, live_config.op_key("classify_topics"))
 
 
 # ── §K console v2 (gr162694): next-run, reserve, top_cpu wiring ─────
