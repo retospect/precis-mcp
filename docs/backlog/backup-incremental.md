@@ -53,8 +53,8 @@ second.
   -move 4a: no retained backups on the DB node).
 - On the NAS, restic backs the directory up into a **local NAS restic
   repo** (the 90-day history, compressed + deduplicated), then
-  `restic copy` to the B2 repo. Weekly dump is enough if A runs; nightly
-  if A is not yet live.
+  `restic copy` to the B2 repo. Nightly, also after A is live (Reto
+  2026-10-23).
 - `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`
   on both repos.
 - Papers (`/Volume1/botshome/papers`, 160 GB) and `precis_root` stay in the
@@ -69,9 +69,15 @@ second.
 
 ### D. Retire
 
-- tar+zstd step and the dated NAS archives (after B has 14 days of
-  snapshots and one restore drill passed); `b2_sync.sh` (already off,
-  td461209) and its role vars.
+A and B **replace** the current backup (Reto 2026-10-23); nothing of the
+old chain stays as a third path. Removed once B has 14 days of snapshots
+and one restore drill passed:
+
+- the tar+zstd step in `pg_backup.sh.j2` and the dated NAS archives
+  (`/Volume1/botshome/backups/postgres/`, 90-day prune);
+- the NAS `restic-weekly.sh` cron (its papers leg moves into B's nightly
+  NAS script);
+- `b2_sync.sh` (already off, td461209) and its role vars.
 
 ### E. Monitors and drill
 
@@ -124,9 +130,7 @@ never printed.
 
 - Reto 2026-10-23: incremental, directory not tar, pgBackRest primary +
   restic logical second — decided.
-- pgBackRest on the macOS DB node: Homebrew build vs a container sharing
-  the data dir — check in slice 2.
+- Reto 2026-10-23: pgBackRest runs straight on the macOS DB node (no
+  container); the logical dump stays nightly; B2 cost is fine for now;
+  A + B replace the current backup chain (section D).
 - Uncompressed dump size on NAS (estimate 50–80 GB) — measured in slice 1.
-- Does the logical dump stay nightly once pgBackRest is live, or weekly?
-- B2 cost at the chosen retention (expect a few $/month; >$25/month needs
-  Reto).
