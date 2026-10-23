@@ -124,7 +124,7 @@ Covers HTTP to scraped hosts, provider APIs, LLM APIs, subprocess/ssh
 | `provider-api` | the documented limit (0225 rows) | — | s2, crossref, openalex, … |
 | `llm-api` | none | a shared hold on `resource_slots` row `(host='api', resource='llm-api:<provider>')`, capacity per provider | paced by 429 + `Retry-After` (`park`); openrouter.ai, OpenAI-compatible hosts; see Q3 below |
 | `llm-local` | none | the endpoint's `llm:<model>` slots, divided by class | castor SGLang and sparks; `llm-lane-scheduler.md` owns the division and the slot count |
-| `internal` | none | — | `is_internal_host`, embedder, cluster services |
+| `internal` | today's per-service pacing until a caller opts in (S1 review b78994bed: a rate-less default would silently drop the 1/s pacing on services that call internal URLs today); the target is none | — | `is_internal_host`, embedder, cluster services |
 
 A rate-less row still needs a park: add `parked_until timestamptz` so
 `park()` works without a token bucket. The S1 decisions below fix the
@@ -178,8 +178,13 @@ Row key = `Policy.provider` if set, else `host:<netloc>` of `url`. Cache:
 one `SELECT provider, <override columns> FROM external_rate_limits WHERE
 <any override column> IS NOT NULL OR parked_until > now()` per process,
 refreshed when older than 30 s (one query per process per 30 s, not per
-call); a row absent from the snapshot has no overrides. Invalidation is
-the TTL only; `precis limits set` does not signal. Merge, per field,
+call); a row absent from the snapshot has no overrides. Overrides are
+invalidated by the TTL only; `precis limits set` does not signal. The
+park is not read from the snapshot (a 30 s-stale park would let calls
+through a 429, defeating D1): the per-call `last_used_at` touch is
+`UPDATE … RETURNING parked_until`, the gate reads that fresh value, and
+`park()` also writes through to the local snapshot (S1 review
+b78994bed). Merge, per field,
 later wins where non-NULL: class default (`CLASS_DEFAULTS[cls]`) →
 `POLICIES[service]` field (new fields `max_wait_s`, `connect_s`,
 `read_s`, `total_s`, `on_refuse`, `concurrency` default `None` =
@@ -198,7 +203,9 @@ row. S2b and S4 write columns S1 created; neither adds a migration.
 `last_used_at` is set by `acquire` and by the rate-less pre-call check,
 because a rate-less row never moves `last_refill` and the 258392232
 eviction (keyed on `last_refill`) would otherwise retire a busy
-`llm-api` row; S4 re-keys eviction on `last_used_at`.
+`llm-api` row with its overrides. So S1, not S4, re-keys eviction on
+`GREATEST(last_refill, last_used_at)` and never evicts a row carrying a
+non-NULL override column.
 
 **Recommendation on `llm-api` concurrency (Reto's pending Q3; recorded as
 this spec's recommendation, not a ruling).** Use the shared slot hold, not
@@ -278,8 +285,8 @@ parts B and C live here and the gripe says so.
 Shipped in 258392232: at `MAX_SEEDED_HOST_ROWS` (500) the seeder evicts
 `host:` rows idle past `HOST_ROW_IDLE_EVICT_S` (24 h, keyed on
 `last_refill`) and the `limiter-host-cap` condition fires when none is
-idle. Left for S4: re-key the idle test on `last_used_at` (S1 column,
-D4), and show occupancy in `/limits`. The cap stays 500 unless the
+idle. S1 re-keys the idle test (D4); left for S4: show occupancy in
+`/limits`. The cap stays 500 unless the
 condition fires in practice.
 
 ## Explicitly NOT in scope
@@ -300,7 +307,7 @@ condition fires in practice.
 | S2a | `deadline=` on `acquire`/`require` and on the local slot wait, ref-pass budget passed down by ContextVar, refusals logged | gr506756's limiter half |
 | S2b | `refused_today`/`last_refused_at` written on refusal, `limiter-refusing` condition | — |
 | S3 | the AST ratchet + ruff rules, allowlist frozen, `test_outbound_polite_ratchet` tightened per call | gr507344's class, gr503084 B+C |
-| S4 | `/limits` effective-policy view + occupancy, `precis limits set/--dry-run`, eviction re-keyed on `last_used_at` | gr503435's visibility half |
+| S4 | `/limits` effective-policy view + occupancy, `precis limits set/--dry-run` | gr503435's visibility half |
 
 S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
 (D4) and are otherwise independent of each other.
@@ -314,7 +321,9 @@ S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
   external_rate_limits SET max_wait_s=5 WHERE provider='crossref'` changes
   the resolved policy within 60 s with no process restart; `prod` shows 0
   `RateLimited('host:openrouter.ai')` lines in `worker_logs` over 24 h
-  while classify throughput holds.
+  while classify throughput holds; a 429 park is honoured by the next
+  call on another process; a rate-less row used within the idle window,
+  or one carrying an override, is not evicted.
 - S2: a caller with 2 s left waits at most 2 s; the fetch pass on
   melchior logs its per-cycle summary row again (gr506756's signal) and
   the `/limits` view shows a non-zero refusal count for a starved row.
@@ -322,8 +331,7 @@ S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
   `subprocess.run` without `timeout=`; the frozen baseline passes; CI's
   lint lane runs it.
 - S4: `get(kind='job', id='/limits?provider=core')` names the layer of
-  every field; a rate-less row used within the idle window is not
-  evicted.
+  every field.
 
 ## Target + blast radius
 
