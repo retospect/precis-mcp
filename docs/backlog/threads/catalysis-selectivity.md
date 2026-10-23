@@ -77,6 +77,13 @@ landed (`c9c52c95b`): `struct_relax` keeps the relaxed lattice and takes
 an explicit `fmax`; an H-loaded-slab preflight pass is test-pinned (the
 straddle caveat itself was gr462730's fix). Stages 1–2 and the top-10
 re-run are unbuilt; the NEB pilot stays held.
+
+**Kinetics guard (2026-10-23, gr502251):** the aggregate's microkinetics
+stage probes a steady-state solve and caps Monte Carlo samples to 60% of
+its wall budget, refusing before solve below the 100-sample floor. This
+keeps the existing 900-second child cap and leaves aggregate success
+independent of the diagnostic solve. Landed `e0e59d776`; no production
+rerun was requested or performed in this session.
 - Live, not yet seen working:
   - the diagram arrows (item 22): pw455722 drawn from prod shows 12 angled
     H⁺+e⁻ arrows and no dashed overlay, but Reto has not looked at it in
