@@ -82,16 +82,20 @@ or `id=` and hand back text.
   export), `nm` (molecular-machine designs on the same block
   surface — envelopes bound to atomistic structures, mechanics
   ceilings), `structure` (atomistic cell + bond graph for
-  DFT/molecular work), `pcb` (netlist + placement graph →
-  BOM/CPL/DSN + Freerouting), and `folder` (organizational container
-  for the above).
-- **Personal state & knowledge** — `todo` (hierarchical todo tree),
-  `memory`, `gripe`, `anki` (spaced-repetition cloze cards → AnkiWeb),
-  `citation` (verified claim → source quote), `finding`
-  (chain-of-evidence over a citation chase), `job` (offline LLM run,
-  child of a `todo`).
+  DFT/molecular work), `pcb` (netlist + placement graph, built-in
+  vector place-and-route → BOM/CPL/DSN), and `folder` (organizational
+  container for the above).
+- **Autonomous work** — `quest` (an open problem worked on without
+  being asked: each tick reads, proposes, simulates and ranks, with a
+  logbook and a tree of sub-quests), `todo` (task tree; a todo can recur
+  on a schedule and spawn work each tick), `job` (one unit of execution
+  on the cluster: an LLM or agent run, a relaxation or DFT step, a
+  sandboxed coding task), `gripe` (a defect report that fixer agents
+  pick up), `plan` (a working plan on a draft's chunk tree).
+- **Memory & evidence** — `memory` (agent memory graph), `citation`
+  (verified claim → source quote), `finding` (chain-of-evidence over a
+  citation chase), `anki` (spaced-repetition cloze cards → AnkiWeb).
 - **Identity, comms & audit** — `orcid` (researcher-identity hub),
-  `cron` (push-notification scheduler),
   `message` (proactive outbound), `alert` (machine-detected ops
   condition), `agentlog` (per-run attribution trail), `provenance`
   (derivation audit).
