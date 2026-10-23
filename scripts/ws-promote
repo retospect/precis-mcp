@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# ws-promote — build a workspace module's wheel into the private index.
+#
+# Structure workspaces spec §Packaging: a promoted agent module is a wheel
+# on the sandbox hosts' --find-links dir (/var/lib/precis-sandbox/index/,
+# NFS-shared). This slice builds only — publishing to the hosts lands with
+# the workspace runtime (slice 1+); the index dir is a local path or an
+# NFS mount the operator points us at.
+#
+#   scripts/ws-promote geom              # the core precis-geom wheel
+#   scripts/ws-promote <dir>             # a module checkout (pyproject.toml)
+#   OUT=/path/index scripts/ws-promote … # default /var/lib/precis-sandbox/index
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+arg="${1:?usage: scripts/ws-promote geom|<module-dir>}"
+if [ "$arg" = "geom" ] || [ "$arg" = "precis-geom" ]; then
+  src="$root/packaging/geom"
+else
+  src="$(cd "$arg" && pwd)"
+fi
+[ -f "$src/pyproject.toml" ] || { echo "ws-promote: no pyproject.toml in $src" >&2; exit 2; }
+
+out="${PRECIS_WS_INDEX:-${OUT:-/var/lib/precis-sandbox/index}}"
+mkdir -p "$out"
+
+dist="$src/dist"
+rm -rf "$dist"
+uv build --wheel --out-dir "$dist" "$src"
+wheel="$(ls "$dist"/*.whl | head -1)"
+cp "$wheel" "$out/"
+sha="$(shasum -a 256 "$out/$(basename "$wheel")" | awk '{print $1}')"
+echo "ws-promote: $(basename "$wheel") -> $out  sha256:$sha"

@@ -31,6 +31,7 @@ childless siblings fold into one frame with an ``occ`` range) and the
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import inspect
 import json
@@ -328,6 +329,29 @@ def _stable_repr(v: Any) -> str:
     return _ADDR_RE.sub("0x…", r)[:4096]
 
 
+def _canon(v: Any) -> Any:
+    """A json-able canonical form for hashing — ndarray content goes in as
+    ``tobytes()`` (C-speed; ``repr`` of an array is the dominant cost)."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, (bytes, bytearray)):
+        return ts.sha8(bytes(v).hex())
+    if hasattr(v, "tobytes") and hasattr(v, "shape"):  # numpy array, duck-typed
+        return ["nd", list(v.shape), ts.sha8(v.tobytes().hex())]
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        return [
+            type(v).__name__,
+            [[f.name, _canon(getattr(v, f.name))] for f in dataclasses.fields(v)],
+        ]
+    if isinstance(v, (list, tuple)):
+        return [_canon(x) for x in v]
+    if isinstance(v, dict):
+        return {
+            str(k): _canon(x) for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))
+        }
+    return _stable_repr(v)
+
+
 def _arg_digest(v: Any) -> Any:
     """Bounded, deterministic digest of one call argument."""
     if v is None or isinstance(v, (bool, int)):
@@ -338,13 +362,13 @@ def _arg_digest(v: Any) -> Any:
         return v if len(v) <= 80 else f"<str {len(v)} {ts.sha8(v)}>"
     if isinstance(v, (bytes, bytearray)):
         return f"<bytes {len(v)} {ts.sha8(bytes(v).hex())}>"
-    if isinstance(v, (list, tuple, dict)):
-        try:
-            canon = json.dumps(v, sort_keys=True, default=_stable_repr)
-        except (TypeError, ValueError):
-            canon = _stable_repr(v)
-        return f"<{type(v).__name__} {len(v)} {ts.sha8(canon)}>"
-    return f"<{type(v).__name__} {ts.sha8(_stable_repr(v))}>"
+    canon = _canon(v)
+    try:
+        canon_s = json.dumps(canon, sort_keys=True)
+    except (TypeError, ValueError):
+        canon_s = str(canon)[:4096]
+    n = len(v) if hasattr(v, "__len__") else ""
+    return f"<{type(v).__name__} {n} {ts.sha8(canon_s)}>"
 
 
 def _frame_args(f: types.FrameType) -> dict[str, Any]:
@@ -450,36 +474,34 @@ def leaf_id() -> int | None:
     return tr.stack[-1].id if tr is not None else None
 
 
-_SIG_CACHE: dict[int, inspect.Signature | None] = {}
-
-
-def _signature(f: Callable[..., Any]) -> inspect.Signature | None:
-    key = id(f)
-    if key not in _SIG_CACHE:
-        try:
-            _SIG_CACHE[key] = inspect.signature(f)
-        except (TypeError, ValueError):
-            _SIG_CACHE[key] = None
-    return _SIG_CACHE[key]
+_ARGNAMES_CACHE: dict[int, tuple[str, ...]] = {}
 
 
 def _call_args(
     f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> dict[str, Any]:
-    sig = _signature(f)
-    if sig is None:
-        out = {f"_{i}": _arg_digest(a) for i, a in enumerate(args)}
-        out.update({k: _arg_digest(v) for k, v in kwargs.items()})
-        return out
-    try:
-        bound = sig.bind(*args, **kwargs)
-    except TypeError:
-        return {}
-    return {
-        k: _arg_digest(v)
-        for k, v in bound.arguments.items()
-        if k not in ("self", "cls")
-    }
+    """Parameter-name → digest. ``co_varnames`` positional mapping instead
+    of ``inspect.signature().bind`` — bind is ~10 µs/call, the dominant
+    per-call cost after arg digests."""
+    key = id(f)
+    names = _ARGNAMES_CACHE.get(key)
+    if names is None:
+        try:
+            code = f.__code__
+            names = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
+        except AttributeError:
+            names = ()
+        _ARGNAMES_CACHE[key] = names
+    out: dict[str, Any] = {}
+    for i, a in enumerate(args):
+        name = names[i] if i < len(names) else f"_{i}"
+        if name in ("self", "cls"):
+            continue
+        out[name] = _arg_digest(a)
+    for k, v in kwargs.items():
+        if k not in ("self", "cls"):
+            out[k] = _arg_digest(v)
+    return out
 
 
 def traced(

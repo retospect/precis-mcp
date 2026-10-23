@@ -84,6 +84,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -402,20 +403,25 @@ _SCRIPT_INSTALL = (
 SCRIPT_SHELL_CMD = f"{_SCRIPT_INSTALL} && /tmp/v/bin/python /work/main.py"
 
 
-def script_shell_cmd(entry: str = "main.py") -> str:
+def script_shell_cmd(entry: str = "main.py", *, warm: bool = False) -> str:
     """:data:`SCRIPT_SHELL_CMD` for ``entry`` (relative to ``/work``).
+
+    ``warm=True`` mounts the stage job's pre-built venv (``venvs/<lock
+    sha>``) at :data:`_sandbox_script.CONTAINER_VENV` instead of running
+    ``uv venv`` + ``uv pip install`` per run — the warm lane.
 
     A folder entry (``code/…``) gets ``PYTHONPATH=/work`` so
     ``import precis_client`` still finds ``/work/precis_client.py``.
     ``entry`` is shape-checked at submit (``_sandbox_inputs.entry_rejection``)
     and quoted here as well.
     """
-    if entry == "main.py":
-        return SCRIPT_SHELL_CMD
-    return (
-        f"{_SCRIPT_INSTALL} && PYTHONPATH=/work /tmp/v/bin/python "
-        f"{shlex.quote('/work/' + entry)}"
+    python = (
+        f"{_sandbox_script.CONTAINER_VENV}/bin/python" if warm else "/tmp/v/bin/python"
     )
+    prefix = "" if warm else f"{_SCRIPT_INSTALL} && "
+    if entry == "main.py":
+        return f"{prefix}{python} /work/main.py"
+    return f"{prefix}PYTHONPATH=/work {python} {shlex.quote('/work/' + entry)}"
 
 
 def build_script_argv(
@@ -431,6 +437,7 @@ def build_script_argv(
     entry: str = "main.py",
     inputs_dir: str | None = None,
     mcp_dir: str | None = None,
+    venv_dir: str | None = None,
 ) -> list[str]:
     """Build the detached ``podman run`` argv for a ``mode:script`` run.
 
@@ -452,6 +459,16 @@ def build_script_argv(
         extra_mounts += ["-v", f"{inputs_dir}:/work/in:ro"]
     if mcp_dir is not None:
         extra_mounts += ["-v", f"{mcp_dir}:{_sandbox_read_mcp.CONTAINER_SOCKET_DIR}:ro"]
+    dep_mounts: list[str]
+    if venv_dir is not None:
+        # Warm lane: the stage job's pre-built venv, mounted at the path
+        # it was built at so its baked-in interpreter paths resolve.
+        dep_mounts = [
+            "-v",
+            f"{venv_dir}:{_sandbox_script.CONTAINER_VENV}:ro",
+        ]
+    else:
+        dep_mounts = ["-v", f"{wheels_dir}:/work/wheels:ro"]
     return [
         podman_bin,
         "run",
@@ -470,14 +487,13 @@ def build_script_argv(
         "none",
         "-v",
         f"{work_dir}:/work",
-        "-v",
-        f"{wheels_dir}:/work/wheels:ro",
+        *dep_mounts,
         *extra_mounts,
         "--",
         image,
         "sh",
         "-c",
-        script_shell_cmd(entry),
+        script_shell_cmd(entry, warm=venv_dir is not None),
     ]
 
 
@@ -1159,6 +1175,13 @@ def _launch_script(
         mcp_dir = handle.socket_dir
 
     memory, cpus, pids_limit = _cgroup_caps()
+    # Warm lane only when the staged venv was built under this run's
+    # image — interpreter paths are baked into the venv.
+    venv_dir = (
+        str(staged.venv_dir)
+        if staged.venv_dir is not None and staged.venv_image == image
+        else None
+    )
     argv = build_script_argv(
         podman_bin=_podman_bin(),
         job_id=ref_id,
@@ -1171,6 +1194,7 @@ def _launch_script(
         entry=code.entry,
         inputs_dir=str(inputs_dir) if inputs_dir is not None else None,
         mcp_dir=str(mcp_dir) if mcp_dir is not None else None,
+        venv_dir=venv_dir,
     )
     res = subprocess.run(
         argv,
@@ -1222,6 +1246,85 @@ def _launch_script(
 # ── Dependency stage jobs (gr496426) ───────────────────────────────
 
 
+#: In-container command the stage job runs to pre-build the warm venv at
+#: :data:`_sandbox_script.CONTAINER_VENV` (structure-workspaces §Packaging
+#: "a pre-built venv per lock sha").
+_VENV_BUILD = (
+    f"uv venv {_sandbox_script.CONTAINER_VENV} && "
+    f"uv pip install --python {_sandbox_script.CONTAINER_VENV} "
+    "--offline --no-index --find-links /wheels -r /lock/lock.txt"
+)
+
+
+def _build_venv(
+    staged: _sandbox_script.StagedDeps,
+) -> tuple[Path | None, str | None, str | None]:
+    """Pre-build the run venv for ``staged.lock_sha`` in a one-shot
+    container on the default image — the venv dir lands under
+    ``venvs/<lock sha>`` complete-marked.
+
+    Built inside the image (not on the host) so the venv's interpreter
+    paths resolve in run containers; mounted at ``CONTAINER_VENV`` so the
+    run bind path equals the build path. Returns ``(venv_dir, image,
+    error)`` — a build failure is not fatal: the run falls back to the
+    cold ``uv venv`` install (logged, still correct).
+    """
+    image = _sandbox_run.default_image()
+    root = _sandbox_script.venv_cache_root(_work_root())
+    dest = root / staged.lock_sha
+    marker = _sandbox_script.venv_complete_marker()
+    if (dest / marker).exists():
+        return dest, image, None
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=f".{staged.lock_sha[:12]}-", dir=root))
+    try:
+        (tmp / "venv").mkdir()
+        lock_dir = tmp / "lock"
+        lock_dir.mkdir()
+        (lock_dir / "lock.txt").write_text(staged.lock_text, encoding="utf-8")
+        res = subprocess.run(
+            [
+                _podman_bin(),
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "-v",
+                f"{tmp / 'venv'}:{_sandbox_script.CONTAINER_VENV}",
+                "-v",
+                f"{staged.wheels_dir}:/wheels:ro",
+                "-v",
+                f"{lock_dir}:/lock:ro",
+                "--",
+                image,
+                "sh",
+                "-c",
+                _VENV_BUILD,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_sandbox_stage.STAGE_WALL_S,
+            check=False,
+        )
+        if res.returncode != 0:
+            tail = (res.stderr or res.stdout or "").strip()[-2000:]
+            return None, None, f"venv build failed (exit {res.returncode}): {tail}"
+        (tmp / "venv" / marker).write_text(staged.lock_sha + "\n", encoding="utf-8")
+        (tmp / "venv").chmod(0o755)
+        try:
+            (tmp / "venv").rename(dest)
+        except OSError:
+            if not (dest / marker).exists():
+                return None, None, "venv rename lost the race and no winner landed"
+        return dest, image, None
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, None, f"venv build raised: {exc!r}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _staged_deps(
     store: Store,
     ref_id: int,
@@ -1248,6 +1351,8 @@ def _staged_deps(
             lock_sha=str(info["lock_sha"]),
             wheels_dir=Path(str(info["wheels_dir"])),
             reused=True,
+            venv_dir=(Path(str(info["venv_dir"])) if info.get("venv_dir") else None),
+            venv_image=info.get("venv_image"),
         )
     if state.pending:
         _requeue_for_stage(store, ref_id, state.ref_id, first=prev != state.ref_id)
@@ -1333,6 +1438,11 @@ def _run_stage(
         else:
             if lost.is_set():
                 return  # another worker owns the row now
+            venv_dir, venv_image, venv_err = _build_venv(staged)
+            if venv_err is not None:
+                log.warning(
+                    "claude_docker: stage job %d venv build: %s", ref_id, venv_err
+                )
             with store.pool.connection() as conn:
                 _set_meta(
                     conn,
@@ -1342,6 +1452,11 @@ def _run_stage(
                         "lock_sha": staged.lock_sha,
                         "wheels_dir": str(staged.wheels_dir),
                         "reused": staged.reused,
+                        **(
+                            {"venv_dir": str(venv_dir), "venv_image": venv_image}
+                            if venv_dir is not None
+                            else {}
+                        ),
                     },
                 )
                 _append_chunk(

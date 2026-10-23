@@ -17,9 +17,17 @@ _HEXFOLD_SRC = Path(__file__).resolve().parent.parent / "src" / "hexfold"
 #: Prefixes hexfold must never import — the monorepo-only surface.
 _FORBIDDEN_PREFIXES = ("precis", "asa_bot", "asa_slack")
 
+#: `precis_geom` is not the `precis` package: it is the workspace wheel's
+#: script-side half, shipped inside precis-geom *alongside* hexfold
+#: (structure-workspaces §Packaging). sheetnet imports its tracer
+#: optionally (soft-import) so standalone hexfold still works without it.
+_WHEEL_SIBLINGS = ("precis_geom",)
+
 
 def _is_forbidden(module: str | None) -> bool:
     if module is None:
+        return False
+    if any(module == s or module.startswith(s + ".") for s in _WHEEL_SIBLINGS):
         return False
     return module.startswith(_FORBIDDEN_PREFIXES)
 

@@ -1,0 +1,50 @@
+# precis-geom — the workspace script's core wheel (structure-workspaces
+# spec §Packaging). Built from this repo at the release sha:
+#   `scripts/ws-promote geom` (or `uv build packaging/geom`).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "precis-geom"
+version = "0.1.0"
+description = "The structure-workspace geometry core: hexfold, precis.cad/structsolve/structure, trace capture, precis_ws"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+# Core-side deps only: RDKit and ASE ride along (spec §Packaging); tblite
+# stays a compute-node package. numba backs hexfold/structure kernels;
+# pint backs precis.utils.units; manifold3d is the cad CSG kernel.
+dependencies = [
+    "numpy>=1.24",
+    "numba>=0.67.0",
+    "ase>=3.22",
+    "rdkit>=2023.9",
+    "pint>=0.23",
+    "manifold3d>=2.5",
+    "scipy>=1.14",
+]
+
+# Partial ``precis`` package on purpose: only what the shipped modules
+# import. ``precis/structure/importers`` is excluded — its fetch paths
+# (precis.store, safe_fetch) are dead under ``--network none`` and would
+# break the import-graph allow-list (tests/test_geom_wheel_imports.py).
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/precis_geom" = "precis_geom"
+"../../src/precis_ws" = "precis_ws"
+"../../src/hexfold" = "hexfold"
+"../../src/precis_chain" = "precis_chain"
+"../../src/precis_flow" = "precis_flow"
+"../../src/precis/cad" = "precis/cad"
+"../../src/precis/structsolve" = "precis/structsolve"
+"../../src/precis/structure" = "precis/structure"
+"../../src/precis/__init__.py" = "precis/__init__.py"
+"../../src/precis/errors.py" = "precis/errors.py"
+"../../src/precis/component_series.py" = "precis/component_series.py"
+"../../src/precis/py.typed" = "precis/py.typed"
+"../../src/precis/utils/__init__.py" = "precis/utils/__init__.py"
+"../../src/precis/utils/units.py" = "precis/utils/units.py"
+"../../src/precis/data/component_series.json" = "precis/data/component_series.json"
+
+[tool.hatch.build.targets.wheel]
+exclude = ["precis/structure/importers"]

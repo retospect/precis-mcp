@@ -63,12 +63,20 @@ class ScriptStageError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class StagedDeps:
-    """What :func:`stage_deps` produced for one job."""
+    """What :func:`stage_deps` produced for one job.
+
+    ``venv_dir`` is the warm pre-built venv (``venvs/<lock sha>``) the run
+    mounts read-only instead of doing ``uv venv`` + ``uv pip install`` in
+    the container — ``None`` means take the cold path. ``venv_image`` is
+    the image the venv was built under; a run on a different image must
+    not mount it (interpreter paths would not resolve)."""
 
     lock_text: str
     lock_sha: str
     wheels_dir: Path
     reused: bool
+    venv_dir: Path | None = None
+    venv_image: str | None = None
 
 
 def _uv_bin() -> str:
@@ -112,6 +120,25 @@ def lock_packages(lock_text: str) -> list[str]:
 def wheel_cache_root(work_root: Path) -> Path:
     raw = os.environ.get("PRECIS_SANDBOX_WHEEL_CACHE")
     return Path(raw) if raw else work_root / "wheels"
+
+
+def venv_cache_root(work_root: Path) -> Path:
+    """``venvs/<lock sha>`` — one pre-built venv per lock (spec §Packaging
+    "warm venv"; the stage job builds it once, runs mount it read-only)."""
+    raw = os.environ.get("PRECIS_SANDBOX_VENV_CACHE")
+    return Path(raw) if raw else work_root / "venvs"
+
+
+#: In-container mount point of the warm venv. The stage job builds the
+#: venv AT this path (one-shot container on the run image), so every
+#: baked-in path — the ``bin/python`` symlink, ``pyvenv.cfg``, script
+#: shebangs — resolves identically when the dir is bind-mounted
+#: read-only at the same path in a run container.
+CONTAINER_VENV = "/opt/precis-venv"
+
+
+def venv_complete_marker() -> str:
+    return _COMPLETE_MARKER
 
 
 def _python_platform() -> str:
@@ -272,6 +299,7 @@ def stage_deps(deps: list[str], *, cache_root: Path) -> StagedDeps:
 
 
 __all__ = [
+    "CONTAINER_VENV",
     "PYPI_INDEX",
     "SCRIPT_PYTHON_VERSION",
     "ScriptStageError",
@@ -279,5 +307,7 @@ __all__ = [
     "compile_lock",
     "download_wheels",
     "stage_deps",
+    "venv_cache_root",
+    "venv_complete_marker",
     "wheel_cache_root",
 ]
