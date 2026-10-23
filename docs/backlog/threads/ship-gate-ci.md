@@ -72,6 +72,11 @@ nightly — the diff-cover verdict is still open.
 
 ## Do next
 
+0. **[`release-train.md`](../release-train.md)** (draft, Reto 2026-10-23
+   ruling) — qland everything, harness-only `--remote`, one 10-shard
+   release gate fixed in place, next cut at deploy start. 7 slices; two
+   questions open for Reto at its end. Supersedes the "one release at a
+   time" model.
 1. **gr495187** — CI runner starvation: main runs waited ~70 min for shard
    runners. Measured twice (gripe comments 1 and 4): mean demand is only
    ~12.4 of 40 runners; the failure was unbounded `ci/*` gate fan-out (peak
