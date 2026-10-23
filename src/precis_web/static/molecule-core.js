@@ -14,6 +14,12 @@ const _ATOMIC_CPK = {
   Pt: "#d0d0e0", Au: "#ffd123",
 }; // fmt: skip
 const _ATOMIC_CPK_DEFAULT = "#ff2fa0";
+//: Night canvas (gr508637 — Reto on /se/cone-gate-18to8-cone-30: "atom
+//: colors need to change a bit, make H a bit grayer and C a bit whiter").
+//: Only the two entries that blur together on the viewer's dark chrome
+//: move — H dims toward the backdrop so the whiter C still reads as the
+//: scaffold; every other element keeps the shared table.
+const _ATOMIC_CPK_NIGHT = { ..._ATOMIC_CPK, H: "#a8a8a8", C: "#e3e3e3" };
 //: Å → the atomic3d.json ``coords``/``smooth`` arrays' own units (scene
 //: display units, already ``world metres × scene.scale`` — server side).
 const _ATOMIC_A_TO_M = 1e-10;
@@ -108,14 +114,31 @@ function _aboveThreshold(v, thr, max) {
 //: `{min, max, p95}` over a layer's applicable values, or null when the
 //: layer applies to nothing. p95 is the default threshold: the element at
 //: rank floor(0.95·n) of the sorted values, so ~5% sit at or above it.
+//: The box-plot five ride along (gr508636 — the row's threshold control
+//: draws the distribution it gates): q1/median/q3, Tukey whiskers (the
+//: innermost points inside 1.5·IQR of the box) and the points beyond
+//: them, evenly sampled down to a cap so a 15k-bond drum doesn't stamp
+//: that many SVG dots.
+const _MAX_PLOTTED_OUTLIERS = 40;
 function _layerStats(values) {
   const v = values.filter((x) => x !== null && x !== undefined && Number.isFinite(x));
   if (!v.length) return null;
   v.sort((a, b) => a - b);
+  const at = (f) => v[Math.min(v.length - 1, Math.floor(f * v.length))];
+  const q1 = at(0.25), q2 = at(0.5), q3 = at(0.75);
+  const iqr = q3 - q1;
+  let lo = 0, hi = v.length - 1;
+  while (v[lo] < q1 - 1.5 * iqr) lo++;
+  while (v[hi] > q3 + 1.5 * iqr) hi--;
+  const outliers = [...v.slice(0, lo), ...v.slice(hi + 1)];
+  const step = Math.ceil(outliers.length / _MAX_PLOTTED_OUTLIERS);
   return {
     min: v[0],
     max: v[v.length - 1],
-    p95: v[Math.min(v.length - 1, Math.floor(0.95 * v.length))],
+    p95: at(0.95),
+    q1, q2, q3,
+    lo: v[lo], hi: v[hi],
+    outliers: outliers.filter((_, i) => i % step === 0),
   };
 }
 
@@ -646,6 +669,9 @@ export async function createMoleculeCore(host, data, {
   for (const [key, field] of Object.entries(_LAYER_FIELDS)) {
     strainStats[key] = _layerStats(data.blocks.flatMap((b) => b[field] || []));
   }
+  //: Remembered so the night palette swap (setNight) can repaint through
+  //: the same thresholds instead of collapsing to the raw element table.
+  let lastStrain = null;
 
   //: `state` = `{deviation: {thr}, bond: {on, thr}, angle: {on, key, thr}}`
   //: with every `thr` already a number (the caller resolves defaults);
@@ -653,6 +679,7 @@ export async function createMoleculeCore(host, data, {
   //: elements it coloured out of how many it applies to.
   function applyStrain(state) {
     if (disposed) return null;
+    lastStrain = state;
     const dev = strainStats.deviation;
     const bond = strainStats.bond;
     const angle = strainStats[state.angle.key];
@@ -714,7 +741,34 @@ export async function createMoleculeCore(host, data, {
     return counts;
   }
 
+  //: Palette swap for the viewer's dark theme (gr508637): rebuild each
+  //: block's cpk array from the night table, then repaint — through the
+  //: last strain state when one was applied (so a live angle-strain
+  //: colouring survives the swap), straight onto the atoms otherwise.
+  function setNight(on) {
+    if (disposed) return;
+    const table = on ? _ATOMIC_CPK_NIGHT : _ATOMIC_CPK;
+    for (const blk of blocks) {
+      for (let i = 0; i < blk.cpk.length; i++) {
+        blk.cpk[i].set(table[blk.src.elements[i]] || _ATOMIC_CPK_DEFAULT);
+      }
+    }
+    if (lastStrain) {
+      applyStrain(lastStrain);
+      return;
+    }
+    for (const blk of blocks) {
+      for (let i = 0; i < blk.cpk.length; i++) blk.atomMesh.setColorAt(i, blk.cpk[i]);
+      if (blk.cpk.length) blk.atomMesh.instanceColor.needsUpdate = true;
+    }
+    try {
+      host.redraw();
+    } catch (err) {
+      console.error("blocktree-3d: night palette redraw failed", err);
+    }
+  }
+
   const bindings = new Map(blocks.map((b) => [String(b.src.uid), b.src.binding]));
   const pickMolecule = (x, y, canvas) => pickAtom(x, y, canvas, true);
-  return { applyT, setVisible, refreshVisibility, pickAtom, pickMolecule, hasTarget, setTargetVisible, strainStats, applyStrain, bindings, dispose };
+  return { applyT, setVisible, refreshVisibility, pickAtom, pickMolecule, hasTarget, setTargetVisible, strainStats, applyStrain, setNight, bindings, dispose };
 }

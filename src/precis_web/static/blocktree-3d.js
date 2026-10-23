@@ -998,6 +998,11 @@ export async function blocktreeViewer3D({
   // `{in, out, fit, reset}` buttons carrying data-shortcut; clicks map to
   // the vendored viewer's reset/zoom, so `?` lists them. Optional.
   viewButtons,
+  // gr508637: the viewer's own chrome/theme toggle (night) and a
+  // fill-the-window button riding the Fullscreen API on the shell.
+  // Optional.
+  nightButton,
+  fullButton,
 }) {
   const progress = _makeProgress(progressEl);
   if (progress) progress.set("scene", "loading design…");
@@ -1664,6 +1669,10 @@ export async function blocktreeViewer3D({
   //: `{applyT, setVisible}` from the current scene's atomic overlay, or
   //: null while one is being built / when the design has no atoms.
   let atomicOverlay = null;
+  //: gr508637 — the viewer's dark theme flag, kept at page scope so the
+  //: per-render overlay rebuild below inherits it (the vendored theme
+  //: itself is display-level and survives re-renders on its own).
+  let nightOn = false;
   let atomicReady = Promise.resolve(null);
 
   // An atom click opens the pick panel. A click, not a drag: the press
@@ -1761,6 +1770,38 @@ export async function blocktreeViewer3D({
   // percentile of the loaded structure (top 5% coloured); switching the
   // angle measure resets it, since θp and the 120° RMS share no scale.
   const _THRESHOLD_STEPS = 1000;
+
+  // gr508636 — the threshold control IS the layer's box plot (Reto: "can
+  // the slider be a box plot with outliers? So we can see what the
+  // approx distribution are"): the template ships an empty inline SVG
+  // (`data-role="threshold"`), this draws the Tukey box the overlay's
+  // `_layerStats` computed — whiskers, q1..q3 box, median, outlier dots —
+  // plus the threshold marker that dragging moves. It still quacks like
+  // the range input it replaced: a numeric `.value` in 0.._THRESHOLD_
+  // STEPS that an `input` event re-reads, so scripts/viewer_check.py's
+  // `_set_range` drives it unchanged.
+  const _BOX_W = 150, _BOX_H = 30, _BOX_PAD = 7;
+  function _drawStrainBox(svg, stats, frac) {
+    const span = stats.max - stats.min;
+    const x = (v) => _BOX_PAD + (span > 0 ? ((v - stats.min) / span) * (_BOX_W - 2 * _BOX_PAD) : 0);
+    const mid = 17, f = (n) => Number(n).toFixed(1);
+    const parts = [
+      `<line x1="${f(x(stats.lo))}" y1="${mid}" x2="${f(x(stats.hi))}" y2="${mid}" class="bp-whisker"/>`,
+      `<line x1="${f(x(stats.lo))}" y1="${mid - 5}" x2="${f(x(stats.lo))}" y2="${mid + 5}" class="bp-whisker"/>`,
+      `<line x1="${f(x(stats.hi))}" y1="${mid - 5}" x2="${f(x(stats.hi))}" y2="${mid + 5}" class="bp-whisker"/>`,
+      `<rect x="${f(x(stats.q1))}" y="${mid - 6}" width="${f(Math.max(1, x(stats.q3) - x(stats.q1)))}" height="12" class="bp-box"/>`,
+      `<line x1="${f(x(stats.q2))}" y1="${mid - 6}" x2="${f(x(stats.q2))}" y2="${mid + 6}" class="bp-median"/>`,
+    ];
+    for (const o of stats.outliers || []) {
+      parts.push(`<circle cx="${f(x(o))}" cy="${mid}" r="1.4" class="bp-outlier"/>`);
+    }
+    const tx = _BOX_PAD + Math.max(0, Math.min(1, frac)) * (_BOX_W - 2 * _BOX_PAD);
+    parts.push(
+      `<line x1="${f(tx)}" y1="4" x2="${f(tx)}" y2="${_BOX_H - 4}" class="bp-threshold"/>`,
+      `<path d="M${f(tx - 3.5)} 2 L${f(tx + 3.5)} 2 L${f(tx)} 7 Z" class="bp-threshold"/>`
+    );
+    svg.innerHTML = parts.join("");
+  }
   const strainState = {
     deviation: { thr: null },
     bond: { on: false, thr: null },
@@ -1805,12 +1846,12 @@ export async function blocktreeViewer3D({
       if (!stats) continue;
       const { unit, digits } = _STRAIN_UNITS[layer];
       const span = stats.max - stats.min;
-      const slider = _role(row, "threshold");
-      if (slider) {
-        slider.max = String(_THRESHOLD_STEPS);
-        slider.value = String(
-          span > 0 ? Math.round(((thr - stats.min) / span) * _THRESHOLD_STEPS) : _THRESHOLD_STEPS
-        );
+      const box = _role(row, "threshold");
+      if (box) {
+        const frac = span > 0 ? (thr - stats.min) / span : 1;
+        box.value = String(Math.round(frac * _THRESHOLD_STEPS));
+        box.setAttribute("aria-valuenow", box.value);
+        _drawStrainBox(box, stats, frac);
       }
       const put = (role, text) => {
         const el = _role(row, role);
@@ -1850,19 +1891,56 @@ export async function blocktreeViewer3D({
         applyStrainState();
       });
     }
-    const slider = _role(row, "threshold");
-    if (slider) {
+    const box = _role(row, "threshold");
+    if (box) {
       let raf = null;
-      slider.addEventListener("input", () => {
+      const commit = (frac) => {
+        const stats = atomicOverlay && atomicOverlay.strainStats[_statsKey(layer)];
+        if (!stats) return;
+        strainState[layer].thr =
+          stats.min + (stats.max - stats.min) * Math.max(0, Math.min(1, frac));
+        applyStrainState();
+      };
+      const schedule = (frac) => {
         if (raf !== null) return;
         raf = requestAnimationFrame(() => {
           raf = null;
-          const stats = atomicOverlay && atomicOverlay.strainStats[_statsKey(layer)];
-          if (!stats) return;
-          strainState[layer].thr =
-            stats.min + ((stats.max - stats.min) * Number(slider.value)) / _THRESHOLD_STEPS;
-          applyStrainState();
+          commit(frac);
         });
+      };
+      const fracNow = () => {
+        const stats = atomicOverlay && atomicOverlay.strainStats[_statsKey(layer)];
+        return stats && stats.max > stats.min
+          ? ((strainState[layer].thr ?? stats.p95) - stats.min) / (stats.max - stats.min)
+          : 1;
+      };
+      // The old range-input contract (scripts/viewer_check.py's
+      // `_set_range`): `.value` in 0.._THRESHOLD_STEPS, moved by an
+      // 'input' event.
+      box.addEventListener("input", () => schedule(Number(box.value) / _THRESHOLD_STEPS));
+      const fracFromX = (e) => {
+        const r = box.getBoundingClientRect();
+        return r.width > 0 ? (e.clientX - r.left - _BOX_PAD) / (r.width - 2 * _BOX_PAD) : 1;
+      };
+      box.addEventListener("pointerdown", (e) => {
+        box.setPointerCapture(e.pointerId);
+        schedule(fracFromX(e));
+        e.preventDefault();
+      });
+      box.addEventListener("pointermove", (e) => {
+        if (e.buttons) schedule(fracFromX(e));
+      });
+      // The range input's keyboard affordance, kept on the svg.
+      box.addEventListener("keydown", (e) => {
+        const big = e.key === "PageUp" || e.key === "PageDown" ? 0.1 : 0.02;
+        const delta = {
+          ArrowLeft: -big, ArrowDown: -big, ArrowRight: big, ArrowUp: big,
+        }[e.key];
+        if (e.key === "Home") schedule(0);
+        else if (e.key === "End") schedule(1);
+        else if (delta !== undefined) schedule(fracNow() + delta);
+        else return;
+        e.preventDefault();
       });
     }
     const measure = _role(row, "measure");
@@ -1967,6 +2045,9 @@ export async function blocktreeViewer3D({
         .then((overlay) => {
           if (gen !== renderGen) { overlay?.dispose(); return; }
           atomicOverlay = overlay;
+          // A rebuilt overlay starts on the day palette; re-apply night
+          // before applyAtomState repaints through the strain state.
+          if (overlay && overlay.setNight) overlay.setNight(nightOn);
           if (overlay) applyAtomState();
           // After the overlay meshes are in and the legend/strain rows are
           // stamped (applyAtomState redraws); mark once, on first paint.
@@ -2126,38 +2207,87 @@ export async function blocktreeViewer3D({
   // against it) on every window resize, not just at init: a shell sized
   // once at load time would drift back out of the viewport the moment
   // the window itself is resized shorter.
+  // gr508637 — the same refit runs on fullscreenchange: in fullscreen
+  // the UA sizes the shell to the viewport (the `:fullscreen` rule),
+  // so the viewport-fit shrink is skipped and the Display is re-budgeted
+  // against the new client box; on exit the normal fit puts it back.
+  function refitViewer() {
+    // In fullscreen an inline height would beat the `:fullscreen` rule's
+    // 100% — clear it so the UA-sized shell is what clientHeight reports.
+    viewerEl.style.height = document.fullscreenElement === viewerEl
+      ? ""
+      : `${_fitShellHeight(viewerEl)}px`;
+    const nextShellWidth = viewerEl.clientWidth || shellWidth;
+    const nextShellHeight = viewerEl.clientHeight || shellHeight;
+    const nextCadWidth = Math.max(
+      _MIN_CAD_WIDTH,
+      nextShellWidth - treeWidth - 2 * _OUTER_MARGIN
+    );
+    const nextHeight = Math.max(
+      _MIN_CAD_HEIGHT,
+      nextShellHeight - _TOOLBAR_HEIGHT_GUESS - 2 * _OUTER_MARGIN
+    );
+    try {
+      viewer.resizeCadView(nextCadWidth, treeWidth, nextHeight);
+    } catch (err) {
+      // Best-effort — see recolour's own try/catch for the convention.
+      console.error("blocktree-3d: resizeCadView on resize failed", err);
+    }
+    const fittedH = _fitViewerToShell(
+      viewer, viewerEl, treeWidth, nextCadWidth, nextHeight
+    );
+    _applyTreeHeightCap(
+      treeHeightCapEl,
+      Math.max(80, fittedH - _INFO_PANEL_HEIGHT),
+      _INFO_PANEL_HEIGHT
+    );
+  }
   let resizeRAF = null;
   window.addEventListener("resize", () => {
     if (resizeRAF) return;
     resizeRAF = requestAnimationFrame(() => {
       resizeRAF = null;
-      viewerEl.style.height = `${_fitShellHeight(viewerEl)}px`;
-      const nextShellWidth = viewerEl.clientWidth || shellWidth;
-      const nextShellHeight = viewerEl.clientHeight || shellHeight;
-      const nextCadWidth = Math.max(
-        _MIN_CAD_WIDTH,
-        nextShellWidth - treeWidth - 2 * _OUTER_MARGIN
-      );
-      const nextHeight = Math.max(
-        _MIN_CAD_HEIGHT,
-        nextShellHeight - _TOOLBAR_HEIGHT_GUESS - 2 * _OUTER_MARGIN
-      );
-      try {
-        viewer.resizeCadView(nextCadWidth, treeWidth, nextHeight);
-      } catch (err) {
-        // Best-effort — see recolour's own try/catch for the convention.
-        console.error("blocktree-3d: resizeCadView on resize failed", err);
-      }
-      const fittedH = _fitViewerToShell(
-        viewer, viewerEl, treeWidth, nextCadWidth, nextHeight
-      );
-      _applyTreeHeightCap(
-        treeHeightCapEl,
-        Math.max(80, fittedH - _INFO_PANEL_HEIGHT),
-        _INFO_PANEL_HEIGHT
-      );
+      refitViewer();
     });
   });
+
+  // ── gr508637: night mode + full window ─────────────────────────────
+  // Night: the vendored `setTheme` repaints its own chrome AND the
+  // backdrop the transparent canvas shows through (the alpha:0 clear
+  // over --tcv-bg-color — the "white patch" is CSS, not a scene
+  // background); the atoms take their own night palette through the
+  // overlay (H grayer, C whiter). Best-effort: a vendored theme that
+  // can't switch leaves the button inert, never the viewer broken.
+  if (nightButton) {
+    nightButton.addEventListener("click", () => {
+      nightOn = !nightOn;
+      try {
+        viewer.setTheme(nightOn ? "dark" : "light");
+      } catch (err) {
+        console.error("blocktree-3d: theme switch failed", err);
+      }
+      if (atomicOverlay && atomicOverlay.setNight) atomicOverlay.setNight(nightOn);
+      nightButton.textContent = nightOn ? "day" : "night";
+      nightButton.setAttribute("aria-pressed", String(nightOn));
+    });
+  }
+  // Full window: the shell itself goes fullscreen (tree + canvas + our
+  // own scale bar all come along); Esc exits by UA convention, and the
+  // fullscreenchange handler below flips the label and re-budgets.
+  if (fullButton && viewerEl.requestFullscreen) {
+    fullButton.addEventListener("click", () => {
+      const p = document.fullscreenElement
+        ? document.exitFullscreen()
+        : viewerEl.requestFullscreen();
+      if (p && p.catch) p.catch(() => {});
+    });
+    document.addEventListener("fullscreenchange", () => {
+      const fs = document.fullscreenElement === viewerEl;
+      fullButton.textContent = fs ? "exit" : "full";
+      fullButton.setAttribute("aria-pressed", String(fs));
+      requestAnimationFrame(refitViewer);
+    });
+  }
 
   // ── explode: spread from the assembly centre, per axis ──────────────
   // Deliberately NOT the vendored viewer's own `setExplode()` (one uniform

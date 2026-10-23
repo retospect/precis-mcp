@@ -199,3 +199,108 @@ def test_no_element_colour_sits_on_a_canvas_background() -> None:
                 f"{element} {colour} is {distance:.3f} luminance from the "
                 f"{name} canvas {bg} (< {floor})"
             )
+
+
+# ── gr508636 ──────────────────────────────────────────────────────────────
+
+
+def test_strain_threshold_is_a_box_plot() -> None:
+    """Reto, on /se/cone-gate-18to8-cone-30: "for bond strain and angle
+    strain, can the slider be a box plot with outliers? So we can see what
+    the approx distribution are." All three rows' threshold control is an
+    inline SVG slider-role element blocktree-3d.js draws the layer's Tukey
+    box into — whiskers, q1..q3 box, median, outlier dots, marker."""
+    tpl = _read(_TEMPLATES / "blocktree" / "detail3d.html.j2")
+    for tid in ("bt3d-dev-threshold", "bt3d-bond-threshold", "bt3d-angle-threshold"):
+        tag = re.search(rf'<svg[^>]*id="{tid}"[^>]*>', tpl)
+        assert tag is not None, tid
+        assert 'data-role="threshold"' in tag.group(0)
+        assert 'class="bt3d-boxplot"' in tag.group(0)
+        assert 'role="slider"' in tag.group(0)
+    assert 'type="range" id="bt3d-dev-threshold"' not in tpl
+    assert 'type="range" id="bt3d-bond-threshold"' not in tpl
+    assert 'type="range" id="bt3d-angle-threshold"' not in tpl
+
+
+def test_strain_stats_carry_the_box_plot_five() -> None:
+    """The plot's data: molecule-core's _layerStats returns quartiles,
+    Tukey whisker bounds and a capped outlier sample alongside the
+    min/max/p95 the rest of the row still reads."""
+    core = _read(_STATIC / "molecule-core.js")
+    stats = re.search(r"function _layerStats\(values\) \{(.*?)\n\}", core, re.S)
+    assert stats is not None
+    body = stats.group(1)
+    for key in ("min", "max", "p95", "q1", "q2", "q3", "lo", "hi", "outliers"):
+        assert re.search(rf"\b{key}\b", body), key
+    assert "1.5 * iqr" in body
+    assert "_MAX_PLOTTED_OUTLIERS" in body
+
+
+def test_box_plot_draws_and_keeps_the_range_input_contract() -> None:
+    """_drawStrainBox renders the SVG; the element still carries a numeric
+    .value moved by an 'input' event (scripts/viewer_check.py's
+    _set_range), and drags/keys move the threshold for real users."""
+    js = _read(_STATIC / "blocktree-3d.js")
+    assert "function _drawStrainBox(svg, stats, frac)" in js
+    for cls in ("bp-whisker", "bp-box", "bp-median", "bp-outlier", "bp-threshold"):
+        assert f'class="{cls}"' in js, cls
+    assert 'box.addEventListener("input"' in js
+    assert 'box.addEventListener("pointerdown"' in js
+    assert 'box.addEventListener("keydown"' in js
+    css = _read(_STATIC / "blocktree-3d-overrides.css")
+    for cls in ("bp-whisker", "bp-box", "bp-median", "bp-outlier", "bp-threshold"):
+        assert f".bt3d-boxplot .{cls}" in css, cls
+
+
+# ── gr508637 ──────────────────────────────────────────────────────────────
+
+
+def test_night_mode_and_full_window_buttons_are_wired() -> None:
+    """Reto, on /se/cone-gate-18to8-cone-30: "can the viewer bit (the
+    white patch) do night mode ... and can it have a 'full window'
+    button?" The canvas is a transparent-clear WebGL canvas over the
+    vendored --tcv-bg-color, so the vendored setTheme flips the patch;
+    fullscreen rides the Fullscreen API on the shell."""
+    tpl = _read(_TEMPLATES / "blocktree" / "detail3d.html.j2")
+    js = _read(_STATIC / "blocktree-3d.js")
+    for bid in ("bt3d-night", "bt3d-full"):
+        assert f'id="{bid}"' in tpl
+    assert 'nightButton: document.getElementById("bt3d-night")' in tpl
+    assert 'fullButton: document.getElementById("bt3d-full")' in tpl
+    assert 'viewer.setTheme(nightOn ? "dark" : "light")' in js
+    assert "atomicOverlay.setNight" in js
+    assert "viewerEl.requestFullscreen()" in js
+    assert 'addEventListener("fullscreenchange"' in js
+
+
+def test_night_palette_moves_h_and_c_as_asked() -> None:
+    """ "atom colors need to change a bit, make H a bit grayer and C a bit
+    whiter": _ATOMIC_CPK_NIGHT overrides exactly those two — H darker,
+    C lighter than their day entries — and both stay off the vendored
+    dark chrome's #444 backdrop. setNight swaps the live palette through
+    the last strain state."""
+    core = _read(_STATIC / "molecule-core.js")
+    day_m = re.search(r"const _ATOMIC_CPK = \{(.*?)\};", core, re.S)
+    night_m = re.search(r"const _ATOMIC_CPK_NIGHT = \{(.*?)\};", core, re.S)
+    assert day_m is not None and night_m is not None
+    day = dict(re.findall(r'(\w+):\s*"(#[0-9a-fA-F]{6})"', day_m.group(1)))
+    night = dict(re.findall(r'(\w+):\s*"(#[0-9a-fA-F]{6})"', night_m.group(1)))
+    assert set(night) == {"H", "C"}
+    assert _srgb_luminance(night["H"]) < _srgb_luminance(day["H"])
+    assert _srgb_luminance(night["C"]) > _srgb_luminance(day["C"])
+    dark_bg = _srgb_luminance("#444444")
+    for element, colour in night.items():
+        assert abs(_srgb_luminance(colour) - dark_bg) >= 0.05, element
+    assert "function setNight(on)" in core
+    assert "applyStrain(lastStrain)" in core
+    assert "setNight," in core  # exported on the overlay's API
+
+
+def test_night_and_fullscreen_css_exist() -> None:
+    """The shell's :fullscreen rule sizes it to the viewport (refitViewer
+    re-budgets the Display inside it), and our own overlays' dark-on-white
+    styling flips under the vendored shell's data-theme="dark"."""
+    css = _read(_STATIC / "blocktree-3d-overrides.css")
+    assert "#bt3d-viewer:fullscreen" in css
+    assert '#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar' in css
+    assert '#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar-label' in css

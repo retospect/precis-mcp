@@ -129,6 +129,14 @@
             title="fit view (f) — or double-click empty space" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">fit</button>
     <button type="button" id="bt3d-vp-reset" data-shortcut="0" data-shortcut-label="Reset view"
             title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
+    {# gr508637: dark chrome + canvas and a night atom palette; and the
+       viewer filling the window (Esc exits). #}
+    <button type="button" id="bt3d-night" aria-pressed="false"
+            title="night mode — dark viewer and canvas; atoms switch to the night palette"
+            class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">night</button>
+    <button type="button" id="bt3d-full" aria-pressed="false"
+            title="full window — the viewer fills the screen (Esc exits)"
+            class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">full</button>
   </span>
   <span class="flex items-center gap-1 text-xs text-fg-muted"
         title="the view as on screen, scale bar included — the SVG holds the scene as an image and the scale bar as vector">
@@ -196,7 +204,13 @@
   <div id="bt3d-smooth-legend" class="hidden items-center gap-1 text-[11px] text-fg-subtle"
        title="each atom's distance from its own smoothed position (the structure smoothed over its bonds, the far end of the atomic ↔ smooth slider); vertices below the threshold stay grey">
     <span>deviation from smoothed</span>
-    <input type="range" id="bt3d-dev-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
+    {# gr508636: the threshold slider IS the box plot — blocktree-3d.js
+       draws whiskers/box/median/outliers from the overlay's stats and
+       drag/keys move the marker. Keeps the range input's `.value`/`input`
+       contract (viewer_check.py). #}
+    <svg id="bt3d-dev-threshold" data-role="threshold" class="bt3d-boxplot" width="150" height="30"
+         viewBox="0 0 150 30" role="slider" tabindex="0"
+         aria-label="deviation threshold" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="950"></svg>
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #e0f2fe, #1d4ed8, #7f1d1d);"></span>
     ≥ <span data-role="value">0.00 Å</span>
     (<span id="bt3d-smooth-legend-min" data-role="min">0.00</span>–<span id="bt3d-smooth-legend-max" data-role="max">0.00</span>)
@@ -204,7 +218,9 @@
   <div id="bt3d-layer-bond" class="hidden items-center gap-1 text-[11px] text-fg-subtle"
        title="C–C bonds coloured by |length − 1.42 Å|; bonds below the threshold stay grey">
     <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-bond-strain" data-role="toggle" /> bond strain vs 1.42 Å</label>
-    <input type="range" id="bt3d-bond-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
+    <svg id="bt3d-bond-threshold" data-role="threshold" class="bt3d-boxplot" width="150" height="30"
+         viewBox="0 0 150 30" role="slider" tabindex="0"
+         aria-label="bond strain threshold" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="950"></svg>
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #22c55e, #16a34a, #14532d);"></span>
     ≥ <span data-role="value">0.000 Å</span>
     (<span data-role="min">0.000</span>–<span data-role="max">0.000</span>)
@@ -216,7 +232,9 @@
       <option value="thetap" selected>θp vs planar</option>
       <option value="120">vs 120°</option>
     </select>
-    <input type="range" id="bt3d-angle-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
+    <svg id="bt3d-angle-threshold" data-role="threshold" class="bt3d-boxplot" width="150" height="30"
+         viewBox="0 0 150 30" role="slider" tabindex="0"
+         aria-label="angle strain threshold" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="950"></svg>
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #fb923c, #ea580c, #7c2d12);"></span>
     ≥ <span data-role="value">0.0°</span>
     (<span data-role="min">0.0</span>–<span data-role="max">0.0</span>)
@@ -416,6 +434,8 @@
       fit: document.getElementById("bt3d-vp-fit"),
       reset: document.getElementById("bt3d-vp-reset"),
     },
+    nightButton: document.getElementById("bt3d-night"),
+    fullButton: document.getElementById("bt3d-full"),
     sceneUrl: {{ scene_url | tojson }},
     validationPanel: document.getElementById("bt3d-validate"),
     validationUrl: {{ validation_url | tojson }},

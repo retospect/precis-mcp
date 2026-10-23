@@ -110,6 +110,32 @@ body {
   border-radius: 2px;
 }
 
+/* gr508637 — the vendored Display's setTheme("dark") stamps
+ * data-theme="dark" on this shell (and flips its own chrome + the
+ * transparent canvas's --tcv-bg-color backdrop). Our own overlays don't
+ * inherit that — the scale bar's dark-on-white styling would vanish on
+ * the dark canvas — so flip just them. */
+#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar {
+  color: #cbd5e1;
+}
+#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar-line {
+  border-left-color: #cbd5e1;
+  border-right-color: #cbd5e1;
+  border-bottom-color: #cbd5e1;
+}
+#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar-label {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+/* gr508637 — "full window": the shell itself goes fullscreen (the UA
+ * pins it to the viewport; blocktree-3d.js's refitViewer then
+ * re-budgets the vendored Display to this new client box). */
+#bt3d-viewer:fullscreen {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
 /* gr337746 — the "connections" group's own tree-panel eyeball (its
  * SHAPE/fill slot, the vendored tree's icon index 0) is PERMANENTLY
  * disabled and CANNOT be fixed without editing the vendored bundle:
@@ -273,4 +299,41 @@ body {
 @keyframes bt3d-progress-slide {
   from { transform: translateX(-100%); }
   to { transform: translateX(340%); }
+}
+
+/* gr508636 — the strain rows' threshold control IS a box plot
+ * (blocktree-3d.js's _drawStrainBox): whiskers, q1..q3 box, median, the
+ * outlier dots and the draggable threshold marker. These rows live in
+ * the page's control bar ABOVE #bt3d-viewer, so — deliberately outside
+ * the file's usual shell scoping — the class prefix itself is the
+ * scope. */
+.bt3d-boxplot {
+  display: block;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.bt3d-boxplot:focus-visible {
+  outline: 1px solid #1d4ed8;
+  outline-offset: 1px;
+}
+.bt3d-boxplot .bp-whisker {
+  stroke: #94a3b8;
+  stroke-width: 1;
+}
+.bt3d-boxplot .bp-box {
+  fill: #cbd5e1;
+  stroke: #64748b;
+  stroke-width: 1;
+}
+.bt3d-boxplot .bp-median {
+  stroke: #1e293b;
+  stroke-width: 1.5;
+}
+.bt3d-boxplot .bp-outlier {
+  fill: #b45309;
+}
+.bt3d-boxplot .bp-threshold {
+  stroke: #b91c1c;
+  fill: #b91c1c;
+  stroke-width: 1.5;
 }

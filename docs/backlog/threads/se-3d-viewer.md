@@ -42,6 +42,13 @@ picture — suspect a stale server upstream before suspecting the data.
 **Last reviewed:** 2026-10-02 (strain layers and the xyz/pdb export live
 since 567f207f; Reto approved both as they are, review item
 se-3d-viewer-1; level chips landed for round 2)
+**2026-10-23 (gr508636/gr508637):** the strain rows' threshold slider is
+now a draggable box plot with outliers (the element keeps the old range
+contract — `.value` in 0..1000 moved by `input` — so viewer_check is
+unchanged), and the viewer gained a `night` toggle (vendored setTheme +
+a `_ATOMIC_CPK_NIGHT` palette: H grayer, C whiter) and a `full` window
+button (Fullscreen API on the shell; refitViewer re-budgets on
+fullscreenchange).
 **Worktree:** `se-3d-viewer`
 
 **Prod dogfood, round 2 (deployed 63301c5c, 2026-10-03).** Against prod
