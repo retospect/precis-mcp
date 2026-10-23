@@ -1542,3 +1542,173 @@ class TestPdfNoBodyJournal:
     def test_body_present_journals_nothing(self, store, tmp_path: Path):
         rows = self._ingest(store, tmp_path, printable_only=False, with_body=True)
         assert rows == []
+
+
+class TestPrintableOnlyFold:
+    """gr506757: a ``printable_only`` companion whose embedded DocInfo names
+    a *different* paper (Elsevier stamps some companions with a predecessor
+    paper's DOI/title) must attach to its sidecar ref on rendered-text
+    identity — and a refused fold must never mint a phantom ref."""
+
+    TARGET_DOI = "10.1016/j.mex.2026.104138"
+    BOGUS_DOI = "10.1016/j.mimet.2018.11.020"
+    TARGET_TITLE = (
+        "A lyophilization-compatible colorimetric LAMP assay for "
+        "cold chain-free detection"
+    )
+
+    @staticmethod
+    def _real_pdf(path: Path, text: str) -> str:
+        import fitz
+
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), text)
+        doc.save(str(path))
+        doc.close()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _bodied_stub(self, store, *, slug: str, doi: str):
+        stub = store.insert_ref(kind="paper", slug=slug, title=self.TARGET_TITLE)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', %s, 'manual')",
+                (stub.id, doi),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 'system', 0, 'paragraph', 'markup body', '{}')",
+                (stub.id,),
+            )
+            conn.commit()
+        return stub
+
+    def _companion_paper(self, sha: str) -> PaperToWrite:
+        """What ``extract_paper(printable_only=True)`` yields from a
+        DocInfo-lying companion: a bogus DOI and zero chunks."""
+        return dataclasses.replace(
+            _fixture_paper(paper_id="boguspid", doi=self.BOGUS_DOI, pdf_sha256=sha),
+            chunks=[],
+            content_hash=None,
+            pdf_role="main",
+        )
+
+    def _n_paper_refs(self, store) -> int:
+        with store.pool.connection() as conn:
+            return int(
+                conn.execute("SELECT count(*) FROM refs WHERE kind='paper'").fetchone()[
+                    0
+                ]
+            )
+
+    def _ingest_events(self, store, ref_id: int):
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id=%s AND source='ingest:pdf' ORDER BY event_id",
+                (ref_id,),
+            ).fetchall()
+
+    def test_doi_conflict_attaches_on_rendered_identity(self, store, tmp_path: Path):
+        """Incident shape: embedded DOI conflicts with the fold target, but
+        the rendered pages carry the target's DOI — attach, don't mint."""
+        stub = self._bodied_stub(store, slug="a26aqd", doi=self.TARGET_DOI)
+        pdf = tmp_path / "a26aqd.pdf"
+        sha = self._real_pdf(
+            pdf, f"{self.TARGET_TITLE} … https://doi.org/{self.TARGET_DOI}"
+        )
+        paper = self._companion_paper(sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id, printable_only=True),
+                store=store,
+            )
+        assert result is not None
+        assert result.inserted is False
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256, pdf_role FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+        assert row == (sha, "main")
+        assert self._n_paper_refs(store) == 1
+        events = self._ingest_events(store, stub.id)
+        assert [e for e, _ in events] == ["attach_doi_overridden"]
+        payload = events[0][1]
+        assert payload["extracted_doi"] == self.BOGUS_DOI
+        assert payload["target_doi"] == self.TARGET_DOI
+
+    def test_mismatched_text_refuses_and_never_mints(self, store, tmp_path: Path):
+        """A companion that is genuinely not the target's paper: refuse the
+        attach, journal it, mint nothing."""
+        stub = self._bodied_stub(store, slug="a26aqd", doi=self.TARGET_DOI)
+        pdf = tmp_path / "a26aqd.pdf"
+        sha = self._real_pdf(
+            pdf,
+            "Photonic bandgap crystals for integrated optics — a thesis "
+            "about an entirely unrelated subject",
+        )
+        paper = self._companion_paper(sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id, printable_only=True),
+                store=store,
+            )
+        assert result is not None
+        assert result.inserted is False
+        assert result.ref_id == stub.id
+        assert result.cite_key == ""  # parks under duplicates/, not corpus
+        assert self._n_paper_refs(store) == 1
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+        assert row[0] is None
+        events = self._ingest_events(store, stub.id)
+        assert [e for e, _ in events] == ["attach_refused"]
+        assert events[0][1]["extracted_doi"] == self.BOGUS_DOI
+
+    def test_embedded_doi_owned_elsewhere_does_not_steal_attach(
+        self, store, tmp_path: Path
+    ):
+        """The bogus embedded DOI can name a real ref — a printable_only
+        ingest must not probe it into attaching to that ref."""
+        owner = store.insert_ref(
+            kind="paper", slug="mimet18", title="Xylenol orange LAMP"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', %s, 'manual')",
+                (owner.id, self.BOGUS_DOI),
+            )
+            conn.commit()
+        stub = self._bodied_stub(store, slug="a26aqd", doi=self.TARGET_DOI)
+        pdf = tmp_path / "a26aqd.pdf"
+        sha = self._real_pdf(
+            pdf, f"{self.TARGET_TITLE} … https://doi.org/{self.TARGET_DOI}"
+        )
+        paper = self._companion_paper(sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id, printable_only=True),
+                store=store,
+            )
+        assert result is not None and result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            target_sha = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()[0]
+            owner_sha = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (owner.id,)
+            ).fetchone()[0]
+            sha_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='pdf_sha256' AND id_value=%s",
+                (sha,),
+            ).fetchone()[0]
+        assert target_sha == sha
+        assert owner_sha is None
+        assert sha_owner == stub.id

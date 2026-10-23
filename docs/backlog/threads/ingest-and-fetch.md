@@ -210,6 +210,13 @@ is verified done on prod.
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
+   gr506757 (2026-10-23): a `deferred_printable_only` no-body can also mean
+   the companion's sidecar fold was refused on its embedded DocInfo DOI —
+   Elsevier stamps some companions with a *predecessor* paper's metadata —
+   which then minted a phantom ref and stole the printable. Fixed in
+   `add.py::_ingest_pdf`: printable_only probes content hashes only,
+   refused folds re-gate on rendered-text identity (`attach_doi_overridden`
+   / `attach_refused` events) and never mint.
 4. **`backlog/outbound-policy.md`** — one resolved policy (rate, wait,
    timeouts, on_refuse, concurrency) per outbound call over the two
    shipped primitives (rate bucket, slot hold), DB-overridable per

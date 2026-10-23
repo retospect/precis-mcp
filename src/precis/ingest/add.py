@@ -571,12 +571,18 @@ def _ingest_pdf(
 
     with store.pool.connection() as conn:
         existing = probe_existing(
-            paper_id=paper.paper_id,
-            doi=paper.doi,
-            arxiv_id=paper.arxiv_id,
-            s2_id=paper.s2_id,
-            pubmed_id=paper.pubmed_id,
-            openalex_id=paper.openalex_id,
+            # A printable_only companion's identity is its fetch provenance
+            # (the sidecar ref_id), never its embedded metadata — gr506757:
+            # Elsevier stamps some companion PDFs with a *predecessor*
+            # paper's DocInfo DOI/title, so probing bibliographic ids can
+            # attach the file to a ref that legitimately owns that other
+            # DOI. Only the content hash probe is meaningful here.
+            paper_id=None if input.printable_only else paper.paper_id,
+            doi=None if input.printable_only else paper.doi,
+            arxiv_id=None if input.printable_only else paper.arxiv_id,
+            s2_id=None if input.printable_only else paper.s2_id,
+            pubmed_id=None if input.printable_only else paper.pubmed_id,
+            openalex_id=None if input.printable_only else paper.openalex_id,
             pdf_sha256=paper.pdf_sha256,
             content_hash=paper.content_hash,
             conn=conn,
@@ -597,6 +603,23 @@ def _ingest_pdf(
                 fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
             )
             if (
+                existing is None
+                and input.printable_only
+                and input.fold_ref_id is not None
+            ):
+                # gr506757: a printable_only companion writes no body chunks
+                # anywhere, so the embedded-DOI conflict that rightly refuses
+                # a body-bearing fold is the wrong gate — that DOI can be the
+                # publisher's own stale DocInfo. Retry the fold gated on the
+                # rendered-text identity check instead.
+                existing = _printable_fold_target(
+                    fold_ref_id, input.pdf_path, kind=paper.kind, conn=conn
+                )
+                if existing is not None:
+                    _note_printable_doi_override(
+                        store, fold_ref_id, input, paper, conn=conn
+                    )
+            if (
                 existing is not None
                 and input.fold_ref_id is None
                 and not _named_stub_identity_ok(existing, input.pdf_path, conn=conn)
@@ -611,9 +634,35 @@ def _ingest_pdf(
                     input.pdf_path.name,
                     existing,
                 )
+            elif input.printable_only and input.fold_ref_id is not None:
+                # Never mint: a printable_only file is only ever the named
+                # ref's attachable printable — not a body candidate — so a
+                # refused fold minting a fresh ref from embedded metadata
+                # mints a phantom paper AND strips the real ref's printable
+                # (gr506757). Journal the refusal on the target instead.
+                _note_printable_attach_refused(
+                    store, fold_ref_id, input, paper, conn=conn
+                )
+                conn.commit()
+                refused = _with_kind(
+                    _hit_result_from_db(fold_ref_id, conn=conn, fallback=paper),
+                    kind=_lookup_kind(fold_ref_id, conn=conn),
+                )
+                # No attach happened, so the file is not the target's
+                # canonical copy — park it in duplicates/, never "recover"
+                # it into the corpus under the target's cite_key.
+                return replace(refused, cite_key="")
             elif input.fold_ref_id is None:
                 log.warning(
                     "precis_add: %s names handle ref_id=%s but it is not a "
+                    "valid fold stub (retired, wrong kind, has a body, or DOI "
+                    "mismatch); ingesting as a new ref",
+                    input.pdf_path.name,
+                    fold_ref_id,
+                )
+            else:
+                log.warning(
+                    "precis_add: %s sidecar named ref_id=%s but it is not a "
                     "valid fold stub (retired, wrong kind, has a body, or DOI "
                     "mismatch); ingesting as a new ref",
                     input.pdf_path.name,
@@ -1136,6 +1185,121 @@ def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
         )
         return False
     return True
+
+
+def _printable_fold_target(
+    ref_id: int, pdf_path: Path, *, kind: str, conn: Any
+) -> int | None:
+    """``ref_id`` iff a ``printable_only`` companion may attach to it (gr506757).
+
+    Runs after :func:`_valid_fold_stub` refused the sidecar's fold target —
+    which, for a still-live same-kind ref that still needs a PDF, can only
+    be the embedded-DOI conflict gate. That gate is the *wrong* evidence
+    here: a companion is attach-only (it never writes body chunks, the
+    hazard the DOI guard exists for), and its embedded DocInfo can name a
+    different paper outright — Elsevier stamps some companion PDFs with a
+    predecessor paper's DOI/title while the rendered pages are the fetched
+    article. Re-check liveness/kind/body-need, then gate on
+    :func:`_named_stub_identity_ok`'s rendered-text verdict instead of the
+    embedded metadata.
+    """
+    valid = _valid_fold_stub(ref_id, kind=kind, conn=conn)
+    if valid is None:
+        return None
+    if not _named_stub_identity_ok(ref_id, pdf_path, conn=conn):
+        return None
+    return valid
+
+
+def _printable_event_dois(paper: Any, fold_ref_id: int, *, conn: Any) -> dict[str, str]:
+    """``{extracted_doi, target_doi}`` for the printable-attach journals."""
+    out: dict[str, str] = {}
+    if paper.doi:
+        out["extracted_doi"] = str(paper.doi)
+    target = _doi_conflicts(paper.doi, fold_ref_id, conn=conn)
+    if target is None:
+        row = conn.execute(
+            "SELECT min(id_value) FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'doi'",
+            (fold_ref_id,),
+        ).fetchone()
+        target = str(row[0]) if row and row[0] else ""
+    if target:
+        out["target_doi"] = target
+    return out
+
+
+def _note_printable_doi_override(
+    store: Store,
+    ref_id: int,
+    input: PdfInput,
+    paper: Any,
+    *,
+    conn: Any,
+) -> None:
+    """Journal a printable attach that overrode an embedded-DOI conflict.
+
+    The rendered-text gate passed where the embedded DocInfo DOI disagreed
+    with the fetch target — the signature of a publisher-stale DocInfo
+    (gr506757). Worth a row: if a genuinely-misserved file ever slips past
+    the text check, this event is what tells an operator which DOI lied.
+    Best-effort, like :func:`_note_pdf_no_body`.
+    """
+    try:
+        store.append_event(
+            int(ref_id),
+            source=PDF_NO_BODY_SOURCE,
+            event="attach_doi_overridden",
+            payload={
+                "file": input.pdf_path.name,
+                "pdf_sha256": paper.pdf_sha256,
+                **_printable_event_dois(paper, ref_id, conn=conn),
+            },
+            conn=conn,
+        )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not journal attach_doi_overridden for "
+            "ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
+def _note_printable_attach_refused(
+    store: Store,
+    ref_id: int,
+    input: PdfInput,
+    paper: Any,
+    *,
+    conn: Any,
+) -> None:
+    """Journal a ``printable_only`` companion that could not attach (gr506757).
+
+    The sidecar's fold target is gone, retired, resolved, or its rendered
+    text mismatches the file. The ingest does NOT mint a fresh ref — the
+    file was only ever this ref's printable — so this row is the loud
+    record of where the printable went. Best-effort, like
+    :func:`_note_pdf_no_body`.
+    """
+    try:
+        store.append_event(
+            int(ref_id),
+            source=PDF_NO_BODY_SOURCE,
+            event="attach_refused",
+            payload={
+                "file": input.pdf_path.name,
+                "pdf_sha256": paper.pdf_sha256,
+                **_printable_event_dois(paper, ref_id, conn=conn),
+            },
+            conn=conn,
+        )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not journal attach_refused for ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
 
 
 def _fold_into_named_stub(
