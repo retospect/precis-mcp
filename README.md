@@ -6,12 +6,24 @@
 [![License](https://img.shields.io/github/license/retospect/precis-mcp.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22863181.svg)](https://doi.org/10.5281/zenodo.22863181)
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server that
-gives language-model agents a small, uniform API for reading, writing,
-and searching across papers, documents, personal state, code, and
-cached tool calls. Small-model-friendly (7B-class agents are the design
-target); stores content in PostgreSQL with `pgvector`, with a web
-interface ([see how it works](guide/README.md)).
+An untiring research collaborator: it reads papers and patents, cites
+the paragraph, writes the paper, and designs and simulates what it
+proposes. A [Model Context Protocol](https://modelcontextprotocol.io/)
+server for language-model agents:
+
+- **Research** — papers, patents and reviews with paragraph-level
+  citations; findings, argument graphs and a term taxonomy.
+- **Writing** — paper, patent and report drafts with figures and
+  diagrams; export to LaTeX, PDF and Word; audio narration.
+- **Science and design** — atomistic structures, proteins, reactions and
+  catalytic pathways, sourced material properties, CAD assemblies, PCBs
+  and flow simulation, all built from code you can read.
+- **Work** — todos, quests, jobs, agent fleets and long-term memory,
+  plus cached web, Wolfram, YouTube and Perplexity calls.
+
+Agents use seven verbs (`get`, `search`, `put`, `edit`, `delete`, `tag`,
+`link`) over every kind; content lives in PostgreSQL with `pgvector`,
+with a web interface ([see how it works](guide/README.md)).
 
 ## See it
 
