@@ -127,8 +127,8 @@ castor, Reto's numbers where he gave them:
 | class | priority | min | max | filler |
 |---|---|---|---|---|
 | `user` (interactive: MCP session calls, chat, agent turns) | 1 | 0 | 4 | no |
-| `classify` | 2 | 2 | ? | no |
-| `llm_summarize` | 3 | ? | ? | no — Reto's numbers needed |
+| `classify` | 2 | 2 | 8 | no |
+| `llm_summarize` | 3 | 4 | 16 | no |
 | `castor_agent` (`castor-agent-lane.md` agent lane; Reto 2026-10-22: one channel at a time) | 2 | 0 | 1 | no |
 | `castor_batch` (`castor-agent-lane.md` batch lane, `llm.op.castor_lane:*`) | 3 | 0 | 16 | no |
 | `graph_garden` | 4 | 2 | slots | yes |
@@ -309,7 +309,13 @@ to a failed call.
 
 ## Open questions / decisions log
 
-- `llm_summarize` floor/max and whether `classify` gets a max: Reto.
+- Decided, Reto 2026-10-23 ("11 as stated .go"): `llm_summarize` min 4
+  max 16, `classify` max 8; S1 counts requests and the S2b benchmark
+  decides weights; per-request reasoning-effort override yes (an
+  `LlmRequest` field the local wire forwards; the lane class stays the
+  source's); controller setpoint 32 until the S0 curve shows the
+  plateau. The three questions below on those topics are kept for their
+  reasoning.
 - Whether `priority` ties are round-robin or config order (proposed:
   round-robin among equal priority, so "schedule evenly" holds within a
   tier).

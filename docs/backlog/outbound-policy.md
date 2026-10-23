@@ -122,7 +122,7 @@ Covers HTTP to scraped hosts, provider APIs, LLM APIs, subprocess/ssh
 |---|---|---|---|
 | `scraped-host` | 1/s (today's `DEFAULT_HOST_ROW`) | — | any `host:<netloc>` with no named row |
 | `provider-api` | the documented limit (0225 rows) | — | s2, crossref, openalex, … |
-| `llm-api` | none | a shared hold on `resource_slots` row `(host='api', resource='llm-api:<provider>')`, capacity per provider | paced by 429 + `Retry-After` (`park`); openrouter.ai, OpenAI-compatible hosts; see Q3 below |
+| `llm-api` | none | a shared hold on `resource_slots` row `(host='api', resource='llm-api:<provider>')`, capacity per provider | paced by 429 + `Retry-After` (`park`); openrouter.ai, OpenAI-compatible hosts; shared hold ruled by Reto 2026-10-23 |
 | `llm-local` | none | the endpoint's `llm:<model>` slots, divided by class | castor SGLang and sparks; `llm-lane-scheduler.md` owns the division and the slot count |
 | `internal` | today's per-service pacing until a caller opts in (S1 review b78994bed: a rate-less default would silently drop the 1/s pacing on services that call internal URLs today); the target is none | — | `is_internal_host`, embedder, cluster services |
 
@@ -207,8 +207,8 @@ eviction (keyed on `last_refill`) would otherwise retire a busy
 `GREATEST(last_refill, last_used_at)` and never evicts a row carrying a
 non-NULL override column.
 
-**Recommendation on `llm-api` concurrency (Reto's pending Q3; recorded as
-this spec's recommendation, not a ruling).** Use the shared slot hold, not
+**`llm-api` concurrency (Reto ruled shared, 2026-10-23; the reasoning, first recorded as
+this spec's recommendation).** Use the shared slot hold, not
 a per-process semaphore. A per-process cap multiplies by the worker count
 (~5 hosts × passes), so the fleet overshoots a provider's concurrency
 limit exactly when every host is busy, and a 429 storm is the only
@@ -349,9 +349,8 @@ and logs once per provider per hour (`_warn_unpaced`).
 
 - Decided 2026-10-23: refusal accounting is a counter column for every
   class (D4); no `llm_call_log` refused rows.
-- **Q3 for Reto** — `concurrency` for `llm-api`: shared through a
-  `resource_slots` hold (this spec's recommendation, §2) or per process.
-  Pending his ruling; S1 builds the shared hold unless he says otherwise.
+- Decided, Reto 2026-10-23: `concurrency` for `llm-api` is the shared
+  `resource_slots` hold (§2, D2), not per process.
 - Whether `digikey`/`mouser`/`farnell` daily caps move to the class
   layer (`vendor-api`) or stay per row.
 - Carried from `shared-rate-limiter.md` (deleted 2026-10-23): a
