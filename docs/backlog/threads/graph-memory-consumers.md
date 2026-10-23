@@ -199,8 +199,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 
 ## Parked
 
-- **backlog/dev-context-diet.md** — small enabler, parked until a
-  consumer above needs it.
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
 - **backlog/universal-short-codes.md** — small enabler.
 
