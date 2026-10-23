@@ -184,12 +184,15 @@ class RealizeConfig:
     #: :func:`_try_plane_jumper`) placed for one net.
     max_plane_jumpers_per_net: int = 4
     #: Extra wire-length millimetres a via inside a part's courtyard
-    #: costs the A* (:func:`vroute.Request.via_body_cost_mm`) — the board
-    #: profile's ``via_body_cost_mm`` (prototype 6.0; gr502369). A soft
-    #: cost, never a keep-out: the search pays up to this much extra
-    #: wire to keep a via out from under a body. ``0.0`` is off — prod's
-    #: default, today's behaviour exactly.
-    via_body_cost_mm: float = 0.0
+    #: costs the A* (:func:`vroute.Request.via_body_cost_mm`; gr502369).
+    #: A soft cost, never a keep-out: the search pays up to this much
+    #: extra wire to keep a via out from under a body. 6.0 on every
+    #: profile (Reto 2026-10-23, gr504972: measured on esp32c3 seeds 1-5
+    #: it routes 11/11 on all five where prod's old 0 left two seeds a
+    #: net short, and halves ``vias_under_part`` — a via out from under a
+    #: part also stops blocking that part's pad exits). A profile row
+    #: that sets ``via_body_cost_mm`` overrides it; ``0.0`` is off.
+    via_body_cost_mm: float = 6.0
     #: Multiplier on track length through a DECLARED plane layer
     #: (:attr:`_RouteContext.plane_layers`, handed to
     #: :func:`vroute.Request.layer_cost`). A track crossing a pour cuts
@@ -218,6 +221,17 @@ class RealizeConfig:
     #: rules set ``thermal: 'solid'`` is exempt: the class value wins over
     #: the profile.
     thermal: ThermalSpec | None = None
+    #: Wire-length millimetres a track leg pays per OTHER pending pad's
+    #: escape lane it enters, and a via site pays to sit in one
+    #: (:attr:`_RouteContext.escape_lanes` → :func:`vroute.Request.
+    #: lane_zones`; gr503666). The lanes the drop-via sweep already keeps
+    #: off, priced for signals too: shortest-first routes a fine-pitch
+    #: part's short nets first, and their exits used to cut diagonally
+    #: across the long header net's one straight exit (esp32c3 U1.SCL),
+    #: which then ``exhausted`` with every goal leg refused. About the
+    #: extra wire of going round a two-via-pitch lane end instead of
+    #: through it. Soft, never a keep-out; ``0.0`` is off.
+    escape_lane_cost_mm: float = 4.0
 
 
 # ── the closed-form geometric primitive ──────────────────────────────────
@@ -1031,6 +1045,11 @@ class _RouteContext:
     #: every ``net_plane_layers`` bitmask) — the layers a routed track
     #: pays ``RealizeConfig.plane_layer_cost`` on (gr503666).
     plane_layers: frozenset[int] = frozenset()
+    #: Every point-to-point-routed fine-pitch pad's straight exit
+    #: (:func:`_escape_lanes`): the drop-via sweep keeps off them all,
+    #: and each signal's search pays ``RealizeConfig.escape_lane_cost_mm``
+    #: to enter one that belongs to a net still waiting to route.
+    escape_lanes: tuple[_Lane, ...] = ()
 
 
 def _route_context(
@@ -1113,6 +1132,29 @@ def _route_context(
         ),
     )
     plane_served_pins = _plane_served_pins(ir, plane_ids, fixed_terminals_by_pin)
+    plane_nets = {int(ir.seg_net[s]) for s in plane_ids}
+    # A lane is long enough for a via to sit beside the pad on either
+    # side: the belt the plane drops form is what it has to cross (the
+    # signal vias', on a board without planes).
+    belt_nets = plane_nets or set(rules_by_net)
+    lane_len = 2.0 * max(
+        (
+            float(rules_by_net[n_].via_dia_mm or 0.0)
+            + net_layer_clearance.get((n_, PAD_LAYER), net_clearance.get(n_, clearance))
+            for n_ in belt_nets
+        ),
+        default=0.0,
+    )
+    escape_lanes = tuple(
+        _escape_lanes(
+            ir,
+            pad_geoms,
+            plane_nets,
+            rules_by_net,
+            lane_len_mm=lane_len,
+            outer_layers=range(n_board_layers),
+        )
+    )
     return _RouteContext(
         signal_layers,
         pad_geoms,
@@ -1139,6 +1181,7 @@ def _route_context(
             for mask in ir.net_plane_layers
             for layer in plane_layers_of(int(mask))
         ),
+        escape_lanes,
     )
 
 
@@ -1306,6 +1349,7 @@ def _static_space(
         ink_field=ctx.ink_field,
         via_body_zones=ctx.via_body_zones,
         served_pins=ctx.plane_served_pins,
+        lanes=ctx.escape_lanes,
     )
     unrouted: list[int] = []
     # A pin with no legal drop leaves its net's segments unserved; report
@@ -1453,6 +1497,7 @@ def _route_seg_vector(
     *,
     budget: int | None = None,
     window_mm: float | None = None,
+    lane_zones: tuple[tuple[int, Any], ...] = (),
 ) -> tuple[list[RealizedTrack], list[RealizedVia]] | None:
     """One segment's vector route — ``None`` when the search found no
     legal path within its share of the pass budget. Stamps the new copper
@@ -1465,7 +1510,9 @@ def _route_seg_vector(
     window). On failure the last search's witness stats land in
     ``fail_witness[seg_id]`` for :func:`_diagnose_all`'s per-segment
     reason; ``{"stop": "budget"}`` when the pool ran out before the
-    search could start.
+    search could start. ``lane_zones`` (:func:`_lane_zones`) are the
+    still-pending nets' escape lanes this search pays
+    ``config.escape_lane_cost_mm`` to enter.
 
     Island terminals (:attr:`RealizeResult.island_terminals`): each end's
     candidate terminals are the pin's own pad first, then its
@@ -1569,6 +1616,8 @@ def _route_seg_vector(
                 via_layers=tuple(range(n)),
                 via_body_cost_mm=config.via_body_cost_mm,
                 via_body_zones=ctx.via_body_zones,
+                lane_zones=lane_zones,
+                lane_cost_mm=config.escape_lane_cost_mm,
                 layer_cost=layer_cost,
                 window_mm=window_mm if window_mm is not None else 3.0,
                 max_expansions=max(1, cap - spent[0]),
@@ -1740,6 +1789,7 @@ def _realize_vector(
         return sum(seg_span(s) for s in segs)
 
     routed: set[int] = set()
+    routed_nets: set[int] = set()
     no_position: set[int] = set()
     tried = 0
     retried = 0
@@ -1764,6 +1814,26 @@ def _realize_vector(
         net_tracks: list[RealizedTrack] = []
         net_vias: list[RealizedVia] = []
         window = retry_window if pool is retry_spent else None
+        # The exits this net must leave room for: every lane of a net
+        # still waiting its turn (gr503666). A routed net's pads have
+        # their copper, a net that cannot route (no segments, or a layer
+        # lock to nothing) never needs its exit, and a lane of this net's
+        # own pads is its own exit.
+        lane_zones = (
+            _lane_zones(
+                ctx.escape_lanes,
+                net,
+                float(ctx.rules_by_net[net].track_width_mm),
+                lambda other: (
+                    other in by_net
+                    and other not in routed_nets
+                    and other not in ctx.net_layer_lock_fail
+                ),
+                ctx,
+            )
+            if config.escape_lane_cost_mm > 0 and ctx.escape_lanes
+            else ()
+        )
         for s in sorted(by_net[net], key=seg_span):
             pa_, pb_ = (
                 pin_point(ir, int(ir.seg_pin_a[s])),
@@ -1787,6 +1857,7 @@ def _realize_vector(
                 fail_witness,
                 budget=cap,
                 window_mm=window,
+                lane_zones=lane_zones,
             )
             if got is None:
                 space.rollback(mark)
@@ -1802,6 +1873,7 @@ def _realize_vector(
         tracks.extend(net_tracks)
         vias.extend(net_vias)
         routed.update(by_net[net])
+        routed_nets.add(net)
         return True
 
     tried_c = [0]
@@ -2749,9 +2821,10 @@ class _FanoutPin:
     key: int = -1
 
 
-#: A routed pad's straight exit the drop-via sweep keeps clear of:
-#: ``(pad centre, lane end, lane half-width, pad layer)``.
-_Lane = tuple[Point, Point, float, int]
+#: A routed pad's straight exit the drop-via sweep keeps clear of and
+#: other signals' searches pay to enter: ``(pad centre, lane end, lane
+#: half-width, pad layer, the pad's net id)``.
+_Lane = tuple[Point, Point, float, int, int]
 
 #: A pad whose nearest same-instance pad is further than this has no row
 #: to escape perpendicular to (a 2.54 mm header is through-hole and
@@ -2769,7 +2842,8 @@ def _escape_lanes(
     outer_layers: range,
 ) -> list[_Lane]:
     """Every point-to-point-routed SMD pad's straight exit — the corridor
-    :func:`_drop_via_site` prices a plane drop out of (gr503666).
+    :func:`_drop_via_site` prices a plane drop out of, and every other
+    pending signal's search pays to enter (gr503666).
 
     **Why.** The fan-out runs before any signal routes and its sweep
     takes the first legal site around the pin, so a drop via two pads
@@ -2816,9 +2890,41 @@ def _escape_lanes(
             half = float(rules_by_net[net].track_width_mm) / 2.0
             layer = _side_layer(ir, inst, outer_layers)
             lanes.append(
-                (p, (p[0] + nx * lane_len_mm, p[1] + ny * lane_len_mm), half, layer)
+                (
+                    p,
+                    (p[0] + nx * lane_len_mm, p[1] + ny * lane_len_mm),
+                    half,
+                    layer,
+                    net,
+                )
             )
     return lanes
+
+
+def _lane_zones(
+    lanes: Sequence[_Lane],
+    net_id: int,
+    width_mm: float,
+    pending: Callable[[int], bool],
+    ctx: _RouteContext,
+) -> tuple[tuple[int, Any], ...]:
+    """``net_id``'s :attr:`vroute.Request.lane_zones`: every lane of a pad
+    whose net is still ``pending`` (not this net, not one already
+    routed), grown by the pair clearance and half this track so the
+    search's centreline test matches the kernel's."""
+    own = ctx.net_clearance.get(net_id, ctx.clearance)
+    return tuple(
+        (
+            layer,
+            _ShapelyLineString([a, b]).buffer(
+                half
+                + max(own, ctx.net_clearance.get(lane_net, ctx.clearance))
+                + width_mm / 2.0
+            ),
+        )
+        for a, b, half, layer, lane_net in lanes
+        if lane_net != net_id and pending(lane_net)
+    )
 
 
 def _blocks_lane(
@@ -2832,7 +2938,7 @@ def _blocks_lane(
 ) -> bool:
     """Would a drop via at ``site`` (stub from ``pad``) leave no room for
     a track down any of ``lanes``?"""
-    for a, b, half, layer in lanes:
+    for a, b, half, layer, _net in lanes:
         if _seg_point_dist(site, a, b) < via_radius_mm + clearance + half:
             return True
         if layer == pad_layer and _seg_seg_dist(pad, site, a, b) < (
@@ -2865,6 +2971,7 @@ def _plane_fanout(
     ink_field: _InkField | None = None,
     via_body_zones: tuple[Any, ...] = (),
     served_pins: frozenset[int] = frozenset(),
+    lanes: Sequence[_Lane] = (),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
 
@@ -2881,10 +2988,10 @@ def _plane_fanout(
 
     ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
     :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
-    to-silk-softly preference; the routed pads' escape lanes
-    (:func:`_escape_lanes`) are forwarded the same way, priced ahead of
-    ink — a via on a signal pad's only exit strands the signal, a via
-    under ink drops a silk line.
+    to-silk-softly preference; ``lanes`` (the routed pads' escape lanes,
+    :attr:`_RouteContext.escape_lanes`) are forwarded the same way,
+    priced ahead of ink — a via on a signal pad's only exit strands the
+    signal, a via under ink drops a silk line.
 
     One stub plus one drop via per PIN, not per segment. A net's segments
     are a spanning TREE over its pins (``ir.from_graph``), so per-segment
@@ -2945,24 +3052,6 @@ def _plane_fanout(
     floor_width = resolve_net_rules(
         "", layer_is_outer=True, fab_caps=config.fab_caps
     ).track_width_mm
-    # Long enough for a via to sit beside the pad on either side: the
-    # belt the neighbours' drops form is what the lane has to cross.
-    lane_len = 2.0 * max(
-        (
-            float(rules_by_net[n].via_dia_mm or 0.0)
-            + space.cl(str(ir.net_name[n]), PAD_LAYER)
-            for n in seg_of_net
-        ),
-        default=0.0,
-    )
-    lanes = _escape_lanes(
-        ir,
-        pad_geoms,
-        set(seg_of_net),
-        rules_by_net,
-        lane_len_mm=lane_len,
-        outer_layers=outer_layers,
-    )
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still

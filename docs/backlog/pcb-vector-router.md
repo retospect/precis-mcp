@@ -710,6 +710,23 @@ and the earlier signals' exits cut across its lane. That is a
 signal-vs-signal lane problem (an escape pass per dense part before the
 trunks, or lane-aware leg costs in the A*), not a fan-out one.
 
+Signal-vs-signal, measured 2026-10-23 (g4-pcb-route): the lane-aware A*
+option landed — `_escape_lanes` moved into `_route_context` (each lane
+carries its pad's net id), and a net's search pays
+`RealizeConfig.escape_lane_cost_mm` = 4.0 per lane of a still-pending
+net a track leg enters, and once for a via site in one (the lanes are
+grown by the pair clearance and half the track; a routed net's lanes
+stop being priced, a plane net's and a layer-locked net's never are).
+The alternative (an escape pass reserving each fine-pitch pad's exit
+before the trunks) lost because a reserved stub is copper that the real
+route then has to re-find: the soft price steers around the lane without
+pre-claiming it. esp32c3 seeds 1–24 at `via_body_cost_mm` 6.0: without
+the cost 23/24 (s8 SDA `exhausted`, its exits cut by earlier tracks —
+the gripe's mechanism); with it 23/24 — s8 routes, s12 trades to BOOT
+(`congestion`, BOOT's own corridor, no lane involved; identical at
+1.0/2.0/4.0, so a different draw rather than a cost artefact). The
+gripe's seeds 1–5 route 11/11 either way.
+
 Still-open scope (coordinator ruling 2026-10-18, adjusted to the
 vector-only world):
 

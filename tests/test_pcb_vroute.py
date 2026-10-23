@@ -196,6 +196,82 @@ def test_the_same_vias_are_free_without_the_body_cost() -> None:
     assert len(path.vias) == 2
 
 
+# ── escape-lane cost (gr503666) ─────────────────────────────────────────
+#
+# Another pending pad's straight exit is a soft price zone the same way a
+# body is: a track leg that enters one pays ``lane_cost_mm`` per lane, a
+# via site inside one pays it once. The fixture routes (2, 5) → (10, 5)
+# across a lane standing on x = 6 from y = 3 to y = 7.5 in otherwise free
+# space, so the choice is exactly "8 mm straight through the lane" vs
+# "~10.5 mm over its end along the terminals' escape rays".
+
+_LANE_ZONE = LineString([(6.0, 3.0), (6.0, 7.5)]).buffer(0.3)
+
+
+def _lane_req(cost: float) -> v.Request:
+    return _req(
+        (2.0, 5.0),
+        (10.0, 5.0),
+        lane_zones=((0, _LANE_ZONE),),
+        lane_cost_mm=cost,
+        window_mm=16.0,
+    )
+
+
+def test_a_track_pays_to_cross_another_pads_escape_lane() -> None:
+    """With the cost on, the extra ~2.5 mm of wire over the lane end is
+    cheaper than the 4 mm surcharge: the path clears the lane."""
+    path = v.route(_space([]), _lane_req(4.0))
+    assert path is not None
+    assert path.length_mm > 10.0
+    for _layer, pts in path.runs:
+        assert not LineString(pts).intersects(_LANE_ZONE), pts
+
+
+def test_the_same_lane_is_free_without_the_cost() -> None:
+    """Control: cost off, the straight 8 mm run through the lane."""
+    path = v.route(_space([]), _lane_req(0.0))
+    assert path is not None
+    assert path.length_mm == pytest.approx(8.0)
+
+
+def test_a_lane_on_another_layer_costs_a_track_nothing() -> None:
+    """A lane is a pad's exit on the pad's own layer; a track under it on
+    another layer leaves the exit open (a via would not — it is priced
+    on every layer)."""
+    req = _req(
+        (2.0, 5.0),
+        (10.0, 5.0),
+        layers=(1,),
+        lane_zones=((0, _LANE_ZONE),),
+        lane_cost_mm=4.0,
+        window_mm=16.0,
+    )
+    path = v.route(_space([]), req)
+    assert path is not None
+    assert path.length_mm == pytest.approx(8.0)
+
+
+def test_a_via_site_inside_a_lane_pays_the_lane_cost() -> None:
+    """The via-under-body fixture with the body zone swapped for a lane
+    zone over the via sites: the short detour (0 vias) beats two lane
+    vias at 2×(1 + 6) exactly as it beats two body vias."""
+    wall = _wall("W", (10.0, 0.0), (10.0, 13.0), width=0.5, layers=(0,))
+    req = _req(
+        (5.0, 5.0),
+        (15.0, 5.0),
+        layers=(0, 1),
+        via=v.ViaSpec(0.6, 0.3),
+        terminal_layers=(0,),
+        lane_zones=((1, _WALL_BODY_ZONE),),
+        lane_cost_mm=6.0,
+        window_mm=16.0,
+    )
+    path = v.route(_space([wall]), req)
+    assert path is not None
+    assert path.vias == []
+
+
 def test_the_expansion_budget_is_shared_by_both_windows() -> None:
     """Work, not the clock, bounds a search: a request that cannot reach
     its goal spends at most ``max_expansions`` over both windows."""

@@ -17,6 +17,7 @@ import math
 from typing import Any
 
 import pytest
+from shapely.geometry import Point
 
 from precis.pcb import DEFAULT_STACKUP, padplace
 from precis.pcb import drc as pcb_drc
@@ -264,17 +265,92 @@ def test_plane_drop_via_keeps_out_of_a_neighbour_signal_pads_escape_lane():
     )
     u1_lanes = [lane for lane in lanes if abs(lane[0][0] - gx) < 1e-6]
     assert len(u1_lanes) == 2, lanes  # pins 3 and 4 — the two signal pads
-    assert all(b[0] < a[0] for a, b, _h, _l in u1_lanes), "lanes run outward (-x)"
+    assert all(b[0] < a[0] for a, b, *_rest in u1_lanes), "lanes run outward (-x)"
+    assert {lane[4] for lane in u1_lanes} == {
+        list(ir.net_name).index("SIG_B"),
+        list(ir.net_name).index("SIG_C"),
+    }, "each lane names its pad's net"
     assert via.y > gy, (
         f"the drop must take the lane-free diagonal up, not ({via.x}, {via.y})"
     )
     clearance = config.clearance_mm
-    for a, b, half, _layer in u1_lanes:
+    for a, b, half, _layer, _net in u1_lanes:
         gap = pcb_realize._seg_point_dist((via.x, via.y), a, b)
         assert gap >= rules.via_dia_mm / 2.0 + clearance + half - 1e-9, (
             f"GND drop via at ({via.x:.3f}, {via.y:.3f}) sits {gap:.3f} mm from the "
             f"escape lane of the signal pad at {a} — it blocks that pad's only exit"
         )
+
+
+def test_a_signal_prices_only_the_pending_neighbours_escape_lanes():
+    """gr503666, the signal-vs-signal half: the route context carries
+    every fine-pitch signal pad's lane, and a net's search is handed the
+    lanes of OTHER nets still waiting to route — never its own exit, and
+    not a routed net's — grown by clearance and half its own track."""
+    from precis.pcb import realize as pcb_realize
+
+    pins = [("U1", str(n)) for n in range(1, 9)]
+    graph = {
+        "instances": [
+            {"refdes": "U1", "x": 10.0, "y": 10.0, "rot": 0.0},
+            {"refdes": "B2", "x": 3.0, "y": 11.0},
+            {"refdes": "C2", "x": 3.0, "y": 4.0},
+            {"refdes": "G2", "x": 30.0, "y": 10.0},
+        ],
+        "pin_order": pins,
+        "nets": [
+            {
+                "name": "GND",
+                "members": [{"refdes": "U1", "pin": "2"}, {"refdes": "G2", "pin": "1"}],
+            },
+            {
+                "name": "SIG_B",
+                "members": [{"refdes": "U1", "pin": "3"}, {"refdes": "B2", "pin": "1"}],
+            },
+            {
+                "name": "SIG_C",
+                "members": [{"refdes": "U1", "pin": "4"}, {"refdes": "C2", "pin": "1"}],
+            },
+        ],
+        "unconnected": [{"refdes": "U1", "pin": str(n)} for n in (1, 5, 6, 7, 8)],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    names = list(ir.net_name)
+    gnd, sig_b, sig_c = names.index("GND"), names.index("SIG_B"), names.index("SIG_C")
+    ir.promote_plane(gnd, 3)
+    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    ctx = pcb_realize._route_context(ir, list(range(ir.n_segments)), config, None, None)
+    assert ctx is not None
+    assert {lane[4] for lane in ctx.escape_lanes} == {sig_b, sig_c}
+    assert all(lane[1][0] < lane[0][0] for lane in ctx.escape_lanes), "outward (-x)"
+    zones = pcb_realize._lane_zones(ctx.escape_lanes, sig_b, 0.2, lambda _n: True, ctx)
+    assert len(zones) == 1
+    (layer, zone), (lane,) = (
+        zones[0],
+        [lane for lane in ctx.escape_lanes if lane[4] == sig_c],
+    )
+    assert layer == lane[3]
+    assert zone.covers(Point(lane[1]))  # the lane end is inside its zone
+    # Grown by the lane's own half-width, the pair clearance and half
+    # this track: the zone edge sits that far off the lane axis (within
+    # the buffer's polygon approximation of a rounded cap).
+    half, clearance = lane[2], ctx.net_clearance.get(sig_b, ctx.clearance)
+    assert zone.exterior.distance(Point(lane[1])) == pytest.approx(
+        half + clearance + 0.1, abs=0.01
+    )
+    # SIG_C routed already: nothing left for SIG_B to pay for.
+    routed = {sig_c}
+    assert (
+        pcb_realize._lane_zones(
+            ctx.escape_lanes, sig_b, 0.2, lambda n: n not in routed, ctx
+        )
+        == ()
+    )
+    # A net with no lane of its own (the plane net) pays for both.
+    assert (
+        len(pcb_realize._lane_zones(ctx.escape_lanes, gnd, 0.2, lambda _n: True, ctx))
+        == 2
+    )
 
 
 def test_plane_pour_antipads_a_pad_that_has_no_track_or_via_at_all():

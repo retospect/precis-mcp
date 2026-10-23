@@ -1,9 +1,10 @@
 """gr502369 / docs/backlog/pcb-board-profile-prototype.md item 4 — the
-via-under-courtyard router cost's plumbing: the profile's
-``via_body_cost_mm`` reaches ``RealizeConfig`` (``prod`` ⇒ 0, off), the
-route context builds the courtyard zones only when the cost is on, and
-the ``vias_under_part`` measurement reads the SAME courtyard geometry the
-A* pays against.
+via-under-courtyard router cost's plumbing: a profile row's
+``via_body_cost_mm`` reaches ``RealizeConfig`` and a row without one
+(``prod``) keeps the config default — 6.0 on every profile since
+gr504972 (Reto 2026-10-23) — the route context builds the courtyard
+zones only when the cost is on, and the ``vias_under_part`` measurement
+reads the SAME courtyard geometry the A* pays against.
 
 The A* mechanism itself (detour vs. body via) is pinned in
 ``tests/test_pcb_vroute.py``'s gr502369 section.
@@ -40,24 +41,26 @@ _GRAPH = {
 
 
 def test_profile_via_body_cost_threads_into_realize_config() -> None:
-    """The one expression ``pcb_route`` builds the config with: the
-    profile's figure on ``prototype``, 0 — off — on ``prod``."""
+    """``pcb_route`` applies a profile row's figure over the config
+    default: ``prototype`` sets 6.0 explicitly, ``prod`` sets nothing and
+    gets the default — also 6.0 (gr504972; the prod row stays all-off so
+    the profile contract "None ⇒ the consumer's own default" holds)."""
     proto = profiles.profile_rules("prototype").via_body_cost_mm
     prod = profiles.profile_rules("prod").via_body_cost_mm
     assert proto == 6.0
     assert prod is None
-    assert RealizeConfig(via_body_cost_mm=proto or 0.0).via_body_cost_mm == 6.0
-    assert RealizeConfig(via_body_cost_mm=prod or 0.0).via_body_cost_mm == 0.0
+    assert RealizeConfig().via_body_cost_mm == 6.0
+    assert RealizeConfig(via_body_cost_mm=proto).via_body_cost_mm == 6.0
 
 
 def test_route_context_builds_zones_only_when_the_cost_is_on() -> None:
-    """Prod (cost 0) builds no zones at all — the same work, the same
-    board, as before the cost existed."""
+    """Cost 0 builds no zones at all — the same work, the same board, as
+    before the cost existed; the default builds one zone per part."""
     ir = from_graph(_GRAPH, stackup=DEFAULT_STACKUP)
     ids = list(range(ir.n_segments))
-    off = _route_context(ir, ids, RealizeConfig(), None, None)
+    off = _route_context(ir, ids, RealizeConfig(via_body_cost_mm=0.0), None, None)
     assert off is not None and off.via_body_zones == ()
-    on = _route_context(ir, ids, RealizeConfig(via_body_cost_mm=6.0), None, None)
+    on = _route_context(ir, ids, RealizeConfig(), None, None)
     assert on is not None
     assert on.via_body_zones == _via_body_zones(ir)
     assert len(on.via_body_zones) == 2  # one per placed instance

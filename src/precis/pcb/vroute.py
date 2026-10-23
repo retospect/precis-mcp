@@ -120,7 +120,16 @@ class Request:
     be >= 1.0 — the octile heuristic is then still admissible (no
     octilinear path is shorter than its cost). ``None``/absent means 1.0
     everywhere; the declared-plane surcharge lives in
-    ``realize._plane_layer_costs`` (gr503666)."""
+    ``realize._plane_layer_costs`` (gr503666).
+
+    ``lane_zones`` are OTHER pads' escape lanes (``realize._escape_lanes``,
+    gr503666) as ``(layer, polygon)`` pairs, each lane already grown by
+    the pair clearance and half this track: a track leg on ``layer`` that
+    enters one pays ``lane_cost_mm`` per lane entered, a via site inside
+    one on any layer pays it once. A fine-pitch pad has one straight
+    exit, and a track laid across it strands that pad's net — the
+    signal-vs-signal shape of the drop-via problem. Same soft-cost
+    discipline: never a keep-out, ``()``/``0.0`` is off."""
 
     net: str
     width_mm: float
@@ -133,6 +142,8 @@ class Request:
     via_cost_mm: float = 1.0
     via_body_cost_mm: float = 0.0
     via_body_zones: tuple[Any, ...] = ()
+    lane_zones: tuple[tuple[int, Any], ...] = ()
+    lane_cost_mm: float = 0.0
     layer_cost: dict[int, float] | None = None
     bend_cost_mm: float = 0.05
     window_mm: float = 3.0
@@ -596,6 +607,45 @@ def _route_in_window(
             )
         return body_memo[key]
 
+    # Foreign escape lanes (gr503666), indexed per layer for track legs
+    # and all together for via sites (a barrel spans every layer).
+    lane_trees: dict[int, tuple[STRtree, list[Any]]] = {}
+    lane_any: tuple[STRtree, list[Any]] | None = None
+    if req.lane_cost_mm and req.lane_zones:
+        per_layer: dict[int, list[Any]] = {}
+        for lane_layer, zone in req.lane_zones:
+            per_layer.setdefault(lane_layer, []).append(zone)
+        lane_trees = {la: (STRtree(zs), zs) for la, zs in per_layer.items()}
+        every = [zone for _la, zone in req.lane_zones]
+        lane_any = (STRtree(every), every)
+    lane_memo: dict[tuple[int, tuple[Coord, ...]], int] = {}
+    lane_via_memo: dict[tuple[float, float], bool] = {}
+
+    def lanes_entered(layer: int, poly: Sequence[Coord]) -> int:
+        """How many foreign escape lanes a connector on ``layer`` enters
+        — each costs ``lane_cost_mm`` on top of the wire."""
+        entry = lane_trees.get(layer)
+        if entry is None:
+            return 0
+        key = (layer, tuple(poly))
+        if key not in lane_memo:
+            tree, zones = entry
+            line = LineString(poly)
+            lane_memo[key] = sum(
+                1 for i in tree.query(line) if zones[int(i)].intersects(line)
+            )
+        return lane_memo[key]
+
+    def via_in_lane(p: Coord) -> bool:
+        if lane_any is None:
+            return False
+        key = (round(p[0], 9), round(p[1], 9))
+        if key not in lane_via_memo:
+            tree, zones = lane_any
+            pt = Point(p)
+            lane_via_memo[key] = any(zones[int(i)].covers(pt) for i in tree.query(pt))
+        return lane_via_memo[key]
+
     via_ok: dict[tuple[float, float], bool] = {}
 
     def via_fits(p: Coord) -> bool:
@@ -812,6 +862,8 @@ def _route_in_window(
             step = _length(poly) * lc.get(layer, 1.0) + req.bend_cost_mm * (
                 len(poly) - 1
             )
+            if lane_trees:
+                step += req.lane_cost_mm * lanes_entered(layer, poly)
             nxt = (layer, j)
             new = cost + step
             if new < g.get(nxt, math.inf) - 1e-12:
@@ -840,6 +892,8 @@ def _route_in_window(
                 new = cost + req.via_cost_mm
                 if under_body(here):
                     new += req.via_body_cost_mm
+                if lane_any is not None and via_in_lane(here):
+                    new += req.lane_cost_mm
                 if new < g.get(nxt, math.inf) - 1e-12:
                     g[nxt] = new
                     via_hops += 1

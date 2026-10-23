@@ -65,7 +65,7 @@ row: it can raise a number, never take one below `jlc_min`.
 | Via drill (`drill_mm`) | `house_default` 0.25 mm | 0.30 mm | a wire-wrap or probe wire fits; drill survives rework |
 | Via annular ring (`annular_ring_mm`) | `house_default` 0.25 mm | 0.25 mm (unchanged) | via diameter is derived `drill + 2 × ring` = 0.80 mm; the ring is not the lever |
 | Via diameter | derived, 0.75 mm | derived, 0.80 mm | follows drill; `capabilities._derive_via_diameter_mm` stays the one place that computes it |
-| Via under a part's courtyard | none (the grid maze router was removed 2026-10-20; vroute has no positional via cost by default) | `via_body_cost_mm` = 6.0 | a soft cost, not a keep-out: Reto "only a little". See the note below |
+| Via under a part's courtyard | `via_body_cost_mm` = 6.0 — the `RealizeConfig` default since gr504972 (Reto 2026-10-23; the prod row itself stays unset) | `via_body_cost_mm` = 6.0 (set explicitly) | a soft cost, not a keep-out: Reto "only a little". See the note below |
 | Via density | no limit | at most 1 via per 4 mm² of board in any 10 × 10 mm window, soft: warn, never block | vias are what a person has to dig past; the limit is on windows, not the board average |
 | Thermal relief on plane/pour pads | solid | spokes + antipad gap | hand soldering a pad tied to a plane pulls heat away |
 | Silk | stroke `silk_width_mm` house 0.25 mm, refdes height `silk.DEFAULT_REFDES_HEIGHT_MM` = 1.0 mm | stroke unchanged; refdes height 1.2 mm; pin-1/polarity mark on every polarized part (`session.polarized_refdes` already finds them; the profile makes a missing mark a warn) | a person reads the board; the label has to survive a magnifier-free glance |
@@ -79,9 +79,12 @@ on 2026-10-20; `vroute` (gridless octilinear A*) carries the cost now
 via"). `vroute.Request.via_body_cost_mm` prices a via site inside any
 courtyard at `via_cost_mm + via_body_cost_mm` in wire-length mm, the
 fan-out drop-via sweep and the sprinkle stage prefer legal sites out
-from under a body, and prod's default is 0 — today's behaviour exactly.
-Zones and the `vias_under_part` count share
-`ir.world_courtyard_polygons`.
+from under a body. Prod started at 0 (today's behaviour exactly);
+since gr504972 (Reto 2026-10-23) the `RealizeConfig` default is 6.0 on
+every profile — measured on esp32c3 seeds 1-5 it routed 11/11 on all
+five where 0 left two seeds a net short, and `vias_under_part` fell from
+5 to 2 — and a profile row's figure overrides it. Zones and the
+`vias_under_part` count share `ir.world_courtyard_polygons`.
 
 **Via density.** The window rule is a DRC finding (`via_density`, warn),
 not a router constraint; the router already pays `VIA_COST_MM` per via.
@@ -203,7 +206,9 @@ has no consumer until a drill-size check exists.
 - A keep-out for vias under parts. Reto: a soft cost, "only a little".
 - Changing `prod` in any way. Prod boards are byte-identical before and
   after (nano, EWOD, taz15 baselines); the one allowed difference is the
-  new `vias_under_part` summary line.
+  new `vias_under_part` summary line. (Superseded for the via cost alone:
+  gr504972, Reto 2026-10-23, made `via_body_cost_mm` = 6.0 the
+  `RealizeConfig` default on every profile; the prod row stays unset.)
 - A third profile, or per-board overrides of individual profile values.
   If a board needs 0.25 mm space it sets a net-class `clearance_mm`,
   which already beats the profile's floor upward (the overlay raises
@@ -265,6 +270,6 @@ No migration. Prod boards are the blast radius to protect: criterion 1.
 - Defaults in the table are proposals chosen to be a visible but modest
   step above `house_default`; Reto may tune them in the JSON without
   touching code. No blocker.
-- Prod has no under-part via cost since the maze removal (gr502369
-  shipped the vroute one, prod default 0); flagged above because the
-  gripe assumed the maze's 3.0 still existed.
+- Prod had no under-part via cost from the maze removal (gr502369
+  shipped the vroute one, prod default 0) until gr504972 (Reto
+  2026-10-23: 6.0 as the `RealizeConfig` default on every profile).

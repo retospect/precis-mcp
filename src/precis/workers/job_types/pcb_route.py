@@ -56,6 +56,7 @@ conflict digest the loop ends in.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 from collections import Counter
@@ -1151,16 +1152,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # the silk gate lands).
         field_polish=bool(params.get("field_polish", FIELD_POLISH_DEFAULT)),
     )
+    profile_rules = pcb_profiles.profile_rules(profile)
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
-        # The profile's soft cost for a via under a part's courtyard
-        # (gr502369); None on prod ⇒ 0, today's behaviour exactly.
-        via_body_cost_mm=pcb_profiles.profile_rules(profile).via_body_cost_mm or 0.0,
         # The profile's thermal reliefs on pour-connected pads
         # (gr495399); None on prod ⇒ solid pour, today's behaviour.
-        thermal=pcb_planes.thermal_spec(pcb_profiles.profile_rules(profile)),
+        thermal=pcb_planes.thermal_spec(profile_rules),
     )
+    if profile_rules.via_body_cost_mm is not None:
+        # The profile's soft cost for a via under a part's courtyard
+        # (gr502369) when the row sets one; a row that leaves it unset
+        # keeps the RealizeConfig default (6.0 on prod too, gr504972).
+        realize_config = dataclasses.replace(
+            realize_config, via_body_cost_mm=profile_rules.via_body_cost_mm
+        )
 
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
