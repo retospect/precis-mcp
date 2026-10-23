@@ -257,10 +257,12 @@ Seams:
   `backlog/db-role-enforce-pgbouncer.md` and the shared-server's role
   isolation (Horizon 1) are one boundary.
 - `ship-gate-ci` ↔ `ingest-and-fetch` ↔ `local-compute` — two primitives,
-  one resolver (Reto 2026-10-23): every outbound rule is a rate bucket
-  (`external_rate_limits`) or a slot hold (`resource_slots`), resolved
-  by `backlog/outbound-policy.md`. ingest-and-fetch ranks the policy
-  layer (S1, S2, S4), ship-gate-ci its S3 enforcement gate;
+  one resolver (Reto 2026-10-23, shipped 2026-10-23): every outbound rule
+  is a rate bucket (`external_rate_limits`) or a slot hold
+  (`resource_slots`), resolved by `utils/outbound_policy.py` — spec
+  deleted, the model lives in its module docstring, the gate in
+  `invariants.md` §Outbound; ingest-and-fetch keeps only the gr506756
+  fetch-pass confirmation.
   `local-compute` ranks `backlog/llm-lane-scheduler.md`, the `llm-local`
   class — one allocator per box (capacity controller + class lanes;
   absorbed `llm-dispatch-feedback-controller.md`), with

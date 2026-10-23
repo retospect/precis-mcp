@@ -18,7 +18,7 @@ preemption/retraction health check (Slice 4) and replication as the
 throughput lever. Slices 0–2 shipped (below). It does not set the slot
 count or divide slots among callers — `llm-lane-scheduler.md` reads the
 counters this item lands — and does not resolve rates or timeouts
-(`outbound-policy.md`).
+(`utils/outbound_policy.py`).
 
 ## Motivation / why
 

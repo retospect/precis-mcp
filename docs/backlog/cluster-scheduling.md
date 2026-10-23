@@ -32,7 +32,7 @@ outbound primitives as they are — the slot hold
 the rate bucket (`utils/rate_limit.py`) — and adds no third. Does not
 divide a local LLM endpoint's slots among callers or set its slot count
 (`llm-lane-scheduler.md`, the lane level), and does not resolve rates,
-timeouts or paid-API concurrency (`outbound-policy.md`). Job-level
+timeouts or paid-API concurrency (`utils/outbound_policy.py`). Job-level
 fairness detail (origin classes, reserved interactive slot per lane) is
 `job-scheduling-fairness.md`.
 
@@ -341,7 +341,7 @@ per §C's gate.
   teardown are primary.
 - The lane level: dividing a local LLM endpoint's slots among callers and
   setting its slot count — `llm-lane-scheduler.md`.
-- Rates, timeouts and paid-API concurrency — `outbound-policy.md`.
+- Rates, timeouts and paid-API concurrency — `utils/outbound_policy.py`.
 
 ## Decisions log & open questions
 
@@ -400,7 +400,7 @@ mechanics, this doc on cross-axis ordering and the laws.
 - `llm-lane-scheduler.md` → the LLM half of §F (slot count per endpoint,
   class lanes, fillers as pull generators); this doc keeps the job-queue
   level only.
-- `outbound-policy.md` → the resolver every outbound call goes through
+- `utils/outbound_policy.py` → the resolver every outbound call goes through
   (rate bucket + slot hold); nothing here invents a third primitive.
 
 Full wedge trail: `gr180096`.

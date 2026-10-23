@@ -47,7 +47,7 @@ Remaining open work:
       semantics unchanged.
     - ✅ **S2 no longer hammered — SHIPPED (the shared rate limiter, c487bd43,
       `utils/rate_limit.py` docstring; policy layer in
-      `docs/backlog/outbound-policy.md`).** Every S2 call — including this
+      `utils/outbound_policy.py`).** Every S2 call — including this
       inline citation-lens fetch — now coordinates cluster-wide through one
       token-bucket row, so the "angers S2" motivation below is resolved.
     - ⏸️ **Warm-cache job — DEFERRED.** With the fetch batched *and*

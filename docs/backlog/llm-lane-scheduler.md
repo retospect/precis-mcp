@@ -16,7 +16,7 @@ local-compute-4, ruling 3): target ~32 parallel sequences per serving box
 with best-practice serving, plus a feedback (PID-style) controller that
 keeps the boxes busy.
 
-**Scope.** Owns the `llm-local` class of `outbound-policy.md` end to end:
+**Scope.** Owns the `llm-local` class of `utils/outbound_policy.py` end to end:
 how many slots a local endpoint advertises (the capacity controller,
 folded from `llm-dispatch-feedback-controller.md` 2026-10-23) and which
 call gets one (classes, floors, maxes, fillers). Its only state is the
@@ -24,7 +24,7 @@ shipped slot-hold primitive — `resource_slots` / `resource_slot_holds`
 (`store/_resource_slots_ops.py`), reserved by `local_serving.acquire` —
 extended with `class`, floors, max and filler; no second semaphore, no
 gateway daemon. Uses the rate bucket for nothing (local endpoints have no
-rate). Does not set rates, timeouts or `on_refuse` (`outbound-policy.md`),
+rate). Does not set rates, timeouts or `on_refuse` (`utils/outbound_policy.py`),
 does not choose the model or server (`vllm-per-node-serving.md`), and does
 not pick which job a worker claims (below).
 
@@ -240,7 +240,7 @@ never overflow to cloud" rule covers the maintenance units only.
 
 - Cloud overflow policy per class beyond today's `fell_to_cloud` path.
 - Rate/timeout policy and the `llm-api` (paid) concurrency hold:
-  `outbound-policy.md`.
+  `utils/outbound_policy.py`.
 - The yield guard itself.
 - MCP agent-session admission (`mcp-concurrency-load-test.md` slice 2
   prototypes a loop over the same `/metrics` that tops agent sessions
@@ -259,7 +259,7 @@ never overflow to cloud" rule covers the maintenance units only.
 | S2b | mix benchmark on castor off-peak: throughput and latency per size class across mixes; sets the pool size in units and the unit weights, checks `max_running_requests`, chunked prefill and mem fraction; weighted units (`size_class` on the `llm.op` row) switch on only if S2 shows count-based lanes misallocate |
 | S3 | capacity controller over S0's signals: capacity moved between a floor and the server limit in the class-aware back-off order, the one-writer test |
 | S4 | multiple endpoints: castor2/spark rows, capability routing, pool-level floors, endpoint-down re-apply |
-| later | agent loops (lane max, turn-boundary yield) and shadow evaluation share; RPC deadlines ride `outbound-policy.md` S2 |
+| later | agent loops (lane max, turn-boundary yield) and shadow evaluation share; RPC deadlines ride the ambient deadline (`utils/deadline.py`, shipped 2026-10-23) |
 
 S1 does not wait on S0 or S3: lanes divide whatever capacity the row
 holds. The old `blocked-by: vllm-per-node-serving` on the controller is

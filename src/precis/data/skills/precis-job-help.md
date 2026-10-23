@@ -269,14 +269,11 @@ get(kind="job", id=101)
 ```
 
 The `job_summary` chunk is the human-readable account ("Fix
-landed on main at <remote> as abc123 (squash of branch gripe_42
-onto def456), confirmed by ls-remote. 3 files changed, 47
-insertions(+), 12 deletions(-). Took 84s."). Searchable through the
-normal `search(kind='job', q=...)` surface.
-
+landed on main at <remote> as abc123 (squash of gripe_42 onto
+def456), confirmed by ls-remote. 3 files changed, 47 insertions(+),
+12 deletions(-). Took 84s."), searchable via `search(kind='job', q=...)`.
 `job_event` chunks (lease renewals, llm_output excerpts,
-commit_made markers) are kept for forensics; default search
-excludes them so they don't pollute results.
+commit_made markers) are forensic; default search excludes them.
 
 ## What jobs have run on this gripe?
 ## History of fix attempts for a gripe
@@ -528,36 +525,29 @@ get(kind='job', id='/logs?job=jo123')
 # it (host= overrides); since= is ignored. Errors if never claimed.
 
 get(kind='job', id='/logs?process=precis-worker-agentlane')
-# process= is an exact match on the PRECIS_PROCESS env the LaunchDaemon
-# plist sets (NULL unless set) — a host running several worker units
-# (e.g. melchior's precis-worker, precis-worker-agentlane,
-# precis-worker-drain-1, precis-worker-drain-2) needs this, host= alone
-# can't tell them apart
+# process= is an exact match on the PRECIS_PROCESS env the plist sets
+# (NULL unless set); a host with several worker units needs this —
+# host= alone can't tell them apart
 
 # top-level q= works too (id's query string wins on conflict)
 get(kind='job', id='/logs', q='timeout')
-# the filters are also real kwargs — equivalent via args=:
+# filters are also real kwargs; since= is hours
 get(kind='job', id='/logs', args={'handler': 'dispatch', 'level': 'INFO', 'since': 6})
-# since= is hours; '6h'/'1d' spellings work too
 ```
 
 Read-only view over the centralised `worker_logs` table (migration
 0015) — the same table an operator reads via `precis logs` on the
 CLI. Header line states the resolved filter + UTC cutoff; each row is
 `ts host handler LEVEL message`; the trailer says `N rows shown of M
-matching`. No queryable surface exists for this table anywhere else
-in the agent surface (no Bash, no raw SQL) — this is it.
+matching`; no other agent surface reads this table (no Bash, no raw SQL).
 
 ## Is the external rate limiter pacing a provider?
 
 ```python
 get(kind='job', id='/limits')
-# → one row per named provider (s2, openalex, unpaywall, arxiv,
-#   crossref, jlcpcb, ...): `provider tokens=<avail>/<cap>
-#   refill=<n>/s day=<used_today>/<daily_cap|->`, then `effective:` —
-#   the resolved policy, fields tagged with their layer:
-#   (class)/(code)/(db) override/(inferred). `slots` = the hold's
-#   resource_slots row; `state:` = park/last_used/refusals.
+# → per named provider (s2, openalex, crossref, jlcpcb, ...):
+#   `provider tokens=<avail>/<cap> refill=<n>/s
+#   day=<used_today>/<daily_cap|->`, then `effective:`, `slots`, `state:`.
 
 get(kind='job', id='/limits?provider=openalex')   # pin one row
 get(kind='job', id='/limits?hosts=1')             # include host:<netloc> rows
@@ -567,11 +557,25 @@ Read-only view over `external_rate_limits` (migration 0121,
 `precis.utils.rate_limit`) — the cross-host outbound limiter fetchers
 like `fetch_oa` go through. `tokens` is the burst balance *right now*
 (refill applied, clamped to capacity), so ~0 means the next call waits;
-`day` is `used_today / daily_cap` (`-` = no daily quota lane). The
-`host:<netloc>` rows are the per-host pacing table safe_fetch seeds on
-demand — hidden unless `hosts=1` (or pin one with
-`provider=host:<netloc>`). Trailer: host-row occupancy.
-Overrides: `precis limits set <row> ... [--dry-run]` (never hand SQL).
+`day` is `used_today / daily_cap` (`-` = no daily quota lane).
+`host:<netloc>` rows (per-host pacing, seeded by safe_fetch) hide
+unless `hosts=1` or `provider=host:<netloc>`; the trailer is host-row
+occupancy.
+
+`effective:` is the resolved `EffectivePolicy`
+(`precis.utils.outbound_policy`): `cls`, `rate` (`-` =
+rate-less class), `concurrency` (a `resource_slots` resource — `slots`
+shows `free/capacity`), `max_wait_s`, `connect_s`/`read_s`/`total_s`,
+`on_refuse` (wait/defer/fail), `retry`; `(layer)` names who set each
+field (class/code/db/inferred/deadline). `state:` = `parked` (live
+Retry-After/429 park), `last_used`, `refused_today`/`last_refused`.
+
+Overrides (operator, no deploy — never hand SQL):
+`precis limits set <row> --class|--max-wait|--connect|--read|--total|
+--on-refuse|--concurrency RESOURCE|N [--clear FIELD] [--create]
+[--dry-run]`; a bare N edits the hold row's `resource_slots` capacity.
+A write audits to `worker_logs` and lands fleet-wide in ~60 s (30 s
+snapshot TTL).
 
 ## What changed since the last doctor tick?
 
@@ -600,31 +604,27 @@ get(kind='job', id='/builds', args={'sha': '<fix commit>'})
 ```
 
 Every claim stamps the claiming worker's `version@sha` on the job
-(`meta.lease_code`, alongside `lease_host`/`lease_process`), so the jobs
-table records what code actually ran where. Each row is
+(`meta.lease_code`), so the jobs table records what code actually ran
+where. Each row is
 `host process version@sha jobs=N last=<UTC>`.
 
-The stamp is taken at claim time, so `/builds` shows what a process ran
-on its last claim, not what it runs now. A lane that has claimed nothing
-since a restart (an idle `precis-worker-compute`, say) keeps showing its
-pre-restart build, and `last=` can still move because polls update the
-old jobs. An old build on such a process is "no claim since the
-restart", not "deploy did not land"; the deploy's own post-bounce check
-(playbook 43 for the compute lane) is the authority there.
+The stamp is taken at claim time — `/builds` shows what a process ran
+on its last claim, not what it runs now; an idle lane keeps its
+pre-restart build and `last=` still moves (polls update old jobs). An
+old build is "no claim since the restart", not "deploy did not land" —
+the deploy's post-bounce check (playbook 43) is the authority there.
 
 A fix is live on a process when that process's newest build sha is the fix
 or a descendant of it. Do not judge that by eye: pass the fix's commit as
 `args={'sha': ...}` (or `id='/builds?sha=...'`) and git answers per row —
 `contains_sha=yes` (the build is that commit or descends from it), `no`
-(it does not), or `unknown (<reason>)` when no checkout is reachable from
-this process, the checkout has never fetched one of the two commits, or the
-row carries no build sha. `unknown` is "cannot tell", never evidence either
-way. Read per **process**, not per host: one host can run several worker
-units, and an env or code difference between two units of the same host is
-a common failure shape that per-host reading hides. Two builds for the same
-host/process in the window is a restart boundary — read the newest.
-`precis-status` answers a different question (the build serving *your own*
-process, which in a container is not the fleet's).
+(it does not), or `unknown` when no checkout is reachable, a
+commit was never fetched, or the row has no build sha. `unknown` is
+"cannot tell", never evidence either way. Read per **process**, not per
+host (a host can run several units — the `process=` caution above);
+two builds in the window is a restart boundary — read the newest.
+`precis-status` answers a different question (your own process's build,
+which in a container is not the fleet's).
 
 ## Is the fleet working or idle?
 
@@ -637,8 +637,8 @@ Rows are `host process claimed=N succeeded=N failed=N running=N
 last_claim=<UTC>`, from the same lease stamps as `/builds`; hosts that
 heartbeat but claimed nothing show `claimed=0`. The trailer gives the queue
 depth now by executor. Read the two together: no claims beside an empty
-queue is a healthy idle; no claims beside queued work is the fault. It is a
-measurement only, no alert reads it. GPU busy fraction is not measured yet.
+queue is a healthy idle; no claims beside queued work is the fault.
+Measurement only — no alert reads it; GPU busy fraction isn't measured.
 
 ## See also
 

@@ -1,7 +1,8 @@
 """Outbound waits must carry a bound — the half ruff cannot enforce.
 
-outbound-policy S3 (docs/backlog/outbound-policy.md §5, folded from
-gr503084 parts B+C): a call that can block forever is a fleet-wide hang
+The outbound wait-bound gate (docs/conventions/invariants.md §Outbound,
+folded from gr503084 parts B+C): a call that can block forever is a
+fleet-wide hang
 class. Ruff covers ``requests.*`` without ``timeout=`` (S113) but nothing
 else, so this AST ratchet scans ``src/`` and ``scripts/`` for:
 

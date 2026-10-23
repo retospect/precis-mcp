@@ -2,15 +2,16 @@
 
 ``precis limits set <row>`` writes the ``external_rate_limits`` override
 columns (migration 0233) — the DB layer of the outbound-policy merge
-(docs/backlog/outbound-policy.md §3) and the only way to retune a
+(``precis.utils.outbound_policy`` docstring) and the only way to retune a
 provider's admission policy without a deploy. The resolver's per-process
 snapshot picks the change up within ~60 s (30 s TTL, worst case a
 refresh cycle late); no worker restart.
 
-``--concurrency`` is the spec's two readings in one flag: a resource
+``--concurrency`` is two readings in one flag: a resource
 name writes the row's ``concurrency`` override column; a bare integer
 edits the ``capacity`` of the resolved resource's ``resource_slots``
-row — "how many at once" lives where the holds are counted (D2), never
+row — "how many at once" lives where the holds are counted
+(``outbound_policy`` D2), never
 in two places. ``--dry-run`` resolves the effective policy before and
 after through :func:`precis.utils.outbound_policy.explain` and writes
 nothing; a real run logs the actor and the field-by-field diff to

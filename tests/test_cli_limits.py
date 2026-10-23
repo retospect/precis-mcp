@@ -1,5 +1,6 @@
 """Tests for ``precis limits`` — the outbound-policy override write door
-(S4 of docs/backlog/outbound-policy.md): ``set`` writes a row's override
+(``precis.utils.outbound_policy`` docstring): ``set`` writes a row's
+override
 columns, ``--dry-run`` resolves before/after without touching the DB, and
 a real run audits who changed what to ``worker_logs``.
 """

@@ -1387,7 +1387,8 @@ class JobHandler(NumericRefHandler):
                     "FROM resource_slots WHERE resource = ANY(%s)",
                     (list(resources),),
                 ).fetchall():
-                    # 'api' is the llm-api hold's accounting host (D2); a
+                    # 'api' is the llm-api hold's accounting host
+                    # (outbound_policy D2); a
                     # same-named row on another host does not count holds.
                     if str(resource) not in slots or host == "api":
                         slots[str(resource)] = (int(free), int(capacity))

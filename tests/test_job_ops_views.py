@@ -107,7 +107,7 @@ def test_limits_unknown_provider_is_empty(jobs: JobHandler) -> None:
     assert "no external_rate_limits row matches" in resp.body
 
 
-# ── /limits effective-policy block (outbound-policy S4) ─────────────
+# ── /limits effective-policy block (outbound_policy) ──────────────────
 
 
 def test_limits_shows_effective_policy_with_layers(

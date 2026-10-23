@@ -308,7 +308,7 @@ TRACE_ID_HEADER = "J-Trace-ID"
 #: (``host:<netloc>``): ``(capacity, refill_per_sec)``, one request a second.
 #: An ``llm-api``-class row keeps this same seed — its tokens are unused
 #: (the class is rate-less) and the row exists to carry ``parked_until``
-#: and the override columns (docs/backlog/outbound-policy.md D1).
+#: and the override columns (``outbound_policy`` docstring, D1).
 DEFAULT_HOST_ROW = (1, 1.0)
 
 
@@ -461,7 +461,7 @@ POLICIES: dict[str, Policy] = {
     # LLM APIs are metered, not scraped (gr507343): the ``llm-api`` class
     # has no token lane — the provider's own 429/Retry-After parks the
     # host row's ``parked_until`` and a shared slot hold caps in-flight
-    # concurrency (docs/backlog/outbound-policy.md D1/D2).
+    # concurrency (``outbound_policy`` docstring, D1/D2).
     "openai-tools": Policy(
         attempts=2,
         base=2.0,
@@ -709,8 +709,9 @@ def _circuit_for(service: str, policy: Policy) -> _Circuit:
 def _resolve_effective(
     service: str, policy: Policy, row: str | None, url: str | None
 ) -> outbound_policy.EffectivePolicy | None:
-    """Resolve this call's :class:`EffectivePolicy` (docs/backlog/
-    outbound-policy.md): class, token lane, concurrency hold and wait
+    """Resolve this call's :class:`EffectivePolicy`
+    (:mod:`precis.utils.outbound_policy`): class, token lane, concurrency
+    hold and wait
     bound in one cached view. ``None`` on a resolver fault — the caller
     falls back to the row + ``limiter_wait_s`` path exactly as before."""
     try:
@@ -732,7 +733,7 @@ def _take_token(
     refusal. Fails open (and logs) when the limiter store is unavailable.
     A resolved rate-less class (``llm-api``/``internal``/``llm-local``)
     takes no token — admission is the ``parked_until`` gate and/or a
-    concurrency hold (docs/backlog/outbound-policy.md D1)."""
+    concurrency hold (``outbound_policy`` docstring, D1)."""
     if provider is None:
         return
     wait_s = policy.limiter_wait_s

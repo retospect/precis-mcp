@@ -88,7 +88,7 @@ class TestCallWithDeadline:
         assert aborts == ["x"]
 
     def test_publishes_the_ambient_deadline_on_the_worker_thread(self) -> None:
-        """outbound-policy S2: the bound rides the ambient deadline
+        """outbound-policy deadline merge: the bound rides the ambient deadline
         ContextVar so outbound waits inside the call (rate_limit.acquire,
         local_serving.acquire) bound themselves to it — and it stays on the
         worker thread, never leaking to the caller."""

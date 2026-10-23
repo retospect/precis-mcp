@@ -13,7 +13,7 @@ that is the routed shape ``fetch_oa._query_core_fulltext_urls`` carries
 622ff9556).
 
 The check is PER CALL, not per enclosing function — that is what tightened
-here (outbound-policy S3). The old rule asked whether the outermost
+here (invariants/outbound-calls-are-polite). The old rule asked whether the outermost
 function (or the file, for ``_``-private helpers) named a core name
 anywhere, so one ``with_backoff`` in the file laundered every bare call.
 Now each outbound call must resolve to the core itself:

@@ -222,22 +222,14 @@ is verified done on prod.
    `edit(kind='paper', args={'retire': True, 'reason': …})` — refuses a
    ref with body, PDF, external id or live inbound cites; `retire:
    False` undoes.
-4. **`backlog/outbound-policy.md`** — one resolved policy (rate, wait,
-   timeouts, on_refuse, concurrency) per outbound call over the two
-   shipped primitives (rate bucket, slot hold), DB-overridable per
-   service; deadline-aware limiter waits; an AST gate on bare calls.
-   Absorbed `shared-rate-limiter.md` 2026-10-23 (the limiter itself is
-   shipped; its rulings moved here). Ranks here
-   because every fetch leg above runs under it: a limiter wait eats the
-   fetch ref-pass budget (gr506756, open), and the now-closed cases it
-   generalises — CORE unpaced (gr507344), new hosts unpaced past the
-   500-row cap (gr507345), OpenRouter on the 1/s website bucket
-   (gr507343, gr507340). The g4-llm-route
-   and g4-workers point fixes land first; S1 generalises them. Its S3 gate
-   is sequenced in `ship-gate-ci`. S2's deadline half shipped
-   2026-10-23 (limiter/slot waits bound to the ambient deadline
-   `call_with_deadline` publishes; refusals counted in-process + logged —
-   the row column waits on an owner ruling).
+4. **gr506756** — `pass-dead:melchior/precis-worker/fetch`, open. The
+   outbound-policy work shipped in full 2026-10-23 (spec deleted; the
+   model lives in `utils/outbound_policy.py`, the gate in
+   `invariants.md` §Outbound): limiter/slot waits bound themselves to
+   the ambient deadline `call_with_deadline` publishes, so a starved
+   limiter leg can no longer eat the fetch ref-pass budget. Left:
+   prod runtime confirmation that the pass logs its per-cycle summary
+   again.
 5. **No-OA stubs** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`

@@ -1,4 +1,4 @@
-"""One outbound policy, resolved once per call — docs/backlog/outbound-policy.md.
+"""One outbound policy, resolved once per call.
 
 Every outbound call resolves a single :class:`EffectivePolicy` describing
 how the call is admitted: whether it takes a limiter token (``rate``),
@@ -6,19 +6,79 @@ whether it must hold a fleet-wide concurrency slot (``concurrency``), how
 long admission may wait (``max_wait_s``), what happens when capacity is
 refused (``on_refuse``), and the retry/timeouts the call should use.
 
+**Two primitives, no third.** Every outbound rule — website politeness,
+provider API rates, paid-LLM concurrency — is a configuration of two
+shipped primitives, resolved here: the *rate bucket* (one
+``external_rate_limits`` row per provider — "how many per second/day",
+``rate_limit._CONSUME_SQL``, fail-open) and the *slot hold*
+(``resource_slots`` + ``resource_slot_holds`` — "how many at once",
+``store/_resource_slots_ops.py``, TTL lease + epoch reaper). Slot
+division of a local endpoint belongs to ``local_serving``
+(llm-lane-scheduler); which job runs belongs to the claim path.
+
+**Classes** (:data:`CLASS_DEFAULTS` is the baseline each merge starts
+from):
+
+- ``scraped-host`` — a ``host:<netloc>`` row with no named policy; a
+  1 req/s token lane, ``on_refuse=wait``.
+- ``provider-api`` — a named provider row (s2, crossref, openalex, …);
+  the row's own bucket parameters apply.
+- ``llm-api`` — metered LLM APIs (openrouter.ai, OpenAI-compatible
+  hosts). No token lane: admission is the ``parked_until`` gate (D1)
+  plus the shared hold (D2); ``on_refuse=defer`` so a worker requeues
+  instead of burning its deadline.
+- ``llm-local`` — cluster endpoints (castor SGLang, sparks); no rate,
+  no hold here — ``local_serving.acquire`` takes the endpoint's
+  ``llm:<model>`` slot.
+- ``internal`` — ``is_internal_host`` URLs. Keeps the legacy 1 req/s
+  lane until callers opt in — a rate-less default would silently drop
+  pacing on today's internal calls; the target is rate-less.
+
+**D1 — rate-less rows still park.** ``Retry-After``/429 writes
+``parked_until`` on every row and negative tokens only where
+``refill_per_sec > 0`` (``rate_limit._PARK_SQL``). A rate-less class
+reads the park FRESH — the per-call ``last_used_at`` touch is
+``UPDATE … RETURNING parked_until`` (:func:`touch_rateless_row`) — then
+:func:`parked_gate` waits ``min(park left, max_wait_s, deadline)`` or
+refuses per ``on_refuse``; the snapshot copy can be 30 s stale, which
+would let calls through a live 429. :func:`record_park` writes a
+just-issued park through to this process's snapshot so the next call
+honours it before the TTL. The carrier row is still seeded at
+``(1, 1.0)`` — its tokens unused — so it can carry ``parked_until``
+and the override columns.
+
+**D2 — the llm-api hold.** One hold per logical LLM call, taken in
+``utils/llm/openai_tools.py`` around the request method (blocking and
+streamed), outside the backoff wrapper: retries reuse the hold and a
+streamed body is read inside it. Acquire/release are the
+``reserve_resource_slots`` + ``insert_slot_hold`` /
+``release_resource_slots`` + ``delete_slot_hold`` pair
+``local_serving.acquire`` uses, on the shared row ``(host='api',
+resource='llm-api:<provider>')``; TTL = the client's hard timeout + 60 s,
+so a crashed holder's unit returns in minutes (the epoch reaper reclaims
+sooner). A full row polls up to ``min(max_wait_s, deadline)``, then
+``on_refuse``. Shared, not per-process (Reto 2026-10-23): a per-process
+cap multiplies by the worker count and the fleet overshoots a provider's
+concurrency limit exactly when every host is busy, leaving a 429 storm
+as the only feedback — one ``resource_slots`` row caps the fleet, and
+the hold's accounting host is a label. A provider with no seeded row
+runs unheld (``_warn_unpaced`` names it); DB down degrades to a
+per-process semaphore of ``PRECIS_OUTBOUND_FALLBACK_CONCURRENCY``
+(default 4). Capacity lives on the ``resource_slots`` row — "how many
+at once" is edited where the holds are counted, never in two places.
+
 Merge order per field, later non-NULL wins (decision D3):
 
-1. ``CLASS_DEFAULTS[cls]`` — the class baseline (§2 of the spec).
+1. ``CLASS_DEFAULTS[cls]`` — the class baseline.
 2. ``POLICIES[service]`` — the code layer; the new ``Policy`` fields
    (``max_wait_s``, ``connect_s``, ``read_s``, ``total_s``, ``on_refuse``,
    ``concurrency``) are ``None`` = inherit; existing backoff fields
    (``attempts``/``base``/``cap``, and ``limiter_wait_s`` as the
    ``max_wait_s`` fallback) keep their values.
 3. The ``external_rate_limits`` row's override columns — the only layer
-   an operator can change without a deploy.
+   an operator can change without a deploy (``precis limits set``).
 4. The ambient deadline (:func:`precis.utils.deadline.deadline_at`),
-   which only shortens
-   ``max_wait_s``.
+   which only shortens ``max_wait_s``.
 
 Class pick: the row's ``class`` column, else ``Policy.cls``, else
 ``internal`` for :func:`~precis.utils.http.is_internal_host`,
@@ -26,8 +86,21 @@ Class pick: the row's ``class`` column, else ``Policy.cls``, else
 
 The DB layer is a per-process snapshot of the rows that can matter — one
 ``SELECT`` of the rows with any override column set or an active park,
-refreshed at most every :data:`_SNAPSHOT_TTL_S` seconds. A row absent
-from the snapshot has no overrides.
+refreshed at most every :data:`_SNAPSHOT_TTL_S` seconds, so an operator
+edit lands within a minute with no restart. A row absent from the
+snapshot has no overrides.
+
+**Refusals and occupancy.** A limiter or slot refusal stamps the row's
+``refused_today`` / ``last_refused_at``; the doctor's
+``limiter-refusing`` condition reads them. ``last_used_at`` keeps a
+busy rate-less row alive under idle host-row eviction (keyed on
+``GREATEST(last_refill, last_used_at)``; a row carrying a non-NULL
+override is never evicted; cap 500 seeded ``host:`` rows, the
+``limiter-host-cap`` condition fires when none is idle).
+``handlers/job.py::_render_limits_view`` (/limits) renders each row's
+effective policy with the layer every field came from, plus the hold's
+``free/capacity``; ``cli/limits.py`` (``precis limits set --dry-run``)
+previews the same resolution through :func:`explain`.
 
 **Fail-open.** A resolver fault (no store, missing migration columns, any
 DB error) returns the code layers alone — today's behaviour — and warns
@@ -35,9 +108,14 @@ once per provider per hour via :func:`rate_limit._warn_unpaced`. The
 resolver must never wedge an outbound call.
 
 The deadline merge reads the one ambient source,
-:func:`precis.utils.deadline.deadline_at` (S2a's ContextVar, published by
-``call_with_deadline``/``deadline_scope``); :func:`deadline_remaining` is
-the one helper every wait path shortens through.
+:func:`precis.utils.deadline.deadline_at` (a ContextVar published by
+``call_with_deadline``/``deadline_scope``); :func:`deadline_remaining`
+is the one helper every wait path shortens through.
+
+Enforcement lives outside this module: ruff ``S113``,
+``tests/test_outbound_polite_ratchet.py`` (per call, not per function)
+and ``tests/test_outbound_timeout_ratchet.py`` (unbounded waits over a
+frozen baseline) — ``docs/conventions/invariants.md`` §Outbound.
 """
 
 from __future__ import annotations
@@ -88,10 +166,10 @@ class _ClassDefault:
     on_refuse: str
 
 
-#: Class baselines (spec §2). ``concurrency`` for ``llm-api`` is
-#: per-provider (``llm-api:<provider>``) and so is computed in
-#: :func:`_resolve`, not stored here; ``llm-local`` slot division is owned
-#: by ``llm-lane-scheduler.md``/``local_serving``, so it stays ``None``.
+#: Class baselines (the class table in the module docstring).
+#: ``concurrency`` for ``llm-api`` is per-provider (``llm-api:<provider>``)
+#: and so is computed in :func:`_resolve`, not stored here; ``llm-local``
+#: slot division is owned by ``local_serving``, so it stays ``None``.
 CLASS_DEFAULTS: dict[str, _ClassDefault] = {
     "scraped-host": _ClassDefault(
         rate=RateLane(1, 1.0, None),
@@ -130,9 +208,9 @@ CLASS_DEFAULTS: dict[str, _ClassDefault] = {
         on_refuse="wait",
     ),
     "internal": _ClassDefault(
-        # S1 deviation (spec §2, post-review): internal URLs keep the
-        # legacy 1/s token lane until a caller opts in — a rate-less
-        # default would silently drop pacing on today's internal calls.
+        # Deliberate deviation: internal URLs keep the legacy 1/s token
+        # lane until a caller opts in — a rate-less default would
+        # silently drop pacing on today's internal calls.
         rate=RateLane(1, 1.0, None),
         concurrency=None,
         max_wait_s=30.0,
@@ -176,7 +254,7 @@ class EffectivePolicy:
     #: (``POLICIES``), ``db`` (the row's override columns), ``inferred``
     #: (``cls`` picked from the URL/row shape) or ``deadline`` (the
     #: ambient deadline shortened ``max_wait_s``). For the ``/limits``
-    #: view and ``precis limits set --dry-run`` (S4); empty for callers
+    #: view and ``precis limits set --dry-run``; empty for callers
     #: that never asked for provenance.
     layers: dict[str, str] = field(default_factory=dict)
 
@@ -184,7 +262,7 @@ class EffectivePolicy:
 def deadline_remaining() -> float | None:
     """Seconds left under the ambient deadline — the ONE deadline source:
     :func:`precis.utils.deadline.deadline_at`, published by
-    ``call_with_deadline``/``deadline_scope`` (slice S2a). ``None`` when
+    ``call_with_deadline``/``deadline_scope``. ``None`` when
     unbounded. Every admission wait only shortens under it."""
     deadline = deadline_at()
     if deadline is None:
@@ -543,7 +621,7 @@ def format_effective(eff: EffectivePolicy) -> str:
     """One compact ``field=value (layer)`` render of a resolved policy —
     the shared display for the ``/limits`` view and
     ``precis limits set --dry-run``. Every field names the layer it came
-    from (spec S4 acceptance)."""
+    from."""
 
     def _lay(field: str) -> str:
         return eff.layers.get(field, "?")
@@ -622,7 +700,7 @@ def parked_gate(
 
 #: Stamp ``last_used_at`` — the rate-less row never moves ``last_refill``,
 #: and this is what keeps a busy rate-less row visible to the idle
-#: eviction re-key landing in S4.
+#: eviction (keyed on ``GREATEST(last_refill, last_used_at)``).
 _TOUCH_SQL = (
     "UPDATE external_rate_limits SET last_used_at = now() "
     "WHERE provider = %s RETURNING parked_until"
@@ -643,7 +721,7 @@ def touch_rateless_row(
     if effective.row is None:
         return None
     if not rate_limit.s1_columns_present(conn):
-        # Un-migrated DB — the caller takes the pre-S1 path (no touch, no
+        # Un-migrated DB — the caller takes the legacy path (no touch, no
         # fresh park, and no resource_slots row to hold either).
         return None
     rate_limit._seed_host_row(conn, effective.row, seed_row)

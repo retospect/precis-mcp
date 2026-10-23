@@ -3526,7 +3526,7 @@ class TestThroughputBounds:
     def test_pool_workers_see_the_ambient_deadline(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """gr506756 / outbound-policy S2: the legs' limiter waits run on
+        """gr506756 / outbound-policy deadline merge: the legs' limiter waits run on
         pool threads, and ContextVars don't cross a ThreadPoolExecutor
         submit on their own — the pass propagates the ambient deadline the
         worker loop published via per-submit ``copy_context``. Without it

@@ -380,7 +380,8 @@ def acquire(
     The wait is further bounded by the caller's deadline — the ``deadline``
     argument or the ambient deadline
     :func:`precis.utils.deadline.call_with_deadline` publishes on its
-    worker thread, whichever lands first (outbound-policy S2, gr506756):
+    worker thread, whichever lands first (``precis.utils.deadline``,
+    gr506756):
     a slot wait can never eat the budget of the bounded pass that owns it.
     ``deadline`` is an absolute ``time.monotonic()`` point, matching
     ``rate_limit.acquire``'s argument.

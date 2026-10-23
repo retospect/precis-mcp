@@ -38,7 +38,7 @@ publishes on its worker thread, whichever bound lands first (gr506756: a
 pass's per-cycle summary row from ever logging). A refusal is counted
 per provider in this process (:func:`refusal_counts`), logged, and
 written through to the row's ``refused_today``/``last_refused_at``
-columns (outbound-policy S2b) so demand is visible in ``/limits`` and to
+columns (``outbound_policy``'s refusal accounting) so demand is visible in ``/limits`` and to
 the ``limiter-refusing`` doctor condition.
 
 **Store-free by design.** The S2 fetch functions this gates
@@ -455,7 +455,7 @@ def _seed_host_row(conn: Any, provider: str, seed_row: tuple[int, float]) -> boo
 
 
 #: Park a row for a server's Retry-After. Two writes in one statement
-#: (outbound-policy D1): ``parked_until`` rises to
+#: (``outbound_policy`` docstring, D1): ``parked_until`` rises to
 #: ``GREATEST(existing, now() + seconds)`` on EVERY row so a rate-less
 #: class (``llm-api``) still parks cross-host, and the existing
 #: negative-token write — drive tokens negative so the refill takes
@@ -482,8 +482,9 @@ UPDATE external_rate_limits
  WHERE provider = %s
 """
 
-#: The outbound-policy S1 columns (migration 0233): detected once — a
-#: deploy whose code is ahead of the migration falls back to the pre-S1
+#: The migration-0233 policy columns: detected once — a
+#: deploy whose code is ahead of the migration falls back to the
+#: pre-migration
 #: statements rather than disabling limiting fleet-wide. ``UndefinedColumn``
 #: caches ``False``; a ``True`` result is permanent. While ``False`` (or
 #: probing failed), the probe retires every :data:`_S1_REPROBE_S` seconds so
@@ -518,8 +519,8 @@ def _s1_columns(conn: Any) -> bool:
 
 
 def s1_columns_present(conn: Any) -> bool:
-    """Whether the outbound-policy S1 columns exist (migration 0233) —
-    for callers that pick between pre-S1 and S1 statements."""
+    """Whether the migration-0233 policy columns exist —
+    for callers that pick between pre- and post-migration statements."""
     return _s1_columns(conn)
 
 
@@ -570,13 +571,14 @@ def _warn_unpaced(provider: str, reason: str) -> None:
 
 
 #: Per-process refusal tally, provider → count. The durable half is the
-#: row's ``refused_today``/``last_refused_at`` (S1 migration 0233,
-#: written by :data:`_REFUSAL_SQL` on every counted refusal —
-#: outbound-policy S2b); this tally plus the rate-limited WARNING below
+#: row's ``refused_today``/``last_refused_at`` (migration 0233,
+#: written by :data:`_REFUSAL_SQL` on every counted refusal); this
+#: tally plus the rate-limited WARNING below
 #: is the per-process demand signal.
 _refusals: dict[str, int] = {}
 
-#: The durable half of a counted refusal (outbound-policy S2b): one
+#: The durable half of a counted refusal (outbound-policy refusal
+#: accounting): one
 #: atomic write that bumps ``refused_today``/``last_refused_at`` and runs
 #: the ``day_start`` rollover for BOTH daily counters — a refusal can be
 #: a row's first touch of a new day, so it must roll ``day_used`` over
@@ -663,7 +665,7 @@ def acquire(
 
     ``deadline`` bounds the wait by the caller's own budget: an absolute
     ``time.monotonic()`` point past which the wait must not run (a ref
-    pass's remaining seconds, outbound-policy S2 / gr506756). The ambient
+    pass's remaining seconds, ``precis.utils.deadline`` / gr506756). The ambient
     deadline :func:`precis.utils.deadline.call_with_deadline` publishes on
     its worker thread bounds the wait the same way — the effective budget
     is the EARLIEST of ``max_wait_s``, ``deadline`` and the ambient bound,

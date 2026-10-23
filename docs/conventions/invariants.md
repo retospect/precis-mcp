@@ -82,6 +82,31 @@ cluster-internal or operator-configured endpoints (embedder, llm serving,
 capability probe, readyz, ASKCOS, deadman, health digest, key probes), each
 with a one-line reason. Fix the call site; do not widen the allowlist.
 
+One admission policy: every outbound call resolves an `EffectivePolicy`
+(`utils/outbound_policy.py` — the module docstring owns the model: classes,
+the parked_until gate, the `llm-api` hold, the merge). Per field, later
+non-NULL wins: class default → `POLICIES[service]` → the row's override
+columns → the caller's deadline. The DB columns are the only layer an
+operator can change without a deploy: write them with
+`precis limits set <row> ...` (audited, `--dry-run` previews the resolved
+policy), never hand SQL; `get(kind='job', id='/limits')` shows each field
+and the layer that set it.
+
+Every wait carries a bound: `tests/test_outbound_timeout_ratchet.py` is an
+AST walk over `src/`+`scripts/` that pins unbounded waits — `subprocess`
+and `Popen` waits without `timeout=`, `psycopg.connect` without
+`connect_timeout`, `Thread.join`/`Queue.get`/`Lock.acquire`/
+`Future.result`/`as_completed`, blocking `fcntl.flock`, `asyncio`/`anyio`
+waits and `*ClientSession` awaits outside `wait_for`/`timeout`, and bare
+`httpx.<method>`/`urlopen` — to `tests/data/outbound_timeout_baseline.json`,
+a one-way floor keyed `file::function::callee` (never line numbers, so
+unrelated edits don't churn it). A new key or a risen count fails: bound
+the call. A fallen count fails too — lower the floor with
+`uv run python tests/test_outbound_timeout_ratchet.py --write` (it refuses
+to raise or add an entry). `while True` polls and `tests/` are report-only.
+Ruff `S113` (requests without `timeout=`) is on for `src/`+`scripts/`;
+`tests/`/`deploy/`/`docker/` sit under per-file-ignores as report-only.
+
 **`uv` for everything.** Dependencies resolve from `uv.lock`; bare `pip`,
 `pytest`, `mypy` or a host `python` use an unpinned environment and report
 phantom failures (the torch-free host lacks `marker`, `sympy`, ...). Tests

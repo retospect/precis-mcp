@@ -595,7 +595,7 @@ def test_acquire_zero_wait_keeps_the_immediate_pause(store) -> None:
 
 
 def test_acquire_wait_bounded_by_ambient_deadline(store) -> None:
-    """outbound-policy S2 (gr506756): the slot wait honours the caller's
+    """outbound-policy deadline merge (gr506756): the slot wait honours the caller's
     deadline — a bounded call is paused at the ambient bound, never held
     the full ``wait_s`` on a saturated slot."""
     import time

@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 #: directly. Bounded outbound waits (``rate_limit.acquire``'s token wait,
 #: ``local_serving.acquire``'s slot wait) bound themselves to it, so a
 #: limiter wait can never eat the budget of the pass that owns it
-#: (gr506756, outbound-policy S2) — without threading an argument through
+#: (gr506756) — without threading an argument through
 #: every call site. ``None`` = no ambient bound; waits then run to their
 #: own configured limits, exactly as before.
 _call_deadline: ContextVar[float | None] = ContextVar(

@@ -48,9 +48,9 @@ was invisible for 4 days):
 * ``limiter-cap-full`` — the auto-seeded ``host:<netloc>`` limiter rows
   are at ``rate_limit.MAX_SEEDED_HOST_ROWS`` with none idle enough to
   evict, so a newly seen host runs unpaced (gr507345).
-* ``limiter-refusing`` — outbound-policy S2b: a provider's
+* ``limiter-refusing`` — a provider's
   ``external_rate_limits`` row has refused calls past a daily floor
-  (``refused_today``/``last_refused_at``, S1 migration 0233 — written by
+  (``refused_today``/``last_refused_at``, migration 0233 — written by
   every counted refusal: a starved bucket, a spent daily cap, a full
   ``llm-api`` slot hold, or a live Retry-After park). Demand the shared
   limiter could not admit; self-clears once refusals stop or at the day
@@ -937,7 +937,7 @@ SELECT provider, refused_today, last_refused_at
 
 
 def _probe_limiter_refusing(store: Store) -> list[ConditionFinding]:
-    """outbound-policy S2b: a provider row refusing past the daily floor is
+    """A provider row refusing past the daily floor is
     demand the shared limiter could not admit — a starved token bucket, a
     spent daily cap, a full ``llm-api`` slot hold, or a live Retry-After
     park (every counted refusal writes ``refused_today``/

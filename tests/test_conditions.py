@@ -1160,7 +1160,7 @@ def _refuse_row(store: Store, n: int, last: str = "now()") -> str:
 
 
 def test_limiter_refusing_fires_over_floor_and_resolves(store: Store) -> None:
-    """outbound-policy S2b: a row over the daily refusal floor with a fresh
+    """``limiter-refusing``: a row over the daily refusal floor with a fresh
     ``last_refused_at`` fires ``limiter-refusing:<provider>``; clearing the
     count resolves it (the auto-close half)."""
     provider = _refuse_row(store, 50)

@@ -16,7 +16,7 @@ model, embedder and science lane, the measured supply and demand numbers,
 and the ruled-but-unscheduled layout plan. Reads slot counts from
 `resource_slots` and placement from `/placement`; it sets neither. The
 slot count per endpoint and its division by class are
-`llm-lane-scheduler.md`; rates and timeouts are `outbound-policy.md`; the
+`llm-lane-scheduler.md`; rates and timeouts are `utils/outbound_policy.py`; the
 serving role is `vllm-per-node-serving.md`.
 
 ## Motivation / why

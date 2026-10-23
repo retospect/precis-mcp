@@ -348,8 +348,8 @@ def run_loop(
       ``call_with_deadline`` publishes the bound as the ambient deadline
       (:func:`precis.utils.deadline.deadline_at`) on the pass's thread, so
       limiter and slot waits inside the pass bound themselves to it
-      instead of eating the pass's remaining budget (gr506756,
-      outbound-policy S2) — no argument threading needed. A pass that
+      instead of eating the pass's remaining budget (gr506756) — no
+      argument threading needed. A pass that
       fans out to a thread pool propagates it by submitting workers via
       ``pool.submit(contextvars.copy_context().run, fn)``.
 

@@ -211,7 +211,7 @@ def _polite[T](send: Callable[[], T], url: str) -> T:
     )
 
 
-# ── llm-api concurrency hold (outbound-policy D2) ──────────────────────
+# ── llm-api concurrency hold (outbound_policy docstring, D2) ───────────
 #
 # One hold per logical LLM call: a `resource_slots` unit on
 # ('api', 'llm-api:<provider>') — 'api' is an accounting label, so one row

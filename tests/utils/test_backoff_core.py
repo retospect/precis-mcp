@@ -584,7 +584,7 @@ def test_resolve_provider_direct():
 
 
 def test_llm_api_policy_takes_no_token(limiter):
-    """outbound-policy S1: an LLM API host (the ``openai-tools`` policy,
+    """outbound-policy classes: an LLM API host (the ``openai-tools`` policy,
     what ``openai_tools._polite`` routes OpenRouter through) resolves to
     the rate-less ``llm-api`` class — no limiter token is taken at all.
     The host row is still resolved (as a ``parked_until``/override

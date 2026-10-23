@@ -95,8 +95,8 @@ nightly — the diff-cover verdict is still open.
    verify the drift guard reads release/nightly verdicts and a qland burst
    costs ~2 jobs/push; the impact-selected main lane from gripe comment 5
    stays a follow-up if lint proves too thin.
-2. **`backlog/outbound-policy.md` S3** — SHIPPED 2026-10-23. The AST
-   ratchet landed: `tests/test_outbound_timeout_ratchet.py` +
+2. **outbound-policy S3** — SHIPPED 2026-10-23 (spec deleted; the gates
+   live in `invariants.md` §Outbound): `tests/test_outbound_timeout_ratchet.py` +
    `tests/data/outbound_timeout_baseline.json` (frozen at 100 sites/88
    keys, one-way floor; `while True` polls and tests/ report-only),
    `tests/test_outbound_polite_ratchet.py` tightened per call, ruff S113

@@ -38,7 +38,7 @@ pilot's pass-rate measurement. Its two lanes are two classes of
 slots, so it adds no allocator, no slot budget of its own and no
 server-side priority scheme; a second castor-class host is a second
 endpoint row there. Rates and timeouts for the shim's requests resolve
-through `outbound-policy.md` (`llm-local` class).
+through `utils/outbound_policy.py` (`llm-local` class).
 
 ## Motivation / why
 

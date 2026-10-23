@@ -736,7 +736,7 @@ class TestRunLoopRefPassDeadline:
         assert calls["ok"] == 2
 
     def test_bounded_pass_sees_the_ambient_deadline(self, store) -> None:
-        """outbound-policy S2 (gr506756): ``call_with_deadline`` publishes
+        """gr506756: ``call_with_deadline`` publishes
         the pass's bound as the ambient deadline on its thread — the
         ContextVar carries ``ref_pass_deadline_s`` down to limiter/slot
         waits inside the pass without an argument through every call."""

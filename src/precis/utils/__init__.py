@@ -13,7 +13,11 @@ pattern. Module docstrings own the detail; this one only groups them.
   every agent-supplied-URL fetch goes through ``safe_get``/``safe_stream``;
   raw redirect-following ``httpx`` is a vulnerability), :mod:`~precis.utils.http`
   (the one shared client seam for network-reaching kinds), :mod:`~precis.utils.rate_limit`,
-  :mod:`~precis.utils.url`, :mod:`~precis.utils.inject_scan` (tier-0
+  :mod:`~precis.utils.outbound_policy` (the one policy resolver every
+  outbound call goes through — rate bucket + slot hold, class defaults
+  and DB overrides; its module docstring owns the model),
+  :mod:`~precis.utils.deadline` (the ambient deadline every admission
+  wait shortens under), :mod:`~precis.utils.url`, :mod:`~precis.utils.inject_scan` (tier-0
   prompt-injection scan). :mod:`precis.utils.llm` is the LLM routing layer
   (tiers, chains, transports; every routed call goes through ``route``);
   :mod:`precis.utils.prompt` is the prompt-assembly model. The ``claude -p``

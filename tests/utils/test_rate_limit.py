@@ -612,7 +612,7 @@ class _QuotaConn(_StarvedConn):
 
 
 class TestDeadlineBound:
-    """outbound-policy S2 (gr506756's limiter half): a limiter wait bounds
+    """outbound-policy deadline merge (gr506756's limiter half): a limiter wait bounds
     itself to the caller's deadline — the ``deadline=`` argument or the
     ambient deadline ``call_with_deadline`` publishes on the bounded call's
     worker thread — so it can never eat the budget of the pass that owns
@@ -859,7 +859,7 @@ class TestDeadlineBound:
 
 
 class TestRefusalCounter:
-    """outbound-policy S2b: every counted refusal lands on the row's
+    """Refusal accounting: every counted refusal lands on the row's
     ``refused_today``/``last_refused_at`` (the durable half of
     :func:`rate_limit._record_refusal`), and the ``day_start`` rollover
     clears it daily — whether the day's first touch is a grant or another
