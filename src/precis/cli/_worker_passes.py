@@ -1101,8 +1101,8 @@ def build_ref_passes(
     # briefing_audio — narrate the morning news briefing onto the podcast
     # feed (the first automatic audio producer). Default-OFF (`service prio` or --only briefing_audio — §L retired
     # PRECIS_BRIEFING_AUDIO_ENABLED as the live gate)
-    # and TTS-host-only: it needs the `[tts]` extra + Kokoro model files +
-    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on spark. Decoupled
+    # and TTS-host-only: it needs the precis-tts container image +
+    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on melchior. Decoupled
     # from the briefing *job* (which runs on the agent worker, no TTS): this
     # pass reads the persisted `briefing-<date>` ref and self-schedules off
     # its existence, idempotent via a `meta.audio_episode_id` marker. See
@@ -1158,7 +1158,7 @@ def build_ref_passes(
 
     # cast_audio — narrate the daily *casts* (morning reading-brief + evening
     # nidra) onto the podcast feed (docs/backlog/reading-prep-loop.md §Audio).
-    # Same substrate as briefing_audio: TTS-host-only (spark), container-first,
+    # Same substrate as briefing_audio: TTS-host-only (melchior), container-first,
     # self-scheduling off an un-narrated cast draft, idempotent via
     # meta.audio_episode_id. Default-OFF (`service prio` or --only
     # cast_audio — §L retired PRECIS_CAST_AUDIO_ENABLED as the live gate)

@@ -10,8 +10,8 @@ craft is the `precis-voice` skill (nidra profile). See
 docs/backlog/reading-prep-loop.md.
 
 This module is store + LLM only (no TTS, no audio deps), so it unit-tests with a
-fake client. The render+publish step lives in the `precis meditation` CLI, which
-runs where Kokoro is installed (spark).
+fake client. The render+publish step lives in the `cast_audio` pass / `precis
+cast` CLI, which runs on the TTS host (melchior).
 """
 
 from __future__ import annotations

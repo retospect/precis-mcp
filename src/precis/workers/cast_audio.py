@@ -4,7 +4,7 @@ The audio organ of the cast pipeline (docs/backlog/reading-prep-loop.md §Audio)
 sibling to :mod:`precis.workers.briefing_audio`. The cast *producers*
 (:func:`precis.reading.briefing_cast.build_reading_briefing`,
 :func:`precis.reading.meditation.build_meditation`) run on any node and persist a
-standalone dated ``draft`` marked ``meta.cast``. This pass — TTS-host-only (spark)
+standalone dated ``draft`` marked ``meta.cast``. This pass — TTS-host-only (melchior)
 — finds the newest cast draft with no audio yet and renders it to speech via
 :func:`precis.tts.render.render_episode` (container-first ``podman/docker run
 precis-tts``), honouring the draft's per-chunk + draft-level voice through

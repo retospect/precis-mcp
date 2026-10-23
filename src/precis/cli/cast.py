@@ -1,4 +1,4 @@
-"""``precis cast`` — compose + schedule the weekly audio *casts*.
+"""``precis cast`` — compose + schedule the daily audio *casts*.
 
 Two standing casts ride the produce → narrate → publish spine (see
 docs/backlog/reading-prep-loop.md §Audio):
@@ -7,15 +7,15 @@ docs/backlog/reading-prep-loop.md §Audio):
 - ``nidra``   — the evening conceptual-walk meditation (voice ``af_nicole``).
 
     precis cast run reading            # compose today's morning-brief draft
-    precis cast run nidra --publish    # compose + narrate + publish (on spark)
-    precis cast schedule --now         # install the weekly watches + cast both now
+    precis cast run nidra --publish    # compose + narrate + publish (on melchior)
+    precis cast schedule --now         # install the daily watches + cast both now
 
 ``run`` is the writer organ (node-agnostic — store + LLM → a draft); ``--publish``
 additionally narrates it inline via the shipped audio path (needs Kokoro / the
-precis-tts image, i.e. spark). ``schedule`` idempotently installs the two
+precis-tts image, i.e. the TTS host, melchior). ``schedule`` idempotently installs the two
 recurring (``meta.schedule`` set) watches that drive the ``reading_brief`` /
-``meditation`` coordinator job_types on a weekly cron; ``--now`` also composes both immediately so
-the first episodes don't wait for the next cron boundary (a never-fired weekly cron
+``meditation`` coordinator job_types on a daily cron; ``--now`` also composes both immediately so
+the first episodes don't wait for the next cron boundary (a never-fired daily cron
 only fires at its next matching minute).
 """
 
@@ -33,7 +33,7 @@ _CASTS = ("reading", "nidra")
 
 
 def add_parser(subparsers: Any) -> None:
-    p = subparsers.add_parser("cast", help="Compose/schedule the weekly audio casts.")
+    p = subparsers.add_parser("cast", help="Compose/schedule the daily audio casts.")
     csub = p.add_subparsers(dest="cast_cmd", required=True)
 
     run_p = csub.add_parser("run", help="Compose one cast now (optionally publish).")
@@ -50,7 +50,7 @@ def add_parser(subparsers: Any) -> None:
     run_p.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     sch_p = csub.add_parser(
-        "schedule", help="Install the weekly cast watches (idempotent)."
+        "schedule", help="Install the daily cast watches (idempotent)."
     )
     sch_p.add_argument(
         "--now",
@@ -77,7 +77,7 @@ def _compose(store: Store, cast: str, *, date_tag: str | None = None) -> int | N
 
 
 def _publish(store: Store, draft_id: int, *, speed: float) -> None:
-    """Narrate + publish a just-composed cast draft inline (spark path)."""
+    """Narrate + publish a just-composed cast draft inline (TTS-host path)."""
     from precis.workers.cast_audio import narrate_cast_ref
 
     ref = store.get_ref(kind="draft", id=draft_id)
@@ -159,7 +159,7 @@ _CARD_FORGE_CRON = "30 1 * * 1"
 
 
 def install_cast_watches(store: Store) -> list[int]:
-    """Idempotently install the weekly reading-loop watches under the Watches
+    """Idempotently install the reading-loop watches under the Watches
     umbrella — the two casts plus the 01:30 ``card_forge`` morning card pass.
     Returns the ref ids (existing or freshly created).
 
@@ -196,7 +196,8 @@ def install_cast_watches(store: Store) -> list[int]:
                 },
                 # claude_inproc (melchior) — the compose uses Sonnet 5 (pinned,
                 # claude_agent transport, FRONTIER band); TTS is a separate
-                # downstream pass on spark, so this once-a-day compute is fine.
+                # downstream pass on the same host, so this once-a-day
+                # compute is fine.
                 "executor": "claude_inproc",
                 "job_type": profile.job_type,
                 "params": {},

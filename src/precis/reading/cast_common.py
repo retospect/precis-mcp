@@ -1,6 +1,6 @@
 """cast_common — shared substrate for the audio *casts* (morning brief + nidra).
 
-A **cast** is a weekly audio episode composed as a ``draft`` and narrated onto
+A **cast** is a daily audio episode composed as a ``draft`` and narrated onto
 the shipped podcast feed (:mod:`precis.audio_feed` + ``precis_web.routes.
 podcast``; ``PRECIS_PODCAST_DIR`` is a shared NAS dir, so a producer on any
 node publishes and the gateway serves — no cross-host copy). Listeners
@@ -94,7 +94,11 @@ class CastProfile:
     voice: str  # kokoro voice for the whole cast (per-chunk meta.voice can override)
     wpm: int  # speaking rate — target_minutes → word budget
     target_minutes: int
-    cron: str  # weekly schedule for the recurring watch
+    cron: str  # daily schedule for the recurring watch — cadence rulings
+    #: land HERE: ``cli.cast._reconcile_watch_cron`` rewrites each live watch's
+    #: ``meta.schedule.cron`` to match this table, so a hand-set todo cron
+    #: reverts on the next ``precis cast schedule`` (gr507415 — daily, Reto
+    #: 2026-10-23; card_forge's separate ``_CARD_FORGE_CRON`` stays weekly).
     job_type: str  # the compose job_type that produces this cast
     slug_prefix: str  # dated-draft slug + episode-id stem
     title: str  # episode/draft title (date appended)
@@ -123,7 +127,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         # and the schedule is UTC-anchored (no tz): under winter GMT the same
         # fire reads 02:30 local. The lead still buys the compose+narrate
         # pipeline ahead of the target land time.
-        cron="30 2 * * 1",
+        cron="30 2 * * *",
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
@@ -140,7 +144,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         # long TTS render, so a 21:00 start landed it late-evening/after-midnight.
         # Starting two hours ahead lands the episode in the ~21:00–22:00 window
         # even when the render is slow. Schedule is UTC-anchored (no tz).
-        cron="0 19 * * 0",
+        cron="0 19 * * *",
         job_type="meditation",
         slug_prefix="cast-nidra",
         title="\U0001f319 Evening meditation",  # 🌙

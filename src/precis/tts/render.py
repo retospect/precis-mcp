@@ -7,7 +7,7 @@ segments, then calls :func:`render_episode`, which picks a backend:
   precis-tts``, read back the produced ``out.mp3``. The worker needs **no**
   ``[tts]`` extra; this is the cluster path (docker/tts/README.md).
 - **in-process** (``synth`` given) — ``synthesize_text`` → WAV → ffmpeg mp3. The
-  local / manual path on a host that has the ``[tts]`` extra (spark's kokoro-venv).
+  local / manual path on a host that has the ``[tts]`` extra (a kokoro-venv).
 
 **MP3, not AAC/m4a** — mp3 is the one audio format that plays *everywhere*
 (incl. Apple Podcasts / Safari / iOS), so a shared enclosure or a copied file

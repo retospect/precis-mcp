@@ -4,11 +4,11 @@ Deterministic in-process producer, run under ``claude_inproc`` (the melchior age
 worker) — the same executor + host as the news ``briefing`` job, because the
 compose call uses a **nice model** (``claude-opus`` via the litellm proxy, which is
 melchior-loopback-only). Driven by a recurring (``meta.schedule`` set) todo
-(``meta.schedule={'cron':'30 2 * * 1'}``, ``meta.executor='claude_inproc'``,
+(``meta.schedule={'cron':'30 2 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='reading_brief'``). Calls
 :func:`precis.reading.briefing_cast.build_reading_briefing`, which unions the
 activity/reading/recall lanes into a standalone dated ``draft``; the ``cast_audio``
-pass on spark then narrates it onto the podcast feed **as a separate downstream
+pass on melchior then narrates it onto the podcast feed **as a separate downstream
 step** (compose and TTS never block each other). Once-a-day, so the melchior
 compute is fine.
 
