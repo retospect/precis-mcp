@@ -468,6 +468,22 @@ def _run_secret_check(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_secret_status(store: Store, batch_size: int) -> None:
+    """Mint one ``secret_status`` checker job, fired from the periodic
+    ``secret_status`` cadence — the job (not the scheduler) runs the
+    probes, on whichever ``job_inproc`` worker claims it. ``batch_size``
+    is unused — the pending-job dedup in ``mint_status_job`` IS the cap.
+    See workers/secret_check.py + job_types/secret_status.py."""
+    del batch_size
+    from precis.workers.secret_check import mint_status_job
+
+    ref_id = mint_status_job(
+        store, origin="background", title="secret_status (periodic)"
+    )
+    if ref_id is not None:
+        log.info("scheduler: minted secret_status job %d", ref_id)
+
+
 def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
     """One ``section:threads`` retirement sweep (gr485358 item 1), fired
     from the daily host-agnostic ``memory_thread_sweep`` cadence.
@@ -933,6 +949,18 @@ CADENCES: tuple[Cadence, ...] = (
         name="secret_check",
         interval_s=7 * 24 * 3600 + 29 * 60,
         run=_run_secret_check,
+    ),
+    # The /secrets stored-status refresher: mints one `secret_status`
+    # checker job per fire (the page itself never probes — it reads the
+    # app_state blob the job rewrites). ~4h keeps "checked <age> ago"
+    # honest for ~13 cheap auth-only calls; off the exact 4h (+19m) so it
+    # doesn't pile onto the draft_refresh_scan tick. Host-agnostic; no
+    # `eligible` gate — a host with nothing configured records all-missing
+    # quietly. spends=False: fixed-endpoint HTTP probes, no LLM.
+    Cadence(
+        name="secret_status",
+        interval_s=4 * 3600 + 19 * 60,
+        run=_run_secret_status,
     ),
     # local-mesh-upkeep §2's nightly count: how many `revisions` rows
     # landed with reason='(unrecorded)', grouped by the write path

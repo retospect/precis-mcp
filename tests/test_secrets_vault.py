@@ -208,7 +208,7 @@ def test_saved_hint_html_is_write_only(
     vault.set_secret(name, value, store=vault_store)
     inventory = [r for r in vault.list_secrets(store=vault_store) if r["name"] == name]
     monkeypatch.setattr(route.secret_status, "KNOWN_SECRETS", ())
-    rows, _ = route._build_rows(inventory, {}, store=vault_store)
+    rows, _ = route._build_rows(inventory, route.secret_status.StatusSnapshot(None, {}))
     scratch = Path(__file__).parents[1] / ".scratch"
     scratch.mkdir(exist_ok=True)
     (scratch / "browser-saved-inventory.json").write_text(

@@ -332,7 +332,7 @@ def test_probe_concurrency_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert 1 < peak <= 3
 
 
-def test_force_within_min_interval_reuses_the_result_then_reprobes(
+def test_within_min_interval_reuses_the_result_then_reprobes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -346,22 +346,17 @@ def test_force_within_min_interval_reuses_the_result_then_reprobes(
     _install_probes(monkeypatch, ["anthropic"], probe)
     now = [1000.0]
     monkeypatch.setattr(secret_status, "_clock", lambda: now[0])
-    monkeypatch.setattr(secret_status, "_last", {})
-    monkeypatch.setattr(secret_status, "_checked_at", None)
+    monkeypatch.setattr(secret_status, "_probed", {})
 
-    async def scenario() -> None:
-        first = dict(await secret_status.get_results(_store(), force=True))
-        now[0] += 10.0  # a force storm inside 30 s
-        for _ in range(5):
-            again = await secret_status.get_results(_store(), force=True)
-            assert again == first
-        assert len(calls) == 1
-        now[0] += 25.0  # 35 s after the real probe
-        later = await secret_status.get_results(_store(), force=True)
-        assert len(calls) == 2
-        assert later["anthropic"].detail == "verified 2"
-
-    asyncio.run(scenario())
+    first = asyncio.run(secret_status.run_checks(_store()))
+    now[0] += 10.0  # a second pass inside 30 s re-serves
+    for _ in range(5):
+        assert asyncio.run(secret_status.run_checks(_store())) == first
+    assert len(calls) == 1
+    now[0] += 25.0  # 35 s after the real probe
+    later = asyncio.run(secret_status.run_checks(_store()))
+    assert len(calls) == 2
+    assert later["anthropic"].detail == "verified 2"
 
 
 def test_changed_credential_bypasses_the_interval(
@@ -478,30 +473,37 @@ def test_open_breaker_reads_as_paused_not_http_503(
     assert len(server.requests) == 1
 
 
-def test_cached_force_does_not_restamp_checked_at(
-    monkeypatch: pytest.MonkeyPatch,
+def test_record_status_restamps_each_pass_but_not_the_probe(
+    monkeypatch: pytest.MonkeyPatch, store: Any
 ) -> None:
+    """Within the interval a second pass re-serves the probe result (no
+    second call) while the stored checked_at still honestly moves — the
+    stamp is "when the pass ran", not "when the wire saw traffic"."""
+    calls: list[str] = []
+
     async def probe(
         client: httpx.AsyncClient, values: dict[str, str]
     ) -> secret_status.CheckResult:
+        calls.append("x")
         return secret_status.CheckResult("ok", "verified")
 
     _install_probes(monkeypatch, ["anthropic"], probe)
     now = [1000.0]
     monkeypatch.setattr(secret_status, "_clock", lambda: now[0])
-    monkeypatch.setattr(secret_status, "_last", {})
-    monkeypatch.setattr(secret_status, "_checked_at", None)
+    monkeypatch.setattr(secret_status, "_probed", {})
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
+    monkeypatch.setattr(
+        secret_status, "present", lambda n, *, vault_names=None, store=None: True
+    )
 
-    async def scenario() -> None:
-        await secret_status.get_results(_store(), force=True)
-        stamped = secret_status.checked_at()
-        assert stamped is not None
-        now[0] += 10.0
-        await secret_status.get_results(_store(), force=True)
-        assert secret_status.checked_at() == stamped
-        now[0] += 25.0
-        await secret_status.get_results(_store(), force=True)
-        later = secret_status.checked_at()
-        assert later is not None and later > stamped
+    from datetime import UTC, datetime
 
-    asyncio.run(scenario())
+    first = secret_status.record_status(
+        store, now=datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+    )
+    second = secret_status.record_status(
+        store, now=datetime(2026, 10, 23, 12, 0, 20, tzinfo=UTC)
+    )
+    assert len(calls) == 1  # the probe itself was not re-run
+    assert first.checked_at is not None
+    assert second.checked_at is not None and second.checked_at > first.checked_at

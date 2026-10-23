@@ -11,6 +11,7 @@ absent from alert text, alert meta, log records and exception reprs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -45,6 +46,9 @@ def _patch_report(
         secret_status, "is_available", lambda n, store=None: n not in absent
     )
     monkeypatch.setattr(secret_status, "get_secret", lambda n, store=None: _SENTINEL)
+    # record_status (run inside the pass) reads the vault inventory too —
+    # keep it canned so the pass never touches the real vault here.
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
 
 
 def _patch_real_probes(
@@ -80,6 +84,7 @@ def _patch_real_probes(
         lambda n, store=None: n != "ACATOME_CROSSREF_MAILTO",
     )
     monkeypatch.setattr(secret_status, "get_secret", lambda n, store=None: _SENTINEL)
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
 
 
 def _open_alerts(store: Any, name: str) -> list[tuple[Any, ...]]:
@@ -272,3 +277,268 @@ def test_cadence_registered_weekly() -> None:
     assert 7 * 24 * 3600 <= cad.interval_s < 8 * 24 * 3600
     assert cad.host_affinity is None
     assert not cad.spends
+
+
+# ── stored status: the checker job's output, the /secrets page's input ────
+
+
+def test_record_status_persists_per_secret_state_and_time(
+    monkeypatch: pytest.MonkeyPatch, store: Any
+) -> None:
+    """The job records last-checked status and time per secret; the page's
+    read path parses the same blob back."""
+    _patch_report(monkeypatch, {"ANTHROPIC_API_KEY": _OK})
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
+
+    snap = secret_status.record_status(store)
+
+    assert snap.checked_at is not None
+    entry = snap.entries["ANTHROPIC_API_KEY"]
+    assert entry.state == "ok" and entry.check == "probe"
+    assert entry.checked_at is not None
+
+    loaded = secret_status.stored_status(store)
+    assert loaded.checked_at is not None
+    assert loaded.entries["ANTHROPIC_API_KEY"].state == "ok"
+    assert loaded.entries["SEMANTIC_SCHOLAR_API_KEY"].state == "missing"
+
+
+def test_record_status_blob_never_holds_a_secret_value(
+    monkeypatch: pytest.MonkeyPatch, store: Any
+) -> None:
+    _patch_report(monkeypatch, {"ANTHROPIC_API_KEY": _BAD})
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
+    monkeypatch.setattr(
+        secret_status, "present", lambda n, *, vault_names=None, store=None: True
+    )
+
+    secret_status.record_status(store)
+
+    assert _SENTINEL not in (store.get_setting(secret_status._STATUS_KEY) or "")
+
+
+def test_infra_class_is_presence_only(
+    monkeypatch: pytest.MonkeyPatch, store: Any
+) -> None:
+    """``svc/infra/*`` names are never probed — even inside a probe group —
+    and record as presence-checked."""
+    called: list[str] = []
+
+    async def spy_probe(client: Any, values: dict[str, str]) -> CheckResult:
+        called.extend(values)
+        return _OK
+
+    monkeypatch.setitem(
+        secret_status._PROBE_GROUP_MEMBERS, "infra_test", ("svc/infra/DB_KEY",)
+    )
+    monkeypatch.setitem(secret_status._PROBES, "infra_test", spy_probe)
+    try:
+        results = asyncio.run(secret_status.run_checks(store))
+    finally:
+        del secret_status._PROBE_GROUP_MEMBERS["infra_test"]
+        del secret_status._PROBES["infra_test"]
+
+    assert results == {}
+    assert called == []
+
+    monkeypatch.setattr(
+        secret_status,
+        "list_secrets",
+        lambda *, store: [
+            {"name": "svc/infra/DB_KEY", "hint": "h", "updated_at": None}
+        ],
+    )
+    snap = secret_status.record_status(store, results={})
+    entry = snap.entries["svc/infra/DB_KEY"]
+    assert entry.state == "present" and entry.check == "presence"
+    assert "never probed" in entry.detail
+
+
+def test_mint_status_job_dedupes_and_carries_no_secret(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.secret_check import (
+        mint_status_job,
+        pending_status_check,
+    )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _SENTINEL)
+    job_id = mint_status_job(store, origin="human", title="secret_status (test)")
+    assert job_id is not None
+    assert pending_status_check(store)
+    # A second mint while one is pending is a no-op.
+    assert mint_status_job(store, origin="human", title="x") is None
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title, meta::text FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row[0] == "secret_status (test)"
+    assert _SENTINEL not in row[1]
+    assert '"secret_status"' in row[1]
+    assert '"human"' in row[1]
+
+
+def test_secret_status_job_type_registered() -> None:
+    from precis.workers.job_types import get_job_type, known_job_types
+
+    spec = get_job_type("secret_status")
+    assert spec is not None
+    assert spec.dispatch is not None
+    assert "job_inproc" in spec.compatible_executors
+    assert "secret_status" in known_job_types()
+
+
+def test_secret_status_cadence_registered() -> None:
+    cad = next(c for c in CADENCES if c.name == "secret_status")
+    assert 3600 <= cad.interval_s <= 24 * 3600
+    assert cad.host_affinity is None
+    assert not cad.spends
+
+
+def test_job_dispatch_writes_status(
+    monkeypatch: pytest.MonkeyPatch, store: Any
+) -> None:
+    """The job_inproc dispatch path runs record_status and meta holds
+    counts only — no names, no values."""
+    import types
+
+    from precis.workers.job_types.secret_status import SPEC
+
+    _patch_report(monkeypatch, {"ANTHROPIC_API_KEY": _OK})
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
+    monkeypatch.setattr(
+        secret_status, "present", lambda n, *, vault_names=None, store=None: True
+    )
+    meta: dict[str, Any] = {}
+    chunks: list[str] = []
+    ctx = types.SimpleNamespace(
+        store=store,
+        meta={},
+        set_meta=lambda **kw: meta.update(kw),
+        append_chunk=lambda kind, text: chunks.append(text),
+        record_failure=lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("dispatch failed")
+        ),
+    )
+    dispatch = SPEC.dispatch
+    assert dispatch is not None
+    dispatch(ctx, SPEC)
+    assert meta["status"]["ok"] >= 1
+    assert _SENTINEL not in repr(meta)
+    assert chunks
+    assert secret_status.stored_status(store).checked_at is not None
+
+
+# ── review fixes F1/F2/F4/F7 ─────────────────────────────────────────────
+
+
+def test_dispatch_failure_names_exception_type_only(
+    monkeypatch: pytest.MonkeyPatch, store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """F1: a record_status failure reaches the job/log as the exception
+    TYPE name only — str(exc)/traceback can echo a key-bearing URL."""
+    import logging
+    import types
+
+    from precis.workers.job_types.secret_status import SPEC
+
+    caplog.set_level(logging.DEBUG)
+
+    def boom(_store: Any) -> Any:
+        raise ValueError("https://probe.invalid/?api_key=" + _SENTINEL)
+
+    monkeypatch.setattr(secret_status, "record_status", boom)
+    failures: list[str] = []
+    ctx = types.SimpleNamespace(
+        store=store,
+        meta={},
+        set_meta=lambda **kw: None,
+        append_chunk=lambda *a: None,
+        record_failure=lambda msg, **kw: failures.append(msg),
+    )
+    dispatch = SPEC.dispatch
+    assert dispatch is not None
+    dispatch(ctx, SPEC)
+    assert len(failures) == 1
+    assert "ValueError" in failures[0]
+    assert _SENTINEL not in failures[0]
+    assert _SENTINEL not in caplog.text
+
+
+def test_mint_takes_the_advisory_xact_lock_before_checking(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2: the pending check + insert are one atomic step — the advisory
+    lock statement runs inside the same connection, ahead of the check."""
+    from precis.workers.secret_check import mint_status_job
+
+    sql_seen: list[str] = []
+    real_conn = store.pool.connection
+
+    @contextlib.contextmanager
+    def spy():
+        with real_conn() as conn:
+            real_execute = conn.execute
+
+            def traced(sql: str, params: Any = None) -> Any:
+                sql_seen.append(sql)
+                return real_execute(sql, params)
+
+            conn.execute = traced
+            yield conn
+
+    monkeypatch.setattr(store.pool, "connection", spy)
+    job_id = mint_status_job(store, origin="background", title="t")
+    assert job_id is not None
+    lock_idx = next(i for i, s in enumerate(sql_seen) if "pg_advisory_xact_lock" in s)
+    check_idx = next(i for i, s in enumerate(sql_seen) if "job_type" in s)
+    assert lock_idx < check_idx
+
+
+def test_stale_pending_job_does_not_block_a_new_mint(
+    store: Any,
+) -> None:
+    """F4: a pending check older than the bound is wedged — it neither
+    blocks a mint nor reads as 'queued' on the page hint."""
+    from precis.workers.secret_check import (
+        mint_status_job,
+        pending_status_check,
+    )
+
+    first = mint_status_job(store, origin="background", title="t1")
+    assert first is not None and pending_status_check(store)
+    assert mint_status_job(store, origin="human", title="t2") is None
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '2 hours' WHERE ref_id = %s",
+            (first,),
+        )
+        conn.commit()
+
+    assert not pending_status_check(store)
+    second = mint_status_job(store, origin="human", title="t3")
+    assert second is not None and second != first
+
+
+def test_present_and_file_refuse_traversal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """F7: names with '..' or a leading '/' never reach the file layer —
+    via present(), _from_file or get_secret's file fallback."""
+    from precis import secrets as vault
+
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    secret_file = tmp_path / "REAL_KEY"
+    secret_file.write_text("v", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}_escape"
+    outside.write_text("v", encoding="utf-8")
+
+    assert vault.present("REAL_KEY")
+    assert not vault.present(f"../{tmp_path.name}_escape")
+    assert not vault.present("/etc/hostname")
+    assert not vault.present("..")
+    assert vault._from_file("../x") is None
+    assert vault.get_secret("../anything") is None
+    outside.unlink()

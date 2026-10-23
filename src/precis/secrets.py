@@ -57,6 +57,7 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Container
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -324,7 +325,20 @@ def _file_dir() -> Path:
     )
 
 
+def _file_safe_name(name: str) -> bool:
+    """``name`` is a vault key, not a path — refuse traversal before file IO.
+
+    A name with ``..`` or a leading ``/``/``\\`` would escape the secrets
+    directory. Inner separators stay legal (``svc/infra/*`` names need them).
+    """
+    return bool(name) and not (
+        ".." in name or name.startswith(("/", "\\")) or "\x00" in name
+    )
+
+
 def _from_file(name: str) -> str | None:
+    if not _file_safe_name(name):
+        return None
     try:
         text = (_file_dir() / name).read_text(encoding="utf-8").strip()
     except OSError:
@@ -693,6 +707,54 @@ def is_available(name: str, *, store: Store | None = None) -> bool:
     return get_secret(name, store=store) is not None
 
 
+#: db-own's vault name-class rule (docs/backlog/multi-user-overhaul.md §S1,
+#: migration 0231): ``svc/infra/*`` names carry class ``infra`` — credentials
+#: only ``precis_system`` members may reveal. Until that column exists the
+#: prefix *is* the class: callers must never probe an infra name with a live
+#: call — presence checks (``present`` / ``list_secrets``) only.
+_INFRA_PREFIX = "svc/infra/"
+
+
+def is_infra_secret(name: str) -> bool:
+    """True iff ``name`` is infra-class per db-own's vault class rule."""
+    return name.startswith(_INFRA_PREFIX)
+
+
+def present(
+    name: str,
+    *,
+    vault_names: Container[str] | None = None,
+    store: Store | None = None,
+) -> bool:
+    """True iff ``name`` *would* resolve — env var, vault inventory, or
+    secrets file — WITHOUT a decrypt and without an audit row. Same sources
+    as :func:`get_secret` minus the reveal: the vault half reads
+    ``vault.list()`` names (``vault_names`` pre-read by the caller, or one
+    listing here when ``store`` is given). The cheap check for inventory
+    surfaces (/secrets, the status cadence) where revealing every name just
+    to answer "is it set" would spam ``vault.events`` and hold plaintext."""
+    if os.environ.get(name):
+        return True
+    names: Container[str]
+    if vault_names is not None:
+        names = vault_names
+    else:
+        st = store if store is not None else _STORE
+        names = ()
+        if st is not None:
+            try:
+                names = {str(r["name"]) for r in list_secrets(store=st)}
+            except Exception as exc:
+                _warn_once(
+                    f"present:{type(exc).__name__}",
+                    f"secrets: vault list unavailable ({type(exc).__name__}); "
+                    "presence falls back to env/file only",
+                )
+    if name in names:
+        return True
+    return _from_file(name) is not None
+
+
 def client_identity() -> tuple[str, str, int, int, str]:
     """Public wrapper over :func:`_client_identity` — the
     ``(host, os_user, pid, ppid, process)`` tuple computed for the vault
@@ -740,8 +802,10 @@ __all__ = [
     "get_secret",
     "invalidate",
     "is_available",
+    "is_infra_secret",
     "list_secrets",
     "mounted_secret",
+    "present",
     "require_secret",
     "require_vault_secret",
     "set_secret",

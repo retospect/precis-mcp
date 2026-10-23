@@ -42,6 +42,12 @@ script only keeps the clock — it never probes anything.
   and raises one `secret_check` alert per `failed` credential (deduped, and
   auto-resolved when the credential passes again). The manual pass above
   remains the review and todo-filing step.
+- The `/secrets` page never probes: it renders the stored status the
+  `secret_status` job_type writes to `app_state["secret_check:status"]`
+  (per-secret state + check kind + checked time). The `secret_status`
+  scheduler cadence (~4h) mints that job; the page's "Check now" button
+  mints it on demand (`origin='human'`). Infra-class secrets
+  (`svc/infra/*`) are presence-checked only — never probed.
 
 ## Log
 

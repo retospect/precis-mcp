@@ -18,6 +18,16 @@ httpcore logs headers at DEBUG/TRACE, and the OpenAlex/Wolfram probes carry
 the key in the query string — the key goes on the wire, never into a log
 record.
 
+Who runs the probes: **only the background checker**, never the web page.
+:func:`record_status` (driven by the ``secret_status`` job_type — cadence-
+minted, or minted on demand by the page's "Check now" POST — and by the
+weekly ``secret_check`` alert pass) runs :func:`run_checks` plus a
+no-decrypt presence check and persists one :class:`StatusEntry` per secret
+in ``app_state``. The ``/secrets`` render path reads only that stored
+status (:func:`stored_status`) — it never probes, never decrypts. Infra-
+class secrets (``svc/infra/*``, db-own's vault class rule) are checked for
+presence only and are never probed, here or anywhere.
+
 :func:`weekly_report` / ``precis secret check`` run the same probes outside the
 web page for ``/whatneedsdoing`` (gr496305): one state per registry secret
 (ok, failed, unprobed, missing), plus the last succeeded job for an unprobed
@@ -33,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -44,16 +55,25 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from precis.secrets import get_secret, is_available
+from precis.secrets import (
+    get_secret,
+    is_available,
+    is_infra_secret,
+    list_secrets,
+    present,
+)
 from precis.utils.http import (
     POLICIES,
     RETRY_STATUSES,
     async_call_with_backoff,
     polite_user_agent,
 )
+from precis.utils.timeutil import as_utc
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 # ── registry ─────────────────────────────────────────────────────────────
 
@@ -434,7 +454,7 @@ def _quiet_probe_logs() -> Iterator[None]:
     transport exception's repr can echo the URL too. The key belongs on the
     wire, never in a log record — and this cadence now runs weekly
     unattended, so "someone notices the INFO line" is not a control.
-    Refcounted so two concurrent batches (the /secrets page and the
+    Refcounted so two concurrent batches (a checker job and the
     ``secret_check`` cadence in one process) can't restore the level while
     the other is still probing.
     """
@@ -657,9 +677,10 @@ _PROBE_TIMEOUT_S = 6.0
 #: force-refresh) does not hit a dozen vendors in the same instant.
 _MAX_CONCURRENT_PROBES = 3
 
-#: A probe target is not re-probed within this many seconds, even on
-#: ``force`` — a refresh storm re-serves the last result instead of hammering
-#: the vendor. A changed credential bypasses it (the user just edited it).
+#: A probe target is not re-probed within this many seconds — a second pass
+#: in the same burst (the weekly alert pass persisting status after its
+#: report, a Verify click landing beside a cadence fire) re-serves the last
+#: result instead of hammering the vendor. A changed credential bypasses it.
 _MIN_PROBE_INTERVAL_S = 30.0
 
 # Seam for tests: the per-target interval reads this, never ``time`` directly.
@@ -668,11 +689,6 @@ _clock: Callable[[], float] = time.monotonic
 #: group -> (monotonic time of the last real probe, credential fingerprint,
 #: result). The fingerprint is a process-local hash; secrets are never stored.
 _probed: dict[str, tuple[float, int, CheckResult]] = {}
-
-#: Count of real (network) probes run; ``get_results`` stamps ``checked_at``
-#: only when this moved, so a refresh served from the interval cache keeps
-#: the honest time of the last real probe.
-_probe_runs: list[int] = [0]
 
 
 _slots: asyncio.Semaphore | None = None
@@ -707,7 +723,6 @@ async def _probe_group(
     ):
         return prior[2]
     result = await _safe_probe(fn, client, values)
-    _probe_runs[0] += 1
     _probed[group] = (_clock(), fingerprint, result)
     return result
 
@@ -760,11 +775,15 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
     with _quiet_probe_logs():
         async with _probe_client() as client:
             for group, names in _PROBE_GROUP_MEMBERS.items():
-                present = [n for n in names if is_available(n, store=store)]
-                if not present:
+                # Infra class is presence-only by policy (db-own's vault
+                # class rule): no live call, not even through a shared group.
+                if any(is_infra_secret(n) for n in names):
                     continue
-                if len(present) < len(names):
-                    for n in present:
+                members = [n for n in names if is_available(n, store=store)]
+                if not members:
+                    continue
+                if len(members) < len(names):
+                    for n in members:
                         results[n] = CheckResult("bad", "partner secret missing")
                     continue
                 if group == "oss_llm" and not os.environ.get("PRECIS_LLM_BASE_URL"):
@@ -784,53 +803,178 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
     return results
 
 
-# ── cache ────────────────────────────────────────────────────────────────
+# ── stored status ────────────────────────────────────────────────────────
+#
+# The checker job's durable output and the /secrets page's only read:
+# ``app_state["secret_check:status"]`` holds one JSON blob — a small map
+# name -> {state, detail, check, checked_at}. ``app_state`` (not a new
+# column) because the vault's functions-only surface can't carry it, and
+# this is exactly app_state's remit — cross-process bookkeeping rows that
+# don't belong on a ref. States: ``ok`` / ``invalid`` / ``unknown`` (a real
+# probe ran), ``missing`` / ``present`` (presence-only — every infra-class
+# and probe_group-less secret). A secret VALUE is never part of the blob —
+# same rule as CheckResult.detail.
 
-_last: dict[str, CheckResult] = {}
-_checked_at: datetime | None = None
-_lock: asyncio.Lock | None = None  # lazily-created; see get_results
+_STATUS_KEY = "secret_check:status"
+
+#: CheckResult.state -> stored StatusEntry.state for a probe that ran.
+_STORED_STATES = {"ok": "ok", "bad": "invalid", "unknown": "unknown"}
 
 
-def checked_at() -> datetime | None:
-    """When :func:`run_checks` last actually ran (``None`` before the first call)."""
-    return _checked_at
+@dataclass(frozen=True)
+class StatusEntry:
+    """One secret's last recorded check, as persisted in ``app_state``.
+
+    ``state`` is ``ok`` | ``invalid`` | ``unknown`` | ``missing`` |
+    ``present``; ``check`` is ``probe`` when a live probe ran or
+    ``presence`` when the check was presence-only (infra class, or no
+    auth-only endpoint exists — the *only* check allowed for those).
+    ``detail`` is a short human string — never a secret value."""
+
+    state: str
+    detail: str
+    check: str
+    checked_at: datetime | None
 
 
-async def get_results(
-    store: Store, *, max_age_s: float = 900.0, force: bool = False
-) -> dict[str, CheckResult]:
-    """Cached probe results — reruns :func:`run_checks` when stale or forced.
+@dataclass(frozen=True)
+class StatusSnapshot:
+    """The stored status blob: ``checked_at`` = when it was written."""
 
-    The lock is created lazily (inside the first async call) rather than at
-    import time, so importing this module never requires a running event
-    loop.
-    """
-    global _checked_at, _lock
-    if _lock is None:
-        _lock = asyncio.Lock()
+    checked_at: datetime | None
+    entries: dict[str, StatusEntry]
 
-    now = datetime.now(UTC)
-    if (
-        not force
-        and _checked_at is not None
-        and (now - _checked_at).total_seconds() < max_age_s
-    ):
-        return _last
-    async with _lock:
-        now = datetime.now(UTC)
-        if (
-            not force
-            and _checked_at is not None
-            and (now - _checked_at).total_seconds() < max_age_s
-        ):
-            return _last
-        runs_before = _probe_runs[0]
-        results = await run_checks(store)
-        _last.clear()
-        _last.update(results)
-        if _probe_runs[0] != runs_before or _checked_at is None:
-            _checked_at = now
-        return _last
+
+def _status_entry(
+    spec: SecretSpec,
+    is_present: bool,
+    result: CheckResult | None,
+    now: datetime,
+) -> StatusEntry:
+    """One registry secret's stored row: probe outcome when a probe ran,
+    presence otherwise. Live presence beats a stale record — the page
+    re-derives presence on render, so ``missing`` here only feeds the
+    stored blob's completeness."""
+    if is_infra_secret(spec.name):
+        return StatusEntry(
+            "present" if is_present else "missing",
+            "infra class — presence-only by policy, never probed",
+            "presence",
+            now,
+        )
+    if result is not None:
+        # A probe outcome implies present — run_checks only probes members
+        # it resolved; keep the probe verdict even if the presence read
+        # disagrees (e.g. a deleted-mid-pass edge).
+        return StatusEntry(_STORED_STATES[result.state], result.detail, "probe", now)
+    if not is_present:
+        detail = "optional, not set" if spec.optional else "not configured"
+        return StatusEntry("missing", detail, "presence", now)
+    if spec.probe_group is None:
+        return StatusEntry(
+            "present", "presence only — no auth-only probe", "presence", now
+        )
+    return StatusEntry("present", "presence only — probe did not run", "presence", now)
+
+
+def _build_status(
+    store: Store, results: dict[str, CheckResult], now: datetime
+) -> StatusSnapshot:
+    """Presence + probe outcomes -> the per-secret status map. Presence is
+    :func:`precis.secrets.present` — no decrypt, no audit row — so the
+    checker only reveals what a probe itself needs."""
+    vault_rows = list_secrets(store=store)
+    vault_names = {str(r["name"]) for r in vault_rows}
+    entries: dict[str, StatusEntry] = {}
+    for spec in KNOWN_SECRETS:
+        entries[spec.name] = _status_entry(
+            spec,
+            present(spec.name, vault_names=vault_names),
+            results.get(spec.name),
+            now,
+        )
+    registry = {s.name for s in KNOWN_SECRETS}
+    for name in sorted(vault_names - registry):
+        if ":" in name:
+            continue  # per-user credentials live on /account, not this page
+        entries[name] = StatusEntry(
+            "present",
+            (
+                "infra class — presence-only by policy, never probed"
+                if is_infra_secret(name)
+                else "presence only — no check registered"
+            ),
+            "presence",
+            now,
+        )
+    return StatusSnapshot(now, entries)
+
+
+def _dump_status(snap: StatusSnapshot) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "written_at": snap.checked_at.isoformat() if snap.checked_at else None,
+            "secrets": {
+                name: {
+                    "state": e.state,
+                    "detail": e.detail,
+                    "check": e.check,
+                    "checked_at": e.checked_at.isoformat() if e.checked_at else None,
+                }
+                for name, e in snap.entries.items()
+            },
+        }
+    )
+
+
+def record_status(
+    store: Store,
+    *,
+    results: dict[str, CheckResult] | None = None,
+    now: datetime | None = None,
+) -> StatusSnapshot:
+    """The checker job's work: probe, presence-check, persist — the one
+    writer of the /secrets page's status. Pass ``results`` when the caller
+    already ran :func:`run_checks` (the weekly alert pass) so its probes
+    aren't run twice."""
+    if results is None:
+        results = asyncio.run(run_checks(store))
+    snap = _build_status(store, results, now or datetime.now(UTC))
+    store.set_setting(_STATUS_KEY, _dump_status(snap))
+    return snap
+
+
+def stored_status(store: Store) -> StatusSnapshot:
+    """Read the checker job's persisted status — the /secrets page's only
+    status read. Empty snapshot when the blob is absent or unreadable; the
+    page then shows "not checked yet" rather than probing."""
+    try:
+        raw = store.get_setting(_STATUS_KEY)
+    except Exception:
+        log.debug("secret_status: stored status read failed", exc_info=True)
+        return StatusSnapshot(None, {})
+    if not raw:
+        return StatusSnapshot(None, {})
+    try:
+        blob = json.loads(raw)
+        secrets = blob["secrets"]
+        entries = {
+            name: StatusEntry(
+                str(e["state"]),
+                str(e["detail"]),
+                str(e.get("check", "presence")),
+                as_utc(e["checked_at"]),
+            )
+            for name, e in secrets.items()
+        }
+        return StatusSnapshot(as_utc(blob.get("written_at")), entries)
+    except Exception:
+        log.warning(
+            "secret_status: stored status blob is unreadable — "
+            "the next checker job rewrites it"
+        )
+        return StatusSnapshot(None, {})
 
 
 # ── weekly report ────────────────────────────────────────────────────────
@@ -898,14 +1042,19 @@ def last_succeeded_job(
     return (int(row[0]), row[1]) if row else None
 
 
-async def weekly_report(store: Store) -> list[ReportRow]:
+async def weekly_report(
+    store: Store, *, results: dict[str, CheckResult] | None = None
+) -> list[ReportRow]:
     """Probe every probe-able registry secret once and report all of them.
 
     Calls :func:`run_checks` directly (the fixed :data:`_PROBES` endpoints, no
-    page cache) and, for each ``unprobed`` secret that jobs depend on, adds
-    the last succeeded job as evidence the key still works.
+    page cache) — or takes the caller's already-run ``results`` (the weekly
+    alert pass probes once for both its report and the status record) — and,
+    for each ``unprobed`` secret that jobs depend on, adds the last succeeded
+    job as evidence the key still works.
     """
-    results = await run_checks(store)
+    if results is None:
+        results = await run_checks(store)
     rows: list[ReportRow] = []
     for spec in KNOWN_SECRETS:
         row = classify(
@@ -951,11 +1100,13 @@ __all__ = [
     "ProbeFn",
     "ReportRow",
     "SecretSpec",
-    "checked_at",
+    "StatusEntry",
+    "StatusSnapshot",
     "classify",
     "format_report",
-    "get_results",
     "last_succeeded_job",
+    "record_status",
     "run_checks",
+    "stored_status",
     "weekly_report",
 ]

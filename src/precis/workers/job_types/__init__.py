@@ -829,6 +829,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
         _REGISTRY[name] = SPEC
         return SPEC
+    if name == "secret_status":
+        # Deterministic credential check for the /secrets stored status —
+        # plugin dispatch under job_inproc; no LLM, no secret in meta.
+        from precis.workers.job_types.secret_status import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "good_search":
         _REGISTRY["good_search"] = _load_good_search()
         return _REGISTRY["good_search"]
@@ -931,6 +938,7 @@ def known_job_types() -> list[str]:
         "sandbox_run",
         "diagnose_gripe",
         "graph_garden",
+        "secret_status",
         "good_search",
         "good_search_triage",
         "quest_tick",

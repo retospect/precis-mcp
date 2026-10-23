@@ -1,13 +1,15 @@
 """``/secrets`` — the secrets-vault editor.
 
 Reads **`vault.list()` only** (name + masked hint + updated_at) for the
-inventory: the RENDER path never decrypts, never holds ciphertext, and cannot
-reveal a plaintext even if the process is compromised. The "Verify now"
-probe pass (:mod:`precis.secret_status`) is the one path that decrypts —
-server-side only, to authenticate against each provider's own API — and it
-never renders or logs the plaintext it resolves; only a short status classification
-(``ok``/``bad``/``unknown`` + a code/exception-derived detail string) crosses
-back into this module.
+inventory: the RENDER path never decrypts, never holds ciphertext, cannot
+reveal a plaintext even if the process is compromised, and makes **no
+outbound call** — validity is read from the stored snapshot
+(:func:`precis.secret_status.stored_status`), written by the background
+``secret_status`` checker job (:mod:`precis.workers.secret_check`). "Check
+now" mints that job — the page shows the stored "checked <age> ago" until
+the worker's pass lands. Presence (env/vault/file) is re-derived live
+without decrypting (:func:`precis.secrets.present`), so a just-added row
+renders correctly before the next check runs.
 
 Writes are **write-only**: each row's input is empty (placeholder = the current
 hint); a blank submit is a no-op, so the form can never round-trip existing
@@ -24,8 +26,6 @@ short note instead of listed row-by-row.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -59,43 +59,46 @@ def _short_label(detail: str) -> str:
 def _dot_for(
     present: bool,
     known: bool,
-    result: secret_status.CheckResult | None,
+    entry: secret_status.StatusEntry | None,
 ) -> tuple[str, str, str]:
     """(color, label, title) for a row's status dot.
 
-    rose = not present anywhere. emerald = present and either verified,
-    presence-only (no probe result to contradict it), or an unknown vault
-    extra we have no registry opinion on. amber = present but the probe
-    came back bad or inconclusive — ``title`` always carries the full
-    ``CheckResult.detail`` (never a secret value).
+    rose = not present anywhere (live presence, not the stale record).
+    emerald = present and the stored check says ok / presence-only / no
+    opinion yet. amber = the stored probe said invalid or inconclusive —
+    ``title`` always carries the full ``StatusEntry.detail`` (never a
+    secret value). A stored ``missing`` beside live presence reads as
+    unverified: the record predates the set.
     """
     if not present:
         return "rose", "missing", "not configured"
-    if result is None:
+    if entry is None or entry.state == "missing":
         label = "present (unverified)" if known else "present"
         return "emerald", label, "present — no automated check run"
-    if result.state == "ok":
-        return "emerald", "verified", result.detail
-    return "amber", _short_label(result.detail), result.detail
+    if entry.state == "ok":
+        return "emerald", "verified", entry.detail
+    if entry.state in ("invalid", "unknown"):
+        return "amber", _short_label(entry.detail), entry.detail
+    return "emerald", "present", entry.detail
 
 
 def _build_rows(
     vault_rows: list[dict[str, object]],
-    results: dict[str, secret_status.CheckResult],
-    *,
-    store: Any,
+    snap: secret_status.StatusSnapshot,
 ) -> tuple[list[dict[str, object]], int]:
     """Merge the vault inventory with the known-secrets registry into the
     template's row shape — known secrets first (registry order), then any
     vault-only extras alphabetically, excluding per-user credentials (a
     ``NAME:<login>`` vault name). Returns ``(rows, per_user_count)``."""
     vault_by_name = {r["name"]: r for r in vault_rows}
+    vault_names = {str(n) for n in vault_by_name}
     rows: list[dict[str, object]] = []
     for spec in secret_status.KNOWN_SECRETS:
         v = vault_by_name.get(spec.name)
-        present = vault.is_available(spec.name, store=store)
-        result = results.get(spec.name)
-        color, label, title = _dot_for(present, True, result)
+        # Live presence, no decrypt: the stored check may predate a set.
+        is_present = vault.present(spec.name, vault_names=vault_names)
+        entry = snap.entries.get(spec.name)
+        color, label, title = _dot_for(is_present, True, entry)
         rows.append(
             {
                 "name": spec.name,
@@ -104,9 +107,9 @@ def _build_rows(
                 "in_vault": v is not None,
                 "hint": v["hint"] if v else None,
                 "updated_at": v["updated_at"] if v else None,
-                "present": present,
-                "env_or_file": present and v is None,
-                "result": result,
+                "present": is_present,
+                "env_or_file": is_present and v is None,
+                "entry": entry,
                 "dot_color": color,
                 "dot_label": label,
                 "dot_title": title,
@@ -126,7 +129,8 @@ def _build_rows(
         key=lambda r: str(r["name"]),
     )
     for v in extras:
-        color, label, title = _dot_for(True, False, None)
+        entry = snap.entries.get(str(v["name"]))
+        color, label, title = _dot_for(True, False, entry)
         rows.append(
             {
                 "name": v["name"],
@@ -137,7 +141,7 @@ def _build_rows(
                 "updated_at": v["updated_at"],
                 "present": True,
                 "env_or_file": False,
-                "result": None,
+                "entry": entry,
                 "dot_color": color,
                 "dot_label": label,
                 "dot_title": title,
@@ -149,11 +153,13 @@ def _build_rows(
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    """Render the masked inventory + registry rows + the write-only editor."""
+    """Render the masked inventory + stored check status + the editor."""
+    from precis.workers.secret_check import pending_status_check
+
     store = get_store(request)
     vault_rows = vault.list_secrets(store=store)
-    results = await secret_status.get_results(store)
-    rows, per_user_count = _build_rows(vault_rows, results, store=store)
+    snap = secret_status.stored_status(store)
+    rows, per_user_count = _build_rows(vault_rows, snap)
     return templates.TemplateResponse(
         request,
         "secrets/index.html.j2",
@@ -161,16 +167,24 @@ async def index(request: Request) -> HTMLResponse:
             "active_tab": "secrets",
             "rows": rows,
             "per_user_count": per_user_count,
-            "checked_at": secret_status.checked_at(),
+            "checked_at": snap.checked_at,
+            "check_queued": pending_status_check(store),
         },
     )
 
 
 @router.post("/check")
 async def check_now(request: Request) -> Response:
-    """Force a fresh probe pass across every known secret, then redirect back."""
-    store = get_store(request)
-    await secret_status.get_results(store, force=True)
+    """Queue a background status check, then redirect back. The page itself
+    only ever reads stored status — the minted ``secret_status`` job runs
+    the probes on a worker."""
+    from precis.workers.secret_check import mint_status_job
+
+    mint_status_job(
+        get_store(request),
+        origin="human",
+        title="secret_status (/secrets check now)",
+    )
     return RedirectResponse("/secrets", status_code=303)
 
 

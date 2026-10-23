@@ -11,6 +11,7 @@ with a real ``httpx.AsyncClient`` in this file.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -196,24 +197,48 @@ def test_run_checks_single_member_group(monkeypatch: pytest.MonkeyPatch) -> None
 
 # ── (d) index route rendering ──────────────────────────────────────────────
 
+_NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+
+def _snapshot(
+    entries: dict[str, secret_status.StatusEntry],
+) -> secret_status.StatusSnapshot:
+    return secret_status.StatusSnapshot(_NOW, entries)
+
+
+def _entry(state: str, detail: str, check: str = "probe") -> secret_status.StatusEntry:
+    return secret_status.StatusEntry(state, detail, check, _NOW)
+
+
+def _patch_page(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    present_names: set[str],
+    snap: secret_status.StatusSnapshot,
+) -> None:
+    """The route's three inputs canned: vault listing empty, presence per
+    ``present_names``, stored status as given — and the job-query helper
+    quieted."""
+    monkeypatch.setattr(vault, "list_secrets", lambda *, store: [])
+    monkeypatch.setattr(
+        vault,
+        "present",
+        lambda name, *, vault_names=None, store=None: name in present_names,
+    )
+    monkeypatch.setattr(secret_status, "stored_status", lambda store: snap)
+    monkeypatch.setattr(
+        "precis.workers.secret_check.pending_status_check", lambda store: False
+    )
+
 
 def test_index_renders_missing_and_verified_dots(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(vault, "list_secrets", lambda *, store: [])
-
-    def fake_is_available(name: str, *, store: Any = None) -> bool:
-        return name == "ANTHROPIC_API_KEY"
-
-    monkeypatch.setattr(vault, "is_available", fake_is_available)
-
-    async def fake_get_results(
-        store: Any, *, max_age_s: float = 900.0, force: bool = False
-    ) -> dict[str, secret_status.CheckResult]:
-        return {"ANTHROPIC_API_KEY": secret_status.CheckResult("ok", "verified")}
-
-    monkeypatch.setattr(secret_status, "get_results", fake_get_results)
-    monkeypatch.setattr(secret_status, "checked_at", lambda: None)
+    _patch_page(
+        monkeypatch,
+        present_names={"ANTHROPIC_API_KEY"},
+        snap=_snapshot({"ANTHROPIC_API_KEY": _entry("ok", "verified")}),
+    )
 
     r = client.get("/secrets")
     assert r.status_code == 200
@@ -223,65 +248,69 @@ def test_index_renders_missing_and_verified_dots(
     assert "bg-danger-solid-soft" in r.text
     assert "missing" in r.text
     assert "verified" in r.text
+    # The stored per-secret check line renders as "checked <ago>: <state>".
+    assert "checked" in r.text and ": ok" in r.text
     # Cost badges render for known rows — Anthropic's is paid, S2's free.
     assert "paid — usage-billed" in r.text
     assert "bg-warning-subtle" in r.text
     assert "bg-success-subtle" in r.text
 
 
+def test_index_makes_no_outbound_call(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The render path must never probe — a raising run_checks proves it."""
+    _patch_page(monkeypatch, present_names=set(), snap=_snapshot({}))
+
+    def boom(_store: Any) -> dict[str, secret_status.CheckResult]:
+        raise AssertionError("run_checks called from the page")
+
+    monkeypatch.setattr(secret_status, "run_checks", boom)
+
+    r = client.get("/secrets")
+    assert r.status_code == 200
+
+
 def test_index_renders_amber_for_bad_probe(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(vault, "list_secrets", lambda *, store: [])
-
-    def fake_is_available(name: str, *, store: Any = None) -> bool:
-        return name == "PERPLEXITY_API_KEY"
-
-    monkeypatch.setattr(vault, "is_available", fake_is_available)
-
-    async def fake_get_results(
-        store: Any, *, max_age_s: float = 900.0, force: bool = False
-    ) -> dict[str, secret_status.CheckResult]:
-        return {
-            "PERPLEXITY_API_KEY": secret_status.CheckResult(
-                "bad", "HTTP 401 — key rejected"
-            )
-        }
-
-    monkeypatch.setattr(secret_status, "get_results", fake_get_results)
-    monkeypatch.setattr(secret_status, "checked_at", lambda: None)
+    _patch_page(
+        monkeypatch,
+        present_names={"PERPLEXITY_API_KEY"},
+        snap=_snapshot(
+            {"PERPLEXITY_API_KEY": _entry("invalid", "HTTP 401 — key rejected")}
+        ),
+    )
 
     r = client.get("/secrets")
     assert r.status_code == 200
     assert "bg-warning-solid-soft" in r.text
+    assert ": invalid" in r.text
     # The blurb/get-link surfaces for a not-fully-verified known secret.
     assert "perplexity.ai" in r.text
 
 
-def test_check_now_forces_refresh_and_redirects(
+def test_check_now_mints_a_job_and_redirects(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[bool] = []
+    mints: list[dict[str, Any]] = []
 
-    async def fake_get_results(
-        store: Any, *, max_age_s: float = 900.0, force: bool = False
-    ) -> dict[str, secret_status.CheckResult]:
-        calls.append(force)
-        return {}
+    def fake_mint(store: Any, *, origin: str, title: str) -> int:
+        mints.append({"origin": origin, "title": title})
+        return 42
 
-    monkeypatch.setattr(secret_status, "get_results", fake_get_results)
+    monkeypatch.setattr("precis.workers.secret_check.mint_status_job", fake_mint)
 
     r = client.post("/secrets/check", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/secrets"
-    assert calls == [True]
+    assert len(mints) == 1
+    assert mints[0]["origin"] == "human"
 
 
 def test_unknown_vault_extra_present_dot_is_emerald(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from datetime import UTC, datetime
-
     monkeypatch.setattr(
         vault,
         "list_secrets",
@@ -289,19 +318,17 @@ def test_unknown_vault_extra_present_dot_is_emerald(
             {
                 "name": "SOME_UNLISTED_SECRET",
                 "hint": "sk-…abc",
-                "updated_at": datetime(2026, 7, 1, tzinfo=UTC),
+                "updated_at": _NOW,
             }
         ],
     )
-    monkeypatch.setattr(vault, "is_available", lambda name, *, store=None: False)
-
-    async def fake_get_results(
-        store: Any, *, max_age_s: float = 900.0, force: bool = False
-    ) -> dict[str, secret_status.CheckResult]:
-        return {}
-
-    monkeypatch.setattr(secret_status, "get_results", fake_get_results)
-    monkeypatch.setattr(secret_status, "checked_at", lambda: None)
+    monkeypatch.setattr(
+        vault, "present", lambda name, *, vault_names=None, store=None: False
+    )
+    monkeypatch.setattr(secret_status, "stored_status", lambda store: _snapshot({}))
+    monkeypatch.setattr(
+        "precis.workers.secret_check.pending_status_check", lambda store: False
+    )
 
     r = client.get("/secrets")
     assert r.status_code == 200
