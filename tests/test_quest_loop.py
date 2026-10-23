@@ -512,6 +512,33 @@ class TestReapOrphanedLoop:
         assert _current_status(store, live_id) == "running"
         assert _non_terminal_loop_ids(store, q) == [live_id]
 
+    def test_parked_loop_with_stale_claim_lease_is_not_reaped(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr507636: a loop parked ``waiting_time`` keeps its claim-time
+        ``meta.lease_until`` (the pre-fix yield path never cleared it;
+        only wake_runner's re-queue did). On a rotation-starved host the
+        wake sits far past the 600 s grace, so parked jobs matched
+        (b) expired lease + (c) no fresh chunk and were cancelled
+        mid-campaign — 27 quest_tick jobs in 24 h on melchior. A
+        ``waiting_*`` status means "parked, no claim held": the lease
+        residue is not a dead claimant, and the job's liveness is the
+        wake_runner's, so the orphan arm must not apply at all."""
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_ORPHAN_GRACE_S", "600")
+        q = self._make_active_quest(store)
+        parked_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert parked_id is not None
+        _set_status(store, parked_id, "waiting_time")
+        _set_lease(store, parked_id, "now() - interval '1 hour'")
+        _insert_chunk(store, parked_id, age_sql="2 hours")
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 0
+        assert out["minted"] == 0
+        assert _current_status(store, parked_id) == "waiting_time"
+        assert _non_terminal_loop_ids(store, q) == [parked_id]
+
     def test_lease_expired_and_no_recent_chunk_is_still_reaped(
         self, store: Store, monkeypatch: Any
     ) -> None:

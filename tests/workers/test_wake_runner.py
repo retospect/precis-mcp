@@ -402,3 +402,34 @@ def test_woken_loop_is_not_reaped_as_a_reboot_orphan(store: Store) -> None:
 
     assert reaped is None, "a freshly woken loop must not read as an orphan"
     assert _status_of(store, coord) == "queued"
+
+
+def test_yield_park_releases_the_claim_lease(store: Store) -> None:
+    """gr507636: persisting a Yield IS releasing the claim — the park must
+    drop ``meta.lease_until`` the same way the wake_runner's re-queue does,
+    so the parked job can't read as an expired claim to the quest
+    reconciler's reboot-orphan reap (the re-queue clear only covered the
+    back half of the same window)."""
+    from precis.workers.executors._yield import WakeWhen, Yield
+
+    coord = _mk_job(
+        store,
+        parent_id=None,
+        status="running",
+        meta={"job_type": "quest_tick", "executor": "coordinator"},
+    )
+    with store.pool.connection() as conn:
+        set_meta(conn, coord, lease_until="2030-01-01T00:00:00+00:00")
+        conn.commit()
+
+    coordinator._persist_dispatch_result(
+        store,
+        coord,
+        Yield(
+            state={"phase": "await"},
+            wake_when=WakeWhen("at_time", {"ts": 0}),
+        ),
+    )
+
+    assert "lease_until" not in _job_meta(store, coord)
+    assert _status_of(store, coord) == "waiting_time"

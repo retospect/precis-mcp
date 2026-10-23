@@ -131,6 +131,7 @@ from precis.quest.compute import (
 from precis.quest.tick import quest_loop_enabled
 from precis.utils.env import env_int
 from precis.utils.job_bubble import INFRA_FAILURE_TAGS, remove_child_failed_tags
+from precis.workers.executors._common import WAITING as _COORD_WAITING_STATUSES
 from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 
 if TYPE_CHECKING:
@@ -521,6 +522,16 @@ def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | N
     non-terminal — so it blocks a re-mint — AND (b) has a ``meta.lease_until``
     that is non-null and expired by more than ``grace_s`` — AND (c) has no
     ``chunks`` row for it created within that same ``grace_s`` window.
+    A ``waiting_*`` status additionally disqualifies the row outright
+    (gr507636): a parked job holds no claim — its ``lease_until`` is stale
+    residue from the claim that yielded it, not evidence of a dead worker —
+    and its liveness is the wake_runner's problem, not the lease's. Before
+    the coordinator's yield path dropped ``lease_until`` at park time, a
+    rotation-starved host (wake_runner running once per ~85-min rotation,
+    vs. the 5-min heartbeat lease) had every healthy parked loop matching
+    (b) and (c) inside 15 minutes of its claim: 27 quest_tick loops were
+    cancelled mid-tick in 24h. The status exclusion also covers parked rows
+    written before that park-time clear.
 
     Both (b) and (c) are required (gr204309). Before this fix the lease-expiry
     arm alone was treated as "no live executor could still be holding it" —
@@ -584,7 +595,7 @@ def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | N
                     idem,
                     grace_interval,
                     grace_interval,
-                    list(_TERMINAL_STATUSES),
+                    list(_TERMINAL_STATUSES) + list(_COORD_WAITING_STATUSES),
                 ),
             ).fetchone()
             if row is None:

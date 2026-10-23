@@ -562,6 +562,18 @@ def _persist_dispatch_result(store: Store, ref_id: int, result: Any) -> None:
                 wake_when={"kind": wake.kind, "payload": wake.payload},
                 **extra_meta,
             )
+            # A park releases the claim: the lease stamped at claim (and
+            # renewed by _LeaseKeepalive during the slice) describes work
+            # the worker holds NOW, not this sleep. Left in place it
+            # expires while parked and reads as a dead claimant to the
+            # quest reconciler's reboot-orphan reap — gr507636: live
+            # waiting_time loops were cancelled mid-campaign on exactly
+            # that stale lease (wake_runner's _clear_lease only covers
+            # the re-queue side of the same window).
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'lease_until' WHERE ref_id = %s",
+                (ref_id,),
+            )
             _set_status(store, ref_id, status, conn=conn)
             conn.commit()
         return

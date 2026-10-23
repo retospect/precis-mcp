@@ -71,10 +71,18 @@ RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile"
 
 #: Passes :func:`run_loop` ages to the front on the same budget as
 #: :data:`RESCUE_SERVICES`, without joining the rescue-gap alert set: the
-#: coordinator executor, so a parked ``quest_tick`` (5-min ``at_time``
-#: heartbeat) is claimed within ``rescue_budget_s`` plus one pass instead of
-#: once per full rotation (~85 min on melchior, gr493226).
-INTERLEAVED_SERVICES: tuple[str, ...] = (*RESCUE_SERVICES, "job_coordinator")
+#: coordinator executor AND the wake pass that re-queues its parked jobs —
+#: a parked ``quest_tick`` (5-min ``at_time`` heartbeat) only becomes
+#: claimable once ``wake_runner`` flips it back to ``STATUS:queued``, so
+#: interleaving the claim alone (gr493226) still left the resume at
+#: rotation cadence, and the parked job outlived its claim-time lease
+#: (gr507636). Both halves now run within ``rescue_budget_s`` plus one
+#: pass instead of once per full rotation (~85 min on melchior).
+INTERLEAVED_SERVICES: tuple[str, ...] = (
+    *RESCUE_SERVICES,
+    "job_coordinator",
+    "wake_runner",
+)
 
 #: Env var overriding :data:`DEFAULT_RESCUE_BUDGET_S`; ``0`` turns the
 #: rescue interleave off (rescue passes run only in their rotation slot).
