@@ -196,7 +196,7 @@ def _mint(store: Store, *, slug: str, section: _StaleSection) -> bool:
     """Mint ONE ``draft_refresh`` job for ``section``. Returns ``True``
     iff a new job was inserted, ``False`` when its ``idem_key`` already
     exists (any status — that's the dedup working, not an error)."""
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     scope = section.heading_dc
     idem_key = f"draft_refresh:{slug}:{scope}:{section.min_created_at:%Y-%m-%d}"
@@ -209,25 +209,15 @@ def _mint(store: Store, *, slug: str, section: _StaleSection) -> bool:
         if existing is not None:
             conn.commit()
             return False
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="draft_refresh",
+            executor="claude_inproc",
             title=f"draft_refresh ({slug}:{scope})",
-            meta={
-                "job_type": "draft_refresh",
-                "executor": "claude_inproc",
-                "params": {"draft": slug, "scope": scope},
-                "idem_key": idem_key,
-            },
+            params={"draft": slug, "scope": scope},
+            idem_key=idem_key,
             prio=_MINT_PRIO,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
         )
         conn.commit()
     log.info(

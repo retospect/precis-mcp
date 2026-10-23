@@ -1306,7 +1306,7 @@ def _mint_auto_decompose(
     and the streak reset commit atomically with the failed job's own
     status flip.
     """
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     # Propagate the parent's prio onto the minted job, same as the normal
     # dispatch.py mint path (``_claim_and_dispatch``) — otherwise an urgent
@@ -1323,26 +1323,16 @@ def _mint_auto_decompose(
         else None
     )
 
-    child = store.insert_ref(
-        kind="job",
-        slug=None,
+    child = mint_background_job(
+        store,
+        conn=conn,
+        job_type="plan_tick",
+        executor=_EXECUTOR_NAME,
         title=f"plan_tick decompose (auto-mint under todo:{parent_ref_id})",
-        meta={
-            "job_type": "plan_tick",
-            "executor": _EXECUTOR_NAME,
-            "params": {"model": model, "decompose": True},
-            "dispatched_from_todo": parent_ref_id,
-        },
+        params={"model": model, "decompose": True},
         parent_id=parent_ref_id,
         prio=parent_prio,
-        conn=conn,
-    )
-    store.add_tag(
-        child.id,
-        Tag.closed("STATUS", "queued"),
-        set_by="system",
-        replace_prefix=True,
-        conn=conn,
+        meta_extra={"dispatched_from_todo": parent_ref_id},
     )
     _set_meta(conn, parent_ref_id, **{_DECOMPOSE_ATTEMPTED_KEY: True})
     _reset_resume_streak(conn, parent_ref_id)

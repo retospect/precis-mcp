@@ -290,7 +290,7 @@ def _on_failed(ctx: Any) -> None:
         return
     from datetime import UTC, datetime, timedelta
 
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
     from precis.workers.dispatch import _pending_job_of_type_exists
     from precis.workers.executors._common import WAITING_TIME
 
@@ -303,30 +303,26 @@ def _on_failed(ctx: Any) -> None:
         ).fetchone()
         parent_id = int(row[0]) if row and row[0] is not None else None
         prio = row[1] if row else None
-        meta = {
-            "job_type": SPEC.name,
-            "executor": "job_inproc",
-            "params": dict(ctx.meta.get("params") or {}),
+        meta_extra: dict[str, Any] = {
             "retry_of": ctx.ref_id,
             "wake_when": {"kind": "at_time", "payload": {"ts": int(wake.timestamp())}},
         }
         if ctx.meta.get("dispatched_from_todo") is not None:
-            meta["dispatched_from_todo"] = ctx.meta["dispatched_from_todo"]
-        ref = ctx.store.insert_ref(
-            kind="job",
-            slug=None,
+            meta_extra["dispatched_from_todo"] = ctx.meta["dispatched_from_todo"]
+        ref = mint_background_job(
+            ctx.store,
+            conn=conn,
+            job_type=SPEC.name,
+            executor="job_inproc",
             title=f"graph_garden (retry of job:{ctx.ref_id})",
-            meta=meta,
+            params=dict(ctx.meta.get("params") or {}),
             parent_id=parent_id,
             prio=prio,
-            conn=conn,
-        )
-        ctx.store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", WAITING_TIME),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
+            status=WAITING_TIME,
+            # A retry is the failed run's own work re-queued: keep its
+            # class (a foreground-put run retries as foreground).
+            origin=ctx.meta.get("origin"),
+            meta_extra=meta_extra,
         )
         ctx.store.append_event(
             ctx.ref_id,

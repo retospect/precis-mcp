@@ -612,7 +612,7 @@ def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | N
     the hub. A failure is logged and swallowed: the materializer's age trigger
     still embeds the hub, only later. Never raises into the write.
     """
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     idem_key = f"embed-nudge:{int(time.time()) // _NUDGE_BUCKET_S}"
     try:
@@ -634,25 +634,15 @@ def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | N
             ).fetchone()
             if queued is not None:
                 return None
-            ref = store.insert_ref(
-                kind="job",
-                slug=None,
+            ref = mint_background_job(
+                store,
+                conn=conn,
+                job_type="embed_batch",
+                executor="job_inproc",
                 title=f"embed_batch (fresh-hub nudge: {reason})",
-                meta={
-                    "job_type": "embed_batch",
-                    "executor": "job_inproc",
-                    "params": {"limit": NUDGE_LIMIT},
-                    "idem_key": idem_key,
-                },
+                params={"limit": NUDGE_LIMIT},
+                idem_key=idem_key,
                 prio=NUDGE_PRIO,
-                conn=conn,
-            )
-            store.add_tag(
-                ref.id,
-                Tag.closed("STATUS", "queued"),
-                set_by="system",
-                replace_prefix=True,
-                conn=conn,
             )
             return int(ref.id)
     except Exception:

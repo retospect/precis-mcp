@@ -121,7 +121,7 @@ def find_or_mint(store: Store, node: str | None, deps: list[str]) -> StageState:
     """The stage job for ``(node, deps)``: the newest one when it is
     pending or usable, else a freshly minted queued one (a failed or
     vanished stage is not reused)."""
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     key = idem_key(node, deps)
     with store.tx() as conn:
@@ -136,24 +136,14 @@ def find_or_mint(store: Store, node: str | None, deps: list[str]) -> StageState:
         }
         if node:
             params["target_node"] = node
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type="sandbox_run",
+            executor="claude_docker",
             title=f"sandbox_run stage ({key[-12:]})",
-            meta={
-                "job_type": "sandbox_run",
-                "executor": "claude_docker",
-                "params": params,
-                "idem_key": key,
-            },
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
+            params=params,
+            idem_key=key,
         )
         return StageState(int(ref.id), "queued", {})
 

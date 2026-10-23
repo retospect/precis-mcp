@@ -454,7 +454,7 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
     accepted as-is; closing it fully needs a unique index or an advisory
     lock, out of scope here.
     """
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     tick = int(time.time()) // _TICK_BUCKET_S
     minted = 0
@@ -473,25 +473,15 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
             if existing is not None:
                 conn.commit()
                 continue
-            ref = store.insert_ref(
-                kind="job",
-                slug=None,
+            mint_background_job(
+                store,
+                conn=conn,
+                job_type=src.job_type,
+                executor=src.executor,
                 title=f"{src.job_type} (materializer {i + 1}/{n})",
-                meta={
-                    "job_type": src.job_type,
-                    "executor": src.executor,
-                    "params": src.params_fn(src.batch_limit),
-                    "idem_key": idem_key,
-                },
+                params=src.params_fn(src.batch_limit),
+                idem_key=idem_key,
                 prio=_MINT_PRIO,
-                conn=conn,
-            )
-            store.add_tag(
-                ref.id,
-                Tag.closed("STATUS", "queued"),
-                set_by="system",
-                replace_prefix=True,
-                conn=conn,
             )
             conn.commit()
         minted += 1

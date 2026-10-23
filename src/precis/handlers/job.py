@@ -1695,6 +1695,19 @@ class JobHandler(NumericRefHandler):
             "executor": resolved_executor,
             "params": params,
         }
+        # Scheduling class (job-scheduling-fairness D1): 'human' only
+        # for an authenticated web write (deps.human_write_context sets
+        # trust_actor_type='human'); a chat agent's put is 'agent'
+        # (ruled 2026-10-23), one inside a background loop 'background'.
+        from precis.store.revision_context import current_revision_context
+
+        _ctx = current_revision_context()
+        if _ctx is not None and _ctx.trust_actor_type == "human":
+            meta["origin"] = "human"
+        elif current_background_actor() is not None:
+            meta["origin"] = "background"
+        else:
+            meta["origin"] = "agent"
         if resolved_idem is not None:
             meta["idem_key"] = resolved_idem
         if requires:

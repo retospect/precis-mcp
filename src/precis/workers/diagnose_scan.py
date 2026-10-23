@@ -48,7 +48,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from precis.store.types import Tag
+from precis.workers._mint import mint_background_job
 from precis.workers.backlog_groom import _OPT_OUT_TAG
 from precis.workers.job_types.diagnose_gripe import _DIAGNOSIS_PREFIX
 from precis.workers.runner import BatchResult
@@ -128,25 +128,15 @@ def _mint(store: Store, *, gripe_id: int, prio: int | None) -> bool:
         if existing is not None:
             conn.commit()
             return False
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type="diagnose_gripe",
+            executor="claude_inproc",
             title=f"diagnose_gripe (gripe:{gripe_id})",
-            meta={
-                "job_type": "diagnose_gripe",
-                "executor": "claude_inproc",
-                "params": {"gripe_id": gripe_id},
-                "idem_key": idem_key,
-            },
+            params={"gripe_id": gripe_id},
+            idem_key=idem_key,
             prio=prio if prio is not None else _MINT_PRIO,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
         )
         conn.commit()
     log.info(

@@ -153,7 +153,7 @@ from typing import Any, Literal
 
 from precis.errors import BadInput, NotFound
 from precis.store import Store
-from precis.store.types import ActorSlug, Tag
+from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
     NOT_HYPOTHESIS_PREDICATE_PARAMS,
@@ -185,6 +185,7 @@ from precis.utils.env import env_float
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import _verify_support_with_caveats
+from precis.workers._mint import mint_background_job
 
 log = logging.getLogger(__name__)
 
@@ -1660,25 +1661,15 @@ def enqueue_conflict_sweep(
         ).fetchone()
         if existing is not None:
             return int(existing[0])
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        ref = mint_background_job(
+            store,
+            conn=c,
+            job_type=CONFLICT_SWEEP_JOB_TYPE,
+            executor="claude_inproc",
             title=f"{CONFLICT_SWEEP_JOB_TYPE} (fi{hub_ref_id}: {reason})",
-            meta={
-                "job_type": CONFLICT_SWEEP_JOB_TYPE,
-                "executor": "claude_inproc",
-                "params": {"hub_id": hub_ref_id, "refresh": bool(refresh)},
-                "idem_key": idem_key,
-            },
+            params={"hub_id": hub_ref_id, "refresh": bool(refresh)},
+            idem_key=idem_key,
             prio=_SWEEP_JOB_PRIO,
-            conn=c,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=c,
         )
         log.info(
             "conflict_search: minted %s job id=%d for fi%d (%s)",

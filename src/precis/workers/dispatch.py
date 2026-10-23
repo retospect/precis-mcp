@@ -62,6 +62,7 @@ from precis.todo.views import (
 )
 from precis.utils.ref_tree import deleted_in_ancestry
 from precis.workers import planner_guardrails
+from precis.workers._mint import mint_background_job
 from precis.workers.executors import (
     EXECUTOR_PROVIDES,
     ZERO_LLM_EXECUTORS,
@@ -1001,12 +1002,9 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool, bool]:
 
         # Mint the child job ref. Stay inside the tx so the row
         # lock spans claim + mint + status tag + event append.
-        child_meta: dict[str, Any] = {
-            "job_type": job_type,
-            "executor": executor,
-            "params": params,
-            "dispatched_from_todo": ref_id,
-        }
+        # ``dispatched_from_todo`` marks the todo lane, which
+        # ``mint_background_job`` reads as the ``recurring`` origin class.
+        meta_extra: dict[str, Any] = {"dispatched_from_todo": ref_id}
         # Serving affinity (narrow: planner ticks that drive a served-OSS model).
         # When the tick's rung-0 model is advertised as an ``llm:`` slot on some
         # host, stamp ``meta.requires`` so the ``_finish_claim`` ``llm:`` hard veto
@@ -1015,23 +1013,18 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool, bool]:
         # tick, or a model served nowhere, gets no requirement → host-agnostic.
         served_requires = _served_model_requirement(conn, job_type, params)
         if served_requires is not None:
-            child_meta["requires"] = served_requires
+            meta_extra["requires"] = served_requires
         title = f"{job_type} (dispatched from todo:{ref_id})"
-        child = store.insert_ref(
-            kind="job",
-            slug=None,
+        child = mint_background_job(
+            store,
+            conn=conn,
+            job_type=job_type,
+            executor=executor,
             title=title,
-            meta=child_meta,
+            params=params,
             parent_id=ref_id,
             prio=parent_prio,
-            conn=conn,
-        )
-        store.add_tag(
-            child.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
+            meta_extra=meta_extra,
         )
         _carry_fixes_link(
             store,

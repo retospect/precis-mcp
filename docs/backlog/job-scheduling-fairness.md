@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Job scheduling fairness — origin classes on the job row, class-preserving ageing, a reserved interactive slot per lane, per-job_type caps for standing bands
 pillar: platform
 prio: normal
@@ -70,7 +70,10 @@ ones.
 `meta.origin` ∈ `human | agent | recurring | background`, stamped at mint:
 
 - `put(kind='job')` from the web UI / Discord bridge → `human`; from an
-  MCP session → `agent` (the handler knows the transport).
+  MCP session → `agent` (the handler knows the transport). As built
+  (slice 1): the web UI's authenticated write context is the only
+  `human` door — the Discord bridge has no human context yet, so its
+  puts stamp `agent` too.
 - Recurring spawn (`dispatched_from_todo`) → `recurring`.
 - Every `insert_ref` minter with an `idem_key` (materialize, sweeps,
   scans) → `background`. A helper `mint_background_job()` sets it so new
@@ -173,13 +176,30 @@ solve; the runtime caps of D4 are not set now.
 
 1. **Is `agent` above `recurring`?** Recommend yes: an agent put is
    usually a chat waiting on it; a recurring tick tolerates minutes.
+   Ruled (Reto 2026-10-23, relayed): yes — `agent` ranks above
+   `recurring`.
 2. **Does a chat agent's put get `human`?** Recommend no; keep `human`
    for UI/Discord so it stays rare and meaningful. Revisit if chat waits
    show up in the class metrics.
+   Ruled (Reto 2026-10-23, relayed): no — a chat agent's put is `agent`,
+   not `human`.
 3. **Cap `derived_drain` by count or shorten its runs?** Recommend both:
    `max_running=2` now, and `params.limit` sized to ≤ 10 min so a slot
    frees often (today's runs are 11–36 min).
+   Ruled (Reto 2026-10-23, relayed): both — `derived_drain` gets
+   `max_running=2` and runs of at most 10 min.
 4. **Keep the 1.5 floor at all?** Recommend replacing it with D3; a floor
    that equals the cron band is what collapsed the classes.
+   Ruled (Reto 2026-10-23, relayed): replace it — the 1.5 floor is
+   replaced by class-preserving ageing (D3).
 5. **Where does prio stop mattering?** Recommend prio stays the in-class
    order and the only cross-class override is prio 1.
+   Ruled (Reto 2026-10-23, relayed): as recommended — prio orders within
+   a class, and only prio 1 crosses classes.
+6. **What class is a worker-internal `put(kind='job')`?** `spawn_child`,
+   the quest compute/loop re-mints and the pathway aggregate/handler
+   mints go through `JobHandler.put` with no human context and would
+   read `agent` — outranking `recurring` work once slice 2 reorders.
+   Ruled (Reto 2026-10-23, relayed): option (a) — a job created by a
+   worker through `put` takes its parent job's `meta.origin`, or
+   `background` when it has none.

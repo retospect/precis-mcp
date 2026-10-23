@@ -182,7 +182,7 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     the same as every other ``claude_inproc`` job.
     """
     del batch_size
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     now = datetime.now(UTC)
     idem_key = f"doctor:{_doctor_tick_window(now)}"
@@ -195,25 +195,15 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
         if existing is not None:
             conn.commit()
             return
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="doctor_tick",
+            executor="claude_inproc",
             title=f"doctor_tick ({idem_key})",
-            meta={
-                "job_type": "doctor_tick",
-                "executor": "claude_inproc",
-                "params": {},
-                "idem_key": idem_key,
-            },
+            params={},
+            idem_key=idem_key,
             prio=8,  # background maintenance — same as draft_refresh_scan
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
         )
         conn.commit()
     log.info("scheduler: minted doctor_tick job for window %s", idem_key)
