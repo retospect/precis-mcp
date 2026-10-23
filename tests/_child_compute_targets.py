@@ -70,3 +70,34 @@ def relax_child_no_tblite(*args: Any) -> Any:
 
     cast(Any, sys.modules)["tblite.ase"] = None
     return hexfold_relax_job._relax_child(*args)
+
+
+def emit_checkpoint_then_sleep(*args: Any) -> Any:
+    """Write one mid-polish checkpoint FILE (gr508493 round 2), then
+    never return — exercises the checkpoint→version write-back."""
+    from precis_se import hexfold_relax_job
+
+    scene = args[0]
+    ckpt = args[5]
+    writer = hexfold_relax_job._CkptWriter(
+        ckpt["dir"],
+        job_id=int(ckpt["job_id"]),
+        base_version=int(ckpt["base_version"]),
+    )
+    writer.write(
+        {
+            "v": 1,
+            "stage": "polish",
+            "fragment": None,
+            "stage_steps": 7,
+            "curve": [0.9, 0.8, 0.7, 0.6, 0.55, 0.52, 0.51],
+            "positions": {
+                la: [round(float(x), 6) for x in a.frac]
+                for la, a in scene.atoms.items()
+            },
+            "polish": None,
+            "fragments": [],
+            "before": [],
+        }
+    )
+    _sleep()

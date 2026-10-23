@@ -45,6 +45,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -94,6 +95,26 @@ def _attach_progress(
         )
 
     opt.attach(_log, interval=PROGRESS_EVERY)
+
+
+def _attach_step_hook(
+    opt: Any,
+    atoms: Any,
+    curve: list[float],
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None,
+) -> None:
+    """Wire ``relax()``'s ``on_step`` onto an ASE optimiser: every step
+    hands over the steps completed, the atoms' current Cartesian
+    positions (scene-atom order — the order ``_to_ase`` builds) and the
+    convergence trace so far. Attach after the curve recorder so
+    ``curve`` already carries this step's entry."""
+    if on_step is None:
+        return
+
+    def _step() -> None:
+        on_step(int(opt.get_number_of_steps()), atoms.get_positions(), list(curve))
+
+    opt.attach(_step, interval=1)
 
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
@@ -243,6 +264,7 @@ def relax(
     charge: int = 0,
     multiplicity: int | None = None,
     fmax: float | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
 ) -> RelaxResult:
     """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
 
@@ -272,6 +294,14 @@ def relax(
     radical is ``multiplicity=2``. No other rung has a total-charge or spin
     input (MACE takes neither), so a non-default value elsewhere raises
     rather than being dropped.
+
+    ``on_step`` — per-optimiser-step checkpoint hook (gr508493): rungs
+    with an observable inner loop (``clean``/``emt``/``xtb``/``ml``) call
+    it after every step with ``(steps_done, positions, curve)`` — the
+    current Cartesian positions in scene-atom order (a fresh array the
+    callback may keep) and the per-step convergence trace so far. The
+    ``geo`` kernel runs its whole loop inside numba with no per-step
+    view, so it never calls it.
     """
     if cell not in CELL_MODES:
         raise RelaxUnsupported(
@@ -310,11 +340,11 @@ def relax(
             "has no total-charge or spin input"
         )
     if fidelity in ("clean", "0"):
-        return _relax_clean(scene, steps=steps, tol=tol)
+        return _relax_clean(scene, steps=steps, tol=tol, on_step=on_step)
     if fidelity == "geo":
         return _relax_geo(scene, steps=steps, tol=tol)
     if fidelity == "emt":
-        return _relax_emt(scene, steps=steps, tol=tol, fmax=fmax)
+        return _relax_emt(scene, steps=steps, tol=tol, fmax=fmax, on_step=on_step)
     if fidelity == "xtb":
         return _relax_xtb(
             scene,
@@ -323,6 +353,7 @@ def relax(
             charge=charge,
             multiplicity=multiplicity,
             fmax=fmax,
+            on_step=on_step,
         )
     if fidelity == "ml":
         return _relax_ml(
@@ -333,6 +364,7 @@ def relax(
             cell=cell_mode,
             dispersion=dispersion,
             fmax=fmax,
+            on_step=on_step,
         )
     if fidelity in _RENTED_RUNGS:
         raise RelaxUnsupported(
@@ -362,7 +394,13 @@ def _over_coordinated(scene: Scene) -> list[str]:
     return out
 
 
-def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+def _relax_clean(
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+) -> RelaxResult:
     """Rung 0: iteratively separate too-close pairs toward their covalent bond
     length. Pure, fixed-aware. Not an energy minimiser — a geometry sanitiser."""
     cell = scene.cell
@@ -370,6 +408,7 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     curve: list[float] = []
     converged = False
     n = 0
+    max_disp = 0.0
     from . import _pair_kernel
 
     lat, pbc = _pair_kernel.cell_arrays(cell)
@@ -388,6 +427,12 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
             moved = float(np.linalg.norm(cell.frac_to_cart(dfrac)))
             max_disp = max(max_disp, moved)
         curve.append(round(max_disp, 4))
+        if on_step is not None:
+            on_step(
+                n,
+                np.array([cell.frac_to_cart(scene.atoms[la].frac) for la in labels]),
+                list(curve),
+            )
         if max_disp < tol:
             converged = True
             break
@@ -502,7 +547,12 @@ def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
 
 
 def _relax_emt(
-    scene: Scene, *, steps: int, tol: float, fmax: float | None = None
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    fmax: float | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
 ) -> RelaxResult:
     """Rung 1: relax on ASE's built-in Effective Medium Theory potential.
 
@@ -555,6 +605,7 @@ def _relax_emt(
     opt = _Optimizer(atoms, logfile=None)
     opt.attach(_record, interval=1)
     _attach_progress(opt, rung="emt", n_atoms=len(labels), steps=steps, curve=curve)
+    _attach_step_hook(opt, atoms, curve, on_step)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
@@ -747,6 +798,7 @@ def _relax_xtb(
     multiplicity: int | None = None,
     spin_polarization: bool = False,
     fmax: float | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
 ) -> RelaxResult:
     """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
 
@@ -803,6 +855,7 @@ def _relax_xtb(
     opt = FIRE(atoms, maxstep=0.1, logfile=None)
     opt.attach(_record, interval=1)
     _attach_progress(opt, rung="xtb", n_atoms=len(labels), steps=steps, curve=curve)
+    _attach_step_hook(opt, atoms, curve, on_step)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
@@ -1117,6 +1170,7 @@ def _relax_ml(
     cell: str | None = None,
     dispersion: bool = False,
     fmax: float | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
 ) -> RelaxResult:
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 
@@ -1182,6 +1236,7 @@ def _relax_ml(
     opt = optimizer(opt_target, logfile=None)
     opt.attach(_record, interval=1)
     _attach_progress(opt, rung="ml", n_atoms=len(labels), steps=steps, curve=curve)
+    _attach_step_hook(opt, atoms, curve, on_step)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 

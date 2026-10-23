@@ -25,12 +25,34 @@ record (``meta["generated"]["junctions"]`` / ``["seam_atoms"]`` /
 ``["sigma_A"]``, minted by the tunnel / hexfold generators) as
 **stored-block ordinals** — positions in the block's atom order, which
 is the scene's atom order too (atoms are inserted in block order).
+
+Step checkpoints (gr508493). ``relax_block`` takes an optional
+``on_checkpoint`` callable and emits one overwrite-slot payload after
+every optimiser step — a multi-hour xtb fragment loses at most one step
+to a kill, deploy or restart. The payload::
+
+    {"v": 1, "stage": "polish"|"fragment"|"strain",
+     "fragment": <in-flight fragment name>|None,
+     "stage_steps": <optimiser steps done in the in-flight stage>,
+     "curve": <in-flight stage's convergence trace so far>,
+     "positions": {atom label: [fa, fb, fc]},
+     "polish": <stage record>|None,        # once the polish completes
+     "fragments": [<stage record>, ...],   # completed fragments only
+     "before": <the strain findings on the ORIGINAL geometry>}
+
+A stage record carries ``{rung, model, converged, n_steps, max_disp,
+energy, max_force, curve}`` (fragments add ``name``/``atoms``/``h_caps``/
+``frozen``). ``resume`` takes the same dict back: checkpointed positions
+are applied to the scene, completed stages are reconstructed (never
+re-run), and the in-flight stage runs its remaining ``steps`` budget —
+a killed job picks up exactly where it stopped.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -234,6 +256,85 @@ def _fragment_scene(
     return sub, frag_labels
 
 
+def _positions(scene: StructScene) -> dict[str, list[float]]:
+    """The block's fractional positions, rounded — the checkpoint's
+    geometry. Label-keyed so a later apply tolerates atom-order drift."""
+    return {
+        la: [round(float(x), 6) for x in atom.frac] for la, atom in scene.atoms.items()
+    }
+
+
+def _apply_positions(scene: StructScene, positions: Any) -> int:
+    """Overlay checkpointed ``{label: [fa, fb, fc]}`` onto the scene.
+    Returns the count applied; unknown labels and malformed rows are
+    skipped (a checkpoint names what it saw, never invents atoms)."""
+    if not isinstance(positions, dict):
+        return 0
+    applied = 0
+    for label, frac in positions.items():
+        atom = scene.atoms.get(label)
+        if atom is None or not isinstance(frac, (list, tuple)) or len(frac) != 3:
+            continue
+        atom.frac = scene.cell.wrap(np.asarray(frac, dtype=float))
+        applied += 1
+    return applied
+
+
+def _stage_record(res: RelaxResult) -> dict[str, Any]:
+    """A RelaxResult as the checkpoint/record's JSON-shaped stage record."""
+    return {
+        "rung": res.rung,
+        "model": res.model,
+        "converged": res.converged,
+        "n_steps": res.n_steps,
+        "max_disp": res.max_disp,
+        "energy": res.energy,
+        "max_force": res.max_force,
+        "curve": list(res.curve),
+    }
+
+
+def _result_from_record(rec: dict[str, Any]) -> RelaxResult:
+    """Rebuild a completed stage's RelaxResult from its checkpoint record
+    — the envelope a resumed run reports, without re-running the stage.
+    The qualitative per-atom ``forces`` are not checkpointed (the job's
+    write-back never reads them)."""
+    return RelaxResult(
+        rung=str(rec.get("rung") or "?"),
+        converged=bool(rec.get("converged")),
+        n_steps=int(rec.get("n_steps") or 0),
+        max_disp=float(rec.get("max_disp") or 0.0),
+        curve=[float(x) for x in (rec.get("curve") or [])],
+        energy=rec.get("energy"),
+        max_force=rec.get("max_force"),
+        model=rec.get("model"),
+    )
+
+
+def _add_prior(
+    res: RelaxResult, prior_steps: int, prior_curve: list[float]
+) -> RelaxResult:
+    """Fold an interrupted attempt's steps into a resumed stage's result,
+    so the report carries the stage's whole cost, not this attempt's."""
+    res.n_steps += prior_steps
+    res.curve = list(prior_curve) + list(res.curve)
+    return res
+
+
+def _fragment_record(
+    zone_name: str, frag: Fragment, res: RelaxResult
+) -> dict[str, Any]:
+    """One completed fragment's checkpoint record — the stage record plus
+    the fragment's shape (atoms/caps/frozen), keyed on the zone name."""
+    return {
+        "name": zone_name,
+        "atoms": len(frag.members) + len(frag.caps),
+        "h_caps": len(frag.caps),
+        "frozen": len(frag.members) - len(frag.movable),
+        **_stage_record(res),
+    }
+
+
 def relax_block(
     scene: StructScene,
     generated: dict[str, Any],
@@ -244,6 +345,8 @@ def relax_block(
     buffer_A: float = DEFAULT_BUFFER_A,
     core_A: float = DEFAULT_CORE_A,
     steps: int = 200,
+    on_checkpoint: Callable[[dict[str, Any]], None] | None = None,
+    resume: dict[str, Any] | None = None,
 ) -> BlockRelaxReport:
     """Polish the whole block, relax each junction fragment, re-score
     the strain — mutating ``scene`` to the relaxed geometry.
@@ -252,7 +355,12 @@ def relax_block(
     the H3 bookkeeping; a record without ``junctions`` raises
     ``ValueError``. Rung failures propagate as
     :class:`~precis.structure.relax.RelaxUnsupported` for the caller to
-    class as infra, never silently different physics."""
+    class as infra, never silently different physics.
+
+    ``on_checkpoint`` gets one overwrite-slot payload after every
+    optimiser step (module docstring for the shape); ``resume`` is such
+    a payload from a killed attempt — completed stages are skipped, the
+    in-flight one runs its remaining ``steps`` budget."""
     if polish not in POLISH_RUNGS:
         raise ValueError(
             f"polish must be one of {sorted(POLISH_RUNGS)}; got {polish!r}"
@@ -271,32 +379,151 @@ def relax_block(
     zones, seams, sigma = bookkeeping
     labels, coords, elements, bonds = _scene_arrays(scene)
     names = [z.name for z in zones]
-    before = [
-        f.to_dict()
-        for f in tunnel_strain(
-            coords, elements, bonds, zones, seams, sigma, names=names
-        )
+
+    resume = resume if isinstance(resume, dict) else {}
+    applied = _apply_positions(scene, resume.get("positions"))
+    if applied:
+        _, coords, _, _ = _scene_arrays(scene)
+        log.info("hexfold_relax: resumed %d checkpointed atom positions", applied)
+    # The strain baseline is the ORIGINAL geometry's — a resumed run
+    # inherits it from the checkpoint rather than re-scoring the
+    # partially-relaxed atoms and understating the before/after delta.
+    before = resume.get("before")
+    if not isinstance(before, list) or not before:
+        before = [
+            f.to_dict()
+            for f in tunnel_strain(
+                coords, elements, bonds, zones, seams, sigma, names=names
+            )
+        ]
+
+    polish_rec = (
+        dict(resume["polish"]) if isinstance(resume.get("polish"), dict) else None
+    )
+    frag_recs: list[dict[str, Any]] = [
+        dict(f)
+        for f in (resume.get("fragments") or [])
+        if isinstance(f, dict) and f.get("name")
+    ]
+    frag_done = {str(f["name"]): f for f in frag_recs}
+    stage = str(resume.get("stage") or "")
+    inflight_frag = (
+        str(resume["fragment"])
+        if stage == "fragment" and resume.get("fragment")
+        else None
+    )
+    prior_steps = int(resume.get("stage_steps") or 0)
+    prior_curve = [
+        float(x) for x in (resume.get("curve") or []) if isinstance(x, (int, float))
     ]
 
+    def _emit(
+        stage_name: str,
+        *,
+        frag: str | None = None,
+        stage_steps: int = 0,
+        curve: list[float] | None = None,
+    ) -> None:
+        if on_checkpoint is None:
+            return
+        on_checkpoint(
+            {
+                "v": 1,
+                "stage": stage_name,
+                "fragment": frag,
+                "stage_steps": int(stage_steps),
+                "curve": list(curve or []),
+                "positions": _positions(scene),
+                "polish": polish_rec,
+                "fragments": list(frag_recs),
+                "before": before,
+            }
+        )
+
+    _emit(
+        stage or "polish",
+        frag=inflight_frag,
+        stage_steps=prior_steps,
+        curve=prior_curve,
+    )
+
     t0 = time.monotonic()
-    log.info(
-        "hexfold_relax: polish[%s] start — %d atoms, %d steps max",
-        polish,
-        len(labels),
-        steps,
-    )
-    polish_result = relax(scene, fidelity=polish, model=model or "mace_mp", steps=steps)
-    log.info(
-        "hexfold_relax: polish[%s] done — %d steps, converged=%s, %.0fs",
-        polish,
-        polish_result.n_steps,
-        polish_result.converged,
-        time.monotonic() - t0,
-    )
+    polish_result: RelaxResult
+    if polish_rec is not None:
+        polish_result = _result_from_record(polish_rec)
+        log.info(
+            "hexfold_relax: polish[%s] skipped — checkpoint has it done "
+            "(%d steps, converged=%s)",
+            polish,
+            polish_result.n_steps,
+            polish_result.converged,
+        )
+    else:
+        polish_prior = prior_steps if stage == "polish" else 0
+        polish_curve = prior_curve if stage == "polish" else []
+
+        def _polish_step(n: int, pos: np.ndarray, curve: list[float]) -> None:
+            for idx, la in enumerate(labels):
+                scene.atoms[la].frac = scene.cell.wrap(
+                    scene.cell.cart_to_frac(pos[idx])
+                )
+            _emit(
+                "polish",
+                stage_steps=polish_prior + n,
+                curve=polish_curve + list(curve),
+            )
+
+        log.info(
+            "hexfold_relax: polish[%s] start — %d atoms, %d steps max%s",
+            polish,
+            len(labels),
+            steps - polish_prior,
+            f" (resuming at step {polish_prior})" if polish_prior else "",
+        )
+        polish_result = relax(
+            scene,
+            fidelity=polish,
+            model=model or "mace_mp",
+            steps=max(steps - polish_prior, 0),
+            on_step=_polish_step if on_checkpoint is not None else None,
+        )
+        if polish_prior:
+            polish_result = _add_prior(polish_result, polish_prior, polish_curve)
+        polish_rec = _stage_record(polish_result)
+        # Stage boundary: the polish is done and now lives in the
+        # record, so stage_steps must not count it a second time
+        # (the in-flight stage is whatever runs next, at 0 steps).
+        _emit("fragment" if fragment != "none" else "strain", stage_steps=0)
+        log.info(
+            "hexfold_relax: polish[%s] done — %d steps, converged=%s, %.0fs",
+            polish,
+            polish_result.n_steps,
+            polish_result.converged,
+            time.monotonic() - t0,
+        )
 
     frag_results: list[FragmentResult] = []
     if fragment != "none":
         for zone in zones:
+            done = frag_done.get(zone.name)
+            if done is not None:
+                frag_results.append(
+                    FragmentResult(
+                        name=zone.name,
+                        atoms=int(done.get("atoms") or 0),
+                        h_caps=int(done.get("h_caps") or 0),
+                        frozen=int(done.get("frozen") or 0),
+                        result=_result_from_record(done),
+                    )
+                )
+                log.info(
+                    "hexfold_relax: fragment %s skipped — checkpoint has it "
+                    "done (%d steps, converged=%s)",
+                    zone.name,
+                    int(done.get("n_steps") or 0),
+                    done.get("converged"),
+                )
+                continue
             t_frag = time.monotonic()
             # coords re-read per junction: a prior fragment's paste-back
             # may sit inside this one's buffer when junctions are close.
@@ -311,7 +538,42 @@ def relax_block(
                 core_A=core_A,
             )
             sub, frag_labels = _fragment_scene(scene, coords, frag, labels)
-            res = relax(sub, fidelity=fragment, steps=steps)
+            frag_prior = prior_steps if inflight_frag == zone.name else 0
+            frag_curve = prior_curve if frag_prior else []
+
+            def _frag_step(
+                n: int,
+                pos: np.ndarray,
+                curve: list[float],
+                _frag: Fragment = frag,
+                _labels: list[str] = frag_labels,
+                _zone: str = zone.name,
+                _prior: int = frag_prior,
+                _curve: list[float] = frag_curve,
+            ) -> None:
+                # pos rows follow the SUB scene's atom order — members
+                # first, caps last; only movable members write back.
+                for row, a in enumerate(_frag.members):
+                    if a not in _frag.movable:
+                        continue
+                    scene.atoms[_labels[row]].frac = scene.cell.wrap(
+                        scene.cell.cart_to_frac(pos[row])
+                    )
+                _emit(
+                    "fragment",
+                    frag=_zone,
+                    stage_steps=_prior + n,
+                    curve=_curve + list(curve),
+                )
+
+            res = relax(
+                sub,
+                fidelity=fragment,
+                steps=max(steps - frag_prior, 0),
+                on_step=_frag_step if on_checkpoint is not None else None,
+            )
+            if frag_prior:
+                res = _add_prior(res, frag_prior, frag_curve)
             moved = 0
             for row, a in enumerate(frag.members):
                 if a not in frag.movable:
@@ -327,6 +589,10 @@ def relax_block(
                     result=res,
                 )
             )
+            frag_recs.append(_fragment_record(zone.name, frag, res))
+            # Done boundary: the fragment is recorded, so it is no
+            # longer the in-flight stage (frag=None, 0 steps).
+            _emit("fragment", frag=None, stage_steps=0)
             log.info(
                 "hexfold_relax: fragment %s — %d atoms (%d caps, %d frozen), "
                 "%d pasted back, %d steps, converged=%s, %.0fs",
@@ -340,6 +606,7 @@ def relax_block(
                 time.monotonic() - t_frag,
             )
 
+    _emit("strain")
     _, coords, _, _ = _scene_arrays(scene)
     after = [
         f.to_dict()
