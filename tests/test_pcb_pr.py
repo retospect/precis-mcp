@@ -68,6 +68,102 @@ def test_required_mm_same_net_merges():
     assert prob.required_mm(a, b, 0) > 0.0
 
 
+def test_parts_table_mirrors_ir_poses_and_locks():
+    built = _built()
+    prob = _problem(built)
+    ir = built.ir
+    parts = prob.parts
+    assert parts.n_live == ir.n_instances == parts.capacity
+    assert list(parts.live_ids()) == list(range(ir.n_instances))
+    # rot carried as (cos, sin) of the authored degrees; side/locks copied.
+    theta = np.radians(np.asarray(ir.inst_rot, dtype=np.float64))
+    assert np.allclose(parts.rot[: ir.n_instances, 0], np.cos(theta))
+    assert np.allclose(parts.rot[: ir.n_instances, 1], np.sin(theta))
+    assert np.array_equal(parts.side[: ir.n_instances], np.asarray(ir.inst_bottom))
+    assert np.array_equal(parts.lock_xy[: ir.n_instances], np.asarray(ir.inst_fixed_xy))
+    assert np.array_equal(
+        parts.lock_rot[: ir.n_instances], np.asarray(ir.inst_fixed_rot)
+    )
+    assert np.all(parts.cluster[: ir.n_instances] == -1)
+    assert [str(r) for r in parts.refdes[: ir.n_instances]] == [
+        str(r) for r in ir.instance_refdes
+    ]
+
+
+def test_parts_capacity_mask_and_free_list():
+    from precis.pcb.pr import state as prstate
+
+    parts = prstate.build_parts(_built().ir, capacity=None)
+    n = parts.n_live
+    # No slack: capacity == live, free list empty, alloc refuses.
+    assert parts.capacity == n and not parts.free
+    with pytest.raises(IndexError):
+        parts.alloc(pos=(0.0, 0.0))
+    # Free a row -> it leaves the live mask and becomes allocatable again.
+    parts.free_row(0)
+    assert parts.n_live == n - 1 and not parts.live[0]
+    assert np.all(np.isnan(parts.pos[0]))
+    i = parts.alloc(pos=(1.5, -2.0), rot_deg=90.0, side=True, refdes="X9")
+    assert i == 0 and parts.n_live == n and parts.live[0]
+    assert np.allclose(parts.pos[0], (1.5, -2.0))
+    assert np.allclose(parts.rot[0], (0.0, 1.0), atol=1e-9)  # cos90, sin90
+    assert bool(parts.side[0]) and parts.refdes[0] == "X9"
+
+
+def test_parts_capacity_slack_preallocates_dead_rows():
+    from precis.pcb.pr import state as prstate
+
+    ir = _built().ir
+    parts = prstate.build_parts(ir, capacity=ir.n_instances + 3)
+    assert parts.capacity == ir.n_instances + 3
+    assert parts.n_live == ir.n_instances
+    assert len(parts.free) == 3
+    # The three dead rows allocate lowest-id first.
+    assert parts.alloc(pos=(0.0, 0.0)) == ir.n_instances
+
+
+def test_net_attrs_role_inference_and_appetite():
+    from precis.pcb.pr import state as prstate
+
+    # Ground and power want copper (negative α), plain signals ~0.
+    assert prstate.infer_role("GND") == prstate.ROLE_GROUND
+    assert prstate.infer_role("AGND") == prstate.ROLE_GROUND
+    assert prstate.infer_role("VCC_3V3") == prstate.ROLE_POWER
+    assert prstate.infer_role("+5V") == prstate.ROLE_POWER
+    assert prstate.infer_role("3V3") == prstate.ROLE_POWER
+    assert prstate.infer_role("SPI_CLK") == prstate.ROLE_SIGNAL
+    assert prstate.infer_role("N14", hint="sensitive analog input") == (
+        prstate.ROLE_SENSITIVE
+    )
+    assert prstate.default_appetite(prstate.ROLE_GROUND) < 0.0
+    assert prstate.default_appetite(prstate.ROLE_SIGNAL) == 0.0
+    assert prstate.default_appetite(prstate.ROLE_SENSITIVE) > 0.0
+    # A fast signal flips to positive appetite; ground stays area-hungry.
+    assert prstate.default_appetite(prstate.ROLE_SIGNAL, f_max=100e6) > 0.0
+    assert prstate.default_appetite(prstate.ROLE_SIGNAL, edge_rate=2.0) > 0.0
+    assert prstate.default_appetite(prstate.ROLE_GROUND, edge_rate=2.0) < 0.0
+
+
+def test_net_attrs_built_and_overridable():
+    from precis.pcb.pr import state as prstate
+
+    built = _built()
+    prob = _problem(built)
+    attrs = prob.net_attrs
+    assert attrs.n_nets == built.ir.n_nets
+    for arr in (attrs.v_min, attrs.v_max, attrs.f_max, attrs.appetite):
+        assert arr.shape == (built.ir.n_nets,)
+    # Override hook: the netlist step's datasheet figures land per net.
+    name0 = prob.net_name[0]
+    over = prstate.build_net_attrs(
+        built.ir,
+        prob.net_name,
+        overrides={name0: {"role": "ground", "v_max": 3.3, "appetite": -2.5}},
+    )
+    assert over.role[0] == prstate.ROLE_GROUND
+    assert over.v_max[0] == 3.3 and over.appetite[0] == -2.5
+
+
 def test_distances_match_shapely():
     torch = pytest.importorskip("torch")
     from shapely.geometry import LineString, Point, Polygon

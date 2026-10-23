@@ -1,11 +1,21 @@
-"""Slice-1 problem state, torch-free (spec §State, fixed pads only).
+"""Problem state, torch-free (spec §State).
 
 A :class:`PrProblem` is the structure-of-arrays view of a board the
 prototype solves: static obstacles as core+radius shapes with a layer
-set, two-pin wires as ratsnest edges (no Steiner points), and the rule
-context every ``required(a, b, layer)`` answer is resolved against.
+set, two-pin wires as ratsnest edges (no Steiner points), the movable
+:class:`Parts` pose table (spec §State Parts) and per-net
+:class:`NetAttrs` (spec §State Net attributes), and the rule context
+every ``required(a, b, layer)`` answer is resolved against.
 Everything here is numpy; torch tensors are built downstream (the host
 venv has no torch).
+
+The :class:`Parts` table is the datamodel slice-2's free-part solve
+needs: ``pos``/``rot`` are variables during 4c relaxation, ``side`` and
+the two lock bits gate 4d discrete moves, and the whole table is
+capacity-padded with a ``live`` mask and a free list so shapes stay
+fixed for compiled kernels (spec §State preamble). Slice 1 relaxes
+nothing in it — the pads are fixed — but it is built from the same IR so
+the method has one state object across slices.
 
 Pads become cores by shape: circle → a degenerate segment (a point),
 rect → an oriented box, obround → the end-centres segment, polygon →
@@ -64,6 +74,233 @@ class WireSpec:
     width_mm: float
 
 
+ROLE_GROUND = "ground"
+ROLE_POWER = "power"
+ROLE_SIGNAL = "signal"
+ROLE_SENSITIVE = "sensitive"
+
+#: Default copper appetite α per role (spec §Net attributes, "Copper
+#: appetite"): cost per mm² of the net's copper. Negative pays the solver
+#: to widen (ground/power want area; the plane emerges where other nets'
+#: spacing stops the growth), ~0 holds a signal at its current minimum,
+#: positive shrinks sensitive/fast nets toward minimal copper. These are
+#: provisional magnitudes — the spec says the weight is bench-tuned so it
+#: stays below a signal's detour cost; :func:`build_net_attrs` takes
+#: per-net overrides for when the netlist step supplies real figures.
+APPETITE_DEFAULTS = {
+    ROLE_GROUND: -1.0,
+    ROLE_POWER: -1.0,
+    ROLE_SIGNAL: 0.0,
+    ROLE_SENSITIVE: 1.0,
+}
+#: A signal at or above this edge frequency is treated as fast and given
+#: positive appetite (spec §Net attributes: "sensitive and fast nets
+#: positive α"). Provisional, bench-tuned.
+FAST_F_MAX_HZ = 50e6
+FAST_APPETITE = 1.0
+
+_GROUND_NAMES = frozenset(
+    {"GND", "GROUND", "AGND", "DGND", "PGND", "GNDA", "VSS", "VSSA", "EARTH"}
+)
+_POWER_TOKENS = ("VCC", "VDD", "VBUS", "VBAT", "VIN", "VOUT", "VDDA", "VAA", "VEE")
+_SENSITIVE_HINTS = ("sensitive", "analog", "audio", "rf", "xtal", "crystal", "antenna")
+
+
+def infer_role(name: str, hint: str | None = None) -> str:
+    """Best-effort :data:`ROLE_*` from a net's name and free-text
+    ``net_function_hint`` — a heuristic standing in until the netlist step
+    emits ``role`` directly (spec §Net attributes). Overridable per net in
+    :func:`build_net_attrs`."""
+    h = (hint or "").lower()
+    if any(k in h for k in _SENSITIVE_HINTS):
+        return ROLE_SENSITIVE
+    u = name.upper().strip()
+    if u in _GROUND_NAMES or u.endswith("GND"):
+        return ROLE_GROUND
+    if any(tok in u for tok in _POWER_TOKENS):
+        return ROLE_POWER
+    # A rail spelled as a voltage: "+3V3", "3V3", "5V", "-12V".
+    core = u.lstrip("+-")
+    if core[:1].isdigit() and "V" in core:
+        return ROLE_POWER
+    return ROLE_SIGNAL
+
+
+def default_appetite(role: str, f_max: float = 0.0, edge_rate: float = 0.0) -> float:
+    """Copper appetite α from a net's role, bumped positive for a fast net
+    (``f_max`` over :data:`FAST_F_MAX_HZ`, or any declared edge rate) so it
+    stays minimal-copper — but never flipping ground/power off wanting
+    area. Spec §Net attributes."""
+    base = APPETITE_DEFAULTS.get(role, 0.0)
+    fast = f_max >= FAST_F_MAX_HZ or edge_rate > 0.0
+    if fast and base >= 0.0:
+        return max(base, FAST_APPETITE)
+    return base
+
+
+@dataclass(frozen=True, slots=True)
+class NetAttrs:
+    """Per-net electrical attributes, index-aligned with the IR's nets
+    (spec §State Net attributes). ``role`` drives the default appetite;
+    ``appetite`` α is the cost per mm² the copper-area energy term charges
+    (spec §Net attributes). ``v_min``/``v_max`` are working-voltage bounds
+    (volts) and ``f_max`` the top signal frequency (Hz); both default to 0
+    until the netlist step supplies them, carried here so the structure is
+    complete across slices."""
+
+    v_min: np.ndarray  # (n_nets,) float64
+    v_max: np.ndarray  # (n_nets,) float64
+    f_max: np.ndarray  # (n_nets,) float64
+    role: tuple[str, ...]  # (n_nets,) one of ROLE_*
+    appetite: np.ndarray  # (n_nets,) float64, α
+
+    @property
+    def n_nets(self) -> int:
+        return len(self.role)
+
+
+def build_net_attrs(
+    ir: PcbIR,
+    net_name: tuple[str, ...],
+    *,
+    overrides: dict[str, dict[str, Any]] | None = None,
+) -> NetAttrs:
+    """Resolve :class:`NetAttrs` off a built IR. ``role`` is inferred from
+    the net name and ``net_function_hint``; ``appetite`` from the role and
+    any declared edge rate (``net_edge_rate_v_per_ns``). ``v_min``,
+    ``v_max`` and ``f_max`` default to 0 — the IR carries no net
+    working-voltage or frequency column today (`net_current_a` and edge
+    rate are the electricals that exist). ``overrides`` maps a net name to
+    any of ``v_min``/``v_max``/``f_max``/``role``/``appetite``, the hook
+    for the netlist step's datasheet-sourced figures."""
+    overrides = overrides or {}
+    n = len(net_name)
+    edge = ir.net_edge_rate_v_per_ns
+    has_edge = getattr(edge, "shape", (0,))[0] == n
+    hints = ir.net_function_hint
+    has_hint = getattr(hints, "shape", (0,))[0] == n
+    v_min = np.zeros(n, dtype=np.float64)
+    v_max = np.zeros(n, dtype=np.float64)
+    f_max = np.zeros(n, dtype=np.float64)
+    appetite = np.zeros(n, dtype=np.float64)
+    roles: list[str] = []
+    for i, name in enumerate(net_name):
+        ov = overrides.get(name, {})
+        hint = str(hints[i]) if has_hint and hints[i] is not None else None
+        role = str(ov["role"]) if "role" in ov else infer_role(name, hint)
+        roles.append(role)
+        v_min[i] = float(ov.get("v_min", 0.0))
+        v_max[i] = float(ov.get("v_max", 0.0))
+        f_max[i] = float(ov.get("f_max", 0.0))
+        er = float(edge[i]) if has_edge and np.isfinite(edge[i]) else 0.0
+        appetite[i] = (
+            float(ov["appetite"])
+            if "appetite" in ov
+            else default_appetite(role, f_max[i], er)
+        )
+    return NetAttrs(v_min, v_max, f_max, tuple(roles), appetite)
+
+
+@dataclass(slots=True)
+class Parts:
+    """Movable parts as a structure-of-arrays (spec §State Parts),
+    capacity-padded with a ``live`` mask so shapes stay fixed for compiled
+    kernels; freed rows go on :attr:`free` for reuse by a 4d discrete move.
+    ``pos`` is the centre (mm, NaN row = unplaced), ``rot`` the (cos θ,
+    sin θ) of the authored rotation (mirroring is carried by ``side``, not
+    folded into ``rot`` — ``pin_point`` mirrors before rotating), ``side``
+    True = bottom, ``cluster`` the hierarchy parent (−1 = board; the block
+    tree is slice-2+)."""
+
+    pos: np.ndarray  # (cap, 2) float64
+    rot: np.ndarray  # (cap, 2) float64 (cos, sin)
+    side: np.ndarray  # (cap,) bool, True = bottom
+    lock_xy: np.ndarray  # (cap,) bool  (ir.inst_fixed_xy)
+    lock_rot: np.ndarray  # (cap,) bool  (ir.inst_fixed_rot)
+    cluster: np.ndarray  # (cap,) int64, -1 = board
+    live: np.ndarray  # (cap,) bool
+    refdes: np.ndarray  # (cap,) object -> str | None
+    free: list[int]  # dead row ids, ready to alloc
+
+    @property
+    def capacity(self) -> int:
+        return int(self.live.shape[0])
+
+    @property
+    def n_live(self) -> int:
+        return int(self.live.sum())
+
+    def live_ids(self) -> np.ndarray:
+        return np.nonzero(self.live)[0]
+
+    def alloc(
+        self,
+        *,
+        pos: tuple[float, float],
+        rot_deg: float = 0.0,
+        side: bool = False,
+        lock_xy: bool = False,
+        lock_rot: bool = False,
+        cluster: int = -1,
+        refdes: str | None = None,
+    ) -> int:
+        """Claim a dead row, returning its id. Raises if the table is at
+        capacity — kernels run on fixed shapes, so grow ``capacity`` at
+        build time rather than here."""
+        if not self.free:
+            raise IndexError("Parts at capacity; raise capacity at build time")
+        i = self.free.pop()
+        self.pos[i] = pos
+        self.rot[i] = (math.cos(math.radians(rot_deg)), math.sin(math.radians(rot_deg)))
+        self.side[i] = side
+        self.lock_xy[i] = lock_xy
+        self.lock_rot[i] = lock_rot
+        self.cluster[i] = cluster
+        self.refdes[i] = refdes
+        self.live[i] = True
+        return i
+
+    def free_row(self, i: int) -> None:
+        """Retire a live row to the free list (a 4d relocate that removes a
+        part). Idempotent-unsafe: freeing a dead row is a bug."""
+        if not self.live[i]:
+            raise IndexError(f"row {i} is already dead")
+        self.live[i] = False
+        self.refdes[i] = None
+        self.pos[i] = np.nan
+        self.free.append(i)
+
+
+def build_parts(ir: PcbIR, *, capacity: int | None = None) -> Parts:
+    """The :class:`Parts` table off a built IR: one live row per instance
+    in IR order, padded to ``capacity`` dead rows (default: no slack) on
+    the free list. ``pos`` copies ``inst_x``/``inst_y`` verbatim, so an
+    unplaced instance stays NaN."""
+    n = ir.n_instances
+    cap = n if capacity is None else max(int(capacity), n)
+    pos = np.full((cap, 2), np.nan, dtype=np.float64)
+    pos[:n, 0] = np.asarray(ir.inst_x, dtype=np.float64)
+    pos[:n, 1] = np.asarray(ir.inst_y, dtype=np.float64)
+    theta = np.radians(np.asarray(ir.inst_rot, dtype=np.float64))
+    rot = np.zeros((cap, 2), dtype=np.float64)
+    rot[:n, 0] = np.cos(theta)
+    rot[:n, 1] = np.sin(theta)
+    side = np.zeros(cap, dtype=bool)
+    side[:n] = np.asarray(ir.inst_bottom, dtype=bool)
+    lock_xy = np.zeros(cap, dtype=bool)
+    lock_xy[:n] = np.asarray(ir.inst_fixed_xy, dtype=bool)
+    lock_rot = np.zeros(cap, dtype=bool)
+    lock_rot[:n] = np.asarray(ir.inst_fixed_rot, dtype=bool)
+    cluster = np.full(cap, -1, dtype=np.int64)
+    live = np.zeros(cap, dtype=bool)
+    live[:n] = True
+    refdes = np.empty(cap, dtype=object)
+    refdes[:n] = [str(r) for r in ir.instance_refdes]
+    # Dead rows, lowest-id first out of pop().
+    free = list(range(cap - 1, n - 1, -1))
+    return Parts(pos, rot, side, lock_xy, lock_rot, cluster, live, refdes, free)
+
+
 @dataclass(frozen=True, slots=True)
 class PrProblem:
     """The whole slice-1 instance. Distances in mm; ``layers`` is the
@@ -82,6 +319,8 @@ class PrProblem:
     ctx: rules.RuleContext
     net_rules: dict[str, rules.NetRules]
     net_name: tuple[str, ...]  # net id -> name, index-aligned with the IR
+    parts: Parts  # movable-part pose table (spec §State Parts)
+    net_attrs: NetAttrs  # per-net v/f/role/appetite (spec §State Net attributes)
 
     @property
     def n_layers(self) -> int:
@@ -280,4 +519,6 @@ def build_problem(
         ctx=ctx,
         net_rules=net_rules,
         net_name=net_name,
+        parts=build_parts(ir),
+        net_attrs=build_net_attrs(ir, net_name),
     )
