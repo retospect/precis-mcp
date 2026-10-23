@@ -339,10 +339,11 @@ class PaperHandler(Handler):
             }
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
-        # redirect (:meth:`_repoint_supersede`); ``reason`` is the audit
-        # string it writes into the ref_event. Subclass hooks read their
+        # redirect (:meth:`_repoint_supersede`); ``retire`` soft-deletes a
+        # phantom stub (:meth:`_retire_stub`); ``reason`` is the audit
+        # string both write into their ref_event. Subclass hooks read their
         # own keys via _edit_args.
-        "edit": ArgsSpec({"redirect_to", "reason"}),
+        "edit": ArgsSpec({"redirect_to", "retire", "reason"}),
     }
 
     stamps_recall = True
@@ -2104,6 +2105,34 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         raw_args = dict(args) if args else {}
+        if "retire" in raw_args:
+            if (
+                "redirect_to" in raw_args
+                or supplement_of is not None
+                or any(
+                    v is not None
+                    for v in (
+                        title,
+                        year,
+                        authors,
+                        abstract,
+                        doi,
+                        arxiv,
+                        journal,
+                        entry_type,
+                    )
+                )
+            ):
+                raise BadInput(
+                    "retire= cannot be combined with other edit fields",
+                    next="make the retire call alone, then edit the rest",
+                )
+            return self._retire_stub(
+                id,
+                raw_args["retire"],
+                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
+                dry=bool(dry_mode),
+            )
         if "redirect_to" in raw_args:
             if supplement_of is not None or any(
                 v is not None
@@ -2465,6 +2494,169 @@ class PaperHandler(Handler):
                 f"({edge_note}; ref_event 'redirect_repointed' logged). "
                 f"Undo: edit(kind='{kind}', id='{src_h}', args="
                 f"{{'redirect_to': '{old_h}', 'reason': '<why>'}})"
+            )
+        )
+
+    def _retire_stub(
+        self, id: str | int, retire: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'retire': True, 'reason': ...})`` — retire a
+        phantom stub; ``{'retire': False}`` un-retires it (gr509441).
+
+        The door exists for refs that should never have been minted — a
+        body-less stub whose title describes rather than names a paper,
+        with no external identifier and no inbound cites. Anything more
+        is not a phantom: the guards below refuse (each with a
+        ``next=``) a ref that still carries live body chunks, an attached
+        PDF, a non-``cite_key`` identifier, a live inbound cite edge
+        (``cites`` / ``cited-by`` / ``awaits-evidence``), a ``[pa<id>]`` /
+        ``§<cite_key>`` token in a live chunk, a ``paper_bib_entries``
+        held cite, or a merge tombstone redirecting through it — the
+        merge-survivor case, where each tombstone's redirect must be
+        moved to another survivor via ``redirect_to`` FIRST.
+
+        ``retire`` writes a ``deleted`` ref_event (the same tombstone
+        convention ``delete`` uses, so a later ``get``'s ``Gone`` reads
+        the reason); ``retire: False`` on the tombstone restores it and
+        logs ``restored`` — the inverse call, so the door undoes itself.
+        A merge tombstone (``meta.superseded_by``) is refused on both
+        directions: re-point it with ``redirect_to``, don't resurrect it.
+        """
+        kind = self.spec.kind
+        ref = self._resolve_ref_incl_retired(id)
+        if ref is None:
+            raise NotFound(
+                f"{kind} id={id!r} resolves to no ref (live or retired)",
+                next=f"search(kind='{kind}', q='...') to find the ref",
+            )
+        handle = _pa(ref)
+        if not _args_truthy(retire):
+            return self._unretire_stub(ref, reason=reason, dry=dry)
+        if not reason:
+            raise BadInput(
+                "args['retire'] needs args['reason'] — the deleted "
+                "ref_event carries it",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'retire': True, 'reason': '<why>'})",
+            )
+        if ref.retired_at is not None:
+            if (ref.meta or {}).get("superseded_by") is not None:
+                raise BadInput(
+                    f"{handle} is already a merge tombstone — its "
+                    "superseded_by pointer is the redirect",
+                    next=f"re-point it with edit(kind='{kind}', "
+                    f"id='{handle}', args={{'redirect_to': '<pa<M>>', "
+                    "'reason': '<why>'}})",
+                )
+            raise BadInput(
+                f"{handle} is already retired",
+                next=f"undo with edit(kind='{kind}', id='{handle}', "
+                "args={'retire': False, 'reason': '<why>'})",
+            )
+        with self.store.pool.connection() as conn:
+            blockers = _retire_blockers(conn, ref)
+        if blockers:
+            raise BadInput(
+                f"{handle} is not a phantom stub — refusing to retire: "
+                + "; ".join(blockers),
+                next="a duplicate of a real record wants a merge, not a "
+                "retire: get(kind='skill', id='precis-paper-help') "
+                "(merge_duplicate / reconcile-duplicates)",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would retire {handle}: "
+                    "retired_at set and a 'deleted' ref_event logged."
+                )
+            )
+        with self.store.tx() as conn:
+            # Re-check inside the transaction: the guards above read on a
+            # pooled conn, so a concurrent import/link between the two
+            # could slip a blocker past them (TOCTOU).
+            blockers = _retire_blockers(conn, ref)
+            if blockers:
+                raise BadInput(
+                    f"{handle} is not a phantom stub — refusing to retire: "
+                    + "; ".join(blockers),
+                    next="a duplicate of a real record wants a merge, not "
+                    "a retire: get(kind='skill', id='precis-paper-help') "
+                    "(merge_duplicate / reconcile-duplicates)",
+                )
+            # The event goes in BEFORE the UPDATE: migration 0229's
+            # trail trigger writes its own ('db','retired') row unless a
+            # ref_event for this ref already exists in this tx, so
+            # appending first keeps exactly one row — ours, with reason.
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="deleted",
+                payload={"reason": reason},
+                conn=conn,
+            )
+            self.store.retire_ref(ref.id, conn=conn)
+        return Response(
+            body=(
+                f"retired {handle} (soft-deleted; ref_event 'deleted' "
+                f"logged). Undo: edit(kind='{kind}', id='{handle}', "
+                "args={'retire': False, 'reason': '<why>'})"
+            )
+        )
+
+    def _unretire_stub(self, ref: Ref, *, reason: str, dry: bool) -> Response:
+        """``args={'retire': False}`` — undo of :meth:`_retire_stub`.
+
+        Restores a plain tombstone via :meth:`Store.restore_ref` (clears
+        ``retired_at``; body rows were never removed) and logs a
+        ``restored`` ref_event. Refuses a live ref (nothing to undo), a
+        merge tombstone — restoring one would fork the supersede
+        redirect, which is ``redirect_to``'s job — and a missing
+        ``reason``.
+        """
+        kind = self.spec.kind
+        handle = _pa(ref)
+        if not reason:
+            raise BadInput(
+                "args['retire']=False needs args['reason'] — the "
+                "restored ref_event carries it",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'retire': False, 'reason': '<why>'})",
+            )
+        if ref.retired_at is None:
+            raise BadInput(
+                f"{handle} is live — retire=False only restores a retired ref",
+                next=f"retire it first: edit(kind='{kind}', id='{handle}', "
+                "args={'retire': True, 'reason': '<why>'})",
+            )
+        if (ref.meta or {}).get("superseded_by") is not None:
+            raise BadInput(
+                f"{handle} is a merge tombstone — restoring it would "
+                "fork the supersede redirect",
+                next=f"re-point the redirect instead: edit(kind='{kind}', "
+                f"id='{handle}', args={{'redirect_to': '<pa<M>>', "
+                "'reason': '<why>'}})",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would restore {handle}: "
+                    "retired_at cleared and a 'restored' ref_event logged."
+                )
+            )
+        with self.store.tx() as conn:
+            # Same ordering as retire: the event precedes the UPDATE so
+            # the 0229 trail trigger suppresses its own 'restored' row.
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="restored",
+                payload={"reason": reason},
+                conn=conn,
+            )
+            self.store.restore_ref(ref.id, conn=conn)
+        return Response(
+            body=(
+                f"restored {handle} (retired_at cleared; ref_event 'restored' logged)."
             )
         )
 
@@ -4417,6 +4609,142 @@ def _supersede_chain_reaches(
         except (TypeError, ValueError):
             return False
     return False
+
+
+def _args_truthy(value: Any) -> bool:
+    """``args={'retire': …}`` flag decode — ``'true'``/``'1'``/``'yes'``
+    strings count as True, everything else (incl. ``'false'``) False.
+    Mirrors :func:`precis.handlers._comment_timeline._truthy`."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes")
+    return bool(value)
+
+
+#: Inbound link relations that make a paper *cited-depended-on* — a live
+#: ``cites``/``cited-by`` edge or a finding's ``awaits-evidence`` claim on
+#: the stub. ``supersedes`` is handled separately (its src is by
+#: construction retired, so a liveness filter would silence it).
+_RETIRE_BLOCKING_RELATIONS = ("cites", "cited-by", "awaits-evidence")
+
+
+def _retire_blockers(conn: Any, ref: Ref) -> list[str]:
+    """Reasons ``ref`` may not be retired by the phantom-stub door
+    (:meth:`PaperHandler._retire_stub`), as human strings; ``[]`` clears it.
+
+    A phantom stub is title-only: no body chunks, no attached PDF, no
+    external identifier (``ref_identifiers`` rows other than the
+    ``cite_key`` — the slug is the internal id, not an external one), and
+    nothing citing it: no live inbound cite edges, no ``[pa<id>]`` /
+    ``§<cite_key>`` token in a live draft chunk (draft-scoped like the
+    ``[fi<id>]`` delete guard — a token elsewhere is a mention, not a
+    cite), no bib entry held on it, and no merge tombstone redirecting
+    through it — the merge-survivor case, where each tombstone's
+    redirect has to be moved to another survivor (``redirect_to``)
+    before this ref can go.
+    """
+    blockers: list[str] = []
+    row = conn.execute(
+        "SELECT count(*) FROM chunks WHERE ref_id = %s "
+        "AND retired_at IS NULL AND ord >= 0",
+        (ref.id,),
+    ).fetchone()
+    if row and row[0]:
+        blockers.append(f"{row[0]} live body chunk(s)")
+    if ref.pdf_sha256:
+        blockers.append("an attached PDF (pdf_sha256 is set)")
+    ids = conn.execute(
+        "SELECT id_kind, id_value FROM ref_identifiers "
+        "WHERE ref_id = %s AND id_kind <> 'cite_key' ORDER BY id_kind",
+        (ref.id,),
+    ).fetchall()
+    if ids:
+        blockers.append(
+            "external identifier(s): " + ", ".join(f"{k}:{v}" for k, v in ids)
+        )
+    citers = conn.execute(
+        "SELECT s.kind, s.ref_id, x.relation "
+        "FROM links x JOIN refs s ON s.ref_id = x.src_ref_id "
+        "WHERE x.dst_ref_id = %s AND x.relation = ANY(%s) "
+        "AND s.retired_at IS NULL",
+        (ref.id, list(_RETIRE_BLOCKING_RELATIONS)),
+    ).fetchall()
+    # The survivor side of a merge: ``this -supersedes-> tombstone``
+    # edges plus retired rows whose meta.superseded_by names this ref —
+    # both spell "a redirect ends here". Retiring the survivor strands
+    # each tombstone's resolution, so they must be moved (redirect_to on
+    # the tombstone) first.
+    victims = conn.execute(
+        "SELECT d.kind, d.ref_id "
+        "FROM links x JOIN refs d ON d.ref_id = x.dst_ref_id "
+        "WHERE x.src_ref_id = %s AND x.relation = 'supersedes' "
+        "AND d.retired_at IS NOT NULL",
+        (ref.id,),
+    ).fetchall()
+    stamped = conn.execute(
+        "SELECT kind, ref_id FROM refs WHERE retired_at IS NOT NULL "
+        "AND meta->>'superseded_by' = %s",
+        (str(ref.id),),
+    ).fetchall()
+    redirect_ends = {(k, i) for k, i in victims} | {(k, i) for k, i in stamped}
+    if redirect_ends:
+        blockers.append(
+            "merge tombstone(s) redirect here: "
+            + ", ".join(
+                sorted(
+                    handle_registry.try_format(k, i) or f"{k}{i}"
+                    for k, i in redirect_ends
+                )
+            )
+            + " — move each redirect to another survivor first "
+            "(edit(args={'redirect_to': <other pa<M>>}) on the tombstone)"
+        )
+    if citers:
+        blockers.append(
+            "live inbound cite edge(s): "
+            + ", ".join(
+                f"{handle_registry.try_format(k, i) or f'{k}{i}'}:{rel}"
+                for k, i, rel in citers
+            )
+        )
+    cited_rows = conn.execute(
+        "SELECT c.chunk_id, c.ref_id, r.kind "
+        "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+        "WHERE c.retired_at IS NULL AND c.ord >= 0 AND r.retired_at IS NULL "
+        "AND r.kind = 'draft' AND c.ref_id <> %s AND c.text ~ %s "
+        "ORDER BY c.ref_id, c.chunk_id LIMIT 10",
+        (ref.id, _retire_cite_pattern(conn, ref)),
+    ).fetchall()
+    if cited_rows:
+        docs = sorted({int(r[1]) for r in cited_rows})
+        blockers.append(
+            f"cited by token in {len(cited_rows)} live draft chunk(s) "
+            f"across {len(docs)} draft(s)"
+        )
+    row = conn.execute(
+        "SELECT count(*) FROM paper_bib_entries WHERE held_ref_id = %s",
+        (ref.id,),
+    ).fetchone()
+    if row and row[0]:
+        blockers.append(f"{row[0]} bib entrie(s) held on it")
+    return blockers
+
+
+def _retire_cite_pattern(conn: Any, ref: Ref) -> str:
+    """Postgres regexp matching every chunk-text cite form that can name
+    ``ref``: the ``[<kind><id>]`` handle, the handle inside a ``>``/``+``
+    pin list, and the ``§<cite_key>`` sugar (cite_key read live — a stub
+    without one simply gets no ``§`` alternative)."""
+    row = conn.execute(
+        "SELECT id_value FROM ref_identifiers "
+        "WHERE ref_id = %s AND id_kind = 'cite_key'",
+        (ref.id,),
+    ).fetchone()
+    handle = handle_registry.format_handle(ref.kind, ref.id)
+    alts = [rf"\[{handle}\]", rf"[,>+]{handle}[\],]"]
+    if row is not None and row[0]:
+        slug = re.escape(str(row[0]))
+        alts.append(rf"§{slug}([^A-Za-z0-9_-]|$)")
+    return "|".join(alts)
 
 
 def _parse_paper_id(

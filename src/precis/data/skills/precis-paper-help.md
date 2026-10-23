@@ -286,6 +286,20 @@ Refuses a source that isn't a retired merge, a target that isn't live
 required and lands in the `redirect_repointed` ref_event with old+new
 targets; undo is the same call aimed back at the old target.
 
+## A phantom citation stub should not exist — how do I retire it?
+
+```python
+edit(kind="paper", id="pa454024", args={"retire": True, "reason": "invented citation, gr509441"})
+```
+
+Soft-deletes a stub that should never have been minted; `reason` lands
+in a `deleted` ref_event and `retire: False` on the tombstone undoes it
+(`restored` event). Refuses anything more than a phantom: body chunks,
+an attached PDF, an external identifier, live inbound cites (edges,
+`[pa<id>]`/`§<cite_key>` tokens in draft chunks, bib holds), or inbound
+`supersedes` (move each tombstone's redirect with `redirect_to` first).
+A duplicate of a real record wants a merge instead. `dry_run` previews.
+
 ## I found a legal PDF for a body-less stub — how do I attach it?
 
 ```python

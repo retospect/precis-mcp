@@ -217,7 +217,11 @@ is verified done on prod.
    which then minted a phantom ref and stole the printable. Fixed in
    `add.py::_ingest_pdf`: printable_only probes content hashes only,
    refused folds re-gate on rendered-text identity (`attach_doi_overridden`
-   / `attach_refused` events) and never mint.
+   / `attach_refused` events) and never mint. Retiring the minted
+   phantoms now has a door (gr509441):
+   `edit(kind='paper', args={'retire': True, 'reason': …})` — refuses a
+   ref with body, PDF, external id or live inbound cites; `retire:
+   False` undoes.
 4. **`backlog/outbound-policy.md`** — one resolved policy (rate, wait,
    timeouts, on_refuse, concurrency) per outbound call over the two
    shipped primitives (rate bucket, slot hold), DB-overridable per

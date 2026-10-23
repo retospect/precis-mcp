@@ -3448,13 +3448,14 @@ class DispatchMixin(RuntimeShape):
         if (
             resolved.redirected_from is not None
             and isinstance(args.get(_EXTRAS_KEY), dict)
-            and "redirect_to" in args[_EXTRAS_KEY]
+            and ("redirect_to" in args[_EXTRAS_KEY] or "retire" in args[_EXTRAS_KEY])
         ):
-            # The paper redirect_to door operates ON the merged tombstone:
-            # rewriting id= to the survivor (the transparent redirect
-            # below) would land the re-point on the wrong ref. Route the
-            # decoded tombstone ref_id through instead so the handler can
-            # resolve it with include_deleted (gr501446).
+            # The paper redirect_to and retire doors operate ON the
+            # merged tombstone: rewriting id= to the survivor (the
+            # transparent redirect below) would land the re-point /
+            # un-retire on the wrong ref. Route the decoded tombstone
+            # ref_id through instead so the handler can resolve it with
+            # include_deleted (gr501446, gr509441).
             args["kind"] = resolved.kind
             parsed = handle_registry.parse(normalized)
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
@@ -3509,6 +3510,16 @@ class DispatchMixin(RuntimeShape):
         handler = self.hub.handler_for(kind) if self.hub is not None else None
         if handler is None:
             return False
+        extras = args.get(_EXTRAS_KEY)
+        if isinstance(extras, dict) and "retire" in extras:
+            # The paper retire door resolves tombstones itself
+            # (_resolve_ref_incl_retired), so a soft-deleted ``pa<id>``
+            # still routes: without this, ``args={'retire': False}`` —
+            # the undo — died on the NotFound below before the handler
+            # could see it (gr509441).
+            args["kind"] = kind
+            args["id"] = str(pk) + suffix
+            return True
         if not handler.spec.is_numeric:
             raise NotFound(
                 f"{kind} {normalized + suffix!r} not found",
