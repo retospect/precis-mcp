@@ -181,6 +181,21 @@ def _worktree(env: dict[str, str], name: str) -> Path:
     return wt
 
 
+def _subagent_event(env: dict[str, str], event: str, agent_id: str) -> None:
+    helper = REPO / "scripts" / "hooks" / "subagent-task-state.py"
+    proc = subprocess.run(
+        [str(helper), event, env["CWD"]],
+        cwd=env["CWD"],
+        env={**env, "CLAUDE_PROJECT_DIR": env["CWD"]},
+        input=json.dumps({"agent_id": agent_id}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def _branches(env: dict[str, str]) -> str:
     return subprocess.run(
         ["git", "branch", "--list", "worktree-*"],
@@ -408,6 +423,20 @@ def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
     assert " done1 worktree-done1 " in log and "dirty1" not in log
     kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
     assert [c[-1] for c in kills] == ["claude-done1", "claude-dirty1"]
+
+
+def test_close_refuses_while_a_subagent_task_is_live(env: dict[str, str]) -> None:
+    wt = _worktree(env, "subagent-parent")
+    _windows(env, {"claude-subagent-parent": IDLE})
+    _subagent_event(env, "start", "task-live-close")
+    try:
+        proc = _run(env, "close", "subagent-parent")
+        assert proc.returncode == 1
+        assert "active subagent task task-live-close" in proc.stdout
+        assert wt.exists()
+        assert not [c for c in _tmux_calls(env) if c[0] == "kill-window"]
+    finally:
+        _subagent_event(env, "stop", "task-live-close")
 
 
 def test_close_refuses_unlanded_commit_and_carries_on(env: dict[str, str]) -> None:

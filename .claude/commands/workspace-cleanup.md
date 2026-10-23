@@ -7,18 +7,18 @@ You are auditing this machine's worktrees for cleanup. **The data collection
 is a script, not LLM steps** — `scripts/inflight --json` already computes,
 per worktree: session liveness (a live pid vs. a dead lock), dirty status, and
 merge verdict (cherry-pick-aware — squash-merges don't fool it), and buckets
-each one into `base` / `self` / `live_session` / `needs_judgment` /
-`safe_remove` / `has_unmerged_work`. Your job is to route the buckets to the
-right place, not to re-derive any of this by hand.
+each one into `base` / `self` / `live_session` / `live_subagent` /
+`needs_judgment` / `safe_remove` / `has_unmerged_work`. Your job is to route
+the buckets to the right place, not to re-derive any of this by hand.
 
 Live state at invocation:
 !`scripts/inflight --json`
 
 ## Procedure
 
-1. **Nothing to do.** If every worktree above is `base`, `self`, or
-   `live_session` (no `safe_remove`, no `needs_judgment`, no
-   `has_unmerged_work`), say so in one line and stop.
+1. **Nothing to do.** If every worktree above is `base`, `self`,
+   `live_session`, or `live_subagent` (no `safe_remove`, no
+   `needs_judgment`, no `has_unmerged_work`), say so in one line and stop.
 
 2. **Delegate the clear-cut cases.** If there's at least one `safe_remove`
    entry, spawn the `housekeeper` agent (Sonnet tier) with the full JSON
@@ -36,9 +36,11 @@ Live state at invocation:
    read the real diff (`git -C <path> diff`) and form a view: disposable
    scratch vs. real unshipped work. This is the one judgment call in this
    flow that stays here — don't ask the housekeeper agent to make it, and
-   don't guess without looking. Tell the user what's in there and your read,
-   then `AskUserQuestion` how they want to proceed (leave it, commit it,
-   discard it). Never discard uncommitted changes without an explicit yes.
+   don't guess without looking. An `agent-*` tree with no live task marker is
+   still ambiguous; have the coordinator confirm that its subagent task ended
+   before offering any cleanup. Tell the user what's in there and your read,
+   then `AskUserQuestion` how they want to proceed. Never discard uncommitted
+   changes without an explicit yes.
 
 4. **Note `has_unmerged_work` entries** (real commits ahead of base, not
    merged) as informational only — these are active branches, not cleanup

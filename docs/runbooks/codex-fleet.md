@@ -89,6 +89,12 @@ each release. This launcher does not gate, merge, deploy or close gripes.
 
 - Coordinator assigns one writer per shared code seam and integrates reviewed
   slices. Workers preserve existing dirty trees and report adoptable work.
+- An isolation-worktree subagent may fall back to its parent tree if its
+  worktree disappears. Do not reset, clean, or close the coordinator tree while
+  background subagents may still be running; wait for their task ids to stop
+  and confirm the tree is clean first. SubagentStart/Stop hooks register live
+  task ids in the shared git directory; reapers and `fleet-wave close` hold
+  trees while a task is active. A missing stop hook leaves a conservative hold.
 - Each worker keeps a compact handoff: objective, current branch, next action,
   evidence, blockers and deployed SHA used for dogfood. Update before ending
   or compaction and after meaningful results.

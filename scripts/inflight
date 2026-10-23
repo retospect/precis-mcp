@@ -11,6 +11,7 @@
 # Columns:
 #   WORKTREE   basename ( * = the one you're in; "main" = the primary checkout )
 #   SESSION    live#<pid>  — a Claude session holds the worktree lock and is alive
+#              live-task#<id> — a Claude subagent task is active in this repository
 #              dead-lock#<pid> — locked by a pid that is gone (safe to reap)
 #              —           — no lock
 #   DIRTY      count of tracked-modified files (+N = untracked), or "clean"
@@ -34,8 +35,9 @@
 #                               #   base            the primary branch, not a candidate
 #                               #   self            the worktree you're calling from
 #                               #   live_session    a claude session still holds the lock
+#                               #   live_subagent   a subagent task is active in the repository
 #                               #   needs_judgment  dirty tree (capped diffstat), or a lock with no
-#                               #                   parseable `pid <N>` — never guessed dead
+#                               #                   parseable `pid <N>`, or an untracked agent tree
 #                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
 #                               #   has_unmerged_work  real commits ahead of base, informational
 #                               # plus a repo-wide stashCount (stash is one ref shared by every
@@ -53,6 +55,7 @@ JSON_MODE=0
 command -v git >/dev/null 2>&1 || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Pick the primary branch: prefer main, fall back to master.
 BASE=main
 git show-ref --verify --quiet refs/heads/main || BASE=master
@@ -63,7 +66,11 @@ HERE=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 # feature branch is still the primary and must never be bucketed removable
 # (git refuses to `worktree remove` it anyway, but the reaper/cleanup must not
 # even try — and its dry-run must not list it).
-PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk 'NR == 1 {print $2}')
+ACTIVE_TASK_ID=""
+if [ -f "$SCRIPT_DIR/hooks/subagent-task-state.py" ]; then
+  ACTIVE_TASK_ID=$(python3 "$SCRIPT_DIR/hooks/subagent-task-state.py" check "$HERE" 2>/dev/null || true)
+fi
 
 trunc() { # trunc <string> <max>
   local s=$1 n=$2
@@ -149,10 +156,17 @@ JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render ti
 emit() { # emit <path> <head> <branch> <locked>
   local path=$1 head=$2 branch=$3 locked=$4
   [ -z "$path" ] && return
-  local name sess dirty untr dirtyf verd purp last mark
+  local name sess dirty untr dirtyf verd purp last mark task_id agent_tree
   if [ "$branch" = "$BASE" ]; then name=$BASE; else name=$(basename "$path"); fi
   mark=' '; [ "$path" = "$HERE" ] && mark='*'
   sess=$(session_field "$locked")
+  task_id=$ACTIVE_TASK_ID
+  [ -n "$task_id" ] && sess="live-task#${task_id}"
+  agent_tree=0
+  case "$name:$branch" in
+    agent-*:*) agent_tree=1 ;;
+    *:worktree-agent-*) agent_tree=1 ;;
+  esac
   dirty=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null | grep -c .)
   untr=$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | grep -c .)
   if [ "$dirty" = 0 ] && [ "$untr" = 0 ]; then dirtyf='clean'
@@ -165,15 +179,17 @@ emit() { # emit <path> <head> <branch> <locked>
   purp=$(purpose_field "$path" "$head" "$branch")
   last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
   ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
-  # overlap-relevant: current tree, live session, dirty, or commits ahead of main
-  if [ "$mark" = '*' ] || [[ "$sess" == live#* ]] || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
+  # overlap-relevant: current tree, live session/task, dirty, or ahead of main
+  if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* ]] \
+     || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
   then SHOW+=(1); else SHOW+=(0); fi
-  # removable = merged into main, clean tree, no live session, not the current wt, not main.
+  # An unknown agent-tree liveness state is not proof that its task has ended.
   # A lock whose reason carries no `pid <N>` (sess = `locked`) was placed by hand
   # or by older code; reap must not guess it dead (incident 2026-08-15,
   # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
-     && [[ "$sess" != live#* ]] && [ "$sess" != 'locked' ] \
+     && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
+     && [ "$sess" != 'locked' ] && [ "$agent_tree" = 0 ] \
      && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
     REMOVABLE+=("$name")
   fi
@@ -183,8 +199,10 @@ emit() { # emit <path> <head> <branch> <locked>
     diffstat=''
     if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
     elif [ "$path" = "$HERE" ]; then bucket='self'
+    elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
     elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
+    elif [ "$agent_tree" = 1 ]; then bucket='needs_judgment'
     elif [ "$dirtyf" != 'clean' ]; then
       bucket='needs_judgment'
       diffstat=$(git -C "$path" diff --stat 2>/dev/null | head -10)
@@ -319,11 +337,15 @@ if [ "$FOR_HOOK" = 1 ]; then
   # One line, not the table (gr499042): the hook's output is injected once
   # and then carried every later turn of the session, so the overlap scan
   # is on-demand now — a session that needs it runs scripts/inflight.
-  LIVE=0; DIRTYF=0; AHEAD=0
+  LIVE=0; DIRTYF=0; AHEAD=0; TASK_COUNTED=0
   for i in "${!ROWS[@]}"; do
     [ "${SHOW[$i]}" = 1 ] || continue
     IFS='|' read -r _c1 _sess _dirtyf _verd _p _l <<<"${ROWS[$i]}"
-    [[ "$_sess" == live#* ]] && LIVE=$((LIVE+1))
+    if [[ "$_sess" == live#* ]]; then
+      LIVE=$((LIVE+1))
+    elif [[ "$_sess" == live-task#* ]] && [ "$TASK_COUNTED" = 0 ]; then
+      LIVE=$((LIVE+1)); TASK_COUNTED=1
+    fi
     [ "$_dirtyf" != 'clean' ] && DIRTYF=$((DIRTYF+1))
     [[ "$_verd" == ↑* ]] && AHEAD=$((AHEAD+1))
   done

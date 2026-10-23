@@ -34,11 +34,13 @@ then remove.
 ## What you MUST NOT do — hand back untouched
 - **`live_session`** — a Claude session still holds the lock. Never remove,
   never even suggest it.
-- **`needs_judgment`** — a dirty tree. You cannot tell disposable scratch
-  apart from real unshipped work from a diffstat alone. Pass these back
-  verbatim (name, path, the `diffstat` field you were given) in your final
-  report — do not read the full diff and do not guess at deleting anything
-  here.
+- **`live_subagent`** — an active subagent task is using this repository. Never
+  remove worktrees; wait for the task to stop.
+- **`needs_judgment`** — a dirty tree, untracked agent tree, or an
+  unidentifiable lock. You cannot tell disposable scratch apart from real
+  unshipped work from a diffstat alone. Pass these back verbatim (name, path,
+  the `diffstat` field you were given) in your final report — do not read the
+  full diff and do not guess at deleting anything here.
 - **`has_unmerged_work`** — real commits not on base. Not a cleanup target by
   definition; just report it exists.
 - **`base` / `self`** — the primary branch and the worktree you were called
@@ -54,7 +56,8 @@ then remove.
    last-session info) and remove the confirmed ones as above.
 4. Report, in order: removed (with confirmation of the new `git worktree
    list`), left alone and why, bucketed exactly as: `live_session`,
-   `needs_judgment` (include each one's diffstat verbatim), `has_unmerged_work`.
+   `live_subagent`, `needs_judgment` (include each one's diffstat verbatim),
+   `has_unmerged_work`.
 
 ## Filing a gripe
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',

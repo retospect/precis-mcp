@@ -6,6 +6,9 @@ racer, worktrees); see that module's docstring.
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -132,3 +135,51 @@ def test_untaken_agent_off_our_head_is_left_alone(rig: Rig) -> None:
     _finish(p, log)
     assert "worktree-agent-idle" in _branches(rig)
     assert idle.exists()
+
+
+def test_sync_local_main_consumes_the_entire_worktree_list(
+    tmp_path: Path,
+) -> None:
+    """Avoid SIGPIPE when awk selects the primary from a large worktree list."""
+    ship = Path(__file__).resolve().parents[1] / "scripts" / "ship"
+    source = ship.read_text(encoding="utf-8")
+    match = re.search(r"^_sync_local_main\(\) \{\n.*?^\}\n", source, re.S | re.M)
+    assert match, "_sync_local_main not found in scripts/ship"
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "if args == ['worktree', 'list', '--porcelain']:\n"
+        "    for i in range(10000):\n"
+        "        print(f'worktree /primary' if i == 0 else f'worktree /tree-{i}')\n"
+        "elif args == ['-C', '/primary', 'symbolic-ref', '--quiet', '--short', 'HEAD']:\n"
+        "    print('main')\n"
+        "elif args == ['-C', '/primary', 'merge', '--ff-only', 'origin/main']:\n"
+        "    pass\n"
+        "elif args == ['-C', '/primary', 'rev-parse', '--short', 'main']:\n"
+        "    print('abc1234')\n"
+        "else:\n"
+        "    raise SystemExit(f'unexpected git args: {args!r}')\n",
+        encoding="utf-8",
+    )
+    git_shim.chmod(0o755)
+    script = (
+        "set -euo pipefail\n"
+        'say() { printf "%s\\n" "$*"; }\n' + match.group(0) + "_sync_local_main\n"
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "local main" in proc.stdout
+    assert "abc1234" in proc.stdout

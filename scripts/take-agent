@@ -29,6 +29,15 @@ branch="$(git -C "$tree" symbolic-ref --short HEAD)"
 [[ "$branch" == worktree-agent-* ]] || die "$branch is not an agent branch (worktree-agent-*) — refusing to touch another session's tree"
 ours="$(git symbolic-ref --short HEAD)"
 [[ "$ours" != main ]] || die "refusing to take agent work onto main"
+task_helper="$top/scripts/hooks/subagent-task-state.py"
+if [[ -f "$task_helper" ]]; then
+    if task_id="$(python3 "$task_helper" check "$tree" 2>/dev/null)"; then
+        die "$tree is used by active subagent task $task_id"
+    else
+        task_rc=$?
+        [[ "$task_rc" == 1 ]] || die "could not verify subagent task liveness for $tree"
+    fi
+fi
 [[ -z "$(git -C "$tree" status --porcelain)" ]] \
     || die "$tree has uncommitted changes — commit them there (or discard them) first"
 

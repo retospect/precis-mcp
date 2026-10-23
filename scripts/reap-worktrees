@@ -7,9 +7,10 @@
 # FROM — that has to happen from outside it, on a later session. This walks
 # `scripts/inflight --json` (the single source of truth for liveness/merge
 # bucketing — never reimplemented here) and removes every worktree whose
-# `bucket` is exactly `safe_remove` (merged + clean + no live session). Every
-# other bucket (`self`, `live_session`, `needs_judgment`, `has_unmerged_work`,
-# `base`) is left untouched. `safe_remove` also covers a `dead-lock#<pid>`
+# `bucket` is exactly `safe_remove` (merged + clean + no live session/task).
+# Every other bucket (`self`, `live_session`, `live_subagent`,
+# `needs_judgment`, `has_unmerged_work`, `base`) is left untouched.
+# `safe_remove` also covers a `dead-lock#<pid>`
 # session (crashed without a clean SessionEnd, so its SessionStart lock —
 # scripts/hooks/session-start-lock.sh — was never released): `git worktree
 # remove` unconditionally refuses a locked worktree, so this unlocks first.
@@ -26,7 +27,7 @@
 #      re-run the FULL bucket check a second time after a shared sleep
 #      (PRECIS_REAP_GRACE_SECONDS, default 60s — one sleep total, not one per
 #      tree). A tree whose re-check comes back anything other than
-#      `safe_remove` (a lock reappeared, the tree went dirty, it's gone
+#      `safe_remove` (a lock/task appeared, the tree went dirty, it's gone
 #      already) is skipped with a log line instead of removed.
 #   2. Fresh-purpose tripwire: a `.claude/purpose` file newer than
 #      PRECIS_REAP_PURPOSE_FRESH_SECONDS (default 6h) demotes `safe_remove` to

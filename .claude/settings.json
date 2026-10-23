@@ -107,6 +107,26 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/subagent-task-state.py\" start \"$CLAUDE_PROJECT_DIR\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/subagent-task-state.py\" stop \"$CLAUDE_PROJECT_DIR\""
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

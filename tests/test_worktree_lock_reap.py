@@ -88,6 +88,8 @@ COMPOSE_PROJECT_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "compose-project.sh"
 LOCK_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-start-lock.sh"
 SESSION_END_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-end-reap.sh"
 SESSION_LOCK_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "session-lock.sh"
+SUBAGENT_TASK_STATE_SRC = REPO_ROOT / "scripts" / "hooks" / "subagent-task-state.py"
+TAKE_AGENT_SRC = REPO_ROOT / "scripts" / "take-agent"
 
 
 def _test_env() -> dict[str, str]:
@@ -225,8 +227,10 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
     lib_dir.mkdir(parents=True)
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    shutil.copy2(TAKE_AGENT_SRC, scripts_dir / "take-agent")
     shutil.copy2(LOCK_HOOK_SRC, hooks_dir / "session-start-lock.sh")
     shutil.copy2(SESSION_END_HOOK_SRC, hooks_dir / "session-end-reap.sh")
+    shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     # scripts/lib/session-lock.sh: sourced (guarded, `[ -f ... ] && source
     # ...`) by both hooks above. Staging it here is what makes the
     # gr256469 nested-session guards in those hooks actually engage in this
@@ -237,6 +241,7 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
     shutil.copy2(SESSION_LOCK_LIB_SRC, lib_dir / "session-lock.sh")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
+    (scripts_dir / "take-agent").chmod(0o755)
     (hooks_dir / "session-start-lock.sh").chmod(0o755)
     (hooks_dir / "session-end-reap.sh").chmod(0o755)
     (primary / "README.md").write_text("root\n", encoding="utf-8")
@@ -1118,8 +1123,11 @@ def guard_repo(tmp_path: Path) -> dict[str, Path]:
 
     scripts_dir = primary / "scripts"
     scripts_dir.mkdir()
+    hooks_dir = scripts_dir / "hooks"
+    hooks_dir.mkdir()
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
 
@@ -1147,6 +1155,129 @@ def _reap_env(**overrides: str) -> dict[str, str]:
     env = _test_env()
     env.update(overrides)
     return env
+
+
+def _subagent_event(primary: Path, event: str, agent_id: str) -> None:
+    script = primary / "scripts" / "hooks" / "subagent-task-state.py"
+    result = subprocess.run(
+        [str(script), event, str(primary)],
+        cwd=str(primary),
+        env={**_test_env(), "CLAUDE_PROJECT_DIR": str(primary)},
+        input=json.dumps({"agent_id": agent_id}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_subagent_lifecycle_hooks_track_task_ids() -> None:
+    settings = json.loads(
+        (REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+    for event, action in (("SubagentStart", "start"), ("SubagentStop", "stop")):
+        commands = [
+            hook["command"]
+            for group in settings["hooks"][event]
+            for hook in group["hooks"]
+        ]
+        assert any(
+            "subagent-task-state.py" in command and f" {action} " in command
+            for command in commands
+        )
+
+
+def test_live_subagent_task_blocks_worktree_reaping(
+    guard_repo: dict[str, Path],
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+    inflight = primary / "scripts" / "inflight"
+    _subagent_event(primary, "start", "task-live-123")
+    try:
+        row = _bucket_for(_run([str(inflight), "--json"], primary).stdout, b)
+        assert row["bucket"] == "live_subagent", row
+        assert row["session"] == "live-task#task-live-123", row
+
+        result = subprocess.run(
+            ["bash", str(reap)],
+            cwd=str(primary),
+            env=_reap_env(PRECIS_REAP_GRACE_SECONDS="0"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        assert b.exists()
+    finally:
+        _subagent_event(primary, "stop", "task-live-123")
+
+
+def test_take_agent_refuses_a_live_subagent_task(
+    repo_trio: dict[str, Path],
+) -> None:
+    primary, caller = repo_trio["primary"], repo_trio["a"]
+    agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
+    _git(
+        primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "worktree-agent-a1b2c3",
+        str(agent),
+        "main",
+    )
+    _subagent_event(primary, "start", "task-live-take")
+    try:
+        result = subprocess.run(
+            ["bash", str(TAKE_AGENT_SRC), "--discard", "agent-a1b2c3"],
+            cwd=str(caller),
+            env=_test_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode != 0
+        assert "active subagent task task-live-take" in result.stderr
+        assert agent.exists()
+    finally:
+        _subagent_event(primary, "stop", "task-live-take")
+
+
+def test_untracked_agent_tree_needs_judgment(
+    guard_repo: dict[str, Path],
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
+    _git(
+        primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "worktree-agent-a1b2c3",
+        str(agent),
+        "main",
+    )
+    (b / "preserve.txt").write_text("keep the control tree\n", encoding="utf-8")
+
+    row = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout,
+        agent,
+    )
+    assert row["bucket"] == "needs_judgment", row
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="0"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert agent.exists()
 
 
 def test_reap_worktrees_purpose_tripwire_blocks_removal(
@@ -1601,9 +1732,12 @@ def reap_db_repo(tmp_path: Path) -> dict[str, Path]:
     scripts_dir = primary / "scripts"
     lib_dir = scripts_dir / "lib"
     lib_dir.mkdir(parents=True)
+    hooks_dir = scripts_dir / "hooks"
+    hooks_dir.mkdir()
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_DB_SRC, scripts_dir / "reap-test-dbs")
     shutil.copy2(COMPOSE_PROJECT_LIB_SRC, lib_dir / "compose-project.sh")
+    shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-test-dbs").chmod(0o755)
     (primary / "README.md").write_text("root\n", encoding="utf-8")
@@ -1794,6 +1928,42 @@ def test_reap_test_dbs_holds_an_agent_trees_db_younger_than_two_hours(
     result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
     assert result.returncode == 0, result.stderr
     assert "down|precis-test-agent-a1b2c3" not in log, log
+
+
+def test_reap_test_dbs_holds_an_agent_task_db_while_task_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    primary = reap_db_repo["primary"]
+    agent = _agent_tree(primary)
+    _subagent_event(primary, "start", "task-db-live")
+    try:
+        containers = [
+            f"precis-test-agent-a1b2c3|dbcid1|precis-test-db|{agent}/docker/dev/compose.yaml"
+        ]
+        created = [f"dbcid1|{_iso_created(3 / 24)}"]
+        result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+        assert result.returncode == 0, result.stderr
+        assert "down|precis-test-agent-a1b2c3" not in log, log
+    finally:
+        _subagent_event(primary, "stop", "task-db-live")
+
+
+def test_reap_test_dbs_holds_orphaned_agent_db_while_task_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    primary = reap_db_repo["primary"]
+    gone = primary / ".claude" / "worktrees" / "agent-gone"
+    _subagent_event(primary, "start", "task-orphan-db")
+    try:
+        containers = [
+            f"precis-test-agent-gone|dbcid1|precis-test-db|{gone}/docker/dev/compose.yaml"
+        ]
+        created = [f"dbcid1|{_iso_created(3 / 24)}"]
+        result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+        assert result.returncode == 0, result.stderr
+        assert "down|precis-test-agent-gone" not in log, log
+    finally:
+        _subagent_event(primary, "stop", "task-orphan-db")
 
 
 def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(

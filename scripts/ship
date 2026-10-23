@@ -1220,7 +1220,7 @@ _remote_race_lost() {
 _sync_local_main() {
     local primary
     say "syncing local main"
-    primary="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+    primary="$(git worktree list --porcelain | awk 'NR == 1 {print $2}')"
     if [[ "$(git -C "$primary" symbolic-ref --quiet --short HEAD || true)" == "main" ]]; then
         git -C "$primary" merge --ff-only origin/main \
             && echo "local main → $(git -C "$primary" rev-parse --short main)" \
@@ -1734,7 +1734,8 @@ _release_after_landing() {
 # within 10 min (GitHub incidents DROP push events and never replay them —
 # observed 2026-09-13), fall back to one explicit workflow_dispatch on the ref.
 remote_gate_wait() {
-    local sha run_id="" status dispatched=0 t0 deadline
+    # Bound recovery if another same-ref push repeatedly cancels this run.
+    local sha run_id="" status dispatched=0 recoveries=0 t0 deadline
     sha="$(git rev-parse HEAD)"
     t0="$(date +%s)"
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
@@ -1764,6 +1765,21 @@ remote_gate_wait() {
             --jq '.status + " " + (.conclusion // "")' 2>/dev/null || true)"
         case "$status" in
             "completed success"*) say "remote gate GREEN (run ${run_id})"; return 0 ;;
+            "completed cancelled"*)
+                if (( recoveries < 2 )); then
+                    say "previous run ${run_id} was cancelled — rerunning check.yml on the same sha"
+                    # Rerun in place; pushing or dispatching can cancel a newer per-ref run.
+                    if ! gh run rerun "$run_id" 2>/dev/null; then
+                        echo "✖ could not rerun cancelled check run ${run_id}" >&2
+                        return 1
+                    fi
+                    run_id=""
+                    recoveries=$((recoveries + 1))
+                    sleep 20
+                else
+                    echo "✖ remote gate stayed cancelled after ${recoveries} rerun attempts (run ${run_id})" >&2
+                    return 1
+                fi ;;
             completed*)
                 echo "✖ remote gate RED: ${status#completed } — failing jobs:" >&2
                 gh run view "$run_id" --json jobs \

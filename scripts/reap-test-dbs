@@ -36,6 +36,10 @@
 # deliberately out of scope; stopping those needs a liveness judgment
 # (scripts/inflight), not a file test.
 #
+# A live SubagentStart marker suppresses both sweeps: an isolation worktree can
+# disappear while its task falls back to the parent tree, so a missing mount
+# path alone is not proof the task has ended.
+#
 # Network-only sweep (gr311857): the container-label reconciliation above
 # needs a container to read the worktree path off. A project that never has
 # one left (a bare `docker network create`, or the last container gone via
@@ -62,29 +66,27 @@
 # `precis-test-<name>` project's db container running for days. This third
 # pass reaps a project whose worktree is STILL PRESENT, but only when ALL
 # of the following hold, each independently conservative:
-#   1. no live session lock on the worktree — read off the exact `session`
-#      field `scripts/inflight --json` already computes (never
-#      reimplemented), so this can never disagree with what a human running
-#      `scripts/inflight` sees.
-#   2. `.claude/purpose` is absent or older than
+#   1. no active subagent task marker in the shared git directory.
+#   2. no live session lock on the worktree — read off the exact `session`
+#      field `scripts/inflight --json` already computes.
+#   3. `.claude/purpose` is absent or older than
 #      PRECIS_REAP_DB_PURPOSE_FRESH_SECONDS (default 6h) — same tripwire
 #      `scripts/reap-worktrees` uses for the analogous worktree-removal case.
-#   3. the project has no RUNNING container other than the test-db service
+#   4. the project has no RUNNING container other than the test-db service
 #      (a `precis-gate` or `run --rm` container means a gate is actually
 #      in flight right now — never touch that).
-#   4. the test-db container itself has been running for at least
+#   5. the test-db container itself has been running for at least
 #      PRECIS_REAP_DB_MIN_AGE_SECONDS (default 48h) — a fresh test-db is
 #      almost certainly mid-use; a multi-day-old one with nothing else
-#      running and no recent purpose is not. An `agent-*` worktree (a
-#      subagent's: it never resumes a session, so a warm db is worth nothing
-#      once it finishes) uses PRECIS_REAP_AGENT_DB_MIN_AGE_SECONDS (default
-#      2h) instead. 2026-10-03 ~14:40Z: 7 idle agent test-dbs 3-27 h old held
+#      running and no recent purpose is not. An `agent-*` worktree uses
+#      PRECIS_REAP_AGENT_DB_MIN_AGE_SECONDS (default 2h) instead.
+#      2026-10-03 ~14:40Z: 7 idle agent test-dbs 3-27 h old held
 #      enough compose networks that docker ran out of address pools ("all
 #      predefined address pools have been fully subnetted") and every
 #      scripts/test in the fleet failed before its first test.
 #      scripts/test now tears an agent tree's project down itself at exit
 #      (unless PRECIS_TEST_KEEP_DB=1), so this 2 h reap is the backstop.
-# All four together are meant to be far more conservative than "would
+# All five together are meant to be far more conservative than "would
 # scripts/inflight call this safe_remove" — this sweep never removes the
 # worktree itself, only its docker footprint, so a false negative (leaving a
 # leaked project alone) is free while a false positive (downing an
@@ -119,6 +121,26 @@ command -v docker >/dev/null 2>&1 || exit 0
 # noisy or slow — `docker ps` blocks on the socket, so bail on any failure.
 docker ps -a --format '{{.Names}}' >/dev/null 2>&1 || exit 0
 
+ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || true)"
+TASK_HELPER="$ROOT/scripts/hooks/subagent-task-state.py"
+active_task_id=""
+subagent_task_clear() {
+    [ -f "$TASK_HELPER" ] || return 0
+    local task_id task_rc
+    task_id="$(python3 "$TASK_HELPER" check "$ROOT" 2>/dev/null)"
+    task_rc=$?
+    if [ "$task_rc" -eq 1 ]; then
+        active_task_id=""
+        return 0
+    fi
+    active_task_id="${task_id:-unknown}"
+    return 1
+}
+if ! subagent_task_clear; then
+    [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — skipping"
+    exit 0
+fi
+
 REAPED=()
 SEEN=""
 
@@ -149,6 +171,10 @@ while IFS='|' read -r proj cfg; do
 
     [ -d "$root" ] && continue   # tree still there — not our business
 
+    if ! subagent_task_clear; then
+        [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — keeping $proj"
+        continue
+    fi
     if [ "$DRY_RUN" = 1 ]; then
         REAPED+=("$proj")
         continue
@@ -182,7 +208,6 @@ done < <(docker ps -a --format \
 # invert the (deliberately non-injective) project name back into a path.
 # Best-effort throughout: a missing git/compose-project.sh, or a `docker
 # network rm` racing a concurrent reaper, must never fail this hook.
-ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || true)"
 if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
     && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     source "$ROOT/scripts/lib/compose-project.sh"
@@ -202,6 +227,10 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
         case " $SEEN " in *" $proj "*) continue ;; esac   # has a container — handled above
         case " $LIVE_PROJECTS " in *" $proj "*) continue ;; esac   # a live worktree still owns this name
 
+        if ! subagent_task_clear; then
+            [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — keeping $net"
+            continue
+        fi
         if [ "$DRY_RUN" = 1 ]; then
             REAPED+=("$net")
             continue
@@ -298,14 +327,22 @@ PY
             # label sweep above) has a db container to judge an age against.
             case " $SEEN " in *" $proj "*) ;; *) continue ;; esac
 
-            # (1) no live session lock on the worktree.
+            # (1) no live session or subagent task owns this checkout.
+            if ! subagent_task_clear; then
+                continue
+            elif [ ! -f "$TASK_HELPER" ] && [[ "$(basename "$wt_path")" == agent-* ]]; then
+                # An untracked harness agent has no reliable session lock.
+                continue
+            fi
+
+            # (2) no live session lock on the worktree.
             sess="$(session_for "$wt_path")"
             case "$sess" in live#*) continue ;; esac
 
-            # (2) .claude/purpose absent or stale.
+            # (3) .claude/purpose absent or stale.
             stale_or_absent_purpose "$wt_path" || continue
 
-            # (3) no running container in this project other than the
+            # (4) no running container in this project other than the
             # test-db service — a gate or `run --rm` container in flight
             # means real work is happening right now.
             other_running=0
@@ -322,7 +359,7 @@ PY
             [ "$other_running" = 1 ] && continue
             [ -z "$db_cid" ] && continue   # no running db either -- nothing to reap here
 
-            # (4) the db container has been up at least DB_MIN_AGE_SECONDS
+            # (5) the db container has been up at least DB_MIN_AGE_SECONDS
             # (AGENT_DB_MIN_AGE_SECONDS for a subagent's `agent-*` tree).
             min_age="$DB_MIN_AGE_SECONDS"
             case "$(basename "$wt_path")" in agent-*) min_age="$AGENT_DB_MIN_AGE_SECONDS" ;; esac

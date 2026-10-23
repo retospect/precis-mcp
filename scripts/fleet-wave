@@ -240,6 +240,22 @@ def _bad_tree(tree: str) -> bool:
     return not re.fullmatch(r"[A-Za-z0-9._-]+", tree) or ".." in tree
 
 
+def _active_subagent_task(tree: Path) -> str:
+    helper = SCRIPTS / "hooks" / "subagent-task-state.py"
+    if not helper.is_file():
+        return "state-check-unavailable"
+    proc = subprocess.run(
+        ["python3", str(helper), "check", str(tree)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode == 0:
+        return proc.stdout.strip() or "unknown"
+    return "" if proc.returncode == 1 else "state-check-unavailable"
+
+
 def cmd_approve(f: Fleet, a: argparse.Namespace) -> int:
     if a.list:
         paths = (
@@ -617,6 +633,10 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
                     print(f"window closed: {p}{name}")
             print(f"no tree: {name}")
             continue
+        if task_id := _active_subagent_task(tree):
+            print(f"REFUSED {name}: active subagent task {task_id}; tree kept")
+            rc = 1
+            continue
         if not git("rev-parse", "--verify", "origin/main", cwd=tree).strip():
             print(f"REFUSED {name}: origin/main does not resolve; kept")
             rc = 1
@@ -635,6 +655,10 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
         if not landed:
             print(f"REFUSED {name}: unlanded commits; window, tree, branch kept")
             print(git("log", "--oneline", "origin/main..HEAD", cwd=tree), end="")
+            rc = 1
+            continue
+        if task_id := _active_subagent_task(tree):
+            print(f"REFUSED {name}: active subagent task {task_id}; tree kept")
             rc = 1
             continue
         for p in PREFIXES:
