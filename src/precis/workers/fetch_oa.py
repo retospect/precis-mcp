@@ -1525,8 +1525,13 @@ def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
             detail=(
                 f"credits_remaining={remaining} ≤ floor={floor}; each paid "
                 f"content fetch costs {_OPENALEX_CONTENT_CREDIT_COST} credits. "
-                "Top up at https://openalex.org/users or the paid last-resort "
-                "leg will start returning fetch_failed / 429."
+                "This is the keyed daily allotment — it refills on OpenAlex's "
+                "daily roll, which self-resolves this alert. If the prepaid "
+                "content wallet (not reported by /rate-limit) is dry instead, "
+                "paid fetches fail with a payment/quota signal — the reactive "
+                "trigger raises this same alert off that failure. Top-up is "
+                "account billing at https://openalex.org/users. Unpaid "
+                "api.openalex.org legs don't draw this balance."
             ),
             severity="warn",
         )
