@@ -519,6 +519,50 @@
     daemon_reload: true
   become: true
 
+# ── Stale Caddy apt source (Linux; gr506049) ──
+# The GB10 sparks once had Caddy installed from the Cloudsmith apt repo; the
+# deb is gone but /etc/apt/sources.list.d/caddy-stable.list and its keyring
+# remain, so every apt run warns about the dead source. Remove both only
+# where the `caddy` package is NOT installed — a host actually serving Caddy
+# from that deb keeps its source for updates. `file state: absent` on both
+# paths is idempotent; the cache refresh runs once, on change only.
+- name: Gather installed-package facts (Linux, stale apt sources)
+  tags: [hardening, security, apt-sources]
+  when: os_family == "linux"
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Remove the stale Caddy apt source + keyring (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - "'caddy' not in ansible_facts.packages"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/caddy-stable.list
+    - /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  become: true
+  register: caddy_apt_source_removed
+
+- name: Refresh the apt cache after removing the stale Caddy source (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - "'caddy' not in ansible_facts.packages"
+    - caddy_apt_source_removed is changed
+    - not ansible_check_mode
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 43200
+    lock_timeout: 120
+  become: true
+  register: _apt_caddy_refresh
+  until: _apt_caddy_refresh is succeeded
+  retries: 3
+  delay: 10
+
 - name: Deploy sudoers drop-in for deploy user
   ansible.builtin.template:
     src: sudoers_deploy.j2

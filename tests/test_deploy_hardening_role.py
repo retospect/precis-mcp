@@ -15,6 +15,9 @@
   free — earlyoom's `-s` leg then gates the kill. Compute hosts render
   `-s 100,100` (the swap condition always satisfied); other hosts keep
   `-s 10,5`. The earlyoom tasks stay under the oom-guard tag.
+- gr506049: the stale Cloudsmith Caddy apt source and keyring are removed
+  (state: absent, both paths), only where the `caddy` deb is not installed,
+  and the apt cache refresh fires only on change — never in check mode.
 """
 
 from __future__ import annotations
@@ -521,6 +524,38 @@ def test_dgx_dashboard_admin_disabled_only_where_the_unit_exists() -> None:
     assert "name: dgx-dashboard.service" not in text
 
 
+# ── gr506049: stale Caddy apt source on the sparks ─────────────────────────
+
+
+def test_stale_caddy_source_tasks_are_tagged_linux_and_guarded() -> None:
+    tasks = [t for t in _tasks() if "apt-sources" in t.get("tags", [])]
+    assert len(tasks) == 3
+    facts, remove, refresh = tasks
+    assert "ansible.builtin.package_facts" in facts
+    not_installed = "'caddy' not in ansible_facts.packages"
+    assert not_installed in remove["when"], remove["name"]
+    assert not_installed in refresh["when"], refresh["name"]
+    for task in tasks:
+        assert 'os_family == "linux"' in str(task["when"]), task["name"]
+        assert "hardening" in task["tags"], task["name"]
+
+
+def test_stale_caddy_source_removes_list_and_keyring_absent() -> None:
+    remove = next(t for t in _tasks() if "caddy" in t["name"].lower())
+    assert remove["ansible.builtin.file"]["state"] == "absent"
+    assert remove["loop"] == [
+        "/etc/apt/sources.list.d/caddy-stable.list",
+        "/usr/share/keyrings/caddy-stable-archive-keyring.gpg",
+    ]
+
+
+def test_stale_caddy_cache_refresh_is_change_and_check_mode_gated() -> None:
+    refresh = next(t for t in _tasks() if "refresh the apt cache" in t["name"].lower())
+    assert refresh["ansible.builtin.apt"]["update_cache"] is True
+    assert "caddy_apt_source_removed is changed" in refresh["when"]
+    assert "not ansible_check_mode" in refresh["when"]
+
+
 # ── task-level tags select a single concern ────────────────────────────────
 
 
@@ -558,6 +593,11 @@ def test_tag_map_selects_only_own_tasks() -> None:
             "Stop and disable the retired nightly-reboot timer (Linux)",
             "Remove the retired nightly-reboot units (Linux)",
             "Reload systemd after retiring nightly-reboot (Linux)",
+        },
+        "apt-sources": {
+            "Gather installed-package facts (Linux, stale apt sources)",
+            "Remove the stale Caddy apt source + keyring (Linux)",
+            "Refresh the apt cache after removing the stale Caddy source (Linux)",
         },
     }
     for tag, names in expected.items():
