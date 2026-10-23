@@ -11,9 +11,9 @@
 #
 # Per the "bake the models" decision the ~330 MB Kokoro model files are baked in
 # (self-contained image, no NAS mount at run) — unlike aizynth, which mounts its
-# models read-only. Build ON the compute node (spark), never shipped as a tarball.
+# models read-only. Build ON the tts_render node (melchior), never shipped as a tarball.
 #
-# Build:  podman build -t precis-tts:<sha> --build-arg PRECIS_REF=<sha> docker/tts
+# Build:  docker build -t precis-tts:<sha> --build-arg PRECIS_REF=<sha> docker/tts
 #
 # Layer order is deliberate: everything expensive and sha-independent (apt,
 # the dep tree, the misaki dict warmups, the ~330 MB model downloads) comes
@@ -36,7 +36,7 @@ ARG KOKORO_VOICES_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/downl
 # git+curl: pip-from-git + model download. build-essential+cmake: pyopenjtalk
 # (misaki[ja]'s Japanese G2P) + mojimoji are C/C++ extensions built from sdist
 # (no aarch64 wheels), so they need a compiler + cmake at install time.
-# Timeouts + retries so spark's flaky external link can't hang a fetch forever
+# Timeouts + retries so a flaky external link can't hang a fetch forever
 # (a stalled apt connection wedged the build for an hour with no timeout).
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update \
  && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y \
