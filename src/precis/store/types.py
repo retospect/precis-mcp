@@ -8,6 +8,7 @@ them in place.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from precis.errors import BadInput
+from precis.store._axes_vocab import DECLARED_AXES, load_categorizer_axes
 
 # ---------------------------------------------------------------------------
 # Type aliases — closed vocabularies mirrored from the schema
@@ -869,6 +871,12 @@ class Tag:
                 # also catches typos like ``STATSU:open`` that would
                 # otherwise survive into queries silently.
                 if allowed is None:
+                    if prefix in DECLARED_AXES:
+                        # Declared machine/bookkeeping axis (pass markers,
+                        # orphaned vocabularies): registered so filtering
+                        # on it isn't refused; values are dynamic, so only
+                        # the axis name is protected (slice 0d).
+                        return cls.closed(prefix, value)
                     # Canonical-form hint matters: ``precis-tags``
                     # documents lowercase open tags as
                     # ``prefix:value`` (e.g. ``topic:co2-capture``),
@@ -879,10 +887,10 @@ class Tag:
                     # ``lowercase:value`` form. (Critic MINOR #8.)
                     raise BadInput(
                         f"unknown closed-prefix axis: {prefix!r}:",
-                        options=sorted(_CLOSED_VOCAB.keys()),
+                        options=sorted(_CLOSED_VOCAB.keys() | DECLARED_AXES),
                         next=(
                             f"either use a registered axis "
-                            f"({sorted(_CLOSED_VOCAB.keys())}) or write "
+                            f"({sorted(_CLOSED_VOCAB.keys() | DECLARED_AXES)}) or write "
                             f"this as a lowercase open tag "
                             f"(e.g. tags=['{prefix.lower()}:{value}'])"
                         ),
@@ -947,8 +955,12 @@ class Tag:
                         ),
                     )
                 if value not in allowed:
+                    close = difflib.get_close_matches(
+                        value, sorted(allowed), n=3, cutoff=0.6
+                    )
+                    hint = f" — close matches: {', '.join(close)}" if close else ""
                     raise BadInput(
-                        f"invalid {prefix} value: {value!r}",
+                        f"invalid {prefix} value: {value!r}{hint}",
                         options=sorted(allowed),
                         next=(f"{prefix}: must be one of {sorted(allowed)}"),
                     )
@@ -1429,6 +1441,40 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # name / ticker / form live in refs.meta + open tags, not closed axes.
     "edgar": frozenset({"SRC", "CACHE"}),
 }
+
+# ── categorizer axes (data/axes/*.yaml), ontology-v2 slice 0(d) ──────────
+# The registry reads the categorizer yaml at import rather than duplicating
+# its namespaces here (gr504808: an axis the hand-maintained table forgot
+# was refused as "unknown closed-prefix axis" even though a pass writes it
+# and facets render it). Two effects:
+#
+# * each axis id (uppercased) joins ``_CLOSED_VOCAB`` — unioned with a
+#   code-side entry when both exist (TAPROOT is in both);
+# * a ref-level axis joins each of its ``applies_to_kinds``/``opt_in_kinds``
+#   kind's ``_KIND_ALLOWED_AXES`` set when that kind has one, so
+#   ``tag(add=['MATERIAL:mof'])``/``search(kind='paper', tags=...)``
+#   accept what the pass writes. Chunk-level axes stay registered for
+#   filters but are never ref-tag writable.
+#
+# Bookkeeping namespaces (``<NS>CASCADE`` markers, CHASETRIG, BIBMARK,
+# SEV, NOTE, ...) are DECLARED_AXES — parse-checked only.
+_CATEGORIZER_AXES = load_categorizer_axes()
+for _axis_ns, _axis in _CATEGORIZER_AXES.items():
+    _CLOSED_VOCAB[_axis_ns] = _CLOSED_VOCAB.get(_axis_ns, frozenset()) | _axis.values
+    if _axis.level == "ref":
+        for _kind in _axis.kinds:
+            if _kind in _KIND_ALLOWED_AXES:
+                _KIND_ALLOWED_AXES[_kind] = _KIND_ALLOWED_AXES[_kind] | {_axis_ns}
+# _RESERVED_FLAGS is built above over the static table; rebuild it now that
+# the yaml axes are merged, so a bare flag colliding with an axis value
+# (``mof`` -> ``MATERIAL:mof``) still points at the closed form.
+_RESERVED_FLAGS.update(
+    {
+        v: f"{prefix}:{v}"
+        for prefix, vals in ((ns, ax.values) for ns, ax in _CATEGORIZER_AXES.items())
+        for v in vals
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)

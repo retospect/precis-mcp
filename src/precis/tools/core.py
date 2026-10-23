@@ -1981,8 +1981,8 @@ def tag(
     Per-kind closed-prefix gating (summary):
     todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
     finding: unrestricted. job: STATUS (lifecycle subsets).
-    memory: SPACE (DREAM/STALE are system-set).
-    anki/conv: none. paper/patent: SRC+CACHE.
+    memory: SPACE+MOVE (DREAM/STALE are system-set).
+    anki/conv: none. paper: SRC+CACHE+DREAM+categorizer axes; patent: SRC+CACHE.
     web/perplexity-*/websearch/youtube: CACHE+WATCH.
     oracle/skill: none. python/calc/math: tag unsupported.
 

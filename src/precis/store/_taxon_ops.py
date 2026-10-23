@@ -66,29 +66,43 @@ nodes AS (
 #: and a read path must stay bounded whatever the data does.
 _CHAIN_CEILING = 5000
 
+#: Depth bound on the upward ancestor walk (ontology-v2 slice 0c): the
+#: taxonomy is a shallow DAG — under ten levels today, one more per
+#: ontology-v2 slice — and a corrupted or runaway hierarchy must not push a
+#: read past this bound. The walk uses ``UNION`` (not ``UNION ALL``), so a
+#: cycle written around the link guard terminates on a revisit instead of
+#: enumerating itself forever.
+TAXON_ANCESTOR_MAX_DEPTH = 16
+
 
 class TaxonMixin:
     pool: Any
 
-    def taxon_ancestors(self, ref_id: int) -> list[tuple[int, int, str | None]]:
-        """Every ancestor of ``ref_id`` as ``(ref_id, depth, axis)`` rows —
-        ``axis`` is the axis of the edge taken to reach it (depth 1 = a
-        direct parent). A node reachable by several routes appears once per
-        distinct ``(depth, axis)``. Ordered by depth, then id."""
+    def taxon_ancestors(
+        self, ref_id: int, *, max_depth: int = TAXON_ANCESTOR_MAX_DEPTH
+    ) -> list[tuple[int, int, str | None]]:
+        """Every ancestor of ``ref_id`` within ``max_depth`` hops as
+        ``(ref_id, depth, axis)`` rows — ``axis`` is the axis of the edge
+        taken to reach it (depth 1 = a direct parent). A node reachable by
+        several routes appears once per distinct ``(depth, axis)``. Ordered
+        by depth, then id. Bounded by :data:`TAXON_ANCESTOR_MAX_DEPTH` and
+        cycle-safe (``UNION`` dedups a revisit at the same ``(node, depth,
+        axis)``)."""
         sql = f"""
         WITH RECURSIVE {_EDGES},
-        walk(ref_id, depth, axis, path) AS (
-          SELECT e.parent, 1, e.axis, ARRAY[%(r)s::bigint, e.parent]
+        walk(ref_id, depth, axis) AS (
+          SELECT e.parent, 1, e.axis
             FROM e WHERE e.child = %(r)s
-          UNION ALL
-          SELECT e.parent, w.depth + 1, e.axis, w.path || e.parent
+          UNION
+          SELECT e.parent, w.depth + 1, e.axis
             FROM walk w JOIN e ON e.child = w.ref_id
-           WHERE NOT e.parent = ANY(w.path)
+           WHERE w.depth < %(maxd)s
         )
-        SELECT DISTINCT ref_id, depth, axis FROM walk ORDER BY depth, ref_id, axis
+        SELECT DISTINCT ref_id, depth, axis FROM walk
+         WHERE ref_id <> %(r)s ORDER BY depth, ref_id, axis
         """
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, {"r": ref_id}).fetchall()
+            rows = conn.execute(sql, {"r": ref_id, "maxd": max_depth}).fetchall()
         return [(int(r[0]), int(r[1]), r[2]) for r in rows]
 
     def taxon_descendants(

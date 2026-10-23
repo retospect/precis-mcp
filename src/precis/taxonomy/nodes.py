@@ -125,10 +125,20 @@ def dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return ka == "si" and a.get("si_vector") != b.get("si_vector")
 
 
-def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
+def validate_taxon_meta(
+    meta: dict[str, Any], *, check_si_unit: bool = False
+) -> dict[str, Any]:
     """Check a node ``meta`` against the fixed key set and per-key rules.
     Returns a normalised copy (``si_vector`` canonicalised); raises
-    :class:`BadInput` naming the offending key."""
+    :class:`BadInput` naming the offending key.
+
+    ``check_si_unit`` is the slice-0a unit guard, opt-in: when ``si_vector``
+    and ``canonical_unit`` are both present the unit must be the vector's
+    coherent SI unit. It is a *write* rule — ``put`` always passes it and
+    ``edit`` passes it for patches touching a unit/dimension key — not a
+    validity invariant on stored rows: legacy nodes already carry
+    non-coherent units (tn504453's eV; a seeded mm), and validating their
+    stored meta must keep round-tripping."""
     unknown = sorted(set(meta) - ALLOWED_KEYS)
     if unknown:
         raise BadInput(
@@ -156,6 +166,11 @@ def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
         )
     if out.get("si_vector") is not None:
         out["si_vector"] = canonical_si_vector(out["si_vector"])
+        if check_si_unit and out.get("canonical_unit") is not None:
+            # lazy: pint + ase are heavy and only this key needs them
+            from precis.taxonomy.measure_units import check_canonical_unit
+
+            check_canonical_unit(out["si_vector"], str(out["canonical_unit"]))
 
     status = out.get("status")
     if status is not None and status not in STATUSES:

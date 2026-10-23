@@ -2076,3 +2076,218 @@ class TestReviewFixes:
         assert "1 instance," in out and f"me{dead}" not in out
         body = _handler(store).get(id=f"tn{afm}", view="facets").body
         assert "instances: 1" in body
+
+
+# ── ontology-v2 slice 0: unit guard, gated unit edit, ancestor paths ────
+
+
+def _mk_raw(
+    store: Any, name: str, meta: dict[str, Any], *, parent: int | None = None
+) -> int:
+    """Mint a taxon directly (no put() validation) — for legacy shapes the
+    guard now refuses, like tn504453's eV-on-energy canonical."""
+    meta = {
+        "name": name,
+        "norm_name": name.lower(),
+        "slug": slugify(name),
+        "definition": f"{name}.",
+        "aliases": [],
+        "status": "proposed",
+        **meta,
+    }
+    ref = store.insert_ref(kind="taxon", slug=None, title=name, meta=meta)
+    if parent is not None:
+        store.add_link(src_ref_id=ref.id, dst_ref_id=parent, relation="specialises")
+    return ref.id
+
+
+_ENERGY = "2,1,-2,0,0,0,0"
+
+
+class TestUnitGuard:
+    """Slice 0(a): a taxon's canonical_unit must be the coherent SI unit of
+    its si_vector — values are stored in it."""
+
+    def test_put_refuses_scaled_canonical_naming_the_si_unit(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="coherent SI unit") as ei:
+            h.put(
+                text="zz binding energy — an energy",
+                meta={
+                    "dimension_kind": "si",
+                    "si_vector": _ENERGY,
+                    "canonical_unit": "eV",
+                },
+            )
+        assert "'J'" in str(ei.value)
+        assert "display_unit='eV'" in (ei.value.next or "")
+        assert _count_titled(store, "zz binding energy") == 0
+
+    def test_put_accepts_coherent_si_units(self, store: Any) -> None:
+        h = _handler(store)
+        ref = store.get_ref(
+            kind="taxon",
+            id=_created_id(
+                h.put(
+                    text="zz adsorption energy — an energy",
+                    meta={
+                        "dimension_kind": "si",
+                        "si_vector": _ENERGY,
+                        "canonical_unit": "J",
+                        "display_unit": "eV",
+                    },
+                )
+            ),
+        )
+        assert ref.meta["canonical_unit"] == "J"
+        assert ref.meta["display_unit"] == "eV"
+
+    def test_put_refuses_wrong_dimension_and_log_scale(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="does not match the dimension"):
+            h.put(
+                text="zz mass — a mass",
+                meta={
+                    "dimension_kind": "si",
+                    "si_vector": _ENERGY,
+                    "canonical_unit": "kg",
+                },
+            )
+        with pytest.raises(BadInput, match="logarithmic"):
+            h.put(
+                text="zz log thing — a scale",
+                meta={
+                    "dimension_kind": "si",
+                    "si_vector": "0,0,0,0,0,0,0",
+                    "canonical_unit": "pH",
+                },
+            )
+
+    def test_put_canonical_without_vector_unchecked(self, store: Any) -> None:
+        # a non-si node carries no vector to cohere against
+        _mk(store, "zz plain", meta={"canonical_unit": "eV"})
+
+    def test_edit_unit_keys_accepted_while_no_live_measures(self, store: Any) -> None:
+        """gr504804: tn504453's eV->J hand-fix path — edit works when no
+        measures row references the node."""
+        h = _handler(store)
+        n = _mk_raw(
+            store,
+            "zz legacy binding",
+            {"dimension_kind": "si", "si_vector": _ENERGY, "canonical_unit": "eV"},
+        )
+        resp = h.edit(id=n, meta={"canonical_unit": "J", "display_unit": "eV"})
+        assert f"tn{n}" in resp.body
+        ref = store.get_ref(kind="taxon", id=n)
+        assert ref.meta["canonical_unit"] == "J"
+        assert ref.meta["display_unit"] == "eV"
+
+    def test_edit_unit_to_noncoherent_refused_naming_si(self, store: Any) -> None:
+        h = _handler(store)
+        n = _mk(
+            store,
+            "zz coherent energy",
+            meta={
+                "dimension_kind": "si",
+                "si_vector": _ENERGY,
+                "canonical_unit": "J",
+            },
+        )
+        with pytest.raises(BadInput, match="coherent SI unit"):
+            h.edit(id=n, meta={"canonical_unit": "kJ"})
+
+    def test_edit_unit_refused_naming_live_measure_count(self, store: Any) -> None:
+        """Slice 0(b): a live measures row freezes the unit — the refusal
+        names the count and the migration path (gr504804)."""
+        from precis.store._measures_ops import MeasureSpec
+        from tests.workers._helpers import seed_ref
+
+        h = _handler(store)
+        n = _mk_raw(
+            store,
+            "zz pinned energy",
+            {"dimension_kind": "si", "si_vector": _ENERGY, "canonical_unit": "eV"},
+        )
+        paper = seed_ref(store, title="zz pinned paper", kind="paper")
+        store.insert_measure(
+            MeasureSpec(n, "0.4", paper, reported_unit="eV", tier="asserted"),
+            actor="reader",
+        )
+        assert store.live_measure_count(n) == 1
+        with pytest.raises(BadInput, match="1 live measures row") as ei:
+            h.edit(id=n, meta={"canonical_unit": "J"})
+        assert "supersede" in (ei.value.next or "")
+        with pytest.raises(BadInput, match="1 live measures row"):
+            h.edit(id=n, meta={"display_unit": "meV"})
+
+    def test_descriptive_edit_on_legacy_broken_node_still_works(
+        self, store: Any
+    ) -> None:
+        """The stored eV-on-si_vector inconsistency is pre-existing; a
+        definition edit doesn't change the unit story and must not be
+        blocked by it."""
+        h = _handler(store)
+        n = _mk_raw(
+            store,
+            "zz legacy definable",
+            {"dimension_kind": "si", "si_vector": _ENERGY, "canonical_unit": "eV"},
+        )
+        resp = h.edit(id=n, meta={"definition": "sharper words here"})
+        assert f"tn{n}" in resp.body
+        assert store.get_ref(kind="taxon", id=n).meta["canonical_unit"] == "eV"
+
+
+class TestAncestorPaths:
+    """Slice 0(c): a/b resolves b with a as an ancestor, not only a direct
+    parent — the taxon_ancestors walk is UNION+depth bounded."""
+
+    def test_root_resolves_leaf_through_an_intermediate_group(self, store: Any) -> None:
+        h = _handler(store)
+        root = _mk(store, "apx root")
+        group = _mk(store, "apx group")
+        leaf = _mk(store, "apx leaf")
+        _link(store, group, root)
+        _link(store, leaf, group)
+        assert h.get(id="apx-root/apx-leaf").body.startswith(f"# taxon {leaf}:")
+        assert h.get(id="apx-root/apx-group/apx-leaf").body.startswith(
+            f"# taxon {leaf}:"
+        )
+
+    def test_ancestor_lookup_keeps_direct_parent_working(self, store: Any) -> None:
+        h = _handler(store)
+        root = _mk(store, "apy root")
+        leaf = _mk(store, "apy leaf")
+        _link(store, leaf, root)
+        assert h.get(id="apy-root/apy-leaf").body.startswith(f"# taxon {leaf}:")
+
+    def test_non_ancestor_first_segment_still_misses(self, store: Any) -> None:
+        h = _handler(store)
+        root = _mk(store, "apz root")
+        other = _mk(store, "apz other")
+        leaf = _mk(store, "apz leaf")
+        _link(store, leaf, root)
+        _link(store, leaf, other)
+        with pytest.raises(NotFound):
+            h.get(id="apz-missing/apz-leaf")
+
+    def test_ancestor_ambiguity_still_refuses_with_candidates(self, store: Any) -> None:
+        h = _handler(store)
+        ga = _mk(store, "apw group a")
+        gb = _mk(store, "apw group b")
+        l1 = _mk(store, "apw shared")
+        l2 = _created_id(h.put(text="apw shared — a thing", dedup=False))
+        _link(store, l1, ga)
+        _link(store, l2, gb)
+        with pytest.raises(BadInput, match="ambiguous") as ei:
+            h.get(id="apw-shared")
+        assert "longer path" in (ei.value.next or "")
+        assert h.get(id="apw-group-a/apw-shared").body.startswith(f"# taxon {l1}:")
+
+    def test_ancestor_walk_is_depth_bounded(self, store: Any) -> None:
+        from precis.store._taxon_ops import TAXON_ANCESTOR_MAX_DEPTH
+
+        chain = [_mk(store, f"apv n{i}") for i in range(TAXON_ANCESTOR_MAX_DEPTH + 3)]
+        for child, parent in zip(chain[1:], chain[:-1]):
+            _link(store, child, parent)
+        depths = {d for _r, d, _ax in store.taxon_ancestors(chain[-1])}
+        assert max(depths) == TAXON_ANCESTOR_MAX_DEPTH

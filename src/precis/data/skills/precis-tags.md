@@ -173,8 +173,50 @@ the canonical list:
 | `SPACE:` | `research` / `repo-dev` / `personal` — which corpus a node belongs to; `memory` defaults to `research`, `repo-dev` is dev-harness memory (`personal` is reserved, nothing writes it) | agent |
 | `TAPROOT:` | `claim` / `review` | `axis:taproot` classifier — `finding`-ref hub discriminator; agent add/remove allowed (legacy rows grandfathered) |
 
-Any UPPERCASE prefix outside that table is rejected — coin concepts
+Any UPPERCASE prefix outside that table, the categorizer table below,
+or the declared bookkeeping set is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
+
+## What are the machine categorizer axes?
+## Where do MATERIAL, DOMAIN, SCALE come from?
+
+The **categorizer axes** are the other half of the closed vocabulary —
+each is defined by `data/axes/<id>.yaml` and written by its `axis:<id>`
+classifier pass (the `classify` cascade owns `junk`/`role3`,
+`classify_topics` the topic dossier). The registry reads the yamls at
+import, so a new axis file registers itself:
+
+| Prefix | Level | Values | Writer pass |
+|---|---|---|---|
+| `DOMAIN:` | ref | `chemistry physics bio materials eng other unknown` | `axis:domain` |
+| `MATERIAL:` | ref | `cnt graphene nanobud fullerene metal mof zeolite metal-oxide 2d-material polymer other unknown n-a` | `axis:material` |
+| `PROPERTY:` | ref | `chemical electrical magnetic mechanical multi optical thermal unknown n-a` | `axis:property` |
+| `DIM:` | ref | `0d 1d 2d 3d mixed unknown n-a` | `axis:dim` |
+| `SCALE:` | ref | `atomic 1nm 10nm 100nm 1um 10um 100um mm km astro multi unknown n-a` | `axis:scale` |
+| `STUDYTYPE:` | ref | `experimental-single-entity experimental-ensemble computational synthesis review conceptual mixed unknown` | `axis:studytype` |
+| `TRANSPORT:` | ref | `point-contact few-atom interfacial thin-film bulk-3d unknown n-a` | `axis:transport` |
+| `MOVE:` | ref | `extension analogy contradiction critique transfer other unknown n-a` | `axis:move` (memories) |
+| `JUNK:` | chunk | `junk substantive` | `classify` cascade (junk gate) |
+| `ROLE:` | chunk | `motivation method result interpretation limitation future-work related-work data boilerplate unknown n-a` | `axis:role` |
+| `ROLE3:` | chunk | `own background furniture` | `classify` cascade (role3) |
+| `OPEN-QUESTION:` | chunk | `yes no unknown n-a` | `axis:open-question` |
+| `PATENT_EXAMPLE:` | chunk | `worked prophetic none` | `axis:patent_example` (patents) |
+| `TAPROOT:` | ref | `claim review` | `axis:taproot` (findings) |
+
+Ref-level axes are writable on the kinds their pass targets (papers +
+findings; `MOVE:` on memory). Chunk-level axes are registered for
+filtering only — they live on `chunk_tags`, not refs. An unknown value
+is refused with close matches.
+
+## Which axes are bookkeeping namespaces?
+
+A third set of namespaces is **declared, value-free**: pass bookkeeping
+markers (`<NS>CASCADE:<version>` done-markers,
+`<NS>CASCADEATTEMPT:1` failure brakes, `TOPICCASCADE:<v>-<hash>`,
+`CHASETRIG:`, `BIBMARK:`, `BIBPARSEATTEMPT:`, `TAPROOT_DUE:`,
+`TAPROOT_REFINE_ATTEMPT:`) and the orphaned review axes `SEV:` /
+`NOTE:` (no live writer). They parse so `search(tags=...)` on them
+works; don't write them — the passes own those rows.
 
 ### `STATUS:` value subsets per lifecycle
 
@@ -215,9 +257,9 @@ axes and suggests the lowercase rewrite.
 | `quest` | `STATUS` (perpetual lifecycle — `active`/`dormant`/`abandoned`, never `done`), `PRIO` (striving weight) |
 | `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator), `SPACE` |
 | `job` | `STATUS` (lifecycle subsets — see table above) |
-| `paper`, `patent` | `SRC`, `CACHE` |
+| `paper`, `patent` | `SRC`, `CACHE` (`paper` also `DREAM` + the ref-level categorizer axes: `DOMAIN`, `MATERIAL`, `PROPERTY`, `DIM`, `SCALE`, `STUDYTYPE`, `TRANSPORT`) |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
-| `memory` | `DREAM` (dreaming-worker provenance; `consolidated`/`acquire` system-set), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set), `AUDIT` (`ungrounded-number`, set by the attribution gate) |
+| `memory` | `DREAM` (dreaming-worker provenance; `consolidated`/`acquire` system-set), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set), `AUDIT` (`ungrounded-number`, set by the attribution gate), `MOVE` (analogy/critique axis) |
 | `skill` | `SPACE` |
 | `alert` | no closed axes, but lowercase `alert-state:` (`open`/`resolved`) is mutually exclusive: adding one value replaces the other (like `STATUS:`) |
 | `anki`, `conv`, `oracle` | _none_ — use lowercase open tags or bare flags |

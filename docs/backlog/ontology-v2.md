@@ -74,7 +74,8 @@ never break.
 Each slice is one tree, one migration where marked; the migration carries
 its rollback as the next forward migration (`docs/conventions/invariants.md`).
 
-0. **Guards and lookup, no data change.** (a) `put(kind='taxon')` refuses a
+0. **Guards and lookup, no data change.** *Landed 2026-10-22 (onto-s0).*
+   (a) `put(kind='taxon')` refuses a
    `canonical_unit` that is not the coherent SI unit of `si_vector` (eV on
    an energy vector → `next: canonical_unit='J', display_unit='eV'`).
    (b) `edit(kind='taxon', meta={'canonical_unit', 'display_unit'})` is

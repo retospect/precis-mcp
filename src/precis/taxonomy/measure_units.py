@@ -315,6 +315,11 @@ _COHERENT: Final[tuple[str, ...]] = (
     "m", "kg", "s", "K", "mol", "A", "cd", "N", "Pa", "J", "W", "C", "V", "ohm", "F",
 )  # fmt: skip
 
+#: The SI base unit each ``si_vector`` slot counts (same order as
+#: :data:`precis.taxonomy.types.SI_BASE_ORDER`: length, mass, time, current,
+#: temperature, substance, luminosity).
+_SI_BASE_SYMBOLS: Final[tuple[str, ...]] = ("m", "kg", "s", "A", "K", "mol", "cd")
+
 #: Dimensionless in pint, but their SI form is the radian, not ``1``.
 _ANGLE_UNITS: Final[frozenset[str]] = frozenset(
     {"deg", "degree", "degrees", "°", "rad", "radian", "arcmin", "arcsec"}
@@ -384,6 +389,62 @@ def is_coherent_si(unit: str | None) -> bool:
         return bool(_registry().Quantity(1, parsed).to_base_units().magnitude == 1)
     except _PARSE_ERRORS:
         return False
+
+
+def _si_vector_unit(si_vector: str) -> Any:
+    """The pint unit an ``si_vector`` exponent string spells
+    (``'2,1,-2,0,0,0,0'`` -> kg·m²/s² = J)."""
+    exps = [int(e) for e in str(si_vector).split(",")]
+    terms = " ".join(f"{sym}**{e}" for sym, e in zip(_SI_BASE_SYMBOLS, exps) if e)
+    return _registry().Quantity(1, terms or "1")
+
+
+def coherent_si_unit(si_vector: str) -> str:
+    """The coherent SI unit of an ``si_vector`` — ``'2,1,-2,0,0,0,0'`` ->
+    ``'J'``. A named derived unit from ``_COHERENT`` when the dimensionality
+    has one, ``'1'`` for the all-zero vector, else the spelled base-unit
+    product."""
+    unit = _si_vector_unit(si_vector)
+    if unit.dimensionless:
+        return "1"
+    ureg = _registry()
+    by_dim = {ureg.Unit(sym).dimensionality: sym for sym in reversed(_COHERENT)}
+    return by_dim.get(unit.dimensionality) or f"{unit.to_base_units().units:~P}"
+
+
+def check_canonical_unit(si_vector: str, canonical_unit: str) -> None:
+    """The taxon unit guard (ontology-v2 slice 0a): on a node carrying an
+    ``si_vector``, ``canonical_unit`` must be the vector's coherent SI unit —
+    values are stored in it, so a scaled or non-SI spelling would corrupt
+    every stored measure. Raises :class:`BadInput` naming the coherent unit;
+    the refused spelling belongs in ``display_unit``."""
+    want = coherent_si_unit(si_vector)
+    next_ = (
+        f"canonical_unit={want!r}, display_unit={canonical_unit!r} "
+        "(values stay SI; the display unit is what people read)"
+    )
+    if is_log_unit(canonical_unit):
+        raise BadInput(
+            f"canonical_unit {canonical_unit!r} is a logarithmic scale, not "
+            f"the coherent SI unit of si_vector {si_vector!r} ({want!r})",
+            next=next_,
+        )
+    parsed, _ = _parse_unit(canonical_unit, what="canonical")
+    expected = _si_vector_unit(si_vector)
+    base = _registry().Quantity(1, parsed).to_base_units()
+    if base.dimensionality != expected.dimensionality:
+        raise BadInput(
+            f"canonical_unit {canonical_unit!r} does not match the dimension "
+            f"of si_vector {si_vector!r} ({want!r})",
+            next=next_,
+        )
+    if base.magnitude != 1:
+        raise BadInput(
+            f"canonical_unit {canonical_unit!r} is not the coherent SI unit of "
+            f"si_vector {si_vector!r} ({want!r}) — a scaled spelling stores "
+            "values off by its factor",
+            next=next_,
+        )
 
 
 # ── display: SI value -> the unit a person expects ────────────────────────

@@ -1606,6 +1606,19 @@ class MeasuresMixin:
             for r in rows
         ]
 
+    def live_measure_count(self, measurand_ref_id: int) -> int:
+        """Live (unsuperseded) rows keyed on this one measurand — the
+        pin count behind the taxon unit guard (ontology-v2 slice 0b): a
+        ``canonical_unit``/``display_unit`` edit is refused while rows
+        would be silently re-interpreted by it."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM measures WHERE measurand_ref_id = %s "
+                "AND superseded_by IS NULL",
+                (measurand_ref_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def search_measures(
         self,
         measurand: int | None = None,

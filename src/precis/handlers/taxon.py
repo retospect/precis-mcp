@@ -37,9 +37,11 @@ Stage C adds search and dedup:
   no ``dimension_kind`` stays compatible. ``dedup=False`` mints anyway.
 * A node is addressed by numeric id, ``tn<id>`` handle, ``taxon:<id>``, or a
   slash path of names/slugs/aliases (``measurand/temperature``) — resolved on
-  ``get``, ``under=`` and ``link(target='taxon:...')``. A path never starts
-  with ``/`` (that is a list view); an ambiguous or unmatched path is refused
-  with candidates.
+  ``get``, ``under=`` and ``link(target='taxon:...')``. Each path segment is
+  satisfied by any ancestor of the node the next segment matched, not only
+  the direct parent (ontology-v2 slice 0c). A path never starts with ``/``
+  (that is a list view); an ambiguous or unmatched path is refused with
+  candidates.
 """
 
 from __future__ import annotations
@@ -127,6 +129,11 @@ def _lede(definition: str) -> str:
 #: Semantic-only fallback hits shown when ``q`` matches no taxon by name.
 _NEAREST_CAP = 3
 
+#: Unit keys ``edit`` accepts only while no live ``measures`` row pins the
+#: node's unit (ontology-v2 slice 0b). Distinct from ``EDITABLE_KEYS`` —
+#: these are gated on data, not unconditionally editable.
+_UNIT_KEYS: frozenset[str] = frozenset({"canonical_unit", "display_unit"})
+
 
 class TaxonHandler(NumericRefHandler):
     owns_under = True
@@ -185,7 +192,7 @@ class TaxonHandler(NumericRefHandler):
                 "a new taxon is always 'proposed'",
                 next="omit status; promotion to 'systematic' is a usage test, not a put",
             )
-        checked = validate_taxon_meta(put_meta)
+        checked = validate_taxon_meta(put_meta, check_si_unit=True)
         out = dict(meta)
         for key, val in checked.items():
             # name/norm_name/slug are derived from the text; the text's
@@ -196,7 +203,7 @@ class TaxonHandler(NumericRefHandler):
                 continue
             out[key] = val
         # Re-run on the merged node so cross-key rules see the final state.
-        return validate_taxon_meta(out)
+        return validate_taxon_meta(out, check_si_unit=True)
 
     def _card_text_for(self, text: str, meta: dict[str, Any]) -> str:
         return taxon_card_text(
@@ -279,17 +286,21 @@ class TaxonHandler(NumericRefHandler):
             out.append(f"  … {len(ids) - _DEDUP_SHOW} more")
         return "\n".join(out)
 
-    def _chain_matches(self, node: int, segs: list[str], seen: frozenset[int]) -> bool:
-        """Does ``node``'s parent chain read ``segs`` (nearest parent last)?"""
+    def _ancestor_matches(self, node: int, segs: list[str]) -> bool:
+        """Does some ancestor chain of ``node`` read ``segs`` (nearest
+        ancestor last)? Each segment is satisfied by ANY ancestor of the
+        node the next segment matched — ``a/b`` resolves ``b`` with ``a`` an
+        ancestor, not only a direct parent (ontology-v2 slice 0c), so a
+        path keeps resolving after an intermediate group node is inserted.
+        The walk is bounded by :data:`TAXON_ANCESTOR_MAX_DEPTH` and
+        cycle-safe, so no visited set is needed."""
         if not segs:
             return True
-        for pid, _axis in self.store.taxon_parents(node):
-            if pid in seen:
-                continue
-            ref = self.store.get_ref(kind=self.kind, id=pid)
+        for aid, _depth, _axis in self.store.taxon_ancestors(node):
+            ref = self.store.get_ref(kind=self.kind, id=aid)
             if ref is None or not _matches_term(ref.meta or {}, segs[-1]):
                 continue
-            if self._chain_matches(pid, segs[:-1], seen | {node}):
+            if self._ancestor_matches(aid, segs[:-1]):
                 return True
         return False
 
@@ -302,7 +313,7 @@ class TaxonHandler(NumericRefHandler):
             )
         cands = self._term_matches(segs[-1])
         hits = (
-            [c for c in cands if self._chain_matches(c, segs[:-1], frozenset())]
+            [c for c in cands if self._ancestor_matches(c, segs[:-1])]
             if len(segs) > 1
             else cands
         )
@@ -692,10 +703,14 @@ class TaxonHandler(NumericRefHandler):
         """``edit(kind='taxon', id=, meta={...})`` changes the descriptive
         keys (``definition``, ``aliases``, ``includes``, ``excludes``) of an
         existing node, through the same validation as put, and re-cards it
-        (DELETE + INSERT of the ord -1 card, so the embedding re-runs). Name,
-        status, dimension and the contract are not editable here. A changed
-        definition is re-checked against other nodes and the node's siblings
-        (itself excluded); ``dedup=False`` overrides, as on put."""
+        (DELETE + INSERT of the ord -1 card, so the embedding re-runs).
+        ``canonical_unit``/``display_unit`` edit only while no live
+        ``measures`` row pins the node (slice 0b, gr504804); a unit patch
+        must keep the unit coherent with the stored ``si_vector`` (slice
+        0a). Name, status, dimension and the contract are not editable here.
+        A changed definition is re-checked against other nodes and the
+        node's siblings (itself excluded); ``dedup=False`` overrides, as on
+        put."""
         if mode not in (None, "find-replace"):  # find-replace = the verb default
             raise BadInput(
                 f"edit(kind='taxon') has no mode={mode!r}",
@@ -720,15 +735,32 @@ class TaxonHandler(NumericRefHandler):
         if not meta or not isinstance(meta, dict):
             raise BadInput(
                 "edit(kind='taxon') requires meta={...}",
-                next="meta keys: " + ", ".join(sorted(EDITABLE_KEYS)),
+                next="meta keys: " + ", ".join(sorted(EDITABLE_KEYS | _UNIT_KEYS)),
             )
-        bad = sorted(set(meta) - EDITABLE_KEYS)
+        bad = sorted(set(meta) - EDITABLE_KEYS - _UNIT_KEYS)
         if bad:
             raise BadInput(
                 f"taxon meta key {bad[0]!r} cannot be edited",
-                next="editable: " + ", ".join(sorted(EDITABLE_KEYS)),
+                next="editable: " + ", ".join(sorted(EDITABLE_KEYS | _UNIT_KEYS)),
             )
         ref = self._resolve_live_ref(self._resolve_spec(id))
+        if set(meta) & _UNIT_KEYS:
+            # Slice 0b: unit keys edit only while no live measures row would
+            # be silently re-read under the new unit (gr504804; the rebase of
+            # live rows is NOT built — ontology-v2 open question 5).
+            n = self.store.live_measure_count(ref.id)
+            if n:
+                handle, name = self._node_label(ref.id)
+                raise BadInput(
+                    f"{handle} {name}: canonical_unit/display_unit is frozen — "
+                    f"{n} live measures row(s) store values in "
+                    f"{(ref.meta or {}).get('canonical_unit')!r}",
+                    next=(
+                        f"the {n} row(s) would have to be re-based first — a "
+                        "supersede-per-row pass (measures are append-only; the "
+                        "bulk rebase is ontology-v2 open question 5, not built)"
+                    ),
+                )
         if "definition" in meta and not (
             isinstance(meta["definition"], str) and meta["definition"].strip()
         ):
@@ -736,7 +768,12 @@ class TaxonHandler(NumericRefHandler):
                 "definition must be a non-empty string",
                 next="meta={'definition': '<genus + differentia>'}",
             )
-        merged = validate_taxon_meta({**(ref.meta or {}), **meta})
+        merged = validate_taxon_meta(
+            {**(ref.meta or {}), **meta},
+            check_si_unit=bool(
+                {"canonical_unit", "si_vector", "dimension_kind"} & set(meta)
+            ),
+        )
         patch = {k: merged[k] for k in meta}
         if "definition" in patch:
             patch["definition"] = patch["definition"].strip()
