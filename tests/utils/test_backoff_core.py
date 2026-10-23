@@ -799,17 +799,26 @@ class _Cursor:
     def fetchone(self) -> tuple[Any, ...] | None:
         return self._row
 
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return [self._row] if self._row is not None else []
+
 
 class _FakeConn:
     """Records every ``execute``; ``fetchone`` results come from per-SQL
-    scripted queues (missing/exhausted queue -> ``None``)."""
+    scripted queues (missing/exhausted queue -> ``None``). ``seed`` scripts
+    the ``RETURNING`` row of each seed insert (``None`` = cap hit / already
+    there), ``evict`` the row an eviction retires, ``occupancy`` the
+    ``(count, idle)`` the cap-full check reads."""
 
     closed = False
 
-    def __init__(self, consume=(), state=()) -> None:
+    def __init__(self, consume=(), state=(), seed=(), evict=(), occupancy=()) -> None:
         self.executed: list[tuple[str, Any]] = []
         self._consume = list(consume)
         self._state = list(state)
+        self._seed = list(seed)
+        self._evict = list(evict)
+        self._occupancy = list(occupancy)
 
     def execute(self, sql: str, params: Any = None) -> _Cursor:
         self.executed.append((sql, params))
@@ -817,6 +826,12 @@ class _FakeConn:
             return _Cursor(self._consume.pop(0) if self._consume else None)
         if sql == rate_limit._SELECT_STATE_SQL:
             return _Cursor(self._state.pop(0) if self._state else None)
+        if sql == rate_limit._SEED_SQL:
+            return _Cursor(self._seed.pop(0) if self._seed else None)
+        if sql == rate_limit._EVICT_IDLE_HOST_SQL:
+            return _Cursor(self._evict.pop(0) if self._evict else None)
+        if sql == rate_limit.HOST_ROW_OCCUPANCY_SQL:
+            return _Cursor(self._occupancy.pop(0) if self._occupancy else None)
         return _Cursor(None)
 
 
@@ -824,11 +839,12 @@ class _FakeConn:
 def rl_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("PRECIS_RATE_LIMIT", raising=False)
     monkeypatch.setattr(rate_limit, "_fail_open_warned", {})
+    monkeypatch.setattr(rate_limit, "_silent_warned", {})
 
 
 def test_acquire_seeds_missing_row_once_then_reconsumes(monkeypatch, rl_env):
     # consume: refused, then granted after the seed; state: row missing.
-    conn = _FakeConn(consume=[None, (0.0,)], state=[None])
+    conn = _FakeConn(consume=[None, (0.0,)], state=[None], seed=[("host:a.b",)])
     monkeypatch.setattr(rate_limit, "_get_conn", lambda: conn)
 
     assert rate_limit.acquire("host:a.b", seed_row=(1, 1.0)) is True
@@ -848,6 +864,66 @@ def test_acquire_seeds_missing_row_once_then_reconsumes(monkeypatch, rl_env):
         1,
         rate_limit.MAX_SEEDED_HOST_ROWS,
     )
+
+
+def test_seed_at_the_cap_evicts_idle_host_rows_then_seeds(monkeypatch, rl_env, caplog):
+    """gr507345: the first seed inserts nothing (cap hit) → the longest-idle
+    ``host:`` rows past the idle threshold are evicted → the seed is retried
+    and lands → the consume is granted. The new host IS paced."""
+    conn = _FakeConn(
+        consume=[None, (0.0,)],
+        state=[None],
+        seed=[None, ("host:new.example",)],
+        evict=[("host:stale.example",)],
+    )
+    monkeypatch.setattr(rate_limit, "_get_conn", lambda: conn)
+
+    with caplog.at_level(logging.INFO, logger=rate_limit.log.name):
+        assert rate_limit.acquire("host:new.example", seed_row=(1, 1.0)) is True
+
+    sqls = [s for s, _ in conn.executed]
+    assert sqls == [
+        rate_limit._CONSUME_SQL,
+        rate_limit._SELECT_STATE_SQL,
+        rate_limit._SEED_SQL,
+        rate_limit._EVICT_IDLE_HOST_SQL,
+        rate_limit._SEED_SQL,
+        rate_limit._CONSUME_SQL,
+    ]
+    assert conn.executed[3][1] == (
+        float(rate_limit.HOST_ROW_IDLE_EVICT_S),
+        rate_limit._EVICT_BATCH,
+    )
+    assert any("evicted 1 row(s)" in r.getMessage() for r in caplog.records)
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_seed_at_a_cap_full_of_live_rows_warns_once_and_fails_open(
+    monkeypatch, rl_env, caplog
+):
+    """Nothing idle to evict: the host runs unpaced (fail-open, as before)
+    but the cap-full state is now named in one WARNING per hour, not
+    silent — and no DELETE is attempted on the live rows."""
+    cap = rate_limit.MAX_SEEDED_HOST_ROWS
+    conn = _FakeConn(
+        consume=[None, None, None],
+        state=[None, None, None],
+        seed=[None, None],
+        evict=[],
+        occupancy=[(cap, 0), (cap, 0)],
+    )
+    monkeypatch.setattr(rate_limit, "_get_conn", lambda: conn)
+
+    with caplog.at_level(logging.WARNING, logger=rate_limit.log.name):
+        assert rate_limit.acquire("host:new.example", seed_row=(1, 1.0)) is True
+        assert rate_limit.acquire("host:new.example", seed_row=(1, 1.0)) is True
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "host-row cap full" in warnings[0] and str(cap) in warnings[0]
+    evicts = [s for s, _ in conn.executed if s == rate_limit._EVICT_IDLE_HOST_SQL]
+    assert len(evicts) == 2  # tried, found nothing idle, deleted nothing
+    assert rate_limit.HOST_ROW_IDLE_EVICT_S >= 3600  # a park (<=15 min) has lapsed
 
 
 def test_acquire_missing_row_without_seed_fails_open_without_insert(

@@ -454,6 +454,81 @@ class TestBucketRate:
         assert rate_limit.bucket_rate("s2") is None
 
 
+class TestHostRowEviction:
+    """gr507345: at the seeding cap, ``host:`` rows idle past
+    ``HOST_ROW_IDLE_EVICT_S`` are retired (oldest first), live ``host:``
+    rows and every named provider row are left alone."""
+
+    def _backdate(self, store: Store, provider: str, hours: float) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET last_refill = now() - "
+                "make_interval(secs => %s) WHERE provider = %s",
+                (hours * 3600.0, provider),
+            )
+            conn.commit()
+
+    def test_evicts_only_idle_host_rows(self, use_store_dsn: Store) -> None:
+        store = use_store_dsn
+        stale = ["host:test-rl-stale-a.example", "host:test-rl-stale-b.example"]
+        fresh = "host:test-rl-fresh.example"
+        for p in [*stale, fresh]:
+            _seed(store, p, capacity=1, refill_per_sec=1.0)
+        self._backdate(store, stale[0], hours=72)
+        self._backdate(store, stale[1], hours=25)
+        self._backdate(store, fresh, hours=1)
+        try:
+            with store.pool.connection() as conn:
+                gone = rate_limit._evict_idle_host_rows(conn)
+                conn.commit()
+            assert gone >= 2
+            with store.pool.connection() as conn:
+                left = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT provider FROM external_rate_limits "
+                        "WHERE provider = ANY(%s)",
+                        ([*stale, fresh],),
+                    ).fetchall()
+                }
+            assert left == {fresh}
+            # Named providers (migration-seeded, however idle) are never evicted.
+            assert _crossref_present(store)
+        finally:
+            for p in [*stale, fresh]:
+                _cleanup(store, p)
+
+    def test_occupancy_sql_counts_rows_and_idle(self, use_store_dsn: Store) -> None:
+        store = use_store_dsn
+        idle = "host:test-rl-occ-idle.example"
+        live = "host:test-rl-occ-live.example"
+        for p in (idle, live):
+            _seed(store, p, capacity=1, refill_per_sec=1.0)
+        self._backdate(store, idle, hours=30)
+        try:
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    rate_limit.HOST_ROW_OCCUPANCY_SQL,
+                    {"idle_s": float(rate_limit.HOST_ROW_IDLE_EVICT_S)},
+                ).fetchone()
+            assert row is not None
+            n, n_idle = int(row[0]), int(row[1])
+            assert n >= 2 and n_idle >= 1 and n_idle < n
+        finally:
+            for p in (idle, live):
+                _cleanup(store, p)
+
+
+def _crossref_present(store: Store) -> bool:
+    with store.pool.connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM external_rate_limits WHERE provider = 'crossref'"
+            ).fetchone()
+            is not None
+        )
+
+
 class TestCrossrefSeed:
     """Ruling 1 (Reto 2026-10-16): crossref is 1 request/s. Found by name,
     not number, so a landing-order renumber only renames the file."""

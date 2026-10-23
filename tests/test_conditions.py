@@ -31,6 +31,7 @@ from precis.workers.conditions import (
     _liveness_handler_names,
     _probe_dead_generation_claims,
     _probe_limiter_bypassed,
+    _probe_limiter_host_cap,
     _probe_llm_degraded,
     _probe_pass_dead,
     _probe_pass_wedged,
@@ -1082,3 +1083,54 @@ def test_limiter_bypassed_fires_only_with_traffic_and_stale_row(store: Store) ->
     assert "limiter-bypassed:unpaywall" in keys
     assert "limiter-bypassed:openalex" not in keys
     assert "limiter-bypassed:arxiv" not in keys
+
+
+def test_limiter_host_cap_fires_only_when_full_of_live_rows(
+    store: Store, monkeypatch
+) -> None:
+    """gr507345: the cap is reached AND nothing is idle enough to evict →
+    one finding; room left, or an evictable idle row, → green."""
+    from precis.utils import rate_limit
+
+    live = f"host:test-cond-{uuid.uuid4().hex[:8]}.example"
+    idle = f"host:test-cond-{uuid.uuid4().hex[:8]}.example"
+    with store.pool.connection() as conn:
+        for p in (live, idle):
+            conn.execute(
+                "INSERT INTO external_rate_limits (provider, capacity, refill_per_sec, tokens) "
+                "VALUES (%s, 1, 1.0, 1) ON CONFLICT DO NOTHING",
+                (p,),
+            )
+        conn.execute(
+            "UPDATE external_rate_limits SET last_refill = now() - interval '2 days' "
+            "WHERE provider = %s",
+            (idle,),
+        )
+        count_row = conn.execute(
+            "SELECT count(*) FROM external_rate_limits WHERE provider LIKE 'host:%'"
+        ).fetchone()
+    assert count_row is not None
+    n_hosts = int(count_row[0])
+    try:
+        # Room left: green regardless of idleness.
+        monkeypatch.setattr(rate_limit, "MAX_SEEDED_HOST_ROWS", n_hosts + 1)
+        assert _probe_limiter_host_cap(store) == []
+        # Full, but the idle row can be evicted: green.
+        monkeypatch.setattr(rate_limit, "MAX_SEEDED_HOST_ROWS", n_hosts)
+        assert _probe_limiter_host_cap(store) == []
+        # Full of live rows: fires, naming the cap and the idle threshold.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET last_refill = now() "
+                "WHERE provider LIKE 'host:%'"
+            )
+        findings = _probe_limiter_host_cap(store)
+        assert [f.key for f in findings] == ["limiter-cap-full"]
+        assert f"{n_hosts}/{n_hosts} host: rows" in findings[0].detail
+        assert "runs unpaced" in findings[0].detail
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = ANY(%s)",
+                ([live, idle],),
+            )

@@ -346,6 +346,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="24h",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "limiter-cap-full",
+        "The host:<netloc> limiter rows are at their seeding cap with none idle "
+        "enough to evict; hosts first seen now run unpaced.",
+        budget="per probe",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",

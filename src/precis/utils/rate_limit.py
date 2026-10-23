@@ -248,18 +248,102 @@ def _next_wait(n: int, avail: float, refill_per_sec: float, remaining: float) ->
 
 #: Most ``host:<netloc>`` rows :data:`_SEED_SQL` will create; past it a
 #: new host runs unpaced (fail-open) instead of growing the table without
-#: bound from agent-supplied URLs.
+#: bound from agent-supplied URLs. At the cap, :func:`_evict_idle_host_rows`
+#: first retires rows idle past :data:`HOST_ROW_IDLE_EVICT_S`; only a cap
+#: full of *live* rows leaves the new host unpaced (gr507345 — prod filled
+#: 500 rows in ~36 h from the OA fetcher's long tail of one-shot publisher
+#: hosts, silently).
 MAX_SEEDED_HOST_ROWS = 500
+
+#: A ``host:`` row untouched for this long carries no state worth keeping:
+#: its bucket refilled within a second of its last grant and any
+#: ``Retry-After`` park has long lapsed (:data:`~precis.utils.http.
+#: RETRY_AFTER_MAX_S` is 15 min), so evicting it loses nothing — the host is
+#: re-seeded at its policy's default on its next request. ``last_refill``
+#: is the last *granted* consume, i.e. last use.
+HOST_ROW_IDLE_EVICT_S = 24 * 3600
+
+#: Idle rows retired per eviction, so the cap is hit (and the delete run)
+#: once per batch of new hosts rather than once per new host.
+_EVICT_BATCH = 50
 
 #: Seed a missing row (the ``host:<netloc>`` default from
 #: :mod:`precis.utils.http`). ``DO NOTHING`` so a migration-seeded or
-#: hand-tuned row always wins.
+#: hand-tuned row always wins; ``RETURNING`` tells "inserted" from "cap
+#: hit / already there" apart.
 _SEED_SQL = """
 INSERT INTO external_rate_limits (provider, capacity, refill_per_sec, tokens, daily_cap)
 SELECT %s, %s, %s, %s, NULL
  WHERE (SELECT count(*) FROM external_rate_limits WHERE provider LIKE 'host:%%') < %s
 ON CONFLICT (provider) DO NOTHING
+RETURNING provider
 """
+
+#: Retire the longest-idle ``host:`` rows past the idle threshold — the
+#: eviction that makes room under :data:`MAX_SEEDED_HOST_ROWS`.
+_EVICT_IDLE_HOST_SQL = """
+DELETE FROM external_rate_limits
+ WHERE provider IN (
+       SELECT provider FROM external_rate_limits
+        WHERE provider LIKE 'host:%%'
+          AND last_refill < now() - make_interval(secs => %s)
+        ORDER BY last_refill
+        LIMIT %s)
+RETURNING provider
+"""
+
+#: Host-row occupancy: ``(count, idle_count)`` — how full the cap is and how
+#: many rows an eviction could retire right now. Read by the
+#: ``limiter-host-cap`` condition (:mod:`precis.workers.conditions`).
+HOST_ROW_OCCUPANCY_SQL = """
+SELECT count(*) AS n,
+       count(*) FILTER (WHERE last_refill < now() - make_interval(secs => %(idle_s)s)) AS idle
+  FROM external_rate_limits
+ WHERE provider LIKE 'host:%%'
+"""
+
+
+def _evict_idle_host_rows(conn: Any) -> int:
+    """Retire up to :data:`_EVICT_BATCH` ``host:`` rows idle past
+    :data:`HOST_ROW_IDLE_EVICT_S`; returns how many went. Logged at INFO
+    so a churning cap is visible without flooding."""
+    gone = conn.execute(
+        _EVICT_IDLE_HOST_SQL, (float(HOST_ROW_IDLE_EVICT_S), _EVICT_BATCH)
+    ).fetchall()
+    if gone:
+        log.info(
+            "rate_limit: host-row cap (%d) reached — evicted %d row(s) idle "
+            "over %dh to seed a new host",
+            MAX_SEEDED_HOST_ROWS,
+            len(gone),
+            HOST_ROW_IDLE_EVICT_S // 3600,
+        )
+    return len(gone)
+
+
+def _seed_host_row(conn: Any, provider: str, seed_row: tuple[int, float]) -> bool:
+    """Insert ``provider``'s row; at the cap, evict idle rows and retry
+    once. ``False`` means the cap is full of live rows (or the row appeared
+    concurrently — the caller's next consume tells those apart) and the
+    cap-full state is warned about once per :data:`_SILENT_WARN_EVERY_S`."""
+    capacity, refill = seed_row
+    params = (provider, capacity, refill, capacity, MAX_SEEDED_HOST_ROWS)
+    if conn.execute(_SEED_SQL, params).fetchone() is not None:
+        return True
+    if _evict_idle_host_rows(conn) and conn.execute(_SEED_SQL, params).fetchone():
+        return True
+    occupancy = conn.execute(
+        HOST_ROW_OCCUPANCY_SQL, {"idle_s": float(HOST_ROW_IDLE_EVICT_S)}
+    ).fetchone()
+    if occupancy is not None and int(occupancy[0]) >= MAX_SEEDED_HOST_ROWS:
+        _warn_unpaced(
+            provider,
+            f"host-row cap full ({MAX_SEEDED_HOST_ROWS} rows, none idle over "
+            f"{HOST_ROW_IDLE_EVICT_S // 3600}h to evict) — raise the cap or "
+            "shorten the idle threshold",
+        )
+    return False
+
 
 #: Park a row for a server's Retry-After: drive its tokens negative so the
 #: refill takes ``seconds`` to bring them back to zero, for every host.
@@ -360,11 +444,7 @@ def acquire(
                 if seed_row is None:
                     _warn_unpaced(provider, "no external_rate_limits row")
                     return True  # unknown provider -> fail open
-                capacity, refill = seed_row
-                conn.execute(
-                    _SEED_SQL,
-                    (provider, capacity, refill, capacity, MAX_SEEDED_HOST_ROWS),
-                )
+                _seed_host_row(conn, provider, seed_row)
                 seed_row = None  # seed once; a second miss fails open
                 continue
             _capacity, refill_per_sec, daily_cap, avail, used_today = state

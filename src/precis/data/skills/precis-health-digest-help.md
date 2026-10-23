@@ -115,7 +115,9 @@ Derived groups name their check after the thing they watch:
   `dead-generation-claims` → `dead-gen-claims:<host>/<process>` (claims
   held by a worker generation that is no longer alive);
   `settings-env-shadowed`; `analysis-stale`; `limiter-bypassed` (fetcher
-  traffic but no limiter consume in 24h: it is failing open).
+  traffic but no limiter consume in 24h: failing open); `limiter-cap-full`
+  (`host:` rows at the seeding cap, none idle to evict: new hosts run
+  unpaced).
 
 ## See also
 

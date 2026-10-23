@@ -45,6 +45,9 @@ was invisible for 4 days):
 * ``dead-generation-claims`` — claims whose holder generation is
   provably replaced are persisting past the claim reaper's window: the
   reclaim lane itself is broken (the watcher's watcher).
+* ``limiter-cap-full`` — the auto-seeded ``host:<netloc>`` limiter rows
+  are at ``rate_limit.MAX_SEEDED_HOST_ROWS`` with none idle enough to
+  evict, so a newly seen host runs unpaced (gr507345).
 * ``settings-env-shadowed`` — info-only (db-resident-settings.md slice 4):
   a host still has a registered setting's env var set locally (self-
   reported via ``host_heartbeat.meta.settings_env_present``) after a DB
@@ -850,8 +853,42 @@ def _probe_limiter_bypassed(store: Store) -> list[ConditionFinding]:
     ]
 
 
+def _probe_limiter_host_cap(store: Store) -> list[ConditionFinding]:
+    """The ``host:<netloc>`` limiter rows are at their seeding cap and none
+    is idle enough to evict (gr507345): every host first seen from now on
+    gets no row, so ``rate_limit.acquire`` fails open and the host runs
+    unpaced — no politeness, no Retry-After sharing — with only a once-an-
+    hour worker WARNING to show for it. Green while there is room, or
+    while the eviction can make room."""
+    from precis.utils import rate_limit
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            rate_limit.HOST_ROW_OCCUPANCY_SQL,
+            {"idle_s": float(rate_limit.HOST_ROW_IDLE_EVICT_S)},
+        ).fetchone()
+    if row is None:
+        return []
+    n, idle = int(row[0]), int(row[1])
+    cap = rate_limit.MAX_SEEDED_HOST_ROWS
+    if n < cap or idle > 0:
+        return []
+    return [
+        ConditionFinding(
+            key="limiter-cap-full",
+            detail=(
+                f"external_rate_limits holds {n}/{cap} host: rows and none is "
+                f"idle over {rate_limit.HOST_ROW_IDLE_EVICT_S // 3600}h — a host "
+                "first seen now gets no limiter row and runs unpaced (raise "
+                "rate_limit.MAX_SEEDED_HOST_ROWS or shorten HOST_ROW_IDLE_EVICT_S)"
+            ),
+        )
+    ]
+
+
 CONDITIONS: tuple[Condition, ...] = (
     Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
+    Condition("limiter-cap-full", "warn", _probe_limiter_host_cap),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
