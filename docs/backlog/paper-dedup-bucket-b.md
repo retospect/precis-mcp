@@ -11,8 +11,9 @@ Ops-gated resolve-metadata runs plus the standing-worker follow-up.
   auto/review/discard lanes, then --apply (network-bound, on-cluster;
   ~20 DOI-track + ~40 title-track expected auto).
 - 187 titleless chunked papers: re-resolve by DOI (32) or S2 title search
-  (≥0.85 gate) — dry-run → gold-check → --apply, then schedule into
-  paper_reconcile (manual-only today).
+  (≥0.85 gate) — dry-run → gold-check → --apply; `paper_reconcile` already
+  runs these on a standing cadence (`_worker_passes.py`), no extra wiring
+  needed once the cohort is resolved.
 - Build the standing worker for future id-less stubs after the CLI proves
   itself on prod. The 49 id-bearing stubs that title-match a held paper stay
   in the review lane — real merges need cross-id (S2) equivalence proof.
@@ -37,12 +38,16 @@ moved, so a generic unmerge cannot reverse them anyway.
    2 further bad merges found — pa42495->pa42940 and pa42498->pa44470 — at
    or below the gate, so step 3 does not trigger. pa42498's merge came via
    `reconcile-doi-case`, not the content-duplicate-stub path the title gate
-   (d3d8569ef) corroborates — flagged in gr501446 as a possible second gap,
-   not yet swept.
+   (d3d8569ef) corroborates — flagged in gr501446 as a possible second gap.
+   DONE (2026-10-22, 1c5be6480): `_doi_case_corroborated`
+   (`src/precis/ingest/dedup.py`) now gates `reconcile_by_doi_case` on the
+   same title/year/author corroboration, citing pa42498 by name; an
+   uncorroborated group is skipped and filed as a review todo instead of
+   merged. The gap is closed going forward — pa42495 and pa42498 predate it.
 3. Gate not tripped (2 further bad merges, not >2): no `unmerge_duplicate`
    build from this sweep. pa42495 and pa42498 need the same by-hand repair
    as step 1 (gr501446).
 
-Size: S (steps 1–2, done except hand repair of the 2 new finds). Who: ops
-for 1–2 (including the 2 new finds), agent-code only if a future sweep of
-`reconcile-doi-case` merges turns up more than 2 further bad ones.
+Size: S (steps 1–2 done; only hand repair of the 2 new finds remains). Who:
+ops for the hand repair (step 1, including the 2 new finds). No further
+agent-code action — the `reconcile-doi-case` gate already shipped.
