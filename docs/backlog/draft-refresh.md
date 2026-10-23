@@ -46,7 +46,8 @@ Remaining open work:
       (`ingest/citations.py::citations_batch`), per-paper write/commit/retry
       semantics unchanged.
     - ✅ **S2 no longer hammered — SHIPPED (the shared rate limiter, c487bd43,
-      `docs/backlog/shared-rate-limiter.md`).** Every S2 call — including this
+      `utils/rate_limit.py` docstring; policy layer in
+      `docs/backlog/outbound-policy.md`).** Every S2 call — including this
       inline citation-lens fetch — now coordinates cluster-wide through one
       token-bucket row, so the "angers S2" motivation below is resolved.
     - ⏸️ **Warm-cache job — DEFERRED.** With the fetch batched *and*

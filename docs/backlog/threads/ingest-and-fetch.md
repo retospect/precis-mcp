@@ -211,8 +211,11 @@ is verified done on prod.
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
 4. **`backlog/outbound-policy.md`** — one resolved policy (rate, wait,
-   timeouts, on_refuse) per outbound call, DB-overridable per service;
-   deadline-aware limiter waits; an AST gate on bare calls. Ranks here
+   timeouts, on_refuse, concurrency) per outbound call over the two
+   shipped primitives (rate bucket, slot hold), DB-overridable per
+   service; deadline-aware limiter waits; an AST gate on bare calls.
+   Absorbed `shared-rate-limiter.md` 2026-10-23 (the limiter itself is
+   shipped; its rulings moved here). Ranks here
    because every fetch leg above runs under it: CORE is unpaced
    (gr507344), new hosts run unpaced past the 500-row cap (gr507345),
    OpenRouter sits on the 1/s website bucket (gr507343, gr507340), and a

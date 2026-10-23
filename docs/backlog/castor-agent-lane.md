@@ -30,6 +30,16 @@ question was opened in
 [claude-code-on-local-serving](claude-code-on-local-serving.md) and is
 answered here.
 
+**Scope.** Owns the harness (`scripts/claude-local` + the shim), the task
+split, the fleet integration (`fleet-wave launch --castor`) and the
+pilot's pass-rate measurement. Its two lanes are two classes of
+`llm-lane-scheduler.md` (`castor_agent`, max 1 per Reto's ruling below;
+`castor_batch`, a queue class) on castor's `llm:openai/gpt-oss-120b`
+slots, so it adds no allocator, no slot budget of its own and no
+server-side priority scheme; a second castor-class host is a second
+endpoint row there. Rates and timeouts for the shim's requests resolve
+through `outbound-policy.md` (`llm-local` class).
+
 ## Motivation / why
 
 Three lanes, three cost curves. Claude is the scarce one (weekly quota,
@@ -212,34 +222,30 @@ builder — the footer text grants nothing; the settings file does.
 summarise op when it is flipped local, the MEDIUM eval reruns, and the
 survey_extract trial. The agent lane must not starve them.
 
-- Priority classes: SGLang has `--enable-priority-scheduling` with
-  `--schedule-policy priority`, a per-request priority integer, and a
-  `--priority-scheduling-preemption-threshold` (default 10)
-  ([SGLang server arguments](https://docs.sglang.io/advanced_features/server_arguments.html)).
-  Proposal: product ops (gardener, verify, summarise) priority 20, the
-  batch lane 10, agent sessions 0, with preemption left on so a product
-  burst retracts an idle agent turn rather than queueing behind it. The
-  rung grammar gains a `priority` key the local wire forwards; the shim
-  sets 0.
-- Slot budget: the `resource_slots` row `llm:openai/gpt-oss-120b` stays
-  `max_parallel` 32 for the router; the agent lane is capped at 8
-  concurrent sessions by `fleet-wave launch --castor` (refuses a ninth
-  with the live count), and the batch lane acquires through
-  `local_serving.acquire` with a per-script concurrency of 16, so product
-  calls always find ≥8 free.
+- Classes, not a second allocator (consolidated 2026-10-23): the agent
+  lane is class `castor_agent` (kind `agent loop`, max 1 — Reto's
+  one-channel ruling below; raise the max there when he widens it) and
+  the batch lane is class `castor_batch` (kind `queue`, max 16) in
+  `llm-lane-scheduler.md`; product classes (`user`, `classify`,
+  `llm_summarize`, `graph_garden`) keep their floors, so product calls
+  always find their floor free whatever the lanes do. The shim's
+  requests carry `source castor_lane:agent`; the batch scripts go through
+  `llm.op.castor_lane:<task>` chains, and both acquire through
+  `local_serving.acquire(class=…)`. `fleet-wave launch --castor` refuses
+  a launch past the class max with the live count.
 - The KV pool, not the slot count, is what the product calls compete
-  for: a long-context agent turn plus a 66k verify batch can exceed it,
-  and SGLang retracts by `--retraction-policy length` by default;
-  `priority` retraction (same flag) is the setting to use once priority
-  scheduling is on.
+  for: a long-context agent turn plus a 66k verify batch can exceed it.
+  SGLang's `--enable-priority-scheduling` / `--retraction-policy
+  priority` is at most a hint the lane class forwards so the server's
+  retraction agrees with the lanes; off until a measured retraction storm
+  (the weighted-units question in `llm-lane-scheduler.md` is the
+  structural answer: an agent turn holds big units).
 
 **SGLang settings.** Keep the role defaults (parsers `gpt-oss`, context
 131072, fp8 KV, 0.80, 32). Add through `sglang_extra_args`:
-`--enable-metrics` (Prometheus, scraped by the monitoring role),
-`--enable-priority-scheduling --schedule-policy priority
---retraction-policy priority`, and `--max-queued-requests` so an
-over-subscribed lane fails fast into the fallback instead of queueing
-for minutes. Per request: `reasoning_effort` low for lint/doc/triage,
+`--enable-metrics` (Prometheus, scraped by the monitoring role) and
+`--max-queued-requests` so an over-subscribed lane fails fast into the
+fallback instead of queueing for minutes. Per request: `reasoning_effort` low for lint/doc/triage,
 medium for test-writing and fixes (the rung key already exists — the
 MEDIUM eval ran `reasoning_effort: low`); `max_tokens` ≥ 4000 on every
 agent turn because reasoning spends it first (a 20-token reply returns
@@ -358,11 +364,13 @@ caller names in the rung.
   Acceptance: 80 open gripes triaged in under 2 minutes wall; Claude
   accepts ≥ 70 % of the rows unchanged; the gardener's 2-hourly run during
   the batch does not time out.
-- **Slice 4 — priority classes.** Role flags for priority scheduling and
-  priority retraction; a `priority` rung key forwarded by the local wire;
-  the shim sends 0. Acceptance: a 16-wide batch at priority 10 while a
-  gardener call at 20 runs: the gardener call's latency stays within 2x
-  of its idle latency.
+- **Slice 4 — classes registered.** `castor_agent` and `castor_batch`
+  rows in `llm-lane-scheduler.md`'s class config, the `source → class`
+  map entries, `fleet-wave launch --castor` reading the class max; no
+  role flag change. Waits on `llm-lane-scheduler.md` S1. Acceptance: a
+  16-wide batch while a gardener call runs: the gardener call's latency
+  stays within 2x of its idle latency and `/lanes` shows the gardener at
+  or above its floor throughout.
 - **Slice 5 — parallel test-fix with selection.** The N=4 attempt script
   from §3 with ruff/mypy/one-test selection and a Claude judge on
   survivors. Acceptance: on 10 red tests from recent gripes, ≥ 4 produce
@@ -404,9 +412,9 @@ caller names in the rung.
 `scripts/fleet-wave`, `scripts/fleet_panes.py`, `scripts/claude-local`,
 `scripts/anthropic-shim.py`, `scripts/fleet-authority` (a `castor`
 launch kind, no authority change), `deploy/roles/sglang`
-(`sglang_extra_args` only, Reto deploys), `precis.utils.llm.router`
-(`priority` rung key), `precis.utils.llm.operations` (register
-`castor_lane:*` sources), new `scripts/castor/*`, the gripe-fleet skill,
+(`sglang_extra_args` only, Reto deploys), `precis.utils.llm.operations`
+(register `castor_lane:*` sources and their lane classes), new
+`scripts/castor/*`, the gripe-fleet skill,
 `.claude/fleet/builder-workflow.txt` (castor lines). No migration, no
 handler contract change, no prod data writes from the lane itself.
 
@@ -443,13 +451,13 @@ budget only after the pilot and a period of single-channel use look
 satisfactory; a second spark-class host with the same model is the
 option for more coding capacity. EAGLE3 stays off. Slice 0 starts now.
 
-1. **Priority field name.** SGLang documents the server-side flags but
-   not the per-request field in the OpenAI-compatible body; confirm
-   against the image's protocol before slice 4 (recommend: probe
-   `/v1/chat/completions` with `priority` in the body and check
-   `--abort-on-priority-when-disabled` behaviour on the running server).
-2. **Agent budget 8 vs KV pool.** Recommend 8 at launch, read slice-1
-   retractions, then set the number from the measured pool at 0.80.
+1. **Priority field name** — carried to `llm-lane-scheduler.md`'s open
+   questions (2026-10-23); nothing here forwards a priority until the
+   lane spec needs one.
+2. **Agent budget vs KV pool.** The max is the `castor_agent` class row
+   (1 today by ruling); read slice-1 retractions, then set it from the
+   measured pool at 0.80 — the weighted-units question in
+   `llm-lane-scheduler.md` is where an agent turn's size is accounted.
 3. **`apply_patch` tool shape.** Recommend an MCP tool that takes the
    OpenAI `apply_patch` v4a text and applies it in the tree (the prior the
    model has), rather than teaching it Edit; decide after slice 0 shows

@@ -11,6 +11,14 @@ Reto, 2026-10-02 (review item `reto-llm-capacity-1`): "We run LLMs on some
 of the machines; we should make a plan of what runs where, for capacity
 planning."
 
+**Scope.** Owns the role and layout record: which box carries which
+model, embedder and science lane, the measured supply and demand numbers,
+and the ruled-but-unscheduled layout plan. Reads slot counts from
+`resource_slots` and placement from `/placement`; it sets neither. The
+slot count per endpoint and its division by class are
+`llm-lane-scheduler.md`; rates and timeouts are `outbound-policy.md`; the
+serving role is `vllm-per-node-serving.md`.
+
 ## Motivation / why
 
 Three local-compute decisions are each being made without a shared picture
@@ -36,9 +44,10 @@ Per node:
   service, the session MCP's embedder), the SMALL Mac's model.
 - **Memory**: unified RAM / VRAM footprint per resident model, KV cache at
   the configured ctx × parallel, and headroom.
-- **Slots**: `resource_slots` `llm:*` capacity per host, checked against
-  the server's real `--parallel` (the 6-vs-4 mismatch carried in
-  the shipped local summarise chain (`workers/job_types/derived_drain.py`) is the failure this catches).
+- **Slots**: `resource_slots` `llm:*` capacity per host, as read; keeping
+  it equal to the server's real limit and the card's `max_parallel` is
+  `llm-lane-scheduler.md`'s capacity slice (the 6-vs-4 mismatch carried
+  in the shipped local summarise chain was that drift).
 - **Demand**: `llm_call_log` by tier and source, local vs cloud, from
   `get(kind='llm', id='/placement')`, as calls/day, tokens/day and $/day;
   the summarise backlog size as the bulk demand that would move.

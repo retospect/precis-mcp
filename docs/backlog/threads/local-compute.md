@@ -317,19 +317,17 @@ task set.
 5. **backlog/local-rungs-small-medium.md** — unblocked (Reto 2026-10-21):
    small chain goes local gpt-oss now, medium stays Claude pending a per-op
    trial; the remainder waits on the maintenance queue and sensitivity gate.
-6. **backlog/llm-dispatch-feedback-controller.md** — ~32 running sequences
-   per serving box, held by a feedback loop on the server's
-   running/waiting/KV metrics; card `max_parallel`, slot capacity and the
-   server limit set from one number; overflow to the cloud rung;
-   the gardener idle filler (`graph-gardener-value.md` slice 5) as the
-   deferrable feed. After
-   Slice 0 (4b) and Slice 1 serving. This and the queue are the path that
-   puts castor to work (Reto 2026-10-03).
-7. **backlog/llm-lane-scheduler.md** — class lanes on each local
-   endpoint: user first (up to 4), classify and the gardener floored at 2,
-   the gardener soaking every idle slot (Reto 2026-10-23). Directly after
-   6 because 6 sets the slot count and this divides it; without it the
-   first background flood takes every castor slot from a live session.
+6. **backlog/llm-lane-scheduler.md** — one allocator per box
+   (absorbed `llm-dispatch-feedback-controller.md` 2026-10-23): class
+   lanes — user first (up to 4), classify and the gardener floored at 2,
+   the gardener soaking every idle slot as a pull generator (Reto
+   2026-10-23) — over a live capacity the controller moves on the box's
+   pressure (SGLang metrics + host swap; class-aware back-off, Reto
+   2026-10-23). S0 (metrics scrape + `local-serving-pressure` alert) and
+   S1 (lanes over the static 32) ship first and independently; S3 (the
+   controller) after S0. This is the path that puts castor to work (Reto
+   2026-10-03); without S1 the first background flood takes every castor
+   slot from a live session.
 8. **Embedder capacity — decided** (Reto 2026-10-02, td461158; item closed
    2026-10-21): this thread holds aggregate embedder capacity, owned by the
    embedder service (`src/precis/embedder_service.py`); host-level admission
@@ -350,9 +348,10 @@ task set.
 4. **backlog/router-cost-coverage.md**
 5. **backlog/llm-judge-reliability.md** — needed before a local judge is
    trusted.
-6. **backlog/vllm-per-node-serving.md beyond Slice 0**,
-   **backlog/llamacpp-fleet-ops.md** — wait on 4's plateau; per-node model
-   choice against a measured ceiling.
+6. **backlog/vllm-per-node-serving.md Slices 3–4** (the metrics scrape is
+   shared with llm-lane-scheduler S0; the retraction health check),
+   **backlog/llamacpp-fleet-ops.md** — Slices 0–2 shipped (SGLang on
+   castor); per-node model choice against a measured ceiling.
 7. **backlog/torch-extras-conflict.md** — venv hygiene on the Sparks
    (spark-provisioning moved up into Do-next 4c).
 8. *(moved up to Do-next 2b on 2026-10-03.)* On Reto's "done" for the tunnel
@@ -375,7 +374,7 @@ task set.
 12. **gr458727** — the capacity-idle monitor ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned
     here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
-    `llm-dispatch-feedback-controller.md` consume it.
+    `llm-lane-scheduler.md`'s capacity controller consume it.
     Half shipped: `get(kind='job', id='/throughput')` reports claims and
     outcomes per host/process plus queue depth by executor. Still open: GPU
     busy fraction and queue depth per tier in `host_heartbeat_log`, and the

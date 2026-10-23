@@ -99,8 +99,12 @@ Opposite direction from the parked Q3 single-box experiment (Q3_K_XL ~104G
 on castor alone, freeing pollux) — decide which way to spend the pair
 before doing either. Model switch = relink `~/serve-current.sh` on castor +
 `systemctl restart llama-server` (~10 min load, big tier falls to cloud
-rung meanwhile); keep card `served_by[0].max_parallel` + `resource_slots`
-in lockstep with `-np` (memory: spark-pair-big-model-serving).
+rung meanwhile); card `served_by[0].max_parallel`, `resource_slots` and
+`-np` are one number, owned by `llm-lane-scheduler.md`'s capacity slice
+(memory: spark-pair-big-model-serving). Note the 2026-10-02 role ruling
+(`llm-capacity-plan.md`): castor is the exclusive SGLang gpt-oss box and
+pollux is science-only, so the pair layout this section assumes is not
+the current one.
 
 test: new model serves on the pair, tok/s single + @4-way measured vs
 DeepSeek's 10.3/27.2, `llm.chain.big` repointed, zero llm_call_log errors

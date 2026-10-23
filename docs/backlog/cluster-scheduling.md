@@ -24,6 +24,18 @@ model: opus
 > ordering. Greenfield where legacy is messy — tied only to what is already
 > proven live.
 
+**Scope (2026-10-23).** Owns the job-queue level of scheduling: which
+unit a worker claims, on which host, under which lease, container and
+cadence (laws 1–6, §A–§M, the fair-dispatch picker below). Uses the two
+outbound primitives as they are — the slot hold
+(`store/_resource_slots_ops.py`: reserve-at-claim for hardware rows) and
+the rate bucket (`utils/rate_limit.py`) — and adds no third. Does not
+divide a local LLM endpoint's slots among callers or set its slot count
+(`llm-lane-scheduler.md`, the lane level), and does not resolve rates,
+timeouts or paid-API concurrency (`outbound-policy.md`). Job-level
+fairness detail (origin classes, reserved interactive slot per lane) is
+`job-scheduling-fairness.md`.
+
 ## North star
 
 **Three cluster-wide singletons** — Postgres (caspar), web (gateway), asa
@@ -86,9 +98,10 @@ capability-reserved claim, `mint_child_job` prio copy), the hardware half of
 idle-unload), and the §L collapsed-worker cutover (cycles a+b executed;
 split units retired).
 
-Dark / spec: the **LLM half of `resource_slots`** (`llm:<model>` slots no-op
-until a card carries `served_by` — activation vehicle:
-`small-llm-derived-drain-band.md`); **containerized dispatch**
+Live since 2026-10-11: the **LLM half of `resource_slots`** (castor
+`llm:openai/gpt-oss-120b` cap 32, reserved by `local_serving.acquire`
+with a bounded wait and spill); its division by class and its capacity
+controller are `llm-lane-scheduler.md`. Dark / spec: **containerized dispatch**
 (`job_claude_docker`, colima sidecar, `sandbox_run` `mode:build`, and the
 `plan_tick`/`fix_gripe` spawn seams that bypass `call_claude_agent`); §F
 elastic residency for LLM models; §C fuse/split.
@@ -176,11 +189,12 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   Shipped for the embedder (amended: the daemon stays supervised; residency
   = idle-unload + lazy-reload in the daemon). **LLM elastic residency
   remains spec** — activation via `small-llm-derived-drain-band.md` first.
-  Open mechanics: generalize `local_serving`'s acquire/release to any
-  `resource_slots` row; seed `llm:` rows from the host's real llama-swap
-  model ids; residency is hysteretic (spin-up earned by a pile crossing
+  Open mechanics: residency is hysteretic (spin-up earned by a pile crossing
   high-water, released below low-water — never load/unload per call; a lone
-  big call rides the cloud rung instead). Crash-safe reclaim shipped
+  big call rides the cloud rung instead). The `llm:` rows are live (seeded
+  from the card's `served_by` by `reconcile_llm_served_slots`); their
+  count per endpoint and their division by class moved to
+  `llm-lane-scheduler.md` 2026-10-23. Crash-safe reclaim shipped
   2026-08-10: `resource_slot_holds` TTL ledger + heartbeat sweep refunds a
   `local_serving` reservation a killed holder never released, fixing the
   fleet-wide `llm:*` `free=0` outage that day. Still open: the job-claim
@@ -325,6 +339,9 @@ per §C's gate.
 - Interactive serving from a fused pool — the interconnect makes it batch.
 - Routine force-kill as a responsiveness lever — reserve+drain and container
   teardown are primary.
+- The lane level: dividing a local LLM endpoint's slots among callers and
+  setting its slot count — `llm-lane-scheduler.md`.
+- Rates, timeouts and paid-API concurrency — `outbound-policy.md`.
 
 ## Decisions log & open questions
 
@@ -380,6 +397,11 @@ mechanics, this doc on cross-axis ordering and the laws.
 - `factory-console-and-scheduling.md` → §K + the console/registry/capability
   detail; its scheduling framing is superseded by this doc.
 - `gpu-cluster-modes.md` → §C — parked behind the one-Spark-quantized test.
+- `llm-lane-scheduler.md` → the LLM half of §F (slot count per endpoint,
+  class lanes, fillers as pull generators); this doc keeps the job-queue
+  level only.
+- `outbound-policy.md` → the resolver every outbound call goes through
+  (rate bucket + slot hold); nothing here invents a third primitive.
 
 Full wedge trail: `gr180096`.
 
@@ -798,8 +820,9 @@ problem, with its own policy —
    sets a short-TTL "interactive" flag; while set, the job claim in
    `claim_executor_jobs` and the dispatch picker strictly prefer
    `prio<=2` (user/chat/cadence) work and throttle background minting
-   (skip discretionary dispatch when local slots are ≥N-1 busy). No
-   kill, no preemption — running jobs finish; this is claim-order only.
+   (skip discretionary dispatch when local slots are ≥N-1 busy — read
+   from the lane view of `llm-lane-scheduler.md`, never a second
+   count). No kill, no preemption — running jobs finish; this is claim-order only.
    Coarse manual override stays: reserve mode (`gpu-priority.md`).
 6. **Auto-run signal consolidation.** Retire the dead
    `executor:<runner>` tag branch in `_claim_and_dispatch`

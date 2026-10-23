@@ -11,6 +11,15 @@ Design session 2026-09-29 (Reto + agent, big-model-manage worktree). Start on
 **castor alone**; add pollux for throughput only if one box proves
 insufficient.
 
+**Scope (narrowed 2026-10-23).** Owns the serving role on castor
+(`deploy/roles/sglang`, playbook `49a-sglang.yml`; `deploy/roles/vllm`
+parked), the metrics scrape into `host_heartbeat_log` (Slice 3), the
+preemption/retraction health check (Slice 4) and replication as the
+throughput lever. Slices 0–2 shipped (below). It does not set the slot
+count or divide slots among callers — `llm-lane-scheduler.md` reads the
+counters this item lands — and does not resolve rates or timeouts
+(`outbound-policy.md`).
+
 ## Motivation / why
 
 Everything the fleet serves locally today is llama.cpp
@@ -42,28 +51,27 @@ owned by `cluster-scheduling.md` §F, which argues it is batch-only.
 
 ## In scope
 
-**Slice 0 — does the model concurrency-scale at all (do this first).**
-A published DGX Spark concurrency benchmark found Nemotron Nano 9B v2 NVFP4,
-a hybrid Mamba-2 model, plateaued at ~156 tok/s aggregate from **c=8**, while
-non-Mamba models on the same box kept climbing to c=256 (gpt-oss 120B MXFP4:
-33.5 tok/s single-stream, 862 tok/s aggregate, still climbing; Nemotron Super
-49B v1.5 NVFP4: 5.8 single, 695 aggregate at c=256, KV-cache-limited,
-regressing at c=320). Nemotron 3 Super is also hybrid Mamba-Transformer. If
-that ceiling carries, the whole oversubscription design dies at single-digit
-concurrency on a box that can do 256 — so measure it before building
-anything else. Serve the candidate and the control, ramp concurrency, find
-where aggregate tok/s stops climbing. Host prep: `spark-provisioning.md` §Host items.
+**Slice 0 — concurrency curve: done 2026-10-03** (tables in the decisions
+log). gpt-oss 120B beats Nemotron 3 Super at every level; vLLM ceiling
+about 450 out tok/s, knee at 64; SGLang KV-full at 64.
 
-**Slice 1 — serving** (role `deploy/roles/vllm/`, playbook `49-vllm.yml`). A vLLM deploy role alongside `deploy/roles/llamacpp/`,
-single-node, `--enable-prefix-caching`, `--enable-auto-tool-choice` with the
-model's matching `--tool-call-parser`. Prefix caching is not only a latency
-win: with the shared system+tools+skills prefix stored once rather than
-per-session, it is concurrency headroom, and on the 49B NVFP4 measurement KV
-cache was the binding constraint.
+**Slice 1 — serving: shipped.** `deploy/roles/sglang` +
+`49a-sglang.yml` (a121538d4): `lmsysorg/sglang:latest-cu130`, gpt-oss
+120B, `--mem-fraction-static 0.80 --max-running-requests 32`
+(gr485635: the 0.86/64 trial hung castor; do not raise),
+`--context-length 131072`, gpt-oss reasoning/tool parsers, runai
+streaming loader. vLLM (`deploy/roles/vllm`, `49-vllm.yml`) is parked:
+vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10 (vllm-project/vllm
+#37030). Prefix caching (RadixAttention on SGLang) is concurrency
+headroom, not only latency: the shared system+tools+skills prefix is
+stored once.
 
-**Slice 2 — router integration.** Static `llm` card with `source="static"`,
-slot capacity and card `max_parallel` kept in lockstep, `chain_override` rung
-in front of cloud.
+**Slice 2 — router integration: shipped.** Card lm162513 with a
+`source="static"` `served_by`, prod `resource_slots` row
+`castor | llm:openai/gpt-oss-120b | 32`; `llm.op.llm_summarize` and
+`llm.chain.small` rung 0 local, `chase:verify` on its per-op local chain
+(Reto 2026-10-22). Keeping card `max_parallel`, slot capacity and the
+server limit one number is `llm-lane-scheduler.md`'s capacity slice.
 
 **Slice 3 — metrics, and the three surfaces.** Scrape vLLM `/metrics` and
 land the counters where each consumer can reach them:
@@ -163,7 +171,7 @@ spark-as-bench-only framing below where they conflict.**
   SGLang. Measure each pair at **1, 8 and 32 concurrent streams** on one
   box; report single-stream tok/s, aggregate tok/s, p95 time-to-first-token,
   and peak KV use at each level. The 32-stream target and the feedback
-  controller that holds it: `llm-dispatch-feedback-controller.md`.
+  controller that holds it: `llm-lane-scheduler.md` (capacity section).
 
 **Decided 2026-09-29 (Reto):** castor first, pollux later for throughput if
 needed; replication over sharding; one model fully resident per box.
@@ -274,99 +282,28 @@ level that matters, and gpt-oss on vLLM leads everything (ceiling about
   `llm_eval` compare harness; the km-8 taxonomy set goes first. No separate
   quality set here.
 
-**Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
-world (`eval-run-spine.md`) run there, not on a serving box. It is the same
-128 GB hardware as castor, so the concurrency curve transfers exactly; it
-runs zero precis units, so an eval loop hammering it cannot disturb prod
-(`host_heartbeat` on 2026-09-29 shows only balthazar / castor / melchior /
-pollux beating — spark is absent, consistent with `90797a34` having deleted
-every unit and `/etc/precis` on 2026-08-29); and it is earmarked for nothing
-else, unlike pollux, which is the second replica. **A bench host is not
-cluster duty** — it joins no service group and no capability list, so the
-inventory guard is untouched.
+**Bench host: spark — superseded 2026-10-02** (Slice 0 ran on castor from
+local NVMe). spark's host traps (nvidia runtime not in a role, Docker Hub
+egress, the hung `/mnt/cluster` mount, the orphaned `/opt/precis`) live in
+`spark-provisioning.md`; the eval world's placement is `eval-run-spine.md`.
 
-Two spark-specific traps, both from `spark-provisioning.md`, and both bite a
-containerized vLLM deploy specifically:
+**Resolved since:**
 
-* The nvidia docker runtime is **not** configured by any ansible role — the
-  live fix was a hand-run `nvidia-ctk runtime configure --runtime=docker` plus
-  a docker restart, so a from-scratch box has no GPU inside containers.
-* **Docker Hub / ECR egress stalls from spark** while ghcr.io works. vLLM's
-  published images are not on ghcr, so plan on pre-seeding the image from
-  another host (`docker save | ssh | docker load`) or serving from a local
-  registry. Budget for this; it is the most likely first-day blocker.
-
-Also note `/opt/precis/venv` on spark is a frozen orphan at 8.32.0 (`86aeff3f`,
-2026-08-29). The bench wants a fresh install, not that.
-
-**Inspected 2026-09-29 — mostly better than the notes above predicted.**
-A read-only pass over the box found no precis, llama-swap or ollama service
-running and `/etc/precis` genuinely gone, so the retirement held. Three
-corrections to the traps:
-
-* **The vLLM image is already cached locally** — `vllm/vllm-openai:v0.20.1`,
-  24 GB, sitting in the local docker store from prior use. The Docker Hub
-  egress block is *confirmed* (`registry-1.docker.io` times out at 20 s,
-  exit 28; `ghcr.io` answers 401 in 0.13 s), but it is no longer the
-  first-day blocker for this image. Pre-seeding is only needed to move to a
-  newer tag.
-* **The nvidia container runtime is already configured** — it is in
-  `/etc/docker/daemon.json` and `docker info` lists it. The trap stands as
-  written (no ansible role establishes it, so a rebuild loses it) but it does
-  not block today.
-* **Disk is not a constraint**: 3.6 TB total, 2.8 TB free on root.
-
-Four things that do need doing, none of them cluster duty:
-
-* **A hung NFS mount.** `/mnt/cluster` (autofs) does not respond — `statvfs`
-  timed out at 120 s. This blocks anything that reads the share, which
-  includes `eval-run-spine.md`'s content-addressed blob store. Fix or unmount
-  before the bench depends on it.
-* **A live graphical session.** Xorg plus gnome-shell hold the GPU (tens of
-  MB) and the box idles at load ~1.4 with nothing else running. Small, but a
-  benchmark host should not have an unaccounted background load — stop the
-  display manager before slice 0 measures anything.
-* **`uv` is absent**, and `/opt/precis` (venv, embedder-venv, kokoro-venv,
-  wheels) is orphaned and should be removed rather than reused.
-* **Stale unit files**: `llamaswap.service` (disabled) and an
-  `ollama.service.d/` drop-in with no parent unit.
-
-One claim in that pass to disregard: it read the single GB10 as meaning spark
-is *not* equivalent to castor. A DGX Spark is one GB10 superchip with 128 GB
-unified memory, so one GB10 is exactly what castor is too. The
-concurrency-curve transfer argument is unaffected. Driver 580.159.03, CUDA
-13.0; `nvidia-smi` reporting memory as "Not Supported" is normal for unified
-memory and not a fault.
+* **Model: gpt-oss 120B** (Reto 2026-10-11, by ruling, skipping the km-8
+  gate). Nemotron and its licence question are moot (Apache 2.0 model).
+* **Server: SGLang** in production despite vLLM winning Slice 0 — the
+  Marlin MXFP4 kernel bug (Slice 1 above). vLLM stays parked, not
+  debugged, unless SGLang regresses.
+* **KV budget:** fp8 KV measured ~211k full-attention + ~169k
+  sliding-window tokens at 0.86, smaller at the shipped 0.80
+  (`castor-agent-lane.md` §3): eight agent sessions at 20–30k context
+  fit, thirty-two do not. The weighted-units question in
+  `llm-lane-scheduler.md` is where that is accounted per request.
+* **Which tier:** small and the per-op medium chains (summarise, verify)
+  today; big stays cloud until its own check (`local-rungs-small-medium.md`).
 
 **Open:**
 
-* **Model choice.** Nemotron 3 Super 120B-A12B NVFP4 is built for this
-  workload — hybrid Mamba-Transformer latent MoE, 12B active, 1M context,
-  natively NVFP4-trained, MTP layers for speculative decoding, a published
-  vLLM DGX Spark recipe, tool calling via `--tool-call-parser qwen3_xml`.
-  gpt-oss 120B MXFP4 is the control: same size class, fits one box, much
-  better published single-stream and aggregate numbers, Apache 2.0 so no
-  licence question. Decide on slice 0's measurement, not on paper.
-* **Licence — APPROVED for the test by Reto, 2026-09-29.** Re-confirm before
-  anything built on this model reaches production or ships to anyone else;
-  the approval as given covers evaluation. The NVIDIA Nemotron Open Model
-  License terminates if *you*
-  institute patent or copyright litigation. It does not restrict commercial
-  use, redistribution, derivative models, or training on outputs; NVIDIA
-  disclaims ownership of outputs; attribution in redistribution notices is
-  the only real obligation. Low risk against a defensive-publication
-  strategy, which structurally never initiates such litigation — but note
-  the scope reads "against any entity", broader than Apache 2.0's, which
-  terminates only the patent grant and only for claims against the work.
-  Read the licence file shipped in the model repo before this is
-  load-bearing; the wording above came from a web fetch plus search
-  summaries and a third-party analysis, which disagreed about a second
-  guardrail-circumvention clause and may describe a different document.
-* **KV budget per session.** Weights at NVFP4 leave roughly half the box for
-  KV; how many concurrent sessions that buys depends on per-session context
-  length, which the fisheye view controls. Falls out of slice 0.
-* **Which tier the local rung joins** — BIG has precedent; FRONTIER would
-  suit a model too big for one box. Same undecided question as
-  `slullama-hpc-placement.md` leg 2.
-* Whether SGLang beats vLLM for this model. Not worth answering until slice 0
-  says the model is viable at all.
+* Slice 3's scrape: SGLang `/metrics` field names for running, queued,
+  KV usage and retractions, mapped to the `host_heartbeat_log` columns
+  the vLLM wording above assumed.

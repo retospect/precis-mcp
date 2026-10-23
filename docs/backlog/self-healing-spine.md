@@ -343,8 +343,12 @@ fallback:
   from the 2026-08-10 watch: NEB=8 (GPU-exclusive), plan_tick=3,
   embed=2, fetch/classify=1; host budgets melchior 12, spark 1 GPU + 4,
   castor 4 llm-slots + 2, caspar 1 light, balthazar suspended (wired
-  flap). Re-fit from T0. Open: new pass vs materialize rewrite; castor
-  demand routing (bandwidth-bound → big-tier only).
+  flap). Re-fit from T0. Open: new pass vs materialize rewrite. The LLM
+  half (castor slot count and demand routing) is no longer this
+  governor's: `llm-lane-scheduler.md` sets the slot count and divides it
+  by class (2026-10-23); what remains here is host-level job load
+  balancing over the hardware rows, at the job-queue level of
+  `cluster-scheduling.md`.
 - **Prod-ops disposition** of the 297 orphan + 540 stuck-doable todos
   surfaced by the alert-triage work (d4b0d354): substrate-2 ops work,
   not code; the deployed aggregate gripe is the hand-off surface.
@@ -545,7 +549,9 @@ prefix always hits and dominates the ratio, hiding per-session tail thrash
 inside a healthy-looking 95%.
 
 Escalation split: the doctor report (Layer 3) narrates the daily number and
-routes a config change — lowering the oversubscription cap — through its
-`## Needs a human` → `waiting-for:reto` conversion. Nursery/`kind='alert'`
+routes a config change — lowering the slot capacity that
+`llm-lane-scheduler.md`'s controller moves — through its
+`## Needs a human` → `waiting-for:reto` conversion. (SGLang serves castor
+today; its retraction counter is the same signal.) Nursery/`kind='alert'`
 only for collapse, where the preemption rate is high enough that aggregate
 throughput actually drops.

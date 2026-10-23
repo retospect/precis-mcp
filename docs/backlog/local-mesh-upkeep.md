@@ -266,13 +266,15 @@ The log keeps every property and adds no node.
 
 ### 3. FEED — into the maintenance queue, out through the review lane
 
-- **Work in.** `graph-gardener-value.md` slice 5 (idle filler) is the producer. Each queued
-  unit is one action on one target (categorise hub X, propose links for
-  node Y). The eval decides which actions are local-eligible and at which
-  bar; an action below both bars is never queued for local.
-- **Capacity.** `llm-dispatch-feedback-controller.md` pulls maintenance
-  units when interactive load leaves headroom; maintenance never overflows
-  to the cloud.
+- **Work in.** `graph-gardener-value.md` slice 5 (idle filler) is the
+  producer, as a pull generator: an idle lane asks it for the next unit
+  (one action on one target — categorise hub X, propose links for node
+  Y); nothing is pre-queued. The eval decides which actions are
+  local-eligible and at which bar; an action below both bars is never
+  yielded for local.
+- **Capacity.** The filler class of `llm-lane-scheduler.md` holds every
+  slot no floored class needs and yields it back between items;
+  maintenance never overflows to the cloud.
 - **Output.** Every local result is a `proposed` ledger row.
   - Auto-apply actions apply at once, recording the prior; the review
     still samples them at a set rate.
@@ -405,8 +407,8 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
    **1b BUILT 2026-10-21** (`mesh-upkeep-1b` worktree): the due rule and
    the `chunk_review` readers read `reviews`; `view='history'`/`'diff'`
    on ref kinds; the `revisions_unrecorded` nightly count.
-2. **Feed.** Proposals into the queue, the review lane, the bars applied
-   per action. Waits on the queue and the controller existing.
+2. **Feed.** The generator, the review lane, the bars applied per
+   action. Waits on `llm-lane-scheduler.md` S1 (the filler class).
 
 ## Open questions / decisions log
 
