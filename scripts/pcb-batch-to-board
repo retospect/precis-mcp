@@ -1,0 +1,372 @@
+#!/usr/bin/env -S uv run python
+"""scripts/pcb-batch-to-board — one-off converter: a pcb batch dict (the
+``put(kind='pcb')`` payload) → an ``examples/boards/<name>/main.py`` that
+rebuilds it through ``precis_geom.pcb`` (docs/backlog/pcb-workspace-code.md
+§Migration "built from the JSON by a one-off converter that emits ``pcb``
+calls (kept as a script, not a runtime path)").
+
+Usage::
+
+    scripts/pcb-batch-to-board SOURCE SLUG OUT_DIR
+
+``SOURCE`` is a ``.json`` file holding the batch dict, or
+``path/to/module.py:callable`` returning it. The emitted ``main.py`` keeps
+the source's authored order; after writing, the script re-imports the
+result and refuses (exit 1) unless ``build().to_batch()`` equals the source
+dict — the same check ``tests/workspaces/test_pcb_board.py`` repeats.
+
+Not a runtime path: nothing imports this. Re-run it when a fixture
+changes shape and the golden must follow.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import keyword
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+_PART_KEYS = {
+    "refdes",
+    "label",
+    "part",
+    "part_lcsc",
+    "footprint",
+    "value",
+    "height_mm",
+    "roles",
+    "pins",
+    "note",
+    "x",
+    "y",
+    "rot",
+    "layer",
+    "fixed",
+    "max_travel_mm",
+    "edge_mate",
+    "group",
+    "group_offset",
+    "pattern",
+    "pattern_instance",
+}
+_NET_KEYS = {
+    "name": None,
+    "class": "cls",
+    "net_class": "cls",
+    "current": "current",
+    "est_current_a": "current",
+    "working_voltage_v": "voltage",
+    "voltage": "voltage",
+    "impedance": "impedance",
+    "impedance_ohm": "impedance",
+    "edge_rate": "edge_rate",
+    "edge_rate_v_per_ns": "edge_rate",
+    "function": "function",
+    "function_hint": "function",
+    "note": "note",
+    "domain": "domain",
+}
+_PAD_KEYS = ("w", "h", "poly", "drill", "role", "mask", "paste")
+
+
+def _load_source(spec: str) -> dict[str, Any]:
+    if spec.endswith(".json"):
+        return json.loads(Path(spec).read_text(encoding="utf-8"))
+    path, _, func = spec.partition(":")
+    mod_spec = importlib.util.spec_from_file_location("_pcb_source", path)
+    assert mod_spec and mod_spec.loader
+    mod = importlib.util.module_from_spec(mod_spec)
+    mod_spec.loader.exec_module(mod)
+    return getattr(mod, func or "build_design")()
+
+
+class _Names:
+    """Stable Python identifiers for refdes/net names, collision-free."""
+
+    def __init__(self) -> None:
+        self.used: set[str] = set()
+
+    def mint(self, raw: str, prefix: str) -> str:
+        ident = "".join(ch if ch.isalnum() else "_" for ch in raw).lower()
+        if not ident or ident[0].isdigit():
+            ident = f"{prefix}_{ident}"
+        if keyword.iskeyword(ident) or ident in {"b", "pcb", "build"}:
+            ident = f"{prefix}_{ident}"
+        base, n = ident, 2
+        while ident in self.used:
+            ident = f"{base}_{n}"
+            n += 1
+        self.used.add(ident)
+        return ident
+
+
+def _kw(**kw: Any) -> str:
+    return ", ".join(f"{k}={v!r}" for k, v in kw.items() if v is not None)
+
+
+def _emit_footprint(fp: dict[str, Any]) -> str:
+    pads = []
+    for p in fp["pads"]:
+        extra = {k: p[k] for k in _PAD_KEYS if k in p}
+        unknown = set(p) - {"pin", "shape", "x", "y", *_PAD_KEYS}
+        if unknown:
+            sys.exit(f"pad {p!r}: unknown keys {sorted(unknown)}")
+        args = f"{p['pin']!r}, {p['shape']!r}, {p['x']!r}, {p['y']!r}"
+        if extra:
+            args += ", " + _kw(**extra)
+        pads.append(f"pcb.pad({args})")
+    rest = {k: fp[k] for k in ("pin_map", "courtyard", "centroid", "note") if k in fp}
+    unknown = set(fp) - {"name", "pads", *rest}
+    if unknown:
+        sys.exit(f"footprint {fp['name']!r}: unknown keys {sorted(unknown)}")
+    tail = (", " + _kw(**rest)) if rest else ""
+    return f"b.footprint(pcb.Footprint({fp['name']!r}, [{', '.join(pads)}]{tail}))"
+
+
+def _emit_feature(f_: dict[str, Any]) -> str:
+    f_ = dict(f_)
+    ftype = f_.pop("ftype")
+    note = f_.pop("note", None)
+    if ftype == "outline" and set(f_) == {"geom"}:
+        return f"b.outline({f_['geom']!r}{', ' + _kw(note=note) if note else ''})"
+    geom = f_.get("geom") or {}
+    if (
+        ftype == "mounting_hole"
+        and set(f_) == {"x", "y", "geom"}
+        and set(geom)
+        <= {
+            "diameter",
+            "ring_dia_mm",
+            "plated",
+        }
+    ):
+        kw = _kw(drill=geom["diameter"], ring=geom["ring_dia_mm"])
+        if "plated" in geom:
+            kw += f", plated={geom['plated']!r}"
+        if note:
+            kw += ", " + _kw(note=note)
+        return f"b.hole({f_['x']!r}, {f_['y']!r}, {kw})"
+    if note is not None:
+        f_["note"] = note
+    return f"b.feature({ftype!r}, {_kw(**f_)})"
+
+
+def _emit_part(c: dict[str, Any], var: str) -> list[str]:
+    unknown = set(c) - _PART_KEYS
+    if unknown:
+        sys.exit(f"component {c['refdes']!r}: unknown keys {sorted(unknown)}")
+    pins: list[Any] = []
+    for p in c.get("pins") or []:
+        pins.append(p["name"] if set(p) == {"name"} else p)
+    kw = _kw(
+        label=c.get("label"),
+        lcsc=c.get("part") or c.get("part_lcsc"),
+        footprint=c.get("footprint"),
+        value=c.get("value"),
+        height_mm=c.get("height_mm"),
+        roles=c.get("roles") or None,
+        pins=pins or None,
+        note=c.get("note"),
+    )
+    line = f"{var} = b.part({c['refdes']!r}{', ' + kw if kw else ''})"
+    if "x" in c:
+        line += (
+            f".at({c['x']!r}, {c['y']!r}, rot={c.get('rot', 0.0)!r}, "
+            f"side={c.get('layer', 'top')!r}, fixed={c.get('fixed')!r})"
+        )
+    elif c.get("fixed") is not None:
+        sys.exit(f"component {c['refdes']!r}: fixed without a pose")
+    if c.get("max_travel_mm") is not None:
+        line += f".leash({c['max_travel_mm']!r})"
+    em = c.get("edge_mate")
+    if em is not None:
+        unknown = set(em) - {"face", "require", "at"}
+        if unknown:
+            sys.exit(f"component {c['refdes']!r}: edge_mate keys {sorted(unknown)}")
+        line += (
+            f".on_edge({em['face']!r}"
+            + (f", at={em['at']!r}" if "at" in em else "")
+            + (f", require={em['require']!r}" if "require" in em else "")
+            + ")"
+        )
+    out = [line]
+    for key in ("pattern", "pattern_instance"):
+        if c.get(key) is not None:
+            out.append(f"{var}.{key} = {c[key]!r}")
+    return out
+
+
+def _emit_groups(components: list[dict[str, Any]], var_of: dict[str, str]) -> list[str]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for c in components:
+        if c.get("group") is not None:
+            groups.setdefault(c["group"], []).append(c)
+    lines = []
+    for name, members in groups.items():
+        parts = ", ".join(var_of[c["refdes"]] for c in members)
+        offs = [c.get("group_offset") or {} for c in members]
+        if any(offs):
+            if any(set(o) != {"x", "y", "rot"} for o in offs):
+                sys.exit(f"group {name!r}: every member needs a full x/y/rot offset")
+            tuples = ", ".join(f"({o['x']!r}, {o['y']!r}, {o['rot']!r})" for o in offs)
+            lines.append(f"b.group({name!r}, [{parts}], offsets=[{tuples}])")
+        else:
+            lines.append(f"b.group({name!r}, [{parts}])")
+    return lines
+
+
+def _emit_connections(
+    conns: list[dict[str, Any]], net_var: dict[str, str], part_var: dict[str, str]
+) -> list[str]:
+    lines: list[str] = []
+    run: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        pins = ", ".join(f"{part_var[c['refdes']]}[{c['pin']!r}]" for c in run)
+        note = run[0].get("note")
+        tail = f", note={note!r}" if note else ""
+        lines.append(f"{net_var[run[0]['net']]}.tie({pins}{tail})")
+        run.clear()
+
+    for c in conns:
+        unknown = set(c) - {"net", "refdes", "pin", "note"}
+        if unknown:
+            sys.exit(f"connection {c!r}: unknown keys {sorted(unknown)}")
+        if run and (c["net"] != run[0]["net"] or c.get("note") != run[0].get("note")):
+            flush()
+        run.append(c)
+    flush()
+    return lines
+
+
+def convert(batch: dict[str, Any], slug: str, source: str) -> str:
+    unknown = set(batch) - {
+        "components",
+        "nets",
+        "connections",
+        "features",
+        "footprints",
+        "net_classes",
+        "roles",
+        "generators",
+        "measures",
+        "meta",
+        "profile",
+    }
+    if unknown:
+        sys.exit(f"batch: unknown top-level keys {sorted(unknown)}")
+    if batch.get("generators") or batch.get("measures") or batch.get("roles"):
+        sys.exit("generators/measures/roles conversion is not implemented")
+    names = _Names()
+    body: list[str] = []
+    ctor = _kw(profile=batch.get("profile"))
+    body.append(f"b = pcb.Board({slug!r}{', ' + ctor if ctor else ''})")
+    if batch.get("footprints"):
+        body.append("")
+        body.append("# authored footprints (batch order)")
+        body += [_emit_footprint(fp) for fp in batch["footprints"]]
+    if batch.get("features"):
+        body.append("")
+        body.append("# outline and mechanical features")
+        body += [_emit_feature(f_) for f_ in batch["features"]]
+    net_var: dict[str, str] = {}
+    body.append("")
+    body.append("# nets")
+    for n in batch["nets"]:
+        unknown = set(n) - set(_NET_KEYS)
+        if unknown:
+            sys.exit(f"net {n['name']!r}: unknown keys {sorted(unknown)}")
+        kw: dict[str, Any] = {_NET_KEYS[k] or k: v for k, v in n.items() if k != "name"}
+        var = names.mint(n["name"], "net")
+        net_var[n["name"]] = var
+        tail = _kw(**kw)
+        body.append(f"{var} = b.net({n['name']!r}{', ' + tail if tail else ''})")
+    part_var: dict[str, str] = {}
+    body.append("")
+    body.append("# parts")
+    for c in batch["components"]:
+        var = names.mint(c["refdes"], "part")
+        part_var[c["refdes"]] = var
+        body += _emit_part(c, var)
+    groups = _emit_groups(batch["components"], part_var)
+    if groups:
+        body.append("")
+        body.append("# rigid groups")
+        body += groups
+    for name, rules in (batch.get("net_classes") or {}).items():
+        body.append(f"b.net_class({name!r}, **{rules!r})")
+    body.append("")
+    body.append("# connections (authored order)")
+    body += _emit_connections(batch["connections"], net_var, part_var)
+    if batch.get("meta"):
+        body.append("")
+        body.append(f"b.meta.update({batch['meta']!r})")
+    body.append("return b")
+    indented = "\n".join(("    " + ln) if ln else "" for ln in body)
+    return f'''"""{slug} — the batch of ``{source}`` as a workspace script.
+
+Generated by ``scripts/pcb-batch-to-board``; ``build().to_batch()`` is
+byte-equal to that source (``tests/workspaces/test_pcb_board.py``). The
+source stays the board's documentation; this file is the construction.
+"""
+
+from __future__ import annotations
+
+import precis_geom.pcb as pcb
+
+
+def build() -> pcb.Board:
+{indented}
+
+
+if __name__ == "__main__":
+    pcb.write_manifest(build(), "out")
+'''
+
+
+def _verify(main_py: Path, expected: dict[str, Any]) -> bool:
+    spec = importlib.util.spec_from_file_location("_pcb_main", main_py)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    got = mod.build().to_batch()
+    if got == expected and json.dumps(got, sort_keys=True) == json.dumps(
+        expected, sort_keys=True
+    ):
+        return True
+    for key in sorted(set(got) | set(expected)):
+        if got.get(key) != expected.get(key):
+            print(f"mismatch in {key!r}", file=sys.stderr)
+            if isinstance(expected.get(key), list):
+                for i, (a, e) in enumerate(zip(got.get(key, []), expected[key])):
+                    if a != e:
+                        print(f"  [{i}] got {a!r}\n      want {e!r}", file=sys.stderr)
+                        break
+    return False
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 4:
+        print(__doc__, file=sys.stderr)
+        return 2
+    source, slug, out_dir = argv[1:]
+    batch = _load_source(source)
+    dest = Path(out_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    main_py = dest / "main.py"
+    main_py.write_text(convert(batch, slug, source), encoding="utf-8")
+    subprocess.run(["uv", "run", "ruff", "format", "-q", str(main_py)], check=True)
+    if not _verify(main_py, batch):
+        print(f"{main_py}: to_batch() differs from {source}", file=sys.stderr)
+        return 1
+    print(f"wrote {main_py} ({len(batch['components'])} parts, byte-equal)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

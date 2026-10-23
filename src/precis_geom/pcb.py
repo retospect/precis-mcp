@@ -1,0 +1,1045 @@
+"""precis_geom.pcb — typed Python builder for pcb workspace scripts
+(docs/backlog/pcb-workspace-code.md §Q1; slice 0: "Builder + goldens, no
+container, no DB").
+
+A board script builds ``Board``/``Net``/``Part``/``Pin``/``Footprint``
+objects purely in memory and calls :meth:`Board.to_batch` to get the
+same dict shape ``store.PcbMixin.pcb_apply`` already accepts
+(``components``/``nets``/``connections``/``features``/``footprints``/
+``net_classes``/``roles``/``generators``/``measures``/``meta``/
+``profile``) — see that method's docstring for the per-key field
+contract. ``to_batch`` emits only what the script said: a key the script
+never set is absent, not defaulted, so a converted fixture is byte-equal
+to the dict it came from (``examples/boards/*/main.py`` are checked that
+way by ``tests/workspaces/test_pcb_board.py``). This module never imports
+``precis``/the store/the MCP; the trusted-side importer (§Import
+boundary) and place/route as cached services (§Q2) are later slices.
+
+Order is authored order everywhere (parts, nets, connections, features,
+footprints) — the batch is a list-shaped document and the importer diffs
+it against the previous run, so a stable order is part of the contract.
+
+**Tracing.** Every construction primitive is decorated with
+``precis_geom.trace.traced`` (structure-workspaces slice 2, on the same
+base): ``with precis_geom.trace.run(): build()`` records one ``core``
+frame per call (``pcb.Board.part`` …) with the user frames between them.
+
+**Intent markers on pins** (``unused``/``nc``/``must_terminate``) emit the
+store's bool shorthand (``{"name": "2", "unused": true}``,
+``_pcb_insert_pins`` §1j), not a tag — the same bytes the batch put
+authors wrote.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from precis_geom import trace as _trace
+from precis_geom.trace import traced
+
+#: ``Net.domain`` vocabulary: the store routes electrical nets only
+#: (``handlers/pcb.py::_reject_non_electrical``); ``None`` = the schema
+#: default, ``'electrical'`` the only explicit value. Fluidic/thermal are
+#: schema-reserved and refused here at build time, as the put refuses them.
+_ELECTRICAL_DOMAINS = frozenset({None, "electrical"})
+
+#: The pin intent markers the store reads as bool keys (§1j).
+_PIN_MARKERS = ("unused", "nc", "must_terminate")
+
+MANIFEST_SCHEMA = 1
+
+
+class PcbBuilderError(ValueError):
+    """A builder-time misuse: a reused refdes/prefix, a module touching a
+    net it was not handed, a non-electrical net domain, an unknown
+    footprint name."""
+
+
+# --------------------------------------------------------------------------
+# Pins, parts
+# --------------------------------------------------------------------------
+
+
+class Pin:
+    """One named pin on a :class:`Part`. Created lazily by ``part[name]``;
+    it appears in the batch only when declared (``Board.part(pins=)``) or
+    annotated (a marker, a tag, a fact) — pins the connections merely
+    reference stay implicit, as in an authored batch."""
+
+    def __init__(self, *, part: Part, name: str) -> None:
+        self.part = part
+        self.name = name
+        self.tags: list[str] = []
+        self.meta: dict[str, Any] = {}
+        self.markers: dict[str, bool] = {}
+        #: Passthrough pin keys the store reads (``pad``/``description``/
+        #: ``note``) that have no builder verb.
+        self.extra: dict[str, Any] = {}
+
+    def etype(self, kind: str) -> Pin:
+        self.meta["etype"] = kind
+        return self
+
+    def current_role(self, kind: str) -> Pin:
+        self.meta["current_role"] = kind
+        return self
+
+    def nc(self) -> Pin:
+        self.markers["nc"] = True
+        return self
+
+    def unused(self) -> Pin:
+        self.markers["unused"] = True
+        return self
+
+    def must_terminate(self) -> Pin:
+        self.markers["must_terminate"] = True
+        return self
+
+    def tag(self, *tags: str) -> Pin:
+        for t in tags:
+            if t not in self.tags:
+                self.tags.append(t)
+        return self
+
+    def client_of(self, role: Role) -> Pin:
+        self.meta.setdefault("client_of", []).append(role.name)
+        return self
+
+    @property
+    def handle(self) -> str:
+        return f"{self.part.refdes}.{self.name}"
+
+    @property
+    def annotated(self) -> bool:
+        return bool(self.tags or self.meta or self.markers or self.extra)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": self.name}
+        for marker in _PIN_MARKERS:
+            if self.markers.get(marker):
+                d[marker] = True
+        if self.tags:
+            d["tags"] = list(self.tags)
+        if self.meta:
+            d["meta"] = dict(self.meta)
+        d.update(copy.deepcopy(self.extra))
+        return d
+
+
+class Part:
+    """One component instance, created by :meth:`Board.part` (refdes is
+    already module-qualified by the time this object exists)."""
+
+    def __init__(
+        self,
+        *,
+        board: Board,
+        refdes: str,
+        lcsc: str | None = None,
+        label: str | None = None,
+        footprint: str | None = None,
+        value: str | None = None,
+        height_mm: float | None = None,
+        roles: Iterable[str] = (),
+        note: str | None = None,
+    ) -> None:
+        self.board = board
+        self.refdes = refdes
+        self.lcsc = lcsc
+        self.label = label
+        self.footprint = footprint
+        self.value = value
+        self.height_mm = height_mm
+        self.roles: list[str] = list(dict.fromkeys(roles))
+        self.note = note
+        self._pins: dict[str, Pin] = {}
+        self._pin_order: list[str] = []
+        self._declared_pins: set[str] = set()
+        self.x: float | None = None
+        self.y: float | None = None
+        self.rot: float = 0.0
+        self.side: str = "top"
+        self.fixed: str | None = None
+        self.max_travel_mm: float | None = None
+        self.edge_mate: dict[str, Any] | None = None
+        self.group: str | None = None
+        self.group_offset: dict[str, Any] | None = None
+        self.pattern: str | None = None
+        self.pattern_instance: str | None = None
+
+    def __getitem__(self, key: str | int) -> Pin:
+        name = str(key)
+        if name not in self._pins:
+            self._pins[name] = Pin(part=self, name=name)
+            self._pin_order.append(name)
+        return self._pins[name]
+
+    def pins(self, *names: str | int) -> list[Pin]:
+        return [self[n] for n in names]
+
+    def declare(self, *names: str | int) -> Part:
+        """Declare pins that must appear in the batch even if nothing
+        annotates them (a part with no catalog part and no footprint has
+        only these as its pin list)."""
+        for n in names:
+            self._declared_pins.add(self[n].name)
+        return self
+
+    def supplies(self, role: Role, pins: Iterable[str] = ()) -> Part:
+        if role.name not in self.roles:
+            self.roles.append(role.name)
+        for name in pins:
+            self[name].meta.setdefault("supplies", []).append(role.name)
+        return self
+
+    def at(
+        self,
+        x: float,
+        y: float,
+        rot: float = 0.0,
+        side: str = "top",
+        fixed: str = "both",
+    ) -> Part:
+        self.x, self.y, self.rot, self.side, self.fixed = x, y, rot, side, fixed
+        return self
+
+    def leash(self, max_travel_mm: float) -> Part:
+        self.max_travel_mm = max_travel_mm
+        return self
+
+    def on_edge(
+        self, face: str, at: float | None = None, require: str = "required"
+    ) -> Part:
+        mate: dict[str, Any] = {"face": face, "require": require}
+        if at is not None:
+            mate["at"] = at
+        self.edge_mate = mate
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"refdes": self.refdes}
+        if self.label is not None:
+            d["label"] = self.label
+        if self.lcsc is not None:
+            d["part"] = self.lcsc
+        if self.footprint is not None:
+            d["footprint"] = self.footprint
+        if self.value is not None:
+            d["value"] = self.value
+        if self.height_mm is not None:
+            d["height_mm"] = self.height_mm
+        if self.roles:
+            d["roles"] = list(self.roles)
+        d["pins"] = [
+            self._pins[n].to_dict()
+            for n in self._pin_order
+            if n in self._declared_pins or self._pins[n].annotated
+        ]
+        if self.note is not None:
+            d["note"] = self.note
+        if self.x is not None:
+            d["x"] = self.x
+            d["y"] = self.y
+            d["rot"] = self.rot
+            d["layer"] = self.side
+        if self.fixed is not None:
+            d["fixed"] = self.fixed
+        if self.max_travel_mm is not None:
+            d["max_travel_mm"] = self.max_travel_mm
+        if self.edge_mate is not None:
+            d["edge_mate"] = dict(self.edge_mate)
+        if self.group is not None:
+            d["group"] = self.group
+        if self.group_offset is not None:
+            d["group_offset"] = dict(self.group_offset)
+        if self.pattern is not None:
+            d["pattern"] = self.pattern
+        if self.pattern_instance is not None:
+            d["pattern_instance"] = self.pattern_instance
+        return d
+
+
+# --------------------------------------------------------------------------
+# Nets, net classes, roles
+# --------------------------------------------------------------------------
+
+
+class Net:
+    """One electrical net, created by :meth:`Board.net`."""
+
+    def __init__(
+        self,
+        *,
+        board: Board,
+        name: str,
+        cls: str | None = None,
+        current: float | None = None,
+        voltage: float | None = None,
+        impedance: float | None = None,
+        edge_rate: float | None = None,
+        function: str | None = None,
+        note: str | None = None,
+        domain: str | None = None,
+    ) -> None:
+        self.board = board
+        self.name = name
+        self.cls = cls
+        self.current = current
+        self.voltage = voltage
+        self.impedance = impedance
+        self.edge_rate = edge_rate
+        self.function = function
+        self.note = note
+        self.domain = domain
+
+    def tie(self, *pins: Pin, note: str | None = None) -> Net:
+        for p in pins:
+            self.board._connect(self, p, note)
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": self.name}
+        if self.cls is not None:
+            d["class"] = self.cls
+        if self.current is not None:
+            d["current"] = self.current
+        if self.voltage is not None:
+            d["working_voltage_v"] = self.voltage
+        if self.impedance is not None:
+            d["impedance"] = self.impedance
+        if self.edge_rate is not None:
+            d["edge_rate"] = self.edge_rate
+        if self.function is not None:
+            d["function"] = self.function
+        if self.domain is not None:
+            d["domain"] = self.domain
+        if self.note is not None:
+            d["note"] = self.note
+        return d
+
+
+class Role:
+    """A supply role (pcb-lazy-netlist-and-checks §1): a part ``supplies``
+    it, a pin ``client_of`` it."""
+
+    def __init__(self, name: str, voltage: float | None = None) -> None:
+        self.name = name
+        self.voltage = voltage
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": self.name}
+        if self.voltage is not None:
+            d["voltage"] = self.voltage
+        return d
+
+
+# --------------------------------------------------------------------------
+# Footprints
+# --------------------------------------------------------------------------
+
+
+def pad(
+    pin: str,
+    shape: str,
+    x: float,
+    y: float,
+    *,
+    w: float | None = None,
+    h: float | None = None,
+    poly: list[list[float]] | None = None,
+    drill: float | None = None,
+    role: str | None = None,
+    mask: Any = None,
+    paste: Any = None,
+) -> dict[str, Any]:
+    """One footprint pad (``_pcb_ops._normalize_local_footprint_pad``
+    shape: ``{pin, shape, x, y, w?, h?, poly?, drill?, role?, mask?,
+    paste?}``)."""
+    d: dict[str, Any] = {"pin": pin, "shape": shape, "x": x, "y": y}
+    if w is not None:
+        d["w"] = w
+    if h is not None:
+        d["h"] = h
+    if poly is not None:
+        d["poly"] = poly
+    if drill is not None:
+        d["drill"] = drill
+    if role is not None:
+        d["role"] = role
+    if mask is not None:
+        d["mask"] = mask
+    if paste is not None:
+        d["paste"] = paste
+    return d
+
+
+class Footprint:
+    """An authored (design-local) footprint — ``pcb_apply``'s
+    ``footprints[]`` entry. Register it with :meth:`Board.footprint` (or
+    pass the instance as ``Board.part(..., footprint=fp)``, which
+    registers on first use); parts then name it by ``name``."""
+
+    def __init__(
+        self,
+        name: str,
+        pads: list[dict[str, Any]],
+        *,
+        pin_map: dict[str, Any] | None = None,
+        courtyard: Any = None,
+        centroid: Any = None,
+        note: str | None = None,
+    ) -> None:
+        self.name = name
+        self.pads = pads
+        self.pin_map = pin_map
+        self.courtyard = courtyard
+        self.centroid = centroid
+        self.note = note
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": self.name, "pads": copy.deepcopy(self.pads)}
+        if self.pin_map is not None:
+            d["pin_map"] = dict(self.pin_map)
+        if self.courtyard is not None:
+            d["courtyard"] = self.courtyard
+        if self.centroid is not None:
+            d["centroid"] = self.centroid
+        if self.note is not None:
+            d["note"] = self.note
+        return d
+
+
+# --------------------------------------------------------------------------
+# Module frames (b.use)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class _ModuleFrame:
+    prefix: str
+    chain: str
+    allowed_net_names: set[str]
+    qualname: str
+
+
+def module[F: Callable[..., Any]](fn: F) -> F:
+    """Marks a sub-circuit function for :meth:`Board.use` (pcb-meta-blocks
+    level 1, as code). An identity marker today; the placed-module cache
+    (slice 3) is what gives it behavior."""
+    return fn
+
+
+# --------------------------------------------------------------------------
+# Check findings
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class CheckFinding:
+    code: str
+    message: str
+    refdes: str | None = None
+    net: str | None = None
+
+
+@dataclass
+class CheckResult:
+    findings: list[CheckFinding]
+    not_checked: list[str]
+
+    def summary(self) -> str:
+        lines = [
+            f"{len(self.findings)} finding(s), "
+            f"{len(self.not_checked)} NOT-CHECKED (no catalog part, no footprint)"
+        ]
+        for f_ in self.findings:
+            where = f_.refdes or f_.net or ""
+            lines.append(f"  {f_.code} {where}: {f_.message}")
+        if self.not_checked:
+            lines.append("  NOT-CHECKED: " + ", ".join(self.not_checked))
+        return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Catalog stub, outline helper
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class CatalogPart:
+    """Offline stand-in for ``pcb.catalog(lcsc)``. Real MCP-backed
+    resolution (``get(kind='part', view='facts')``) is the sandbox
+    runtime's job, outside this DB-free kernel; always unresolved here."""
+
+    lcsc: str
+    resolved: bool = False
+    pins: list[str] = field(default_factory=list)
+    package: str | None = None
+
+
+def catalog(lcsc: str) -> CatalogPart:
+    return CatalogPart(lcsc=lcsc)
+
+
+def rect(w: float, h: float, *, corner_mm: float | None = None) -> dict[str, Any]:
+    """A closed rectangular outline geometry for :meth:`Board.outline`
+    (origin corner, ``w`` along x, ``h`` along y)."""
+    geom: dict[str, Any] = {"path": [[0, 0], [w, 0], [w, h], [0, h], [0, 0]]}
+    if corner_mm is not None:
+        geom["corner_radius_mm"] = corner_mm
+    return geom
+
+
+# --------------------------------------------------------------------------
+# Board
+# --------------------------------------------------------------------------
+
+
+class Board:
+    """A pcb design built in memory; ``to_batch()`` is the
+    ``pcb_apply``-shaped payload. ``meta`` is the batch's free-form
+    ``meta`` dict (the script writes into it directly)."""
+
+    def __init__(
+        self,
+        slug: str,
+        *,
+        profile: str | None = None,
+        stackup: str | list[Any] | None = None,
+        sides: str = "both",
+        outline: dict[str, Any] | list[tuple[float, float]] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        self.slug = slug
+        self.profile = profile
+        self.stackup = stackup
+        self.sides = sides
+        self.meta: dict[str, Any] = dict(meta or {})
+        self._parts: dict[str, Part] = {}
+        self._part_order: list[str] = []
+        self._nets: dict[str, Net] = {}
+        self._net_order: list[str] = []
+        self._connections: list[dict[str, Any]] = []
+        self._features: list[dict[str, Any]] = []
+        self._footprints: dict[str, Footprint] = {}
+        self._footprint_order: list[str] = []
+        self._net_classes: dict[str, dict[str, Any]] = {}
+        self._roles: dict[str, Role] = {}
+        self._generators: list[dict[str, Any]] = []
+        self._measures: list[dict[str, Any]] = []
+        self._used_prefixes: set[str] = set()
+        self._frame_stack: list[_ModuleFrame] = []
+
+        if isinstance(stackup, list):
+            self.meta["stackup_layers"] = list(stackup)
+        elif stackup is not None:
+            self.meta["stackup_preset"] = stackup
+        if sides != "both":
+            self.meta["placement_sides"] = sides
+        if outline is not None:
+            self.outline(outline)
+
+    # -- naming (module frames) ------------------------------------------
+
+    @property
+    def _frame(self) -> _ModuleFrame | None:
+        return self._frame_stack[-1] if self._frame_stack else None
+
+    def _qualify(self, name: str, sep: str) -> str:
+        frame = self._frame
+        return f"{frame.chain}{sep}{name}" if frame else name
+
+    # -- construction primitives -------------------------------------------
+
+    @traced
+    def footprint(self, fp: Footprint) -> Footprint:
+        """Register an authored footprint (authored order is batch order).
+        Re-registering the same instance is a no-op; a different instance
+        under a used name is refused."""
+        prev = self._footprints.get(fp.name)
+        if prev is None:
+            self._footprints[fp.name] = fp
+            self._footprint_order.append(fp.name)
+        elif prev is not fp:
+            raise PcbBuilderError(
+                f"footprint {fp.name!r} already registered on board {self.slug!r}"
+            )
+        return fp
+
+    @traced
+    def part(
+        self,
+        refdes: str,
+        *,
+        lcsc: str | None = None,
+        label: str | None = None,
+        footprint: str | Footprint | None = None,
+        value: str | None = None,
+        height_mm: float | None = None,
+        roles: Iterable[str] = (),
+        pins: Iterable[Any] = (),
+        note: str | None = None,
+    ) -> Part:
+        qualified = self._qualify(refdes, ".")
+        if qualified in self._parts:
+            raise PcbBuilderError(
+                f"refdes {qualified!r} already used on board {self.slug!r}"
+            )
+        fp_name = (
+            self.footprint(footprint).name
+            if isinstance(footprint, Footprint)
+            else footprint
+        )
+        p = Part(
+            board=self,
+            refdes=qualified,
+            lcsc=lcsc,
+            label=label,
+            footprint=fp_name,
+            value=value,
+            height_mm=height_mm,
+            roles=roles,
+            note=note,
+        )
+        for entry in pins:
+            if isinstance(entry, dict):
+                pin = p[entry["name"]]
+                for marker in _PIN_MARKERS:
+                    if entry.get(marker):
+                        pin.markers[marker] = True
+                pin.tag(*entry.get("tags", ()))
+                pin.meta.update(entry.get("meta") or {})
+                pin.extra.update(
+                    {
+                        k: v
+                        for k, v in entry.items()
+                        if k not in ("name", "tags", "meta", *_PIN_MARKERS)
+                    }
+                )
+            else:
+                pin = p[entry]
+            p._declared_pins.add(pin.name)
+        self._parts[qualified] = p
+        self._part_order.append(qualified)
+        return p
+
+    @traced
+    def net(
+        self,
+        name: str,
+        *,
+        cls: str | None = None,
+        current: float | None = None,
+        voltage: float | None = None,
+        impedance: float | None = None,
+        edge_rate: float | None = None,
+        function: str | None = None,
+        note: str | None = None,
+        domain: str | None = None,
+    ) -> Net:
+        if domain not in _ELECTRICAL_DOMAINS:
+            raise PcbBuilderError(
+                f"net {name!r}: domain must be electrical (omit it or pass "
+                f"'electrical'), got {domain!r}"
+            )
+        qualified = self._qualify(name, "/")
+        if qualified in self._nets:
+            raise PcbBuilderError(
+                f"net {qualified!r} already declared on board {self.slug!r}"
+            )
+        n = Net(
+            board=self,
+            name=qualified,
+            cls=cls,
+            current=current,
+            voltage=voltage,
+            impedance=impedance,
+            edge_rate=edge_rate,
+            function=function,
+            note=note,
+            domain=domain,
+        )
+        self._nets[qualified] = n
+        self._net_order.append(qualified)
+        frame = self._frame
+        if frame is not None:
+            frame.allowed_net_names.add(qualified)
+        return n
+
+    def _connect(self, net: Net, pin: Pin, note: str | None = None) -> None:
+        frame = self._frame
+        if frame is not None and net.name not in frame.allowed_net_names:
+            raise PcbBuilderError(
+                f"module {frame.qualname!r} (prefix {frame.prefix!r}) touched "
+                f"net {net.name!r} it was not handed as a port"
+            )
+        entry: dict[str, Any] = {
+            "net": net.name,
+            "refdes": pin.part.refdes,
+            "pin": pin.name,
+        }
+        if note:
+            entry["note"] = note
+        self._connections.append(entry)
+
+    @traced
+    def wire(self, pin_a: Pin, pin_b: Pin, name: str | None = None) -> Net:
+        """Two-pin net. Without ``name`` the net is minted
+        ``<refdes>_<pin>__<refdes>_<pin>`` (the free-ended-net name rule,
+        §1d) and recorded like any other."""
+        if name is None:
+            name = f"{pin_a.part.refdes}_{pin_a.name}__{pin_b.part.refdes}_{pin_b.name}"
+            name = name.replace(".", "_").replace("/", "_")
+        net = self._nets.get(self._qualify(name, "/")) or self.net(name)
+        net.tie(pin_a, pin_b)
+        return net
+
+    @traced
+    def net_class(self, name: str, **rules: Any) -> dict[str, Any]:
+        self._net_classes[name] = rules
+        return rules
+
+    @traced
+    def role(self, name: str, voltage: float | None = None) -> Role:
+        r = Role(name=name, voltage=voltage)
+        self._roles[name] = r
+        return r
+
+    @traced
+    def plane(self, layer: str, *, net: Net, priority: int = 0) -> dict[str, Any]:
+        entry = {
+            "ftype": "plane_net",
+            "layer": layer,
+            "net": net.name,
+            "priority": priority,
+        }
+        self._features.append(entry)
+        return entry
+
+    @traced
+    def outline(
+        self,
+        geom: dict[str, Any] | list[tuple[float, float]],
+        *,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """The board outline (one per board): a :func:`rect` geometry or a
+        point list (closed by the caller if it should be)."""
+        if any(f_["ftype"] == "outline" for f_ in self._features):
+            raise PcbBuilderError(f"board {self.slug!r} already has an outline")
+        if not isinstance(geom, dict):
+            geom = {"path": [[x, y] for x, y in geom]}
+        f_: dict[str, Any] = {"ftype": "outline", "geom": geom}
+        if note is not None:
+            f_["note"] = note
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def hole(
+        self,
+        x: float,
+        y: float,
+        *,
+        drill: float,
+        ring: float,
+        plated: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        f_: dict[str, Any] = {
+            "ftype": "mounting_hole",
+            "x": x,
+            "y": y,
+            "geom": {"diameter": drill, "ring_dia_mm": ring, "plated": plated},
+        }
+        if note is not None:
+            f_["note"] = note
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def fiducial(self, x: float, y: float) -> dict[str, Any]:
+        f_ = {"ftype": "fiducial", "x": x, "y": y}
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def testpoint(
+        self, net: Net, x: float | None = None, y: float | None = None
+    ) -> dict[str, Any]:
+        f_: dict[str, Any] = {"ftype": "testpoint", "net": net.name}
+        if x is not None:
+            f_["x"] = x
+        if y is not None:
+            f_["y"] = y
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def corner_nuts(self) -> dict[str, Any]:
+        f_ = {"ftype": "corner_nuts"}
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def keepout(
+        self,
+        poly: list[list[float]],
+        layers: Iterable[str] = (),
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        f_: dict[str, Any] = {"ftype": "keepout", "geom": {"poly": poly}}
+        if layers:
+            f_["layers"] = list(layers)
+        if reason is not None:
+            f_["reason"] = reason
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def feature(self, ftype: str, **fields: Any) -> dict[str, Any]:
+        """An arbitrary ``features[]`` row (``_pcb_insert_feature`` shape)
+        for feature types without a dedicated primitive."""
+        f_: dict[str, Any] = {"ftype": ftype, **fields}
+        self._features.append(f_)
+        return f_
+
+    def near(self, a: Part, b: Part, within_mm: float) -> dict[str, Any]:
+        return self.measure("near", [a, b], bound=within_mm)
+
+    def apart(self, a: Part, b: Part, at_least_mm: float) -> dict[str, Any]:
+        return self.measure("apart", [a, b], bound=at_least_mm)
+
+    def align(self, a: Part, b: Part, axis: str) -> dict[str, Any]:
+        m = self.measure("align", [a, b])
+        m["axis"] = axis
+        return m
+
+    @traced
+    def measure(
+        self,
+        metric: str,
+        operands: Iterable[Any],
+        *,
+        bound: float | None = None,
+        goal: float | None = None,
+        hard: bool = False,
+        weight: float = 1.0,
+    ) -> dict[str, Any]:
+        m: dict[str, Any] = {
+            "metric": metric,
+            "operands": [getattr(o, "refdes", o) for o in operands],
+            "hard": hard,
+            "weight": weight,
+        }
+        if bound is not None:
+            m["bound"] = bound
+        if goal is not None:
+            m["goal"] = goal
+        self._measures.append(m)
+        return m
+
+    @traced
+    def generate(self, name: str, *, generator: str, **params: Any) -> dict[str, Any]:
+        g = {"name": name, "generator": generator, "params": params}
+        self._generators.append(g)
+        return g
+
+    @traced
+    def group(
+        self,
+        name: str,
+        parts: Iterable[Part],
+        *,
+        rigid: bool = True,
+        pattern: str | None = None,
+        offsets: Iterable[tuple[float, float, float]] | None = None,
+    ) -> list[Part]:
+        """A rigid group (instance meta ``group``/``group_offset``);
+        ``offsets`` are per-part ``(x, y, rot)`` in the group frame."""
+        parts = list(parts)
+        offs = list(offsets) if offsets is not None else None
+        if offs is not None and len(offs) != len(parts):
+            raise PcbBuilderError(
+                f"group {name!r}: {len(offs)} offsets for {len(parts)} parts"
+            )
+        for i, p in enumerate(parts):
+            p.group = name
+            if offs is not None:
+                x, y, rot = offs[i]
+                p.group_offset = {"x": x, "y": y, "rot": rot}
+            if pattern is not None:
+                p.pattern = pattern
+        return parts
+
+    @traced
+    def use(self, module_fn: Callable[..., Any], *, prefix: str, **ports: Any) -> Any:
+        """Instantiate a module: its parts become ``<prefix>.<local>``, its
+        own nets ``<prefix>/<name>``; the ``Net`` arguments are the only
+        outside nets it may touch."""
+        if prefix in self._used_prefixes:
+            raise PcbBuilderError(
+                f"prefix {prefix!r} already used on board {self.slug!r}"
+            )
+        self._used_prefixes.add(prefix)
+        allowed = {v.name for v in ports.values() if isinstance(v, Net)}
+        chain = ".".join([f.prefix for f in self._frame_stack] + [prefix])
+        frame = _ModuleFrame(
+            prefix=prefix,
+            chain=chain,
+            allowed_net_names=allowed,
+            qualname=getattr(
+                module_fn,
+                "__qualname__",
+                getattr(module_fn, "__name__", str(module_fn)),
+            ),
+        )
+        self._frame_stack.append(frame)
+        try:
+            return module_fn(self, **ports)
+        finally:
+            self._frame_stack.pop()
+
+    # -- inspection ---------------------------------------------------------
+
+    def check(self) -> CheckResult:
+        """Pure, offline L0 checks (§Q1): parts with no catalog part and no
+        authored footprint are NOT-CHECKED (a synthesized landpattern
+        bound); a declared net with zero connections, a connection to a
+        part the board never made, and a part naming an unregistered
+        footprint are findings. No geometry, no DRC — that stays
+        server-side (§DRC)."""
+        not_checked = [
+            r
+            for r in self._part_order
+            if self._parts[r].lcsc is None and self._parts[r].footprint is None
+        ]
+        findings: list[CheckFinding] = []
+        for r in self._part_order:
+            fp = self._parts[r].footprint
+            if fp is not None and fp not in self._footprints:
+                findings.append(
+                    CheckFinding(
+                        code="footprint.unknown",
+                        refdes=r,
+                        message=f"footprint {fp!r} is not registered on this board",
+                    )
+                )
+        connected = {c["net"] for c in self._connections}
+        findings += [
+            CheckFinding(
+                code="net.unconnected", net=n, message=f"net {n!r} has no connections"
+            )
+            for n in self._net_order
+            if n not in connected
+        ]
+        findings += [
+            CheckFinding(
+                code="net.undeclared",
+                net=c["net"],
+                message=f"connection {c['refdes']}.{c['pin']} names an undeclared net",
+            )
+            for c in self._connections
+            if c["net"] not in self._nets
+        ]
+        return CheckResult(findings=findings, not_checked=not_checked)
+
+    def to_batch(self) -> dict[str, Any]:
+        """The ``pcb_apply``-shaped batch dict (see that method's
+        docstring for the per-key field contract). Optional sections are
+        present only when the script authored them."""
+        out: dict[str, Any] = {
+            "components": [self._parts[r].to_dict() for r in self._part_order],
+            "nets": [self._nets[n].to_dict() for n in self._net_order],
+            "connections": [dict(c) for c in self._connections],
+        }
+        if self._features:
+            out["features"] = [copy.deepcopy(f_) for f_ in self._features]
+        if self._footprints:
+            out["footprints"] = [
+                self._footprints[n].to_dict() for n in self._footprint_order
+            ]
+        if self._net_classes:
+            out["net_classes"] = {k: dict(v) for k, v in self._net_classes.items()}
+        if self._roles:
+            out["roles"] = {k: r.to_dict() for k, r in self._roles.items()}
+        if self._generators:
+            out["generators"] = [dict(g) for g in self._generators]
+        if self._measures:
+            out["measures"] = [dict(m) for m in self._measures]
+        if self.meta:
+            out["meta"] = dict(self.meta)
+        if self.profile is not None:
+            out["profile"] = self.profile
+        return out
+
+    def manifest(self, requests: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+        """The workspace run's ``out/manifest.json`` document (§Import
+        boundary): ``{schema, kind: 'pcb', board, requests}``."""
+        return {
+            "schema": MANIFEST_SCHEMA,
+            "kind": "pcb",
+            "board": self.to_batch(),
+            "requests": [dict(r) for r in requests],
+        }
+
+
+def canonical_json(batch: dict[str, Any]) -> str:
+    """The byte form the goldens hash and the request key is built from."""
+    return json.dumps(batch, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def content_hash(batch: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(batch).encode("utf-8")).hexdigest()
+
+
+def write_manifest(
+    board: Board,
+    out_dir: str | Path,
+    *,
+    requests: Iterable[dict[str, Any]] = (),
+) -> Path:
+    """Write ``manifest.json`` (and ``trace.json`` when a tracer is live)
+    under ``out_dir``; returns the manifest path."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "manifest.json"
+    path.write_text(
+        json.dumps(board.manifest(requests), sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    doc = _trace.dump()
+    if doc is not None:
+        (out / "trace.json").write_text(
+            json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    return path
+
+
+__all__ = [
+    "MANIFEST_SCHEMA",
+    "Board",
+    "CatalogPart",
+    "CheckFinding",
+    "CheckResult",
+    "Footprint",
+    "Net",
+    "Part",
+    "PcbBuilderError",
+    "Pin",
+    "Role",
+    "canonical_json",
+    "catalog",
+    "content_hash",
+    "module",
+    "pad",
+    "rect",
+    "write_manifest",
+]

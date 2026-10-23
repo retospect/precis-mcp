@@ -1,0 +1,441 @@
+"""pcb-workspace-code slice 0 acceptance (docs/backlog/pcb-workspace-code.md,
+Slices row 0): the ``precis_geom.pcb`` builder emits the ``pcb_apply``
+batch shape; ``examples/boards/*/main.py`` rebuild the reference boards
+and are byte-equal to the fixtures they came from (nano, nano_r2,
+esp32c3); ``b.use`` refuses a reused prefix and an un-handed net;
+``b.check()`` on nano lists exactly ``meta.synthesized_footprint_refdes``
+as NOT-CHECKED; tier-1 goldens (canonical sha + counts) pin all four
+boards ("byte-equal" means canonical-JSON-equal, ``pcb.canonical_json``:
+sorted keys, compact separators — authored dict order does not matter);
+trace keys are stable across two builds on structure-workspaces slice
+2's ``precis_geom.trace``.
+
+The kernel import-boundary belt (no first-party, stdlib only) mirrors
+``tests/test_precis_flow.py``.
+
+Regenerate the goldens after an intended change (then read the diff)::
+
+    uv run python -c "import sys, json; sys.path.insert(0, 'tests/workspaces'); \\
+      import test_pcb_board as t; t.GOLDEN.write_text(json.dumps({n: \\
+      t._golden_row(t._example(n)) for n in t.EXAMPLES}, indent=1, \\
+      sort_keys=True) + '\\n', encoding='utf-8')"
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+import precis_geom.pcb as pcb
+from precis_geom.pcb import Board, Footprint, PcbBuilderError, module, pad, rect
+
+ROOT = Path(__file__).resolve().parents[2]
+BOARDS = ROOT / "examples" / "boards"
+FIXTURES = ROOT / "tests" / "fixtures" / "pcb"
+GOLDEN = Path(__file__).resolve().parent / "data" / "pcb_goldens.json"
+
+#: example dir → the fixture whose dict it must reproduce byte for byte
+CONVERTED = {
+    "nano_usb_pd": "nano_usb_pd_testboard.py:build_design",
+    "nano_usb_pd_r2": "nano_usb_pd_testboard_r2.py:build_design",
+    "esp32c3": "esp32c3_reference.json",
+}
+EXAMPLES = (*CONVERTED, "sanity")
+
+
+def _load(path: Path, name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _example(name: str) -> Board:
+    return _load(BOARDS / name / "main.py", f"example_{name}").build()
+
+
+def _fixture(spec: str) -> dict[str, Any]:
+    if spec.endswith(".json"):
+        return json.loads((FIXTURES / spec).read_text(encoding="utf-8"))
+    file, _, func = spec.partition(":")
+    return getattr(_load(FIXTURES / file, f"fixture_{file[:-3]}"), func)()
+
+
+def _golden_row(b: Board) -> dict[str, Any]:
+    batch = b.to_batch()
+    check = b.check()
+    return {
+        "sha256": pcb.content_hash(batch),
+        "parts": len(batch["components"]),
+        "nets": len(batch["nets"]),
+        "connections": len(batch["connections"]),
+        "findings": [f_.code for f_ in check.findings],
+        "not_checked": check.not_checked,
+    }
+
+
+# --- goldens -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", list(CONVERTED))
+def test_converted_example_is_byte_equal_to_its_fixture(name: str) -> None:
+    got = _example(name).to_batch()
+    want = _fixture(CONVERTED[name])
+    assert got == want
+    assert pcb.canonical_json(got) == pcb.canonical_json(want)
+
+
+@pytest.mark.parametrize("name", EXAMPLES)
+def test_tier1_golden(name: str) -> None:
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    row = _golden_row(_example(name))
+    assert row == golden[name], (
+        f"{name}: golden drift — if intended, regenerate "
+        "tests/workspaces/data/pcb_goldens.json with the one-liner in this "
+        f"module's docstring; got {json.dumps(row, indent=1)}"
+    )
+
+
+def test_golden_file_covers_every_example_dir() -> None:
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    dirs = sorted(p.name for p in BOARDS.iterdir() if (p / "main.py").is_file())
+    assert dirs == sorted(golden) == sorted(EXAMPLES)
+
+
+def test_nano_check_not_checked_matches_synthesized_footprint_refdes() -> None:
+    b = _example("nano_usb_pd")
+    result = b.check()
+    assert sorted(result.not_checked) == sorted(b.meta["synthesized_footprint_refdes"])
+    assert result.findings == []
+    assert "NOT-CHECKED" in result.summary()
+
+
+def test_build_is_deterministic_across_two_builds() -> None:
+    for name in EXAMPLES:
+        assert _example(name).to_batch() == _example(name).to_batch()
+
+
+def test_trace_keys_stable_across_two_builds() -> None:
+    from precis_geom import trace
+
+    keys = []
+    for _ in range(2):
+        with trace.run(work_root=BOARDS) as tr:
+            _example("sanity")
+            doc = tr.dump()
+        keys.append([f["key"] for f in doc["frames"]])
+        quals = {f["qual"] for f in doc["frames"]}
+        assert {"pcb.Board.part", "pcb.Board.wire", "pcb.Board.footprint"} <= quals
+    assert keys[0] == keys[1]
+    assert len(keys[0]) > 20
+
+
+def test_manifest_and_write(tmp_path: Path) -> None:
+    b = _example("esp32c3")
+    man = b.manifest(requests=[{"op": "place", "key": "k", "params": {"seed": 1}}])
+    assert man["schema"] == pcb.MANIFEST_SCHEMA and man["kind"] == "pcb"
+    assert man["board"] == b.to_batch()
+    path = pcb.write_manifest(b, tmp_path / "out")
+    assert json.loads(path.read_text(encoding="utf-8"))["board"] == b.to_batch()
+
+
+# --- builder units -----------------------------------------------------------
+
+
+def test_board_emits_only_what_was_said() -> None:
+    assert Board("bare").to_batch() == {"components": [], "nets": [], "connections": []}
+    b = Board(
+        "t1", profile="prototype", stackup="2l", outline=rect(30, 20, corner_mm=2)
+    )
+    batch = b.to_batch()
+    assert batch["profile"] == "prototype"
+    assert batch["meta"] == {"stackup_preset": "2l"}
+    assert batch["features"] == [
+        {
+            "ftype": "outline",
+            "geom": {
+                "path": [[0, 0], [30, 0], [30, 20], [0, 20], [0, 0]],
+                "corner_radius_mm": 2,
+            },
+        }
+    ]
+    with pytest.raises(PcbBuilderError):
+        b.outline(rect(1, 1))
+
+
+def test_stackup_list_sides_and_point_outline() -> None:
+    b = Board(
+        "t2",
+        stackup=["F.Cu", "In1.Cu", "B.Cu"],
+        sides="top",
+        outline=[(0, 0), (10, 0), (10, 10)],
+    )
+    batch = b.to_batch()
+    assert batch["meta"] == {
+        "stackup_layers": ["F.Cu", "In1.Cu", "B.Cu"],
+        "placement_sides": "top",
+    }
+    assert batch["features"][0]["geom"]["path"] == [[0, 0], [10, 0], [10, 10]]
+
+
+def test_part_pins_connections_shape() -> None:
+    b = Board("t3")
+    gnd = b.net("GND", cls="ground")
+    vbus = b.net("VBUS", cls="power", current=0.5, voltage=5.0)
+    j1 = b.part("J1", lcsc="C165948", roles={"connector"})
+    vbus.tie(j1["VBUS"])
+    gnd.tie(j1["GND"], note="shell")
+    r1 = b.part("R1", value="5.1k", pins=["1", "2"])
+    b.wire(j1["CC1"], r1["1"], name="CC1")
+    gnd.tie(r1[2])
+    batch = b.to_batch()
+    assert batch["components"] == [
+        {"refdes": "J1", "part": "C165948", "roles": ["connector"], "pins": []},
+        {"refdes": "R1", "value": "5.1k", "pins": [{"name": "1"}, {"name": "2"}]},
+    ]
+    assert batch["connections"] == [
+        {"net": "VBUS", "refdes": "J1", "pin": "VBUS"},
+        {"net": "GND", "refdes": "J1", "pin": "GND", "note": "shell"},
+        {"net": "CC1", "refdes": "J1", "pin": "CC1"},
+        {"net": "CC1", "refdes": "R1", "pin": "1"},
+        {"net": "GND", "refdes": "R1", "pin": "2"},
+    ]
+    assert batch["nets"] == [
+        {"name": "GND", "class": "ground"},
+        {"name": "VBUS", "class": "power", "current": 0.5, "working_voltage_v": 5.0},
+        {"name": "CC1"},
+    ]
+
+
+def test_pin_markers_tags_facts_emit_store_shapes() -> None:
+    b = Board("t4")
+    p = b.part("U1", pins=[{"name": "2", "unused": True}, {"name": "7", "pad": "B3"}])
+    p["NC1"].nc()
+    p["RST"].must_terminate().tag("reset")
+    p["SHUNT"].current_role("shunt").etype("power_in")
+    pins = {pin["name"]: pin for pin in p.to_dict()["pins"]}
+    assert pins["2"] == {"name": "2", "unused": True}
+    assert pins["7"] == {"name": "7", "pad": "B3"}
+    assert pins["NC1"] == {"name": "NC1", "nc": True}
+    assert pins["RST"] == {"name": "RST", "must_terminate": True, "tags": ["reset"]}
+    assert pins["SHUNT"]["meta"] == {"current_role": "shunt", "etype": "power_in"}
+    assert list(pins) == ["2", "7", "NC1", "RST", "SHUNT"]
+
+
+def test_at_leash_on_edge_group_offsets() -> None:
+    b = Board("t5")
+    p1 = b.part("J1").at(2.0, 10.0, rot=90, fixed="rot").on_edge("left")
+    p2 = b.part("J2").leash(max_travel_mm=1.5)
+    b.group("hdrs", [p1, p2], offsets=[(0.0, 0.0, 90), (15.24, 0.0, 90)])
+    d1, d2 = p1.to_dict(), p2.to_dict()
+    assert (d1["x"], d1["rot"], d1["fixed"], d1["layer"]) == (2.0, 90, "rot", "top")
+    assert d1["edge_mate"] == {"face": "left", "require": "required"}
+    assert d1["group"] == d2["group"] == "hdrs"
+    assert d2["group_offset"] == {"x": 15.24, "y": 0.0, "rot": 90}
+    assert d2["max_travel_mm"] == 1.5
+    with pytest.raises(PcbBuilderError):
+        b.group("bad", [p1, p2], offsets=[(0, 0, 0)])
+
+
+def test_net_domain_is_electrical_only() -> None:
+    b = Board("t6")
+    assert b.net("E", domain="electrical").to_dict() == {
+        "name": "E",
+        "domain": "electrical",
+    }
+    with pytest.raises(PcbBuilderError):
+        b.net("BRACKET", domain="mechanical")
+
+
+def test_refdes_net_and_footprint_reuse_refused() -> None:
+    b = Board("t7")
+    b.part("U1")
+    with pytest.raises(PcbBuilderError):
+        b.part("U1")
+    b.net("GND")
+    with pytest.raises(PcbBuilderError):
+        b.net("GND")
+    fp = Footprint("X", [pad("1", "circle", 0, 0, w=1)])
+    b.footprint(fp)
+    b.footprint(fp)
+    with pytest.raises(PcbBuilderError):
+        b.footprint(Footprint("X", []))
+
+
+def test_mechanical_features_and_keepout() -> None:
+    b = Board("t8")
+    gnd = b.net("GND")
+    b.hole(3, 3, drill=2.2, ring=4.0)
+    b.fiducial(1, 1)
+    b.testpoint(gnd, x=5, y=5)
+    b.corner_nuts()
+    b.keepout([[0, 0], [1, 0], [1, 1]], layers=["F.Cu"], reason="RF")
+    b.plane("In1.Cu", net=gnd, priority=1)
+    b.feature("mask_open", geom={"poly": [[0, 0]]})
+    feats = b.to_batch()["features"]
+    assert [f_["ftype"] for f_ in feats] == [
+        "mounting_hole",
+        "fiducial",
+        "testpoint",
+        "corner_nuts",
+        "keepout",
+        "plane_net",
+        "mask_open",
+    ]
+    assert feats[0] == {
+        "ftype": "mounting_hole",
+        "x": 3,
+        "y": 3,
+        "geom": {"diameter": 2.2, "ring_dia_mm": 4.0, "plated": True},
+    }
+
+
+def test_measures_net_class_role_generator() -> None:
+    b = Board("t9")
+    u, c = b.part("U1"), b.part("C1")
+    b.near(u, c, within_mm=2.0)
+    b.apart(u, c, at_least_mm=10.0)
+    b.align(u, c, axis="x")
+    b.net_class("usb", width_mm=0.2, pairs=[["D+", "D-"]])
+    role = b.role("vbus", voltage=5.0)
+    u.supplies(role, pins=["VOUT"])
+    u["VIN"].client_of(role)
+    g = b.generate("pad_array", generator="ewod_pad_array", rows=4, cols=4)
+    batch = b.to_batch()
+    assert [(m["metric"], m["operands"]) for m in batch["measures"]] == [
+        ("near", ["U1", "C1"]),
+        ("apart", ["U1", "C1"]),
+        ("align", ["U1", "C1"]),
+    ]
+    assert batch["net_classes"]["usb"]["pairs"] == [["D+", "D-"]]
+    assert batch["roles"]["vbus"] == {"name": "vbus", "voltage": 5.0}
+    assert batch["components"][0]["roles"] == ["vbus"]
+    assert batch["generators"] == [g]
+
+
+def test_footprint_registration_order_and_dedup() -> None:
+    b = Board("t11")
+    late = Footprint("LATE", [pad("1", "rect", 0, 0, w=1, h=1)])
+    fp = Footprint("HDR-2", [pad("1", "circle", -1.27, 0, w=1.7, drill=0.9)])
+    b.footprint(late)
+    b.part("J1", footprint=fp)
+    b.part("J2", footprint=fp)
+    b.part("J3", footprint="MISSING")
+    batch = b.to_batch()
+    assert [f_["name"] for f_ in batch["footprints"]] == ["LATE", "HDR-2"]
+    assert [c["footprint"] for c in batch["components"]] == [
+        "HDR-2",
+        "HDR-2",
+        "MISSING",
+    ]
+    assert [(f_.code, f_.refdes) for f_ in b.check().findings] == [
+        ("footprint.unknown", "J3")
+    ]
+
+
+def test_module_namespacing_and_refusals() -> None:
+    b = Board("t13")
+    gnd, vin, vout = b.net("GND"), b.net("VIN"), b.net("VOUT")
+
+    @module
+    def ldo(board: Board, *, vin: pcb.Net, vout: pcb.Net, gnd: pcb.Net) -> pcb.Part:
+        u = board.part("U")
+        cin = board.part("CIN")
+        fb = board.net("FB")
+        vin.tie(u["VIN"])
+        vout.tie(u["VOUT"])
+        gnd.tie(u["GND"], cin["2"])
+        fb.tie(u["FB"])
+        board.wire(u["X"], cin["1"])
+        return u
+
+    u2 = b.use(ldo, prefix="U2", vin=vin, vout=vout, gnd=gnd)
+    assert u2.refdes == "U2.U"
+    batch = b.to_batch()
+    assert {"U2.U", "U2.CIN"} <= {c["refdes"] for c in batch["components"]}
+    assert {"U2/FB", "U2/U2_U_X__U2_CIN_1"} <= {n["name"] for n in batch["nets"]}
+    assert {"net": "U2/FB", "refdes": "U2.U", "pin": "FB"} in batch["connections"]
+
+    with pytest.raises(PcbBuilderError, match="prefix 'U2' already used"):
+        b.use(ldo, prefix="U2", vin=vin, vout=vout, gnd=gnd)
+
+    stray = b.net("STRAY")
+
+    @module
+    def bad(board: Board, *, vin: pcb.Net) -> pcb.Part:
+        u = board.part("X")
+        stray.tie(u["A"])
+        return u
+
+    with pytest.raises(PcbBuilderError, match="not handed as a port"):
+        b.use(bad, prefix="U3", vin=vin)
+
+
+def test_check_findings() -> None:
+    b = Board("t14")
+    u1 = b.part("U1", lcsc="C1")
+    b.part("R1", pins=["1", "2"])
+    b.net("FLOAT")
+    b.net("GND").tie(u1["GND"])
+    result = b.check()
+    assert result.not_checked == ["R1"]
+    assert [(f_.code, f_.net) for f_ in result.findings] == [
+        ("net.unconnected", "FLOAT")
+    ]
+
+
+# --- kernel boundary (mirrors test_precis_flow.py) --------------------------
+
+_GEOM_SRC = ROOT / "src" / "precis_geom"
+_FORBIDDEN_PREFIXES = (
+    "precis.",
+    "precis_se",
+    "precis_web",
+    "asa_bot",
+    "asa_slack",
+    "hexfold",
+)
+
+
+def _imports(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            out.append(node.module)
+    return out
+
+
+def test_precis_geom_imports_nothing_first_party_and_only_stdlib() -> None:
+    offenders: list[str] = []
+    for path in sorted(_GEOM_SRC.rglob("*.py")):
+        for name in _imports(path):
+            root = name.split(".")[0]
+            if root == "precis_geom":
+                continue
+            if name == "precis" or name.startswith(_FORBIDDEN_PREFIXES):
+                offenders.append(f"{path.name}: {name} (first-party)")
+            elif root not in sys.stdlib_module_names:
+                offenders.append(f"{path.name}: {name} (third-party)")
+    assert not offenders, (
+        "src/precis_geom is the DB-free, stdlib-only wheel core "
+        f"(structure-workspaces §Packaging): {offenders}"
+    )
+
+
+def test_pcb_builder_has_no_importlinter_root_leak() -> None:
+    """`precis_geom.pcb` must import cleanly without `precis` loaded."""
+    assert "precis_geom.pcb" in sys.modules
+    assert not any(
+        m == "precis" or m.startswith("precis.") for m in _imports(_GEOM_SRC / "pcb.py")
+    )

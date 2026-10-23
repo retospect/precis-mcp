@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** slice 0 of [structure-workspaces](../structure-workspaces.md) (importer + goldens, no container) and slice 0 of [pcb-workspace-code](../pcb-workspace-code.md) (builder + goldens, no container); neither waits on the sandbox lane.
+- **Next:** slice 0 of [structure-workspaces](../structure-workspaces.md) (importer + goldens, no container); it waits on nothing. Slice 0 of [pcb-workspace-code](../pcb-workspace-code.md) (builder + goldens) landed 2026-10-23 (g4-pcb-ws0).
 - **Blocked by:** slice 1 (usable `run`) needs [sandbox-python-script](../sandbox-python-script.md) slice 4 (factory thread: the `mode:script` lane live); the proof slice needs [hexfold-multicell-prism](../hexfold-multicell-prism.md) slice 3.
 - **Unblocks:** removal of the `generate`/`join`/`terminate` ops and the pcb batch construction put (W5); per-row call-site provenance on se and pcb designs; [pcb-platform](pcb-platform.md) Do-next 1.
 - **Acceptance:** each spec's slice table acceptance column; slice 1 also needs the construction refusals live with `next=` naming the workspace path and no skill naming a retired op.
@@ -33,16 +33,15 @@ design-review: yes
 
 0. **[dev-loop-scratch](../dev-loop-scratch.md) D0–D3** — first (Reto 2026-10-23: "work on the small dev loop first, make it awesome"): scratch dir + host run + `jiggle` relax rung, read-write per-worktree MCP server with auto-restart, file-backed trace views (atoms, then PCB, then macro), and the [local-edits-processed-designs](../local-edits-processed-designs.md) spec. Independent of the sandbox lane; D0, D1 and D3 run in parallel.
 1. **structure-workspaces slice 0** — importer + manifest + goldens with no container; every later slice (and pcb slice 1) imports through it, and it is the only slice that needs nothing above it.
-2. **pcb-workspace-code slice 0** — `precis_geom.pcb` builder, `to_batch` byte-equal to the nano fixture's `build_design()`; parallel to 1, needs only the trace decorator from structure slice 2 for the trace-key assertions.
-3. **structure-workspaces slice 2** — `precis-geom` wheel, warm venv, `@traced`; the pcb builder, trace views and relax cache all depend on it.
-4. **structure-workspaces slice 1** — workspace kind + `run`; waits on the sandbox lane. Same change removes `generate`/`join`/`terminate` and their skill text (W5: no clock, no wrapper phase). Until it lands those ops stay as-is.
-5. **se-flow-kernel slice 4a** — `precis_geom.flow` + `precis_geom.physics.evaluate(['flow'])` in the wheel, `out.physics` → `flow:` pocket on import, the `precis-workspace-optimize-help` skill's `evaluate` section; end-to-end acceptance script → import → the Flow tab particle player (`/se/<slug>/flow`). First by Reto's order (tracer to the visualizer before any optimiser); the first toolkit physics. After 3 and 4.
-6. **se-flow-kernel slice 4b** — the design-optimisation kit (`precis_geom.params`, `precis_geom.optimize`: cache, `evaluate_many`, search trace, checkpoint/resume, adapters; the build-step stack cache with params in the creator frame and the per-step cost/rebuild report) + the chamber-anneal and manifold-split examples, as dogfood; the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 5.
-7. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 4.
-8. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 4.
-9. **structure-workspaces 2t, 2p, 2a** and **pcb-workspace-code 2, 2t** — trace views, python-kind join, assembly API, place/route as cached requests; after 3–7.
-10. **se-native-fields slice 1** — `precis_fields` scalar family + Joule, `fields:` token, `material=` + value selection, computers, the fields section of the optimise skill, the fin-heat example; "then we add more physics" — unblocks every solids case (conduction, DC, Joule) a script can check. After 6 (shares `evaluate`, the kit and the card pattern).
-11. **structure-workspaces slice 3** — the 12-wall H-column prism both ways; the proof that the script path is cheaper (needs hexfold-multicell-prism slice 3).
+2. **structure-workspaces slice 2** — `precis-geom` wheel, warm venv, `@traced`; the pcb builder, trace views and relax cache all depend on it.
+3. **structure-workspaces slice 1** — workspace kind + `run`; waits on the sandbox lane. Same change removes `generate`/`join`/`terminate` and their skill text (W5: no clock, no wrapper phase). Until it lands those ops stay as-is.
+4. **se-flow-kernel slice 4a** — `precis_geom.flow` + `precis_geom.physics.evaluate(['flow'])` in the wheel, `out.physics` → `flow:` pocket on import, the `precis-workspace-optimize-help` skill's `evaluate` section; end-to-end acceptance script → import → the Flow tab particle player (`/se/<slug>/flow`). First by Reto's order (tracer to the visualizer before any optimiser); the first toolkit physics. After 2 and 3.
+5. **se-flow-kernel slice 4b** — the design-optimisation kit (`precis_geom.params`, `precis_geom.optimize`: cache, `evaluate_many`, search trace, checkpoint/resume, adapters; the build-step stack cache with params in the creator frame and the per-step cost/rebuild report) + the chamber-anneal and manifold-split examples, as dogfood; the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 4.
+6. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 3.
+7. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 3.
+8. **structure-workspaces 2t, 2p, 2a** and **pcb-workspace-code 2, 2t** — trace views, python-kind join, assembly API, place/route as cached requests; after 2–6.
+9. **se-native-fields slice 1** — `precis_fields` scalar family + Joule, `fields:` token, `material=` + value selection, computers, the fields section of the optimise skill, the fin-heat example; "then we add more physics" — unblocks every solids case (conduction, DC, Joule) a script can check. After 5 (shares `evaluate`, the kit and the card pattern).
+10. **structure-workspaces slice 3** — the 12-wall H-column prism both ways; the proof that the script path is cheaper (needs hexfold-multicell-prism slice 3).
 
 ## Horizon
 

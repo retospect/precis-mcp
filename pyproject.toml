@@ -725,6 +725,10 @@ root_packages = [
     "precis_chain",
     # `precis_flow` is the same shape (numpy + scipy, no first-party imports).
     "precis_flow",
+    # `precis_geom` is the same shape again, stricter: stdlib only, no
+    # third-party deps either — the `precis-geom` wheel under
+    # `packaging/geom/` (structure-workspaces slice 2).
+    "precis_geom",
 ]
 
 [[tool.importlinter.contracts]]
@@ -762,6 +766,16 @@ source_modules = ["precis_flow"]
 forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
 # Same shape as the precis_chain contract above. `tests/test_precis_flow.py`
 # carries the AST-walk belt for non-root first-party packages (precis_se etc.).
+
+[[tool.importlinter.contracts]]
+name = "precis_geom is a standalone kernel: no precis/asa imports"
+type = "forbidden"
+source_modules = ["precis_geom"]
+forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
+# Same shape as the precis_chain/precis_flow contracts above.
+# `tests/workspaces/test_pcb_board.py` carries the AST-walk belt, and is
+# stricter: it also refuses any third-party import (precis_geom.pcb is
+# pure stdlib).
 
 [[tool.importlinter.contracts]]
 name = "slack bridge shares asa_bot runtime but never the web app"
