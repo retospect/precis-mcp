@@ -1,7 +1,7 @@
 ---
 name: cluster-ops
 description: "Cluster/prod read-only gopher: SSHes a node or queries prod, returns a digest; never mutates."
-tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: haiku
 ---
 
@@ -58,7 +58,10 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
-and is the only prod write you may make.
+and is the only prod write you may make. The write verbs are deferred tools —
+before your first `put`/`tag`, load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
+`No such tool available` and the record is lost (gr504489).
 
 Read-only against prod means `scripts/prod-psql --ro` (agent_ro, inside
 `BEGIN READ ONLY`). Never a session-level `SET`/`RESET` through the prod

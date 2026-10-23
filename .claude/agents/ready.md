@@ -1,7 +1,7 @@
 ---
 name: ready
 description: "Sonnet backlog-readiness judge: vets a spec against prose and code; never writes code or flips status."
-tools: Read, Grep, Glob, Bash, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 
@@ -107,7 +107,10 @@ approves each one.
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
-and is the only prod write you may make.
+and is the only prod write you may make. The write verbs are deferred tools —
+before your first `put`/`tag`, load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
+`No such tool available` and the record is lost (gr504489).
 
 Judge the spec as written and as it maps onto real code. Flag, don't fix —
 resolving a blocker is the human's edit, not yours.

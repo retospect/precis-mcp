@@ -1,7 +1,7 @@
 ---
 name: cluster-admin
 description: "Sonnet WRITE cluster op: runs a decided, reversible runbook; hard-stops on novel, destructive or prod-DB writes."
-tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 
@@ -49,7 +49,10 @@ Always report every mutation you performed, in order, so the caller has the trai
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
-and is the only prod write you may make.
+and is the only prod write you may make. The write verbs are deferred tools —
+before your first `put`/`tag`, load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
+`No such tool available` and the record is lost (gr504489).
 
 Short leash, honest trail. Routine reversible recovery is yours; novelty, data,
 and destruction go back up.

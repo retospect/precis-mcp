@@ -29,7 +29,9 @@ only.** `quest` supports `edit` but accepts only
 `todo` takes `replace` (title/body) plus `find-replace` / `insert` on its
 details body (literal `find=`, unique unless `match=`, `dry_run=True`
 previews; comments are untouched); see `precis-todo-tree-help`. `memory` takes `replace` plus the `find-replace` /
-`insert` anchors on its body (`precis-memory-help`). Most other kinds either
+`insert` anchors on its body — and `ops=[{find,text,...}]`, several
+anchored ops applied in order in one transaction, a bad op refusing the
+whole call as `ops[i]` (`precis-memory-help`). Most other kinds either
 ignore `mode=` (metadata-patch edits like `paper`/`draft`/`structure`)
 or don't support `edit` at all. A wrong `mode=` raises `BadInput`
 naming that kind's actual accepted set.

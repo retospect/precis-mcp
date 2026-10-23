@@ -1375,6 +1375,227 @@ def test_anchored_edit_of_legacy_title_only_memory(
     assert _body(handler, store, mid) == "new body"
 
 
+# ---------------------------------------------------------------------------
+# edit(ops=[{find, text, ...}]) — several anchored ops in one transaction
+# ---------------------------------------------------------------------------
+
+
+def _body_events(store: Store, mid: int) -> int:
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id=%s AND event='body_replaced'",
+            (mid,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_ops_apply_in_order_in_one_write(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid,
+        ops=[
+            {"find": "/old/dir", "text": "/new/dir"},
+            {"op": "insert", "find": "beta", "where": "after", "text": "!"},
+            {"op": "append", "text": "delta line"},
+        ],
+    )
+    assert f"edited body of memory id={mid}" in out.body
+    assert "3 ops" in out.body
+    assert _body(handler, store, mid) == (
+        "alpha path /new/dir\nbeta! line\ngamma tail\n\ndelta line"
+    )
+    assert _body_events(store, mid) == 1
+
+
+def test_ops_later_op_resolves_against_earlier_result(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "aaa")
+    handler.edit(
+        id=mid,
+        ops=[{"find": "aaa", "text": "bbb"}, {"find": "bbb", "text": "ccc"}],
+    )
+    assert _body(handler, store, mid) == "ccc"
+
+
+def test_ops_bad_op_refuses_whole_call_naming_index(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match=r"ops\[1\]") as excinfo:
+        handler.edit(
+            id=mid,
+            ops=[
+                {"find": "/old/dir", "text": "/new/dir"},
+                {"find": "nonexistent", "text": "x"},
+            ],
+        )
+    assert excinfo.value.next is not None
+    assert _body(handler, store, mid) == _BODY
+    assert _body_events(store, mid) == 0
+
+
+def test_ops_ambiguous_match_names_index(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler, "foo one\nfoo two\nbar")
+    with pytest.raises(BadInput, match=r"ops\[0\].*2 matches"):
+        handler.edit(id=mid, ops=[{"find": "foo", "text": "baz"}])
+    assert _body(handler, store, mid) == "foo one\nfoo two\nbar"
+
+
+def test_ops_write_retries_through_lock_contention(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The multi-op batch is one body write: contention inside the
+    retry budget retries in-process instead of surfacing an error."""
+    from psycopg.errors import LockNotAvailable
+
+    from precis.utils import db_retry
+
+    mid = _make(handler)
+    real_tx = store.tx
+    attempts = {"n": 0}
+
+    def contended_tx() -> Any:
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise LockNotAvailable("could not obtain lock")
+        return real_tx()
+
+    monkeypatch.setattr(store, "tx", contended_tx)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    out = handler.edit(id=mid, ops=[{"find": "beta", "text": "BETA"}])
+    assert f"edited body of memory id={mid}" in out.body
+    assert attempts["n"] == 3
+    assert _body(handler, store, mid) == _BODY.replace("beta", "BETA")
+
+
+def test_ops_write_lock_exhaustion_refuses_with_next(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from psycopg.errors import LockNotAvailable
+
+    from precis.utils import db_retry
+
+    mid = _make(handler)
+
+    def always_locked() -> Any:
+        raise LockNotAvailable("still locked")
+
+    monkeypatch.setattr(store, "tx", always_locked)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with pytest.raises(Upstream) as excinfo:
+        handler.edit(id=mid, ops=[{"find": "beta", "text": "BETA"}])
+    assert excinfo.value.next is not None
+    assert "retry the edit" in excinfo.value.next
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_ops_rejects_non_list_and_non_dict(handler: MemoryHandler) -> None:
+    mid = _make(handler)
+    bad: Any
+    for bad in ("beta", [], [{"find": "beta", "text": "x"}, "beta"]):
+        with pytest.raises(BadInput, match=r"non-empty list|ops\[1\]"):
+            handler.edit(id=mid, ops=bad)
+
+
+def test_ops_unknown_key_and_op_kind(handler: MemoryHandler) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match=r"ops\[0\]: unknown key"):
+        handler.edit(id=mid, ops=[{"find": "beta", "text": "x", "bogus": 1}])
+    with pytest.raises(BadInput, match=r"ops\[0\]: unknown 'op'"):
+        handler.edit(id=mid, ops=[{"op": "reorder", "find": "x", "text": "y"}])
+
+
+def test_ops_reject_top_level_single_edit_args(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler)
+    for kw in (
+        {"find": "beta"},
+        {"text": "x"},
+        {"title": "t"},
+        {"rule": "r"},
+        {"warrant": "w"},
+        {"where": "after"},
+        {"nth": 1},
+        {"match": "all"},
+    ):
+        with pytest.raises(BadInput, match="single-edit"):
+            handler.edit(id=mid, ops=[{"find": "beta", "text": "BETA"}], **kw)
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_ops_reject_explicit_insert_or_append_mode(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler)
+    for mode in ("insert", "append"):
+        with pytest.raises(BadInput, match=f"mode={mode!r}"):
+            handler.edit(id=mid, mode=mode, ops=[{"find": "beta", "text": "BETA"}])
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_ops_dry_run_writes_nothing(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid,
+        ops=[
+            {"find": "beta", "text": "BETA"},
+            {"op": "append", "text": "tail"},
+        ],
+        dry_run=True,
+    )
+    assert "DRY RUN" in out.body
+    assert "+BETA line" in out.body
+    assert _body(handler, store, mid) == _BODY
+    assert _body_events(store, mid) == 0
+
+
+def test_ops_empty_result_is_refused(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler, "only this")
+    with pytest.raises(BadInput, match="empty body"):
+        handler.edit(id=mid, ops=[{"find": "only this", "text": ""}])
+    assert _body(handler, store, mid) == "only this"
+
+
+def test_ops_takes_meta(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    handler.edit(id=mid, ops=[{"find": "beta", "text": "BETA"}], meta={"hook": "batch"})
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["hook"] == "batch"
+    assert "BETA" in handler._body_text(ref)
+
+
+def test_runtime_edit_ops_reaches_handler_both_doors(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The flat ops= verb param and args={'ops': ...} both route."""
+    created = runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "one stale path"}
+    )
+    mid = id_of(created)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {"kind": "memory", "id": mid, "ops": [{"find": "stale", "text": "fresh"}]},
+    )
+    assert "[error" not in out, out
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "__extras__": {"ops": [{"find": "fresh", "text": "done"}]},
+        },
+    )
+    assert "[error" not in out, out
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    handler = runtime_with_store.hub.handler_for("memory")
+    assert isinstance(handler, MemoryHandler)
+    assert handler._body_text(ref) == "one done path"
+
+
 @pytest.mark.parametrize("mode", ["replace", "find-replace"])
 def test_body_writes_hold_ref_lock_before_store_read_and_replacement(
     handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch, mode: str

@@ -1,7 +1,7 @@
 ---
 name: documenter
 description: "Sonnet doc-sync writer: syncs docs and skills to a code change. Not mission prose or architecture calls."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 
@@ -49,6 +49,9 @@ design or narrative.
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
-and is the only prod write you may make.
+and is the only prod write you may make. The write verbs are deferred tools —
+before your first `put`/`tag`, load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
+`No such tool available` and the record is lost (gr504489).
 
 Commit with a conventional subject (`type(scope): what changed`) before shipping, or pass `-m`; a placeholder subject fails ship immediately.

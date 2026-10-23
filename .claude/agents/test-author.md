@@ -1,7 +1,7 @@
 ---
 name: test-author
 description: "Sonnet test writer: writes tests from a caller spec (contract or repro) and confirms they run."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 
@@ -38,7 +38,10 @@ the caller; you write the tests that pin it down and prove they run.
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
-and is the only prod write you may make.
+and is the only prod write you may make. The write verbs are deferred tools —
+before your first `put`/`tag`, load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
+`No such tool available` and the record is lost (gr504489).
 
 Write the tests for the decided behavior; prove they run. Don't invent the
 contract, and don't leave a test whose pass/fail you haven't verified.

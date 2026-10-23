@@ -1691,6 +1691,9 @@ def edit(
     apply: bool | None = None,
     # structure/nm typed graph ops (see precis-structure-help): edit(kind=
     # 'structure'|'nm', ops=[{...}, ...]) applies the kind's op vocabulary.
+    # memory (see precis-memory-help): ops=[{'find':…,'text':…}, ...]
+    # applies several anchored body ops in order in one transaction —
+    # one bad op refuses the whole call.
     # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
     # clients don't strip it — previously reachable only via the lenient
     # ``__extras__`` channel (ratchet entries ("structure","edit","ops")/
@@ -1766,7 +1769,8 @@ def edit(
     `replace` with `id='slug~selector'` rewrites one chunk.
 
     todo: `replace` accepts `text=` (title) and/or `body=` (details).
-    quest: `replace` only. memory: `replace`, `find-replace`, `insert`.
+    quest: `replace` only. memory: `replace`, `find-replace`, `insert`,
+    or `ops=[{find,text,...}]` for several anchored ops in one call.
     Structural or metadata ops use their kind-specific fields.
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
@@ -2166,7 +2170,8 @@ _EDIT_HELP: dict[str, str] = {
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
     "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
     "'replace' only — the default 'find-replace' is rejected there; "
-    "memory: 'replace' | 'find-replace' | 'insert'. "
+    "memory: 'replace' | 'find-replace' | 'insert' | 'append' — or "
+    "ops=[{find,text,...}] for several anchored ops in one call. "
     "Most other kinds don't branch on mode= (silently ignored) or don't "
     "support edit at all.",
     "text": "Replacement / inserted content. Required for every mode "

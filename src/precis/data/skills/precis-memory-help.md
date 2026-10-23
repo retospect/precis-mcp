@@ -136,6 +136,18 @@ refused, never taken as a whole-body overwrite.
 If another edit changes the body before the write, the edit is refused
 without changes; get the current memory and retry with fresh anchors.
 
+Several anchored fixes in one call — `edit(kind='memory', id=42,
+ops=[{'find': '/old/path', 'text': '/new/path'}, {'op': 'append',
+'text': 'new tail'}])`. Each dict takes the anchored grammar: `'op'`
+picks `'find-replace'` (the default) / `'insert'` (+ `'where'`) /
+`'append'` (needs only `'text'`); `before`/`after`/`match`/`nth` work
+per op. The ops apply in order, each against the previous op's result,
+and land in a single transaction — a bad op refuses the whole call
+naming `ops[i]`, and nothing is written. Top-level `find`/`text`/
+`title`/`rule`/`warrant` and the anchor args are refused alongside
+`ops=` (they belong inside each dict); `meta=`, `reason=` and
+`dry_run=` ride along.
+
 ## Record a decision I just made
 ## Log a design choice with rationale
 ## Pin a decision so I can find it later

@@ -19,6 +19,10 @@ Semantics (`precis-memory-help`):
                                    — anchored edit of the body, same grammar
                                      as the file kinds (before/after/match/
                                      nth/where/dry_run)
+    - edit(id=N, ops=[{find, text, ...}, ...])
+                                   — several anchored ops in one call, applied
+                                     in order and written in one transaction
+                                     (a bad op refuses the whole call)
     - edit(id=N, mode='append', text=...)
                                    — tack text onto the end of the body
                                      (no anchor)
@@ -193,6 +197,14 @@ _TITLE_MAX = 80
 #: ``meta=`` keys a caller may write on put/edit. ``hook`` is the one-line
 #: index text of a ``SPACE:repo-dev`` memory (``precis memory index``).
 _META_ALLOWED = ("hook", "type")
+
+#: Keys one ``ops=[{...}]`` dict may carry on ``edit`` — the single-op
+#: anchored vocabulary plus ``op`` for the op kind (the
+#: ``ops=[{'op': ...}]`` convention the structure kind already uses).
+_OPS_KEYS = frozenset(
+    {"op", "find", "text", "before", "after", "where", "match", "nth"}
+)
+_OPS_KINDS = ("find-replace", "insert", "append")
 _MEMORY_TYPES = ("user", "feedback", "project", "reference")
 
 
@@ -831,6 +843,7 @@ class MemoryHandler(NumericRefHandler):
         where: str | None = None,
         match: str = "unique",
         nth: int | None = None,
+        ops: list[dict[str, Any]] | None = None,
         dry_run: bool | str = False,
         reason: str | None = None,
         **_kw: Any,
@@ -849,6 +862,16 @@ class MemoryHandler(NumericRefHandler):
           ``find=`` match.
         - ``mode='append'``: ``text=`` is tacked onto the end of the body —
           no anchor (the "add an update" door).
+        - ``ops=[{...}, ...]``: several anchored ops in one call. Each dict
+          takes the anchored grammar — ``find`` / ``text`` / ``before`` /
+          ``after`` / ``match`` / ``nth``, ``'op': 'insert'`` + ``'where'``
+          switches op kind (default ``'find-replace'``), ``'op': 'append'``
+          needs only ``text``. The ops apply in order, each against the
+          previous op's result, and the batch lands in a single
+          transaction — a bad op refuses the whole call with ``ops[i]``
+          naming the failing one and nothing written. Top-level
+          find=/text=/title=/rule=/warrant= are refused alongside ``ops=``;
+          ``meta=``, ``reason=`` and ``dry_run=`` ride along.
 
         The anchored pair takes the file kinds' vocabulary — ``before=`` /
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
@@ -928,6 +951,50 @@ class MemoryHandler(NumericRefHandler):
             meta_clean["hook"] = mask_secrets(meta_clean["hook"])
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         dry_mode = normalize_dry_run(dry_run)
+        if ops is not None:
+            if mode not in ("find-replace", "replace"):
+                raise BadInput(
+                    f"ops= cannot combine with mode={mode!r} — each op "
+                    "dict carries its own 'op': 'find-replace'|'insert'|"
+                    "'append' (default 'find-replace')",
+                    next=(
+                        f"edit(kind='memory', id={id}, ops=[{{'find': 'old', "
+                        "'text': 'new'}}, ...])"
+                    ),
+                )
+            mixed = [
+                name
+                for name, val in (
+                    ("find", find),
+                    ("text", text),
+                    ("title", new_title),
+                    ("rule", rule_clean),
+                    ("warrant", warrant_clean),
+                    ("before", before or None),
+                    ("after", after or None),
+                    ("where", where),
+                    ("nth", nth),
+                    ("match", match if match != "unique" else None),
+                )
+                if val is not None
+            ]
+            if mixed:
+                raise BadInput(
+                    f"{'/'.join(mixed)}= is a single-edit argument — with "
+                    "ops= it belongs inside each op dict",
+                    next=(
+                        f"edit(kind='memory', id={id}, ops=[{{'find': 'old', "
+                        "'text': 'new'}}, ...]) — meta=, reason= and "
+                        "dry_run= may ride along at top level"
+                    ),
+                )
+            return self._edit_ops(
+                ref_id=self._coerce_id(id),
+                ops=ops,
+                dry_mode=dry_mode,
+                meta_patch=meta_clean,
+                reason=reason,
+            )
         # Only the MCP default with neither body argument is a metadata
         # patch. Explicit insert/append and even empty text must validate
         # anchors (append's check is its own "no anchor" rule).
@@ -1473,6 +1540,192 @@ class MemoryHandler(NumericRefHandler):
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(Response(body=ack), misses)
+
+    def _edit_ops(
+        self,
+        *,
+        ref_id: int,
+        ops: Any,
+        dry_mode: str | None,
+        meta_patch: dict[str, Any],
+        reason: str | None = None,
+    ) -> Response:
+        """``ops=[{find, text, ...}]`` — several anchored edits in one call.
+
+        Each dict is one anchored edit with the single-op vocabulary —
+        ``find``/``text``/``before``/``after``/``match``/``nth`` plus
+        ``'op'`` for the op kind (``'find-replace'`` default, ``'insert'``
+        with ``'where'``, ``'append'`` needing only ``text`` — the
+        ``ops=[{'op': ...}]`` convention the structure kind already
+        uses). Ops resolve in order, each against the previous op's
+        result; the final buffer then lands through the single
+        :meth:`_write_body` transaction (retried under
+        :func:`retry_locked` like every body write). Any bad op refuses
+        the whole call with ``ops[i]`` naming the failing index — nothing
+        is written, so a batch can't leave a half-applied body.
+        """
+        if not isinstance(ops, list) or not ops:
+            raise BadInput(
+                "ops= must be a non-empty list of op dicts",
+                next=(
+                    "edit(kind='memory', id=N, ops=[{'find': 'old', "
+                    "'text': 'new'}, ...])"
+                ),
+            )
+        ref = self._resolve_live_ref(ref_id)
+        label = f"{self.kind} {ref.id}"
+        old_body = self._body_text(ref)
+        new_body = old_body
+        spans: list[tuple[int, int]] = []
+        for i, raw in enumerate(ops):
+            if not isinstance(raw, dict):
+                raise BadInput(
+                    f"ops[{i}]: each op must be a dict, got {type(raw).__name__}",
+                    next="ops=[{'find': 'exact text', 'text': 'replacement'}]",
+                )
+            unknown = sorted(str(k) for k in raw if k not in _OPS_KEYS)
+            if unknown:
+                raise BadInput(
+                    f"ops[{i}]: unknown key(s) {unknown}; allowed: {sorted(_OPS_KEYS)}",
+                    next="ops=[{'find': 'exact text', 'text': 'replacement'}]",
+                )
+            op_kind = raw.get("op", "find-replace")
+            if op_kind not in _OPS_KINDS:
+                raise BadInput(
+                    f"ops[{i}]: unknown 'op' {op_kind!r}",
+                    options=list(_OPS_KINDS),
+                    next="drop 'op' (default 'find-replace') or set 'insert'/'append'",
+                )
+            try:
+                if op_kind == "append":
+                    new_body, span = self._op_append(raw, new_body)
+                else:
+                    new_body, span = self._op_anchored(
+                        raw, new_body, op_kind=op_kind, label=label
+                    )
+            except BadInput as exc:
+                raise BadInput(
+                    f"ops[{i}]: {exc.cause}", next=exc.next, options=exc.options
+                ) from exc
+            spans.extend(span)
+        if not new_body.strip():
+            raise BadInput(
+                f"ops= would leave {label} with an empty body",
+                next=(
+                    f"delete(kind='memory', id={ref.id}) to remove the "
+                    "memory, or keep some body text"
+                ),
+            )
+        if dry_mode is not None:
+            header = render_dry_run_header(
+                region_label=label,
+                edited_spans=tuple(spans),
+                match_policy=f"{len(ops)} ops",
+            )
+            if dry_mode == "full":
+                body = render_dry_run_full(
+                    new_body, edited_spans=tuple(spans), region_label=label
+                )
+            else:
+                diff = format_unified_diff(old_body, new_body, file_label=label)
+                body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            return Response(body="\n".join([*header, "", body]))
+        misses = self._attribution_misses(new_body)
+        self._write_retried(
+            ref.id,
+            "body edit",
+            lambda: self._write_body(
+                ref.id,
+                new_body,
+                new_title=None,
+                meta_patch=meta_patch,
+                expected_body=old_body,
+                misses=misses,
+                reason=reason,
+            ),
+        )
+        ack = (
+            f"edited body of {self._sense()} id={ref.id} "
+            f"({len(old_body.split())} → {len(new_body.split())} words, "
+            f"{len(ops)} ops). view='log' for the full diff."
+        )
+        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        if lead:
+            ack += f"\n\nhint: {lead}"
+        ack += render_next_section(link_hints(self, ref.id))
+        return self._with_attribution_advisory(Response(body=ack), misses)
+
+    @staticmethod
+    def _op_append(
+        raw: dict[str, Any], buffer: str
+    ) -> tuple[str, tuple[tuple[int, int], ...]]:
+        """One ``'op': 'append'`` dict — tack ``text`` onto the body end."""
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise BadInput("'op': 'append' requires 'text' (the text to tack on)")
+        text = mask_secrets(text)
+        anchored = [
+            k for k in ("find", "before", "after", "where", "nth") if raw.get(k)
+        ] + (["match"] if raw.get("match") not in (None, "unique") else [])
+        if anchored:
+            raise BadInput(
+                f"'op': 'append' takes no anchors ({'/'.join(anchored)} "
+                "given) — it always writes at the end of the body",
+            )
+        new_buffer = (
+            f"{buffer.rstrip()}\n\n{text.strip()}" if buffer.strip() else text.strip()
+        )
+        span = ((buffer.count("\n") + 1, new_buffer.count("\n") + 1),)
+        return new_buffer, span
+
+    @staticmethod
+    def _op_anchored(
+        raw: dict[str, Any],
+        buffer: str,
+        *,
+        op_kind: str,
+        label: str,
+    ) -> tuple[str, tuple[tuple[int, int], ...]]:
+        """One ``'find-replace'``/``'insert'`` dict through ``apply_edit``."""
+        find = raw.get("find")
+        if not isinstance(find, str) or not find:
+            raise BadInput(
+                f"'op': {op_kind!r} requires 'find' (the exact text to locate)",
+            )
+        text = raw.get("text")
+        if not isinstance(text, str):
+            raise BadInput(
+                f"'op': {op_kind!r} requires 'text' — pass 'text': '' to "
+                "delete the matched span",
+            )
+        before = raw.get("before", "")
+        after = raw.get("after", "")
+        where = raw.get("where")
+        match = raw.get("match", "unique")
+        nth = raw.get("nth")
+        for key, val in (
+            ("before", before),
+            ("after", after),
+            ("where", where),
+            ("match", match),
+        ):
+            if val is not None and not isinstance(val, str):
+                raise BadInput(f"'{key}' must be a string")
+        if nth is not None and not isinstance(nth, int):
+            raise BadInput("'nth' must be an int")
+        op = EditOp(
+            op="edit" if op_kind == "find-replace" else "insert",
+            find=mask_secrets(find),
+            text=mask_secrets(text),
+            before=mask_secrets(cast(str, before)),
+            after=mask_secrets(cast(str, after)),
+            where=cast("Any", mask_secrets(where) if isinstance(where, str) else where),
+            match=cast("Any", match or "unique"),
+            nth=nth,
+            region_label=label,
+        )
+        result = apply_edit(buffer, op)
+        return result.new_buffer, result.edited_spans
 
     # ── tag: refuse author add/remove of the system-set STALE: axis ──
 
