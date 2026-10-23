@@ -31,6 +31,7 @@ design-review: yes
 
 ## Do next
 
+0. **[dev-loop-scratch](../dev-loop-scratch.md) D0–D3** — first (Reto 2026-10-23: "work on the small dev loop first, make it awesome"): scratch dir + host run + `jiggle` relax rung, read-write per-worktree MCP server with auto-restart, file-backed trace views (atoms, then PCB, then macro), and the local-edits spec. Independent of the sandbox lane; D0, D1 and D3 run in parallel.
 1. **structure-workspaces slice 0** — importer + manifest + goldens with no container; every later slice (and pcb slice 1) imports through it, and it is the only slice that needs nothing above it.
 2. **pcb-workspace-code slice 0** — `precis_geom.pcb` builder, `to_batch` byte-equal to the nano fixture's `build_design()`; parallel to 1, needs only the trace decorator from structure slice 2 for the trace-key assertions.
 3. **structure-workspaces slice 2** — `precis-geom` wheel, warm venv, `@traced`; the pcb builder, trace views and relax cache all depend on it.
