@@ -328,6 +328,46 @@ def test_truncated_json_reply_fails_not_stored(store: Any, hub: Any) -> None:
     assert _desc_chunks(store, ref_id) == []
 
 
+def test_failing_ref_is_braked_by_attempt_lease(store: Any, hub: Any) -> None:
+    """gr508688: a persistently-failing ref (a reply that parses as JSON
+    but never carries ``description`` — melchior's card_describe loop)
+    brakes on the claim-time attempt lease: claimed at most once per
+    cooldown, re-billing a dispatch every pass was the pre-fix shape."""
+    ref_id = _put_structure(hub)
+
+    class _BadShapeClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            return SimpleNamespace(
+                text='{"narrative": "..."}',
+                data={"narrative": "..."},
+                model="local",
+            )
+
+    r = run_card_describe_pass(store, client=_BadShapeClient(), batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert _desc_chunks(store, ref_id) == []
+
+    # Leased: the next pass does not re-claim (no re-bill, no ERROR).
+    again = _BadShapeClient()
+    r = run_card_describe_pass(store, client=again, batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
+    assert again.calls == []
+
+    # Cooldown expiry self-heals (simulated, mirroring the bib_parse and
+    # axis_pass lease tests — never waiting out the real TTL).
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(_desc_chunks(store, ref_id)) == 1
+
+
 # ── gr500371: emptied chain defers the batch, log names cli_unavailable ──
 
 

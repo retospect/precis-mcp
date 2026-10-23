@@ -45,7 +45,12 @@ kind there); this worker never touches an embedder.
 Claim/write shape mirrors :mod:`precis.workers.chunk_keywords`: a
 single-runner ``pg_try_advisory_xact_lock`` held for the whole pass on a
 dedicated connection, claim-commit-first, per-ref work on pooled
-connections, writes wrapped in :func:`retry_locked`.
+connections, writes wrapped in :func:`retry_locked`. The claim carries a
+claim-time attempt lease (:mod:`precis.workers.ref_lease`, stamped in the
+claim transaction): this pass's only "done" marker is the success-written
+chunk, so without the brake a persistently-failing ref — e.g. a model
+reply whose JSON never carries ``description`` (gr508688) — is re-claimed
+and re-billed every sweep instead of once per cooldown.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.db_retry import retry_locked
 from precis.utils.figure_source import _svg_to_png
 from precis.utils.llm.router import DispatchError
+from precis.workers import ref_lease
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -78,6 +84,11 @@ CARD_DESCRIBE_VERSION = "1.0"
 #: idiom as ``chunk_keywords`` — arbitrary constant, namespaced away
 #: from its ``"chnk_kw\x00"`` key). ``"crd_dsc\x00"`` mapped signed.
 _LOCK_KEY = 0x63_72_64_5F_64_73_63_00 - 2**63
+
+#: :mod:`precis.workers.ref_lease` marker namespace — the claim-time
+#: attempt lease that brakes a failing ref for
+#: :data:`ref_lease.ATTEMPT_COOLDOWN_MIN` (gr508688).
+_LEASE_NS = "CARDDESCRIBE"
 
 #: Ref kinds this pass describes — S1 ``structure``, S2 ``cad`` + ``pcb``,
 #: S3 ``figure`` (vision prompt). The card kinds' grounding is their one
@@ -151,7 +162,8 @@ _FIGURE_SYSTEM = (
 )
 
 #: The card-kind claim leg (structure/cad/pcb): grounding is the ref's one
-#: ``card_combined`` chunk at ord=-1.
+#: ``card_combined`` chunk at ord=-1. The ref_lease exclusion brakes a
+#: leased ref (mid-work or post-failure — gr508688).
 _CARD_CLAIM_SQL = """
     SELECT r.ref_id, r.kind, r.title, card.text
       FROM refs r
@@ -164,14 +176,14 @@ _CARD_CLAIM_SQL = """
       LEFT JOIN chunks d
         ON d.ref_id = r.ref_id
        AND d.chunk_kind = 'card_description'
-     WHERE r.kind = ANY(%s)
+     WHERE r.kind = ANY(%(kinds)s)
        AND (
             d.chunk_id IS NULL
          OR (d.meta->>'source_sha') IS DISTINCT FROM
             encode(digest(card.text, 'sha256'), 'hex')
-         OR (d.meta->>'version') IS DISTINCT FROM %s
+         OR (d.meta->>'version') IS DISTINCT FROM %(ver)s
        )
-"""
+""" + ref_lease.exclude_clause("r.ref_id", "lease_ns")
 
 #: The figure claim leg (S3): grounding is the ref's FIRST live
 #: ``figure_node`` chunk — the SVG source document, ``figure_node`` being
@@ -196,19 +208,19 @@ _FIGURE_CLAIM_SQL = """
         ON d.ref_id = r.ref_id
        AND d.chunk_kind = 'card_description'
      WHERE r.kind = 'figure'
-       AND src.text ~* %s
+       AND src.text ~* %(drawable)s
        AND (
             d.chunk_id IS NULL
          OR (d.meta->>'source_sha') IS DISTINCT FROM
             encode(digest(src.text, 'sha256'), 'hex')
-         OR (d.meta->>'version') IS DISTINCT FROM %s
+         OR (d.meta->>'version') IS DISTINCT FROM %(ver)s
        )
-"""
+""" + ref_lease.exclude_clause("r.ref_id", "lease_ns")
 
 #: Shared trailer for both claim legs: oldest-first, claim-count cap, and
 #: the row lock (claim-commit-first — same idiom as ``chunk_keywords``).
 _CLAIM_TAIL = (
-    "     ORDER BY r.ref_id\n     LIMIT %s\n       FOR UPDATE OF r SKIP LOCKED\n"
+    "     ORDER BY r.ref_id\n     LIMIT %(limit)s\n       FOR UPDATE OF r SKIP LOCKED\n"
 )
 
 
@@ -223,24 +235,37 @@ def claim_refs_without_description(
     ``card_description`` kind was registered (the deploy stamp — see the
     module docstring) AND either no ``card_description`` chunk exists yet
     or the stored ``meta.source_sha`` no longer matches the grounding
-    text's sha256 (the card/figure was edited since).
+    text's sha256 (the card/figure was edited since). A ref under an
+    unexpired claim-time attempt lease (:mod:`precis.workers.ref_lease`)
+    is excluded — it is mid-work or braked after a failure.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
+    lease_ns = ref_lease.attempt_ns(_LEASE_NS)
     rows: list[tuple[Any, ...]] = []
     card_kinds = [k for k in _DESCRIBED_KINDS if k != "figure"]
     if card_kinds:
         rows.extend(
             conn.execute(
                 _CARD_CLAIM_SQL + _CLAIM_TAIL,
-                (card_kinds, CARD_DESCRIBE_VERSION, limit),
+                {
+                    "kinds": card_kinds,
+                    "ver": CARD_DESCRIBE_VERSION,
+                    "lease_ns": lease_ns,
+                    "limit": limit,
+                },
             ).fetchall()
         )
     if "figure" in _DESCRIBED_KINDS:
         rows.extend(
             conn.execute(
                 _FIGURE_CLAIM_SQL + _CLAIM_TAIL,
-                (_FIGURE_DRAWABLE_SQL, CARD_DESCRIBE_VERSION, limit),
+                {
+                    "drawable": _FIGURE_DRAWABLE_SQL,
+                    "ver": CARD_DESCRIBE_VERSION,
+                    "lease_ns": lease_ns,
+                    "limit": limit,
+                },
             ).fetchall()
         )
     rows.sort(key=lambda r: int(r[0]))
@@ -252,7 +277,7 @@ def claimable_counts(conn: Connection) -> dict[str, int]:
     (``precis card-describe``). Same claim predicates as
     :func:`claim_refs_without_description`, unbounded and lock-free."""
     counts: dict[str, int] = {}
-    legs: list[tuple[str, tuple[Any, ...]]] = []
+    legs: list[tuple[str, dict[str, Any]]] = []
     card_kinds = [k for k in _DESCRIBED_KINDS if k != "figure"]
     if card_kinds:
         legs.append(
@@ -260,7 +285,11 @@ def claimable_counts(conn: Connection) -> dict[str, int]:
                 _CARD_CLAIM_SQL.replace(
                     "SELECT r.ref_id, r.kind, r.title, card.text", "SELECT r.kind"
                 ),
-                (card_kinds, CARD_DESCRIBE_VERSION),
+                {
+                    "kinds": card_kinds,
+                    "ver": CARD_DESCRIBE_VERSION,
+                    "lease_ns": ref_lease.attempt_ns(_LEASE_NS),
+                },
             )
         )
     if "figure" in _DESCRIBED_KINDS:
@@ -269,7 +298,11 @@ def claimable_counts(conn: Connection) -> dict[str, int]:
                 _FIGURE_CLAIM_SQL.replace(
                     "SELECT r.ref_id, r.kind, r.title, src.text", "SELECT r.kind"
                 ),
-                (_FIGURE_DRAWABLE_SQL, CARD_DESCRIBE_VERSION),
+                {
+                    "drawable": _FIGURE_DRAWABLE_SQL,
+                    "ver": CARD_DESCRIBE_VERSION,
+                    "lease_ns": ref_lease.attempt_ns(_LEASE_NS),
+                },
             )
         )
     for sql, params in legs:
@@ -386,7 +419,9 @@ def write_card_description(
     :meth:`ChunkStore._replace_card_chunk`; never UPDATE, never a second
     row). ``meta`` carries the derived provenance: which pass, which
     version, which model, and the card-text hash it describes (the
-    re-claim key)."""
+    re-claim key). Success also clears the ref's attempt lease in the
+    SAME transaction, so a legitimate re-trigger (version bump, edited
+    card) is never blocked by a stale lease."""
     meta = {
         "generator": "card_describe",
         "version": CARD_DESCRIBE_VERSION,
@@ -401,6 +436,7 @@ def write_card_description(
             text=text,
             meta=meta,
         )
+        ref_lease.clear_attempt(store, ref_id, _LEASE_NS, conn=conn)
         conn.commit()
 
 
@@ -453,11 +489,17 @@ def _run_card_describe_batch(
     ``chunk_keywords``)."""
     with store.pool.connection() as conn:
         rows = claim_refs_without_description(conn, limit=batch_size)
+        # Stamp the claim-time attempt lease for every claimed ref in the
+        # SAME transaction as the claim SELECT, before it commits (the
+        # bib_parse shape — gripe 202116) — the lease is the durable
+        # brake, the FOR UPDATE row lock dies with this commit.
+        for claimed_id, *_ in rows:
+            ref_lease.stamp_attempt(store, claimed_id, _LEASE_NS, conn=conn)
         conn.commit()
     claimed = len(rows)
 
     ok = failed = 0
-    for ref_id, kind, title, card_text in rows:
+    for i, (ref_id, kind, title, card_text) in enumerate(rows):
         try:
             if kind == "figure":
                 # S3: describe the RENDERED figure, not its markup — reuse
@@ -508,6 +550,14 @@ def _run_card_describe_batch(
                     reason,
                     claimed - ok,
                 )
+                # Rows never attempted hand their leases back so they
+                # re-claim next pass instead of sitting out the cooldown
+                # (the bib_parse RateLimited shape); the paused ref keeps
+                # its brake.
+                with store.pool.connection() as conn:
+                    for skipped_id, *_ in rows[i + 1 :]:
+                        ref_lease.clear_attempt(store, skipped_id, _LEASE_NS, conn=conn)
+                    conn.commit()
                 return {
                     "claimed": 0,
                     "ok": 0,
