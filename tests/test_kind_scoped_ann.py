@@ -11,6 +11,7 @@ big kind whose index is missing or invalid stays on the global index.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, cast
@@ -21,8 +22,12 @@ import pytest
 from psycopg import Connection
 
 from precis.cli.embedding_kind_backfill import (
+    _GLOBAL_HNSW,
+    _index_valid,
+    autovacuum_paused,
     backfill_embedding_kinds,
     build_kind_indexes,
+    reindex_global,
 )
 from precis.store import Store, _chunks_ops
 from precis.store._chunks_ops import (
@@ -142,31 +147,37 @@ def test_ref_kind_update_cascades_to_the_copy(store: Store) -> None:
     assert _copy(store, cid) == (ref.id, "finding")
 
 
+def _legacy_nulls(conn: Connection, cids: list[int]) -> None:
+    """Recreate prod's post-0226 shape on ``conn``: NULL legacy rows under a
+    NOT VALID CHECK. The caller rolls back the whole transaction."""
+    conn.execute(
+        "ALTER TABLE chunk_embeddings DROP CONSTRAINT chunk_embeddings_ref_kind_filled"
+    )
+    conn.execute(
+        "ALTER TABLE chunk_embeddings DISABLE TRIGGER chunk_embeddings_fill_ref_kind"
+    )
+    for cid in cids:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (cid, _EMBEDDER, _unit(np.ones(_DIM))),
+        )
+    conn.execute(
+        "ALTER TABLE chunk_embeddings ENABLE TRIGGER chunk_embeddings_fill_ref_kind"
+    )
+    conn.execute(
+        "ALTER TABLE chunk_embeddings ADD CONSTRAINT chunk_embeddings_ref_kind_filled "
+        "CHECK (ref_id IS NOT NULL AND kind IS NOT NULL) NOT VALID"
+    )
+
+
 def test_backfill_fills_legacy_rows_and_validates(store: Store) -> None:
     """Prod shape: NULL legacy rows under NOT VALID constraints. Rolled back."""
     ref = store.insert_ref(kind="memory", slug=None, title="m", meta={})
     cids = [_chunk(store, ref.id, f"memory body {i}", i) for i in range(3)]
     with store.pool.connection() as conn:
         assert not conn.autocommit  # the DDL below must roll back
-        conn.execute(
-            "ALTER TABLE chunk_embeddings DROP CONSTRAINT chunk_embeddings_ref_kind_filled"
-        )
-        conn.execute(
-            "ALTER TABLE chunk_embeddings DISABLE TRIGGER chunk_embeddings_fill_ref_kind"
-        )
-        for cid in cids:
-            conn.execute(
-                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
-                "VALUES (%s, %s, %s, 'ok')",
-                (cid, _EMBEDDER, _unit(np.ones(_DIM))),
-            )
-        conn.execute(
-            "ALTER TABLE chunk_embeddings ENABLE TRIGGER chunk_embeddings_fill_ref_kind"
-        )
-        conn.execute(
-            "ALTER TABLE chunk_embeddings ADD CONSTRAINT chunk_embeddings_ref_kind_filled "
-            "CHECK (ref_id IS NOT NULL AND kind IS NOT NULL) NOT VALID"
-        )
+        _legacy_nulls(conn, cids)
         dry = backfill_embedding_kinds(conn, apply=False)
         assert dry.unfilled_before == 3 and dry.updated == 0
         res = backfill_embedding_kinds(conn, apply=True, window=1, sleep_s=0)
@@ -182,6 +193,108 @@ def test_backfill_fills_legacy_rows_and_validates(store: Store) -> None:
         ).fetchone()
         assert valid == (True,)
         conn.rollback()
+
+
+def test_backfill_retries_a_cancelled_window_with_half_the_span(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A QueryCanceled/DeadlockDetected window retries at half span. Rolled back."""
+    ref = store.insert_ref(kind="memory", slug=None, title="m", meta={})
+    cids = [_chunk(store, ref.id, f"memory body {i}", i) for i in range(3)]
+    attempts: list[tuple[int, int]] = []
+    real = Connection.execute
+    failed = False
+
+    def spy(self: Connection, query: Any, params: Any = None, **kw: Any) -> Any:
+        nonlocal failed
+        if isinstance(query, str) and "UPDATE chunk_embeddings ce" in query:
+            attempts.append((int(params[0]), int(params[1])))
+            if not failed:
+                failed = True
+                raise psycopg.errors.QueryCanceled(
+                    "canceling statement due to statement timeout"
+                )
+        return real(self, query, params, **kw)
+
+    monkeypatch.setattr(Connection, "execute", spy)
+    with store.pool.connection() as conn:
+        _legacy_nulls(conn, cids)
+        res = backfill_embedding_kinds(conn, apply=True, window=6, sleep_s=0)
+        conn.rollback()
+    assert res.updated == 3 and res.validated
+    # (0, 6] cancelled → span 3 → (0, 3], (3, 6] — the halved span stays for
+    # the rest of the pass; the (empty) paper pass restarts at window 6.
+    assert attempts == [(0, 6), (0, 3), (3, 6), (0, 6)]
+
+
+def test_backfill_skips_the_sleep_after_an_empty_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 0.5 s pause is a write throttle — an empty window does not pause.
+    Rolled back."""
+    ref = store.insert_ref(kind="memory", slug=None, title="m", meta={})
+    cids = [_chunk(store, ref.id, f"memory body {i}", i) for i in range(3)]
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    with store.pool.connection() as conn:
+        _legacy_nulls(conn, cids)
+        # window=1 → one chunk_id per window: exactly the 3 windows holding a
+        # legacy row update, every other window updates 0 and does not sleep.
+        res = backfill_embedding_kinds(conn, apply=True, window=1, sleep_s=0.01)
+        conn.rollback()
+    assert res.updated == 3
+    assert sleeps == [0.01] * 3
+
+
+def test_reindex_global_drops_an_invalid_ccnew_leftover(store: Store) -> None:
+    """A failed REINDEX CONCURRENTLY leaves an INVALID *_ccnew index; the next
+    run drops it before reindexing."""
+    ccnew = f"{_GLOBAL_HNSW}_ccnew"
+    with _autocommit(store) as conn:
+        conn.execute(f"CREATE INDEX {ccnew} ON chunk_embeddings (status)")
+        conn.execute(
+            "UPDATE pg_index SET indisvalid = false WHERE indexrelid = %s::regclass",
+            (ccnew,),
+        )
+        assert _index_valid(conn, ccnew) is False
+        assert reindex_global(conn) is True
+        left = conn.execute(
+            "SELECT count(*) FROM pg_class WHERE relname = %s", (ccnew,)
+        ).fetchone()
+        assert left == (0,)
+        assert _index_valid(conn, _GLOBAL_HNSW) is True
+
+
+def test_autovacuum_pause_vacuums_and_restores_reloptions_on_failure(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The autovacuum window resets the reloption even when the body fails —
+    and still runs the manual VACUUM ANALYZE first."""
+    seen: list[str] = []
+    real = Connection.execute
+
+    def spy(self: Connection, query: Any, params: Any = None, **kw: Any) -> Any:
+        if isinstance(query, str) and (
+            "VACUUM" in query or "autovacuum_enabled" in query
+        ):
+            seen.append(query.split()[0])
+        return real(self, query, params, **kw)
+
+    monkeypatch.setattr(Connection, "execute", spy)
+    reloptions = "SELECT reloptions FROM pg_class WHERE relname = 'chunk_embeddings'"
+    with _autocommit(store) as conn:
+        with pytest.raises(RuntimeError, match="window aborted"):
+            with autovacuum_paused(conn):
+                row = conn.execute(reloptions).fetchone()
+                assert row is not None and "autovacuum_enabled=false" in (row[0] or [])
+                raise RuntimeError("window aborted")
+        row = conn.execute(reloptions).fetchone()
+        # chunk_embeddings carries other reloptions; RESET removes only
+        # autovacuum_enabled.
+        assert row is not None and not any(
+            "autovacuum_enabled" in o for o in (row[0] or [])
+        )
+        assert seen == ["ALTER", "VACUUM", "ALTER"]
 
 
 # --- routing ---------------------------------------------------------------------

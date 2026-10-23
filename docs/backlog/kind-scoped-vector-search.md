@@ -70,11 +70,26 @@ plus distance), so the exact path only stays under ~0.3 s up to ~5k rows.
 Fill every kind including paper, then rebuild the global HNSW.
 
 **Scheduled (Reto 2026-10-21): the weekend of 2026-10-24/25, after a
-fresh prod DB backup is verified.** Steps 1–2 are live on prod (search is
-correct, only the per-kind fast path is missing); steps 3–7 wait for that
-window.
+fresh prod DB backup is verified (gr500071/gr496659).** Steps 1–2 are
+live on prod (search is correct, only the per-kind fast path is
+missing); steps 4–8 wait for that window. The command's own order on
+`--apply`: autovacuum off on chunk_embeddings → the FK btree → fill →
+validate → per-kind indexes → reindex → manual VACUUM ANALYZE +
+autovacuum reset (the cleanup also runs on failure).
 
-1. **Pre-build the two parent keys (mandatory)**, outside a transaction:
+0. **Rehearse on the backup-restore-drill container** (skill
+   `backup-restore-drill`): restore the nightly dump, then on the
+   restored copy measure (i) the `chunk_embeddings_ref_id_kind_idx`
+   CONCURRENTLY build time, (ii) fill ms/row — run the fill ~30 min and
+   take the unfilled-count delta over elapsed — and (iii) `REINDEX
+   INDEX CONCURRENTLY chunk_embeddings_vec_hnsw_idx` wall time.
+   Go/no-go for the weekend, derived from the measured numbers: go when
+   the measured ms/row extrapolates to ≤ 60 h total fill (534k
+   non-paper + 3.41M paper — a weekend plus slack) and the rehearsed
+   reindex fits the remaining window with both index copies on disk;
+   no-go otherwise, and prefer the open option below.
+1. **Pre-build the two parent keys (mandatory; live on prod)**,
+   outside a transaction:
    `CREATE UNIQUE INDEX CONCURRENTLY refs_ref_id_kind_key ON refs (ref_id,
    kind)` and `... chunks_chunk_id_ref_id_key ON chunks (chunk_id, ref_id)`;
    confirm `indisvalid`. The runner wraps each file in a transaction
@@ -82,31 +97,74 @@ window.
    on an INVALID copy (IF NOT EXISTS would skip it) and refuses to build the
    chunks key itself when chunks has over 1M rows (a SHARE lock over a
    6.2 GB heap scan, est. 10–30 s of blocked chunk writes).
-2. **Deploy 0226.** `SET LOCAL lock_timeout = '5s'` bounds every DDL wait
-   (the runner sets 0); on timeout the file rolls back and re-applies
-   cleanly. ADD COLUMN (no default) is metadata-only; FKs and CHECK are NOT
-   VALID; no index is built.
-3. **Backfill, non-paper then paper:** `precis backfill-embedding-kinds
-   --apply --no-indexes` (500-id windows, 60 s statement_timeout per window,
-   0.5 s pause; resumable with `--after`). Cost: every row is a non-HOT
-   update (dev: 0 of 5,000 HOT) and is re-inserted into the 29 GB global
-   HNSW. Dev, 62k-vector index, one stream: 8.6 ms/row paper, 9.3 ms/row
-   memory. Extrapolated: ~1.3 h for the 534k non-paper rows, ~8 h for 3.41M
-   paper rows, more on prod's 60× larger graph.
-4. **Validate:** the same command validates the three constraints when no
+2. **Deploy 0226** (live). `SET LOCAL lock_timeout = '5s'` bounds every
+   DDL wait (the runner sets 0); on timeout the file rolls back and
+   re-applies cleanly. ADD COLUMN (no default) is metadata-only; FKs and
+   CHECK are NOT VALID; no index is built.
+3. **Raise `max_wal_size` for the fill.** Prod runs the 4 GB default;
+   every filled row is a non-HOT update — its own WAL plus the HNSW
+   page work — and 3.94M rows at that write volume forces checkpoint
+   stalls at 4 GB. `ALTER SYSTEM SET max_wal_size = '16GB'` +
+   `SELECT pg_reload_conf()` (SIGHUP GUC, no restart; release owner);
+   restore `4GB` after step 7. pg_wal can hold ~1.5× max_wal_size —
+   covered by the free disk in step 7.
+4. **Backfill, non-paper then paper:** `precis backfill-embedding-kinds
+   --apply --no-indexes --database-url <direct postgres DSN>` — now a
+   direct DSN, because the run first builds
+   `chunk_embeddings_ref_id_kind_idx` CONCURRENTLY (without it the
+   `chunk_embeddings_ref_kind_fkey` ON DELETE/UPDATE CASCADE trigger
+   seq-scans the table on every refs delete or kind update; it may be
+   pre-built any time before the window with `--apply --skip-fill
+   --no-indexes`, which exits after the build reporting the expected
+   unfilled count). The fill: 500-id windows, `--batch-timeout 300` per
+   window, a cancelled (statement_timeout) or deadlocked window retries
+   at half span, and a window that fills nothing skips the 0.5 s pause;
+   resumable with `--resume-pass/--after`. Rows that stay unfilled are
+   listed with their chunk_id and chunks→refs join diagnosis. Cost:
+   every row is a non-HOT update (dev: 0 of 5,000 HOT) and is
+   re-inserted into the 29 GB global HNSW. Dev, 62k-vector index, one
+   stream: 8.6 ms/row paper, 9.3 ms/row memory. Extrapolated: ~1.3 h
+   for the 534k non-paper rows, **20–45 h for the 3.41M paper rows** on
+   prod's 60× larger graph under live writes — the rehearsal's ms/row
+   governs.
+5. **Validate:** the same command validates the three constraints when no
    row is unfilled (SHARE UPDATE EXCLUSIVE; inserts keep flowing).
-5. **Build the per-kind indexes:** `precis backfill-embedding-kinds --apply
+6. **Build the per-kind indexes:** `precis backfill-embedding-kinds --apply
    --skip-fill --database-url <direct postgres DSN>`: btree plus 14 partial
-   HNSW, `CREATE INDEX CONCURRENTLY`, ~534k vectors, ~4 GB. The connection
-   passes `options=-c statement_timeout=0`, so it needs a direct Postgres
-   DSN, not pgbouncer. Each kind switches to its index within 60 s of its
-   index turning valid.
-6. **REINDEX the global HNSW (required):** `... --skip-fill --no-indexes
-   --reindex-global` runs `REINDEX INDEX CONCURRENTLY
-   chunk_embeddings_vec_hnsw_idx`, clearing the 3.94M dead entries step 3
-   left. Needs ~29 GB free disk while both copies exist; a failure leaves an
-   INVALID `_ccnew` index to drop.
-7. **Regenerate `docs/reference/schema.md`** from prod (`scripts/gen-schema`).
+   HNSW, `CREATE INDEX CONCURRENTLY`, ~534k vectors, ~4 GB. The session
+   sets `maintenance_work_mem` (`--maintenance-work-mem`, default 18 GB)
+   and `max_parallel_maintenance_workers`
+   (`--max-parallel-maintenance-workers`, default 4) before any DDL.
+   RAM arithmetic for the default: the DB host has 32 GB — 8 GB
+   shared_buffers + 18 GB maintenance_work_mem leaves ~6 GB for the OS,
+   pgbouncer and connections (work_mem is 64 MB each); if a host has
+   less headroom, lower the flag. Each kind switches to its index
+   within 60 s of its index turning valid.
+7. **REINDEX the global HNSW (required):** `... --skip-fill --no-indexes
+   --reindex-global --database-url <direct>` drops an INVALID
+   `*_ccnew`/`*_ccold` leftover of a failed earlier reindex
+   CONCURRENTLY, then runs `REINDEX INDEX CONCURRENTLY
+   chunk_embeddings_vec_hnsw_idx`, clearing the 3.94M dead entries step
+   4 left. Disk: the reindex needs ~29 GB while both copies exist; df
+   on the DB host showed ~65 GB free at review (132 GB on 2026-10-22 —
+   re-check at the window). The run's exit cleanup (VACUUM ANALYZE +
+   autovacuum reset) covers this step too.
+8. **Regenerate `docs/reference/schema.md`** from prod (`scripts/gen-schema`).
+
+**Open option (Reto's, not picked): skip the paper pass** — ~85 % of the
+fill time (3.41M of 3.94M rows), only needed for the CHECK to validate
+and for paper's own copy (which nothing routes on: paper stays on the
+global index anyway). The catch: the router's gate is the table-wide
+validated CHECK, which never validates while any row is unfilled — so
+this option needs a per-kind gate instead, e.g. route kind k to its
+partial index when the index is valid AND a cached `NOT EXISTS` probe
+finds no unfilled row joining to kind k through chunks→refs. Trade-off:
+every partial kind's fast path switches on after the ~1.3 h non-paper
+fill instead of after a 20–45 h weekend; the cost is a router change,
+the CHECK staying NOT VALID (so the global-gate invariant is lost)
+until a paper pass eventually runs, and live searches relying on the
+probe rather than a catalog flag. Decide after the rehearsal numbers
+land; the fill tooling supports either path.
 
 Trigger + FK cost on the write path (dev, 10k-row INSERT ... SELECT): with
 the HNSW indexes dropped, 0.22–0.24 s without 0226 vs 0.31–0.45 s with it

@@ -4,33 +4,50 @@
 three NOT VALID constraints. On a large table (prod) it leaves legacy rows
 NULL and builds no index. This command does the rest, in order:
 
-1. **fill** — non-paper rows first, then paper, in ``chunk_id`` windows, one
-   short transaction per window (``statement_timeout`` per batch, a pause
-   between batches). Each UPDATE only sets ``ref_id = NULL`` on unfilled
+0. **autovacuum off** — ``ALTER TABLE chunk_embeddings SET
+   (autovacuum_enabled = false)`` for the whole apply run: every filled row
+   is a non-HOT update and autovacuum would race the fill instead of running
+   once. On exit (success or failure) the command runs a manual
+   ``VACUUM ANALYZE`` and resets the reloption.
+1. **btree** — ``CREATE INDEX CONCURRENTLY`` ``chunk_embeddings_ref_id_kind_idx``
+   before any fill: the ``chunk_embeddings_ref_kind_fkey`` ON DELETE/UPDATE
+   CASCADE trigger seq-scans the table on every refs delete or kind update
+   until this index exists. Skipped with ``--no-btree`` (it must already
+   exist, e.g. on a small DB where 0226 built it).
+2. **fill** — non-paper rows first, then paper, in ``chunk_id`` windows, one
+   short transaction per window (``statement_timeout`` per batch). A window
+   cancelled by the timeout or rolled back by a deadlock is retried at half
+   the span (the smaller span stays for the rest of the pass — a dense
+   window means the next one is dense too). A window that fills nothing
+   does not sleep. Each UPDATE only sets ``ref_id = NULL`` on unfilled
    rows: the trigger does the fill, so the copy keeps one definition.
-2. **validate** — VALIDATE the three constraints (SHARE UPDATE EXCLUSIVE;
+3. **validate** — VALIDATE the three constraints (SHARE UPDATE EXCLUSIVE;
    inserts keep flowing).
-3. **indexes** — ``CREATE INDEX CONCURRENTLY`` the FK-covering btree and one
-   partial HNSW per kind in ``_ANN_PARTIAL_KINDS``, each built once from
-   filled data; an INVALID leftover is dropped CONCURRENTLY and rebuilt;
-   every index is checked ``indisvalid`` after. The router uses a kind's
-   index only when it is valid and the CHECK is validated
-   (``store/_chunks_ops.py::_ann_route``).
-4. ``--reindex-global`` — ``REINDEX INDEX CONCURRENTLY`` the global HNSW.
+4. **indexes** — ``CREATE INDEX CONCURRENTLY`` one partial HNSW per kind in
+   ``_ANN_PARTIAL_KINDS`` (the btree is re-ensured first, a no-op after step
+   1), each built once from filled data; an INVALID leftover is dropped
+   CONCURRENTLY and rebuilt; every index is checked ``indisvalid`` after.
+   The router uses a kind's index only when it is valid and the CHECK is
+   validated (``store/_chunks_ops.py::_ann_route``).
+5. ``--reindex-global`` — ``REINDEX INDEX CONCURRENTLY`` the global HNSW.
    Required once after the fill: every filled row was a non-HOT update and
-   left a dead tuple in it.
+   left a dead tuple in it. An INVALID ``*_ccnew``/``*_ccold`` leftover from
+   a failed earlier reindex is dropped CONCURRENTLY first.
 
-Phase 3 and 4 run outside any transaction and can take a long time, so they
-need a connection whose ``statement_timeout`` allows it: the command passes
-``options=-c statement_timeout=0`` at connect, which needs a direct Postgres
-DSN (``--database-url``), not a pooler that rejects startup options.
+The index phases and ``--reindex-global`` run outside any transaction and
+can take a long time, so the apply session connects with
+``options=-c statement_timeout=0`` (each fill window sets its own
+``statement_timeout`` locally) — which needs a direct Postgres DSN
+(``--database-url``), not a pooler that rejects startup options. The session
+also gets ``maintenance_work_mem`` and ``max_parallel_maintenance_workers``
+(``--maintenance-work-mem``, ``--max-parallel-maintenance-workers``) before
+any DDL. A fill-only run (``--no-btree --no-indexes``, no
+``--reindex-global``) still works through the pooler; ``run`` probes the
+options connection first and refuses a pooler before touching anything.
 
 Dry-run by default; ``--apply`` writes. Resume a fill with ``--resume-pass
 <pass> --after <chunk_id>``: ``--after`` applies only to that pass, earlier
 passes are skipped, later ones start from 0.
-
-The index phase and ``--reindex-global`` need a direct DSN; ``run`` checks
-that with a throwaway connection before any fill and refuses a pooler.
 """
 
 from __future__ import annotations
@@ -38,8 +55,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from typing import Any
 
+import psycopg
 from psycopg import Connection
 
 from precis.cli._common import resolve_dsn
@@ -52,10 +73,18 @@ _CONSTRAINTS = (
 )
 _BTREE = "chunk_embeddings_ref_id_kind_idx"
 _GLOBAL_HNSW = "chunk_embeddings_vec_hnsw_idx"
+_GLOBAL_HNSW_DDL = (
+    f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_GLOBAL_HNSW} ON chunk_embeddings "
+    "USING hnsw (vector vector_cosine_ops) WHERE status = 'ok' AND vector IS NOT NULL"
+)
 
 #: Fill passes, in order: the 534k non-paper rows switch their kinds on
 #: first; paper (3.4M rows) only matters to the CHECK.
 _PASSES = (("non-paper", "r.kind <> 'paper'"), ("paper", "r.kind = 'paper'"))
+
+#: Errors one fill window retries at half span: the per-window
+#: ``statement_timeout`` cancelling the UPDATE, or a deadlock victim.
+_RETRYABLE = (psycopg.errors.QueryCanceled, psycopg.errors.DeadlockDetected)
 
 
 @dataclass
@@ -83,6 +112,26 @@ def _unfilled(conn: Connection, *, timeout_s: int = 1800) -> int:
     return int(row[0]) if row else 0
 
 
+def _unfilled_rows(conn: Connection, *, limit: int = 25) -> list[tuple[Any, ...]]:
+    """A sample of rows the fill could not fill, with the join diagnosis.
+
+    A row stays unfilled when the trigger found nothing to copy: the chunk
+    row is gone, or the chunk's ref is gone. Listed so a stalled fill's
+    failure names the cause instead of a bare count.
+    """
+    return conn.execute(
+        "SELECT ce.chunk_id, ce.status, ce.attempts, "
+        "       (c.chunk_id IS NOT NULL) AS has_chunk, "
+        "       r.ref_id AS ref_id, r.kind AS ref_kind "
+        "FROM chunk_embeddings ce "
+        "LEFT JOIN chunks c ON c.chunk_id = ce.chunk_id "
+        "LEFT JOIN refs r ON r.ref_id = c.ref_id "
+        "WHERE ce.ref_id IS NULL OR ce.kind IS NULL "
+        "ORDER BY ce.chunk_id LIMIT %s",
+        (limit,),
+    ).fetchall()
+
+
 def _index_valid(conn: Connection, name: str) -> bool | None:
     """``indisvalid`` of index ``name``; ``None`` when it does not exist."""
     row = conn.execute(
@@ -93,15 +142,27 @@ def _index_valid(conn: Connection, name: str) -> bool | None:
     return None if row is None else bool(row[0])
 
 
-def _index_ddl() -> list[tuple[str, str]]:
-    """``(name, CREATE INDEX CONCURRENTLY ...)`` for every 0226 index."""
-    out = [
-        (
-            _BTREE,
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_BTREE} "
-            "ON chunk_embeddings (ref_id, kind)",
-        )
-    ]
+def ensure_ref_kind_btree(conn: Connection) -> bool:
+    """Ensure ``chunk_embeddings_ref_id_kind_idx``; return ``indisvalid``.
+
+    ``conn`` must be autocommit (CONCURRENTLY refuses a transaction block).
+    An INVALID leftover from a failed build is dropped CONCURRENTLY first —
+    ``IF NOT EXISTS`` alone would keep it. This is step 1 of the rollout:
+    the ``chunk_embeddings_ref_kind_fkey`` ON DELETE/UPDATE CASCADE trigger
+    seq-scans the table on every refs delete or kind update without it.
+    """
+    if _index_valid(conn, _BTREE) is False:
+        conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {_BTREE}")
+    conn.execute(
+        f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_BTREE} "
+        "ON chunk_embeddings (ref_id, kind)"
+    )
+    return bool(_index_valid(conn, _BTREE))
+
+
+def _kind_index_ddl() -> list[tuple[str, str]]:
+    """``(name, CREATE INDEX CONCURRENTLY ...)`` for the per-kind partials."""
+    out: list[tuple[str, str]] = []
     for kind in _ANN_PARTIAL_KINDS:
         name = ann_partial_index_name(kind)
         lit = kind.replace("'", "''")
@@ -133,13 +194,103 @@ def build_kind_indexes(
             "SELECT set_config('maintenance_work_mem', %s, false)",
             (maintenance_work_mem,),
         )
-    result: dict[str, bool] = {}
-    for name, ddl in _index_ddl():
+    result = {_BTREE: ensure_ref_kind_btree(conn)}
+    for name, ddl in _kind_index_ddl():
         if _index_valid(conn, name) is False:
             conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
         conn.execute(ddl)
         result[name] = bool(_index_valid(conn, name))
     return result
+
+
+def _reindex_leftovers(conn: Connection, name: str) -> list[str]:
+    """INVALID ``<name>_ccnew*``/``<name>_ccold*`` indexes a failed REINDEX
+    CONCURRENTLY left behind."""
+    rows = conn.execute(
+        "SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
+        "WHERE NOT i.indisvalid AND c.relkind = 'i' "
+        "  AND (starts_with(c.relname, %s) OR starts_with(c.relname, %s))",
+        (f"{name}_ccnew", f"{name}_ccold"),
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def reindex_global(conn: Connection, *, name: str = _GLOBAL_HNSW) -> bool:
+    """``REINDEX INDEX CONCURRENTLY`` ``name``; return ``indisvalid`` after.
+
+    ``conn`` must be autocommit. Invalid ``*_ccnew``/``*_ccold`` leftovers of
+    an earlier failed reindex are dropped CONCURRENTLY first — a retry would
+    otherwise collide on the names. When the index itself is INVALID the
+    reindex would fail, so it is dropped and created CONCURRENTLY from
+    ``_GLOBAL_HNSW_DDL`` instead.
+    """
+    for stale in _reindex_leftovers(conn, name):
+        conn.execute(
+            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(
+                psycopg.sql.Identifier(stale)
+            )
+        )
+    if _index_valid(conn, name) is False:
+        conn.execute(
+            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(
+                psycopg.sql.Identifier(name)
+            )
+        )
+        conn.execute(_GLOBAL_HNSW_DDL)
+    else:
+        conn.execute(
+            psycopg.sql.SQL("REINDEX INDEX CONCURRENTLY {}").format(
+                psycopg.sql.Identifier(name)
+            )
+        )
+    return bool(_index_valid(conn, name))
+
+
+def _set_maintenance_params(
+    conn: Connection, *, work_mem: str | None, parallel_workers: int | None
+) -> None:
+    """Session-level maintenance GUCs for the DDL session (``is_local=false``;
+    a session SET survives autocommit's implicit commits)."""
+    if work_mem:
+        conn.execute(
+            "SELECT set_config('maintenance_work_mem', %s, false)", (work_mem,)
+        )
+    if parallel_workers is not None:
+        conn.execute(
+            "SELECT set_config('max_parallel_maintenance_workers', %s, false)",
+            (str(parallel_workers),),
+        )
+
+
+@contextmanager
+def autovacuum_paused(conn: Connection) -> Iterator[None]:
+    """Disable autovacuum on ``chunk_embeddings`` for the apply window.
+
+    On exit — success or failure — run a manual ``VACUUM ANALYZE`` and reset
+    the reloption. A cleanup failure is reported on stderr and raised only
+    when the body did not itself fail, so it never masks the real error and
+    never leaves autovacuum silently off.
+    """
+    conn.execute("ALTER TABLE chunk_embeddings SET (autovacuum_enabled = false)")
+    try:
+        yield
+    finally:
+        body_failed = sys.exc_info()[0] is not None
+        errs: list[Exception] = []
+        for stmt in (
+            "VACUUM ANALYZE chunk_embeddings",
+            "ALTER TABLE chunk_embeddings RESET (autovacuum_enabled)",
+        ):
+            try:
+                conn.execute(stmt)
+            except Exception as exc:
+                errs.append(exc)
+                print(
+                    f"warning: {stmt!r} failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+        if errs and not body_failed:
+            raise errs[0]
 
 
 def backfill_embedding_kinds(
@@ -149,7 +300,7 @@ def backfill_embedding_kinds(
     window: int = 500,
     after: int = 0,
     sleep_s: float = 0.5,
-    batch_timeout_s: int = 60,
+    batch_timeout_s: int = 300,
     validate: bool = True,
     resume_pass: str = _PASSES[0][0],
 ) -> BackfillResult:
@@ -159,9 +310,13 @@ def backfill_embedding_kinds(
     Each window runs in its own transaction with ``SET LOCAL
     statement_timeout`` (on an autocommit ``conn`` that commits per window;
     otherwise the windows nest as savepoints in the caller's transaction,
-    as the tests do). ``window`` is a ``chunk_id`` span, not a row count.
-    ``after`` applies to the pass named ``resume_pass`` only; earlier passes
-    are skipped (already done), later ones start at 0.
+    as the tests do). A window killed by that timeout or by a deadlock is
+    retried at half the span — which then stays for the rest of the pass —
+    and re-raised when it can no longer be halved. ``window`` is a
+    ``chunk_id`` span, not a row count. ``after`` applies to the pass named
+    ``resume_pass`` only; earlier passes are skipped (already done), later
+    ones start at 0. The ``sleep_s`` pause is skipped after a window that
+    updated no rows.
     """
     names = [n for n, _ in _PASSES]
     if resume_pass not in names:
@@ -179,23 +334,31 @@ def backfill_embedding_kinds(
     for label, pred in _PASSES[names.index(resume_pass) :]:
         lo = after if label == resume_pass else 0
         last_pass = label
+        span = window
         while lo <= max_id:
-            with conn.transaction():
-                conn.execute(
-                    "SELECT set_config('statement_timeout', %s, true)",
-                    (f"{int(batch_timeout_s)}s",),
-                )
-                cur = conn.execute(
-                    "UPDATE chunk_embeddings ce SET ref_id = NULL "
-                    "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                    "WHERE c.chunk_id = ce.chunk_id "
-                    "  AND ce.chunk_id > %s AND ce.chunk_id <= %s "
-                    f"  AND (ce.ref_id IS NULL OR ce.kind IS NULL) AND {pred}",
-                    (lo, lo + window),
-                )
-                updated += cur.rowcount or 0
-            lo += window
-            if sleep_s:
+            try:
+                with conn.transaction():
+                    conn.execute(
+                        "SELECT set_config('statement_timeout', %s, true)",
+                        (f"{int(batch_timeout_s)}s",),
+                    )
+                    cur = conn.execute(
+                        "UPDATE chunk_embeddings ce SET ref_id = NULL "
+                        "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                        "WHERE c.chunk_id = ce.chunk_id "
+                        "  AND ce.chunk_id > %s AND ce.chunk_id <= %s "
+                        f"  AND (ce.ref_id IS NULL OR ce.kind IS NULL) AND {pred}",
+                        (lo, lo + span),
+                    )
+                    n = cur.rowcount or 0
+            except _RETRYABLE:
+                if span <= 1:
+                    raise
+                span = max(1, span // 2)
+                continue
+            updated += n
+            lo += span
+            if sleep_s and n:
                 time.sleep(sleep_s)
     validated = False
     left = _unfilled(conn)
@@ -214,9 +377,11 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "backfill-embedding-kinds",
         help="Fill chunk_embeddings.ref_id/kind after migration 0226.",
         description=(
-            "Fill unfilled chunk_embeddings rows (non-paper, then paper) so the "
-            "0226 trigger sets ref_id/kind, VALIDATE the 0226 constraints, then "
-            "build the per-kind indexes CONCURRENTLY. Dry-run by default."
+            "Build the FK-covering btree, fill unfilled chunk_embeddings rows "
+            "(non-paper, then paper) so the 0226 trigger sets ref_id/kind, "
+            "VALIDATE the 0226 constraints, build the per-kind indexes "
+            "CONCURRENTLY, and optionally REINDEX the global HNSW. "
+            "Dry-run by default."
         ),
     )
     p.add_argument("--apply", action="store_true", help="Write.")
@@ -236,15 +401,29 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--maintenance-work-mem",
-        default="2GB",
-        help="maintenance_work_mem for the index builds (Postgres size string).",
+        default="18GB",
+        help="maintenance_work_mem for the index/reindex session (Postgres "
+        "size string; the rollout targets ~18 GB on a 32 GB host beside 8 GB "
+        "shared_buffers).",
+    )
+    p.add_argument(
+        "--max-parallel-maintenance-workers",
+        type=int,
+        default=4,
+        help="max_parallel_maintenance_workers for the index/reindex session.",
     )
     p.add_argument("--sleep", type=float, default=0.5, help="Seconds between windows.")
     p.add_argument(
         "--batch-timeout",
         type=int,
-        default=60,
-        help="statement_timeout (s) per window.",
+        default=300,
+        help="statement_timeout (s) per window; a timed-out window retries "
+        "at half span.",
+    )
+    p.add_argument(
+        "--no-btree",
+        action="store_true",
+        help=f"Skip the pre-fill {_BTREE} build (it must already exist).",
     )
     p.add_argument("--skip-fill", action="store_true", help="Skip fill + validate.")
     p.add_argument("--no-indexes", action="store_true", help="Skip the index phase.")
@@ -265,8 +444,6 @@ def require_direct_connection(dsn: str) -> None:
     turns a failure after a multi-hour fill into an immediate refusal. The
     driver's error text is not echoed: it can carry connection details.
     """
-    import psycopg
-
     try:
         with psycopg.connect(
             dsn, autocommit=True, options="-c statement_timeout=0", connect_timeout=15
@@ -274,12 +451,12 @@ def require_direct_connection(dsn: str) -> None:
             conn.execute("SELECT 1")
     except psycopg.Error as exc:
         print(
-            "refusing: the index/reindex phase needs a direct Postgres connection "
-            "(not the pgbouncer pooler), which must accept "
+            "refusing: the btree/index/reindex phase needs a direct Postgres "
+            "connection (not the pgbouncer pooler), which must accept "
             "'-c statement_timeout=0' at connect "
             f"({type(exc).__name__}). Either pass --database-url <direct DSN>, or "
-            "pass --no-indexes (and not --reindex-global) to run only the fill "
-            "and validate through the pooler. Nothing was changed.",
+            "pass --no-btree --no-indexes (and not --reindex-global) to run "
+            "only the fill and validate through the pooler. Nothing was changed.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -287,68 +464,107 @@ def require_direct_connection(dsn: str) -> None:
 
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis backfill-embedding-kinds``."""
-    import psycopg
-
     dsn = resolve_dsn(args.database_url)
     mode = "APPLY" if args.apply else "DRY-RUN"
-    needs_direct = (not args.no_indexes) or args.reindex_global
-    if args.apply and needs_direct:
+    needs_direct = args.apply and (
+        not args.no_btree or not args.no_indexes or args.reindex_global
+    )
+    if needs_direct:
         require_direct_connection(dsn)
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        if args.skip_fill:
-            res = BackfillResult(
-                _unfilled(conn), 0, args.after, False, args.resume_pass
-            )
-            res.unfilled_after = res.unfilled_before
-        else:
-            res = backfill_embedding_kinds(
-                conn,
-                apply=args.apply,
-                window=args.window,
-                after=args.after,
-                sleep_s=args.sleep,
-                batch_timeout_s=args.batch_timeout,
-                resume_pass=args.resume_pass,
-            )
-        print(
-            f"backfill-embedding-kinds [{mode}]: unfilled before {res.unfilled_before}, "
-            f"updated {res.updated}, validated {res.validated}. "
-            f"Resume with --resume-pass {res.last_pass} --after {res.last_chunk_id}.",
-            file=sys.stderr,
-        )
-        if not args.apply:
-            return
-        left = res.unfilled_after if res.unfilled_after is not None else _unfilled(conn)
-        if left:
-            print("rows still unfilled: index phase skipped.", file=sys.stderr)
-            sys.exit(1)
-    if not needs_direct:
-        return
-    # Long, transaction-less DDL: no statement_timeout for this session.
-    with psycopg.connect(
-        dsn, autocommit=True, options="-c statement_timeout=0"
-    ) as conn:
-        if not args.no_indexes:
-            built = build_kind_indexes(
-                conn, maintenance_work_mem=args.maintenance_work_mem
-            )
-            for name, ok in built.items():
-                print(f"  {name}: {'valid' if ok else 'INVALID'}", file=sys.stderr)
-            if not all(built.values()):
-                sys.exit(1)
-        if args.reindex_global:
-            conn.execute(f"REINDEX INDEX CONCURRENTLY {_GLOBAL_HNSW}")
+    connect_kw: dict[str, Any] = {"autocommit": True}
+    if needs_direct:
+        connect_kw["options"] = "-c statement_timeout=0"
+    with psycopg.connect(dsn, **connect_kw) as conn:
+        pause = autovacuum_paused(conn) if args.apply else nullcontext()
+        with pause:
+            if needs_direct:
+                _set_maintenance_params(
+                    conn,
+                    work_mem=args.maintenance_work_mem,
+                    parallel_workers=args.max_parallel_maintenance_workers,
+                )
+            if args.apply and not args.no_btree:
+                ok = ensure_ref_kind_btree(conn)
+                print(
+                    f"  {_BTREE}: {'valid' if ok else 'INVALID'}",
+                    file=sys.stderr,
+                )
+                if not ok:
+                    sys.exit(1)
+            if args.skip_fill:
+                res = BackfillResult(
+                    _unfilled(conn), 0, args.after, False, args.resume_pass
+                )
+                res.unfilled_after = res.unfilled_before
+            else:
+                res = backfill_embedding_kinds(
+                    conn,
+                    apply=args.apply,
+                    window=args.window,
+                    after=args.after,
+                    sleep_s=args.sleep,
+                    batch_timeout_s=args.batch_timeout,
+                    resume_pass=args.resume_pass,
+                )
             print(
-                f"  {_GLOBAL_HNSW}: reindexed, valid={_index_valid(conn, _GLOBAL_HNSW)}",
+                f"backfill-embedding-kinds [{mode}]: unfilled before "
+                f"{res.unfilled_before}, updated {res.updated}, "
+                f"validated {res.validated}. Resume with --resume-pass "
+                f"{res.last_pass} --after {res.last_chunk_id}.",
                 file=sys.stderr,
             )
+            if not args.apply:
+                return
+            left = (
+                res.unfilled_after
+                if res.unfilled_after is not None
+                else _unfilled(conn)
+            )
+            if left and not args.skip_fill:
+                print(f"{left} rows still unfilled; first 25:", file=sys.stderr)
+                for (
+                    cid,
+                    status,
+                    attempts,
+                    has_chunk,
+                    ref_id,
+                    ref_kind,
+                ) in _unfilled_rows(conn):
+                    print(
+                        f"  chunk_id={cid} status={status} attempts={attempts} "
+                        f"chunk={'yes' if has_chunk else 'MISSING'} "
+                        f"ref_id={ref_id if ref_id is not None else 'MISSING'} "
+                        f"ref_kind={ref_kind}",
+                        file=sys.stderr,
+                    )
+                print("fill incomplete: index phase skipped.", file=sys.stderr)
+                sys.exit(1)
+            if left:
+                print(f"  {left} rows still unfilled (--skip-fill).", file=sys.stderr)
+            if not args.no_indexes:
+                built = build_kind_indexes(conn)
+                for name, ok in built.items():
+                    print(f"  {name}: {'valid' if ok else 'INVALID'}", file=sys.stderr)
+                if not all(built.values()):
+                    sys.exit(1)
+            if args.reindex_global:
+                ok = reindex_global(conn)
+                print(
+                    f"  {_GLOBAL_HNSW}: reindexed, valid={ok}",
+                    file=sys.stderr,
+                )
+                if not ok:
+                    sys.exit(1)
 
 
 __all__ = [
     "BackfillResult",
     "add_parser",
+    "autovacuum_paused",
     "backfill_embedding_kinds",
     "build_kind_indexes",
+    "ensure_ref_kind_btree",
+    "reindex_global",
     "require_direct_connection",
     "run",
 ]

@@ -21,12 +21,14 @@ def _args(**kw: Any) -> argparse.Namespace:
         "after": 0,
         "resume_pass": "non-paper",
         "sleep": 0,
-        "batch_timeout": 60,
+        "batch_timeout": 300,
         "skip_fill": False,
+        "no_btree": False,
         "no_indexes": False,
         "reindex_global": False,
         "database_url": _DSN,
-        "maintenance_work_mem": "2GB",
+        "maintenance_work_mem": "18GB",
+        "max_parallel_maintenance_workers": 4,
     }
     base.update(kw)
     return argparse.Namespace(**base)
@@ -63,12 +65,16 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     return log
 
 
-@pytest.mark.parametrize("extra", [{}, {"reindex_global": True, "no_indexes": True}])
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"reindex_global": True, "no_indexes": True}, {"no_indexes": True}],
+)
 def test_pooler_with_index_phase_refuses_before_fill(
     calls: list[tuple[str, dict[str, Any]]],
     capsys: pytest.CaptureFixture[str],
     extra: dict[str, Any],
 ) -> None:
+    """Even a fill run needs a direct DSN unless the pre-fill btree is off."""
     with pytest.raises(SystemExit) as e:
         bf.run(_args(**extra))
     assert e.value.code == 2
@@ -81,6 +87,7 @@ def test_pooler_with_index_phase_refuses_before_fill(
 def test_pooler_with_no_indexes_is_allowed(
     calls: list[tuple[str, dict[str, Any]]],
 ) -> None:
-    bf.run(_args(no_indexes=True))
+    """A fill-only run (--no-btree --no-indexes) still works via the pooler."""
+    bf.run(_args(no_indexes=True, no_btree=True))
     assert [c[0] for c in calls] == ["connect", "fill"]
     assert all("options" not in c[1] for c in calls)
