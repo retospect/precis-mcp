@@ -12,7 +12,7 @@ exist and should stay in parity where the feature applies:
 
 - **Embedded**: `src/precis_web/templates/refs/pathway_detail.html.j2`
   (self-contained; graph + chips + states table live here).
-- **Standalone catpath export**: `/Users/reto/catpath` —
+- **Standalone catpath export**: `../catpath` —
   `src/autocatpath/render.py` / `report.py` (+ `naming.py`,
   tests `test_render.py`/`test_report.py`). Not yet explored this
   session — first step is mapping which features belong in which
@@ -66,5 +66,5 @@ exist and should stay in parity where the feature applies:
 
 `src/precis_web/templates/refs/pathway_detail.html.j2` (+ its route
 `src/precis_web/routes/refs.py` if data shape needs augmenting);
-possibly `/Users/reto/catpath/src/autocatpath/render.py`/`report.py`
+possibly `../catpath/src/autocatpath/render.py`/`report.py`
 (separate repo — its own release flow, see memory `catpath-dev-deploy`).

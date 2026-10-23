@@ -161,7 +161,7 @@ and that headless volume is within each plan's terms.
    and melchior; run against live sessions for a day to tune state
    detection and exception rules. Verify the capacity sources.
    `scripts/fleet-report` exists (2026-10-09); runs on another host as
-   `ssh HOST 'python3 - --repo ~/precis-mcp' < scripts/fleet-report`.
+   `ssh HOST 'python3 - --repo ~/precis-mcp' < scripts/fleet-report`. <!-- home-path: allow — the checkout path on the named host -->
    Verified on the Mac and melchior: Claude transcript state and usage;
    Codex `rate_limits` (Pro plan: weekly `primary` only, `secondary:
    null`, no 5h window); a live Codex pane's footer (`Context N% left ·
@@ -267,7 +267,7 @@ from melchior. Tuning before step 3:
 **Push scheduling + row detail (2026-10-14, gr486948):** shipped —
 `scripts/fleet-report-install` installs the 60 s launchd push (token via
 `--token-file` → `PRECIS_MCP_TOKEN_FILE`, or an embedded
-`PRECIS_MCP_TOKEN`; logs to `~/Library/Logs`); `ctx_pct` uses the
+`PRECIS_MCP_TOKEN`; logs to `~/Library/Logs`); `ctx_pct` uses the <!-- home-path: allow — macOS per-user log/cache dir -->
 transcript's model id (gen-5 ids are a native 1M window, haiku-4-5 and
 older 200k; `--claude-window` overrides) and a live pane footer
 (`Context: Nk / Mk tokens (P%)`, `N% ctx`, `Context N% left`) wins over

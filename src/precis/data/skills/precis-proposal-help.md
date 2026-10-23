@@ -35,7 +35,7 @@ the call's word limits.
 
 ```
 # 1. Ingest the call-for-proposal (same pipeline as a paper, spec kind)
-$ precis add --as cfp ~/Downloads/nsf-25-501.pdf      # → cfp slug, e.g. nsf-25-501
+$ precis add --as cfp ./nsf-25-501.pdf      # → cfp slug, e.g. nsf-25-501
 #    (or drop it in the watch inbox under  inbox/cfp/)
 #    read it at  /cfp/<slug>  (the paper-style two-pane reader)
 

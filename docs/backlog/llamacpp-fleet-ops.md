@@ -97,7 +97,7 @@ headroom for KV growth (scales with slots × ctx) and the OS.
 
 Opposite direction from the parked Q3 single-box experiment (Q3_K_XL ~104G
 on castor alone, freeing pollux) — decide which way to spend the pair
-before doing either. Model switch = relink `~/serve-current.sh` on castor +
+before doing either. Model switch = relink `~/serve-current.sh` on castor + <!-- home-path: allow — script in the deploy home on castor -->
 `systemctl restart llama-server` (~10 min load, big tier falls to cloud
 rung meanwhile); card `served_by[0].max_parallel`, `resource_slots` and
 `-np` are one number, owned by `llm-lane-scheduler.md`'s capacity slice

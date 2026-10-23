@@ -11,7 +11,7 @@ model: opus
 ## Motivation / why
 
 The session MCP is a per-session stdio container
-(`~/work/infrastructure/precis-mcp/scripts/precis-mcp-dev-stdio.sh`:
+(`../../infrastructure/precis-mcp/scripts/precis-mcp-dev-stdio.sh`:
 `docker run -i --rm --name precis-mcp-dev-$$`), bind-mounting the main
 checkout read-only at `/app`. Two defects compound:
 
@@ -266,7 +266,7 @@ env override (`store/store.py::Store.connect` /
 - `src/precis/handlers/skill.py` — `precis-status`'s breadcrumb read
   becomes session-keyed.
 - `src/precis/store/pool.py` — env-resolved pool size defaults.
-- `~/work/infrastructure/precis-mcp/scripts/` — new
+- `../../infrastructure/precis-mcp/scripts/` — new
   `precis-mcp-http-ensure.sh`; `precis-mcp-dev-stdio.sh` **deleted**.
 - `.claude/settings.json` — new `SessionStart` hook entry.
 - `~/.claude.json` (host-local, not in repo).

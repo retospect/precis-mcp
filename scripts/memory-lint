@@ -81,6 +81,15 @@
 #      manifest's supersedes column is the truth); (b) two or more live
 #      threads nodes sharing a title prefix (text before the first
 #      date/timestamp — one node per campaign, gr485358).
+#  11. home paths in bodies: /Users/<name>, /home/<name>, `~/<non-dot>`
+#      (~/work, ~/catpath) and `~/.claude/projects/-<escaped>` (encodes an
+#      absolute checkout) all pin shared text to one machine's home layout
+#      (Reto 2026-10-22). Sibling repos are written relative to this checkout
+#      (../catpath); repo files ./relative. `~/.tool` locations and `~user/…`
+#      host notation pass. A line carrying 'home-path: allow — <reason>' (or
+#      the line after it) is exempt — same convention as the repo test
+#      tests/test_convention_home_paths.py, which gates the same shapes in
+#      tracked docs.
 #   (--bands only, graph mode) recency band per node — ACTIVE, SETTLED or
 #      SPENT, grouped by hub; a report, not findings (context-memory-hierarchy).
 #   6. sibling-repo path currency (always runs; internally weekly-gated, self-
@@ -586,6 +595,37 @@ elif (( BANDS )); then
     echo "  bands: $(grep -c $'\tACTIVE\t' <<< "$band_rows" || true) ACTIVE · $(grep -c $'\tSETTLED\t' <<< "$band_rows" || true) SETTLED · $(grep -c $'\tSPENT\t' <<< "$band_rows" || true) SPENT"
 fi
 
+# 11. home paths in bodies — /Users/<name>, /home/<name>, `~/<non-dot>`
+#     (~/work, ~/catpath, ~/Library, ~/2026-…) and `~/.claude/projects/-<esc>`
+#     (Claude Code's escaped project dir, which encodes the absolute checkout)
+#     all pin shared text to one machine's home layout (Reto 2026-10-22).
+#     Write a sibling repo relative to this checkout (../catpath) and a repo
+#     file ./relative. `~/.tool` canonical locations (~/.ssh, ~/.cache) and
+#     `~user/…` other-account notation pass. Same shapes and marker as the
+#     repo gate in tests/test_convention_home_paths.py.
+if [[ -n "$SCAN_DIR" ]]; then
+    _home_line_re='(^|[^A-Za-z0-9_.~-])/(Users|home)/[A-Za-z0-9_.-]+|(^|[^A-Za-z0-9_/.~-])~/(\.claude/projects/-[A-Za-z0-9_-]+|[A-Za-z0-9_-][A-Za-z0-9_/.~-]*)'
+    _home_tok_re='/(Users|home)/[A-Za-z0-9_./~-]+|~/\.claude/projects/-[A-Za-z0-9_-]+|~/[A-Za-z0-9_-][A-Za-z0-9_./~-]*'
+    for tf in "$SCAN_DIR"/*.md; do
+        b=$(basename "$tf"); is_topic "$b" || continue
+        prev=""
+        while IFS= read -r _raw; do
+            _ln="${_raw#*:}"
+            if [[ "$_ln" == *"home-path: allow"* || "$prev" == *"home-path: allow"* ]]; then
+                prev="$_ln"; continue
+            fi
+            _tok=$(printf '%s' "$_ln" | grep -oE "$_home_tok_re" | head -n1)
+            if (( GRAPH )); then
+                echo "  home path → $(label_of "$b" "$tf"): '$_tok' names one machine's home — a sibling repo is ../<name> relative to this checkout, a repo file ./relative: edit(kind='memory', id='${b%.md}'), or mark 'home-path: allow — <reason>'"
+            else
+                echo "  home path → $b: '$_tok' names one machine's home — a sibling repo is ../<name> relative to this checkout, a repo file ./relative, or mark 'home-path: allow — <reason>'"
+            fi
+            problems=$((problems+1))
+            prev="$_ln"
+        done < <(grep -nE "$_home_line_re" "$tf" 2>/dev/null || true)
+    done
+fi
+
 if (( problems == 0 )) && (( GRAPH )); then
     echo "memory-lint: ✓ clean (graph mode, no hygiene findings)"
 elif (( problems == 0 )); then
@@ -870,9 +910,16 @@ else
             name="${root##*/}"
             [[ "$name" == "precis-mcp" ]] && continue   # this repo — no signal
             expanded="${root/#\~/$HOME}"
+            [[ "$root" == ../* ]] && expanded="$MAIN_ROOT/$root"
             [[ -e "$expanded" ]] || sib_findings+=("$(ident "$b"): $root — no longer on disk (repo retired/renamed? fix or drop the ref)")
-        done < <(grep -ohE '~/work/projects/code/[A-Za-z0-9_-]+|~/work/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/projects/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/[A-Za-z0-9_-]+' "$tf" 2>/dev/null \
-                       | sed -E 's#^/Users/[A-Za-z0-9_-]+/work/#~/work/#' | sort -u)
+        # The ../<name> extraction: the sibling-repo convention (check 11)
+        # names sibling checkouts relative to this one. `\.\./name(/seg)*`
+        # bounded by a non-path char (or EOL) — `../x.md` links don't match
+        # (the `.` fails the bound) — and the first component is the repo.
+        done < <( { grep -ohE '~/work/projects/code/[A-Za-z0-9_-]+|~/work/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/projects/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/[A-Za-z0-9_-]+' "$tf" 2>/dev/null \
+                        | sed -E 's#^/Users/[A-Za-z0-9_-]+/work/#~/work/#';
+                    grep -ohE '(^|[^A-Za-z0-9_.~-])\.\./[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*([^A-Za-z0-9_./~-]|$)' "$tf" 2>/dev/null \
+                        | grep -oE '\.\./[A-Za-z0-9_-]+'; } | sort -u )
     done
     if (( ${#sib_findings[@]} == 0 )); then
         echo "  ✓ all sibling-repo paths verify"
@@ -881,7 +928,14 @@ else
         for f in "${sib_findings[@]}"; do echo "  - $f"; done
         sib_note="${#sib_findings[@]} stale path(s): $(printf '%s; ' "${sib_findings[@]}")"
     fi
-    printf '\n**%s** — %s\n' "$today" "$sib_note" >> "$SIB_LOG"
+    # The stamped line quotes stale paths verbatim — mark it so check 11's
+    # twin gate in tracked docs (tests/test_convention_home_paths.py)
+    # doesn't flag the check's own log.
+    if (( ${#sib_findings[@]} )); then
+        printf '\n**%s** — %s <!-- home-path: allow — verbatim scanner findings -->\n' "$today" "$sib_note" >> "$SIB_LOG"
+    else
+        printf '\n**%s** — %s\n' "$today" "$sib_note" >> "$SIB_LOG"
+    fi
 fi
 
 exit 0

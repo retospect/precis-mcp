@@ -123,7 +123,7 @@ Current source at `0655b224f7de53249870fcb516b8458e353efa2e`:
 
 - The implementation owner is the **tracked vendored `src/hexfold` package
   in precis**, not `precis_se.atomic.generators`. Its package docstring
-  names root `hexfold/` as an export seed; `/Users/reto/hexfold` is absent.
+  names root `hexfold/` as an export seed; `../hexfold` is absent.
 - `precis_se.atomic.join.JOINERS` (`join.py:944`) is a sorted lattice-pair
   dispatcher, currently only `("sp2-hex","sp2-hex")`. Its operation takes
   two endpoints. This does NOT mean all hexfold seams are k=2-only.

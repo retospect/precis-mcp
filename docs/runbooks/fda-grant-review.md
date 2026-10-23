@@ -47,7 +47,7 @@ Two guards exist; this runbook is the **second**:
 
 The authority is `deploy/roles/tcc_profile/defaults/main.yml`
 (`tcc_profile_binaries`). The `tcc_profile` role also renders a per-host
-checklist to `/Users/Shared/cluster-fda-checklist.txt` on each `scripts/deploy`
+checklist to `/Users/Shared/cluster-fda-checklist.txt` on each `scripts/deploy` <!-- home-path: allow — the path deploy writes -->
 (re-run the role if that file is stale — it omitted `/opt/precis/venv/bin/python3`
 as of 2026-08-01). The NAS-touching interpreters in practice:
 `/opt/precis/venv/bin/python3`, `/opt/precis/embedder-venv/bin/python3`,

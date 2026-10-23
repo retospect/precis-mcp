@@ -47,7 +47,7 @@ off that gap until it closes.
 - **Region slice A** (Do next 1) is live on prod (4181421ce, 2026-10-04T00:15Z, migrations core 0182 and se 0018). Dogfooded there through a throwaway design, now retired:
   - every documented op works as precis-se-regions-help says: measures with measurands, patch and ring selectors, add/set/remove pocket, `set_measure measurand=`, `unit_mismatch` in drc, and `view='ops'` round-trip;
   - every documented refusal fires.
-  Five polish issues: reason-column noise in `view='measures'`, unit drift in a taxon's text, unclear "declaration on frame" wording, `atoms:` accepted on an unbound block, and taxon `under=` leaking. Grammar and review verdicts are in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` §3–§5.
+  Five polish issues: reason-column noise in `view='measures'`, unit drift in a taxon's text, unclear "declaration on frame" wording, `atoms:` accepted on an unbound block, and taxon `under=` leaking. Grammar and review verdicts are in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` §3–§5. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 - **Organic print** (Do next 2): print 1, se `organic-bracket-1` as
   file v3, is printing in PLA (Reto, 2026-10-03T21:18Z). Bambu Studio
   02.08.02.61 showed only "invalid config", a Studio bug for every
@@ -93,7 +93,7 @@ off that gap until it closes.
 - **Inferred insertion (Reto 2026-10-02):** `moves` stays required.
   Reto asked whether tool travel and bolt insertion can be inferred; the
   proposal is in
-  `~/.claude/projects/-Users-reto-precis-mcp/review-queue/answered/se-machine-design-1.md`.
+  `~/.claude/projects/-Users-reto-precis-mcp/review-queue/answered/se-machine-design-1.md`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
   Its bolt-insertion part has since shipped from se-3d-viewer
   (fe1e6840c: `toolaccess.insertion_path`, rule `fastener_insertion_path`,
   run by `fasten(reach=True)` in `view='drc'`), so do not file it. Still

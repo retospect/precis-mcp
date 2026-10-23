@@ -77,7 +77,7 @@ or internal cases and list each one in the commit body.
 
 Nothing before `mcp.run()` (`server.main()` → `_init_runtime`, instructions
 preamble) may scale with a mounted tree. The dev-stdio launcher mounts all of
-`~/work` as `PRECIS_ROOT`; an unbounded `os.walk` there pushed the
+`~/work` as `PRECIS_ROOT`; an unbounded `os.walk` there pushed the <!-- home-path: allow — the launcher mount at incident time -->
 `initialize` reply past Claude Code's 30 s CONNECT_TIMEOUT. Background-thread
 it or budget it (`server.py::_FILE_COUNT_BUDGET_S`, 1 s, preamble shows `≥N`).
 Diagnose by timing the handshake: pipe one `initialize` JSON-RPC line into

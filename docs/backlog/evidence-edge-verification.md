@@ -86,7 +86,7 @@ Deployed and attempted on melchior. **All 20 edges errored**, every one with
 attempts all failed the same way:
 
 1. plain `ssh melchior` as the operator → not logged in
-2. `+ HOME=/Users/deploy` (the daemon's home, `.claude` present) → not logged in
+2. `+ HOME=/Users/deploy` (the daemon's home, `.claude` present) → not logged in <!-- home-path: allow — the daemon's real env value -->
 3. `--tier small` with the daemon's full `EnvironmentVariables` exported → **HTTP
    401, "Missing…"** — the OpenRouter key is not in that plist either
 4. `sudo -n -E -u deploy -H` → not logged in

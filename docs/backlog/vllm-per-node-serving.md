@@ -201,7 +201,7 @@ TPOT.
 - 3.5 tok/s per stream at the 32-stream target is slow for interactive use;
   acceptable only for bulk work where aggregate counts.
 - C=1 TTFT p95 7.8 s is likely first-request warm-up (p50 0.9 s).
-- Raw results: castor `/home/deploy/slice0/results/`.
+- Raw results: castor `/home/deploy/slice0/results/`. <!-- home-path: allow — the deploy account's home on the node -->
 
 **Slice 0 result, vLLM arm, gpt-oss 120B MXFP4 on castor (2026-10-03).**
 Same run script and settings (max-model-len 16384, max-num-seqs 64,
@@ -210,7 +210,7 @@ gpu-memory-utilization 0.8); server start 505 s; 0 failed requests; no
 harmony tokenizer vocab from the internet at startup and the container
 cannot reach it: stage `o200k_base.tiktoken` and `cl100k_base.tiktoken` on
 the host, mount them read-only, set `TIKTOKEN_ENCODINGS_BASE` (castor:
-`/home/deploy/slice0/tiktoken/`). Any serving role for gpt-oss needs the
+`/home/deploy/slice0/tiktoken/`). Any serving role for gpt-oss needs the <!-- home-path: allow — the deploy account's home on the node -->
 same.
 
 | C | out tok/s | per-stream tok/s | TTFT p50 / p95 (ms) | peak KV % |

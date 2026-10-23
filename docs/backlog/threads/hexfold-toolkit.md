@@ -35,7 +35,7 @@ design-review: yes
 Free GFN2-xTB (tblite, Te 1000 K, FIRE fmax 0.05 eV/Å, no pins, H caps
 kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
 5,790 atoms is out of xTB reach; 516 atoms cost ~12 s/step). Scripts:
-`~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/xtb_free.py`,
+`~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/xtb_free.py`, <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 `relax1013/` (reports `*.json`, coordinates `*.after.extxyz`).
 
 | scene (prod design) | atoms | converged | result |
@@ -640,7 +640,7 @@ removed as met — the transport move it waited on happened 09-29)
      So grading buys one row. The k=3 washer never flattens (11.6° at
      its flattest), and turn width tracks defect count as much as design.
      Probes and plot are in
-     `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/`
+     `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/` <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
      (`corner3.py`, `corner_profile.png`). The earlier 26°/42° figures
      came from whole-instance fits and are retracted. Recommendation,
      awaiting the verdict: don't rank tube-wall surgery on this. The

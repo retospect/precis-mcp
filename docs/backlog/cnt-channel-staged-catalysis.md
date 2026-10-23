@@ -13,7 +13,7 @@ cross-section `rail-k3-120-z` shipped 2026-10-13, so the cross-section
 gate Reto set is met. **Minting the quest is Reto's call** — this file
 does not mint one.
 Later it feeds the catalysis quests. Reto's full brief:
-`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/cnt-channel-context-2026-10-03.md`.
+`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/cnt-channel-context-2026-10-03.md`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 Concrete instance and its design toolchain (2026-10-04):
 [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 

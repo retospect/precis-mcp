@@ -87,7 +87,7 @@ held for hexfold; leave the hero and its unrelaxed-junction caption intact.
   - ~~delete dc3015729 and dc3015722~~ done 2026-10-09 via MCP `delete(kind='draft')`, both retired (Reto: "delete them");
   - ~~enrich-rearm~~ applied 2026-10-08 (115/118); the worker-cycle wait and the re-export are Reto's (2026-10-09, "I work on it");
   - pillar delete + `pillar/regen.py` + re-export;
-  - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session).
+  - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session). <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 - **Off-thread requests from this session, each with its owner:**
   - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; the greenfield layout (now `llm-capacity-plan.md`);
   - knowledge-mesh: rxn_values folded into measures; LLM specs as a consumer; range + conditions search with SI storage (in `measures-substrate.md`);
@@ -301,7 +301,7 @@ item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
    **Printed-source read: DONE 2026-10-03 ~07:40Z.** For 61 of 159
    printed sources, no single linked passage individually carries the
    full sentence. This is not a miscitation count (Reto 11:56Z ruling).
-   Report: `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/
+   Report: `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/ <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
    printed-read/REPORT.md`. Wrong-paper ingest: gr463414.
    **Item 26 ruled 11:56Z after a Fable audit**
    (`reviews/citation-rigour-audit-2026-10-03.md`). Adopted citation rule:
@@ -341,7 +341,7 @@ The items below are all Reto's; each is a `waiting-for:reto` todo under
 td173019.
 
 1. **td461160 — Nanoscale review proposal** — draft at
-   `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
+   `../../poster/nanobuds-paper/nanoscale-review-proposal.md`
    (outside this repo; authors filled from the draft); Reto fills the
    "importance now" lines and the key references, checks byline order,
    then sends it to the editorial office.
@@ -437,7 +437,7 @@ td173019.
 
 - **td450087** — done 2026-10-01: the README rewrite was already committed in
   the poster repo; Reto moved the poster to the posters folder
-  (`~/work/projects/poster/poster-cmd2026-nanobuds`, a clone with history;
+  (`../../poster/poster-cmd2026-nanobuds`, a clone with history;
   the copy under `pres/` stays until Reto removes it).
 - **pa4365** — cite candidate from the gap-finder (first-principles nanobud
   states 0.3–0.8 eV above the Fermi level, matching dc3015724's STS

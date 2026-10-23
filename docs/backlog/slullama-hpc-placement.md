@@ -21,7 +21,7 @@ pillar: local-compute
 precis reaches an external Slurm HPC GPU (Meluxina, via the ICHEC interim
 service — https://ichec.github.io/interim-service/interim-service.html) as
 a client, over a thin SSH tunnel maintained by `slullama` (separate repo,
-`~/work/projects/code/slullama`): a head-node daemon that `sbatch`-wakes a
+`../slullama`): a head-node daemon that `sbatch`-wakes a
 GPU node, serves Ollama's OpenAI-compat `/v1`, reverse-proxies it to the
 tunnel, and idle-tears-down (`idle_timeout≈30min`, `keep_alive=extend` on
 the cluster side). Since ADR 0066 retired location-coupled tiers, this is
@@ -117,7 +117,7 @@ LuxProvide's current usage policy disallows long-running login-node processes.
 
 Owners: MeluXina for SSH/Slurm lifecycle; chemistry/catpath for the ML-potential
 worker and wheel; local-compute for the later LLM qualification workload.
-Actual local checkout is `/Users/reto/catpath` (clean main when checked);
+Actual local checkout is `../catpath` (clean main when checked);
 implementation belongs in an isolated worktree, not that checkout's main.
 
 ### First pilot: ML potential through autocatpath

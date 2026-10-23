@@ -113,7 +113,7 @@ simulation-vs-world boundary already drawn. Read it first.
 ### Consequence of the gap
 
 Because the tick could not ask, `qu330435` entry 10's Monte Carlo was written
-out-of-band to `~/precis-experiments/photonic-arm/mc_protocol.py` on one
+out-of-band to `~/precis-experiments/photonic-arm/mc_protocol.py` on one <!-- home-path: allow — experiment dir in the user's home -->
 operator's laptop: not a ref, not citable by handle, not re-runnable, invisible
 to the dialectic, and lost if that machine goes away.
 

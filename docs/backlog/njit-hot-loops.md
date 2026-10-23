@@ -50,7 +50,7 @@ and `st459564` (1,494 C).
   1,213 s → 1.8 s on st459564.
 - **Caveat:** run on the host (numba 0.68.0), so the 1e-14 figure may
   differ by platform. Script:
-  `~/.claude/projects/-Users-reto-precis-mcp/scratch/njit-parity/parity.py`.
+  `~/.claude/projects/-Users-reto-precis-mcp/scratch/njit-parity/parity.py`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 
 ## Open
 

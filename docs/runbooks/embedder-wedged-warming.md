@@ -15,7 +15,7 @@ serially instead of fast-failing to lexical.
 - `sample <pid>` shows one thread in `poll` (the accept loop); the
   `embedder-warm` daemon thread is gone. No libtorch / safetensors in
   `lsof -p <pid>`.
-- `~/Library/Logs/precis-embedder.log` fills with identical tracebacks.
+- `~/Library/Logs/precis-embedder.log` fills with identical tracebacks. <!-- home-path: allow — macOS per-user log/cache dir -->
 - `/healthz` still answers `ok` — it is liveness only. `/readyz` answers 503,
   which is correct, but nothing acts on it: launchd `KeepAlive` restarts only
   on process *exit*, and a wedged process never exits.

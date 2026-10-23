@@ -18,7 +18,7 @@ here and has misled three sessions into diagnosing a deadlock (2026-09-28).
 The authoritative read:
 
 ```
-cat /Users/reto/precis-mcp/.git/precis-gate-slot-{0,1}.lock.d/holder
+cat .git/precis-gate-slot-{0,1}.lock.d/holder
   -> <worktree path> pid=<pid> host=<host>
 ps -o etime=,command= -p <pid>
 ```

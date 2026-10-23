@@ -37,7 +37,7 @@ What the dogfood found (2026-10-13, prod):
 - **The import drops part identity.** `view='bom'` prints the refdes in
   the Comment column with no LCSC number for all 96 parts, so no datasheet
   pull was queued and `search(kind='datasheet')` finds nothing for the
-  board. The source has it: `~/taz15.epro2` carries `Manufacturer Part`
+  board. The source has it: `taz15.epro2` (user's home) carries `Manufacturer Part`
   (594 attrs), `Supplier Part` (593, C-numbers), `Manufacturer`, `Pin
   Type` (372, IN/OUT/…), `NO_CONNECT` (11), values (`Resistance`,
   `Capacitance`) and datasheet `link`s. `epro.component_attrs` reads only

@@ -23,18 +23,18 @@ overlay. `/health` returns 503 `{"Loading model"}` until warm.
 
 ## Persistence (systemd, both `enabled`, survive reboot)
 
-- pollux `llama-rpc.service` → `/home/deploy/start-rpc.sh` →
+- pollux `llama-rpc.service` → `/home/deploy/start-rpc.sh` → <!-- home-path: allow — the deploy account's home on the node -->
   `ggml-rpc-server -d CUDA0 -H <cx addr> -p 50052 -c`. The `-c` tensor disk
   cache (`~/.cache/llama.cpp/rpc/`) writes pollux's ~96 GB share to NVMe on
   the FIRST load (slow once) but speeds reloads after a reboot. The script
   waits for the CX IP before binding.
-- castor `llama-server.service` → `ExecStartPre=/home/deploy/wait-rpc.sh`
-  (waits for pollux's RPC port) → `/home/deploy/serve-current.sh`.
+- castor `llama-server.service` → `ExecStartPre=/home/deploy/wait-rpc.sh` <!-- home-path: allow — the deploy account's home on the node -->
+  (waits for pollux's RPC port) → `/home/deploy/serve-current.sh`. <!-- home-path: allow — the deploy account's home on the node -->
 
 ## Switch models = repoint a symlink + restart
 
 `serve-current.sh` is a symlink to `serve-qwen.sh` or `serve-deepseek.sh`
-(both in `/home/deploy`), each = `llama-server -m <first-shard> --alias …
+(both in `/home/deploy`), each = `llama-server -m <first-shard> --alias … <!-- home-path: allow — the deploy account's home on the node -->
 --host 0.0.0.0 --port 8080 -ngl 999 --rpc <pollux cx>:50052 -c 131072 -np 8
 --cache-type-k/v q8_0 -fa on --jinja` — 128K ctx, 8 parallel slots, tool
 calling on (verified live 2026-08-07Z).
@@ -59,10 +59,10 @@ resident.
 - **A model switch on castor (new `--alias`) needs the card's `model_id` /
   `served_by` and the chain rung updated to match.**
 
-## Model library (`/home/deploy/models`, ~3.5 TB free per box)
+## Model library (`/home/deploy/models`, ~3.5 TB free per box) <!-- home-path: allow — the deploy account's home on the node -->
 
 Downloaded with the `hf` CLI and `HF_XET_HIGH_PERFORMANCE=1` in the
-`/home/deploy/hfenv` venv (a blackholed CDN:
+`/home/deploy/hfenv` venv (a blackholed CDN: <!-- home-path: allow — the deploy account's home on the node -->
 [`hf-cdn-blackhole-prefetch`](./hf-cdn-blackhole-prefetch.md)).
 
 - `qwen3-235b-a22b-2507/Q6_K/` — Qwen3-235B-A22B-Instruct-2507 Q6_K, 193 GB
@@ -74,7 +74,7 @@ Downloaded with the `hf` CLI and `HF_XET_HIGH_PERFORMANCE=1` in the
 ## Build
 
 llama.cpp is built from source on each box; identical hardware → pin the
-**same commit** on both. `/home/deploy/build-llama.sh`:
+**same commit** on both. `/home/deploy/build-llama.sh`: <!-- home-path: allow — the deploy account's home on the node -->
 `cmake -B build -DGGML_CUDA=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121-real
 -DLLAMA_CURL=ON -DGGML_NATIVE=ON`, then `-j20`. CUDA 13.0 is already on the
 image at `/usr/local/cuda` (add its `bin` to PATH — `nvcc` isn't on PATH by

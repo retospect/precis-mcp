@@ -20,7 +20,7 @@ slice 3 staircase panel (B2) and slice 6 window/Shapley/HER objectives
 (B3) all landed 2026-10-13 — wave B complete. **Wave C: slice 7 built
 2026-10-14** (Reto: "continue with wave C") — contract below.
 Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
-`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
+`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`; <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
 

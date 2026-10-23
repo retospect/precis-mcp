@@ -85,7 +85,7 @@ matches, the decagons are the corridor faces the label does not see.
   the xTB minimum of the three-sheet 120° seam is the `k3-sp3-z` sp³
   dimer chain — the real seam atom is a flattened tetrahedron. The built
   row seeds at those lengths (dimer 1.60 Å, sheet 1.51 Å, gap 3.32 Å).
-  Coordinates `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/
+  Coordinates `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/ <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
   relax1013/{y-a,seam-out}.after.extxyz`, report `y-a.json` (read-only).
   Finite-segment artefacts ignored: three guard-column H crowding at
   each seam end, two guard carbons bonded across sheets at the start.

@@ -25,7 +25,7 @@ IdentityAgent=none -i ~/.ssh/cluster`.
 
 Canonical deploy account: uid **806**, gid **806** (gid == uid; the historical
 1001 was retired 2026-08-08Z — `cluster_uid_gid_parity`), groups `deploy` +
-`docker`, home `/home/deploy`, shell `/bin/bash`; `authorized_keys` =
+`docker`, home `/home/deploy`, shell `/bin/bash`; `authorized_keys` = <!-- home-path: allow — the deploy account's home on the node -->
 `~/.ssh/cluster.pub`; `/etc/sudoers.d/deploy` =
 `deploy ALL=(ALL) NOPASSWD: ALL` (chmod 440). The melchior-tunnel and
 dev-user keys are appended later by the ansible `ssh_tunnels` role — don't

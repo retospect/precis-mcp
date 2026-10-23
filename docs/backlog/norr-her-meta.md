@@ -77,7 +77,7 @@ and the first exp↔comp join on real data.
 
 ## Step 1 result — hub census (2026-09-27, zero model cost)
 
-Regex census over the 1664 hub sentences (`~/.claude/projects/-Users-reto-precis-mcp/norr-her-meta/census.py`, output `census.txt`). 87% of hubs carry a digit.
+Regex census over the 1664 hub sentences (`~/.claude/projects/-Users-reto-precis-mcp/norr-her-meta/census.py`, output `census.txt`). 87% of hubs carry a digit. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 Hubs per measurand bucket (a hub can hit several):
 
 | bucket | hubs |

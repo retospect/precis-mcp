@@ -209,7 +209,7 @@ is verified done on prod.
    This thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
-   `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
+   `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
    gr506757 (2026-10-23): a `deferred_printable_only` no-body can also mean
    the companion's sidecar fold was refused on its embedded DocInfo DOI —
    Elsevier stamps some companions with a *predecessor* paper's metadata —

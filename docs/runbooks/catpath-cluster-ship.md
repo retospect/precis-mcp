@@ -20,7 +20,7 @@ channel is a wheelhouse seeded by `scripts/deploy` (gr263082). General deploy:
    untagged, energy-moving bump), then run `uv lock -P autocatpath` (it
    resolves the **remote** commit — push first). Ship via `/go`.
 4. **Deploy needs `PRECIS_CATPATH_DIR=<catpath checkout>`** — the default
-   `~/catpath` does not exist on the controller. With the floor bumped,
+   `~/catpath` does not exist on the controller. With the floor bumped, <!-- home-path: allow — where the checkout lives on the controller -->
    `scripts/deploy` preflight builds the new wheel from that checkout
    (provenance-checked against the `uv.lock` pin) and seeds every plugin host's
    `/opt/precis/wheels`.

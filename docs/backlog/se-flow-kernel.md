@@ -10,7 +10,7 @@ title: se flow kernel — dimension-free thin-chamber flow + particle tracing on
 
 Reto, 2026-10-20: "we do mm to 50 cm or so scale for now. If we can
 meaningfully do this dimension-free, I love it." Source code: the
-`cfdtest` scratch repo at `~/work/projects/code/cfdtest`
+`cfdtest` scratch repo at `../cfdtest`
 (`src/breakthrough_annealer/`, own git, not in this repo): `flow.py`
 (Hele-Shaw finite-volume Poisson solve → depth-averaged U, resistance),
 `tracker.py` (vectorised Lagrangian tracer with a stochastic vertical

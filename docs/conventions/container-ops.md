@@ -101,7 +101,7 @@ must target its own worktree"). That refusal is **not** a repo hook and cannot
 be tuned here — `guard-worktree-path.py` only auto-corrects Edit/Write paths.
 To read another worktree's state, use `scripts/inflight --json`: it derives
 per-tree dirty counts, ahead/behind, and a capped diffstat at call time. For
-non-git ops an **absolute path** is fine (`ls /Users/reto/precis-mcp`,
+non-git ops an **absolute path** is fine (`ls /Users/reto/precis-mcp`, <!-- home-path: allow — example of a fine absolute path -->
 `scripts/prod-psql` with an explicit host var).
 
 Do not route around that refusal with a wrapper script that shells out

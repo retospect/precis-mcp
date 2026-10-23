@@ -56,7 +56,7 @@ makes it the single point of failure for every session. Since 2026-10-01
 14:20Z a PID-1 supervisor holds its port across restarts, so restarts no
 longer strand sessions, and kills a wedged server (liveness
 detector). Since 2026-10-01 ~17:52Z it serves the deployed code: `/src`
-is a plain clone (`~/work/projects/code/precis-mcp-prod`) that
+is a plain clone (`../precis-mcp-prod`) that
 `scripts/deploy` moves to each deployed sha, so a qland no longer restarts
 it and a deploy restarts it once (`deploy`'s change, Reto ran the
 recreate). Embedder admission is answered. Since 2026-10-01
@@ -155,7 +155,7 @@ check their state first.
 0. **Any refused window longer than the client's retry budget
    strands sessions; make the server's refused windows short.** Measured
    2026-10-02 on Claude Code v2.1.285 (MCP client logs under
-   `~/Library/Caches/claude-cli-nodejs/<project>/mcp-logs-precis/`):
+   `~/Library/Caches/claude-cli-nodejs/<project>/mcp-logs-precis/`): <!-- home-path: allow — macOS per-user log/cache dir -->
    - **A connected session whose connection drops** makes 5 reconnect
      attempts at 0/1/2/4/8 s, ~15 s in all, then logs "Max reconnection
      attempts (5) reached, giving up" and never retries. Reproduced on
@@ -219,7 +219,7 @@ check their state first.
    - The dev Mac and melchior take the proxy version of the script at the
      organizer-mcp-2 cutover. Its home is now
      `deploy/mcp-http/precis-mcp-http-ensure.sh` (9c668358a). The live
-     copy under `~/work/infrastructure/precis-mcp/` is still copied by
+     copy under `../../infrastructure/precis-mcp/` is still copied by
      hand, and Horizon 1 (mcps role vs wrapper) decides whether that stays.
    **Round-1 gate hang:** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the

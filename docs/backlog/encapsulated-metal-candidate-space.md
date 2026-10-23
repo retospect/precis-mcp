@@ -10,7 +10,7 @@ blocked-by: surface-pourbaix-staircase-optimizer
 
 **File only, not built** (Reto, 2026-10-02T20:37Z: "convert to standard
 and add to the appropriate place"). The source is Reto's transfer prompt,
-`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/encapsulated-metal-transfer-prompt.md`
+`~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/encapsulated-metal-transfer-prompt.md` <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 (§ numbers below refer to it).
 
 Labels:

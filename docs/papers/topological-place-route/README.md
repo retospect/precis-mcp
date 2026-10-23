@@ -31,7 +31,7 @@ and will go stale against it.
 ## Open threads
 
 - Evaluation is not run. Benchmark pointers and the three traps that will
-  bite are in `~/benchmark.txt` (PCBWorld arXiv:2607.05915 as primary, the
+  bite are in `benchmark.txt` in the user's home (PCBWorld arXiv:2607.05915 as primary, the
   UCSD `PCB-Benchmarks` 11 sets as secondary).
 - Nanopublications cannot be minted until the preprint has a DOI and is
   ingested as a `paper` ref; Appendix B records the ordering and the gate

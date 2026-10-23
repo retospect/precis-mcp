@@ -44,7 +44,7 @@ Dispatch one agent (Sonnet) against prod read-only: take qu164903's
 trusted pathways since 2026-09-02 (15 `barrier_trusted`), read
 `view='analysis'|'trust'|'warnings'|'kinetics'` per pathway plus the
 frontier, group by slab composition × co-adsorbate count from the
-structure ops, and write a local report (`~/precis-experiments/
+structure ops, and write a local report (`~/precis-experiments/ <!-- home-path: allow — experiment dir in the user's home -->
 qu164903-effects/report-2026-09-XX.md`) with: H effect (only effect with
 data), U readings at U=0 / U_L / U_opt per pathway, and a **shortcomings**
 section — which views were insufficient, which numbers untrusted, which
@@ -52,7 +52,7 @@ effects have zero data. File the tool gaps as gripes. Output feeds Phases
 1–2 with evidence instead of guesses.
 
 **DONE 2026-09-17** (Sonnet, read-only, against the e91c791e deploy):
-`~/precis-experiments/qu164903-effects/report-2026-09-17.md`, 25 pathways
+`~/precis-experiments/qu164903-effects/report-2026-09-17.md`, 25 pathways <!-- home-path: allow — experiment dir in the user's home -->
 / 15 structures. Findings: no clean H-effect read (the two H-bearing
 candidates also differ in dopant count); zero O/OH/H₂O co-adsorbates
 anywhere (gap audit confirmed exactly); 11/24 barriers untrusted, nearly

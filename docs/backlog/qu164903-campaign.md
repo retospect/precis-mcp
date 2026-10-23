@@ -36,7 +36,7 @@ autocatpath 0.18.0 everywhere.
 2. **SALVAGE — COMPLETE 2026-08-27.** Two passes: 58 rulings (dossier tree
    + frontier + logbook→Aug-2), then a full tail drain (ALL 4,767 entries)
    adding 31 items + corrections. Artifacts:
-   `~/precis-experiments/qu164903-reset/salvage-rulings-2026-08-27.md` (v1,
+   `~/precis-experiments/qu164903-reset/salvage-rulings-2026-08-27.md` (v1, <!-- home-path: allow — experiment dir in the user's home -->
    inline-corrected) + `salvage-tail-addendum-2026-08-27.md` (items 59–94).
    Key corrections: rulings 15/32/33 invalidated; real noise floor ~1 eV
    same-crystal (not 0.111 eV); z=0.66 rule inverted (correct ≈0.46–0.47);
@@ -90,7 +90,7 @@ autocatpath 0.18.0 everywhere.
 
 Done: logbook deleted (4,767→0, cascades verified, ref_events kept);
 dialectic dossier installed verbatim (seed:
-`~/precis-experiments/qu164903-reset/dossier-seed-dialectic.md`); 27
+`~/precis-experiments/qu164903-reset/dossier-seed-dialectic.md`); 27 <!-- home-path: allow — experiment dir in the user's home -->
 off-topic serves pruned (1,241→1,214; 25 finding serves intact). Mint
 done earlier: fi263178 + fi263593–617 (minus 263613), 2 refuted-tagged.
 Tick-zero replication DISPATCHED pre-hold: 50 valid jobs jb263259–263823
@@ -193,7 +193,7 @@ over once catpath 0.17 exists.
 > private for now, and its auto-publish is OFF anyway (a GitHub release does
 > NOT reach PyPI; publishing is a manual `workflow_dispatch` of
 > `workflow.yml` with a typed version confirm). Until publication, 0.17.0
-> reaches the sparks as a locally-built wheel (`uv build` in `~/catpath`)
+> reaches the sparks as a locally-built wheel (`uv build` in `../catpath`)
 > via the `roles/autocatpath` wheelhouse (`/opt/precis/wheels` on each
 > host — installed over the constraints pin every run, survives redeploys;
 > see `deploy/roles/autocatpath/defaults/main.yml`). Steps 1–2 below are
@@ -354,7 +354,7 @@ their own backlog files with `blocked-by` back here.
 | 7 | pH slider on the pareto front — do we need to rerun? justify why this can be dynamic | quest page pareto | discussing |
 | 8 | Default axes of the pareto plot (all three) considered more carefully | quest page pareto | DECIDED: x U_L_abs · y log_tof · colour barrier, via rubric reorder (Reto's SQL below) |
 
-### Working notes (verified 2026-09-18 against this tree + /Users/reto/catpath)
+### Working notes (verified 2026-09-18 against this tree + `../catpath`)
 
 **What exists today (anchors).**
 - Pathway page CHE lever: `templates/refs/pathway_detail.html.j2` `#pw-u-lever`

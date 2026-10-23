@@ -15,7 +15,7 @@ and clarification): under cathodic operation Pd absorbs H and turns β-PdH
 NO→NH₃ peak-FE potential found is −0.3 to −0.4 V_RHE. All 232 live
 qu164903 candidates are bare Pd(111) at 3.89 Å, so its pathways ran on the
 wrong substrate. Full plan, sources and costs:
-`~/.claude/projects/-Users-reto-precis-mcp/reviews/catalysis-selectivity.md`
+`~/.claude/projects/-Users-reto-precis-mcp/reviews/catalysis-selectivity.md` <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 §15; approval item `catalysis-selectivity-16`.
 
 ## In scope

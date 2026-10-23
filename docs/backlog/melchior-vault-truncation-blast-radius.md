@@ -12,7 +12,7 @@ pillar: platform
 
 ## What happened
 
-melchior's overlay working copy (`/Users/reto/git_deploy_helper`, which
+melchior's overlay working copy (`/Users/reto/git_deploy_helper`, which <!-- home-path: allow — the real path on the named host -->
 `precis-mcp/deploy/inventory` symlinks to) had
 `group_vars/all/vault.yml` **truncated from 29 keys to 15** on
 2026-08-18 08:32, with a `vault.yml.bak-20260817` written the same
@@ -46,7 +46,7 @@ To answer this:
 
 1. Find melchior-launched plays in the window — the Mac's
    `.deploy-logs/` will NOT have them (that is why this went unnoticed);
-   check shell history on melchior and `/Users/reto/precis-mcp`.
+   check shell history on melchior and `/Users/reto/precis-mcp`. <!-- home-path: allow — the real path on the named host -->
 2. For each role touched, check whether it references any of the 14 keys
    and whether it uses `| default(...)` (renders empty, silent) or fails
    on undefined (loud, so it would already have been noticed).

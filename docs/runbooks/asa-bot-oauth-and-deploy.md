@@ -2,14 +2,14 @@
 
 **What it is.** asa-bot (`src/asa_bot/`; the Discord bridge) runs Asa as a
 Claude Code agent on **melchior** as user **hermes** (LaunchDaemon
-`com.asa.bot`, log `/Users/hermes/.asa/asa-bot.log`, needs `sudo`). Each Discord
+`com.asa.bot`, log `/Users/hermes/.asa/asa-bot.log`, needs `sudo`). Each Discord <!-- home-path: allow — the real path on the named host -->
 turn spawns a fresh `claude -p` subprocess (`src/asa_bot/claude_invoke.py::invoke`).
 
 ## "Failed to authenticate." on every turn
 
 Cause (2026-07-13Z): the subprocess inherited env but set no
 `CLAUDE_CODE_OAUTH_TOKEN`, so `claude` fell back to the interactive keychain
-credential `/Users/hermes/.claude/.credentials.json`, which is **short-lived
+credential `/Users/hermes/.claude/.credentials.json`, which is **short-lived <!-- home-path: allow — the real path on the named host -->
 (~1 day)** and had expired (`claude: Not logged in · Please run /login`). The
 long-lived token (from `claude setup-token`, ~1 year) was fine — asa just
 wasn't wired to it.

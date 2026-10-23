@@ -97,7 +97,7 @@ same scalars in `results`; precis computes them if absent.
   112/213 candidates (`HNOH -> HNOH+H`, `H2NO -> H2NO+H`), so today's
   criterion mostly compares an H-adsorption energy against a barrier. The
   window criterion must not inherit that. Repeatable with
-  `~/.claude/projects/-Users-reto-precis-mcp/scratch/catsel-r2/replay.py`.
+  `~/.claude/projects/-Users-reto-precis-mcp/scratch/catsel-r2/replay.py`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 - **Decided, Reto 2026-10-02 (review-queue `catalysis-selectivity-3`):**
   qu164903's current selectivity rankings are read as unreliable until
   this item drops +H supply edges as branch-point competitors. No

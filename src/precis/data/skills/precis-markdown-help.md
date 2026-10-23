@@ -35,7 +35,7 @@ get(kind="markdown", id="notes/meeting.md~conclusion")  # name selector
 get(
     kind="markdown", id="notes/meeting.md~3"
 )  # by chunk pos (output shows the handle mc<id>; get(id='mc<id>') works too)
-get(kind="markdown", id="/Users/me/notes/meeting.md")  # absolute path also accepted
+get(kind="markdown", id="/Users/me/notes/meeting.md")  # absolute path also accepted <!-- home-path: allow — example absolute-path input -->
 ```
 
 `/` and `--` are interchangeable in the file portion. `..` parent

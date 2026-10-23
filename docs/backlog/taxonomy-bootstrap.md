@@ -58,7 +58,7 @@ chemistry lives in campaign configuration files.
    number, since whether `D` means debye or "two-dimensional" is a property of
    the corpus, not of the language.
    Same input ⇒ byte-identical output. The hand-written
-   `~/.claude/projects/-Users-reto-precis-mcp/norr-her-meta/census.py` is a
+   `~/.claude/projects/-Users-reto-precis-mcp/norr-her-meta/census.py` is a <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
    chemistry-regex draft of this stage and is NOT the implementation.
 2. **Discovery (model, open vocabulary).** Hubs are split into halves A and B
    *before* the run. Per hub sentence with its mentions marked, Sonnet returns

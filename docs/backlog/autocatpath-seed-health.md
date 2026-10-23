@@ -90,7 +90,7 @@ Spark; supersedes the earlier tegrastats note).
 release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 
 ### Ground truth (spark, 2026-08-09)
-- host `spark`, aarch64, user `deploy`, HOME `/home/deploy`, `/` 2.4 T free.
+- host `spark`, aarch64, user `deploy`, HOME `/home/deploy`, `/` 2.4 T free. <!-- home-path: allow — the deploy account's home on the node -->
 - prod engine venv `/opt/precis/venv`: torch `2.13.0+cu130` (cuda True),
   mace `0.3.16`, autocatpath `0.7.0`; hosts both `precis_pathway` and
   `autocatpath`. **Never mutate this venv** (prod workers run from it).
@@ -100,9 +100,9 @@ release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 
 ### Proposed setup ("catpath dev loop on spark")
 1. **Checkout, zero prod mutation:** clone github.com/retospect/catpath to
-   `/home/deploy/dev/catpath` at `main` (carries batching dtype-fix `9d587e5`).
+   `/home/deploy/dev/catpath` at `main` (carries batching dtype-fix `9d587e5`). <!-- home-path: allow — the deploy account's home on the node -->
 2. **Run mechanism = PYTHONPATH overlay** (no new venv, no wheel-sourcing):
-   `PYTHONPATH=/home/deploy/dev/catpath/src /opt/precis/venv/bin/python …`
+   `PYTHONPATH=/home/deploy/dev/catpath/src /opt/precis/venv/bin/python …` <!-- home-path: allow — the deploy account's home on the node -->
    → prod's torch/mace/precis_pathway with the **dev** `autocatpath`
    shadowing the 0.7.0 site-packages copy. Edit-run loop = `git pull` + rerun.
    Fallback (only if we need different deps): full isolated venv from
@@ -124,7 +124,7 @@ release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 
 ### Invariants
 - Never `pip install -e` into `/opt/precis/venv`; all dev under
-  `/home/deploy/dev`.
+  `/home/deploy/dev`. <!-- home-path: allow — the deploy account's home on the node -->
 - Dev loop and prod worker must not run heavy GPU work simultaneously.
 - catpath ships by `git push origin main`; reaches prod only via GH release →
   PyPI + playbook 44 (+ mandatory `_AUTOCATPATH_CACHE_EPOCH` bump). The
@@ -132,7 +132,7 @@ release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 
 ### Open decisions (for user)
 - Auth: interactive `claude login` on spark vs copy credentials?
-- User/dir: `deploy` + `/home/deploy/dev` ok, or dedicated dev user?
+- User/dir: `deploy` + `/home/deploy/dev` ok, or dedicated dev user? <!-- home-path: allow — the deploy account's home on the node -->
 - Quiesce now: kill seed 574501 + hold jobs for a clean first measurement?
 
 ## autocatpath_seed genuine overruns — reduce cost, checkpoint

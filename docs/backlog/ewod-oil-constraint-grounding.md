@@ -60,9 +60,9 @@ The boxel draft (`draft:nano-computer`) insert and the one genuinely
 mintable artifact — a **hypothesis** that staged imine-cage boxel assembly is
 executable on an EWOD-in-oil platform, with its `motivation` and
 `testable_by` drafted — are prepared as exact copy-paste calls in
-`~/2026-09-13-ewod-boxel-handoff.md`. They could not run: the precis MCP
+`~/2026-09-13-ewod-boxel-handoff.md`. They could not run: the precis MCP <!-- home-path: allow — dated file in the user's home -->
 disconnected mid-session. That file also holds the $0 re-import call for the
-salvaged report text (`~/2026-09-13-ewod-oil-synthesis-report-partial.md`).
+salvaged report text (`~/2026-09-13-ewod-oil-synthesis-report-partial.md`). <!-- home-path: allow — dated file in the user's home -->
 
 The remaining *code* follow-ups (structured step conditions, then
 constraint-aware search rather than annotation) are in

@@ -156,7 +156,7 @@ first, so the script reads the top:
   `sed -n` calls; another had 63 `sed -n` calls ≈43K tokens of tool_result.
   Folded into the existing `token-review-hook-gaps` backlog item as Rule D.
 - **2026-08-07** — sampled the 6 largest 07-30–08-05 sessions (7–18 MB;
-  transcripts live under `~/.claude/projects/-Users-reto-precis-mcp*/` —
+  transcripts live under `~/.claude/projects/-Users-reto-precis-mcp*/` — <!-- home-path: allow — transcript dir on the Mac -->
   the stale path in "The pass" above corrected this pass). Verdict: the 07-29
   `bash-reflex-nudge` hook is NOT moving behavior — Rule A never fires on the
   dominant multi-pattern exploratory greps (24–75/session vs 0–4 navigator

@@ -8,7 +8,7 @@ pillar: 3d-design
 
 # Benchmark selection for the place+route paper
 
-Queued background project. Source handoff: `~/benchmark.txt` (user's home,
+Queued background project. Source handoff: `benchmark.txt` (user's home,
 outside this repo). Paper draft lives at
 `docs/papers/topological-place-route/` in the **`pcb-paper` worktree** —
 not here.

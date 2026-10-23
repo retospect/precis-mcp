@@ -118,7 +118,7 @@ reported "exited with code 0" and read as success. Redirect to a log, read the
 
 ## Preflight traps
 
-1. **Catpath wheel precheck looks in `~/catpath`, not your real checkout.**
+1. **Catpath wheel precheck looks in `~/catpath`, not your real checkout.** <!-- home-path: allow — where the precheck looks on the host -->
    Deploy dies with "autocatpath floor is >=X but no wheel that new exists in
    …/dist and there is no catpath checkout there" (gr263082). Set
    `PRECIS_CATPATH_DIR=<catpath checkout>`, or
@@ -147,7 +147,7 @@ Install (root-owned venvs, `--force-reinstall --no-deps`):
 - Mac (melchior/balthazar): `sudo /opt/precis/venv/bin/pip install
   --force-reinstall --no-deps "git+https://github.com/retospect/precis-mcp@<commit>"`;
   melchior web: same with `/opt/mcps/venv/bin/pip`.
-- Linux (castor/pollux): `sudo /home/deploy/.local/bin/uv pip install --python
+- Linux (castor/pollux): `sudo /home/deploy/.local/bin/uv pip install --python <!-- home-path: allow — the deploy account's home on the node -->
   /opt/precis/venv/bin/python --reinstall --no-deps "git+…@<commit>"` (uv is
   not on PATH; the venv has no pip).
 
