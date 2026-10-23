@@ -1,5 +1,5 @@
 ---
-status: ready
+status: draft
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 prio: normal
 pillar: 3d-design
@@ -334,35 +334,20 @@ already amended; nothing to do there.
 
 - **Accepted** (Reto 2026-10-02, review queue se-machine-design-2): all
   five round-3 calls stand for v1. Reto adds that the model must get
-  better; that is the ranked follow-up below.
+  better; that follow-up moved to pcb-workspace-code slice 0b
+  (2026-10-23).
 
-## Follow-up v2 — real per-part heights and subtracted holes (ranked, Reto 2026-10-02)
+## Follow-up v2 — moved (Reto 2026-10-23)
 
-Not v1, but not optional either: Reto ruled the one conservative box
-and marker-only holes acceptable **for now**, and wants the model to
-grow to:
+The v2 remainder (per-part real heights, hole geometry, the se-side
+multi-solid call shared with `cross-scale-single-assembly.md`) moved to
+[pcb-workspace-code](pcb-workspace-code.md) slice 0b, "Board 3-D shape
+in the container": the board's 3-D shape is exposed as data and as a
+callable inside the workspace container, so a script checks the board
+against se parts or an enclosure and argues the fit. This file keeps
+the v0 build record and the unbuilt pass-A/negotiation remainder.
 
-1. **Per-part envelopes.** Each placed part is its own solid with its
-   real height (courtyard/footprint extent × `height_mm`, top or bottom
-   side), so clearance sees the actual skyline instead of a box at the
-   tallest part. Needs se to carry more than one envelope per block:
-   either derived child blocks (one per part, read-time, never
-   op-authored) or a compound envelope the clearance check iterates.
-   The v1 `segments[0].prisms` list already holds the data, so this is
-   a consumer change, not a new derivation.
-2. **Mounting holes subtracted** from the slab solid, so a fastener or
-   standoff passing through the board clears it in se clearance and
-   fastener-access checks (`se-mechanical-drc.md`). The v1 hole markers
-   carry position and diameter already.
-3. **Proposed heights still flagged.** A part without `height_mm` keeps
-   the 1 mm `origin=proposed` prism and the `pcb_height_proposed`
-   warning; per-part envelopes make that guess more visible, not less.
-
-Ranked in `threads/se-machine-design.md` directly after this item.
-Open when picked up: which of the two multi-solid shapes (child blocks
-versus compound envelope) se adopts. That call is shared with
-`cross-scale-single-assembly.md`, which needs the same capability for
-cartridges.
+## Readiness vet history
 
 ### Readiness vet round 3 (se-machine-design, 2026-10-02)
 

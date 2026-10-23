@@ -7,7 +7,7 @@ effort: high
 
 ## Resume
 
-- **Next:** the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O5 + declared flat faces shipped 2026-10-21 (`annotations={'boss': <t>}` on a `load_at`/`fixed_at` port pins a passive slab at its declared axis face; non-axis directions refuse). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
+- **Next:** pcb-se-binding is draft — the rough box built 2026-10-21, the pass-A remainder and the outline-negotiation loop are unready, and v2 moved to pcb-workspace-code slice 0b (2026-10-23). O5 + declared flat faces shipped 2026-10-21 (`annotations={'boss': <t>}` on a `load_at`/`fixed_at` port pins a passive slab at its declared axis face; non-axis directions refuse). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
 - **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): `pocket-from-molecule` drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
@@ -163,10 +163,17 @@ off that gap until it closes.
      Before building, tell ewod-pcb and pcb-easyeda-round-trip.
      **Built 2026-10-21** (pcb-se-bind): derivation + heights table +
      `attach_boards` + reader decisions + se migration 0023 (lands via
-     builder-ce). Left: v2 (item 7).
-7. **pcb-se-binding v2** — section "Follow-up v2" in
-   `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
-   with real heights and subtracted mounting holes. Blocked-by 6.
+     builder-ce). Left: the pass-A deferrals (`pcb_boards.thickness_mm`,
+     the additive `mechanical_profile` keys, connector roles) and the
+     absorbed outline-negotiation loop; the spec is `draft`. The v2
+     remainder moved to pcb-workspace-code slice 0b (item 7).
+7. **pcb-se-binding v2 → pcb-workspace-code slice 0b** — moved
+   2026-10-23 (Reto): "Board 3-D shape in the container" in
+   `backlog/pcb-workspace-code.md` — the board's outline, per-part
+   heights/courtyards, mounting holes and keepouts exposed as data and
+   as a callable inside the workspace container. Owned by the
+   structure-workspaces thread; waits on pcb-workspace-code slice 0,
+   not on item 6.
 8. **backlog/pcb-argue-with-design.md** — slices 1+2 shipped; the
    `pcb_argue` job answers open notes in place. No prod `service_config`
    row owed (a job_type rides the `job_inproc` lane). Left: the browser

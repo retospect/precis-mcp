@@ -122,13 +122,13 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   place+route pass; reject re-placement when the T1+D14 wirelength
   accept metric is more than 2% worse than those input poses. A
   legalization/outline repair rules out restoring the illegal input.
-- **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
-  pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
-  cross-probing, shared zoom/pan module with se. **Spec slices 1–3
-  shipped**: focus mode + pinning (124b468d9); sheets by placement
-  group with off-sheet connectors + cross-probe sheet picking, and the
+- `pcb-workbench-layout` — shipped and deleted 2026-10-23: schematic
+  left, layout right, one chat, cross-probing, shared zoom/pan module
+  with se. Slices 1–3 landed (focus mode + pinning 124b468d9; sheets by
+  placement group with off-sheet connectors + cross-probe sheet picking;
   se adoption — se 2D on `viewport.js` (`se-2d.js`), se 3D f/0/+/− keys
-  + the gesture table (`blocktree-3d.js`) — on `pcb-wb-23`.
+  + the gesture table (`blocktree-3d.js`)) and the Proposed items
+  (part cards + cached thumbnails, `pcb_parts.py`) shipped with them.
 - **backlog/pcb-datasheet-review.md** — `in-progress/high`, filed
   2026-10-13 from the taz15-blank dogfood: shared part facts, design
   intent in graph memory, re-derivable verdicts, review job, shortlist
