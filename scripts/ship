@@ -226,7 +226,7 @@ REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 # 2026-09-13 HYBRID fallback engage: re-sync and validate the integrated tree
 # with the FULL LOCAL container gate (~10 min) instead, then push. The
 # fallback no longer holds the ship lock (it did until 2026-10-03, when a
-# hybrid gate held it to the 2 h cap); it needs one of the two fleet-wide
+# hybrid gate held it to the 2 h cap); it needs one of the fleet-wide
 # gate slots (gr343941 — the FIFO slot ticket is that gripe's remaining
 # scope). If even that gate loses the race, the ship lands by the in-lock
 # forward merge instead of looping.
@@ -892,7 +892,7 @@ GATE_RUN_LOG=""
 GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact $(case "$(uname -m)" in (aarch64|arm64) echo --no-extra struct-search ;; esac)'
 
 gate_deps_sync() {
-    local log host
+    local log host sync_rc
     GATE_UV_OFFLINE=0
     log="$(mktemp "${TMPDIR:-/tmp}/precis-gate-sync.XXXXXX")"
     if gate_sh "uv sync --offline ${GATE_SYNC_EXTRAS}" >"$log" 2>&1; then
@@ -905,7 +905,9 @@ gate_deps_sync() {
             GATE_UV_OFFLINE=0
             cat "$log"
         else
+            sync_rc=$?
             cat "$log" >&2
+            gate_oom_note "$sync_rc" "the gate env sync"
             host="$(gate_net_host "$log" || true)"
             rm -f "$log"
             gate_slot_release
@@ -936,6 +938,9 @@ gate_exec() {
         gate_sh "$cmd" 2>&1 | tee -a "$GATE_RUN_LOG" || rc=$?
     fi
     if [[ "$rc" != 0 ]]; then
+        # 137 = the container's own OOM kill (its mem_limit in compose.yaml),
+        # not a lint/test verdict — say so before the generic red below.
+        gate_oom_note "$rc" "the gate container (${GATE_MODE} mode)"
         host="$(gate_net_host "$GATE_RUN_LOG" || true)"
         if [[ -n "$host" ]]; then
             gate_slot_release

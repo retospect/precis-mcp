@@ -67,13 +67,17 @@ and deleting that ref kills the run. Escape hatch `PRECIS_NO_CI_REF_REAP=1`
 (remote untouched, worktrees still reaped); offline or unauthenticated is a
 silent skip, never a hook failure.
 
-All gate/test containers still share **one Docker VM memory ceiling**, so
+All gate/test containers still share **one Docker VM**, so
 `scripts/test` and the `scripts/ship` gate take a fleet-wide **gate slot**
-(`scripts/lib/gate-slot.sh`, default 2 concurrent, `PRECIS_GATE_SLOTS`
+(`scripts/lib/gate-slot.sh`, default 3 concurrent, `PRECIS_GATE_SLOTS`
 overrides) before the heavyweight container run — a queued run waits with a
 message instead of OOM-killing a sibling's at random (exit 137 / silent
-pytest death mid-run, gr202193). Abandoned slots are stolen when the holder
-pid dies or after 45 min.
+pytest death mid-run, gr202193). The default moved 2 → 3 on 2026-10-21 with
+the OrbStack VM (93.2 GiB, 8 CPUs: a gate peaks ~4.5 GiB, so CPU is the
+limit now, not memory). Each gate/dev container also carries a 24 GiB
+`mem_limit` (`docker/dev/compose.yaml`), so a runaway OOMs alone and the
+kill is reported as OOM rather than a silent death. Abandoned slots are
+stolen when the holder pid dies or after 45 min.
 
 ```
 scripts/test                         # full suite (-n6)

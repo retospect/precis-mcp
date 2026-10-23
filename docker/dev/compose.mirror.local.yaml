@@ -106,6 +106,13 @@ services:
       secrets:
         - gh_token
     working_dir: /app
+    # One runaway gate/dev container OOMs inside its own cgroup (exit 137,
+    # reported by scripts/test|ship via gate_oom_note) instead of the VM
+    # killing a random sibling's gate (gr202193). Sized ~1.7x the dev-run's
+    # measured ~14.4 GiB peak on the OrbStack VM (2026-10-21 — a full -n6
+    # --selected run plateaued at ~14.4 GiB; an 8g cap thrashed). Deliberately
+    # no CPU cap — CPU contention just slows a gate, memory was the killer.
+    mem_limit: 24g
 
   # Warm gate container (scripts/ship). Long-lived across ships, and
   # DELIBERATELY has no /app bind mount: ship tar-syncs `git archive HEAD`
@@ -138,6 +145,9 @@ services:
     image: precis-dev
     working_dir: /app
     command: ["sleep", "infinity"]
+    # Same per-container OOM bound as precis-dev above (24 GiB, 2026-10-21) —
+    # this service also runs the gate workload, via exec rather than run.
+    mem_limit: 24g
     depends_on:
       precis-test-db:
         condition: service_healthy

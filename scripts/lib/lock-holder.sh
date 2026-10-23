@@ -12,7 +12,8 @@
 # from a live process — and `ship --mutate` plus a full gate routinely runs
 # 70+ minutes. That re-opened the shared-index clobber the ship mutex exists
 # to prevent, and let a third gate container into a 2-slot semaphore sized to
-# a ~8GB VM (the OOM churn of gr202193).
+# the ~8 GB Docker Desktop VM the fleet ran then (the OOM churn of gr202193;
+# on the 93.2 GiB OrbStack VM the default is 3 — 2026-10-21).
 #
 # The condition the comments described was never expressible, because a
 # holder file recorded only `<dir> pid=<n>`: pids are host-local, so a pid

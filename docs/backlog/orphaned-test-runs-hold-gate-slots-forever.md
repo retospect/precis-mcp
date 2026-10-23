@@ -8,7 +8,7 @@ pillar: platform
 
 ## What
 
-`scripts/lib/gate-slot.sh` is an N-slot (default 2) mkdir-mutex on the git
+`scripts/lib/gate-slot.sh` is an N-slot (default 3) mkdir-mutex on the git
 common dir, taken for the whole life of a `scripts/test` / `scripts/ship`
 container run. Reclaim is deliberately conservative: on this host the holder
 pid decides — dead pid steals at once, **live pid waits however long its gate

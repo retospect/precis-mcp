@@ -264,7 +264,7 @@ commit is not the pin.
 ## /qgo — ungated deploy
 
 qland + deploy that sha **ungated**, then a repair gate only if a slot is
-free (never queued — queuing starves the 2-slot semaphore). Prod may run
+free (never queued — queuing starves the gate-slot semaphore). Prod may run
 broken code until the next pass: accepted on a dev cluster, and
 `scripts/qgo-guard` hard-refuses the two things prod cannot take back (any
 `*/migrations/*.sql`, `safe_fetch.py`) — those take `/go`.

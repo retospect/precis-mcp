@@ -243,9 +243,11 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 # (gr176375). See scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
-# Gate-slot admission (gr202193): the test container runs against one shared
-# Docker VM ceiling with every sibling worktree's — cap concurrency so runs
-# queue briefly instead of OOM-killing each other at random (exit 137).
+# Gate-slot admission (gr202193): the test container runs on one shared
+# Docker VM with every sibling worktree's — cap concurrency so runs queue
+# briefly instead of OOM-killing each other at random. A runaway's own
+# container now OOMs alone at its mem_limit (exit 137; gate_oom_note names
+# it — sourced with the lib).
 source "${WORKTREE}/scripts/lib/gate-slot.sh"
 # Disk preflight: a docker VM disk near full dies later as a raw ENOSPC with no
 # test output, which reads as a red run. Refuse now (exit 3), before any compose
@@ -352,9 +354,11 @@ if [[ "${1:-}" == "--typecheck" ]]; then
     shift
     MYPY_ARGS=("$@")
     [[ ${#MYPY_ARGS[@]} -eq 0 ]] && MYPY_ARGS=(src tests)
+    rc=0
     compose run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}"
-    exit $?
+        bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}" || rc=$?
+    gate_oom_note "$rc" "the mypy container"
+    exit "$rc"
 fi
 
 # Co-located RAM test DB (the same service scripts/ship's gate uses). If it
@@ -520,6 +524,7 @@ run_pytest() {
     if [[ "$mode" == "testmon" ]]; then
         tm_args=("${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}")
     fi
+    local rc=0
     compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
         -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
         "${THREAD_CAP_ENV[@]}" \
@@ -529,7 +534,11 @@ run_pytest() {
         bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-lock-pins.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
-        "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@"
+        "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" || rc=$?
+    # Exit 137 = the container's own OOM kill (mem_limit in compose.yaml) —
+    # name it as such rather than a silent red run (gate-slot.sh).
+    gate_oom_note "$rc" "the pytest container"
+    return "$rc"
 }
 
 # --selected: the static half (contract + map + corpus-coupled + direct

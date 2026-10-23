@@ -65,21 +65,39 @@ def _slot_dirs(repo: Path) -> list[Path]:
     return sorted((repo / ".git").glob("precis-gate-slot-*.lock.d"))
 
 
-def _start_acquire(repo: Path, done: Path, *, slots: int = 1) -> subprocess.Popen:
+def _start_acquire(
+    repo: Path, done: Path, *, slots: int | None = 1
+) -> subprocess.Popen:
     """Run the real ``gate_slot_acquire`` in the background.
 
-    On success it writes the won slot dir to ``done``, then sleeps so the slot
-    stays held while the test inspects it.
+    ``slots=None`` leaves ``PRECIS_GATE_SLOTS`` unset, exercising the script's
+    default cap. On success it writes the won slot dir to ``done``, then
+    sleeps so the slot stays held while the test inspects it.
     """
     script = (
         f'cd "{repo}"; source "{_LIB}"; '
         f'gate_slot_acquire; printf "%s" "$GATE_SLOT_DIR" > "{done}"; sleep 30'
     )
+    env = {**os.environ}
+    if slots is None:
+        env.pop("PRECIS_GATE_SLOTS", None)
+    else:
+        env["PRECIS_GATE_SLOTS"] = str(slots)
     return subprocess.Popen(
         ["bash", "-c", script],
-        env={**os.environ, "PRECIS_GATE_SLOTS": str(slots)},
+        env=env,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _hold_slot(repo: Path, index: int, pid: int) -> Path:
+    """Occupy slot ``index`` as a live same-host holder would."""
+    d = repo / ".git" / f"precis-gate-slot-{index}.lock.d"
+    d.mkdir()
+    (d / "holder").write_text(
+        f"{repo} pid={pid} host={_this_host()}\n", encoding="utf-8"
+    )
+    return d
 
 
 def _wait_for(path: Path, timeout: float) -> bool:
@@ -190,3 +208,57 @@ def test_release_clears_an_unacquired_waiters_ticket(
     assert not ticket.exists(), (
         "gate_slot_release left the waiter's ticket in the queue"
     )
+
+
+def test_default_cap_is_three_and_env_override_wins(repo: Path, tmp_path: Path) -> None:
+    """The default cap is exactly 3 (OrbStack sizing, 2026-10-21).
+
+    ``PRECIS_GATE_SLOTS`` unset: with slots 0-1 held an acquirer must win
+    slot 2 (default >= 3), and once 0-2 are all held a second acquirer must
+    WAIT (default <= 3). The env still overrides: a third acquirer under
+    ``PRECIS_GATE_SLOTS=4`` takes slot 3 while the capped one still waits.
+    """
+    holder = subprocess.Popen(["sleep", "60"])
+    done_a = tmp_path / "done-a"
+    done_b = tmp_path / "done-b"
+    done_wide = tmp_path / "done-wide"
+    proc_a = proc_b = proc_wide = None
+    try:
+        for i in range(2):
+            _hold_slot(repo, i, holder.pid)
+
+        # Lower edge: the default cap reaches slot 2.
+        proc_a = _start_acquire(repo, done_a, slots=None)
+        assert _wait_for(done_a, timeout=10), (
+            "an acquirer with PRECIS_GATE_SLOTS unset never took the free "
+            "slot 2 — the default cap is under 3"
+        )
+        assert done_a.read_text(encoding="utf-8").endswith("precis-gate-slot-2.lock.d")
+
+        # Upper edge: slots 0-2 held (0-1 by `holder`, 2 by proc_a itself)
+        # and the default-capped waiter must queue, not reach a slot 3.
+        proc_b = _start_acquire(repo, done_b, slots=None)
+        assert not _wait_for(done_b, timeout=7), (
+            "a default-capped acquirer won a fourth slot while 0-2 are held "
+            "— the default cap is over 3"
+        )
+
+        # The env override still wins: =4 admits the waiter to slot 3.
+        proc_wide = _start_acquire(repo, done_wide, slots=4)
+        assert _wait_for(done_wide, timeout=10), (
+            "PRECIS_GATE_SLOTS=4 did not take the free slot 3 — the env "
+            "override no longer wins"
+        )
+        assert done_wide.read_text(encoding="utf-8").endswith(
+            "precis-gate-slot-3.lock.d"
+        )
+        assert not done_b.exists(), (
+            "the default-capped waiter slipped past its 3-slot bound"
+        )
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+        for proc in (proc_a, proc_b, proc_wide):
+            if proc is not None:
+                proc.terminate()
+                proc.wait(timeout=10)

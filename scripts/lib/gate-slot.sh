@@ -2,12 +2,19 @@
 # scripts/lib/gate-slot.sh — N-slot admission semaphore for heavyweight gate
 # containers (gr202193). Sourced by scripts/test and scripts/ship.
 #
-# Why: every worktree's gate/test run is a 1-3GB container capped against ONE
-# shared Docker Desktop/colima VM (~8GB), not host RAM. With 4+ sibling
-# sessions gating at once the VM OOM-kills containers at random (exit 137,
-# silent pytest death mid-run, mypy SIGKILL at container-creation) — never a
-# real failure, pure capacity. Capping concurrent gates fleet-wide turns that
-# churn into a short queue.
+# Why: every worktree's gate/test run is a heavyweight container on ONE shared
+# Docker VM — OrbStack on this host, 93.2 GiB / 8 CPUs on a 128 GiB box
+# (measured 2026-10-21). The cap was set at 2 for the ~8 GB Docker Desktop VM
+# (gr202193): with 4+ sibling sessions gating at once the VM OOM-killed
+# containers at random (exit 137, silent pytest death mid-run, mypy SIGKILL
+# at container-creation) — never a real failure, pure capacity. Capping
+# concurrent gates fleet-wide turns that churn into a short queue. A gate now
+# peaks ~4.5 GiB and 180-470% CPU (baseline containers ~9 GiB), so three fit
+# memory comfortably and CPU is the binding constraint — default 3. The
+# remaining OOM risk (one runaway run) is bounded per-container: the gate and
+# dev-run services carry a 24 GiB mem_limit in docker/dev/compose.yaml, so a
+# runaway OOMs alone (exit 137) and its siblings are untouched; callers name
+# that kill via gate_oom_note below.
 #
 # Mechanics mirror the ship lock (scripts/ship §3): all worktrees share one
 # .git, so mkdir-mutexes on the git common dir are host-global; macOS has no
@@ -23,9 +30,11 @@
 # (gr202363) — otherwise a release firing after a sibling steals our slot
 # (>45-min hold, or a late EXIT trap) deletes THEIR fresh slot instead.
 #
-# PRECIS_GATE_SLOTS overrides the cap (default 2 — measured: two concurrent
-# full gates fit the ~8GB VM, three don't). Callers must arrange
-# `gate_slot_release` on EXIT (idempotent) and around early returns.
+# PRECIS_GATE_SLOTS overrides the cap (default 3 — sized 2026-10-21 for the
+# OrbStack VM: ~4.5 GiB peak per gate against 93.2 GiB, and CPU-bound rather
+# than memory-bound; the previous 2 was measured on the ~8 GB Docker Desktop
+# VM, gr202193). Callers must arrange `gate_slot_release` on EXIT (idempotent)
+# and around early returns.
 #
 # Fairness (gr294498): the slot grab used to be a plain unfair spin-race —
 # every waiter re-scanned all slots and `mkdir`'d on each 3s wake-up with no
@@ -71,7 +80,7 @@ _gate_queue_prune() { # <qdir> <max_age_min>
 }
 
 gate_slot_acquire() {
-    local slots="${PRECIS_GATE_SLOTS:-2}"
+    local slots="${PRECIS_GATE_SLOTS:-3}"
     local common i d holder reason host name my_rank depth other seen_self
     local waited=0 last_rank=-1
     common="$(git rev-parse --git-common-dir)"
@@ -175,4 +184,18 @@ gate_slot_release() {
         fi
         GATE_SLOT_DIR=""
     fi
+}
+
+# The other half of the OOM guard (2026-10-21): the semaphore bounds how many
+# gates run at once; the 24 GiB mem_limit on the precis-dev/precis-gate
+# services (docker/dev/compose.yaml) bounds ONE runaway, so it dies inside
+# its own cgroup instead of the VM killing a random sibling's gate. A cgroup
+# OOM surfaces as exit 137 (128+SIGKILL) — historically a silent pytest death
+# or a mystery red gate. Callers pass the container's exit code through here
+# so every 137 is named as the kill it almost always is.
+gate_oom_note() { # <exit code> <what died>
+    [[ "${1:-0}" == 137 ]] || return 0
+    # ✖ + indented continuation: the shape ship's quiet epilogue surfaces.
+    printf '\033[31m✖ %s exited 137 (SIGKILL) — almost always the OOM killer on its mem_limit (24 GiB, docker/dev/compose.yaml), not a verdict on the diff.\n  The kill is per-container now: siblings keep running. Re-run to rule out a flake; if it repeats, bisect the memory hog.\033[0m\n' "${2:-the gate container}" >&2
+    return 0
 }

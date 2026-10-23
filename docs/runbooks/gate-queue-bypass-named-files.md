@@ -1,7 +1,7 @@
 # Verifying a few named test files when the local gate queue is hours deep
 
-**When.** `scripts/test` waits on a 2-slot local gate (`scripts/lib/gate-slot.sh`)
-and the queue is deep (seen 2026-09-16: ~20 sibling waiters, some over 1.5 h).
+**When.** `scripts/test` waits on an N-slot local gate (`scripts/lib/gate-slot.sh`,
+default 3) and the queue is deep (seen 2026-09-16: ~20 sibling waiters, some over 1.5 h).
 You need a handful of named test files green before a `/qland`, not the full
 suite. The remote `/land` matrix or the post-burst `/go` stays the real gate;
 this is a spot check.
@@ -11,14 +11,14 @@ usefully and flails on empty logs), and do not kill or stop gate containers
 (they belong to sibling sessions). Your own parked `bash scripts/test …`
 waiter holds no container, so a plain `kill <pid>` on it is safe.
 
-## First: find out who actually holds the two slots
+## First: find out who actually holds the slots
 
 A slot is a **holder file**, not a container. `docker ps` reads backwards
 here and has misled three sessions into diagnosing a deadlock (2026-09-28).
-The authoritative read:
+The authoritative read (slot dirs are numbered 0..N-1; N is the cap):
 
 ```
-cat .git/precis-gate-slot-{0,1}.lock.d/holder
+cat .git/precis-gate-slot-*.lock.d/holder
   -> <worktree path> pid=<pid> host=<host>
 ps -o etime=,command= -p <pid>
 ```
@@ -33,10 +33,11 @@ ps -o etime=,command= -p <pid>
   most of a holder's elapsed time was spent waiting for the slot it now
   holds.
 
-Never raise `PRECIS_GATE_SLOTS` to get unblocked: `scripts/lib/gate-slot.sh`
-records that a third gate into a 2-slot semaphore caused the OOM churn the
-guard exists to stop (gr202193). Wait, use the bypass below, or ask the
-holder's session.
+Never raise `PRECIS_GATE_SLOTS` to get unblocked: the default (3 since
+2026-10-21, sized to the 93.2 GiB / 8-CPU OrbStack VM) is the fleet's
+capacity answer, not a per-session knob — the OOM churn it prevents is
+gr202193's, and CPU is now the binding constraint, not RAM. Wait, use the
+bypass below, or ask the holder's session.
 
 ## Recipe
 

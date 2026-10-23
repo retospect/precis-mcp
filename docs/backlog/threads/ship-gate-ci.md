@@ -146,7 +146,7 @@ nightly — the diff-cover verdict is still open.
    the orchestrator 19:01Z).
 5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
-   2-slot gate for every tree.
+   slot-capped gate for every tree.
 6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
    container; the tooling that makes 5 diagnosable.
 7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
