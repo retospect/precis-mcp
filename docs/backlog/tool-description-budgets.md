@@ -79,7 +79,9 @@ and does not restate it).
 
 ## Slices
 
-1. **Hygiene.** Put the per-verb cap test into `CODE_HYGIENE`. Independent of
+1. **Hygiene.** *(landed 2026-10-21 — tool-desc-s1 added the whole
+   `test_token_budget.py` file, matching the `impacted-tests` CONTRACT
+   target.)* Put the per-verb cap test into `CODE_HYGIENE`. Independent of
    M1-M3; stops `--quick` reddening main. Size: small.
 2. **Inventory.** List every kind-specific clause in the seven docstrings and
    classify each as errors-on-misuse, silent, or destructive (rule 3). No
