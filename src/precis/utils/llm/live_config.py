@@ -49,11 +49,15 @@ MODEL_KEY_PREFIX = "llm.model."
 #: app_settings key prefix for a per-tier chain override: ``llm.chain.<tier>``
 #: (e.g. ``llm.chain.frontier``), a JSON-encoded list of rung dicts
 #: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
-#:. Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
+#: plus the optional per-rung keys ``bare``, ``max_tokens``,
+#: ``timeout_s`` and ``reasoning_effort`` (local wire only) — the grammar
+#: :func:`precis.utils.llm.router.parse_chain_rungs` validates.
+#: Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."
 #: app_settings key prefix for a per-operation override (JSON
-#: ``{"tier": <str>?, "model": <str>?}``) — ``llm.op.<source>``
-#: (per-operation model routing). Kept in sync with
+#: ``{"tier": <str>?, "model": <str>?, "chain": [<rung>…]?}``) —
+#: ``llm.op.<source>`` (per-operation model routing); ``chain`` uses the
+#: same rung grammar as :data:`CHAIN_KEY_PREFIX`. Kept in sync with
 #: :data:`precis.utils.llm.operations.OP_KEY_PREFIX` (the writer's mirror).
 OP_KEY_PREFIX = "llm.op."
 #: app_settings key for the cloud-throttle dial. ``"false"`` (or

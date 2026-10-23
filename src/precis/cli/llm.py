@@ -229,6 +229,8 @@ def add_parser(subparsers: Any) -> None:
         help="Per-operation rung chain — a JSON list in the llm.chain.<tier> "
         "grammar, validated through parse_chain_rungs, e.g. "
         '\'[{"placement":"local","model":"<served id>","transport":"local"}]\'. '
+        "Optional per-rung keys: bare, max_tokens, timeout_s, "
+        "reasoning_effort (low|medium|high, local wire only). "
         "New keys merge into the existing override row (op clear resets).",
     )
     grp.add_argument(
