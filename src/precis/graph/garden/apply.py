@@ -32,7 +32,10 @@ proposals) hold where present, and the edge does not already exist.
 
 The measures guard mirrors ``store.migrate_links``: a loser carrying
 live ``measures`` rows (subject, measurand, or a quantifies-anchored
-primary link) refuses — re-pointing measures by merge is not built.
+primary link) refuses — the merge itself never moves them. The sanctioned
+move is the canonical_unit-safe re-point
+(``store.repoint_measurand_measures``, migration 0234's
+``precis.allow_measurand_repoint`` door): run it first, then this.
 """
 
 from __future__ import annotations

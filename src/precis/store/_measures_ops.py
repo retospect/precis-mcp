@@ -57,6 +57,16 @@ neither is guessed. A caller whose number really is in the canonical unit
 (a table-recipe row) passes that unit as ``reported_unit``. Unitless numeric
 rows are accepted only on a unit-less taxon.
 
+**Re-point door (0234).** A row's ``measurand_ref_id`` is frozen like every
+other column, so a duplicate-measurand merge whose loser carries rows was
+unappliable. ``repoint_measurand_measures`` is the one door: inside a
+transaction that sets ``precis.allow_measurand_repoint`` (the helper sets
+it), ``measurand_ref_id`` — nothing else — may move onto a live taxon with
+the same ``canonical_unit``/``dimension_kind``/``si_vector`` (checked in
+the trigger). Live and superseded rows move together so the merge guard
+counts zero. Reviews on the moved rows refuse the run — the measure sha
+covers ``measurand_ref_id``, a re-point stales them.
+
 **Legacy taxa.** A taxon seeded from a legacy registry (``meta.legacy_source``)
 has a ``measure_unit_compat`` row: the unit the registry kept (``legacy_unit``),
 its SI unit and the linear map. A ``reported_unit`` equal to the legacy unit
@@ -89,6 +99,7 @@ import uuid
 from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1168,6 +1179,145 @@ class MeasuresMixin:
                 (new_id, spec.supersedes),
             )
         return new_id
+
+    def repoint_measurand_measures(
+        self,
+        src_ref_id: int,
+        dst_ref_id: int,
+        *,
+        conn: Connection,
+        actor: str,
+        at: str | None = None,
+    ) -> dict[str, Any]:
+        """Move every measure row off one measurand taxon onto another —
+        the canonical_unit-safe re-point (ontology-v2, Reto's Q8 ruling).
+
+        The only sanctioned way a row changes ``measurand_ref_id``: the 0234
+        door in ``precis_measures_frozen``, opened here by the
+        transaction-local ``precis.allow_measurand_repoint`` setting, lets
+        that column move *only* onto a live taxon with the same
+        ``canonical_unit``, ``dimension_kind`` and ``si_vector`` — the stored
+        SI numbers then mean the same under the new measurand, so the update
+        is a re-label, not a re-base. Live and superseded rows alike move
+        (the garden merge guard counts both), while ``subject_ref_id`` and
+        ``primary_link_id`` references are *not* covered — a row pointing at
+        ``src`` through one of those refuses the run by name.
+
+        Guards beyond the trigger's: both refs must exist and be taxa, the
+        target must be live (the trigger checks this too — a clearer error
+        here), the dimension contract is compared in Python first so a
+        mismatch names both units, and a measure carrying a *current*
+        review refuses — ``precis_measure_sha`` covers ``measurand_ref_id``,
+        so a re-point stales its reviews. The repoint is recorded on the
+        source's ``meta.measure_repoint`` (survives the loser's retirement
+        or merge) inside the same transaction.
+
+        Returns a small report ``{moved, ids, reviews}``; ``moved`` counts
+        every updated row. Caller supplies the transaction via ``conn`` so
+        the re-point can commit atomically with a following merge/retire
+        where the door allows (the garden apply path takes its own tx).
+        """
+        if src_ref_id == dst_ref_id:
+            raise BadInput("re-point needs two distinct measurand taxa")
+        taxa = conn.execute(
+            "SELECT ref_id, kind, title, retired_at IS NOT NULL, meta "
+            "FROM refs WHERE ref_id = ANY(%s) FOR UPDATE",
+            ([src_ref_id, dst_ref_id],),
+        ).fetchall()
+        by_id = {int(r[0]): r for r in taxa}
+        for rid in (src_ref_id, dst_ref_id):
+            row = by_id.get(rid)
+            if row is None:
+                raise NotFound(f"measurand taxon {rid} not found")
+            if row[1] != "taxon":
+                raise BadInput(
+                    f"re-point endpoint {rid} is a {row[1]!r}, not a taxon",
+                    next="re-point runs measurand taxon -> measurand taxon only",
+                )
+        if by_id[dst_ref_id][3]:
+            raise BadInput(
+                f"target taxon {dst_ref_id} is retired — re-pointing onto it "
+                "would strand the rows again",
+                next="restore it, or pick a live measurand",
+            )
+        s_meta, d_meta = by_id[src_ref_id][4] or {}, by_id[dst_ref_id][4] or {}
+        diff = [
+            key
+            for key in ("canonical_unit", "dimension_kind", "si_vector")
+            if s_meta.get(key) != d_meta.get(key)
+        ]
+        if diff:
+            raise BadInput(
+                f"measurand {src_ref_id} -> {dst_ref_id} is not "
+                f"canonical_unit-safe: {', '.join(diff)} differ "
+                f"({src_ref_id} { {k: s_meta.get(k) for k in diff} } vs "
+                f"{dst_ref_id} { {k: d_meta.get(k) for k in diff} })",
+                next="re-point only between taxa storing the same unit; a "
+                "unit change is a supersede-per-row re-base (not built)",
+            )
+
+        stray = conn.execute(
+            "SELECT count(*) FROM measures WHERE subject_ref_id = %(r)s "
+            "   OR primary_link_id IN (SELECT link_id FROM links "
+            "        WHERE src_ref_id = %(r)s OR dst_ref_id = %(r)s)",
+            {"r": src_ref_id},
+        ).fetchone()
+        if stray and int(stray[0]):
+            raise BadInput(
+                f"{int(stray[0])} measure(s) reference taxon {src_ref_id} as "
+                "subject or through an anchored link — the re-point only "
+                "covers measurand_ref_id rows",
+                next="resolve those rows by hand first; the merge guard "
+                "counts them too",
+            )
+        reviews = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT r.review_id FROM reviews r JOIN measures m "
+                "  ON m.id = r.target_id "
+                "WHERE r.target_kind = 'measure' "
+                "  AND m.measurand_ref_id = %s "
+                "  AND r.content_sha = precis_target_sha('measure', m.id)",
+                (src_ref_id,),
+            ).fetchall()
+        ]
+        if reviews:
+            raise BadInput(
+                f"{len(reviews)} live measure review(s) pin rows on "
+                f"{src_ref_id} ({reviews[:5]}) — a re-point changes "
+                "measurand_ref_id, which precis_measure_sha covers: every "
+                "review goes stale",
+                next="get a ruling on the reviews first (they re-review "
+                "against the re-labelled rows)",
+            )
+
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT id FROM measures WHERE measurand_ref_id = %s ORDER BY id",
+                (src_ref_id,),
+            ).fetchall()
+        ]
+        if ids:
+            conn.execute(
+                "SELECT set_config('precis.allow_measurand_repoint', 'on', true)"
+            )
+            conn.execute(
+                "UPDATE measures SET measurand_ref_id = %s WHERE measurand_ref_id = %s",
+                (dst_ref_id, src_ref_id),
+            )
+        stamp = {
+            "at": at or f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}",
+            "actor": actor,
+            "dst": dst_ref_id,
+            "moved": len(ids),
+            "ids": ids,
+        }
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (Jsonb({"measure_repoint": stamp}), src_ref_id),
+        )
+        return {"moved": len(ids), "ids": ids, "reviews": len(reviews)}
 
     # -- read --------------------------------------------------------------
 

@@ -234,7 +234,11 @@ lands and gripes come in (todo filed). Member mapping:
 Merged/retired before slice 1: duplicate bore diameter and maximum service
 temperature, length→overall length, price per gram→cost per unit mass;
 retired delta length, unit length, persistence length, thermal half life,
-PSS short fraction.
+PSS short fraction. Driver built: `scripts/onto-repoint` (dry-run/apply) +
+the 0234 `precis.allow_measurand_repoint` door — landed, awaiting
+coordinator --apply. (Reto 2026-10-22 re-ruled the five retire taxa:
+KEEP all five, no re-point — re-parent each under its Q8 group; the
+script's reparent half does that via the link path.)
 
 1. **`method` start node vs v1.5's `axis/method`.** Recommend separate
    nodes: `axis/*` names edge angles (a label vocabulary), `method/*`
