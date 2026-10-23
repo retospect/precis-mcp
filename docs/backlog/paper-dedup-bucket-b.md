@@ -46,8 +46,13 @@ moved, so a generic unmerge cannot reverse them anyway.
    merged. The gap is closed going forward — pa42495 and pa42498 predate it.
 3. Gate not tripped (2 further bad merges, not >2): no `unmerge_duplicate`
    build from this sweep. pa42495 and pa42498 need the same by-hand repair
-   as step 1 (gr501446).
+   as step 1 (gr501446). DONE (the door, 2026-10-23):
+   `edit(kind='paper', id='pa<stub>', args={'redirect_to': 'pa<live>',
+   'reason': ...})` re-points a retired stub's `meta.superseded_by` +
+   `supersedes` edge in one tx, logged and undoable. The three prod
+   re-points (42495→2997, 42497→3026, 42498→5972) remain for chat-99 to
+   run once deployed.
 
-Size: S (steps 1–2 done; only hand repair of the 2 new finds remains). Who:
-ops for the hand repair (step 1, including the 2 new finds). No further
-agent-code action — the `reconcile-doi-case` gate already shipped.
+Size: S (steps 1–2 done; redirect door shipped; only the 3 prod re-points
+remain). Who: ops for the re-point calls. No further agent-code action —
+the `reconcile-doi-case` gate already shipped.

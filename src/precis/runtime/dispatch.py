@@ -3358,6 +3358,20 @@ class DispatchMixin(RuntimeShape):
             return True
         # resolve_handle already emitted the merge-redirect hint (via the
         # store's wired hint bus) if it followed a supersede; nothing to do here.
+        if (
+            resolved.redirected_from is not None
+            and isinstance(args.get(_EXTRAS_KEY), dict)
+            and "redirect_to" in args[_EXTRAS_KEY]
+        ):
+            # The paper redirect_to door operates ON the merged tombstone:
+            # rewriting id= to the survivor (the transparent redirect
+            # below) would land the re-point on the wrong ref. Route the
+            # decoded tombstone ref_id through instead so the handler can
+            # resolve it with include_deleted (gr501446).
+            args["kind"] = resolved.kind
+            parsed = handle_registry.parse(normalized)
+            args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
+            return True
         args["kind"] = resolved.kind
         args["id"] = resolved.public_id + suffix
         return True

@@ -338,8 +338,11 @@ class PaperHandler(Handler):
                 "verify",
             }
         ),
-        # edit takes ``args`` only for subclass hooks (_edit_args); none here.
-        "edit": ArgsSpec(),
+        # ``redirect_to`` re-points a retired/merged stub's supersede
+        # redirect (:meth:`_repoint_supersede`); ``reason`` is the audit
+        # string it writes into the ref_event. Subclass hooks read their
+        # own keys via _edit_args.
+        "edit": ArgsSpec({"redirect_to", "reason"}),
     }
 
     stamps_recall = True
@@ -2100,6 +2103,31 @@ class PaperHandler(Handler):
         cfp/datasheet (both ``PaperHandler`` subclasses).
         """
         dry_mode = normalize_dry_run(dry_run)
+        raw_args = dict(args) if args else {}
+        if "redirect_to" in raw_args:
+            if supplement_of is not None or any(
+                v is not None
+                for v in (
+                    title,
+                    year,
+                    authors,
+                    abstract,
+                    doi,
+                    arxiv,
+                    journal,
+                    entry_type,
+                )
+            ):
+                raise BadInput(
+                    "redirect_to= cannot be combined with other edit fields",
+                    next="make the redirect_to call alone, then edit the rest",
+                )
+            return self._repoint_supersede(
+                id,
+                raw_args["redirect_to"],
+                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
+                dry=bool(dry_mode),
+            )
         ref_id = self._resolve_paper_ref_id(id)
         extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
@@ -2261,6 +2289,184 @@ class PaperHandler(Handler):
             if doi_warning:
                 body = f"{body}\n{doi_warning}"
         return Response(body=body)
+
+    def _resolve_ref_incl_retired(self, id: str | int) -> Ref | None:
+        """Resolve a paper address to its ref WITHOUT the liveness filter.
+
+        The redirect door addresses the retired tombstone itself — the
+        thing every other path transparently follows to the survivor.
+        Accepts a ``pa<id>`` handle, a bare ref_id / digits, or a slug
+        (the loser keeps its cite_key across a merge). ``None`` for an
+        unresolvable or foreign-kind id; the caller names the failure.
+        """
+        kind = self.spec.kind
+        ref_id: int | None = None
+        if isinstance(id, int):
+            ref_id = id
+        else:
+            slug, sel, path_view = _parse_paper_id(str(id).strip(), kind)
+            reject_chunk_or_path_view(
+                kind=kind, slug=slug, sel=sel, path_view=path_view
+            )
+            parsed = handle_registry.parse(slug)
+            if parsed is not None and not parsed[1]:
+                if parsed[0] != kind:
+                    return None
+                ref_id = parsed[2]
+            elif slug.isdigit():
+                ref_id = int(slug)
+            else:
+                return self.store.get_ref(kind=kind, id=slug, include_deleted=True)
+        ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
+        if ref is None or ref.kind != kind:
+            return None
+        return ref
+
+    def _repoint_supersede(
+        self, id: str | int, target: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'redirect_to': <live paper>})`` — re-point a
+        retired/merged ref's supersede redirect at a different survivor.
+
+        A dedup merge leaves the loser retired with
+        ``meta.superseded_by=<survivor>`` and a ``survivor -supersedes->
+        loser`` edge; handles and link targets follow that pointer
+        transparently. When the merge picked the *wrong* survivor
+        (gr501446: pa42495/42497/42498) the pointer itself was
+        unreachable — every handle resolves through to the survivor
+        before a handler sees it. This door moves both halves in one
+        transaction and logs a ``redirect_repointed`` ref_event carrying
+        old target, new target and ``reason`` — undo is the same call
+        aimed back at the old target.
+
+        Refuses (each with a ``next=``): a source that isn't a retired
+        merge (live, or deleted with no pointer), a target that isn't
+        live (missing, itself merged, or deleted), a target whose
+        supersede chain leads back to the source (a cycle the
+        reader-side follow would hang on), and a missing ``reason``.
+        """
+        kind = self.spec.kind
+        src = self._resolve_ref_incl_retired(id)
+        if src is None:
+            raise NotFound(
+                f"{kind} id={id!r} resolves to no ref (live or retired)",
+                next=f"search(kind='{kind}', q='...') to find the ref",
+            )
+        src_h = _pa(src)
+        if src.retired_at is None:
+            raise BadInput(
+                f"{src_h} is live — redirect_to re-points a retired/merged "
+                "ref's supersede pointer only",
+                next="folding a live duplicate is a different door: "
+                "get(kind='skill', id='precis-paper-help') "
+                "(merge_duplicate / reconcile-duplicates)",
+            )
+        try:
+            old_id = int(str((src.meta or {}).get("superseded_by")))
+        except (TypeError, ValueError):
+            old_id = -1
+        if old_id < 0:
+            raise BadInput(
+                f"{src_h} is retired but carries no meta.superseded_by — "
+                "a plain deletion has no redirect to re-point",
+                next="if it should resolve to another paper that is a merge: "
+                "get(kind='skill', id='precis-paper-help')",
+            )
+        if not reason:
+            raise BadInput(
+                "args['redirect_to'] needs args['reason'] — the "
+                "redirect_repointed ref_event carries it",
+                next=f"edit(kind='{kind}', id='{src_h}', args="
+                "{'redirect_to': 'pa<M>', 'reason': '<why>'})",
+            )
+        tgt_raw = "" if target is None else str(target).strip()
+        tgt = self._resolve_ref_incl_retired(tgt_raw) if tgt_raw else None
+        if tgt is None:
+            raise BadInput(
+                f"redirect_to={tgt_raw!r} resolves to no {kind} ref",
+                next=f"search(kind='{kind}', q='...') for the live "
+                "target's pa<id> or slug",
+            )
+        tgt_h = _pa(tgt)
+        if tgt.id == src.id:
+            raise BadInput(
+                "redirect_to names the record itself",
+                next="pass the live paper this stub should resolve to",
+            )
+        if tgt.retired_at is not None:
+            chain_end = self.store.follow_supersede(tgt.id)
+            if chain_end is not None:
+                end_h = handle_registry.format_handle(tgt.kind, chain_end)
+                raise BadInput(
+                    f"{tgt_h} is itself merged into {end_h} — a redirect "
+                    "must end on a live ref",
+                    next=f"edit(kind='{kind}', id='{src_h}', args="
+                    f"{{'redirect_to': '{end_h}', 'reason': '{reason}'}})",
+                )
+            raise BadInput(
+                f"{tgt_h} is deleted (retired, no survivor) — a redirect "
+                "must end on a live ref",
+                next=f"search(kind='{kind}', q='...') for a live target",
+            )
+        with self.store.pool.connection() as conn:
+            cycles = _supersede_chain_reaches(conn, tgt.id, src.id)
+        if cycles:
+            raise BadInput(
+                f"redirect_to {tgt_h} would cycle: its superseded_by "
+                f"chain leads back to {src_h}",
+                next="pick a live target whose supersede chain does not "
+                "pass through this stub",
+            )
+        old_h = handle_registry.format_handle(kind, old_id)
+        if tgt.id == old_id:
+            return Response(body=f"no change: {src_h} already redirects to {tgt_h}.")
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would re-point {src_h}: "
+                    f"superseded_by {old_h} -> {tgt_h}, the supersedes "
+                    "edge moved and a redirect_repointed ref_event logged."
+                )
+            )
+        with self.store.tx() as conn:
+            removed = self.store.remove_link(
+                src_ref_id=old_id,
+                dst_ref_id=src.id,
+                relation="supersedes",
+                conn=conn,
+            )
+            self.store.add_link(
+                src_ref_id=tgt.id,
+                dst_ref_id=src.id,
+                relation="supersedes",
+                set_by="agent",
+                conn=conn,
+            )
+            self.store.stamp_ref_meta(src.id, {"superseded_by": tgt.id}, conn=conn)
+            self.store.append_event(
+                src.id,
+                source="edit",
+                event="redirect_repointed",
+                payload={
+                    "old_survivor": old_id,
+                    "new_survivor": tgt.id,
+                    "reason": reason,
+                },
+                conn=conn,
+            )
+        edge_note = (
+            "supersedes edge moved"
+            if removed
+            else "no old supersedes edge found; new one added"
+        )
+        return Response(
+            body=(
+                f"re-pointed {src_h}: superseded_by {old_h} -> {tgt_h} "
+                f"({edge_note}; ref_event 'redirect_repointed' logged). "
+                f"Undo: edit(kind='{kind}', id='{src_h}', args="
+                f"{{'redirect_to': '{old_h}', 'reason': '<why>'}})"
+            )
+        )
 
     def _declare_supplement(
         self, child_id: int, parent_handle: str, *, dry: bool = False
@@ -4178,6 +4384,39 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             ),
         )
     return slug + ("~" + sel if sel else "")
+
+
+def _supersede_chain_reaches(
+    conn: Any, start_ref_id: int, needle_ref_id: int, *, cap: int = 8
+) -> bool:
+    """Walk raw ``meta.superseded_by`` pointers from ``start_ref_id``;
+    True when the chain hits ``needle_ref_id`` within ``cap`` hops.
+
+    Unlike :meth:`Store.follow_supersede` this ignores liveness — a
+    live ref still carrying a merge stamp counts, because pointing a
+    redirect at it would write a pointer cycle the reader-side follow
+    would then spin on (its seen-set would return ``None``: a silent
+    dead handle).
+    """
+    seen: set[int] = set()
+    cur = start_ref_id
+    for _ in range(cap):
+        if cur == needle_ref_id:
+            return True
+        if cur in seen:
+            return False
+        seen.add(cur)
+        row = conn.execute(
+            "SELECT meta->>'superseded_by' FROM refs WHERE ref_id = %s",
+            (cur,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return False
+        try:
+            cur = int(row[0])
+        except (TypeError, ValueError):
+            return False
+    return False
 
 
 def _parse_paper_id(

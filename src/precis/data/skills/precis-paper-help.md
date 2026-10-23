@@ -271,6 +271,21 @@ file named `pa<id>.pdf` follows the same rule: if its bytes match a
 different live twin, the twin merges into `pa<id>` (when titles corroborate),
 never the reverse.
 
+## A merged stub resolves to the wrong paper — how do I re-point the redirect?
+
+```python
+edit(kind="paper", id="pa42495", args={"redirect_to": "pa2997", "reason": "mis-merge gr501446"})
+```
+
+A retired/merged ref's `meta.superseded_by` + `supersedes` edge are what
+make its handle resolve to the survivor. `redirect_to` moves both in one
+transaction, addressed at the tombstone itself (its `pa<id>` handle,
+ref_id or slug — dispatch does not follow the redirect for this call).
+Refuses a source that isn't a retired merge, a target that isn't live
+(itself merged → aim at the chain end it names), and cycles. `reason` is
+required and lands in the `redirect_repointed` ref_event with old+new
+targets; undo is the same call aimed back at the old target.
+
 ## I found a legal PDF for a body-less stub — how do I attach it?
 
 ```python
