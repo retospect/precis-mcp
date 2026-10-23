@@ -112,13 +112,20 @@ class Paths:
     steps_used: int
     frames: np.ndarray | None  # (record_frames, N, 3) float32 (x*, y*, psi)
     frame_t: np.ndarray | None  # (record_frames,) evenly spaced t*
+    absorbed: np.ndarray | None = None  # (N,) wall-reacted (walls= runs)
+    absorb_star: np.ndarray | None = None  # (N, 2) absorption (x*, y*)
+    capped: bool = False  # stopped on max_steps, not on EXIT_FRACTION
 
     @property
     def resolved_fraction(self) -> float:
-        """Fraction that either broke through or exited (statistic converged)."""
+        """Fraction that resolved — broke through, exited, or (``walls=``
+        runs) was absorbed — i.e. the statistic that converged."""
         if not self.n_particles:
             return 1.0
-        return float((self.broke | self.exited).mean())
+        resolved = self.broke | self.exited
+        if self.absorbed is not None:
+            resolved = resolved | self.absorbed
+        return float(resolved.mean())
 
     @property
     def trapped_fraction(self) -> float:
@@ -232,6 +239,10 @@ def trace(
     seed_rng: np.random.Generator | int,
     record_frames: int = 0,
     profile: str = "plug",
+    pe: float | None = None,
+    epsilon: float | None = None,
+    walls: dict[str, float | np.ndarray] | None = None,
+    max_steps: int = MAX_STEPS,
 ) -> Paths:
     """Advect the swarm and record first plane crossings.
 
@@ -255,7 +266,27 @@ def trace(
     """
     if profile not in ("plug", "parabolic"):
         raise ValueError(f"profile must be 'plug' or 'parabolic', got {profile!r}")
+    if pe is not None and profile != "parabolic":
+        raise ValueError(
+            "trace: pe= needs profile='parabolic' — molecular diffusion on a "
+            "plug is not Taylor dispersion (se-multiphysics.md slice 1)"
+        )
+    if (pe is not None or walls) and epsilon is None:
+        raise ValueError("trace: pe=/walls= need epsilon= (h0/L)")
+    if epsilon is not None and epsilon <= 0:
+        raise ValueError("trace: epsilon must be > 0")
+    if pe is not None and pe <= 0:
+        raise ValueError("trace: pe must be > 0")
     domain = field.domain
+    # wall Damköhler per reactive wall (scalar or (ny,nx) field); inf = a
+    # perfectly absorbing wall (P = 1 on every hit).
+    wall_da: dict[str, np.ndarray] = {}
+    for side, da in (walls or {}).items():
+        if side not in ("floor", "lid"):
+            raise ValueError(f"trace: walls keys are 'floor'/'lid', got {side!r}")
+        wall_da[side] = np.broadcast_to(
+            np.asarray(da, dtype=float), domain.shape
+        ).astype(float)
     rng = (
         seed_rng
         if isinstance(seed_rng, np.random.Generator)
@@ -265,6 +296,8 @@ def trace(
     pos = _seed_positions(field, seed, n, rng)
     broke = np.zeros(n, dtype=bool)
     exited = np.zeros(n, dtype=bool)
+    absorbed = np.zeros(n, dtype=bool) if wall_da else None
+    absorb_star = np.full((n, 2), np.nan) if wall_da else None
     cross = np.full((n, 2), np.nan)
     residence = np.full(n, np.nan)
     active = np.ones(n, dtype=bool)
@@ -275,6 +308,19 @@ def trace(
 
     char = _char_speed(field)
     dt = CFL * dx / char if char > 1e-15 else dx
+    if pe is not None and epsilon is not None:
+        # Vertical-mixing resolution: the spec wants ~100/(Pe·ε) steps per
+        # transit so the gap is sampled between velocity changes — a CFL dt
+        # decorrelates ψ every step and adds false shear dispersion.
+        dt = min(dt, epsilon * pe / 100.0)
+    # Absorption cap: keep the per-hit probability ≤ 0.1 (Erban–Chapman
+    # fidelity); infinite Da_w needs no cap (P = 1 regardless).
+    if wall_da:
+        finite = [d for d in wall_da.values() if np.isfinite(d).all()]
+        if finite and pe is not None and epsilon is not None:
+            da_max = float(max(float(np.max(d)) for d in finite))
+            if da_max > 0:
+                dt = min(dt, (0.1 / da_max) ** 2 * (epsilon * pe / np.pi))
     stuck_tol = STUCK_SPEED_FRAC * max(char, 1e-15)
     strikes = np.zeros(n, dtype=int)
 
@@ -284,11 +330,22 @@ def trace(
             np.column_stack([pos[:, 0], pos[:, 1], _psi(field, pos)]).astype(np.float32)
         )
 
+    # Species runs need the resolved tail, not a statistic at 95%: a pulse
+    # RTD or an absorption fraction truncated at EXIT_FRACTION under-reads
+    # the spread by ~20%. They stop only when no particle remains active
+    # (or max_steps — reported via Paths.capped).
+    species_run = pe is not None or bool(wall_da)
+    exit_fraction = 1.0 if species_run else EXIT_FRACTION
     steps_used = 0
-    for step in range(MAX_STEPS):
+    capped = True
+    for step in range(max_steps):
         steps_used = step + 1
         # Stop when enough particles are resolved (broke through OR exited).
-        if (broke | exited).mean() >= EXIT_FRACTION or not active.any():
+        resolved = broke | exited
+        if absorbed is not None:
+            resolved = resolved | absorbed
+        if resolved.mean() >= exit_fraction or not active.any():
+            capped = False
             break
         idx = np.where(active)[0]
         p = pos[idx]
@@ -307,38 +364,110 @@ def trace(
         dz_sigma = np.sqrt(2.0 * d_v_star * speed * depth * dt)
         pnew[:, 2] += dz_sigma * rng.standard_normal(idx.size)
 
+        # Molecular diffusion (pe=): horizontal kick sqrt(2ε/Pe dt*) ξ and
+        # vertical in z~ at D_z* = 1/(Pe ε) (the spec's ψ-space
+        # D_ψ = 1/(εPe h*²) stretched by the local gap — identical in z~).
+        if pe is not None and epsilon is not None:
+            sigma_h = np.sqrt(2.0 * epsilon / pe * dt)
+            pnew[:, 0] += sigma_h * rng.standard_normal(idx.size)
+            pnew[:, 1] += sigma_h * rng.standard_normal(idx.size)
+            sigma_z = np.sqrt(2.0 * dt / (pe * epsilon))
+            pnew[:, 2] += sigma_z * rng.standard_normal(idx.size)
+
         z_old = p[:, 2]
         z_new = pnew[:, 2]
 
         # Detect first upward crossing of the tracking plane (before clamping).
-        newly = (~broke[idx]) & (z_old < z_plane) & (z_new >= z_plane)
-        if newly.any():
-            denom = np.where(z_new - z_old != 0, z_new - z_old, 1.0)
-            t = (z_plane - z_old) / denom
-            cx = p[:, 0] + t * (pnew[:, 0] - p[:, 0])
-            cy = p[:, 1] + t * (pnew[:, 1] - p[:, 1])
-            gi = idx[newly]
-            broke[gi] = True
-            cross[gi, 0] = cx[newly]
-            cross[gi, 1] = cy[newly]
-            residence[gi] = (step + t[newly]) * dt
-            active[gi] = False  # resolved: counted once, no need to track further
+        # Species runs (pe=/walls=) skip it: the plane resolves a particle on
+        # its way to the lid, which would truncate the outlet RTD and mask
+        # lid absorption — species particles resolve only by exit or reaction.
+        if pe is None and not wall_da:
+            newly = (~broke[idx]) & (z_old < z_plane) & (z_new >= z_plane)
+            if newly.any():
+                denom = np.where(z_new - z_old != 0, z_new - z_old, 1.0)
+                t = (z_plane - z_old) / denom
+                cx = p[:, 0] + t * (pnew[:, 0] - p[:, 0])
+                cy = p[:, 1] + t * (pnew[:, 1] - p[:, 1])
+                gi = idx[newly]
+                broke[gi] = True
+                cross[gi, 0] = cx[newly]
+                cross[gi, 1] = cy[newly]
+                residence[gi] = (step + t[newly]) * dt
+                active[gi] = False  # resolved: counted once, no need to track further
 
-        # Clamp z~ into (b~, 1].
-        pnew[:, 2] = np.clip(pnew[:, 2], b_here, 1.0)
+        # Wall absorption (walls=): a step ending past a wall is a certain
+        # encounter; a step that stays inside can still have touched the
+        # wall mid-step — the Brownian-bridge term
+        #   P_enc = exp(−d0·d1/(D_tot·dt)),  D_tot = D_tot/D · (ε Pe)⁻¹
+        # catches those crossings (endpoint-only detection under-absorbs
+        # ~25% in the transport limit — the decay slope comes out 25%
+        # shallow). Each encounter absorbs with Erban–Chapman probability
+        # P = Da_w sqrt(pi dt* / (ε Pe · D_tot/D)); Da_w = ∞ → P = 1.
+        # Survivors reflect back inside below.
+        if wall_da:
+            if pe is None:
+                raise ValueError(
+                    "trace: walls= needs pe= — the absorption probability "
+                    "is measured in vertical-mixing units"
+                )
+            assert epsilon is not None
+            assert absorbed is not None and absorb_star is not None
+            d_tot = 1.0 + epsilon * pe * d_v_star * speed * depth
+            roll = rng.random(idx.size)
+            for side, d0, d1, crossed in (
+                ("floor", z_old - b_here, z_new - b_here, z_new <= b_here),
+                ("lid", 1.0 - z_old, 1.0 - z_new, z_new >= 1.0),
+            ):
+                da_field = wall_da.get(side)
+                if da_field is None:
+                    continue
+                enc = np.exp(
+                    -np.clip(d0, 0.0, None)
+                    * np.clip(d1, 0.0, None)
+                    * epsilon
+                    * pe
+                    / (d_tot * dt)
+                )
+                enc = np.where(crossed, 1.0, enc)
+                da_here = _bilinear(da_field[None], domain, pnew[:, 0], pnew[:, 1])[0]
+                p_abs = da_here * np.sqrt(np.pi * dt / (epsilon * pe * d_tot))
+                p_abs = np.where(np.isinf(da_here), 1.0, np.clip(p_abs, 0, 1))
+                dying = (roll < enc * p_abs) & active[idx]
+                if dying.any():
+                    gi = idx[dying]
+                    absorbed[gi] = True
+                    absorb_star[gi, 0] = pnew[dying, 0]
+                    absorb_star[gi, 1] = pnew[dying, 1]
+                    residence[gi] = (step + 1) * dt
+                    active[gi] = False
+
+        # Reflect z~ into (b~, 1] — Neumann walls for a diffusing particle.
+        # Clamping piles walkers onto exactly ψ ∈ {0, 1} where the shear
+        # velocity vanishes and inflates every residence/absorption tail.
+        span = np.maximum(1.0 - b_here, 1e-12)
+        z_rel = pnew[:, 2] - b_here
+        z_rel = np.abs(np.mod(z_rel + span, 2.0 * span) - span)
+        pnew[:, 2] = b_here + z_rel
         pos[idx] = pnew
 
         # Retire particles that leave the domain or reach the outlet.
         inside = _bilinear(
             domain.mask.astype(float)[None], domain, pnew[:, 0], pnew[:, 1]
         )[0]
-        left = (
-            (pnew[:, 0] <= 0)
-            | (pnew[:, 0] >= 1.0)
-            | (pnew[:, 1] <= 0)
-            | (pnew[:, 1] >= width)
-            | (inside < 0.5)
-        )
+        out_port = (pnew[:, 0] <= 0) | (pnew[:, 0] >= 1.0)
+        left = out_port | (pnew[:, 1] <= 0) | (pnew[:, 1] >= width) | (inside < 0.5)
+        if species_run:
+            # Side walls and mask edges are no-flux for species: reject the
+            # step's horizontal move instead of retiring the walker — a
+            # species particle lost over a wall corrupts both the outlet
+            # RTD and the absorption bookkeeping. Port faces still resolve.
+            wall_out = ~out_port & left
+            if wall_out.any():
+                wr = np.where(wall_out)[0]
+                pnew[wr, 0] = p[wr, 0]
+                pnew[wr, 1] = p[wr, 1]
+                pos[idx] = pnew
+                left = out_port
         # Mark as exited only those still active (not just retired by a
         # breakthrough this step).
         gi_left = idx[left]
@@ -382,4 +511,7 @@ def trace(
         steps_used=steps_used,
         frames=frames,
         frame_t=frame_t,
+        absorbed=absorbed,
+        absorb_star=absorb_star,
+        capped=capped,
     )

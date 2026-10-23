@@ -15,6 +15,12 @@ slices add one physics each on the same grid and operator. A pluggable
 external 3-D backend (FEniCSx / Elmer / OpenFOAM) takes what the thin-gap
 form cannot carry.
 
+**Landed (slice 1), 2026-10-21 on `mp-s1c`** — fv kernel + species
+transport, tracer `pe=`/`walls=`, species card lines, the se surface
+(`fluid=`/`species=`, BC patch measures, four COMPUTERS), `wall_rate`,
+migration 0231 (via builder-ce), `precis-se-flow-help`, and the 12
+acceptance tests.
+
 **Ready (slice 1 only), 2026-10-21.** The later slices stay draft; each
 gets its acceptance criteria when it goes ready. A physics review (Fable,
 2026-10-21) found the core relations correct: the Taylor coefficient with
@@ -274,7 +280,7 @@ Worked points: water, `D = 1e-9 m²/s`, `h0 = 100 µm`, `L = 20 mm`
   (mol/m³, inlet patch; optional while linear), `wall-rate-constant`
   (m/s, per species, on floor/lid patches), `species-diffusivity`
   (m²/s, on the pocket region; falls back to the fluid material).
-  Species scope uses the measure name `<block>.<species>.<property>`
+  Species scope uses the measure name `<block>.<species>/<property>`
   (Q2).
 - Output computers in `FLOW_COMPUTERS`: `outlet-conversion` (ratio),
   `outlet-concentration` (`c*`), `wall-flux-fraction` (fraction of the
@@ -517,7 +523,7 @@ core seed migration, which goes through the release owner.
 - Q1 BCs as measures on patch regions (default) vs. more keys in the
   `flow:` token. Measures reuse value/band/strength/origin and DRC; the
   token stays a role list.
-- Q2 Species scope via the measure name `<block>.<species>.<property>`
+- Q2 Species scope via the measure name `<block>.<species>/<property>`
   (default) vs. a new `species` column on `se_measures` (migration).
 - Q3 Liquid-phase catpath rates: refuse (default) until a solvation /
   Henry model is stated.

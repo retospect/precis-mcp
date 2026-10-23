@@ -382,6 +382,7 @@ from precis_se.fret import (
 from precis_se.identity import resolve_block
 from precis_se.measures import (
     ORIGINS,
+    SCOPE_SEP,
     UNITS,
     MeasureError,
     MeasureSpec,
@@ -830,6 +831,15 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: ``None`` (a bare tree) leaves ``field:`` envelopes unresolvable
     #: there — declared intent, never a guess.
     field_loader: FieldLoader | None = field(default=None, repr=False, compare=False)
+    #: Store-bound material-property lookup: a ``kind='material'`` slug →
+    #: ``{property_id: value_num}``, ``None`` when the material is gone.
+    #: Wired by the loader like :attr:`measurands`; read by the flow
+    #: adapter's ``fluid=`` (se-multiphysics.md slice 1). ``None`` (a
+    #: bare tree) means "cannot resolve" — a fluid-dependent line is a
+    #: reason, never a guess.
+    materials: Callable[[str], dict[str, float] | None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -1876,6 +1886,18 @@ def _measure_shared(
             "relation-source syntax ('block.measure', split on the last "
             "dot) reserves it"
         )
+    species = op.get("species")
+    if species is not None:
+        # Species scope (se-multiphysics.md Q2): the stored name is
+        # '<species>/<prop>' (SCOPE_SEP, the pocket-spec measures' '/');
+        # '.' stays reserved for the 'block.measure' relation source.
+        sp = str(species).strip()
+        if not sp or "." in sp or SCOPE_SEP in sp:
+            raise OpError(
+                f"{opname} 'species' must be a bare species name (no '.' or "
+                f"{SCOPE_SEP!r}), got {species!r}"
+            )
+        name = f"{sp}{SCOPE_SEP}{name}"
     return block, name
 
 

@@ -436,6 +436,10 @@ def test_measurand_unchecked_names_measure_and_measurand() -> None:
         "residence-time-t0",
         "resistance-ratio",
         "evenness",
+        "outlet-conversion",
+        "outlet-concentration",
+        "wall-flux-fraction",
+        "damkohler",
     }
     tree = _tree(
         _BOX,

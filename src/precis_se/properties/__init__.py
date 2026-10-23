@@ -115,6 +115,10 @@ COMPUTERS.update(
             "residence-time-t0",
             "resistance-ratio",
             "evenness",
+            "outlet-conversion",
+            "outlet-concentration",
+            "wall-flux-fraction",
+            "damkohler",
         )
     }
 )

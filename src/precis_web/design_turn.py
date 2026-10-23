@@ -718,6 +718,10 @@ _SE_DRY_RUN_SKIPPED: frozenset[str] = frozenset(
         # the pure add_pocket/add_measure paths only, so the dry-run has
         # nothing pure to prepare.
         "pocket_from_molecule",
+        # se-multiphysics slice 1: reads trusted catpath solves off the
+        # store (and may run the apparent-order probe solves) to write a
+        # proposed wall-rate-constant measure — nothing pure to prepare.
+        "wall_rate",
     }
 )
 

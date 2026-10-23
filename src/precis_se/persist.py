@@ -573,6 +573,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     # gr503066); a store without the cad ops (a read fake) leaves it off.
     loader_of = getattr(store, "field_loader", None)
     tree.field_loader = loader_of() if loader_of is not None else None
+    tree.materials = material_resolver(store)
     return tree
 
 
@@ -708,6 +709,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         tree.measurands = measurand_resolver(store)
         tree.structure_versions = structure_version_resolver(store)
         tree.structures = structure_scene_resolver(store)
+        tree.materials = material_resolver(store)
     return tree
 
 
@@ -716,6 +718,30 @@ def _known(cls: type, d: dict[str, Any]) -> dict[str, Any]:
     forward/backward tolerance."""
     names = {f.name for f in fields(cls)}
     return {k: v for k, v in d.items() if k in names}
+
+
+def material_resolver(store: Any) -> Callable[[str], dict[str, float] | None]:
+    """A ``kind='material'`` slug → ``{property_id: value_num}`` (canonical
+    SI units — the kind is canonical-only), or ``None`` when the slug is
+    gone. Memoized per returned closure. Backs the flow adapter's
+    ``fluid=`` (se-multiphysics.md slice 1): μ/ρ/D are read off the row —
+    a missing property is a reason, never a silent default."""
+    cache: dict[str, dict[str, float] | None] = {}
+
+    def props_of(slug: str) -> dict[str, float] | None:
+        if slug not in cache:
+            ref = store.get_ref(kind="material", id=slug)
+            out: dict[str, float] | None = None
+            if ref is not None:
+                out = {
+                    str(v["property_id"]): float(v["value_num"])
+                    for v in store.material_values_for_ref(ref.id)
+                    if v.get("property_id") and v.get("value_num") is not None
+                }
+            cache[slug] = out
+        return cache[slug]
+
+    return props_of
 
 
 def structure_version_resolver(store: Any) -> Callable[[str], int | None]:

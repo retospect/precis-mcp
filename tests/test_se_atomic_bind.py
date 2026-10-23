@@ -188,6 +188,7 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
         "make_steps",
         "flatpack_box",
         "pocket_from_molecule",
+        "wall_rate",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

@@ -284,6 +284,20 @@ viewer.
 - Nothing writes a region measure from this yet; that is pocket
   slice 2.
 
+## Flow-chamber boundary conditions ride this mechanism
+
+A `flow:` pocket's species boundary conditions are the same patch
+measures: `inlet-velocity`/`pressure-drop` (the operating point),
+`species-diffusivity`, `inlet-concentration`, and `wall-rate-constant`
+on floor/lid patches (one measure per reactive patch — each is scored
+separately). Species scope is the name prefix `<species>/<prop>` matching
+the token's `species=` list; a bare name applies to every species.
+Unlike the purely declarative properties above, these feed live
+computers (`outlet-conversion`, `outlet-concentration`,
+`wall-flux-fraction`, `damkohler`), so they are checked, not
+`measurand_unchecked`. Chamber, solver routing and the `wall_rate`
+catpath binding: `precis-se-flow-help`.
+
 ## Why view='drc' says measurand_unchecked
 
 No property computer is live yet. Every measure whose measurand is not

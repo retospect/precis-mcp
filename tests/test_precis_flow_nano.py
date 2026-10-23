@@ -167,10 +167,13 @@ def test_paths_contract_and_determinism() -> None:
 def test_regime_card_routes() -> None:
     """Kn ≥ 10 names knudsen; 0.01 < Kn < 10 refuses naming DSMC;
     a holding card routes continuum."""
-    phys = dict(L=1e-8, h0=1e-9, mu=2e-5, rho=0.7, u0=300.0)
-    card = RegimeCard.from_physical(**phys, mean_free_path=5e-8)  # Kn = 50
+    card = RegimeCard.from_physical(  # Kn = 50
+        L=1e-8, h0=1e-9, mu=2e-5, rho=0.7, u0=300.0, mean_free_path=5e-8
+    )
     assert card.route == "knudsen"
-    card = RegimeCard.from_physical(**phys, mean_free_path=1e-9)  # Kn = 1
+    card = RegimeCard.from_physical(  # Kn = 1
+        L=1e-8, h0=1e-9, mu=2e-5, rho=0.7, u0=300.0, mean_free_path=1e-9
+    )
     with pytest.raises(ValueError, match="DSMC"):
         _ = card.route
     card = RegimeCard.from_physical(  # Kn = 5e-3, continuum holds

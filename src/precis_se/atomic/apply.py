@@ -107,6 +107,11 @@ HANDLER_LEVEL_OPS = (
     # slice 2b): store-read for the bound structures, GFN2 for the ESP
     # — it emits add_pocket/add_measure through the pure paths.
     "pocket_from_molecule",
+    # The catpath TOF → wall-rate-constant binding
+    # (:mod:`precis_se.wall_rate`, se-multiphysics.md slice 1): store-read
+    # for the quest's trusted solve record, then an add/set_measure
+    # through the pure path.
+    "wall_rate",
 )
 
 
@@ -205,6 +210,12 @@ def apply_ops_with_atomic(
         # Region resolution (atoms:/sites:/mpatch:) and the wall-side
         # computers read the bound structure through this resolver.
         tree.structures = structure_scene_resolver(store)
+    if tree.materials is None:
+        # The flow adapter's fluid= reads material property rows through
+        # this resolver (se-multiphysics.md slice 1).
+        from precis_se.persist import material_resolver
+
+        tree.materials = material_resolver(store)
     # Baseline for the post-walk pin stamp: which atoms:/sites: measures
     # this call writes (:func:`precis_se.datums.stamp_region_pins`).
     datums_before = snapshot_measure_datums(tree)
@@ -370,6 +381,11 @@ def apply_ops_with_atomic(
                 continue
             if name == "pocket_from_molecule":
                 echoes.append(pocket_spec.op_pocket_from_molecule(store, tree, op))
+                continue
+            if name == "wall_rate":
+                from precis_se.wall_rate import op_wall_rate
+
+                echoes.append(op_wall_rate(store, tree, op))
                 continue
             try:
                 apply_ops(tree, [op])

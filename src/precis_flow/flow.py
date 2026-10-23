@@ -11,6 +11,9 @@ velocity is exactly
 Face transmissivity is the harmonic mean of the two adjacent cell ``T*``
 (correct for series conductances / sharp gap jumps at hole walls); the linear
 system is symmetric and solved directly with ``scipy.sparse.linalg.spsolve``.
+The assembly lives in :mod:`precis_flow.fv` (the shared finite-volume
+operator of se-multiphysics.md slice 1) — this module keeps the velocity,
+floor-gradient and resistance post-processing.
 
 Returns the depth-averaged reduced velocity ``U*``, the reduced pressure
 ``p*``, the reduced floor gradient ``grad* b~`` (``b~ = 1 - h*``; the tracer's
@@ -27,9 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 
+from . import fv
 from .domain import Domain
 
 
@@ -94,69 +96,14 @@ def _harmonic(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def solve(domain: Domain) -> Field:
     """Assemble and solve the variable-transmissivity Poisson problem."""
-    ny, nx = domain.shape
     dx = domain.dx_star
     inside = domain.mask
     inlet = domain.ports.inlet
     outlet = domain.ports.outlet
-    dirichlet = inlet | outlet
     h = domain.h_star
 
     t_field = np.where(inside, h**3, 0.0)
-
-    # Flat index for inside cells only.
-    idx = -np.ones((ny, nx), dtype=int)
-    idx[inside] = np.arange(int(inside.sum()))
-    n = int(inside.sum())
-
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
-    b = np.zeros(n)
-
-    # Face transmissivities (harmonic mean to neighbour) in +x and +y.
-    tx = _harmonic(t_field, np.roll(t_field, -1, axis=1))  # face (i)-(i+1)
-    tx[:, -1] = 0.0
-    ty = _harmonic(t_field, np.roll(t_field, -1, axis=0))  # face (j)-(j+1)
-    ty[-1, :] = 0.0
-
-    jj, ii = np.where(inside)
-    for j, i in zip(jj.tolist(), ii.tolist()):
-        k = idx[j, i]
-        if dirichlet[j, i]:
-            rows.append(k)
-            cols.append(k)
-            data.append(1.0)
-            b[k] = 1.0 if inlet[j, i] else 0.0
-            continue
-        diag = 0.0
-        # neighbours: (j,i-1) west, (j,i+1) east, (j-1,i) south, (j+1,i) north
-        faces = (
-            (j, i - 1, tx[j, i - 1] if i - 1 >= 0 else 0.0),
-            (j, i + 1, tx[j, i]),
-            (j - 1, i, ty[j - 1, i] if j - 1 >= 0 else 0.0),
-            (j + 1, i, ty[j, i]),
-        )
-        for nj, ni, tf in faces:
-            if tf <= 0.0 or nj < 0 or ni < 0 or nj >= ny or ni >= nx:
-                continue
-            if not inside[nj, ni]:
-                continue
-            diag += tf
-            rows.append(k)
-            cols.append(idx[nj, ni])
-            data.append(-tf)
-        if diag == 0.0:
-            diag = 1.0  # isolated cell -> pin to 0 to keep matrix non-singular
-        rows.append(k)
-        cols.append(k)
-        data.append(diag)
-
-    a = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
-    p_vec = spla.spsolve(a.tocsc(), b)
-
-    p = np.full((ny, nx), np.nan)
-    p[inside] = p_vec
+    p = fv.elliptic(domain, t_field, [(inlet, 1.0), (outlet, 0.0)])
 
     # Depth-averaged reduced velocity U* = -h*^2 grad* p*.
     p_for_grad = np.where(inside, np.nan_to_num(p, nan=0.0), 0.0)

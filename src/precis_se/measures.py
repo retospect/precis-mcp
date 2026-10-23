@@ -59,6 +59,13 @@ from precis.utils.units import format_quantity
 
 _RELATION_KEYS = frozenset({"source", "offset", "tol", "scale", "feature"})
 
+#: Scope separator inside a measure name: ``<species>/<prop>``
+#: (se-multiphysics Q2), the same ``/`` the pocket-spec measures use
+#: (``<pocket>/<kind>_p<id>``). ``.`` is reserved — a relation source
+#: ``'block.measure'`` splits on the last dot — so a scoped name must
+#: never carry one.
+SCOPE_SEP = "/"
+
 #: The closed unit registry (se-kind.md slice 4): metres, dimensionless
 #: counts (gear teeth), dimensionless ratios, degrees. Relations require
 #: unit agreement; ``scale`` is dimensionless so it never converts.

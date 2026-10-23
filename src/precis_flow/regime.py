@@ -21,6 +21,28 @@ knudsen       ``Kn = lambda/h0``                  <= 0.01                free-mo
 A line whose inputs were not supplied is marked not-applicable and does not
 block ``card.ok`` — but ``line.applicable`` is False, so a stored card never
 silently claims a check it did not run.
+
+The **species group** (docs/backlog/se-multiphysics.md slice 1) rides on
+:attr:`RegimeCard.species` whenever any species input
+(``molecular_d``, ``k_s``, ``apparent_order``) is supplied:
+
+============  ==================================  =====================  ============================
+line          number                             model holds when       else
+============  ==================================  =====================  ============================
+taylor        ``Pe . eps``, ``eps = h0/L``       <= 0.1 -> Eulerian      route to the Lagrangian tracer
+wall_damkohler ``k_s/k_m = 2 Da_II/Sh``          <= 0.1 reaction-limited, >= 10 transport-limited; 0.1-10 mixed (Lagrangian reference)
+damkohler     ``Da_I = n_w k_s L/(h0 u0)``       informational          expected conversion ~1 - e^-Da_I
+apparent_order ``alpha`` (catpath binding)       |alpha - 1| <= 0.2      first-order k_s only while X ~< 0.2
+============  ==================================  =====================  ============================
+
+``Sh`` is 7.54 where both walls are reactive, 4.86 where one is
+(``n_walls`` 2 or 1). The routing lines are verdicts, not just gates:
+``taylor`` names the solver taking over (the Eulerian depth-averaged
+solve needs the transverse mixing developed; the Lagrangian is valid for
+any ``Pe·eps`` and is the reference in the mixed ``wall_damkohler`` band,
+where the depth average drops the O(Da_w) dispersion shift).
+``species_solver`` names which solver the card admits for —
+``'lagrangian'`` makes the taylor line a route note, never a refusal.
 """
 
 from __future__ import annotations
@@ -99,6 +121,11 @@ class RegimeCard:
     gravity: RegimeLine
     peclet: RegimeLine
     knudsen: RegimeLine
+    #: Optional species group (se-multiphysics.md slice 1): taylor,
+    #: wall_damkohler, damkohler, apparent_order — present only when a
+    #: species input was supplied; ``peclet`` above is the group's fifth
+    #: line and stays at top level for slice-1 compatibility.
+    species: tuple[RegimeLine, ...] = ()
 
     @property
     def lines(self) -> tuple[RegimeLine, ...]:
@@ -109,6 +136,7 @@ class RegimeCard:
             self.gravity,
             self.peclet,
             self.knudsen,
+            *self.species,
         )
 
     @property
@@ -164,6 +192,10 @@ class RegimeCard:
         rho_p: float | None = None,
         molecular_d: float | None = None,
         mean_free_path: float | None = None,
+        k_s: float | None = None,
+        n_walls: int = 2,
+        apparent_order: float | None = None,
+        species_solver: str | None = None,
     ) -> RegimeCard:
         """Compute the card for a physical case (SI units throughout).
 
@@ -171,6 +203,15 @@ class RegimeCard:
         the scale velocity is ``u0 = h0^2 dp / (12 mu L)``. The particle lines
         (``stokes``, ``gravity``) need ``particle_d`` and ``rho_p``; ``peclet``
         needs ``molecular_d``; ``knudsen`` needs ``mean_free_path``.
+
+        Species group (se-multiphysics.md slice 1): ``k_s`` is the wall
+        rate constant (m/s), ``n_walls`` the reactive wall count (1 or 2 —
+        sets the developed ``Sh``), ``apparent_order`` the catpath
+        binding's ``alpha``, and ``species_solver`` which solver the card
+        admits for — ``None`` (the default) asks for none: the taylor
+        line stays a route note and never blocks ``ok``; ``'eulerian'``
+        gates on ``Pe·ε ≤ 0.1``; ``'lagrangian'`` is valid for any
+        ``Pe·ε``.
         """
         if dp is not None and u0 is not None:
             raise ValueError("state exactly one of dp or u0")
@@ -247,6 +288,17 @@ class RegimeCard:
                 "knudsen", 0.01, "free-molecular: the nano propagator, not this kernel"
             )
 
+        species = _species_lines(
+            L=L,
+            h0=h0,
+            u0=u0,
+            molecular_d=molecular_d,
+            k_s=k_s,
+            n_walls=n_walls,
+            apparent_order=apparent_order,
+            species_solver=species_solver,
+        )
+
         return cls(
             L=L,
             h0=h0,
@@ -257,4 +309,145 @@ class RegimeCard:
             gravity=gravity,
             peclet=peclet,
             knudsen=knudsen,
+            species=species,
         )
+
+
+#: Developed Sherwood numbers for parallel-plate walls (spec table):
+#: both walls reactive / one wall — the same pair species.py solves with.
+_SH = {1: 4.86, 2: 7.54}
+
+
+def _species_lines(
+    *,
+    L: float,
+    h0: float,
+    u0: float,
+    molecular_d: float | None,
+    k_s: float | None,
+    n_walls: int,
+    apparent_order: float | None,
+    species_solver: str | None,
+) -> tuple[RegimeLine, ...]:
+    """The species group (taylor, wall_damkohler, damkohler,
+    apparent_order) — emitted only when a species input was supplied;
+    each line is not-applicable unless ITS inputs were given."""
+    if molecular_d is None and k_s is None and apparent_order is None:
+        return ()
+    if species_solver not in (None, "eulerian", "lagrangian"):
+        raise ValueError(
+            "species_solver is None, 'eulerian' or 'lagrangian', "
+            f"got {species_solver!r}"
+        )
+    nw = int(n_walls)
+    if nw not in _SH:
+        raise ValueError(f"n_walls is 1 or 2 (sets the developed Sh), got {n_walls!r}")
+    sh = _SH[nw]
+    out: list[RegimeLine] = []
+
+    if molecular_d is not None and molecular_d > 0:
+        pe = u0 * h0 / molecular_d
+        eps = h0 / L
+        pe_eps = pe * eps
+        out.append(
+            RegimeLine(
+                name="taylor",
+                value=pe_eps,
+                threshold=0.1,
+                ok=pe_eps <= 0.1 or species_solver != "eulerian",
+                holds_when="<= 0.1 → Eulerian depth-averaged",
+                otherwise=(
+                    "Pe·ε > 0.1 → route to the Lagrangian tracer "
+                    "(trace with pe=/walls=) — valid for any Pe·ε"
+                ),
+            )
+        )
+    else:
+        out.append(
+            _skipped(
+                "taylor",
+                0.1,
+                "route to the Lagrangian tracer — valid for any Pe·ε",
+            )
+        )
+
+    if k_s is not None and k_s > 0 and molecular_d is not None and molecular_d > 0:
+        da2 = k_s * h0 / molecular_d
+        ratio = 2.0 * da2 / sh  # k_s/k_m with k_m = Sh D/(2h)
+        regime = (
+            "reaction-limited"
+            if ratio <= 0.1
+            else "transport-limited"
+            if ratio >= 10.0
+            else "mixed"
+        )
+        out.append(
+            RegimeLine(
+                name="wall_damkohler",
+                value=ratio,
+                threshold=0.1,
+                ok=regime != "mixed",
+                holds_when="<= 0.1 reaction-limited · >= 10 transport-limited",
+                otherwise=(
+                    f"{regime} regime (k_s/k_m = {ratio:g}) — the Lagrangian "
+                    "is the reference; the solver uses the series k_eff "
+                    "in every case"
+                ),
+            )
+        )
+    else:
+        out.append(
+            _skipped(
+                "wall_damkohler",
+                0.1,
+                "mixed regime — the Lagrangian is the reference",
+            )
+        )
+
+    if k_s is not None and k_s > 0:
+        da1 = nw * k_s * L / (h0 * u0)
+        out.append(
+            RegimeLine(
+                name="damkohler",
+                value=da1,
+                threshold=float("nan"),
+                ok=True,
+                holds_when="informational",
+                otherwise=f"expected conversion ~1 − e^(−Da_I) = {1.0 - pow(2.718281828459045, -da1):.3g}",
+            )
+        )
+    else:
+        out.append(
+            _skipped(
+                "damkohler",
+                float("nan"),
+                "informational: expected conversion ~1 − e^(−Da_I)",
+            )
+        )
+
+    if apparent_order is not None:
+        alpha = float(apparent_order)
+        near = abs(alpha - 1.0) <= 0.2
+        out.append(
+            RegimeLine(
+                name="apparent_order",
+                value=alpha,
+                threshold=0.2,
+                ok=near,
+                holds_when="|α − 1| <= 0.2",
+                otherwise=(
+                    f"α = {alpha:g}: first-order k_s is valid only while "
+                    "conversion X ≲ 0.2 — past that the wall BC needs "
+                    "nonlinear kinetics (slice 1c)"
+                ),
+            )
+        )
+    else:
+        out.append(
+            _skipped(
+                "apparent_order",
+                0.2,
+                "first-order k_s valid only while X ≲ 0.2 (α unmeasured)",
+            )
+        )
+    return tuple(out)

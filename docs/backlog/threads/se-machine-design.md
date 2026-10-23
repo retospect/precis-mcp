@@ -235,7 +235,12 @@ off that gap until it closes.
 0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1
-   ready after the Fable physics review (2026-10-21), later slices draft.
+   (species advection–diffusion, Taylor dispersion, wall reactions)
+   landed 2026-10-21 on `mp-s1c` (`src/precis_flow/fv.py`/`species.py`,
+   tracer `pe=`/`walls=`, species card lines, `fluid=`/`species=` token
+   keys + four species COMPUTERS, `wall_rate`, migration 0231 via
+   builder-ce, skills `precis-se-flow-help` + regions section); slice 1b
+   (entrance-region mass transfer) next, later slices draft.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
