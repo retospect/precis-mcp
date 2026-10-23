@@ -2310,6 +2310,8 @@ def render_body(
     external links normal mode otherwise puts on each ``[n]`` (the link
     itself rides on the bib entry, :func:`build_bib`) — no effect in
     patent/footnote mode, which never emit ``\\cite`` at all."""
+    from precis.export._ref_cache import RefLookupMemo
+
     chunks = store.drafts.reading_order(ref.id)
     back_matter = _back_matter_handles(chunks)
     # ``create_draft`` seeds every draft with a depth-0 heading carrying the
@@ -2333,7 +2335,11 @@ def render_body(
         keymap=_acronym_keymap(abbrevs),
         abbrevs=abbrevs,
         known_handles={c.dc for c in chunks},
-        store=store,
+        # Per-render memo (gr493192): each ``[n]`` marker re-resolves its
+        # cite slug, so an unmemoised walk re-reads the same handful of
+        # refs thousands of times. Standalone callers (the retraction
+        # walk, source collection) get the same collapse as export_docx.
+        store=RefLookupMemo(store),
         legacy_to_dc=walker.legacy_map(chunks),
         doc_type=doc_type,
         footnote_refs=footnote_refs,
@@ -3456,6 +3462,12 @@ def export_draft(
     (gr491602 — the export itself is a read; only the explicit write ops —
     the ``draft_export``/``remarkable_send`` jobs and the CLI — pass it)."""
     from precis.export import guard_exportable, guard_no_secrets
+    from precis.export._ref_cache import RefLookupMemo
+
+    # Same per-export memo the docx path applies (gr493192): render, bib
+    # and the sources appendix re-read a handful of refs at every marker,
+    # so one memo over the whole build collapses the round trips.
+    mstore: Any = RefLookupMemo(store)
 
     progress.report("reading the draft")
     guard_exportable(ref)
@@ -3471,7 +3483,7 @@ def export_draft(
         doc_type = ws.doc_type if ws else ""
     if doc_type == _POSTER_DOC_TYPE:
         return _export_poster(
-            store,
+            mstore,
             ref,
             target_dir=target_dir,
             doi_links=doi_links,
@@ -3489,7 +3501,7 @@ def export_draft(
     remarkable = remarkable and not patent_mode
 
     rendered = render_body(
-        store,
+        mstore,
         ref,
         doc_type=doc_type,
         footnote_refs=remarkable,
@@ -3510,7 +3522,7 @@ def export_draft(
         ""
         if patent_mode
         else build_bib(
-            store,
+            mstore,
             rendered.cited_slugs,
             rendered.warnings,
             doi_links=doi_links,
@@ -3529,7 +3541,7 @@ def export_draft(
         from precis.export.sources import collect_cited_sources, safe_source_filename
 
         source_bundle = collect_cited_sources(
-            store, ref, cited_slugs=rendered.cited_slugs
+            mstore, ref, cited_slugs=rendered.cited_slugs
         )
         if source_bundle.present:
             src_dir = target_dir / "sources"
@@ -3545,7 +3557,7 @@ def export_draft(
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
     published_tex = (
-        build_published_claims_section(store, rendered.trust, rendered.claim_cites)
+        build_published_claims_section(mstore, rendered.trust, rendered.claim_cites)
         if claim_appendix
         else ""
     )
@@ -3572,7 +3584,7 @@ def export_draft(
     # override. Written only on an explicit record request (gr491602: the
     # export itself is a read); no-op when nothing was overridden.
     if record_override:
-        record_override_event(store, ref, rendered.trust)
+        record_override_event(mstore, ref, rendered.trust)
 
     # Materialise figure images beside main.tex — the body
     # references them as pics/<dc>.<ext> via \includegraphics.

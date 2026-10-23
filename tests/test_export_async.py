@@ -117,6 +117,31 @@ def test_docx_ref_lookups_scale_with_papers_not_cites(
     assert len(idents) <= N_PAPERS + 2, len(idents)
 
 
+def test_preflight_retraction_walk_is_memoised(
+    seeded: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192: the preflight's retraction walk renders the body to learn
+    the cite set — the same per-marker ref reads the exporter does. The
+    memo covers it, so the gate scales with papers, not cite markers."""
+    from precis.export.preflight import draft_export_preflight
+
+    store, ref = seeded
+    seen: list[str] = []
+    orig = psycopg.Cursor.execute
+
+    def spy(self: Any, query: Any, *a: Any, **k: Any) -> Any:
+        seen.append(str(query))
+        return orig(self, query, *a, **k)
+
+    monkeypatch.setattr(psycopg.Cursor, "execute", spy)
+    pf = draft_export_preflight(store, ref)
+    assert not pf.blocked
+    lookups = [q for q in seen if "id_kind = 'cite_key'" in q]
+    # 36 cite markers over N_PAPERS papers — same bound the docx render
+    # itself meets (was thousands of lookups when this walk was unmemoised).
+    assert len(lookups) <= 4 * N_PAPERS, len(lookups)
+
+
 def test_export_docx_reports_progress(seeded: tuple[Any, Any], tmp_path: Path) -> None:
     store, ref = seeded
     events: list[tuple[str, int | None, int | None]] = []
@@ -171,6 +196,28 @@ def test_async_docx_matches_direct_download(client: TestClient) -> None:
             return {n: z.read(n) for n in z.namelist() if n != "docProps/core.xml"}
 
     assert parts(got.content) == parts(direct.content)
+
+
+def test_async_export_hands_exporter_the_warmed_memo(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192: the job's store is one RefLookupMemo across resolve →
+    preflight → handler, so the exporter renders off the preflight's warm
+    cache instead of re-reading every ref the gate just walked."""
+    import precis.export.docx as docx_mod
+    from precis.export._ref_cache import RefLookupMemo
+
+    captured: list[Any] = []
+    real_docx = docx_mod.export_docx
+
+    def spy(*a: Any, **k: Any) -> Any:
+        captured.append(a[0] if a else k.get("store"))
+        return real_docx(*a, **k)
+
+    monkeypatch.setattr(docx_mod, "export_docx", spy)
+    tok = client.post("/drafts/asyncd/export/start?fmt=docx").json()["token"]
+    assert _wait(client, f"/drafts/asyncd/export/status/{tok}")["state"] == "done"
+    assert captured and isinstance(captured[0], RefLookupMemo)
 
 
 def test_async_pdf_runs_the_pdf_route(

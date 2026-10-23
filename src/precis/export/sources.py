@@ -175,6 +175,12 @@ def collect_cited_sources(
     it (``ExportResult.cited_slugs``); otherwise we render the draft body once
     to compute it. ``corpus_dirs`` defaults to :func:`corpus_roots_from_env`.
     """
+    from precis.export._ref_cache import RefLookupMemo
+
+    # One memo for the walk (gr493192): the optional render and the
+    # per-slug resolve loop re-read the same refs.
+    store = RefLookupMemo(store)
+
     if cited_slugs is None:
         # Local import: latex imports us for the appendix, so import lazily to
         # avoid a cycle at module load.

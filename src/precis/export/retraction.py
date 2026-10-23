@@ -336,8 +336,14 @@ def cited_paper_refs(
     off disk, which a retraction walk has no use for).
     """
     # Local imports: both modules import each other's neighbours at load.
+    from precis.export._ref_cache import RefLookupMemo
     from precis.export.latex import render_body
     from precis.export.sources import _resolve_source_ref
+
+    # One memo for the whole walk: the render re-resolves each cite at
+    # every ``[n]`` marker, and the resolve loop re-reads the same refs —
+    # unmemoised this was the fat half of the export preflight (gr493192).
+    store = RefLookupMemo(store)
 
     if cited_slugs is None:
         cited_slugs = render_body(store, ref).cited_slugs

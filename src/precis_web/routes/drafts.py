@@ -1340,7 +1340,10 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     without ``?sources=1`` only the server log line records it."""
     from precis.export.docx import export_docx
 
-    store = get_store(request)
+    # Under the async export job the runner resolved the draft on a
+    # per-job RefLookupMemo (``export_store``) warmed by the preflight's
+    # body render — reuse it so this render doesn't re-read the same refs.
+    store = request.scope.get("export_store") or get_store(request)
     # Under the async export job the runner already resolved (and gated)
     # the draft in stage 1 — reuse it rather than looking it up twice;
     # a direct GET finds nothing in scope and does the lookup itself.
@@ -1432,7 +1435,7 @@ async def papers_zip_route(request: Request, ident: str) -> Response:
     legitimately incomplete)."""
     from precis.export.sources import build_sources_zip
 
-    store = get_store(request)
+    store = request.scope.get("export_store") or get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
@@ -2009,9 +2012,10 @@ async def pdf(request: Request, ident: str) -> Response:
     from precis.export.compile import compile_pdf, have_latexmk
     from precis.export.latex import export_draft
 
-    store = get_store(request)
-    # Same reuse as the .docx route: under the async job the runner's
-    # stage 1 already resolved (and gated) the draft.
+    # Same reuse as the .docx route: the job's per-export memoised store
+    # (``export_store``) carries the preflight's warm lookups into the
+    # render; a direct GET gets the plain store.
+    store = request.scope.get("export_store") or get_store(request)
     ref = request.scope.get("export_ref") or _draft_ref(store, ident)
     if ref is None:
         return templates.TemplateResponse(

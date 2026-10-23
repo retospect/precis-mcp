@@ -51,6 +51,7 @@ from fastapi.responses import FileResponse, Response
 
 from precis.budget.work_class import WorkClass, work_class_scope
 from precis.export import progress
+from precis.export._ref_cache import RefLookupMemo
 from precis_web.deps import get_store
 
 log = logging.getLogger(__name__)
@@ -181,7 +182,13 @@ def start(
                         if preflight is not None
                         else "resolving draft"
                     )
-                    store = get_store(sub)
+                    # One memo for the whole job (gr493192): the preflight's
+                    # body render warms the cite/ref lookups the exporter
+                    # then repeats, so the two walks cost one pass over the
+                    # refs, not two. The handler picks it up via
+                    # ``export_store`` in the request scope.
+                    store = RefLookupMemo(get_store(sub))
+                    sub.scope["export_store"] = store
                     ref = resolve(store, ident)
                     if ref is None:
                         job.error = "draft not found"
