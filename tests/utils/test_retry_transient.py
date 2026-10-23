@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 
@@ -100,7 +101,11 @@ def test_logs_one_info_line_with_host(caplog: pytest.LogCaptureFixture) -> None:
         sleep=lambda _s: None,
     )
     lines = [
-        r.getMessage() for r in caplog.records if "retry_transient" in r.getMessage()
+        r.getMessage()
+        for r in caplog.records
+        if r.name == http.log.name
+        and r.levelno == logging.INFO
+        and "retry_transient" in r.getMessage()
     ]
     assert len(lines) == 1
     assert "api.crossref.org" in lines[0]
