@@ -82,6 +82,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 10. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
+11. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
+    filed 2026-10-23 (Reto's no-flood-fill ruling, me507871): the
+    pour-removal half landed in `g4-pours-off`; the survey inside says
+    what "fatten traces by net property" already has (current→width
+    via IPC-2221) and lacks (impedance→width, return-path→geometry,
+    per-edge widths). Do not build without a further ruling.
 
 ## Horizon
 

@@ -1655,10 +1655,11 @@ def layer_is_pourable(layer: dict[str, Any]) -> bool:
     it decides to promote some net to a plane.
 
     An explicit ``"pourable"`` key wins when present; otherwise this
-    falls back to the legacy rule (``role == "plane"``), so
-    :data:`precis.pcb.DEFAULT_STACKUP` keeps today's behaviour: the
-    annealer may auto-promote a net onto In1.Cu/In2.Cu, never onto
-    F.Cu/B.Cu.
+    falls back to the legacy rule (``role == "plane"``), so under
+    :data:`precis.pcb.DEFAULT_STACKUP` — every layer ``signal`` — the
+    annealer may auto-promote onto no layer at all: a pour only ever
+    comes from an authored instruction (``op='plane_net'``, a stackup
+    ``fill``/``plane_net``, a preset, an import's rows).
 
     **This predicate gates only the automatic move generator — never a
     human instruction.** ``op='plane_net'`` reaches :meth:`PcbIR.

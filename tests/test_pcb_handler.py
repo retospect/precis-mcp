@@ -1909,13 +1909,9 @@ def test_feasibility_view(pcb):
 def test_put_creates_default_board(pcb):
     resp = pcb.put(id="sensor-node", args=_DESIGN)
     # the netlist TOC surfaces the board name + stackup layer summary;
-    # gr495287: it names the GND the default stackup really pours (a fill
-    # on all four layers since the outer-layer GND pours), not a plane
-    # declaration nothing poured
-    summary = (
-        "4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu, "
-        "GND fill on F.Cu/In1.Cu/In2.Cu/B.Cu, power regions on In2.Cu"
-    )
+    # since the 2026-10-23 no-flood-fill ruling the default stackup
+    # declares no plane_net/fill, so the summary is layer names only
+    summary = "4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu"
     assert "board: main" in resp.body
     assert summary in resp.body
     toc = pcb.get(id="sensor-node")
@@ -2361,21 +2357,17 @@ def test_stackup_view_is_discoverable():
 
 
 def test_stackup_view_default_4_layer(pcb):
-    """The board every put() is born on: DEFAULT_STACKUP declares
-    In1.Cu/GND but writes no pcb_planes row (the mirror is op='stackup''s,
-    not pcb_ensure_board's) — so the row shows the declaration while the
-    skip line honestly reports the router pours nothing."""
+    """The board every put() is born on: DEFAULT_STACKUP declares no
+    plane_net/fill at all (the 2026-10-23 no-flood-fill ruling), so the
+    skip line honestly reports every net routes as traces."""
     pcb.put(id="stackup-4", args=_CROSSED)
     resp = pcb.get(id="stackup-4", view="stackup")
     assert "4 layer(s)" in resp.body
     for layer in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"):
         assert layer in resp.body
     assert "router skips: none" in resp.body
-    # In1.Cu declares plane_net=GND with no assignment row — dead on a
-    # legacy stackup until op='plane_net' or a preset lands; the view flags
-    # it rather than imply a pour.
-    assert "In1.Cu=GND" in resp.body
-    assert "will not pour" in resp.body
+    assert "will not pour" not in resp.body
+    assert "fill" not in resp.body
 
 
 def test_stackup_view_preset_board_pours_every_layer(pcb):

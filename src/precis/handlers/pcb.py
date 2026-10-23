@@ -3105,8 +3105,8 @@ class PcbHandler(Handler):
             )
 
         # `plane_net` on a stackup entry was a DEAD key until now — nothing
-        # in the engine read it, so DEFAULT_STACKUP's own In1.Cu/GND
-        # declaration has never poured anything. Applying it through the
+        # in the engine read it, so the v1 DEFAULT_STACKUP's own In1.Cu/GND
+        # declaration never poured anything. Applying it through the
         # same `pcb_planes` write `op='plane_net'` uses makes the
         # declaration true instead of decorative; a named net that does not
         # exist is an error, never a silent skip.

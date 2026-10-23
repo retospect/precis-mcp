@@ -971,9 +971,8 @@ def import_epro(
     }
     # ONE transaction for the design, the stackup and the planes. A board
     # that got its instances but not its stackup would silently keep
-    # DEFAULT_STACKUP, which claims a GND plane on In1.Cu — so a partial
-    # import would leave a board that lies about its own layers rather
-    # than no board at all.
+    # DEFAULT_STACKUP — so a partial import would leave a board that lies
+    # about its own layers rather than no board at all.
     with store.tx() as conn:
         ref, created, counts = store.pcb_apply(
             slug=slug,

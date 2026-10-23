@@ -333,9 +333,10 @@ put(kind="pcb", id="s", args={"op": "stackup", "layers": [
 ]})
 ```
 
-Every board is born on the default stackup: all four layers route, and
-`In1.Cu` and `In2.Cu` each pour a GND `fill` over what routing leaves
-(`In2.Cu` also derives power regions). A board authored with plane-only
+Every board is born on the default stackup: all four layers route, none
+pours (the 2026-10-23 no-flood-fill ruling). `fill`/`plane_net`/
+`power_regions` keys, `op='plane_net'`, a preset or an import's rows are
+how a board gets a pour. A board authored with plane-only
 inner layers has exactly **two** routing layers, and on a board whose
 front is spoken for (an electrode field, a big connector land) that
 leaves **one**. That is usually the real reason such a board will not
@@ -384,9 +385,8 @@ hybrid — F.Cu/B.Cu signal with a GND fill, In1.Cu a GND plane that also
 routes at 2.5x, In2.Cu power regions with GND filling the rest — so every
 copper layer pours. `4l-top-only` is the same copper with parts on top
 only; `2l` is two signal layers with GND fills. `ground="VSS"` renames the
-preset's GND. New boards are still born on the legacy default above; on
-it, In1's `plane_net` pours only once `op='plane_net'` (or a preset)
-writes the row.
+preset's GND. New boards are born on the default above — it pours
+nothing until `op='plane_net'` or a preset puts a pour on it.
 
 Read it back with `get(kind="pcb", id="s", view="stackup")` — one row per
 layer in stack order: `role` (`signal`/`plane`, or `mixed` when the layer
@@ -415,8 +415,8 @@ get(kind="pcb", id="s", view="planes")  # see what's assigned
 ```
 
 `layer` must name a layer in the board's stackup (`get(id=s)`'s TOC shows
-it, e.g. `4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu` — `(GND)` is the stackup's
-declaration only; nothing pours until `op='plane_net'` or `op='stackup'` records
+it, e.g. `4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu`; the default declares none, so
+nothing pours until `op='plane_net'` or `op='stackup'` records
 an assignment, see `view='planes'`); an unknown name is
 rejected with the valid options. A plane-assigned net's pins **dog-bone
 fan out** (a short stub off the pad, no via-in-pad) instead of routing

@@ -17,8 +17,10 @@ kinds: [pcb]
 
 In a `pcb` design every net has a **required, meaningful name** and an optional
 **class**. The name *is* the intent (`VCC3V3`, `I2C_SCL`, `MIC_OUT` — never
-`N$12`). The class tells precis how to treat the copper: how wide, whether it
-pours as a plane, and which design measures apply by default. Set both in the
+`N$12`). The class tells precis how to treat the copper: how wide, whether the
+crossing metric treats it as a pour/return net, and which design measures
+apply by default. A pour itself is authored (`op='plane_net'`, a stackup
+`plane_net`/`fill`, a preset) — class alone never pours. Set both in the
 `nets` array of `put` ([[precis-pcb-help]]).
 
 ```python
@@ -34,8 +36,8 @@ pours as a plane, and which design measures apply by default. Set both in the
 
 | class | meaning | width | plane? | typical measures |
 |-------|---------|-------|--------|------------------|
-| `power` / `pwr` | a supply rail | from `current` (or wide) | yes (inner plane) | short, low-Z; bypass at each load |
-| `gnd` / `ground` | the return | widest / pour | **yes** | continuous pour, stitching |
+| `power` / `pwr` | a supply rail | from `current` (or wide) | usually (author it) | short, low-Z; bypass at each load |
+| `gnd` / `ground` | the return | widest / pour | usually (author it) | continuous pour, stitching |
 | `analog` | a sensitive analog signal | signal | no | keep away from `noisy`; guard |
 | `i2c` | an I²C bus line (SCL/SDA) | signal | no | pull-ups; short; see [[precis-i2c-help]] |
 | `spi` | a SPI line (SCK/MOSI/MISO/CS) | signal | no | length-similar; see [[precis-spi-help]] |
@@ -62,15 +64,17 @@ mm/A on external 1 oz copper for a ~10 °C rise; bump up for inner layers.
 ## Planes & the ratsnest
 
 **Plane classes** (`gnd`/`ground`/`power`/`pwr`/`plane`) are **excluded from
-the crossing/ratsnest metric** — they pour as copper, they don't route
-point-to-point, so counting their airwires would drown the real signal
-crossings. The netlist still models **every** GND/VCC connection (so DRC and
+the crossing/ratsnest metric** — precis treats them as pour/return nets, not
+point-to-point airwires, so counting their airwires would drown the real
+signal crossings. The netlist still models **every** GND/VCC connection (so DRC and
 connectivity stay honest); only the *placement objective* ignores them. This is
 why `view='crossings'` shows you signal congestion, not a hairball.
 
-Default stack is **4-layer Sig / GND / PWR / Sig** (components + signals on the
-outer layers, planes inner — manufacturable and quiet). 2-layer is supported;
-on 2-layer the ground "plane" is a pour and crossings matter much more.
+The default stackup is four **signal** layers and pours nothing — the
+2026-10-23 no-flood-fill ruling; a board authors its planes (`op='plane_net'`,
+a stackup `plane_net`/`fill`, a `4l-two-sided`-style preset). 2-layer is
+supported; there the ground "plane" is a pour too, so it is authored the
+same way.
 
 ## Where the classes come from
 

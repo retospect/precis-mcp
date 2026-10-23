@@ -120,17 +120,16 @@ def test_stackup_plane_net_and_fill_resolve_without_rows() -> None:
     assert all(a.locked for a in got)
 
 
-def test_default_stackup_fills_every_layer() -> None:
-    """gr495395: F.Cu and B.Cu carry a GND ``fill`` too — every layer of a
-    default board pours, per Reto's "each layer should be filled"."""
+def test_default_stackup_pours_nothing() -> None:
+    """Reto 2026-10-23 (me507871, superseding gr495395's "each layer
+    should be filled"): no flood fill — a default board declares no
+    ``plane_net``/``fill`` on any layer, so nothing pours unless a board
+    authors one itself."""
     from precis.pcb import DEFAULT_STACKUP
 
     got, notes = resolve_assignments(DEFAULT_STACKUP, [], ["GND", "N1"])
     assert notes == []
-    assert {(a.layer, a.net, a.source, a.priority) for a in got} == {
-        (name, "GND", "fill", FILL_PRIORITY)
-        for name in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")
-    }
+    assert got == []
 
 
 def test_a_missing_net_or_a_whole_board_row_skips_the_declaration() -> None:

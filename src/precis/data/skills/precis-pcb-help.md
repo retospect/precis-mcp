@@ -186,7 +186,7 @@ Field notes:
 ## Author a design — nets, connections, board
 
 - **net**: `name` is **required and meaningful** — the name *is* the intent
-  (`I2C_SCL`, not `N$7`). `class` drives width / plane / measure defaults
+  (`I2C_SCL`, not `N$7`). `class` drives width / measure defaults
   ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)
   overrides.
 - **net electrical spec** — where datasheet numbers go: `current` (amps →
@@ -213,11 +213,11 @@ Field notes:
   layers…); a net's `net_class` joins this by name, a missing row means
   built-in defaults.
 - Every design gets a default **board** (`pcb_boards`, name `'main'`, the
-  4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu(GND)`/`In2.Cu`/`B.Cu`) on first
+  4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu`/`In2.Cu`/`B.Cu`) on first
   `put` — the netlist≠board hedge for future multi-board work; v1 is one
-  board per design. All FOUR layers route; both inner layers also pour a
-  GND `fill` over whatever routing leaves (In2 adds power-net regions),
-  with no `pcb_planes` row needed. Change it with
+  board per design. All FOUR layers route and none pours — the 2026-10-23
+  ruling is no flood fill: copper area comes from routed traces. A board
+  that wants a pour authors one with `put(args={'op':'plane_net', ...})`,
   `put(args={'op':'stackup', ...})`, or
   `args={'op':'stackup','preset':'4l-two-sided'}` for the hybrid that pours
   every layer — see [[precis-pcb-route-help]]. On a board whose front is spoken for,
@@ -347,7 +347,8 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 
 - **crossings** is the objective the placer minimises — fewer crossed wires =
   easier route. **Plane nets** (`gnd/ground/power/pwr/plane`) are excluded from
-  the metric (they pour, they don't route point-to-point) but stay fully in the
+  the metric by class — they're the nets that pour or return through vias, not
+  point-to-point airwires — but stay fully in the
   netlist.
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the

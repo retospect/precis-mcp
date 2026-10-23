@@ -357,7 +357,8 @@ PRESET_GROUND_NET = "GND"
 #: (pcb-stackup-regions slice 3, Reto's rulings 2026-10-16):
 #:
 #: - ``4l-two-sided`` — the hybrid (:data:`DEFAULT_STACKUP` instead routes
-#:   and fills both inner layers, measured better on nano). F.Cu/B.Cu
+#:   all four layers and pours nothing — the 2026-10-23 no-flood-fill
+#:   ruling). F.Cu/B.Cu
 #:   signal with a GND ``fill``; In1.Cu a GND plane that also routes at
 #:   :data:`HYBRID_IN1_ROUTE_COST`; In2.Cu carries derived power regions
 #:   (``power_regions``) with GND filling whatever no region claims. Sides
@@ -418,17 +419,18 @@ def stackup_preset(
     return out
 
 
-#: The default stackup every board is born with (gr495395/gr495287): every
-#: layer pours a GND ``fill`` over whatever routing leaves — Reto's ruling
-#: is "each layer should be filled" (shielding, less etchant, connectivity);
-#: In2.Cu also derives power-net regions. A ``fill`` pours after routing
-#: without a ``pcb_planes`` row, so a fresh board's planes are real
-#: copper; the v1 literal (In1 a ``plane_net`` declaration the router never
-#: poured without ``op='stackup'``) did not. Measured on the nano board
-#: seeds 1-8 against the v1 literal: routed mean 34.375 -> 35.75, per-seed
-#: min 28 -> 30. Migration 0138's backfill literal is the old v1 one; no
-#: column default reads this. The ``4l-two-sided`` hybrid preset (In1 a
-#: whole-board plane) stays ``op='stackup', preset=...``.
+#: The default stackup every board is born with: all four layers route,
+#: **none pours**. Reto's ruling 2026-10-23 (me507871, superseding the
+#: 2026-10-17 "each layer should be filled" ruling, gr495395 closed): "no
+#: fill, we just fill with traces. (no floodfil.)" — copper area comes
+#: from routed traces widened by net property, not a flood pour, so the
+#: GND ``fill``/``power_regions`` declarations bb1265dbf and 527ce6d63
+#: put here are gone. Pours are opt-in: a board authors one with
+#: ``op='plane_net'``/``op='stackup'`` (a ``plane_net``/``fill``/
+#: ``power_regions`` key on its own stackup), a stackup preset, or an
+#: import's ``pcb_planes`` rows; boards born before this change keep
+#: their stamped stackup, fills included. Migration 0138's backfill
+#: literal is the even older v1 one; no column default reads this.
 #:
 #: **``role`` answers two questions; the explicit flags split them.**
 #: :func:`precis.pcb.ir.layer_is_routable`/:func:`~precis.pcb.ir.
@@ -446,14 +448,8 @@ def stackup_preset(
 #: ``route_cost``, and ``pour_nets`` — net(s) an import found carried by a
 #: board-covering fill on a signal layer (gr486958).
 DEFAULT_STACKUP: list[dict[str, Any]] = [
-    {"name": "F.Cu", "role": "signal", "fill": PRESET_GROUND_NET},
-    {"name": "In1.Cu", "role": "signal", "routable": True, "fill": PRESET_GROUND_NET},
-    {
-        "name": "In2.Cu",
-        "role": "signal",
-        "routable": True,
-        "fill": PRESET_GROUND_NET,
-        "power_regions": True,
-    },
-    {"name": "B.Cu", "role": "signal", "fill": PRESET_GROUND_NET},
+    {"name": "F.Cu", "role": "signal"},
+    {"name": "In1.Cu", "role": "signal", "routable": True},
+    {"name": "In2.Cu", "role": "signal", "routable": True},
+    {"name": "B.Cu", "role": "signal"},
 ]

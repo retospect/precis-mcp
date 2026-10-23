@@ -4633,8 +4633,8 @@ class PcbMixin:
         same hedge :meth:`pcb_ensure_board` offers: the ``.epro2`` import
         writes the design, the stackup and the planes as ONE unit, because
         a board that got its instances but not its plane assignments would
-        silently fall back to :data:`precis.pcb.DEFAULT_STACKUP`'s claim of
-        a GND plane on In1.Cu.
+        silently fall back to :data:`precis.pcb.DEFAULT_STACKUP`, which no
+        longer matches the imported stackup.
 
         Always stamps ``meta.source = 'authored'`` (merged on conflict,
         never overwriting unrelated meta keys) — a human's explicit

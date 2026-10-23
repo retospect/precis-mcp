@@ -41,6 +41,10 @@ clearance halos wall the pad in (fine-pitch IC rows), so
   plane, routable at a moderate cost; In2.Cu power regions; B.Cu signal +
   GND fill. "Ground pour unless we can do something more clever": any copper
   area with no assigned net region pours GND.
+  **Superseded 2026-10-23** (me507871): no flood fill — the default pours
+  nothing; the hybrid lives on as the `4l-two-sided` preset and the
+  graph-routing replacement is
+  [pcb-graph-routing-fattens-traces](pcb-graph-routing-fattens-traces.md).
 - **Power regions on In2.** Keep the cost of crossing a region edge small.
   `reference` is a **soft cost**, never a hard rule; pairing a wire to its
   return in the adjacent fill is mostly overkill.
