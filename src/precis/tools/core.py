@@ -445,6 +445,28 @@ def _ctx_session(ctx: Context | None) -> object | None:
         return None
 
 
+def _ctx_raw_args(ctx: Context | None) -> dict[str, Any] | None:
+    """The call's raw wire arguments — ``CallToolRequest.params.arguments``
+    as the client sent them — or ``None`` outside a live request.
+
+    The ledger's ``input_keys`` needs these to tell an explicit
+    ``key=None`` from an omitted key: tool wrappers forward every
+    declared kwarg defaulted to ``None``, so both look identical by
+    dispatch time (gr504415). Same degrades-to-None contract as
+    :func:`_ctx_session`.
+    """
+    if ctx is None:
+        return None
+    try:
+        request = getattr(ctx.request_context, "request", None)
+        if request is None:
+            return None
+        args = getattr(request.params, "arguments", None)
+    except (AttributeError, ValueError):
+        return None
+    return dict(args) if isinstance(args, dict) else None
+
+
 def get(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
@@ -512,7 +534,7 @@ def get(
     search(kind='skill', q='reading a paper') for a topical lookup.
     """
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
         if args:
@@ -1056,7 +1078,7 @@ def search(
     # that can actually reach a handler (every early return above this
     # point is a pre-dispatch validation error).
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch("search", payload)
     finally:
@@ -1386,7 +1408,7 @@ def put(
         if reserved_err is not None:
             return reserved_err
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch(
             "put",
@@ -1849,7 +1871,7 @@ def edit(
         payload["__extras__"] = extras
     # See ``get`` for the ``str | CallToolResult`` return contract.
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch("edit", payload)
     finally:
@@ -1906,7 +1928,7 @@ def delete(
             return reserved_err
         payload["__extras__"] = dict(args)
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch("delete", payload)
     finally:
@@ -1969,7 +1991,7 @@ def tag(
     `precis-tags` is the authoritative axis matrix.
     """
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch(
             "tag",
@@ -2020,7 +2042,7 @@ def link(
     `precis-relations` lists every rel (cites, blocks, ...).
     """
     session = _ctx_session(ctx)
-    token = serve_ledger.bind(session)
+    token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         return _dispatch(
             "link",

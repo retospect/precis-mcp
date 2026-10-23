@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from precis import serve_ledger
 from precis.runtime import PrecisRuntime
 
 
@@ -81,6 +82,47 @@ def test_dispatch_ledger_drops_none_valued_keys(
     assert ["kind", "text", "title"] in key_sets, key_sets
     # The pre-fix signature: this call's row carrying its None-padded kwargs.
     assert ["id", "kind", "mode", "text", "title", "url"] not in key_sets
+
+
+def test_dispatch_ledger_raw_args_keep_explicit_nulls(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr504415: with the raw wire arguments bound (the live MCP path),
+    a caller-sent ``key=None`` lands in input_keys — only a genuinely
+    omitted key is absent. ``arg_sample`` still skips the None value, so
+    ``key ∈ input_keys ∧ key ∉ arg_sample`` reads as "sent as null"."""
+    tag = uuid4().hex[:8]
+    raw = {
+        "kind": "memory",
+        "text": f"body-{tag}",
+        "title": f"tool-ledger-raw-{tag}",
+        "id": None,  # explicitly sent null — indistinguishable downstream
+    }
+    token = serve_ledger.bind(None, raw)
+    try:
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "put",
+            {
+                "kind": "memory",
+                "text": f"body-{tag}",
+                "title": f"tool-ledger-raw-{tag}",
+                "id": None,
+            },
+        )
+    finally:
+        serve_ledger.unbind(token)
+    assert is_error is False, body
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT input_keys, arg_sample FROM tool_calls "
+            "WHERE kind='memory' AND ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 10"
+        ).fetchall()
+    key_sets = [sorted(r[0]) for r in rows]
+    assert ["id", "kind", "text", "title"] in key_sets, key_sets
 
 
 def test_dispatch_ledger_never_leaks_payload_values(

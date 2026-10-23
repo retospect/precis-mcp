@@ -1089,6 +1089,7 @@ class DispatchMixin(RuntimeShape):
         if store is None:
             return
         try:
+            from precis import serve_ledger
             from precis.agentlog import current_from_env
             from precis.tool_ledger import (
                 ToolCallRecord,
@@ -1106,17 +1107,28 @@ class DispatchMixin(RuntimeShape):
                 error_type = m.group(1) if m else "Unknown"
             kind = args.get("kind")
             session_id, seq = current_session_key()
+            # The raw wire arguments (CallToolRequest params.arguments,
+            # bound by the wrapper via serve_ledger) say exactly which
+            # keys the caller sent — including explicitly-null ones,
+            # which the payload can't tell from a defaulted None
+            # (gr504415). Without a live MCP request (CLI, tests) the
+            # fallback keeps the old rule: None-valued keys are wrapper
+            # defaults, not caller input — tools/core.py's put/edit/get
+            # pass every declared kwarg defaulted to None, so recording
+            # bare key presence would log the same static ~70-key list
+            # for every put — useless for arg-shape mining.
+            raw = serve_ledger.current_raw_args()
+            input_keys = (
+                sorted(str(k) for k in raw)
+                if raw is not None
+                else sorted(str(k) for k, v in args.items() if v is not None)
+            )
             record_call(
                 store,
                 ToolCallRecord(
                     verb=verb,
                     kind=str(kind) if kind is not None else None,
-                    # None-valued keys are wrapper defaults, not caller
-                    # input: tools/core.py's put/edit/get pass every
-                    # declared kwarg defaulted to None, so recording bare
-                    # key presence would log the same static ~70-key list
-                    # for every put — useless for arg-shape mining.
-                    input_keys=sorted(str(k) for k, v in args.items() if v is not None),
+                    input_keys=input_keys,
                     outcome="error" if is_error else "ok",
                     error_type=error_type,
                     result_count=result_count,

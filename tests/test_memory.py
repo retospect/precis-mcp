@@ -2102,6 +2102,14 @@ def test_agent_cannot_write_system_dream_values(handler: MemoryHandler) -> None:
     resp = handler.put(text="a hunch", tags=["DREAM:speculative"])
     mid = id_of(resp.body)
     assert "DREAM:speculative" in {str(t) for t in handler.store.tags_for(mid)}
+    # The dream's thread marker must coexist with DREAM:speculative — a
+    # closed ``DREAM:thread`` value can't (closed-axis replace semantics),
+    # so it is the open tag ``dream-thread`` (gr504795).
+    resp = handler.put(text="a thread", tags=["dream-thread", "DREAM:speculative"])
+    tid = id_of(resp.body)
+    assert {"dream-thread", "DREAM:speculative"} <= {
+        str(t) for t in handler.store.tags_for(tid)
+    }
     for bad in ("DREAM:consolidated", "DREAM:acquire"):
         with pytest.raises(BadInput, match="system-set"):
             handler.tag(id=mid, add=[bad])

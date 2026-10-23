@@ -21,15 +21,38 @@ _current_session: contextvars.ContextVar[object | None] = contextvars.ContextVar
     "precis_serve_ledger_session", default=None
 )
 
+#: The call's raw wire arguments — ``CallToolRequest.params.arguments`` as
+#: the client sent them, before the tool wrapper fills declared kwargs
+#: with ``None``. The tool-call ledger's ``input_keys`` reads it so an
+#: explicitly-sent ``key=None`` is distinguishable from an omitted key
+#: (gr504415); ``None`` outside a live MCP call.
+_current_raw_args: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "precis_serve_ledger_raw_args", default=None
+)
 
-def bind(session: object | None) -> contextvars.Token[object | None]:
-    """Bind ``session`` as the ledger's current session; returns a reset token."""
+
+def bind(
+    session: object | None, raw_args: dict | None = None
+) -> contextvars.Token[object | None]:
+    """Bind ``session`` (and optionally the call's raw wire arguments) as
+    the ledger's context for this tool call; returns a reset token."""
+    _current_raw_args.set(raw_args)
     return _current_session.set(session)
 
 
 def unbind(token: contextvars.Token[object | None]) -> None:
     """Undo a :func:`bind` call. Always pair with a ``try/finally``."""
     _current_session.reset(token)
+    _current_raw_args.set(None)
+
+
+def current_raw_args() -> dict | None:
+    """The raw wire arguments bound for this call, or ``None``.
+
+    Presence of a key means the caller sent it (even as ``null``); the
+    dispatch payload can't tell that apart from a defaulted ``None``.
+    """
+    return _current_raw_args.get()
 
 
 def current_session() -> object | None:

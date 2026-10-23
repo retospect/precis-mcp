@@ -225,19 +225,28 @@ def test_packaged_prompt_carries_thread_directive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # opus-4.8 on the dream pass gains a "pursue threads worth returning
-    # to" directive — captured as ``thread:`` memories, capped + dedup'd
-    # + explicitly speculative so it never clogs the doable rotation.
+    # to" directive — captured as ``dream-thread`` memories, capped +
+    # dedup'd + explicitly speculative so it never clogs the doable
+    # rotation. ``dream-thread`` (open tag) replaced the bare ``thread:``
+    # tag, an empty-valued collision with the gripe ``thread:<slug>``
+    # axis (gr504795); a closed ``DREAM:thread`` can't work — closed-axis
+    # replace semantics make it mutually exclusive with DREAM:speculative.
     monkeypatch.delenv("PRECIS_DREAM_PROMPT_PATH", raising=False)
     prompt = _load_prompt()
     assert prompt is not None
     # The directive is present and lands as a memory, not a todo.
-    assert "thread:" in prompt
+    assert "dream-thread" in prompt
     assert "Thread worth returning to" in prompt
     assert "WHY IT MIGHT MATTER LATER" in prompt
     # Anti-noise constraints: capped to a handful, dedup'd, speculative,
-    # and never a todo (so the doable rotation stays clean).
+    # and never a todo (so the doable rotation stays clean). New threads
+    # tag ``dream-thread``; the dedup pass still scans the legacy bare
+    # ``thread:`` set until the one-off sweep strips it.
     assert "at most THREE" in prompt
+    assert 'tags=["dream-thread", "DREAM:speculative"]' in prompt
+    assert 'search(kind="memory", tags=["dream-thread"]' in prompt
     assert 'search(kind="memory", tags=["thread:"]' in prompt
+    assert 'tags=["thread:", "DREAM:speculative"]' not in prompt
     assert "DREAM:speculative" in prompt
     assert "Never mint a ``kind='todo'``" in prompt
 
