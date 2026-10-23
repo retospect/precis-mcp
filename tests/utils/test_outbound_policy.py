@@ -228,6 +228,30 @@ class TestLlmApiHold:
         finally:
             _seed_limit_row_cleanup(bound, "host:openrouter.ai")
 
+    def test_full_slot_refusal_counts_on_the_row(self, park_dsn: Store) -> None:
+        """S2b: an llm-api hold refusal lands on the provider row's durable
+        counter (``refused_today``/``last_refused_at``), not just the
+        in-process tally — ``park_dsn`` points rate_limit's own connection
+        at the test clone."""
+        _seed_slot(park_dsn, 0)
+        _seed_limit_row(park_dsn, "host:openrouter.ai", max_wait_s=0)
+        try:
+            outbound_policy.reset_cache()
+            with pytest.raises(rate_limit.RateLimited):
+                with openai_tools._llm_api_hold(OPENROUTER_URL, 5.0):
+                    pass
+            with park_dsn.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT refused_today, last_refused_at "
+                    "FROM external_rate_limits "
+                    "WHERE provider = 'host:openrouter.ai'"
+                ).fetchone()
+            assert row is not None
+            assert int(row[0]) == 1 and row[1] is not None
+            assert rate_limit.refusal_counts()["host:openrouter.ai"] >= 1
+        finally:
+            _seed_limit_row_cleanup(park_dsn, "host:openrouter.ai")
+
     def test_db_down_caps_per_process(
         self, bound: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -36,8 +36,10 @@ ambient deadline :func:`precis.utils.deadline.call_with_deadline`
 publishes on its worker thread, whichever bound lands first (gr506756: a
 30 s limiter wait used to eat a ref pass's last seconds, keeping the
 pass's per-cycle summary row from ever logging). A refusal is counted
-per provider in this process (:func:`refusal_counts`) and logged; the
-durable ``limiter_refusals`` row counter is the deferred half of S2.
+per provider in this process (:func:`refusal_counts`), logged, and
+written through to the row's ``refused_today``/``last_refused_at``
+columns (outbound-policy S2b) so demand is visible in ``/limits`` and to
+the ``limiter-refusing`` doctor condition.
 
 **Store-free by design.** The S2 fetch functions this gates
 (``precis.ingest.citations``, ``precis.ingest.semantic_scholar``,
@@ -567,12 +569,29 @@ def _warn_unpaced(provider: str, reason: str) -> None:
     )
 
 
-#: Per-process refusal tally, provider → count. The durable
-#: ``limiter_refusals`` column the spec wants on the row is the deferred
-#: half of outbound-policy S2 (its owner is undecided) — until then this
-#: counter plus the rate-limited WARNING below is the demand signal
-#: (log/metric only, no schema change).
+#: Per-process refusal tally, provider → count. The durable half is the
+#: row's ``refused_today``/``last_refused_at`` (S1 migration 0233,
+#: written by :data:`_REFUSAL_SQL` on every counted refusal —
+#: outbound-policy S2b); this tally plus the rate-limited WARNING below
+#: is the per-process demand signal.
 _refusals: dict[str, int] = {}
+
+#: The durable half of a counted refusal (outbound-policy S2b): one
+#: atomic write that bumps ``refused_today``/``last_refused_at`` and runs
+#: the ``day_start`` rollover for BOTH daily counters — a refusal can be
+#: a row's first touch of a new day, so it must roll ``day_used`` over
+#: too, else a post-midnight refusal would leave yesterday's spend
+#: counting against today's cap. ``day_start`` advances so a following
+#: consume does not re-roll ``refused_today`` back to 0.
+_REFUSAL_SQL = """
+UPDATE external_rate_limits
+   SET day_used = CASE WHEN day_start < CURRENT_DATE THEN 0 ELSE day_used END,
+       refused_today = CASE WHEN day_start < CURRENT_DATE
+                          THEN 1 ELSE refused_today + 1 END,
+       day_start = CURRENT_DATE,
+       last_refused_at = now()
+ WHERE provider = %s
+"""
 
 #: Seconds between two refusal warnings for one provider — a starved 1/s
 #: row can refuse every call, so the WARNING carries the running count and
@@ -584,9 +603,22 @@ _refusal_warned: dict[str, float] = {}
 def _record_refusal(provider: str, reason: str) -> None:
     """Count a genuine limiter refusal and log it, at most once per
     :data:`_REFUSAL_WARN_EVERY_S` per provider — the warning's running count
-    carries the suppressed ones. Called only on a real "you are limited"
-    answer: never on fail-open, and a drain stop is shutdown, not demand."""
+    carries the suppressed ones. Also writes the durable row counter
+    (:data:`_REFUSAL_SQL`; S2b) on the limiter's own connection — the write
+    is best-effort (a dead store or a pre-migration schema only loses the
+    durable count, never the refusal) and runs outside the caller's
+    transaction so it survives a rollback. Called only on a real "you are
+    limited" answer: never on fail-open, and a drain stop is shutdown, not
+    demand."""
     _refusals[provider] = _refusals.get(provider, 0) + 1
+    try:
+        conn = _get_conn()
+        if conn is not None and _s1_columns(conn):
+            conn.execute(_REFUSAL_SQL, (provider,))
+    except Exception:
+        log.debug(
+            "rate_limit: refused_today write failed for %r", provider, exc_info=True
+        )
     now = time.monotonic()
     last = _refusal_warned.get(provider)
     if last is not None and now - last < _REFUSAL_WARN_EVERY_S:
@@ -602,9 +634,9 @@ def _record_refusal(provider: str, reason: str) -> None:
 
 
 def refusal_counts() -> dict[str, int]:
-    """This process's limiter-refusal tally, provider → count. Process-local:
-    the durable per-provider row counter is the deferred half of S2. For
-    tests and the ``/limits`` view."""
+    """This process's limiter-refusal tally, provider → count. Process-local;
+    the durable per-provider counter is the row's ``refused_today`` (S2b).
+    For tests and the ``/limits`` view."""
     return dict(_refusals)
 
 

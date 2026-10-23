@@ -249,13 +249,18 @@ def _fallback_semaphore() -> threading.BoundedSemaphore:
 
 
 @contextlib.contextmanager
-def _fallback_slot(resource: str, budget: float) -> Iterator[None]:
+def _fallback_slot(
+    resource: str, budget: float, *, row: str | None = None
+) -> Iterator[None]:
     """The DB-down cap: a per-process semaphore. Bounded by the same wait
-    budget as the slot poll; a timeout refuses like a full row."""
+    budget as the slot poll; a timeout refuses like a full row — counted
+    against ``row`` (the ``external_rate_limits`` carrier), though with the
+    store unreachable only the in-process count lands."""
     from precis.utils import rate_limit
 
     sem = _fallback_semaphore()
     if not sem.acquire(timeout=max(0.0, budget)):
+        rate_limit._record_refusal(row or resource, "llm-api fallback semaphore full")
         raise rate_limit.RateLimited(resource)
     try:
         yield
@@ -313,7 +318,7 @@ def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
                 )
     except Exception:
         rate_limit._warn_fail_open(resource, "llm-api pre-call check")
-        with _fallback_slot(resource, budget):
+        with _fallback_slot(resource, budget, row=effective.row):
             yield
         return
 
@@ -360,7 +365,7 @@ def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
         except Exception:
             hold_id = None  # commit failed — the tx rolled back, nothing held
             rate_limit._warn_fail_open(resource, "llm-api slot reserve")
-            with _fallback_slot(resource, budget):
+            with _fallback_slot(resource, budget, row=effective.row):
                 yield
             return
         if hold_id is not None:
@@ -373,6 +378,13 @@ def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
             yield
             return
         if effective.on_refuse == "fail" or time.monotonic() >= wait_deadline:
+            # A counted refusal (S2b): the hold could not be admitted within
+            # budget — on_refuse decides whether the call defers, fails, or
+            # proceeds unheld ("wait"). The provider row carries the count.
+            rate_limit._record_refusal(
+                effective.row or resource,
+                f"llm-api slot wait past budget (on_refuse={effective.on_refuse})",
+            )
             if effective.on_refuse == "wait":
                 yield
                 return

@@ -463,6 +463,12 @@ def parked_gate(
     if remaining is not None:
         budget = min(budget, remaining)
     if effective.on_refuse == "fail" or left > budget:
+        reason = (
+            "parked (on_refuse=fail)"
+            if effective.on_refuse == "fail"
+            else f"Retry-After park has {left:.0f}s left, past the {budget:g}s wait budget"
+        )
+        rate_limit._record_refusal(effective.row, reason)
         raise rate_limit.RateLimited(effective.row)
     from precis.liveness import drain_sleep
 

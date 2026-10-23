@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -33,6 +34,7 @@ from precis.workers.conditions import (
     _probe_deploy_fleet,
     _probe_limiter_bypassed,
     _probe_limiter_host_cap,
+    _probe_limiter_refusing,
     _probe_llm_degraded,
     _probe_local_serving_pressure,
     _probe_pass_dead,
@@ -1135,6 +1137,81 @@ def test_limiter_host_cap_fires_only_when_full_of_live_rows(
             conn.execute(
                 "DELETE FROM external_rate_limits WHERE provider = ANY(%s)",
                 ([live, idle],),
+            )
+
+
+def _refuse_row(store: Store, n: int, last: str = "now()") -> str:
+    """A provider row showing ``n`` durable refusals (S2b's
+    ``refused_today``/``last_refused_at``); returns its unique name."""
+    provider = f"test-cond-refuse-{uuid.uuid4().hex[:8]}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO external_rate_limits "
+            "(provider, capacity, refill_per_sec, tokens) "
+            "VALUES (%s, 1, 1.0, 1)",
+            (provider,),
+        )
+        conn.execute(
+            "UPDATE external_rate_limits SET refused_today = %s, "
+            f"last_refused_at = {last} WHERE provider = %s",
+            (n, provider),
+        )
+    return provider
+
+
+def test_limiter_refusing_fires_over_floor_and_resolves(store: Store) -> None:
+    """outbound-policy S2b: a row over the daily refusal floor with a fresh
+    ``last_refused_at`` fires ``limiter-refusing:<provider>``; clearing the
+    count resolves it (the auto-close half)."""
+    provider = _refuse_row(store, 50)
+    try:
+        fired = _probe_limiter_refusing(store)
+        keys = [f.key for f in fired]
+        assert f"limiter-refusing:{provider}" in keys
+        assert "50" in next(f for f in fired if f.key.endswith(provider)).detail
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET refused_today = 0 WHERE provider = %s",
+                (provider,),
+            )
+        assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s",
+                (provider,),
+            )
+
+
+def test_limiter_refusing_quiet_on_a_stale_last_refusal(store: Store) -> None:
+    """A burst that went quiet resolves via the recency arm rather than
+    holding the check red until the refused_today day rollover."""
+    provider = _refuse_row(store, 50, last="now() - interval '5 hours'")
+    try:
+        assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s",
+                (provider,),
+            )
+
+
+def test_limiter_refusing_green_on_pre_s1_schema(store: Store, monkeypatch) -> None:
+    """Code ahead of migration 0233: no refusal columns -> no findings,
+    never an 'unknown' check on a deploy lagging its migration."""
+    from precis.utils import rate_limit
+
+    monkeypatch.setattr(rate_limit, "_has_s1_cols", False)
+    monkeypatch.setattr(rate_limit, "_s1_cols_at", time.monotonic())
+    provider = _refuse_row(store, 50)
+    try:
+        assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s",
+                (provider,),
             )
 
 

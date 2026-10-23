@@ -119,7 +119,12 @@ Derived groups name their check after the thing they watch:
   `settings-env-shadowed`; `analysis-stale`; `limiter-bypassed` (fetcher
   traffic but no limiter consume in 24h: failing open); `limiter-cap-full`
   (`host:` rows at the seeding cap, none idle to evict: new hosts run
-  unpaced); `deploy-fleet-coverage` → `deploy-uncovered:<host>` (a live
+  unpaced); `limiter-refusing` → `limiter-refusing:<provider>` (a
+  provider's limiter row refused calls past a daily floor and is still
+  refusing: a starved bucket, spent daily cap, full `llm-api` slot hold,
+  or a live Retry-After park — `refused_today`/`last_refused_at` on the
+  `external_rate_limits` row); `deploy-fleet-coverage` →
+  `deploy-uncovered:<host>` (a live
   host in no overlay deploy group — deploys silently skip it),
   `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
   `deploy-ledger:unpublished|invalid` (no `app_settings.deploy.fleet`

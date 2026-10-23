@@ -48,6 +48,13 @@ was invisible for 4 days):
 * ``limiter-cap-full`` — the auto-seeded ``host:<netloc>`` limiter rows
   are at ``rate_limit.MAX_SEEDED_HOST_ROWS`` with none idle enough to
   evict, so a newly seen host runs unpaced (gr507345).
+* ``limiter-refusing`` — outbound-policy S2b: a provider's
+  ``external_rate_limits`` row has refused calls past a daily floor
+  (``refused_today``/``last_refused_at``, S1 migration 0233 — written by
+  every counted refusal: a starved bucket, a spent daily cap, a full
+  ``llm-api`` slot hold, or a live Retry-After park). Demand the shared
+  limiter could not admit; self-clears once refusals stop or at the day
+  rollover.
 * ``local-serving-pressure`` — llm-lane-scheduler slice S0: sustained
   KV-cache use over threshold, retractions ticking, or host swap-in
   rising on a serving box, read from the ``serving_*`` columns the
@@ -920,6 +927,50 @@ def _probe_limiter_host_cap(store: Store) -> list[ConditionFinding]:
     ]
 
 
+_LIMITER_REFUSING_SQL = """
+SELECT provider, refused_today, last_refused_at
+  FROM external_rate_limits
+ WHERE refused_today >= %(min_refusals)s
+   AND last_refused_at > now() - make_interval(secs => %(recent_s)s)
+ ORDER BY refused_today DESC, provider
+"""
+
+
+def _probe_limiter_refusing(store: Store) -> list[ConditionFinding]:
+    """outbound-policy S2b: a provider row refusing past the daily floor is
+    demand the shared limiter could not admit — a starved token bucket, a
+    spent daily cap, a full ``llm-api`` slot hold, or a live Retry-After
+    park (every counted refusal writes ``refused_today``/
+    ``last_refused_at``). The recency arm keeps a morning burst from
+    holding the check red all day; ``refused_today``'s own day rollover
+    bounds staleness regardless. Green on a pre-S1 schema (the columns
+    don't exist yet)."""
+    from precis.utils import rate_limit
+
+    min_refusals = int(_env_f("PRECIS_COND_LIMITER_REFUSALS_MIN", 25))
+    recent_s = _env_f("PRECIS_COND_LIMITER_REFUSAL_RECENT_S", 2 * 3600.0)
+    with store.pool.connection() as conn:
+        if not rate_limit.s1_columns_present(conn):
+            return []
+        rows = conn.execute(
+            _LIMITER_REFUSING_SQL,
+            {"min_refusals": min_refusals, "recent_s": recent_s},
+        ).fetchall()
+    return [
+        ConditionFinding(
+            key=f"limiter-refusing:{provider}",
+            detail=(
+                f"external_rate_limits[{provider}] refused {int(n)} call(s) "
+                f"today (last {last:%Y-%m-%d %H:%MZ}) — the shared limiter "
+                "could not admit the demand: the bucket, daily cap, or "
+                "llm-api hold is undersized, or a caller is looping (the "
+                "worker's rate-limited WARNING names the reason)"
+            ),
+        )
+        for provider, n, last in rows
+    ]
+
+
 #: ``app_settings`` key ``scripts/deploy`` refreshes after every green
 #: deploy: JSON ``{"sha": <deployed sha>, "at": <isoZ>, "covered":
 #: [<host>, …], "skipped": {<host>: <sha it still runs>}}``. Host names
@@ -1163,6 +1214,7 @@ def _probe_local_serving_pressure(store: Store) -> list[ConditionFinding]:
 CONDITIONS: tuple[Condition, ...] = (
     Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
     Condition("limiter-cap-full", "warn", _probe_limiter_host_cap),
+    Condition("limiter-refusing", "warn", _probe_limiter_refusing),
     Condition("local-serving-pressure", "warn", _probe_local_serving_pressure),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),

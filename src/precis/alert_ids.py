@@ -356,6 +356,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     ),
     _watchdog(
         "condition",
+        "limiter-refusing:{provider}",
+        "A provider's limiter row refused calls past the daily floor — demand "
+        "the shared limiter could not admit (starved bucket, spent quota, "
+        "full llm-api hold, or a live park).",
+        budget="per probe",
+        service="health_digest",
+    ),
+    _watchdog(
+        "condition",
         "deploy-{kind}:{host}",
         "A heartbeating host is in no overlay deploy group (deploys silently "
         "skip it), serves a sha other than the deployed release, or the "

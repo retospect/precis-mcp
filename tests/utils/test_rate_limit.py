@@ -86,6 +86,18 @@ def _cleanup(store: Store, provider: str) -> None:
         conn.commit()
 
 
+def _refusal_cols(store: Store, provider: str) -> tuple[Any, ...] | None:
+    """``(refused_today, last_refused_at, day_used, day_start)`` — the S2b
+    durable refusal counter and the daily-rollover pair it shares."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT refused_today, last_refused_at, day_used, day_start "
+            "FROM external_rate_limits WHERE provider = %s",
+            (provider,),
+        ).fetchone()
+        return tuple(row) if row is not None else None
+
+
 @pytest.fixture
 def use_store_dsn(store: Store, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
     """Point ``rate_limit``'s own connection at the ``store`` fixture's DSN
@@ -842,5 +854,100 @@ class TestDeadlineBound:
                 for r in caplog.records
                 if r.levelname == "WARNING"
             )
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+
+class TestRefusalCounter:
+    """outbound-policy S2b: every counted refusal lands on the row's
+    ``refused_today``/``last_refused_at`` (the durable half of
+    :func:`rate_limit._record_refusal`), and the ``day_start`` rollover
+    clears it daily — whether the day's first touch is a grant or another
+    refusal."""
+
+    def test_starved_refusal_writes_the_counter(self, use_store_dsn: Store) -> None:
+        provider = "test_rl_rc_starved"
+        _seed(use_store_dsn, provider, capacity=1, refill_per_sec=0.0001, tokens=0.0)
+        try:
+            assert rate_limit.acquire(provider, max_wait_s=0.1) is False
+            row = _refusal_cols(use_store_dsn, provider)
+            assert row is not None
+            refused_today, last_refused_at, _used, _start = row
+            assert int(refused_today) == 1
+            assert last_refused_at is not None
+            if last_refused_at.tzinfo is None:
+                last_refused_at = last_refused_at.replace(tzinfo=UTC)
+            assert (datetime.now(UTC) - last_refused_at).total_seconds() < 60
+            assert rate_limit.refusal_counts()[provider] == 1
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+    def test_quota_refusal_writes_the_counter(self, use_store_dsn: Store) -> None:
+        provider = "test_rl_rc_quota"
+        _seed(
+            use_store_dsn,
+            provider,
+            capacity=10,
+            refill_per_sec=100.0,
+            daily_cap=5,
+            day_used=5,
+        )
+        try:
+            assert rate_limit.acquire(provider, max_wait_s=0.1) is False
+            row = _refusal_cols(use_store_dsn, provider)
+            assert row is not None and int(row[0]) == 1 and row[1] is not None
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+    def test_refusal_on_a_stale_day_rolls_both_counters(
+        self, use_store_dsn: Store
+    ) -> None:
+        """A refusal can be the row's first touch of a new day: the write
+        must roll ``day_used`` over too, or yesterday's spend would count
+        against today's cap — and ``refused_today`` restarts at 1 (this
+        refusal), not yesterday's leftover."""
+        provider = "test_rl_rc_rollover"
+        _seed(use_store_dsn, provider, capacity=1, refill_per_sec=0.0001, tokens=0.0)
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        with use_store_dsn.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET day_start = %s, day_used = 9, "
+                "refused_today = 7 WHERE provider = %s",
+                (yesterday, provider),
+            )
+            conn.commit()
+        try:
+            assert rate_limit.acquire(provider, max_wait_s=0.1) is False
+            row = _refusal_cols(use_store_dsn, provider)
+            assert row is not None
+            refused_today, _last, day_used, day_start = row
+            assert int(refused_today) == 1  # rolled over, then this refusal
+            assert int(day_used) == 0  # yesterday's spend cleared
+            assert day_start == datetime.now(UTC).date()
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+    def test_grant_on_a_stale_day_clears_refused_today(
+        self, use_store_dsn: Store
+    ) -> None:
+        """The consume path's rollover: a grant on a row whose day turned
+        writes ``refused_today`` back to 0 — the counter is demand TODAY,
+        not a lifetime tally."""
+        provider = "test_rl_rc_grantroll"
+        _seed(use_store_dsn, provider, capacity=2, refill_per_sec=1.0, tokens=2)
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        with use_store_dsn.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET day_start = %s, "
+                "refused_today = 7 WHERE provider = %s",
+                (yesterday, provider),
+            )
+            conn.commit()
+        try:
+            assert rate_limit.acquire(provider, max_wait_s=1.0) is True
+            row = _refusal_cols(use_store_dsn, provider)
+            assert row is not None
+            assert int(row[0]) == 0
+            assert row[1] is None  # no refusal today: timestamp stays unset
         finally:
             _cleanup(use_store_dsn, provider)
