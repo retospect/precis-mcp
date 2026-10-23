@@ -48,6 +48,76 @@ META_MERGE = "garden_merge"
 META_PRIOR_REF = "prior_ref_id"
 
 
+class MergeRefused(BadInput):
+    """An approved merge refused by the deterministic re-check inside
+    the apply transaction. ``reason`` is the machine-readable code the
+    caller records on the rejected proposal (``stale``, ``target_gone``,
+    ``apply_refused``)."""
+
+    def __init__(self, reason: str, why: str) -> None:
+        super().__init__(f"{reason}: {why}")
+        self.reason = reason
+
+
+def _check_reviewed_merge(
+    store: Store, conn: Any, review_id: int, loser_id: int, winner_id: int
+) -> None:
+    """Re-verify the proposal being applied, inside the apply
+    transaction while the endpoint locks are held (the reviewer's
+    finding: the verdict judged pinned state, so a merge may not write
+    over drift). Refusal raises :class:`MergeRefused`; a ``review_id``
+    naming no garden proposal returns — ``resolve_proposal`` owns the
+    not-a-proposal ``NotFound``.
+
+    Checks: the proposal row is still ``current`` on the target; both
+    endpoints' ``payload.shas`` pins still hold (a proposal without
+    them cannot be verified and refuses ``stale``); a ``dup_pair``
+    merge still clears :func:`~.candidates.dup_pair_qualifies` live."""
+    row = conn.execute(
+        "SELECT note, "
+        "  content_sha = precis_target_sha(target_kind, target_id) "
+        "FROM reviews WHERE review_id = %s",
+        (review_id,),
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        g = (json.loads(row[0] or "") or {}).get("garden") or {}
+    except (TypeError, ValueError):
+        g = {}
+    if not g.get("key"):
+        return  # not a garden proposal — resolve_proposal will refuse it
+    if not row[1]:
+        raise MergeRefused("stale", "the target changed since the proposal")
+    payload = g.get("payload") or {}
+    shas = payload.get("shas") or {}
+    if str(loser_id) not in shas or str(winner_id) not in shas:
+        raise MergeRefused(
+            "stale", "the proposal carries no endpoint sha pins to verify"
+        )
+    live = conn.execute(
+        "SELECT ref_id, precis_target_sha('ref', ref_id) "
+        "FROM refs WHERE ref_id = ANY(%s)",
+        ([loser_id, winner_id],),
+    ).fetchall()
+    now = {int(r[0]): str(r[1]) for r in live if r[1] is not None}
+    if winner_id not in now:
+        raise MergeRefused("target_gone", "the winner no longer exists")
+    if shas[str(winner_id)] != now[winner_id]:
+        raise MergeRefused("stale", "the winner changed since the proposal")
+    if loser_id not in now or shas[str(loser_id)] != now[loser_id]:
+        raise MergeRefused("stale", "the loser changed since the proposal")
+    if str(g.get("detector") or "") == "dup_pair":
+        from precis.graph.garden.candidates import dup_pair_qualifies
+
+        fail = dup_pair_qualifies(store, loser_id, winner_id)
+        if fail is not None:
+            raise MergeRefused(
+                "apply_refused",
+                f"the pair no longer meets the dup floor: {fail}",
+            )
+
+
 @dataclass(slots=True)
 class MergeRecord:
     """The reversal record stored on the loser at ``meta.garden_merge``."""
@@ -132,11 +202,15 @@ def apply_merge(
             )
 
         # Optional proposal-marking: approve the garden row being applied.
-        # Recorded BEFORE the mutation so the ledger sha matches the state
+        # The deterministic re-check runs first, in this transaction, so
+        # a verdict written over since-changed state cannot apply. Then
+        # resolve BEFORE the mutation so the ledger sha matches the state
         # the judge actually reviewed. resolve_proposal echoes the
         # proposal's key so the read view folds the pair.
         if review_id is not None:
             from precis.graph.garden.proposals import resolve_proposal
+
+            _check_reviewed_merge(store, conn, review_id, loser_id, winner_id)
 
             resolved = resolve_proposal(
                 store,
@@ -346,4 +420,11 @@ def undo_merge(store: Store, merge_id: str) -> dict[str, int]:
     }
 
 
-__all__ = ["META_MERGE", "META_PRIOR_REF", "MergeRecord", "apply_merge", "undo_merge"]
+__all__ = [
+    "META_MERGE",
+    "META_PRIOR_REF",
+    "MergeRecord",
+    "MergeRefused",
+    "apply_merge",
+    "undo_merge",
+]

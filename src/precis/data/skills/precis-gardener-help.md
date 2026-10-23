@@ -143,11 +143,19 @@ a consumer step (`params.consume`, default on; `review_limit` Opus
 verdicts per run, default 10):
 
 - **Auto-prune** — a pending `dangling_edge` proposal whose link still
-  touches a retired ref, is not human-authored and is not provenance is
-  applied: the link is deleted and the proposal resolved `approved`
-  with `garden.applied='prune'` and the deleted row in `garden.link`.
-- **Opus review** (`graph_garden:consume`, FRONTIER) of pending merge
-  and relink proposals. Approve on a merge applies it through the merge
+  meets the detector predicate (exactly one retired endpoint, retired
+  kind not a history kind, not provenance) is applied: the link is
+  deleted and the proposal resolved `approved` with
+  `garden.applied='prune'` and the deleted row in `garden.link`.
+  Prunes are not undoable by tool. Predicate failures close as
+  `not_dangling`; a human-authored edge closes as `human_edge`.
+- **Opus review** (`graph_garden:consume`, FRONTIER, bounded by
+  `review_limit` *attempts*, stopping after 3 consecutive errors) of
+  pending merge and relink proposals. Merge proposals must carry
+  `payload.shas` (both endpoints' content shas, pinned by the
+  detectors) — unpinned ones close `stale` without a call. Approve on
+  a merge re-verifies the pins and the dup floor inside the apply
+  transaction, then applies through the merge
   door below (`actor='garden-consumer'`, undoable). Reject writes a
   terminal `rejected` row with `garden.reason`: `distinct_terms`,
   `specialisation`, `placeholder_definition`, `wrong_target`,

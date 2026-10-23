@@ -456,7 +456,12 @@ class TestPaperIdentity:
         assert hit.evidence["doi"] == "missing"
         assert hit.evidence["years"] == [2020, 2021]
         assert hit.evidence["first_authors"] == ["smith", "smith"]
-        assert hit.payload == {"loser": b, "winner": a, "kind": "paper"}
+        assert {k: v for k, v in hit.payload.items() if k != "shas"} == {
+            "loser": b,
+            "winner": a,
+            "kind": "paper",
+        }
+        assert set(hit.payload["shas"]) == {str(a), str(b)}
 
     def test_conflicting_evidence_gates_the_pair(self, store: Store) -> None:
         _paper(store, "p1", doi="10.1/x")

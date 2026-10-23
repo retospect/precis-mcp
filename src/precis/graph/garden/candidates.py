@@ -861,6 +861,7 @@ def paper_identity_candidates(
             "FROM refs r WHERE r.ref_id = ANY(%s)",
             (ids,),
         ).fetchall()
+    shas = _ref_shas(store, ids)
     info = {
         int(rid): {
             "title": str(title or ""),
@@ -902,7 +903,12 @@ def paper_identity_candidates(
                     other_id=winner,
                     title=f"paper identity {winner}↔{loser}: {w['title'][:80]!r}",
                     evidence=ev,
-                    payload={"loser": loser, "winner": winner, "kind": "paper"},
+                    payload={
+                        "loser": loser,
+                        "winner": winner,
+                        "kind": "paper",
+                        "shas": {str(i): shas[i] for i in (winner, loser) if i in shas},
+                    },
                 )
             )
     # Strongest evidence first: a shared DOI or PDF, then the rest.

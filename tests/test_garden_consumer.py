@@ -354,12 +354,15 @@ class TestAutoPrune:
         )
         assert g["link"]["link_id"] == link and g["link"]["relation"] == "related-to"
 
-    def test_human_edge_is_left_for_a_human(self, store: Store) -> None:
+    def test_human_edge_closes_as_human_edge(self, store: Store) -> None:
+        """A human's edge is never touched — and the proposal closes
+        instead of filling the pending window every tick."""
         review_id, link, _dead = _dangling(store, set_by="user")
         report = consume_proposals(store, review=_Judge())
-        assert (report.pruned, report.prune_left) == (0, 1)
-        assert _link_exists(store, link)
-        assert [p.review_id for p in pending_proposals(store)] == [review_id]
+        assert report.pruned == 0 and _link_exists(store, link)
+        g = _note(store, review_id)
+        assert (g["verdict"], g["reason"]) == ("rejected", "human_edge")
+        assert pending_proposals(store) == []
 
     def test_restored_endpoint_closes_as_not_dangling(self, store: Store) -> None:
         review_id, link, dead = _dangling(store)
@@ -683,3 +686,94 @@ class TestApplyRecheck:
             second.rejected,
             second.errors,
         ) == (0, 0, 0, 0, 0, 0)
+
+    def test_undo_of_a_consumer_applied_merge(self, store: Store) -> None:
+        """The full round trip through the consumer: approve → applied
+        → undo restores the loser, its edges and the winner's aliases."""
+        a = _ref(store, "concept", "band gap")
+        b = _ref(store, "concept", "bandgap")
+        for rid_ in (a, b):
+            _card_vec(store, rid_, "band gap")
+        m = _ref(store, "memory", "a note naming the loser")
+        store.add_link(src_ref_id=m, dst_ref_id=b, relation="related-to")
+        _merge_proposal(store, a, b, kind="concept")
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert report.applied == 1
+        assert not _live(store, b)
+        with store.pool.connection() as conn:
+            edge = conn.execute(
+                "SELECT dst_ref_id FROM links WHERE src_ref_id = %s", (m,)
+            ).fetchone()
+        assert edge is not None and edge[0] == a  # repointed
+        counts = undo_merge(store, report.merges[0])
+        assert (counts["links_restored"], counts["links_deleted"]) == (1, 1)
+        assert _live(store, b)
+        with store.pool.connection() as conn:
+            edge = conn.execute(
+                "SELECT dst_ref_id FROM links WHERE src_ref_id = %s", (m,)
+            ).fetchone()
+            assert edge is not None and edge[0] == b  # back to the loser
+            meta = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (b,)
+            ).fetchone()
+        assert meta is not None and "garden_merge" not in meta[0]
+
+    def test_apply_door_refusal_closes_as_apply_refused(self, store: Store) -> None:
+        """A merge the door itself refuses (cross-kind) lands as
+        apply_refused even when the reviewer approved."""
+        a = _ref(store, "concept", "left thing")
+        b = _ref(store, "memory", "right thing")
+        rid = emit_proposal(
+            store,
+            GardenCandidate(
+                detector="other_pass",
+                action="merge",
+                target_kind="ref",
+                target_id=b,
+                other_id=a,
+                title="cross-kind pair",
+                evidence={},
+                payload={
+                    "loser": b,
+                    "winner": a,
+                    "kind": "concept",
+                    "shas": {str(a): _sha(store, a), str(b): _sha(store, b)},
+                },
+            ),
+            rationale="r",
+        )
+        assert rid is not None
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, rid)
+        assert (g["verdict"], g["reason"]) == ("rejected", "apply_refused")
+        assert "same-kind" in g["why"]
+        assert _live(store, a) and _live(store, b)
+
+    def test_merge_without_sha_pins_closes_stale(self, store: Store) -> None:
+        """Proposals filed before payload.shas existed cannot be
+        re-verified — closed as stale without a model call."""
+        a = _ref(store, "concept", "legacy one")
+        b = _ref(store, "concept", "legacy two")
+        rid = emit_proposal(
+            store,
+            GardenCandidate(
+                detector="dup_pair",
+                action="merge",
+                target_kind="ref",
+                target_id=b,
+                other_id=a,
+                title="legacy dup pair",
+                evidence={},
+                payload={"loser": b, "winner": a, "kind": "concept"},
+            ),
+            rationale="pre-pinning proposal",
+        )
+        assert rid is not None
+        judge = _Judge("approve")
+        report = consume_proposals(store, review=judge)
+        assert judge.seen == []  # never reviewed
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, rid)
+        assert (g["verdict"], g["reason"]) == ("rejected", "stale")
+        assert _live(store, a) and _live(store, b)

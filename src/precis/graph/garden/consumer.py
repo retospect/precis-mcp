@@ -18,18 +18,22 @@ both run by the ``graph_garden`` job right after its tick
    it can be re-inserted by hand — prunes are not undoable by tool (the
    ruling's undo requirement covers merges). A proposal whose edge is
    gone or fails the re-check is closed ``rejected`` with reason
-   ``target_gone`` / ``not_dangling``; a human-authored edge is left
-   for a human. If the resolve write returns ``None`` the row was
-   decided concurrently and the delete is skipped.
+   ``target_gone`` / ``not_dangling`` / ``human_edge`` (a human's edge —
+   closed, not left to fill the pending window). If the resolve write
+   returns ``None`` the row was decided concurrently and the delete is
+   skipped.
 2. **Opus review.** Up to ``review_limit`` *attempts* per tick on
    pending, current merge/relink proposals — the bound counts calls,
    not verdicts, and :data:`MAX_CONSECUTIVE_ERRORS` errors in a row
    stops the tick's review early (a broken reviewer must not burn the
    budget). ``sibling_confusion`` rows (merge-shaped but carrying
-   siblings/options, no loser/winner) never reach the reviewer. A merge
-   approve re-verifies deterministically before applying — the proposal
-   is still ``current`` on the target and, when the payload pins one,
-   the winner sha too, and a ``dup_pair`` pair still passes
+   siblings/options, no loser/winner) never reach the reviewer, and a
+   merge without ``payload.shas`` pins closes ``stale`` uncalled. A merge
+   approve re-verifies inside the apply transaction
+   (:func:`~precis.graph.garden.apply._check_reviewed_merge`, raising
+   :class:`~precis.graph.garden.apply.MergeRefused`): the proposal is
+   still ``current``, both pinned endpoint shas hold, and a
+   ``dup_pair`` pair still passes
    :func:`~.candidates.dup_pair_qualifies` live — then applies through
    :func:`~precis.graph.garden.apply.apply_merge`: the loser keeps
    ``meta.superseded_by`` (the redirect), its name joins the winner's
@@ -73,7 +77,6 @@ from precis.graph.garden.candidates import (
     HISTORY_KINDS,
     PROVENANCE_RELATIONS,
     SIBLING_REJECT_REASON,
-    dup_pair_qualifies,
     short_sibling_pair,
 )
 from precis.graph.garden.proposals import (
@@ -118,6 +121,7 @@ REJECT_REASONS: dict[str, str] = {
     "target_gone": "the target no longer exists",
     "not_dangling": "the edge no longer meets the dangling predicate",
     "stale": "an endpoint changed since the proposal was filed",
+    "human_edge": "the edge is human-authored — a machine consumer does not prune it",
     "apply_refused": "the apply door refused the approved action",
 }
 
@@ -153,7 +157,6 @@ class ConsumeReport:
 
     pruned: int = 0
     prune_closed: int = 0
-    prune_left: int = 0
     reviewed: int = 0
     attempts: int = 0
     applied: int = 0
@@ -213,8 +216,10 @@ def _prune_one(store: Store, prop: GardenProposal, report: ConsumeReport) -> Non
         if row is None:
             reason, why = "target_gone", f"link {prop.target_id} no longer exists"
         elif str(row[6]) == "user" or str(row[8]) == "human":
-            report.prune_left += 1  # a human's edge: theirs
-            return
+            # A human's edge is theirs — the consumer declines and
+            # closes the proposal rather than leaving it to fill the
+            # pending window every tick.
+            reason, why = "human_edge", "the edge is human-authored"
         else:
             src_ret, dst_ret = bool(row[11]), bool(row[12])
             retired_kind = str(row[9]) if src_ret else str(row[10]) if dst_ret else None
@@ -430,46 +435,6 @@ def _note_approved_relink(
     )
 
 
-def _merge_apply_check(
-    store: Store, prop: GardenProposal, loser: int, winner: int
-) -> tuple[str, str] | None:
-    """Deterministic re-checks between an Opus approve and the apply —
-    ``(reason, why)`` when the merge must not write, else ``None``.
-
-    The verdict judged the proposal's pinned state, so the pins are
-    re-verified live: the proposal row is still ``current`` on the
-    target, and when the payload records the pair's shas
-    (:data:`~.candidates.duplicate_candidates` ``payload.shas``) the
-    winner's still matches — a proposal without winner sha keeps the
-    loser check plus the floor. A ``dup_pair`` merge then re-runs
-    :func:`~.candidates.dup_pair_qualifies`: the pair must still clear
-    the detector's lexical/embedding floor."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT content_sha = precis_target_sha(target_kind, target_id) "
-            "FROM reviews WHERE review_id = %s",
-            (prop.review_id,),
-        ).fetchone()
-        w_row = conn.execute(
-            "SELECT precis_target_sha('ref', %s)", (winner,)
-        ).fetchone()
-    if w_row is None or w_row[0] is None:
-        return ("target_gone", "the winner no longer exists")
-    if row is None or not row[0]:
-        return ("stale", "the target changed since the proposal")
-    recorded = (prop.payload.get("shas") or {}).get(str(winner))
-    if recorded is not None and recorded != w_row[0]:
-        return ("stale", "the winner changed since the proposal")
-    if prop.detector == "dup_pair":
-        fail = dup_pair_qualifies(store, loser, winner)
-        if fail is not None:
-            return (
-                "apply_refused",
-                f"the pair no longer meets the dup floor: {fail}",
-            )
-    return None
-
-
 def _apply_approved(
     store: Store, prop: GardenProposal, v: ConsumerVerdict, report: ConsumeReport
 ) -> None:
@@ -477,7 +442,7 @@ def _apply_approved(
         _note_approved_relink(store, prop, v)
         report.approved_unapplied += 1
         return
-    from precis.graph.garden.apply import apply_merge
+    from precis.graph.garden.apply import MergeRefused, apply_merge
 
     loser, winner = prop.payload.get("loser"), prop.payload.get("winner")
     if not isinstance(loser, int) or not isinstance(winner, int):
@@ -491,22 +456,23 @@ def _apply_approved(
             report=report,
         )
         return
-    refused = _merge_apply_check(store, prop, loser, winner)
-    if refused is not None:
-        _close(
-            store,
-            prop,
-            actor=CONSUMER_ACTOR,
-            reason=refused[0],
-            why=f"approved ({v.why}) but at apply: {refused[1]}",
-            model=v.model,
-            report=report,
-        )
-        return
     try:
         rec = apply_merge(
             store, loser, winner, actor=CONSUMER_ACTOR, review_id=prop.review_id
         )
+    except MergeRefused as exc:
+        # The in-transaction re-check refused: reason is a code like
+        # ``stale``/``target_gone``/``apply_refused``.
+        _close(
+            store,
+            prop,
+            actor=CONSUMER_ACTOR,
+            reason=exc.reason,
+            why=f"approved ({v.why}) but at apply: {exc}",
+            model=v.model,
+            report=report,
+        )
+        return
     except (BadInput, NotFound) as exc:
         _close(
             store,
@@ -548,6 +514,19 @@ def _reviewable(prop: GardenProposal) -> bool:
     return prop.action == "relink"
 
 
+def _sha_pinned(prop: GardenProposal) -> bool:
+    """A merge proposal pinning both endpoints' shas
+    (``payload.shas``, written by the dup/identity detectors). Without
+    the pins the apply-time re-check cannot verify the pair is the one
+    the judge saw, so the consumer closes it ``stale`` — never judged."""
+    shas = prop.payload.get("shas")
+    if not isinstance(shas, dict):
+        return False
+    return all(
+        str(i) in shas for i in (prop.payload.get("loser"), prop.payload.get("winner"))
+    )
+
+
 def review_pending(
     store: Store,
     props: list[GardenProposal],
@@ -564,7 +543,21 @@ def review_pending(
     for prop in props:
         if report.attempts >= limit or consec_errors >= MAX_CONSECUTIVE_ERRORS:
             return
-        if not prop.current or not _reviewable(prop):
+        if not _reviewable(prop):
+            continue
+        if prop.action == "merge" and not _sha_pinned(prop):
+            _close(
+                store,
+                prop,
+                actor=CONSUMER_ACTOR,
+                reason="stale",
+                why="the proposal carries no endpoint sha pins — filed "
+                "before apply-time pinning",
+                model=None,
+                report=report,
+            )
+            continue
+        if not prop.current:
             continue
         if prop.review_id in reviewed_ids:
             continue  # verdicted already (an approved-but-unapplied relink)

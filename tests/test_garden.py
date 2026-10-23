@@ -314,7 +314,13 @@ class TestAC4MergeApplyUndo:
             store,
             "taxon",
             "alpha prime",
-            meta={"name": "alpha prime", "norm_name": "alpha prime"},
+            meta={
+                "name": "alpha prime",
+                "norm_name": "alpha prime",
+                # A shared term keeps the pair on the dup lexical leg —
+                # apply_merge's in-transaction re-check needs it.
+                "aliases": ["alpha term"],
+            },
         )
         mentioner = _ref(store, "memory", "a note about alpha prime")
         target = _ref(store, "concept", "supported claim")
@@ -327,6 +333,15 @@ class TestAC4MergeApplyUndo:
         self, store: Store
     ) -> None:
         winner, loser, mentioner, target = self._pair(store)
+        with store.pool.connection() as conn:
+            shas = {
+                str(r[0]): str(r[1])
+                for r in conn.execute(
+                    "SELECT ref_id, precis_target_sha('ref', ref_id) "
+                    "FROM refs WHERE ref_id = ANY(%s)",
+                    ([loser, winner],),
+                ).fetchall()
+            }
         proposal = emit_proposal(
             store,
             GardenCandidate(
@@ -336,6 +351,12 @@ class TestAC4MergeApplyUndo:
                 target_id=loser,
                 other_id=winner,
                 title="dup pair",
+                payload={
+                    "loser": loser,
+                    "winner": winner,
+                    "kind": "taxon",
+                    "shas": shas,
+                },
             ),
             rationale="same term",
             model="test-model",
