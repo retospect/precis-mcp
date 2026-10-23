@@ -551,7 +551,10 @@ in the agent surface (no Bash, no raw SQL) — this is it.
 get(kind='job', id='/limits')
 # → one row per named provider (s2, openalex, unpaywall, arxiv,
 #   crossref, jlcpcb, ...): `provider tokens=<avail>/<cap>
-#   refill=<n>/s day=<used_today>/<daily_cap|->`
+#   refill=<n>/s day=<used_today>/<daily_cap|->`, then `effective:` —
+#   the resolved policy, fields tagged with their layer:
+#   (class)/(code)/(db) override/(inferred). `slots` = the hold's
+#   resource_slots row; `state:` = park/last_used/refusals.
 
 get(kind='job', id='/limits?provider=openalex')   # pin one row
 get(kind='job', id='/limits?hosts=1')             # include host:<netloc> rows
@@ -564,7 +567,8 @@ like `fetch_oa` go through. `tokens` is the burst balance *right now*
 `day` is `used_today / daily_cap` (`-` = no daily quota lane). The
 `host:<netloc>` rows are the per-host pacing table safe_fetch seeds on
 demand — hidden unless `hosts=1` (or pin one with
-`provider=host:<netloc>`).
+`provider=host:<netloc>`). Trailer: host-row occupancy.
+Overrides: `precis limits set <row> ... [--dry-run]` (never hand SQL).
 
 ## What changed since the last doctor tick?
 

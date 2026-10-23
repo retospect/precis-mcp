@@ -288,6 +288,11 @@ COMMANDS: tuple[Command, ...] = (
         "Live worker run control (service_config): prio / model / clear.",
     ),
     _c(
+        "limits",
+        "limits",
+        "Outbound policy overrides (external_rate_limits): set [--dry-run].",
+    ),
+    _c(
         "taproot",
         "taproot",
         "Taproot claim-hub authoring (mint hubs from citations).",

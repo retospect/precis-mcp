@@ -91,6 +91,14 @@ _FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
 #: up to ``rate_limit.MAX_SEEDED_HOST_ROWS``).
 _LIMITS_MAX_ROWS = 600
 
+
+def _limits_ts(value: Any) -> str:
+    """``2026-10-23T16:44Z`` or ``-`` — a NULL timestamptz on a ``/limits``
+    row (``parked_until``/``last_used_at``/``last_refused_at``)."""
+    dt = as_utc(value)
+    return dt.strftime("%Y-%m-%dT%H:%MZ") if dt is not None else "-"
+
+
 #: Per-section row cap for the ``/delta`` view — a louder window than
 #: this means the tick wants the full surfaces, not the delta.
 _DELTA_SECTION_ROWS = 40
@@ -1146,6 +1154,19 @@ class JobHandler(NumericRefHandler):
         several hundred of uninteresting rows) — hidden by default;
         ``hosts=1`` lists them newest-touched first, ``provider=<p>``
         pins any one row exactly (``provider=host:...`` works too).
+
+        Outbound-policy S4: with the 0233 columns present each row also
+        carries an ``effective:`` block — the resolved
+        :class:`~precis.utils.outbound_policy.EffectivePolicy` per
+        service interpretation that lands on the row
+        (``outbound_policy.row_resolutions``), every field tagged with
+        the merge layer it came from (``class`` default / ``code``
+        POLICIES / ``db`` row override / ``inferred``), plus the
+        ``resource_slots`` ``free/capacity`` of a resolved concurrency
+        resource and the row's park/refusal state. The trailer carries
+        the ``host:`` seeding-cap occupancy (spec §6): how full
+        ``MAX_SEEDED_HOST_ROWS`` is and how many rows are idle enough to
+        evict. On a pre-0233 DB the view degrades to the lanes alone.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
         provider = (params.get("provider") or "").strip() or None
@@ -1172,7 +1193,17 @@ class JobHandler(NumericRefHandler):
             else "provider"
         )
 
+        from precis.utils import rate_limit
+
         with self.store.pool.connection() as conn:
+            s1 = rate_limit.s1_columns_present(conn)
+            select_extra = ""
+            if s1:
+                select_extra = (
+                    ',       "class", max_wait_s, connect_s, read_s, total_s,\n'
+                    "       on_refuse, concurrency, parked_until, last_used_at,\n"
+                    "       refused_today, last_refused_at\n"
+                )
             rows = conn.execute(
                 f"""
                 SELECT provider, capacity, refill_per_sec,
@@ -1182,7 +1213,7 @@ class JobHandler(NumericRefHandler):
                          AS tokens_now,
                        daily_cap,
                        CASE WHEN day_start < CURRENT_DATE
-                            THEN 0 ELSE day_used END AS used_today
+                            THEN 0 ELSE day_used END AS used_today{select_extra}
                   FROM external_rate_limits
                   {where_sql}
                  ORDER BY {order}
@@ -1190,6 +1221,20 @@ class JobHandler(NumericRefHandler):
                 """,
                 {**sql_params, "cap": _LIMITS_MAX_ROWS},
             ).fetchall()
+            occupancy = None
+            carriers: set[str] = set()
+            if s1:
+                occupancy = conn.execute(
+                    rate_limit.HOST_ROW_OCCUPANCY_SQL_S1,
+                    {"idle_s": float(rate_limit.HOST_ROW_IDLE_EVICT_S)},
+                ).fetchone()
+                carriers = {
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT resource FROM resource_slots "
+                        "WHERE host = 'api' AND resource LIKE 'llm-api:%'"
+                    ).fetchall()
+                }
 
         header = (
             "# external_rate_limits — cross-host outbound limiter\n"
@@ -1197,6 +1242,12 @@ class JobHandler(NumericRefHandler):
             "~0 means the next call waits\n"
             "# day = used_today / daily_cap ('-' = no daily quota lane)"
         )
+        if s1:
+            header += (
+                "\n# effective: resolved policy per service, "
+                "field=value (layer) — class default / code POLICIES / "
+                "db row override / inferred"
+            )
         if not rows:
             body = f"{header}\nno external_rate_limits row matches this filter."
             body += render_next_section(
@@ -1214,7 +1265,8 @@ class JobHandler(NumericRefHandler):
             return Response(body=body)
 
         lines = [header, ""]
-        for name, capacity, refill, tokens_now, daily_cap, used_today in rows:
+        for r in rows:
+            name, capacity, refill, tokens_now, daily_cap, used_today = r[:6]
             day = (
                 f"{int(used_today)}/{int(daily_cap)}"
                 if daily_cap is not None
@@ -1224,16 +1276,82 @@ class JobHandler(NumericRefHandler):
                 f"{name} tokens={float(tokens_now):.1f}/{int(capacity)} "
                 f"refill={float(refill):g}/s day={day}"
             )
+            if s1:
+                lines.extend(self._limits_policy_lines(name, r, carriers))
         lines.append("")
-        lines.append(
-            f"{len(rows)} provider row(s)"
-            + (
-                " — host:<netloc> rows hidden; /limits?hosts=1 shows them"
-                if not (provider or include_hosts)
-                else ""
+        trailer = f"{len(rows)} provider row(s)"
+        if not (provider or include_hosts):
+            trailer += " — host:<netloc> rows hidden; /limits?hosts=1 shows them"
+        if occupancy is not None:
+            n, idle = int(occupancy[0]), int(occupancy[1])
+            cap = rate_limit.MAX_SEEDED_HOST_ROWS
+            trailer += (
+                f" · host: rows {n}/{cap} seeded, {idle} idle "
+                f">{rate_limit.HOST_ROW_IDLE_EVICT_S // 3600}h (evictable)"
             )
-        )
+        lines.append(trailer)
         return Response(body="\n".join(lines), result_count=len(rows))
+
+    def _limits_policy_lines(self, name: str, r: Any, carriers: set[str]) -> list[str]:
+        """The ``effective:``/``state:`` lines for one ``/limits`` row —
+        the resolved policy under each service interpretation
+        (``row_resolutions``) and the row's park/refusal state."""
+        from precis.utils import outbound_policy
+
+        overrides = {
+            "class": r[6],
+            "max_wait_s": r[7],
+            "connect_s": r[8],
+            "read_s": r[9],
+            "total_s": r[10],
+            "on_refuse": r[11],
+            "concurrency": r[12],
+            "parked_until": r[13],
+            "capacity": r[1],
+            "refill_per_sec": r[2],
+            "daily_cap": r[4],
+        }
+        resolutions = [
+            (label, outbound_policy.explain(label, pol, name, url, overrides))
+            for label, pol, url in outbound_policy.row_resolutions(
+                name, llm_api_carriers=carriers
+            )
+        ]
+        resources = {eff.concurrency for _, eff in resolutions if eff.concurrency}
+        slots: dict[str, tuple[int, int]] = {}
+        if resources:
+            with self.store.pool.connection() as conn:
+                for host, resource, free, capacity in conn.execute(
+                    "SELECT host, resource, free, capacity "
+                    "FROM resource_slots WHERE resource = ANY(%s)",
+                    (list(resources),),
+                ).fetchall():
+                    # 'api' is the llm-api hold's accounting host (D2); a
+                    # same-named row on another host does not count holds.
+                    if str(resource) not in slots or host == "api":
+                        slots[str(resource)] = (int(free), int(capacity))
+
+        lines = []
+        for label, eff in resolutions:
+            rendered = outbound_policy.format_effective(eff)
+            if eff.concurrency:
+                free_cap = slots.get(eff.concurrency)
+                suffix = (
+                    f"{free_cap[0]}/{free_cap[1]}"
+                    if free_cap is not None
+                    else "missing"
+                )
+                rendered += f"  slots={eff.concurrency} {suffix}"
+            via = "" if label == name else f" (via {label})"
+            lines.append(f"  effective{via}: {rendered}")
+        parked, last_used, refused, last_refused = r[13], r[14], r[15], r[16]
+        lines.append(
+            "  state: "
+            f"parked={_limits_ts(parked)} last_used={_limits_ts(last_used)} "
+            f"refused_today={int(refused or 0)} "
+            f"last_refused={_limits_ts(last_refused)}"
+        )
+        return lines
 
     def _delta_cutoff(self, since_raw: str) -> tuple[datetime, str]:
         """The ``/delta`` cutoff plus a short human label naming where it

@@ -41,6 +41,7 @@ def _seed_limit(
     tokens: float = 4,
     daily_cap: int | None = None,
     day_used: int = 0,
+    **override_cols: object,
 ) -> None:
     with store.pool.connection() as conn:
         conn.execute(
@@ -52,6 +53,12 @@ def _seed_limit(
             "VALUES (%s, %s, %s, %s, %s, %s)",
             (provider, capacity, refill, tokens, daily_cap, day_used),
         )
+        if override_cols:
+            sets = ", ".join(f'"{c}" = %s' for c in override_cols)
+            conn.execute(
+                f"UPDATE external_rate_limits SET {sets} WHERE provider = %s",
+                (*override_cols.values(), provider),
+            )
         conn.commit()
 
 
@@ -98,6 +105,91 @@ def test_limits_provider_pin(jobs: JobHandler, store: Store) -> None:
 def test_limits_unknown_provider_is_empty(jobs: JobHandler) -> None:
     resp = jobs.get(id=f"/limits?provider=no-such-{uuid4().hex[:8]}")
     assert "no external_rate_limits row matches" in resp.body
+
+
+# ── /limits effective-policy block (outbound-policy S4) ─────────────
+
+
+def test_limits_shows_effective_policy_with_layers(
+    jobs: JobHandler, store: Store
+) -> None:
+    """Each row resolves its EffectivePolicy and every field names the
+    merge layer it came from (S4 acceptance)."""
+    prov = f"test-{uuid4().hex[:8]}"
+    _seed_limit(store, prov, max_wait_s=5, on_refuse="defer")
+
+    resp = jobs.get(id=f"/limits?provider={prov}")
+    body = resp.body
+
+    assert "effective:" in body
+    # A named row with no POLICIES entry resolves under the default
+    # policy: provider-api inferred, the lane's numbers read off the row.
+    assert "cls=provider-api (inferred)" in body
+    assert "rate=4/1/s daily=- (db)" in body
+    assert "concurrency=- (class)" in body
+    assert "max_wait_s=5 (db)" in body
+    assert "connect_s=- (class)" in body
+    assert "read_s=- (class)" in body
+    assert "total_s=- (class)" in body
+    assert "on_refuse=defer (db)" in body
+    assert "retry=5x 1..60s (code)" in body
+    assert "state: parked=- last_used=- refused_today=0 last_refused=-" in body
+
+
+def test_limits_core_names_every_field_layer(jobs: JobHandler, store: Store) -> None:
+    """The spec probe: ``/limits?provider=core`` names the layer of
+    every field."""
+    _seed_limit(store, "core", capacity=8, refill=1.0, tokens=8)
+    resp = jobs.get(id="/limits?provider=core")
+    body = resp.body
+    for field in (
+        "cls=",
+        "rate=",
+        "concurrency=",
+        "max_wait_s=",
+        "connect_s=",
+        "read_s=",
+        "total_s=",
+        "on_refuse=",
+        "retry=",
+    ):
+        assert field in body, field
+    # core maps to POLICIES['core'] — one interpretation, no 'via' tag.
+    assert "cls=provider-api (inferred)" in body
+
+
+def test_limits_llm_api_carrier_shows_slot_occupancy(
+    jobs: JobHandler, store: Store
+) -> None:
+    """An llm-api carrier host row resolves under openai-tools too, and
+    the hold row's free/capacity renders."""
+    _seed_limit(store, "host:openrouter.ai")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM resource_slot_holds WHERE resource = 'llm-api:openrouter'"
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('api', 'llm-api:openrouter', 16, 11, 'hard') "
+            "ON CONFLICT (host, resource) DO UPDATE SET capacity = 16, free = 11"
+        )
+        conn.commit()
+
+    resp = jobs.get(id="/limits?provider=host:openrouter.ai")
+    body = resp.body
+
+    assert "effective (via provider-less): cls=scraped-host (inferred)" in body
+    assert "effective (via openai-tools): cls=llm-api (code)" in body
+    assert "concurrency=llm-api:openrouter (class)" in body
+    assert "slots=llm-api:openrouter 11/16" in body
+
+
+def test_limits_shows_host_row_occupancy(jobs: JobHandler, store: Store) -> None:
+    """§6: the trailer carries the host: seeding-cap occupancy."""
+    resp = jobs.get(id="/limits")
+    assert "host: rows" in resp.body
+    assert "/500 seeded" in resp.body
+    assert "evictable" in resp.body
 
 
 # ── /delta ──────────────────────────────────────────────────────────

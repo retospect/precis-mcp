@@ -45,8 +45,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
 
@@ -169,6 +170,15 @@ class EffectivePolicy:
     retry: tuple[int, float, float]
     #: Active Retry-After park end on the row, if the snapshot saw one.
     parked_until: datetime | None = None
+    #: Which merge layer supplied each field — ``class`` (the
+    #: :data:`CLASS_DEFAULTS` baseline, including the ``llm-api``
+    #: per-provider resource name derived from it), ``code``
+    #: (``POLICIES``), ``db`` (the row's override columns), ``inferred``
+    #: (``cls`` picked from the URL/row shape) or ``deadline`` (the
+    #: ambient deadline shortened ``max_wait_s``). For the ``/limits``
+    #: view and ``precis limits set --dry-run`` (S4); empty for callers
+    #: that never asked for provenance.
+    layers: dict[str, str] = field(default_factory=dict)
 
 
 def deadline_remaining() -> float | None:
@@ -307,7 +317,24 @@ def _resolve(
         )
         snap = {}
     overrides = snap.get(row) if row is not None else None
-    overrides = overrides or {}
+    return _merge(service, policy, row, url, overrides or {}, apply_deadline=True)
+
+
+def _merge(
+    service: str,
+    policy: Policy,
+    row: str | None,
+    url: str | None,
+    overrides: dict[str, Any],
+    *,
+    apply_deadline: bool,
+) -> EffectivePolicy:
+    """The field-by-field merge (D3), recording each winner in
+    ``EffectivePolicy.layers``. ``apply_deadline=False`` (the ``/limits``
+    view, ``precis limits set --dry-run``) skips the ambient-deadline
+    merge — the result then describes the policy, not one call's wait
+    budget."""
+    layers: dict[str, str] = {}
 
     db_cls = overrides.get("class")
     if db_cls is not None and db_cls not in CLASS_DEFAULTS:
@@ -322,7 +349,10 @@ def _resolve(
             )
         db_cls = None
     cls = db_cls or policy.cls
-    if cls is None:
+    if cls is not None:
+        layers["cls"] = "db" if db_cls is not None else "code"
+    else:
+        layers["cls"] = "inferred"
         if url and _is_internal(url):
             cls = "internal"
         elif row is not None and not row.startswith("host:"):
@@ -332,44 +362,62 @@ def _resolve(
     base = CLASS_DEFAULTS.get(cls, CLASS_DEFAULTS["scraped-host"])
 
     rate = base.rate
+    layers["rate"] = "class"
     if cls == "provider-api" and overrides.get("capacity") is not None:
         rate = RateLane(
             int(overrides["capacity"]),
             float(overrides["refill_per_sec"]),
             overrides["daily_cap"],
         )
+        layers["rate"] = "db"
 
     concurrency = base.concurrency
+    layers["concurrency"] = "class"
     if cls == "llm-api":
         name = _provider_name(url, policy.provider)
         concurrency = f"llm-api:{name}" if name else concurrency
     if policy.concurrency is not None:
         concurrency = policy.concurrency
+        layers["concurrency"] = "code"
     if overrides.get("concurrency") is not None:
         concurrency = overrides["concurrency"]
+        layers["concurrency"] = "db"
 
     max_wait_s = base.max_wait_s
+    layers["max_wait_s"] = "class"
     if policy.max_wait_s is not None:
         max_wait_s = policy.max_wait_s
+        layers["max_wait_s"] = "code"
     elif policy.limiter_wait_s is not None:
         max_wait_s = policy.limiter_wait_s
+        layers["max_wait_s"] = "code"
     if overrides.get("max_wait_s") is not None:
         max_wait_s = overrides["max_wait_s"]
-    remaining = deadline_remaining()
-    if remaining is not None:
-        max_wait_s = min(max_wait_s, remaining)
+        layers["max_wait_s"] = "db"
+    if apply_deadline:
+        remaining = deadline_remaining()
+        if remaining is not None:
+            max_wait_s = min(max_wait_s, remaining)
+            layers["max_wait_s"] = "deadline"
 
     def _timeout(field: str) -> float | None:
         value = getattr(policy, field)
+        layers[field] = "code" if value is not None else "class"
         if overrides.get(field) is not None:
             value = overrides[field]
+            layers[field] = "db"
         return value
 
     on_refuse = base.on_refuse
+    layers["on_refuse"] = "class"
     if policy.on_refuse is not None:
         on_refuse = policy.on_refuse
+        layers["on_refuse"] = "code"
     if overrides.get("on_refuse") is not None:
         on_refuse = overrides["on_refuse"]
+        layers["on_refuse"] = "db"
+
+    layers["retry"] = "code"
 
     return EffectivePolicy(
         service=service,
@@ -384,6 +432,7 @@ def _resolve(
         on_refuse=on_refuse,
         retry=(policy.attempts, policy.base, policy.cap),
         parked_until=overrides.get("parked_until"),
+        layers=layers,
     )
 
 
@@ -426,6 +475,101 @@ def resolve_for(
     ``_resolve_provider`` (explicit ``provider=`` overrides, or a policy
     passed beside a host-named ``service`` label)."""
     return _resolve(service, policy, row, url)
+
+
+def explain(
+    service: str,
+    policy: Policy,
+    row: str | None,
+    url: str | None,
+    overrides: dict[str, Any],
+) -> EffectivePolicy:
+    """Resolve against an explicit ``overrides`` map — a row's own
+    columns, or a pending ``precis limits set`` write — instead of the
+    process snapshot. The ambient deadline does NOT merge
+    (``apply_deadline=False``): the result describes the policy, not one
+    call's wait budget. Same override keys as the snapshot row
+    (``class``, ``max_wait_s``, ``connect_s``, ``read_s``, ``total_s``,
+    ``on_refuse``, ``concurrency``, ``parked_until``, and the lane's
+    ``capacity``/``refill_per_sec``/``daily_cap``). ``numeric`` columns
+    arrive as :class:`decimal.Decimal`; they are coerced to ``float`` so
+    the merged fields stay typed."""
+    coerced = {
+        k: (float(v) if isinstance(v, Decimal) else v) for k, v in overrides.items()
+    }
+    return _merge(service, policy, row, url, coerced, apply_deadline=False)
+
+
+def row_resolutions(
+    row: str, *, llm_api_carriers: set[str] | frozenset[str] = frozenset()
+) -> list[tuple[str, Policy, str | None]]:
+    """The ``(label, policy, url)`` interpretations that land on one
+    ``external_rate_limits`` row.
+
+    A named row resolves under every :data:`~precis.utils.http.POLICIES`
+    service that names it; identical policies collapse into one entry
+    with the service names joined in the label (``openalex`` and
+    ``openalex-content`` share a policy). A ``host:<netloc>`` row
+    resolves under the provider-less default — plus ``openai-tools``
+    when ``llm_api_carriers`` names its ``llm-api:<provider>`` resource
+    (the row is then an llm-api carrier: ``host:openrouter.ai`` for
+    ``llm-api:openrouter``). A named row no POLICIES entry claims
+    resolves under the default policy.
+    """
+    from precis.utils.http import DEFAULT_POLICY, POLICIES
+
+    if row.startswith("host:"):
+        url = f"https://{row[5:]}/"
+        out: list[tuple[str, Policy, str | None]] = [
+            ("provider-less", DEFAULT_POLICY, url)
+        ]
+        name = _provider_name(url)
+        if name and f"llm-api:{name}" in llm_api_carriers:
+            out.append(("openai-tools", POLICIES["openai-tools"], url))
+        return out
+    by_policy: dict[Policy, list[str]] = {}
+    for service, pol in POLICIES.items():
+        if pol.provider == row:
+            by_policy.setdefault(pol, []).append(service)
+    if by_policy:
+        return [
+            (",".join(sorted(services)), pol, None)
+            for pol, services in by_policy.items()
+        ]
+    return [(row, DEFAULT_POLICY, None)]
+
+
+def format_effective(eff: EffectivePolicy) -> str:
+    """One compact ``field=value (layer)`` render of a resolved policy —
+    the shared display for the ``/limits`` view and
+    ``precis limits set --dry-run``. Every field names the layer it came
+    from (spec S4 acceptance)."""
+
+    def _lay(field: str) -> str:
+        return eff.layers.get(field, "?")
+
+    def _num(value: float | None) -> str:
+        return "-" if value is None else f"{float(value):g}"
+
+    if eff.rate is None:
+        rate = "-"
+    else:
+        daily = "-" if eff.rate.daily_cap is None else str(int(eff.rate.daily_cap))
+        rate = (
+            f"{_num(eff.rate.capacity)}/{_num(eff.rate.refill_per_sec)}/s daily={daily}"
+        )
+    attempts, base, cap = eff.retry
+    return (
+        f"cls={eff.cls} ({_lay('cls')})  "
+        f"rate={rate} ({_lay('rate')})  "
+        f"concurrency={eff.concurrency or '-'} ({_lay('concurrency')})  "
+        f"max_wait_s={eff.max_wait_s:g} ({_lay('max_wait_s')})  "
+        f"connect_s={_num(eff.connect_s)} ({_lay('connect_s')})  "
+        f"read_s={_num(eff.read_s)} ({_lay('read_s')})  "
+        f"total_s={_num(eff.total_s)} ({_lay('total_s')})  "
+        f"on_refuse={eff.on_refuse} ({_lay('on_refuse')})  "
+        f"retry={attempts}x {base:g}..{cap:g}s ({_lay('retry')})"
+    )
 
 
 _FROM_EFFECTIVE = object()
@@ -529,10 +673,13 @@ __all__ = [
     "EffectivePolicy",
     "RateLane",
     "deadline_remaining",
+    "explain",
+    "format_effective",
     "parked_gate",
     "record_park",
     "reset_cache",
     "resolve",
     "resolve_for",
+    "row_resolutions",
     "touch_rateless_row",
 ]
