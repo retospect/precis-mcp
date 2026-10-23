@@ -184,7 +184,24 @@ class TestAC1DuplicateMerge:
         assert out.candidates == 1 and out.proposals == 1
         (row,) = _garden_rows(store)
         assert row["action"] == "merge" and row["detector"] == "dup_pair"
-        assert row["payload"] == {"loser": b, "winner": a, "kind": "taxon"}
+        payload = row["payload"]
+        assert (payload["loser"], payload["winner"], payload["kind"]) == (
+            b,
+            a,
+            "taxon",
+        )
+        # Both endpoints' shas pinned at proposal time (apply re-check).
+        assert set(payload["shas"]) == {str(a), str(b)}
+        with store.pool.connection() as conn:
+            live: dict[int, str] = {
+                int(k): str(v)
+                for k, v in conn.execute(
+                    "SELECT ref_id, precis_target_sha('ref', ref_id) "
+                    "FROM refs WHERE ref_id = ANY(%s)",
+                    ([a, b],),
+                ).fetchall()
+            }
+        assert payload["shas"] == {str(k): v for k, v in live.items()}
 
     def test_si_vector_mismatch_yields_nothing_even_with_identical_embeddings(
         self, store: Store

@@ -255,18 +255,29 @@ def resolve_proposal(
     The row echoes the proposal's ``key`` so both the dedup check and the
     read view fold the pair: newest row wins, and a decided key stops
     reading as pending. Returns the new :class:`Review`, or ``None`` when
-    ``review_id`` is not a pending garden row (already decided, or not
-    ours). ``extra`` merges into the ``garden`` payload (an apply door
+    ``review_id`` is not a pending garden row — already decided, or not
+    ours. A proposal row keeps ``verdict='proposed'`` after it is
+    decided (the ledger is append-only), so "decided" means a second row
+    carries ``garden.resolves=<review_id>``; the ``FOR UPDATE`` lock
+    makes a concurrent resolver see that row instead of double-deciding.
+    ``extra`` merges into the ``garden`` payload (an apply door
     passes e.g. ``{"applied": merge_id}``).
     """
 
     def _do(c: Any) -> Any:
         prop = c.execute(
             "SELECT target_kind, target_id, note FROM reviews "
-            "WHERE review_id = %s AND actor = %s AND verdict = 'proposed'",
+            "WHERE review_id = %s AND actor = %s AND verdict = 'proposed' "
+            "FOR UPDATE",
             (review_id, GARDEN_ACTOR),
         ).fetchone()
         if prop is None:
+            return None
+        decided = c.execute(
+            "SELECT 1 FROM reviews WHERE note LIKE %s AND note ~ %s LIMIT 1",
+            ('%"resolves"%', f'"resolves": {int(review_id)}[^0-9]'),
+        ).fetchone()
+        if decided is not None:
             return None
         g = _parse_note(prop[2]) or {}
         body: dict[str, Any] = {

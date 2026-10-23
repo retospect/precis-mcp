@@ -10,7 +10,8 @@ relinks or tags. After the tick the proposal consumer
 (:mod:`precis.graph.garden.consumer`, gr506044) prunes dangling edges and
 has Opus approve (merge applied, undoable) or reject (with a reason
 code) the pending merge/relink proposals; ``params.consume=false`` turns
-it off.
+it off. A consumer exception lands on ``meta.garden.consume_error``
+rather than failing the tick that already wrote its proposals.
 
 Who mints it: an operator-seeded recurring todo under Watches —
 ``meta.schedule`` + ``meta.executor='job_inproc'`` +
@@ -203,14 +204,21 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     if not outcome.paused and params.get("consume", True) is not False:
         # The proposal consumer (gr506044, Reto 2026-10-23): auto-prune
         # dangling edges, then the Opus review of merge/relink proposals.
+        # A consume failure is recorded on meta, not raised — the tick's
+        # already-written proposals must not fail with it.
         from precis.graph.garden import consumer
 
-        consumed = consumer.consume_proposals(
-            ctx.store,
-            review=consumer.consume_llm,
-            review_limit=_ints("review_limit", consumer.DEFAULT_REVIEW_LIMIT),
-        )
-        garden["consumed"] = consumed.as_meta()
+        try:
+            consumed = consumer.consume_proposals(
+                ctx.store,
+                review=consumer.consume_llm,
+                review_limit=_ints("review_limit", consumer.DEFAULT_REVIEW_LIMIT),
+            )
+        except Exception as exc:
+            log.warning("graph_garden: consumer raised: %s", exc)
+            garden["consume_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            garden["consumed"] = consumed.as_meta()
         ctx.set_meta(garden=garden)
     if outcome.paused:
         # Window-scoped LLM pause — park the job (STATUS:waiting_time)

@@ -554,6 +554,106 @@ def _lexical_pairs(
     return out
 
 
+def _ref_shas(store: Store, ids: list[int]) -> dict[int, str]:
+    """``{ref_id: precis_target_sha('ref', id)}`` for the given live refs —
+    the per-endpoint pin a proposal carries so apply can tell the graph
+    moved (review finding: a merge may apply only while both endpoints
+    are the refs the judge saw)."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        return {
+            int(r[0]): str(r[1])
+            for r in conn.execute(
+                "SELECT ref_id, precis_target_sha('ref', ref_id) "
+                "FROM refs WHERE ref_id = ANY(%s)",
+                (sorted(set(ids)),),
+            ).fetchall()
+            if r[1] is not None
+        }
+
+
+def _pair_vector_distance(store: Store, kind: str, a: int, b: int) -> float | None:
+    """The pair's cosine distance on the kind's dup-leg vector
+    (:data:`DUP_VECTOR_CHUNK` — ``memory_body`` for memories, the card
+    elsewhere), ``None`` when either side lacks an embedded vector."""
+    chunk_kind = DUP_VECTOR_CHUNK.get(kind, "card_combined")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (c.ref_id) c.ref_id, ce.vector "
+            "FROM chunks c "
+            "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+            "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+            "JOIN embedders em ON em.name = ce.embedder AND em.is_default "
+            "WHERE c.ref_id = ANY(%(ids)s) AND c.chunk_kind = %(ck)s "
+            "  AND c.retired_at IS NULL "
+            "ORDER BY c.ref_id, c.ord",
+            {"ids": [a, b], "ck": chunk_kind},
+        ).fetchall()
+    vecs = {int(r[0]): _coerce_vector(r[1]) for r in rows}
+    va, vb = vecs.get(a), vecs.get(b)
+    if va is None or vb is None:
+        return None
+    return _cosine(va, vb)
+
+
+def _memory_bodies_identical(store: Store, a: int, b: int) -> bool:
+    """The body-hash leg for one pair: the two memories' ``memory_body``
+    text is byte-identical (same md5 as :func:`_memory_body_twins`)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT c.ref_id, md5(string_agg(c.text, E'\\n' ORDER BY c.ord)) "
+            "FROM chunks c WHERE c.ref_id = ANY(%s) "
+            "  AND c.chunk_kind = 'memory_body' AND c.retired_at IS NULL "
+            "  AND c.ord >= 0 GROUP BY c.ref_id",
+            ([a, b],),
+        ).fetchall()
+    shas = {int(r[0]): r[1] for r in rows if r[1] is not None}
+    return shas.get(a) is not None and shas.get(a) == shas.get(b)
+
+
+def dup_pair_qualifies(store: Store, a: int, b: int) -> str | None:
+    """The dup detector's bars recomputed for one pair at apply time —
+    the consumer's deterministic re-check before an approved merge
+    writes (review finding: the model's verdict is only as good as the
+    state it judged). Returns ``None`` when the pair still qualifies:
+    both live, same kind, no taxon dimension clash, and at least one
+    leg — embedding distance under :data:`DUP_MAX_DISTANCE` on the
+    kind's vector chunk, a shared name/alias term (non-memory), or an
+    identical memory body. Else a short phrase for the reject ``why``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, kind, title, meta, retired_at FROM refs "
+            "WHERE ref_id = ANY(%s)",
+            ([a, b],),
+        ).fetchall()
+    nodes = {int(r[0]): r for r in rows}
+    ra, rb = nodes.get(a), nodes.get(b)
+    if ra is None or rb is None:
+        return "an endpoint no longer exists"
+    if ra[4] is not None or rb[4] is not None:
+        return "an endpoint is retired"
+    kind = str(ra[1])
+    if kind != str(rb[1]):
+        return "the pair is not same-kind"
+    ta, ma = str(ra[2] or ""), ra[3] or {}
+    tb, mb = str(rb[2] or ""), rb[3] or {}
+    if kind == "taxon" and dimension_clash(ma, mb):
+        return "the taxa clash on dimension"
+    if kind == "memory" and _memory_bodies_identical(store, a, b):
+        return None
+    if kind != "memory" and _ref_terms(ma, ta) & _ref_terms(mb, tb):
+        return None
+    dist = _pair_vector_distance(store, kind, a, b)
+    if dist is not None and dist < DUP_MAX_DISTANCE:
+        return None
+    return (
+        "no shared term and no sub-floor embedding distance"
+        if dist is None
+        else f"the pair now embeds {dist:.3f} apart (floor {DUP_MAX_DISTANCE})"
+    )
+
+
 def duplicate_candidates(
     store: Store,
     *,
@@ -631,6 +731,9 @@ def duplicate_candidates(
     parents = _taxon_parents(
         store, [i for pair, ev in pairs.items() if ev["kind"] == "taxon" for i in pair]
     )
+    # The proposal pins both endpoints' shas so the consumer can tell at
+    # apply time that the pair the judge saw is the pair it would merge.
+    shas = _ref_shas(store, ids)
     out: list[GardenCandidate] = []
     for (a, b), ev in pairs.items():
         ta, ma = nodes.get(a, ("", {}))
@@ -653,7 +756,12 @@ def duplicate_candidates(
                 other_id=a,
                 title=f"dup pair {ev['kind']} {a}↔{b}",
                 evidence=ev,
-                payload={"loser": b, "winner": a, "kind": ev["kind"]},
+                payload={
+                    "loser": b,
+                    "winner": a,
+                    "kind": ev["kind"],
+                    "shas": {str(i): shas[i] for i in (a, b) if i in shas},
+                },
             )
         )
     out.sort(
@@ -1593,6 +1701,7 @@ __all__ = [
     "cycle_edge_candidates",
     "dangling_edge_candidates",
     "detectors_for",
+    "dup_pair_qualifies",
     "dup_window_size",
     "duplicate_candidates",
     "orphan_taxon_candidates",

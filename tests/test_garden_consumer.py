@@ -80,6 +80,24 @@ def _taxon(store: Store, name: str, definition: str, parent: int) -> int:
     return rid
 
 
+def _sha(store: Store, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT precis_target_sha('ref', %s)", (ref_id,)).fetchone()
+    assert row is not None and row[0] is not None
+    return str(row[0])
+
+
+def _card_vec(store: Store, ref_id: int, text: str) -> None:
+    """Give a ref an embedded ``card_combined`` chunk (the dup leg's vector)."""
+    cid = store.chunks.upsert_card_combined(ref_id, text)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+            "status, attempts) VALUES (%s, %s, %s, 'ok', 1)",
+            (cid, _EMBEDDER, _EMB.embed_one(text)),
+        )
+
+
 def _merge_proposal(
     store: Store, winner: int, loser: int, kind: str = "taxon", **evidence: Any
 ) -> int:
@@ -93,7 +111,15 @@ def _merge_proposal(
             other_id=winner,
             title=f"dup pair {kind} {winner}↔{loser}",
             evidence={"kind": kind, **evidence},
-            payload={"loser": loser, "winner": winner, "kind": kind},
+            payload={
+                "loser": loser,
+                "winner": winner,
+                "kind": kind,
+                "shas": {
+                    str(loser): _sha(store, loser),
+                    str(winner): _sha(store, winner),
+                },
+            },
         ),
         rationale="High lexical overlap (0.833) and low distance (0.1686)",
         model="castor",
@@ -226,6 +252,10 @@ class TestOpusReview:
     def test_approve_applies_an_undoable_merge(self, store: Store) -> None:
         a = _ref(store, "concept", "band gap")
         b = _ref(store, "concept", "band-gap")
+        # The pair qualifies on the embedding leg (names differ
+        # lexically) — the apply-time floor re-check needs it.
+        for rid in (a, b):
+            _card_vec(store, rid, "band gap")
         other = _ref(store, "concept", "semiconductor")
         store.add_link(src_ref_id=other, dst_ref_id=b, relation="related-to")
         review_id = _merge_proposal(store, a, b, kind="concept")
@@ -404,3 +434,252 @@ class TestJobStep:
         _dispatch(ctx, SPEC)
         assert "consumed" not in ctx.meta["garden"]
         assert len(pending_proposals(store)) == 1
+
+    def test_consume_failure_is_meta_not_a_tick_failure(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A consumer exception lands on meta.garden.consume_error; the
+        tick's own proposals and outcome are untouched."""
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        self._lit(store)
+        _dangling(store)
+
+        def _boom(*_a: Any, **_kw: Any) -> Any:
+            raise RuntimeError("reviewer blew up")
+
+        monkeypatch.setattr(consumer, "consume_proposals", _boom)
+        ctx = _Ctx(store, {"pass": "split"})
+        _dispatch(ctx, SPEC)
+        assert ctx.meta["garden"]["consume_error"].startswith(
+            "RuntimeError: reviewer blew up"
+        )
+        assert ctx.failure is None
+        assert len(pending_proposals(store)) == 1  # the edge stays proposed
+
+
+# ── review-time guards ─────────────────────────────────────────────────────
+
+
+def _prune_proposal(store: Store, link_id: int, other: int) -> int:
+    """File a prune proposal directly — the shape a pre-narrowing tick
+    wrote, before the detector excluded history/provenance edges."""
+    rid = emit_proposal(
+        store,
+        GardenCandidate(
+            detector="dangling_edge",
+            action="prune",
+            target_kind="link",
+            target_id=link_id,
+            other_id=other,
+            title=f"edge {link_id} touches a retired ref",
+            evidence={},
+            payload={"delete_link": link_id},
+        ),
+        rationale="filed before the dangling_edge narrowing",
+    )
+    assert rid is not None
+    return rid
+
+
+class TestPruneRecheck:
+    """_prune_one re-runs the narrowed dangling predicate at apply time."""
+
+    def test_done_todo_endpoint_is_history_not_dangling(self, store: Store) -> None:
+        live = _ref(store, "concept", "live concept")
+        done = _ref(store, "todo", "finished task")
+        link = int(
+            store.add_link(src_ref_id=live, dst_ref_id=done, relation="related-to").id
+        )
+        store.retire_ref(done)
+        review_id = _prune_proposal(store, link, done)
+        report = consume_proposals(store, review=_Judge())
+        assert report.pruned == 0 and _link_exists(store, link)
+        g = _note(store, review_id)
+        assert (g["verdict"], g["reason"]) == ("rejected", "not_dangling")
+
+    def test_both_endpoints_retired_is_not_dangling(self, store: Store) -> None:
+        a = _ref(store, "concept", "dead a")
+        b = _ref(store, "concept", "dead b")
+        link = int(store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to").id)
+        store.retire_ref(a)
+        store.retire_ref(b)
+        review_id = _prune_proposal(store, link, b)
+        report = consume_proposals(store, review=_Judge())
+        assert report.pruned == 0 and _link_exists(store, link)
+        assert _note(store, review_id)["reason"] == "not_dangling"
+
+    def test_decided_concurrently_skips_the_delete(self, store: Store) -> None:
+        """resolve_proposal returning None means another decider won —
+        the link must not be deleted on a lost race."""
+        from precis.graph.garden.consumer import ConsumeReport, _prune_one
+        from precis.graph.garden.proposals import resolve_proposal
+
+        review_id, link, _dead = _dangling(store)
+        prop = next(
+            p
+            for p in pending_proposals(store, action="prune")
+            if p.review_id == review_id
+        )
+        resolve_proposal(store, review_id, actor="user", verdict="rejected")
+        _prune_one(store, prop, ConsumeReport())
+        assert _link_exists(store, link)
+
+
+class TestReviewBounds:
+    def test_errors_bound_attempts_and_stop_after_three(self, store: Store) -> None:
+        """A reviewer whose verdict never parses counts as attempts and
+        stops the tick after MAX_CONSECUTIVE_ERRORS."""
+        for i in range(5):
+            _merge_proposal(
+                store,
+                _ref(store, "concept", f"alpha {i}"),
+                _ref(store, "concept", f"beta {i}"),
+                kind="concept",
+            )
+        calls: list[int] = []
+
+        def _broken(_s: Store, p: Any) -> ConsumerVerdict:
+            calls.append(p.review_id)
+            return ConsumerVerdict(verdict="", error="unusable verdict 'x'")
+
+        report = consume_proposals(store, review=_broken, review_limit=10)
+        assert len(calls) == consumer.MAX_CONSECUTIVE_ERRORS == 3
+        assert (report.attempts, report.errors, report.reviewed) == (3, 3, 0)
+        assert len(pending_proposals(store)) == 5
+
+    def test_attempt_bound_counts_errors(self, store: Store) -> None:
+        """Below the consecutive cap, the limit still counts attempts —
+        4 pending proposals, limit 2, all failing: exactly 2 calls."""
+        for i in range(4):
+            _merge_proposal(
+                store,
+                _ref(store, "concept", f"gamma {i}"),
+                _ref(store, "concept", f"delta {i}"),
+                kind="concept",
+            )
+        calls: list[int] = []
+
+        def _broken(_s: Store, p: Any) -> ConsumerVerdict:
+            calls.append(p.review_id)
+            return ConsumerVerdict(verdict="", error="boom")
+
+        consume_proposals(store, review=_broken, review_limit=2)
+        assert len(calls) == 2
+
+
+class TestReviewFilters:
+    def test_sibling_confusion_never_reaches_the_reviewer(self, store: Store) -> None:
+        """A merge-shaped proposal with siblings/options and no
+        loser/winner is a decision for a human — not an apply, not an
+        apply_refused reject."""
+        parent = _ref(store, "taxon", "axis", meta={"name": "axis"})
+        a = _taxon(store, "confused a", "def a", parent)
+        b = _taxon(store, "confused b", "def b", parent)
+        rid = emit_proposal(
+            store,
+            GardenCandidate(
+                detector="sibling_confusion",
+                action="merge",
+                target_kind="ref",
+                target_id=b,
+                other_id=a,
+                title="sibling confusion",
+                evidence={"axis": "phase"},
+                payload={
+                    "axis": "phase",
+                    "siblings": [a, b],
+                    "options": ["merge", "sharpen", "re-axis", "re-parent"],
+                },
+            ),
+            rationale="shared instances on an exclusive axis",
+        )
+        assert rid is not None
+        judge = _Judge("approve")
+        report = consume_proposals(store, review=judge)
+        assert judge.seen == []
+        assert report.rejected == 0 and report.applied == 0
+        assert [p.review_id for p in pending_proposals(store)] == [rid]
+
+    def test_approved_relink_is_recorded_once_then_filtered(self, store: Store) -> None:
+        """An approved relink stays pending (gr507641, no apply door)
+        but is never re-reviewed: the SQL filter drops it before the
+        reviewer is consulted."""
+        orphan = _ref(store, "taxon", "orphan", meta={"name": "orphan"})
+        parent = _ref(store, "taxon", "parent", meta={"name": "parent"})
+        rid = emit_proposal(
+            store,
+            GardenCandidate(
+                detector="orphan",
+                action="relink",
+                target_kind="ref",
+                target_id=orphan,
+                other_id=parent,
+                title="orphan relink",
+                evidence={},
+                payload={"child": orphan, "parent": parent},
+            ),
+            rationale="orphan taxon, nearest start node",
+        )
+        assert rid is not None
+        judge = _Judge("approve")
+        first = consume_proposals(store, review=judge)
+        assert judge.seen == [rid] and first.approved_unapplied == 1
+        second = consume_proposals(store, review=judge)
+        assert second.attempts == 0 and len(judge.seen) == 1
+        # And the proposal is still pending — for a human, per the ruling gap.
+        assert [p.review_id for p in pending_proposals(store)] == [rid]
+
+
+class TestApplyRecheck:
+    def test_winner_drift_closes_as_stale(self, store: Store) -> None:
+        """The merge was approved on the winner as pinned; an edit to the
+        winner after the proposal must not ride the stale verdict."""
+        a = _ref(store, "concept", "band gap")
+        b = _ref(store, "concept", "bandgap")
+        for rid_ in (a, b):
+            _card_vec(store, rid_, "band gap")
+        review_id = _merge_proposal(store, a, b, kind="concept")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = 'band gap (SI)' WHERE ref_id = %s",
+                (a,),
+            )
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, review_id)
+        assert (g["verdict"], g["reason"]) == ("rejected", "stale")
+        assert _live(store, a) and _live(store, b)
+
+    def test_pair_below_the_floor_is_apply_refused(self, store: Store) -> None:
+        """No shared term and no sub-floor embedding: even an approve
+        cannot merge a pair the detector would not propose today."""
+        a = _ref(store, "concept", "electrolyte")
+        b = _ref(store, "concept", "gear ratio")
+        review_id = _merge_proposal(store, a, b, kind="concept")
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert (report.applied, report.rejected) == (0, 1)
+        g = _note(store, review_id)
+        assert (g["verdict"], g["reason"]) == ("rejected", "apply_refused")
+        assert "no shared term" in g["why"]
+        assert _live(store, a) and _live(store, b)
+
+    def test_second_tick_is_a_noop(self, store: Store) -> None:
+        """Everything the first consume decided stays decided."""
+        _dangling(store)
+        a = _ref(store, "concept", "band gap")
+        b = _ref(store, "concept", "bandgap")
+        for rid_ in (a, b):
+            _card_vec(store, rid_, "band gap")
+        _merge_proposal(store, a, b, kind="concept")
+        first = consume_proposals(store, review=_Judge("approve"))
+        assert (first.pruned, first.applied) == (1, 1)
+        second = consume_proposals(store, review=_Judge("approve"))
+        assert (
+            second.pruned,
+            second.prune_closed,
+            second.attempts,
+            second.reviewed,
+            second.rejected,
+            second.errors,
+        ) == (0, 0, 0, 0, 0, 0)
