@@ -1094,6 +1094,23 @@ where the paper gives them and records `theta0` otherwise.
    mode `hindered` shifts NH₃ desorption K by the Campbell–Sellers amount
    within 0.1 eV and bumps `corrections.VERSION`; `KineticsResult`
    round-trips `as_dict`/`from_dict`.
+   shipped: catpath 1398d07 (v0.33.0), precis: the commit adding this line
+   (pin move + glue). Found: the chain's steady state is a numerical solve
+   over rates spanning ~10 decades, so `equilibrium_flux` runs at
+   `consistency.CHAIN_EPS = 1e-4` on the chain (the spec's 1e-8 is the
+   exact-MF target — a broken affinity still fails by ~8 decades); the
+   review pass replaced the chain solve with a LOG-SPACE equilibrium
+   check (boundary equilibria like pw455722's ~1e29 bar solve below the
+   steady-state solver's dynamic range), the barrier identity now
+   verifies the rate-path-stored energies against the rate-implied
+   barriers, and the v2 record is a sibling of the v1 block, never
+   nested in it;
+   `standard_state`/`temperature_consistency` are MF checks and report
+   not-applicable on the chain (provider re-T is the slice-4 rule);
+   `harmonic` adsorbate mode returns `harmonic_g(modes)` as the whole
+   correction (ZPE + vibrational free energy), not `zpe_table − TS`;
+   slotted records need field defaults read off `dataclasses.fields`,
+   not class attributes.
 3. **BEP as a rated source + correlated uncertainty v1.** Excluded steps
    vanish; `bep_flux_share`; hierarchical draws (`z_model`, `z_c`, `z_i`,
    ρ = 0.5 and the ρ sweep); rank probability on paired draws. Acceptance:

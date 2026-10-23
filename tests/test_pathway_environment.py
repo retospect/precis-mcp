@@ -41,6 +41,7 @@ from precis_pathway.toon_views import kinetics_text
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
+    from precis_pathway.types import PathwayArtifact
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pw455722_results.json"
 
@@ -208,8 +209,8 @@ def test_far_vs_legacy_changes_selectivity_and_the_basis(replay) -> None:
     """pw455722 itself: the bases differ and so does the selectivity. Its
     chain has 13 absorbing components (every NEB step excluded), so the
     selectivity value is noise-dominated; the well-posed check is above."""
-    legacy = replay()
-    far = replay(
+    legacy, _ = replay()
+    far, _ = replay(
         {"T": 298.15, "gases": {"inputs": {"NO": 1.0, "H2": 1.0}, "outputs": "far"}}
     )
     assert far["selectivity"] != pytest.approx(legacy["selectivity"], abs=1e-3)
@@ -234,7 +235,7 @@ def test_equilibrium_outputs_give_zero_net_flux_on_every_transition(
         ledgers, 298.15, refs=fx["refs"], inputs=inputs, target="NH3", p_target=None
     )
     outputs = {g: p for g, p in comp.items() if g not in inputs}
-    data = replay({"T": 298.15, "gases": {"inputs": inputs, "outputs": outputs}})
+    data, _ = replay({"T": 298.15, "gases": {"inputs": inputs, "outputs": outputs}})
     k_scale = max(max(t["k_f"], t["k_b"]) for t in data["transitions"])
     for t in data["transitions"]:
         assert abs(t["net_rate"]) < 1e-6 * k_scale, t["name"]
@@ -249,8 +250,8 @@ def test_p_total_with_a_composition_reproduces_the_explicit_table(replay) -> Non
     pressure difference would move it."""
     gases = ENV["gases"]
     total = math.fsum([*gases["inputs"].values(), *gases["outputs"].values()])
-    scaled = replay({**ENV, "p_total": 8.0 * total})
-    explicit = replay(
+    scaled, _ = replay({**ENV, "p_total": 8.0 * total})
+    explicit, _ = replay(
         {
             **ENV,
             "gases": {
@@ -272,19 +273,19 @@ def test_p_total_with_a_composition_reproduces_the_explicit_table(replay) -> Non
 def test_legacy_warnings_carry_no_v2_notes(replay) -> None:
     """pw455722's overall NH3 cycle leaves a parked O, which a block solve
     notes beside q_over_k; a legacy solve keeps its pre-v2 ``warnings``."""
-    legacy = replay()
+    legacy, _ = replay()
     assert not any("q_over_k" in w for w in legacy["warnings"])
     assert not any("sticking uncited" in w for w in legacy["warnings"])
-    block = replay(ENV)
+    block, _ = replay(ENV)
     assert any("parked fragments" in w for w in block["warnings"])
 
 
 def test_uncited_sticking_is_reported_per_gas(replay) -> None:
-    data = replay(ENV)
+    data, _ = replay(ENV)
     assert "sticking uncited: H2" in data["warnings"]
     assert "sticking uncited: NO" not in data["warnings"]  # NO cites pa498804
     # a legacy replay never says it (today's trust gate, unchanged)
-    assert not any(w.startswith("sticking uncited") for w in replay()["warnings"])
+    assert not any(w.startswith("sticking uncited") for w in replay()[0]["warnings"])
     # pw455722's excluded steps trip the bracket guard first; the harvest
     # is untrusted either way (the uncited note itself: test_pathway_plugin)
     assert _kinetics_scalars({"kinetics": data})["kinetics_trusted"] is False
@@ -488,7 +489,7 @@ _GRAPH: dict[str, Any] = {
 
 
 def test_kinetics_view_renders_environment_q_over_k_and_reversibility(replay) -> None:
-    far = replay(
+    far, _ = replay(
         {"T": 298.15, "gases": {"inputs": {"NO": 1.0, "H2": 1.0}, "outputs": "far"}}
     )
     meta = {
@@ -510,3 +511,203 @@ def test_kinetics_view_without_a_solve_is_unchanged() -> None:
         {"graph": _GRAPH, "results": {"pathway": ["A", "B"], "target": "B"}}
     )
     assert "Environment:" not in body and "Q/K" not in body
+
+
+# --- acceptance (spec §Slices item 2): provider seam + checks + record --------
+
+
+def test_core_checks_green_on_pw455722(replay) -> None:
+    """The three lattice-independent D3 checks pass on the fixture chain —
+    and they actually run (the v2 record's consistency block, stamped
+    beside v1)."""
+    pytest.importorskip("autocatpath.consistency")  # engine >= 0.33
+    _data, v2 = replay(ENV)
+    assert isinstance(v2, dict)
+    assert v2["consistency"]["elementary_ratio"] is True
+    assert v2["consistency"]["barrier_identity"] is True
+    assert v2["consistency"]["equilibrium_flux"] is True
+
+
+def test_v1_block_is_unchanged_on_the_fixture(replay) -> None:
+    """D8 "beside, never in place": the v1 kinetics block carries no new
+    keys — `consistency` and `kinetics_v2` live beside it, not inside."""
+    pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    data, _v2 = replay(ENV)
+    assert "consistency" not in data and "kinetics_v2" not in data
+    for key in (
+        "tof",
+        "transitions",
+        "coverages",
+        "production",
+        "warnings",
+        "environment",
+        "reversibility",
+    ):
+        assert key in data  # the v1 surface is intact
+
+
+def test_clipped_reverse_fails_barrier_identity_naming_the_step() -> None:
+    """An independently clipped reverse barrier cannot be written with a
+    single G_TS_eff: the rate-implied Ea_b no longer equals
+    G_TS_eff - G_FS, and the check names the step.  (The production-path
+    clip is exercised in the engine's own suite via a step_pair
+    monkeypatch; pw455722's replay carries no Eyring steps.)"""
+    cons = pytest.importorskip("autocatpath.consistency")  # engine >= 0.33
+    import math
+
+    thermo = pytest.importorskip("autocatpath.thermo")
+    T = 298.15
+    kt = thermo.K_B_EV * T
+    nu = kt / kinetics.H_EV_S
+    # stored: g_ts_eff - g_fs = 0.5 eV; the emitted reverse rate carries a
+    # clipped 0.2 eV barrier — inconsistent with the stored TS.
+    t = kinetics.Transition(
+        "NO@N->NOH",
+        "NO@N",
+        "NOH",
+        "step",
+        dg=0.2,
+        k_f=nu,  # implied ea_f = 0 -> stored 0.0 above IS
+        k_b=nu * math.exp(-0.2 / kt),
+        g_is=0.0,
+        g_fs=0.2,
+        g_ts_eff=0.7,
+    )
+    ok = kinetics.Transition(
+        "NOH->NH2OH",
+        "NOH",
+        "NH2OH",
+        "step",
+        dg=-0.4,
+        k_f=nu * math.exp(-0.3 / kt),
+        k_b=nu * math.exp(-0.7 / kt),
+        g_is=0.0,
+        g_fs=-0.4,
+        g_ts_eff=0.3,
+    )
+    rep = cons.barrier_identity([t, ok], T)
+    assert not rep.passed
+    assert any("NO@N->NOH" in f for f in rep.failures)
+    assert not any("NOH->NH2OH" in f for f in rep.failures)
+
+
+def test_hindered_moves_nh3_desorption_k_and_the_version() -> None:
+    """adsorbate_mode=hindered (Q4): NH3's adsorbate entropy shifts the
+    desorption K by the Campbell-Sellers amount (0.332 eV at 298.15 K,
+    well inside the 0.1 eV band) and the derived corrections stamp moves."""
+    thermo = pytest.importorskip("autocatpath.thermo")
+    if not hasattr(thermo, "cs_entropy"):
+        pytest.skip("engine < 0.33: no adsorbate_mode")
+    import math
+
+    cm = pytest.importorskip("autocatpath.corrections")
+    t0 = thermo.Table(
+        temperature=298.15, pressures={}, species={}, adsorbate_mode="ts0"
+    )
+    th = thermo.Table(
+        temperature=298.15, pressures={}, species={}, adsorbate_mode="hindered"
+    )
+    shift = t0.ads_correction("NH3") - th.ads_correction("NH3")
+    want = thermo.T_REF * thermo.cs_entropy(thermo.GASES["NH3"]["s298"] / 96485.33212)
+    assert want == pytest.approx(0.332, abs=0.1)  # the pinned CS literal
+    assert shift == pytest.approx(want, abs=1e-9)
+    # the acceptance names the desorption K, not the bare correction
+    k_ratio = math.exp(want / (thermo.K_B_EV * thermo.T_REF))
+    assert k_ratio == pytest.approx(math.exp(shift / (thermo.K_B_EV * thermo.T_REF)))
+    assert cm.version(adsorbate_mode="hindered", reference_state="site") != cm.version(
+        adsorbate_mode="ts0", reference_state="site"
+    )
+
+
+def test_kinetics_v2_record_round_trips(replay) -> None:
+    records = pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    data, v2 = replay(ENV)
+    rec = records.KineticsResult.from_dict(v2)
+    assert rec.schema == "kinetics" and rec.schema_version == 2
+    assert rec.provider == "vacuum"
+    assert rec.tof_chain == data["tof"]
+    assert rec.consistency == v2["consistency"]
+    assert rec.as_dict() == v2
+
+
+def test_kinetics_subprocess_carries_kinetics_v2(fx: dict[str, Any]) -> None:
+    """The production path: run_kinetics_subprocess hands the child's
+    payload across the process boundary — both the v1 block and the v2
+    record must survive, or meta.kinetics_v2 can never reach prod."""
+    pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    from precis_pathway import runner
+
+    cfg = copy.deepcopy(fx["config"])
+    cfg["kinetics"]["n_samples"] = 0  # the fixture's legacy env, as prod runs it
+    artifact = cast(
+        "PathwayArtifact",
+        {
+            "results_json": {
+                "nodes": fx["nodes"],
+                "edges": fx["edges"],
+                "score": fx["score"],
+            }
+        },
+    )
+    runner.run_kinetics_subprocess(cfg, artifact, timeout=180)
+    rj = artifact["results_json"]
+    assert "kinetics_error" not in rj
+    assert "tof" in rj["kinetics"]  # the v1 block arrived
+    v2 = rj.get("kinetics_v2")
+    assert isinstance(v2, dict) and v2["schema"] == "kinetics"
+
+
+def test_finish_stamps_kinetics_v2_on_the_pathway_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D8: precis stores the v2 record as meta.kinetics_v2 beside v1 —
+    presence-gated so a pre-0.33 engine's solve leaves no key."""
+    import precis_pathway.persist as persist_mod
+    from precis_pathway._dispatch_common import finish
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        persist_mod,
+        "persist_result",
+        lambda *a, **kw: captured.update(kw.get("extra_meta") or {}),
+    )
+    ctx = SimpleNamespace(
+        store=None,
+        set_meta=lambda **kw: None,
+        append_chunk=lambda *a: None,
+        set_status=lambda s: None,
+    )
+
+    def artifact(v1: Any, v2: Any = None) -> PathwayArtifact:
+        rj: dict[str, Any] = {
+            "nodes": {},
+            "edges": [],
+            "n_samples": 0,
+            "backend": "emt",
+            "kinetics": v1,
+        }
+        if v2 is not None:
+            rj["kinetics_v2"] = v2  # beside v1, never nested (D8)
+        return cast(
+            "PathwayArtifact",
+            {
+                "results_json": rj,
+                "graph_json": {},
+                "config": {},
+                "content_key": "k",
+                "methods_md": "",
+            },
+        )
+
+    rec = {"schema": "kinetics", "schema_version": 2}
+    assert finish(
+        ctx,
+        artifact({"tof": 1e-3}, rec),
+        1,
+        pathway_slug=None,
+        produced_by="t",
+    )
+    assert captured["kinetics_v2"] == rec
+    captured.clear()
+    assert finish(ctx, artifact({"tof": 1e-3}), 1, pathway_slug=None, produced_by="t")
+    assert "kinetics_v2" not in captured

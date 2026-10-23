@@ -327,6 +327,14 @@ def finish(
         from precis_pathway.persist import persist_result
 
         pathway_extra: dict[str, Any] = {"produced_by": produced_by, "slice": 1}
+        # kinetics v2 slice 2 (D8): the engine (>= 0.33) returns the typed
+        # ``kinetics_v2`` record BESIDE the v1 block — a sibling key on
+        # results_json, never nested inside ``kinetics``; lift it to the
+        # pathway meta as ``meta.kinetics_v2``.  Presence-gated — a
+        # pre-0.33 engine carries no record and none is fabricated.
+        v2 = artifact["results_json"].get("kinetics_v2")
+        if isinstance(v2, dict):
+            pathway_extra["kinetics_v2"] = v2
         if extra_meta:
             pathway_extra.update(extra_meta)
         if "barrier" in summary:

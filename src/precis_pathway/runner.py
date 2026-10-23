@@ -1650,10 +1650,19 @@ def run_kinetics(
             return
         configured = cfg.kinetics.n_samples
         cfg.kinetics.n_samples = n_samples
-        result = kinetics.solve(
+        out = kinetics.solve(
             cfg, nodes, edges, net, refs, span=span, mari=None, log=lambda *a, **k: None
         )
-        results_json["kinetics"] = result
+        # engine >= 0.33 returns (v1, kinetics_v2); older engines return the
+        # v1 dict alone. The v2 record sits BESIDE the v1 block (D8).
+        if isinstance(out, tuple):
+            result, v2 = out
+            results_json["kinetics"] = result
+            if isinstance(v2, dict):
+                results_json["kinetics_v2"] = v2
+        else:
+            result = out
+            results_json["kinetics"] = result
         if n_samples < configured:
             band = (result.get("sensitivity") or {}).get("tof") or {}
             result["mc_budget"] = {
@@ -1797,6 +1806,10 @@ def run_kinetics_subprocess(
 
     if "kinetics" in payload:
         results_json["kinetics"] = payload["kinetics"]
+        # the v2 record rides beside v1 (D8); a pre-0.33 child never
+        # emits it and none is fabricated
+        if isinstance(payload.get("kinetics_v2"), dict):
+            results_json["kinetics_v2"] = payload["kinetics_v2"]
     else:
         results_json["kinetics_error"] = payload.get(
             "kinetics_error", "kinetics child returned no result"
@@ -1826,7 +1839,7 @@ def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int
         )
         rj = artifact["results_json"]
         payload = (
-            {"kinetics": rj["kinetics"]}
+            {k: rj[k] for k in ("kinetics", "kinetics_v2") if k in rj}
             if "kinetics" in rj
             else {"kinetics_error": rj.get("kinetics_error", "no result")}
         )

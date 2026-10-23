@@ -307,7 +307,18 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    Horizon 5 and the electrochemical-interface spec plug into; slices
    1–4 and 10 need no KMC and no U. Slice 1 (environment block, refuse,
    Q/K, reversibility, basis fold) shipped on catpath v0.32.0; slice 2
-   is next.
+   (VacuumProvider + rate-builder seam, core checks, `kinetics_v2`
+   record, `adsorbate_mode=hindered` + derived corrections stamp) is on
+   catpath v0.33.0 (1398d07, one commit — squashed per review; engine
+   committed and tagged locally, NOT pushed pending the engine review).
+   Review round 2 fixed: the equilibrium-flux check now runs in log
+   space (pw455722's boundary equilibrium at ~1e29 bar is where it
+   earns its keep, and a check that cannot run is reported, never
+   stamped passed); barrier_identity verifies the rate-path-stored
+   energies against the rate-implied barriers, so a clipped reverse
+   barrier fails naming the step; the v2 record is a results_json
+   SIBLING of the v1 block (byte-compatible). Precis glue lifts the
+   sibling `kinetics_v2` key onto the pathway meta at review-ready.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing
