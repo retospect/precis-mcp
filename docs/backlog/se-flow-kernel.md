@@ -318,8 +318,9 @@ commit carrying this line; `git log` has the sha.*
         units/modules, both scales). A change rebuilds only the changed
         module; co-optimisation covers only what the assembly script
         owns (placement, interface params) unless the author re-opens a
-        module. Rebuild cost is negligible next to evaluation (CSG
-        µs–ms per feature, atoms ms–s), so evaluation is what scales:
+        module. A trivial recipe rebuilds in µs–ms per feature; real
+        builds cost minutes (the step-stack bullet below), so both
+        scale: rebuild through the step cache, evaluation through
         the cache, `evaluate_many`, warm start, coarse-to-fine (`cells`
         low for the search, the final candidates re-evaluated fine, the
         trace recording both); module-level reduced models (a frozen
@@ -342,6 +343,45 @@ commit carrying this line; `git log` has the sha.*
      layer, but its builders and evaluators differ: the netlist and
      modules are built in code, while place/route/DRC stay server
      services, like relax.
+   - **Build-step stack cache** (ruled, Reto 2026-10-23; general kit
+     infra at both scales, not a chamber special case). `build(recipe)`
+     is a stack — generally a DAG — of primitive and 3-D manipulation
+     steps (box, extrude, drill, boolean, fillet, wrap, relax…). Each
+     step's output is memoised under `step key = hash(step name, its
+     params, parent step key(s))`: changing step `k` rebuilds `k` and
+     its descendants; everything below is a cache hit. The high-water
+     mark falls out of the keys with no extra bookkeeping; branches
+     (two independent hole sets) keep separate entries; undo is a hit
+     on an earlier key, so an annealer's reject and backtrack cost no
+     build — consistent with item 0 (recipe mutable, geometry
+     immutable, a move = recipe edit + rebuild). It is the in-build
+     counterpart of the frozen units/modules (structure-workspaces
+     §Frozen units/modules: the same key discipline, one step instead
+     of one module). The chamber is the smallest demo; the builds
+     that cost minutes are macro — booleans on bodies with many
+     features, fillets, the cylinder wrap + mold negative
+     ([se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)), lattices,
+     assemblies of frozen modules — and, at Å, relax: a relaxed base
+     stays frozen and only the wiggled top relaxes, locally
+     (structure-workspaces §Relax hierarchy (c)). Named heavy example:
+     the filleted bracket (se-native-fields §Bracket example) — a rib
+     edit rebuilds the rib boolean and the fillets above it, never the
+     base, pads or clearance holes.
+     - **Params in the frame.** A step-built object's creator frame
+       carries the step name, its params, the recipe key that set them
+       (`holes[3].x`) and the step key; interrogating a contact point
+       answers `made by drill(x=12.1, d=3) · step 7 · set by holes[3]`
+       (structure-workspaces §Construction traces).
+     - **Order stable → volatile.** The kit records per-step build
+       seconds and rebuild count and reports the steps that are both
+       expensive and often invalidated, so a bad order is visible;
+       `out.search` prints the report with the search summary.
+     - **Container-only.** An LRU over step snapshots, in-process, with
+       a byte cap; never Postgres — only the final build's trace and
+       the search summary are stored (structure-workspaces
+       §Construction traces, Storage).
+     - **Later, not v1:** incremental evaluation under the same keys
+       (slice 4c).
    - **`precis_geom.optimize`** — search tooling over `evaluate`:
      - `cache`: `Outcome`s keyed `(shape sha, physics, spec sha, seed,
        cells)`; a revisited state costs no solve; persisted under
@@ -482,11 +522,43 @@ commit carrying this line; `git log` has the sha.*
      per-evaluation construction trace) and the final build's creator
      frames only; `view='trace'` renders the best iteration with its
      measures.
+   - **Step cache.** Changing a top step (one hole's `x`) rebuilds that
+     step only — per-step rebuild counters show one increment; a base
+     step edit rebuilds it and its descendants, none below; two
+     independent hole sets hold separate entries and an edit to one
+     leaves the other's counter at 0; undo to the previous recipe is a
+     cache hit (no counter moves, the build is bitwise-equal to the
+     earlier one).
+   - **Params in the frame.** The creator frame of a drilled hole
+     carries the step name, params, `recipe_key` (`holes[3].x`) and
+     `step_key`; `view='trace'` on the hole's contact point renders
+     `drill(x=12.1, d=3) · step 7 · set by holes[3]`.
+   - **Build report.** `out.search` writes per-step build seconds and
+     rebuild count into the search summary and the run echo names the
+     steps that are both expensive and frequently invalidated; a
+     fixture with a volatile step placed under a stable one flags it.
+   - **Container-only.** Step snapshots never reach the manifest or
+     Postgres (the stored trace carries only the final build's frames);
+     the LRU evicts under its byte cap and the build still completes.
+   - **Heavy macro case.** On a filleted-bracket fixture (base, pads,
+     clearance holes, ribs, fillets — the se-native-fields §Bracket
+     shape built with `pg`, no solver), a rib edit rebuilds the rib
+     boolean and the fillets above it only; base, pads and holes hit
+     the cache, asserted via the counters and the per-step report.
    - **Recipe round trip.** `uv run main.py` on the stored `recipe.json`
      rebuilds the stored blocks byte-identical; `search` without
      `--fresh` starts from that recipe at the reheat temperature and
      its summary names the parent recipe hash; `--fresh` starts from
      the base design with no parent.
+4c. **Incremental evaluation under the step keys** *(later, not v1;
+   after 4b and se-native-fields slice 1)*. `evaluate(..., warm=prev)`
+   keeps mesh and solver state for the regions below the high-water
+   mark: the cut-cell grid (se-native-fields §Grid from the solid)
+   re-cuts only the cells whose SDF the changed steps touched, the
+   flow kernel re-rasterises only those holes, and the restart data
+   rides the step key. Acceptance when sliced: a top-step edit re-cuts
+   a bounded cell set (a cut counter) and the result equals a cold
+   `evaluate` within 1e-12.
 
 ## Decisions (Reto 2026-10-20: "yes")
 
@@ -516,8 +588,14 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   recommended design, **proposed, under discussion** — not ruled.
   Ruled within it: the recipe is mutable, built geometry immutable
   (one creator frame per object; no in-place transform, no per-move
-  traces); modules are frozen units at both scales; scale evaluation,
-  not rebuild.
+  traces); modules are frozen units at both scales; scale evaluation
+  through the evaluate cache and rebuild through the step cache.
+- **2026-10-23:** the build-step stack cache with a high-water mark
+  (4b bullet) is ruled — step keys `hash(name, params, parent keys)`,
+  params + recipe key in every creator frame, general at both scales
+  with the chamber as the smallest demo, stable → volatile ordering
+  with a per-step cost/rebuild report, in-container LRU only;
+  incremental evaluation is slice 4c, later.
 - Kit-facing names are general (`GapDomain`); the skill is
   `precis-workspace-optimize-help`, CFD its first physics section.
 - Scripts build, evaluate and optimise with no DB and no se — the wheel
@@ -563,6 +641,8 @@ New `src/precis_flow/`; `precis_se` gains the adapter module and the
 (`packaging/geom/`), `precis_se/flow.py` shrinks to the tree-bound half,
 `workspace_import.py` (`out.physics` → `flow:` pocket, re-check), the
 skill `precis-workspace-optimize-help`. Slice 4b: `precis_geom.params`,
-`precis_geom.optimize`, `examples/workspaces/chamber-anneal/` and
-`manifold-split/`, `precis_flow.stats` (outlet-mask list), the skill's
-optimisation sections.
+`precis_geom.optimize`, the step cache in `precis_geom.design.build`
+with `step`/`recipe_key` on `precis_geom.trace` frames,
+`examples/workspaces/chamber-anneal/` and `manifold-split/`,
+`precis_flow.stats` (outlet-mask list), the skill's optimisation
+sections. Slice 4c: `precis_fields.grid` partial re-cut, `evaluate(warm=)`.

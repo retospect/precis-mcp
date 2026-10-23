@@ -19,11 +19,12 @@ design-review: yes
 ## Thread context
 
 **Status:** ends when designs are built by Python scripts run in sandboxed workspaces and imported with per-row call-site provenance (`script_sha`, frame), the construction ops are gone, and relax is a cached service at both scales — [structure-workspaces](../structure-workspaces.md) and [pcb-workspace-code](../pcb-workspace-code.md), Reto 2026-10-22 (rulings W1–W6, Q1–Q6). Today both specs are `ready`, nothing is built; the list follows the specs' slice dependencies (importer before runner, trace before views, structures before pcb services).
-**Last reviewed:** 2026-10-22
+**Last reviewed:** 2026-10-23
 **Worktree:** `structure-workspaces`
 **Allocation decision:** active — Reto 2026-10-22.
 **Ruling (Reto 2026-10-22):** the physics toolkit's `evaluate` returns physics outcomes only; design-space terms (hole count, material, manufacturability) are the script's own objective — [se-flow-kernel](../se-flow-kernel.md) slice 4a, [se-native-fields](../se-native-fields.md) §The toolkit.
 **Ruling (Reto 2026-10-22, chat-99):** order is "particle tracer first and run it all the way to visualizer, then we do a chamber optimizer example (as dogfood). Then we add more physics" — flow 4a before 4b before fields; and slice 4 is a general design-optimisation kit (`precis_geom.params` + `precis_geom.optimize`, two examples), the chamber being one example — se-flow-kernel §Decided 2026-10-22.
+**Ruling (Reto 2026-10-23):** `build(recipe)` is a build-step stack with a high-water-mark cache (step key = `hash(name, params, parent keys)`; a changed step rebuilds itself and its descendants, undo is a cache hit; params + recipe key in every creator frame; both scales, in-container LRU only) — se-flow-kernel slice 4b §Build-step stack cache, structure-workspaces §Frozen units/modules; incremental evaluation under the same keys is the new later slice 4c.
 
 ## Do next
 
@@ -32,7 +33,7 @@ design-review: yes
 3. **structure-workspaces slice 2** — `precis-geom` wheel, warm venv, `@traced`; the pcb builder, trace views and relax cache all depend on it.
 4. **structure-workspaces slice 1** — workspace kind + `run`; waits on the sandbox lane. Same change removes `generate`/`join`/`terminate` and their skill text (W5: no clock, no wrapper phase). Until it lands those ops stay as-is.
 5. **se-flow-kernel slice 4a** — `precis_geom.flow` + `precis_geom.physics.evaluate(['flow'])` in the wheel, `out.physics` → `flow:` pocket on import, the `precis-workspace-optimize-help` skill's `evaluate` section; end-to-end acceptance script → import → the Flow tab particle player (`/se/<slug>/flow`). First by Reto's order (tracer to the visualizer before any optimiser); the first toolkit physics. After 3 and 4.
-6. **se-flow-kernel slice 4b** — the design-optimisation kit (`precis_geom.params`, `precis_geom.optimize`: cache, `evaluate_many`, search trace, checkpoint/resume, adapters) + the chamber-anneal and manifold-split examples, as dogfood; the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 5.
+6. **se-flow-kernel slice 4b** — the design-optimisation kit (`precis_geom.params`, `precis_geom.optimize`: cache, `evaluate_many`, search trace, checkpoint/resume, adapters; the build-step stack cache with params in the creator frame and the per-step cost/rebuild report) + the chamber-anneal and manifold-split examples, as dogfood; the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 5.
 7. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 4.
 8. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 4.
 9. **structure-workspaces 2t, 2p, 2a** and **pcb-workspace-code 2, 2t** — trace views, python-kind join, assembly API, place/route as cached requests; after 3–7.
@@ -45,6 +46,7 @@ design-review: yes
    - **Slice 5 (macro check-and-report) landed 2026-10-22 (sw-s5), ahead of slice 0.** `precis_se.assembly_check.assembly_check(store, tree, ref_id)` over the existing design blocks, read-only as `get(kind='se', id=…, view='assembly_check')`: one findings list (`drc` + interference depth per pair + stack-up worst-case and RSS + `mold.undercut` + the rigid-body mate-redundancy analysis + the read-only formfind solve where axial) in the spec's `{geometry, findings[], method:'assembly', seed, constraints}` shape. **Left for slice 0/4:** the importer's `relax: {method: 'assembly'}` calls that function — no second implementation. Not built (W4): a mate solver, settle, FEA; the `clearance below minimum` row has no se-side minimum to read yet (no process row in `modes.py` carries one).
 2. **structure-workspaces 2e, 2r** — atom fisheye and observation rays; after 2t/2p.
 3. **se-native-fields slices 2, 3** — thermoelastic via scikit-fem with the bracket example (fits a part to existing blocks' ports; needs structure 2r's macro rays and the `context.json` staging), then advection coupling with the flow kernel; after fields slice 1 (slice 3 also after se-multiphysics slice 1).
+   - **se-flow-kernel slice 4c** — incremental evaluation under the step keys (`evaluate(warm=)`, the cut-cell grid re-cuts only cells the changed steps touched); after 4b and fields slice 1.
 4. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration.
 
 ## Parked

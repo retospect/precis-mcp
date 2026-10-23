@@ -122,7 +122,11 @@ main.py` builds from `recipe.json`; `uv run main.py search` warm-starts
 from it by default (`--fresh` for the base design). Rebuild, import
 re-check, `regenerate` and the frozen-unit cache call `build(recipe)`,
 never `search`; a search reproduces with its seed within one toolkit
-version only. Worked example: se-flow-kernel slice 4b `chamber-anneal`;
+version only. `build(recipe)` runs as a step stack with a
+high-water-mark cache (Reto 2026-10-23; se-flow-kernel slice 4b
+§Build-step stack cache): a recipe edit rebuilds only the steps whose
+key changed, undo is a cache hit, the cache lives in the container.
+Worked example: se-flow-kernel slice 4b `chamber-anneal`;
 a script that fits a part to existing blocks: se-native-fields slice 2
 `bracket`.
 
@@ -514,8 +518,18 @@ atomic case of one rule; the same rule holds for macro modules.
   `out.block(ports=)`/`pga.place`/`out.connect` frames (or an `op`
   frame for `add_port`/`connect`), so `view='trace'` with
   `{'port': 'p/rim+'}` or `{'connect': 'c3'}` resolves contact →
-  the two blocks' objects → the code line that placed each; a
-  connect's frame lists the two ports in `touched`.
+  the two blocks' objects → the code line that placed each, and for a
+  step-built object its step params and recipe key (`made by
+  drill(x=12.1, d=3) · step 7 · set by holes[3]`); a connect's frame
+  lists the two ports in `touched`.
+- **In-build counterpart** (Reto 2026-10-23). Inside one build the
+  same discipline holds per step: `step key = hash(step name, params,
+  parent step keys)`; a changed step rebuilds itself and its
+  descendants, the rest is a hit, at both scales (macro booleans,
+  fillets, wrap + mold negative, lattices; Å relax of the wiggled top
+  over a frozen base). A frozen module is a step whose key crosses
+  runs; a step is a module that lives for one container — se-flow-kernel
+  slice 4b §Build-step stack cache owns the design.
 
 ## Construction traces — who made this atom
 
@@ -541,9 +555,11 @@ collapse into the public frame that called them. `occ` is the
 occurrence counter of this `(qual, line)` under the same parent, so the
 7th `junction` call in a loop is `#7`. `args` is a bounded digest: scalars
 and short strings verbatim, arrays and blocks as `<strip 48 atoms>`
-plus a sha8. `made`/`touched` are counts per entity type (atoms, bonds,
-instances, faces, blocks, ports) for the frame alone; the subtree sum is
-derived.
+plus a sha8. A frame minted by a build step (se-flow-kernel slice 4b)
+also carries `step` (its step key) and `recipe_key` (the recipe path
+that set its params, `holes[3].x`). `made`/`touched` are counts per
+entity type (atoms, bonds, instances, faces, blocks, ports) for the
+frame alone; the subtree sum is derived.
 
 **Stable key.** `key = sha8(parent.key, qual, line, occ)` — the path of
 call sites from the root. It does not depend on run id, memory address or
@@ -573,8 +589,9 @@ call (OCP internals are untraced) — a known limit, stated in the skill.
 **Storage.** One trace per run — the **final build's** trace, i.e. the
 creator frames of the objects the run stores (a few KB), plus the
 search summary; the traces of the intermediate builds a `search` makes
-stay in-container as in-memory pointers and never reach Postgres, so
-provenance survives teardown at constant size. Module traces are
+stay in-container as in-memory pointers (as do the step-cache
+snapshots, an in-process LRU) and never reach Postgres, so provenance
+survives teardown at constant size. Module traces are
 linked (`unit` frame), not copied. Stored once as a chunk on the run job
 (≤ 64 KB typical; hard cap 20k frames — past 64 same-site childless
 siblings they run-length collapse into one frame with an `occ` range,
@@ -934,7 +951,8 @@ leg). `fold.py::material_intervals` and `ray_spans` already compute
 ray–solid intervals attributed to the CSG node that made them, so the
 macro leg is mostly wrapping. A ray's report is an ordered **event
 list**: `enter`/`exit` of a block's solid with the feature and its
-creator frame; gap lengths between solids; port regions crossed (the
+creator frame (step params and recipe key included, so an event reads
+`hole#1 drill(d=5.5) · set by holes[0]`); gap lengths between solids; port regions crossed (the
 port's cylinder of its diameter along its direction); and field samples
 along it where fields exist (`von-mises`, `utilisation`, `temperature`
 from the stored `Outcome`, se-native-fields `view='fields'`). Every
@@ -1215,7 +1233,16 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   the recipe is mutable, built geometry is not — one creator frame per
   object, no per-move traces, no in-place cad transform; modules are
   frozen units at both scales, fetched by key and trace-linked
-  (§Frozen units/modules); evaluation, not rebuild, is what scales.
+  (§Frozen units/modules); evaluation is what scales — and rebuild,
+  through the next ruling.
+- **Build-step stack cache (2026-10-23):** `build(recipe)` is a step
+  stack/DAG memoised per step under `hash(name, params, parent keys)`;
+  a changed step rebuilds itself and its descendants, undo is a cache
+  hit; every step-built object's frame carries its params and recipe
+  key; general at both scales (the chamber is the smallest demo);
+  steps ordered stable → volatile with a per-step cost/rebuild report;
+  in-container LRU, never Postgres; incremental evaluation later
+  (se-flow-kernel slices 4b, 4c).
 - **Structure fisheye and rays (2026-10-22):** π perception from our own
   bond graph (a better structure-aware source is welcome later); rays are
   stored as block children ("an excellent idea"); the `charges` payload on
