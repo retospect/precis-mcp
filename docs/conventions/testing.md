@@ -97,6 +97,8 @@ Slow tests (>=1 s) are pinned to shards by time in `tests/shard_weights.json`
 (light tests and new tests keep hashing, so the partition stays exact);
 regenerate with `scripts/shard-weights <junit.xml>...` from the CI shard junit artifacts
 (`junit-<N>-<K>`, several runs averaged) when one shard drifts past ~30 min.
+Its `seconds` map feeds `tests/test_ci_shards.py`'s per-test cap (30% of the
+test-linux timeout): a test over it is split per case, not pinned whole.
 
 **CI shapes (check.yml, decided by its `plan` job).** The single source for
 gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min

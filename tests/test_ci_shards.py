@@ -81,3 +81,32 @@ def test_pinned_weights_cover_every_shard_count() -> None:
         assert {shard_index(t, n) for t in ids} == set(range(n))
     # a count without a table ignores the pins and still covers every id once
     assert {shard_index(t, 5) for t in ids} == set(range(5))
+
+
+#: Most of one test-linux shard's budget a single test may take. A test
+#: pinned whole to one shard can't be balanced away: an 8-seed loop at 31 min
+#: held its shard at the 40 min cap (gr495187). 0.3 is the tightest round
+#: share green at the 2026-10-23 regeneration (r2 nano baseline 678 s = 28%);
+#: four tests sit at 20-28% (481-678 s) and are the next to split or speed up.
+MAX_TEST_SHARE = 0.3
+
+
+def test_no_single_test_eats_a_shard() -> None:
+    import json
+    import re
+
+    match = re.search(
+        r"\n  test-linux:\n(?:    .*\n)*?    timeout-minutes: (\d+)", WORKFLOW
+    )
+    assert match is not None, "test-linux job lost its timeout-minutes"
+    cap_s = int(match.group(1)) * 60 * MAX_TEST_SHARE
+    data = json.loads(
+        (Path(__file__).parent / "shard_weights.json").read_text(encoding="utf-8")
+    )
+    seconds = data.get("seconds")
+    assert seconds, "regenerate tests/shard_weights.json (scripts/shard-weights)"
+    over = {t: s for t, s in seconds.items() if s > cap_s}
+    assert not over, (
+        f"tests over {MAX_TEST_SHARE:.0%} of a shard's budget ({cap_s:.0f} s); "
+        f"split them per case (parametrize) or speed them up: {over}"
+    )

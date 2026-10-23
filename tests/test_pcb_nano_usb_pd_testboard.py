@@ -335,18 +335,15 @@ def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
 
 
 @pytest.mark.slow
-def test_nano_board_mean_routed_floor_over_seeds(store: Store) -> None:
-    """Name kept for tests/shard_weights.json. No longer a floor (Reto
-    2026-10-19): every seed's place and route job must drain cleanly
-    (``_place_and_route`` asserts that); the routed count per seed and the
-    mean are printed as evidence."""
-    routed = {
-        seed: _place_and_route(store, seed, slug=f"{SLUG}-s{seed}")[2]
-        for seed in NANO_SEEDS
-    }
-    mean = sum(routed.values()) / len(routed)
-    print(f"\nnano routed by seed: {routed}; mean {mean:.3f}")
-    assert set(routed) == set(NANO_SEEDS)
+@pytest.mark.parametrize("seed", NANO_SEEDS)
+def test_nano_board_routes_cleanly_per_seed(store: Store, seed: int) -> None:
+    """Not a floor (Reto 2026-10-19): every seed's place and route job must
+    drain cleanly (``_place_and_route`` asserts that); the routed count is
+    printed as evidence. One test per seed, not one 8-seed loop: the loop
+    took 20-30 min on a CI runner and, pinned to a single shard, sat at the
+    40 min job cap (gr495187); per-seed ids spread over the shards."""
+    routed = _place_and_route(store, seed, slug=f"{SLUG}-s{seed}")[2]
+    print(f"\nnano seed {seed} routed: {routed}")
 
 
 @pytest.mark.slow
