@@ -826,7 +826,7 @@ extend-exclude = [".claude"]
 exclude = ["*.md"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW1514"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW1514", "S113"]
 # PLW1514 (unspecified-encoding) is still a preview rule in ruff 0.16, so it
 # needs `preview` on to fire at all. `explicit-preview-rules` keeps that from
 # being a blanket opt-in: preview rules arrive only when named by their exact
@@ -858,7 +858,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B007", "E402", "E731", "E741", "F841", "RUF012", "RUF015", "RUF059", "UP036"]
+"tests/**" = ["B007", "E402", "E731", "E741", "F841", "RUF012", "RUF015", "RUF059", "S113", "UP036"]
+# S113 (requests-without-timeout) is enforced on src/ and scripts/ only —
+# the same scope tests/test_outbound_timeout_ratchet.py gates; tests/,
+# deploy/ and docker/ stay report-only there.
+"deploy/**" = ["S113"]
+"docker/**" = ["S113"]
 "src/**" = ["E402", "RUF059"]
 # The U+00D7 repeat marker is required by the hexfold notation format.
 "src/hexfold/text.py" = ["RUF001", "RUF002"]

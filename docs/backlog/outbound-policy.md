@@ -255,30 +255,30 @@ rows), so demand is visible in `/limits` and the doctor's
 (`workers/conditions.py::_probe_limiter_bypassed`) gets a sibling
 `limiter-refusing` finding.
 
-### 5. Enforcement gate (merges the timeout checker from gr503084 B + C)
+### 5. Enforcement gate (merges the timeout checker from gr503084 B + C) — SHIPPED 2026-10-23
 
-One AST ratchet test, shaped like `tests/test_text_io_encoding.py` and
-`test_outbound_polite_ratchet.py`, run by the pre-qland lint, every gate
-and CI:
+Landed as two gates:
 
-- HTTP: `httpx`/`requests`/`urlopen`/`aiohttp`/`http_client(...).get|post`
-  outside the policy layer, checked per call (the resolved callee goes
-  through `with_backoff`/`call_with_backoff`), not per enclosing function.
-- `subprocess.run/check_output/check_call/call`, `Popen.wait/communicate`
-  without `timeout=`.
-- `asyncio` network awaits without `wait_for`/`timeout`;
-  `asyncio.Queue.get`, `Event.wait`; `Thread.join`, `Queue.get`,
-  `Lock.acquire`, `Future.result`, `as_completed` without a timeout;
-  `psycopg.connect` without `connect_timeout`; blocking `fcntl.flock`.
-- `while True` polling loops with no deadline: report only.
-- ruff `S113` and the `ASYNC` family on.
+- `tests/test_outbound_polite_ratchet.py` tightened from per-enclosing-
+  function to per call: an outbound call is polite inside a polite call's
+  arguments, inside a routed (injected-transport) function, or in a
+  function taking a shared limiter token; client constructions must
+  provably serve the core. ruff `S113` is on for `src/`+`scripts/`
+  (`tests/`/`deploy/`/`docker/` report-only via per-file-ignores). The
+  `ASYNC` family was measured and left off (3 pre-existing violations).
+- `tests/test_outbound_timeout_ratchet.py` — the AST wait-bound ratchet
+  with `tests/data/outbound_timeout_baseline.json` as the one-way floor:
+  `subprocess.run`/`Popen.wait/communicate` without `timeout=`,
+  `psycopg.connect` without `connect_timeout`, `Thread.join`/`Queue.get`/
+  `Lock.acquire`/`Future.result`/`as_completed` without a timeout,
+  blocking `fcntl.flock`, `asyncio`/`anyio` waits and `*ClientSession`
+  awaits outside `wait_for`/`timeout`, `httpx.<method>`/`urlopen`
+  without `timeout=`. `while True` polls and `tests/` are report-only.
+  Frozen at 100 sites in 88 keys (regenerated 2026-10-23; the 2026-10-21
+  scan's 25/16 src/scripts subprocess counts had drifted to 27/20).
 
-Baseline counts frozen in the allowlist (AST scan 2026-10-21: src
-subprocess 25/77 bare, scripts 16/20, tests 222/302; HTTP in src all
-carry timeouts); a new offender fails, the list only shrinks. The CORE
-bypass is the motivating case. gr503084 keeps its part A (CI hang
-debuggability: per-worker START markers, py-spy dump, leak detector);
-parts B and C live here and the gripe says so.
+gr503084 keeps its part A (CI hang debuggability: per-worker START
+markers, py-spy dump, leak detector); parts B and C shipped here.
 
 ### 6. Seeding cap
 
@@ -306,7 +306,7 @@ condition fires in practice.
 | S1 | `EffectivePolicy` + resolver (D3), class defaults, the one migration (D4), `parked_until` park (D1), `llm-api` class with its shared hold (D2); deletes `LLM_HOST_ROW` | replaces 1eabf9afe's wide row |
 | S2a | `deadline=` on `acquire`/`require` and on the local slot wait, ref-pass budget passed down by ContextVar, refusals logged | gr506756's limiter half |
 | S2b | `refused_today`/`last_refused_at` written on refusal, `limiter-refusing` condition | — |
-| S3 | the AST ratchet + ruff rules, allowlist frozen, `test_outbound_polite_ratchet` tightened per call | gr507344's class, gr503084 B+C |
+| S3 | the AST ratchet + ruff rules, allowlist frozen, `test_outbound_polite_ratchet` tightened per call — SHIPPED 2026-10-23 | gr507344's class, gr503084 B+C |
 | S4 | `/limits` effective-policy view + occupancy, `precis limits set/--dry-run` | gr503435's visibility half |
 
 S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
@@ -327,9 +327,9 @@ S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
 - S2: a caller with 2 s left waits at most 2 s; the fetch pass on
   melchior logs its per-cycle summary row again (gr506756's signal) and
   the `/limits` view shows a non-zero refusal count for a starved row.
-- S3: the ratchet fails on a synthetic bare `http_client().get` and a
-  `subprocess.run` without `timeout=`; the frozen baseline passes; CI's
-  lint lane runs it.
+- S3 (met): the ratchet fails on a synthetic bare `http_client().get` and
+  a `subprocess.run` without `timeout=`; the frozen baseline passes; CI's
+  lint lane runs it (CONTRACT in `scripts/impacted-tests`).
 - S4: `get(kind='job', id='/limits?provider=core')` names the layer of
   every field.
 

@@ -95,13 +95,13 @@ nightly — the diff-cover verdict is still open.
    verify the drift guard reads release/nightly verdicts and a qland burst
    costs ~2 jobs/push; the impact-selected main lane from gripe comment 5
    stays a follow-up if lint proves too thin.
-2. **`backlog/outbound-policy.md` S3** — the AST ratchet that refuses a
-   bare outbound call, a `subprocess` without `timeout=` or an asyncio
-   wait without a deadline, run by the pre-qland lint and every gate; it
-   absorbs gr503084's parts B and C (the release-time timeout checker
-   Reto asked for 2026-10-21); gr503084 is closed and its part A (CI hang
-   debuggability) went with p0-ci. Ranks after 1 because 1 is live starvation;
-   above the rest because a new hang class lands unseen without it.
+2. **`backlog/outbound-policy.md` S3** — SHIPPED 2026-10-23. The AST
+   ratchet landed: `tests/test_outbound_timeout_ratchet.py` +
+   `tests/data/outbound_timeout_baseline.json` (frozen at 100 sites/88
+   keys, one-way floor; `while True` polls and tests/ report-only),
+   `tests/test_outbound_polite_ratchet.py` tightened per call, ruff S113
+   on for src/+scripts/. It absorbed gr503084's parts B and C; gr503084
+   is closed and its part A (CI hang debuggability) went with p0-ci.
 
 3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and

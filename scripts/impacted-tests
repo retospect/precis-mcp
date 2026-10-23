@@ -171,6 +171,7 @@ CONTRACT: list[str] = [
     # code hygiene: ratchets and text-walk guards
     "tests/test_type_ignore_ratchet.py",
     "tests/test_outbound_polite_ratchet.py",
+    "tests/test_outbound_timeout_ratchet.py",
     "tests/test_posix_only_guards.py",
     "tests/test_text_io_encoding.py",
     "tests/test_extra_only_import_guards.py",
