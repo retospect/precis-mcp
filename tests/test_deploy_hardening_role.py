@@ -18,6 +18,12 @@
 - gr506049: the stale Cloudsmith Caddy apt source and keyring are removed
   (state: absent, both paths), only where the `caddy` deb is not installed,
   and the apt cache refresh fires only on change — never in check mode.
+- gr508877: spark's hand-managed grafana apt source keeps its key in the
+  legacy /etc/apt/trusted.gpg keyring (apt warns on every update). The role
+  exports the Grafana Labs key into /etc/apt/keyrings/grafana.gpg (fetching
+  the published key as fallback), pins the source with signed-by=, and drops
+  the legacy copy only after the new keyring verifies — all gated on the
+  source file existing without signed-by.
 """
 
 from __future__ import annotations
@@ -527,17 +533,21 @@ def test_dgx_dashboard_admin_disabled_only_where_the_unit_exists() -> None:
 # ── gr506049: stale Caddy apt source on the sparks ─────────────────────────
 
 
-def test_stale_caddy_source_tasks_are_tagged_linux_and_guarded() -> None:
+def test_apt_sources_tasks_are_tagged_linux() -> None:
     tasks = [t for t in _tasks() if "apt-sources" in t.get("tags", [])]
-    assert len(tasks) == 3
-    facts, remove, refresh = tasks
+    for task in tasks:
+        assert 'os_family == "linux"' in str(task["when"]), task["name"]
+        assert "hardening" in task["tags"], task["name"]
+
+
+def test_stale_caddy_source_tasks_are_guarded() -> None:
+    tasks = [t for t in _tasks() if "apt-sources" in t.get("tags", [])]
+    facts = next(t for t in tasks if "package facts" in t["name"].lower())
+    remove, refresh = [t for t in tasks if "caddy" in t["name"].lower()]
     assert "ansible.builtin.package_facts" in facts
     not_installed = "'caddy' not in ansible_facts.packages"
     assert not_installed in remove["when"], remove["name"]
     assert not_installed in refresh["when"], refresh["name"]
-    for task in tasks:
-        assert 'os_family == "linux"' in str(task["when"]), task["name"]
-        assert "hardening" in task["tags"], task["name"]
 
 
 def test_stale_caddy_source_removes_list_and_keyring_absent() -> None:
@@ -550,10 +560,84 @@ def test_stale_caddy_source_removes_list_and_keyring_absent() -> None:
 
 
 def test_stale_caddy_cache_refresh_is_change_and_check_mode_gated() -> None:
-    refresh = next(t for t in _tasks() if "refresh the apt cache" in t["name"].lower())
+    refresh = next(
+        t
+        for t in _tasks()
+        if "caddy" in t["name"].lower() and "refresh the apt cache" in t["name"].lower()
+    )
     assert refresh["ansible.builtin.apt"]["update_cache"] is True
     assert "caddy_apt_source_removed is changed" in refresh["when"]
     assert "not ansible_check_mode" in refresh["when"]
+
+
+# ── gr508877: grafana apt key off the legacy trusted.gpg keyring ────────────
+
+_GRAFANA_FPR = "B53AE77BADB630A683046005963FA27710458545"
+_GRAFANA_KEYRING = "/etc/apt/keyrings/grafana.gpg"
+
+
+def _grafana_tasks() -> list[dict[str, Any]]:
+    return [
+        t
+        for t in _tasks()
+        if "grafana" in t["name"].lower()
+        or "/etc/apt/keyrings" in str(t.get("ansible.builtin.file", {}))
+    ]
+
+
+def test_grafana_keyring_tasks_gate_on_source_without_signed_by() -> None:
+    # Every grafana task needs the source file present; all but the stat also
+    # need it missing signed-by (a converged or differently-managed host is
+    # untouched).
+    # The stat and the signed-by check produce the gates themselves.
+    producers = ("Stat the grafana", "Check whether the grafana source")
+    for task in _grafana_tasks():
+        if task["name"].startswith(producers):
+            continue
+        assert "grafana_apt_source.stat.exists" in str(task["when"]), task["name"]
+        assert "grafana_source_signed.rc | default(1) != 0" in str(task["when"]), task[
+            "name"
+        ]
+
+
+def test_grafana_key_export_and_fetch_use_the_published_fingerprint() -> None:
+    export = next(t for t in _grafana_tasks() if "Export the grafana" in t["name"])
+    fetch = next(t for t in _grafana_tasks() if "Fetch grafana" in t["name"])
+    dearmor = next(t for t in _grafana_tasks() if "Dearmor" in t["name"])
+    assert _GRAFANA_FPR in export["ansible.builtin.command"]
+    assert _GRAFANA_KEYRING in export["ansible.builtin.command"]
+    get_url = fetch["ansible.builtin.get_url"]
+    assert get_url["url"] == "https://apt.grafana.com/gpg.key"
+    assert _GRAFANA_KEYRING in dearmor["ansible.builtin.command"]
+    # The export runs only when the key is in trusted.gpg and the dedicated
+    # keyring lacks it; the fetch is the fallback when trusted.gpg has none.
+    assert "grafana_key_in_trusted.rc | default(1) == 0" in str(export["when"])
+    assert "grafana_key_in_trusted.rc | default(1) != 0" in str(fetch["when"])
+    assert "grafana_key_in_trusted.rc | default(1) != 0" in str(dearmor["when"])
+
+
+def test_grafana_source_is_pinned_signed_by_and_legacy_key_dropped_last() -> None:
+    pin = next(t for t in _grafana_tasks() if "Pin the grafana" in t["name"])
+    assert "signed-by=" in pin["ansible.builtin.lineinfile"]["line"]
+    assert _GRAFANA_KEYRING in pin["ansible.builtin.lineinfile"]["line"]
+    drop = next(t for t in _grafana_tasks() if "Drop the grafana" in t["name"])
+    assert _GRAFANA_FPR in drop["ansible.builtin.command"]
+    assert "/etc/apt/trusted.gpg" in drop["ansible.builtin.command"]
+    # The legacy key goes only after the new keyring verified.
+    assert "grafana_keyring_ready.rc | default(1) == 0" in str(drop["when"])
+    assert "grafana_keyring_ready.rc | default(1) == 0" in str(pin["when"])
+
+
+def test_grafana_cache_refresh_is_change_and_check_mode_gated() -> None:
+    refresh = next(
+        t for t in _grafana_tasks() if "refresh the apt cache" in t["name"].lower()
+    )
+    assert refresh["ansible.builtin.apt"]["update_cache"] is True
+    assert "not ansible_check_mode" in refresh["when"]
+    when = str(refresh["when"])
+    assert "grafana_keyring_exported" in when
+    assert "grafana_apt_source_rewritten" in when
+    assert "grafana_trusted_key_removed" in when
 
 
 # ── task-level tags select a single concern ────────────────────────────────
@@ -598,6 +682,19 @@ def test_tag_map_selects_only_own_tasks() -> None:
             "Gather installed-package facts (Linux, stale apt sources)",
             "Remove the stale Caddy apt source + keyring (Linux)",
             "Refresh the apt cache after removing the stale Caddy source (Linux)",
+            "Stat the grafana apt source (Linux)",
+            "Check whether the grafana source already pins signed-by (Linux)",
+            "Check whether the grafana key sits in legacy trusted.gpg (Linux)",
+            "Check whether a dedicated grafana keyring already holds the key (Linux)",
+            "Ensure /etc/apt/keyrings exists (Linux)",
+            "Export the grafana key into a dedicated keyring (Linux)",
+            "Fetch grafana's published key when trusted.gpg had none (Linux)",
+            "Dearmor the fetched grafana key into the dedicated keyring (Linux)",
+            "Verify the dedicated grafana keyring holds the key (Linux)",
+            "Permissions on the dedicated grafana keyring (Linux)",
+            "Pin the grafana apt source to the dedicated keyring (Linux)",
+            "Drop the grafana key from legacy trusted.gpg (Linux)",
+            "Refresh the apt cache after the grafana keyring move (Linux)",
         },
     }
     for tag, names in expected.items():

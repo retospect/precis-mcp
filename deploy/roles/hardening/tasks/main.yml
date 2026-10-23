@@ -563,6 +563,194 @@
   retries: 3
   delay: 10
 
+# ── Grafana apt source on the legacy trusted.gpg keyring (Linux; gr508877) ──
+# A node running a hand-managed apt grafana (`deb https://packages.grafana.com/
+# oss/deb stable main`) can keep its key in /etc/apt/trusted.gpg, so every apt
+# run warns "Key is stored in legacy trusted.gpg keyring". Export the Grafana Labs
+# key (B53AE77BADB630A683046005963FA27710458545, matching the published
+# https://apt.grafana.com/gpg.key) into a dedicated keyring, pin the source
+# with signed-by=, then drop the legacy copy. Gated on the source file being
+# present AND missing signed-by, so a converged or differently-managed host is
+# untouched. The legacy key is deleted only after the new keyring verifies.
+- name: Stat the grafana apt source (Linux)
+  tags: [hardening, security, apt-sources]
+  when: os_family == "linux"
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/grafana.list
+  register: grafana_apt_source
+
+- name: Check whether the grafana source already pins signed-by (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+  ansible.builtin.command: grep -l signed-by /etc/apt/sources.list.d/grafana.list
+  changed_when: false
+  failed_when: false
+  register: grafana_source_signed
+
+- name: Check whether the grafana key sits in legacy trusted.gpg (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+  ansible.builtin.command: >
+    gpg --no-default-keyring --keyring /etc/apt/trusted.gpg
+    --list-keys B53AE77BADB630A683046005963FA27710458545
+  changed_when: false
+  failed_when: false
+  register: grafana_key_in_trusted
+
+- name: Check whether a dedicated grafana keyring already holds the key (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+  ansible.builtin.command: >
+    gpg --no-default-keyring --keyring /etc/apt/keyrings/grafana.gpg
+    --list-keys B53AE77BADB630A683046005963FA27710458545
+  changed_when: false
+  failed_when: false
+  register: grafana_key_in_keyring
+
+- name: Ensure /etc/apt/keyrings exists (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_key_in_keyring.rc | default(1) != 0
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Export the grafana key into a dedicated keyring (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_key_in_trusted.rc | default(1) == 0
+    - grafana_key_in_keyring.rc | default(1) != 0
+  ansible.builtin.command: >
+    gpg --batch --yes --output /etc/apt/keyrings/grafana.gpg
+    --no-default-keyring --keyring /etc/apt/trusted.gpg
+    --export B53AE77BADB630A683046005963FA27710458545
+  become: true
+  register: grafana_keyring_exported
+
+- name: Fetch grafana's published key when trusted.gpg had none (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_key_in_trusted.rc | default(1) != 0
+    - grafana_key_in_keyring.rc | default(1) != 0
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg.key
+    dest: /tmp/grafana-apt.key
+    mode: "0644"
+    timeout: 30
+  become: true
+
+- name: Dearmor the fetched grafana key into the dedicated keyring (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_key_in_trusted.rc | default(1) != 0
+    - grafana_key_in_keyring.rc | default(1) != 0
+    - not ansible_check_mode
+  ansible.builtin.command: >
+    gpg --batch --yes --output /etc/apt/keyrings/grafana.gpg
+    --dearmor /tmp/grafana-apt.key
+  become: true
+  register: grafana_keyring_fetched
+
+- name: Verify the dedicated grafana keyring holds the key (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - not ansible_check_mode
+  ansible.builtin.command: >
+    gpg --no-default-keyring --keyring /etc/apt/keyrings/grafana.gpg
+    --list-keys B53AE77BADB630A683046005963FA27710458545
+  register: grafana_keyring_ready
+  changed_when: false
+
+- name: Permissions on the dedicated grafana keyring (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_keyring_ready.rc | default(1) == 0
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/grafana.gpg
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Pin the grafana apt source to the dedicated keyring (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_keyring_ready.rc | default(1) == 0
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/grafana.list
+    regexp: '^deb\s+(https://packages\.grafana\.com/\S+\s+.*)$'
+    line: 'deb [signed-by=/etc/apt/keyrings/grafana.gpg] \1'
+    backrefs: true
+  become: true
+  register: grafana_apt_source_rewritten
+
+- name: Drop the grafana key from legacy trusted.gpg (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - grafana_keyring_ready.rc | default(1) == 0
+    - grafana_key_in_trusted.rc | default(1) == 0
+  ansible.builtin.command: >
+    gpg --batch --yes --no-default-keyring --keyring /etc/apt/trusted.gpg
+    --delete-key B53AE77BADB630A683046005963FA27710458545
+  become: true
+  register: grafana_trusted_key_removed
+
+- name: Refresh the apt cache after the grafana keyring move (Linux)
+  tags: [hardening, security, apt-sources]
+  when:
+    - os_family == "linux"
+    - grafana_apt_source.stat.exists
+    - grafana_source_signed.rc | default(1) != 0
+    - not ansible_check_mode
+    - >-
+      (grafana_keyring_exported | default({})) is changed
+      or (grafana_keyring_fetched | default({})) is changed
+      or (grafana_apt_source_rewritten | default({})) is changed
+      or (grafana_trusted_key_removed | default({})) is changed
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 43200
+    lock_timeout: 120
+  become: true
+  register: _apt_grafana_refresh
+  until: _apt_grafana_refresh is succeeded
+  retries: 3
+  delay: 10
+
 - name: Deploy sudoers drop-in for deploy user
   ansible.builtin.template:
     src: sudoers_deploy.j2
