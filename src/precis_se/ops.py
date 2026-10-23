@@ -339,7 +339,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
@@ -411,6 +411,9 @@ class BoundScene(NamedTuple):
 #: A structure design's slug → :class:`BoundScene` (``None`` = no such
 #: design or it fails to load); see :attr:`SeTree.structures`.
 StructureSceneResolver = Callable[[str], "BoundScene | None"]
+
+if TYPE_CHECKING:
+    from precis.cad.dsl import FieldLoader
 
 #: Characters a block name may not contain: the region selectors
 #: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
@@ -819,6 +822,14 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     structures: StructureSceneResolver | None = field(
         default=None, repr=False, compare=False
     )
+    #: Store-bound ``field:<sha256>`` grid loader
+    #: (:data:`precis.cad.dsl.FieldLoader`), wired by the loader like
+    #: :attr:`structures`. Store-free geometry paths (the flow COMPUTERS,
+    #: region datums) take it so a chamber whose envelope is a stored
+    #: field grid resolves off the same tree every reader uses (gr503066).
+    #: ``None`` (a bare tree) leaves ``field:`` envelopes unresolvable
+    #: there — declared intent, never a guess.
+    field_loader: FieldLoader | None = field(default=None, repr=False, compare=False)
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)

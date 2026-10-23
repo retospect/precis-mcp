@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -430,6 +431,45 @@ def test_flow_computer_reports_reason() -> None:
     comp = FLOW_COMPUTERS["breakthrough-fraction"]
     assert comp(tree, m) is None
     assert "pocket" in (comp.reason or "")
+
+
+def test_flow_computer_field_chamber_loads_grid_via_tree(store: Any) -> None:
+    """gr503066: a flow measure whose chamber envelope is a ``field:``
+    grid blob computes from the tree-wired loader alone. The computers'
+    signature is store-free (``drc()`` stays library-pure), so the loader
+    reaches ``_flow_run`` through ``persist.load_tree`` — before the fix
+    the chamber blob could not load and the measure came back
+    uncomputable."""
+    from precis.dispatch import Hub
+    from precis_se import persist
+    from precis_se.handler import SeHandler
+    from tests._flow_hex import hex_chamber_field, hex_chamber_ops
+
+    se = SeHandler(hub=Hub(store=store))
+    ops = hex_chamber_ops("0" * 64)
+    se.put(id="flow-field-chamber", text=json.dumps({"ops": ops[1:3]}))
+    ref = store.get_ref(kind="se", id="flow-field-chamber")
+    assert ref is not None
+    sha = store.put_field(ref.id, hex_chamber_field(pitch=5e-4))
+    ops = hex_chamber_ops(sha)
+    ops[-1]["regions"] = [{"selector": f"patch:pout.side3@0,0+{PORT_W}x{H}"}]
+    se.put(id="flow-field-chamber", text=json.dumps({"ops": ops}))
+
+    ref = store.get_ref(kind="se", id="flow-field-chamber")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    assert tree.field_loader is not None
+    m = MeasureSpec(
+        block="chamber",
+        name="bt",
+        datum=f"patch:pout.side3@0,0+{PORT_W}x{H}",
+        measurand="breakthrough-fraction",
+        unit="ratio",
+    )
+    computer = FLOW_COMPUTERS["breakthrough-fraction"]
+    value = computer(tree, m)
+    assert value is not None, f"still uncomputable: {computer.reason}"
+    assert 0.0 <= value <= 1.0
 
 
 def test_registered_in_computers() -> None:

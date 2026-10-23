@@ -516,7 +516,10 @@ def domain_from_solid(
 def _chamber_placed(store: Any, tree: Any, name: str) -> Placed | None:
     """The block's envelope as a world-posed primitive — the
     ``se_datums._placed`` path with a ``field_loader`` so ``field:<sha>``
-    envelopes resolve through the store."""
+    envelopes resolve through the store. With no store (the flow
+    COMPUTERS' store-free signature) the loader wired onto the loaded
+    tree by :mod:`precis_se.persist` answers instead (gr503066); a bare
+    tree leaves a ``field:`` envelope unbuilt."""
     from precis_se.ops import effective_envelope
 
     node = tree.blocks.get(name)
@@ -525,7 +528,11 @@ def _chamber_placed(store: Any, tree: Any, name: str) -> Placed | None:
     env = effective_envelope(tree, node)
     if env is None:
         return None
-    loader = store.field_loader() if store is not None else None
+    loader = (
+        store.field_loader()
+        if store is not None
+        else getattr(tree, "field_loader", None)
+    )
     try:
         prim = cad_dsl.build(cad_dsl.parse(env), field_loader=loader)
     except (cad_dsl.DslError, ValueError):

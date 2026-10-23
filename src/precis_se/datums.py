@@ -522,8 +522,12 @@ def _placed(
         env = env_override[name]
     if env is None:
         return None
+    # ``field:<sha>`` envelopes load their grid through the loader the
+    # persist layer wired onto this tree (gr503066); a bare tree has none
+    # and the envelope stays unbuildable (``None``).
+    loader = getattr(tree, "field_loader", None)
     try:
-        prim = cad_dsl.build(cad_dsl.parse(env))
+        prim = cad_dsl.build(cad_dsl.parse(env), field_loader=loader)
     except (cad_dsl.DslError, ValueError):
         return None
     xform = cad_pose(as_vec3(node.pose), as_vec3(node.rot))

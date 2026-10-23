@@ -568,6 +568,11 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     tree.measurands = measurand_resolver(store)
     tree.structure_versions = structure_version_resolver(store)
     tree.structures = structure_scene_resolver(store)
+    # Same door for the store-free geometry paths that must resolve a
+    # ``field:<sha>`` envelope (the flow COMPUTERS' chamber builder,
+    # gr503066); a store without the cad ops (a read fake) leaves it off.
+    loader_of = getattr(store, "field_loader", None)
+    tree.field_loader = loader_of() if loader_of is not None else None
     return tree
 
 
