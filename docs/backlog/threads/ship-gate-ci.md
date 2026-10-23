@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Verify Do next 1 (gr495187: ship-side cap of 2 concurrent `ci/*` gates landed; check run→first-job delay on the first main pushes after it lands). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
+- **Next:** Verify Do next 1 (gr495187: both halves landed — the ship-side cap of 2 concurrent `ci/*` gates, then the slim main-push lane per Reto 2026-10-23; check the drift guard keeps reading release/nightly verdicts on the first pushes after it lands). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
 - **Blocked by:** Nothing.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -75,15 +75,21 @@ nightly — the diff-cover verdict is still open.
 1. **gr495187** — CI runner starvation: main runs waited ~70 min for shard
    runners. Measured twice (gripe comments 1 and 4): mean demand is only
    ~12.4 of 40 runners; the failure was unbounded `ci/*` gate fan-out (peak
-   20 concurrent gates, 77% of at-cap jobs, 10–14% of the week at cap).
-   Fix shipped: `scripts/ship --remote` admits at most
+   20 concurrent gates, 77% of at-cap jobs, 10–14% of the week at cap)
+   stacked on every main push running the full matrix (~32% of
+   job-minutes). Two fixes shipped: `scripts/ship --remote` admits at most
    `PRECIS_REMOTE_GATE_SLOTS` (2) queued+in-flight `ci/*` runs before
-   pushing its gate ref (a shared concurrency group can't express the cap —
-   it cancels extra pending runs, which ships read as red). Shard counts
-   unchanged (fewer shards costs wall-clock headroom, not job-minutes);
-   nightly stays at 05:23Z (measured quietest, 0% at-cap). Left: verify on
-   the first main pushes after landing that run→first-job delay is back to
-   single-digit minutes.
+   pushing its gate ref, and the **slim main lane** (Reto 2026-10-23:
+   "qland all, then one release ... only release branch gets ci") — a push
+   to main is now plan + lint (+ the docs lane for docs-only deltas), the
+   matrix is reserved for `ci/**`, `release/**`, the nightly and `full`
+   dispatches. A main sha's verdict comes from the release cut on it or
+   the nightly; `scripts/last-gated-main-sha` drops CANCELLED check-runs
+   so a displaced slim run can't veto those. No staging branch: under
+   qland main already is staging, `release/r<N>` is the tested cut. Left:
+   verify the drift guard reads release/nightly verdicts and a qland burst
+   costs ~2 jobs/push; the impact-selected main lane from gripe comment 5
+   stays a follow-up if lint proves too thin.
 2. **`backlog/outbound-policy.md` S3** — the AST ratchet that refuses a
    bare outbound call, a `subprocess` without `timeout=` or an asyncio
    wait without a deadline, run by the pre-qland lint and every gate; it

@@ -45,8 +45,10 @@ failed post and posts nothing.
 
 ## Red main, and "did it land"
 
-`check.yml` runs on every push to main, so a red main's failures usually
-already sit on GitHub. Run `scripts/main-ci-status` first (run id, failing
+`check.yml` runs the slim lane (lint + the docs lane for docs-only diffs;
+gr495187) on every push to main, so a lint-red main's failures usually
+already sit on GitHub — a pytest red surfaces on the release gate or the
+nightly instead. Run `scripts/main-ci-status` first (run id, failing
 jobs, UNCLAIMED or not), then `gh run view <id> --log-failed`; read the
 whole summary line ("1 failed, 2 errors" is three problems). A full local
 gate validates, never diagnoses. Claim the fix in `.claude/purpose`, fix every
@@ -125,7 +127,7 @@ Work you won't use: `scripts/take-agent --discard <agent-tree>`.
 `scripts/ship --quick` lands the tree on `main` (lint only), then
 `scripts/release` drives `scripts/round`: open a round if none is open,
 `round cut --sha S` pushes `release/r<N>` at S = `origin/main`, check.yml
-runs the full gate (lint + 6 shards, never cancelled) on that exact head,
+runs the full gate (lint + the shard matrix, never cancelled) on that exact head,
 and `round deploy` deploys it `--pinned` and moves `gated`/`prod`. Exit 3
 leaves runtime proof to the session: verify boot shas and the session MCP,
 then `round deploy --confirm-runtime S --runtime-evidence …` tags

@@ -30,10 +30,14 @@ Marks carry the round number, so a mark left from an earlier round reads as
 "no mark" — `open` never has to clean up after anyone. `in` and `none` are
 final for the round; `eta` is not, so an `eta` peer stays in `pending`.
 
-There is no local gate and no ship lock in a round any more. Every main push
-gets a full GitHub CI verdict (check.yml no longer cancels main runs), so the
-candidate is simply the newest main sha whose shards all went green
-(`scripts/last-gated-main-sha`). `gate` reports it and how much unverified
+There is no local gate and no ship lock in a round any more. A push to main
+no longer runs the shard matrix (gr495187, Reto 2026-10-23 — the slim lane
+is lint + docs only), so a main sha's shard verdict comes from the release
+cut made on it, the nightly, or a `full` dispatch. The candidate is the
+newest main sha whose shards all went green
+(`scripts/last-gated-main-sha`); `cut --sha` may freeze any sha on main's
+first-parent line, since the release push gives it its own full gate.
+`gate` reports it and how much unverified
 main sits above it; `deploy` refuses unless it is still an ancestor of
 origin/main, fresh enough, and a fast-forward of `gated` AND `prod`, then deploys exactly
 that sha with `--pinned`. An exact certified release may instead retain a

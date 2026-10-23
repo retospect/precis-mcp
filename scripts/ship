@@ -1742,8 +1742,8 @@ _release_after_landing() {
 # concurrency group can't fix it: a group holds ONE pending run and cancels
 # the rest, which ships read as a red gate. So cap client-side: push only
 # when fewer than PRECIS_REMOTE_GATE_SLOTS (default 2) ci/* check.yml runs
-# are queued or in flight — two gates ≈ 24–28 jobs, so a main run (≤14) and
-# a release head always fit beside them. Soft cap: simultaneous polls
+# are queued or in flight — two gates ≈ 24–28 jobs, so a slim main run (≤6)
+# and a release head always fit beside them. Soft cap: simultaneous polls
 # overshoot by a run or two. Queued runs count — they hold the same demand.
 # An unreadable count proceeds: gh being down fails the push anyway, and a
 # hiccup must not brick the ship. Own budget PRECIS_REMOTE_GATE_WAIT_MIN

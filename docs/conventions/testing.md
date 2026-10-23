@@ -105,8 +105,13 @@ gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min
 wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
 `scripts/ship --quick` lint takes ~3 min. Other docs link here instead of quoting
 numbers. The ship gate
-(`ci/**` and `main` pushes, PRs) is lint + mypy + 10 or 12 shards of Linux+db on
-3.13 — 8 jobs, so two ships fan out fully under the 20-runner cap. A diff
+(`ci/**` and `release/**` pushes, PRs) is lint + mypy + 10 or 12 shards of
+Linux+db on
+3.13 — 12–14 jobs (scripts/ci-shard-plan picks from live load). A **push to
+`main` runs the slim lane instead** (gr495187, Reto 2026-10-23 — "only
+release branch gets ci"): `plan` + `lint` only, no shard matrix. A main
+sha's shard verdict comes from the release cut made on it, the nightly, or
+a `full` dispatch — the qland drift guard counts those. A diff
 that touches only `docs/` and root `*.md` gets the **docs lane** instead of
 the shards: one job of the fast set (`-m 'not db and not slow'`, no
 Postgres), which holds the doc-reading tests (doc pointers, the secrets
@@ -123,8 +128,10 @@ removes them.
 *running* run (`cancel-in-progress` is false), but GitHub keeps at most one
 *pending* run per group: a push that queues behind a running run replaces the
 older pending one, which ends `cancelled` with zero jobs. Under a busy
-fleet most main shas therefore never get a verdict (2026-10-11: 33 of 40 runs
-cancelled, 5 went green). Don't expect a
+fleet most main shas therefore never get even a lint verdict; a displaced
+run's cancelled check-runs do not disqualify the sha either
+(scripts/last-gated-main-sha drops them — a release gate or nightly verdict
+on the same sha still counts). Don't expect a
 specific main sha to be gated; to gate a fixed sha, cut `release/r<N>`
 (`scripts/round cut --sha S`) — release refs get a group per sha and are never
 replaced. Keying main by sha would give every push a verdict but cost a full
@@ -178,8 +185,8 @@ cluster and `/go` gets its verdict in minutes.
 
 What still covers it, so nothing is actually ungated:
 
-- **check.yml's Linux shards carry no `-m` filter** — every push to `main`
-  and every `ci/**` pre-merge gate runs the whole cluster.
+- **check.yml's Linux shards carry no `-m` filter** — every `ci/**`
+  pre-merge gate and every `release/**` push runs the whole cluster.
 - The nightly full matrix runs it on 3.12 and macOS too.
 
 Every test carries a 300 s pytest-timeout (`[tool.pytest.ini_options]`).

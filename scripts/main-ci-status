@@ -4,10 +4,11 @@
 `scripts/ship --remote` gates every merge on GitHub's check.yml, so a merge
 commit is green *at push time*. main can still go red afterwards: a sibling's
 concurrent merge lands bytes the gated tree never saw (ruff-format drift is the
-recurring case), and check.yml's `push: main` run on the merge commit fails.
-Nothing watched that run (gr346534) — the red was discovered by whoever synced
-next, and three sessions then fixed the same four files independently because
-nothing said who owned it.
+recurring case), and check.yml's `push: main` run on the merge commit fails —
+the slim lint + docs lane since gr495187, which is exactly the class of
+breakage post-merge drift produces. Nothing watched that run (gr346534) — the
+red was discovered by whoever synced next, and three sessions then fixed the
+same four files independently because nothing said who owned it.
 
 This script is the watcher + the ownership signal:
 

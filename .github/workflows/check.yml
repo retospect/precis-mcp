@@ -8,12 +8,24 @@ on:
     # force-with-lease rejection is the "did anything land meanwhile" check,
     # which re-syncs and re-runs this gate). A ship retry force-pushes the
     # same ref, so the per-ref concurrency group below auto-cancels the
-    # superseded run. The main trigger stays: it covers the /qland + /go
-    # direct-push escape hatches, which bypass the pre-merge gate.
+    # superseded run.
     #
     # release/** is the round's release branch (`scripts/round cut`): every
     # push runs the full gate shape — plan never delta-scopes it — and its
     # verdict is the one the round deploys. See the concurrency note below.
+    #
+    # main runs the SLIM lane, not the gate: plan + lint, plus the docs lane
+    # when the delta is docs-only. The shard matrix is reserved for ci/**,
+    # release/**, the nightly and `full` dispatches (gr495187, Reto
+    # 2026-10-23: "qland all, then one release ... only release branch gets
+    # ci"). A main push's own matrix burned ~32% of all job-minutes only to
+    # be displaced by the next qland push — the starvation measured in the
+    # gripe. A main sha's shard verdict now comes from the release cut made
+    # on it (a cut sha is a main sha, so the release gate's check-runs land
+    # on it), the nightly, or a full dispatch; the qland drift guard
+    # (scripts/last-gated-main-sha) counts those. The push lint still
+    # catches what a sibling's ungated qland actually breaks — ruff/mypy
+    # drift is the recurring red-main cause — inside minutes.
     branches: [main, 'ci/**', 'release/**']
   pull_request:
   # Nightly FULL matrix (both Pythons + macOS) on main. The ship
@@ -52,26 +64,32 @@ on:
 permissions:
   contents: read
 
-# A RUNNING main run is never cancelled: the round deploys the newest main sha
-# with a full green verdict (`scripts/round gate|deploy`) and the qland drift
-# guard reads its age. Cancelling running main runs left 0 of 52 main commits
-# with a verdict over 2026-10-03 00:00–12:00Z and hid a red ratchet for 12 h
-# (backlog/release-candidate-verdicts.md). `ci/**` and PR refs still cancel:
+# A RUNNING main run is never cancelled. The rule predates the slim lane —
+# when a main push ran the full gate, the round deployed the newest main sha
+# with a green verdict and the qland drift guard read its age; cancelling
+# running main runs left 0 of 52 main commits with a verdict over
+# 2026-10-03 00:00–12:00Z and hid a red ratchet for 12 h
+# (backlog/release-candidate-verdicts.md). It stays because a started lint
+# run is cheap and its verdict is the post-merge signal
+# scripts/main-ci-status watches. `ci/**` and PR refs still cancel:
 # a ship retry force-pushes the same `ci/` ref and the superseded run is
 # worthless.
 #
 # Main pushes share ONE group with `cancel-in-progress: false`. A group admits
 # one running and one pending run; a newer push replaces the pending one, so
-# main is SAMPLED: every run that starts finishes, and a green verdict lands
-# about once per run (~45 min) on the newest sha at that moment. The verdict
-# readers only need the newest green sha, not one per commit. Cost: a red names
-# the range of pushes since the last finished run, not one sha.
+# main is SAMPLED: every run that starts finishes, and a lint verdict lands
+# about once per run on the newest sha at that moment. A displaced pending
+# run's CANCELLED check-runs do not disqualify the sha either —
+# scripts/last-gated-main-sha drops them, so a release gate or nightly
+# verdict that lands on the same sha still counts (gr495187).
 #
 # Why not a run per push (the sha in the key, 2026-10-03 12:16–16:00Z): at
 # fleet rate (~33 pushes/h) × 8 jobs × ~100 runner-min against the then 20-job cap
 # (~12 full pushes/h), main queued 18 runs with 10–18 min queue delay, and a
 # `ship --remote` gate waited behind them. Reto ruled for the shared group
-# (review-queue ship-gate-ci-1, 2026-10-03).
+# (review-queue ship-gate-ci-1, 2026-10-03); the slim lane (gr495187,
+# 2026-10-23) later cut a main push to ~2 jobs, which made that queueing
+# arithmetic moot — the group stays because the sampling is still right.
 #
 # `release/**` pushes are never cancelled either, but each gets a group of its
 # own (the sha is appended to the key for release refs only): a release fix
@@ -133,6 +151,8 @@ jobs:
   #               are deliberately NOT docs here — skills are served and
   #               tested at runtime, scripts are executed by tests, and the
   #               .claude hooks are shell that tests exercise.
+  #   lint_only — a push to main (gr495187): the shard matrix does not run.
+  #               A docs-only delta still takes the docs lane.
   # Anything else is the ship-gate shape: lint + 10 (or 12 when idle) shards
   # of 3.13 Linux (the `shards` step below).
   plan:
@@ -148,6 +168,7 @@ jobs:
     outputs:
       full: ${{ steps.shape.outputs.full }}
       docs_only: ${{ steps.shape.outputs.docs_only }}
+      lint_only: ${{ steps.shape.outputs.lint_only }}
       shards: ${{ steps.shards.outputs.n }}
       shard_list: ${{ steps.shards.outputs.list }}
     steps:
@@ -165,9 +186,14 @@ jobs:
         run: |
           full=false
           docs_only=false
+          lint_only=false
           case "$EVENT" in
             schedule) full=true ;;
             workflow_dispatch) if [[ "$FULL_INPUT" == "true" ]]; then full=true; fi ;;
+            # The slim lane (gr495187): a main push skips the shard matrix —
+            # see the `on.push` note. The range below still runs, for the
+            # docs lane alone.
+            push) if [[ "$GITHUB_REF" == refs/heads/main ]]; then lint_only=true; fi ;;
           esac
           range=""
           if [[ "$full" == false ]]; then
@@ -182,7 +208,8 @@ jobs:
                 # a docs-only push take the docs lane while main carries
                 # ungated src (scripts/last-gated-main-sha closes that). Falling back to
                 # `before` would re-open that hole, so an unanswerable lookup
-                # gates fully instead (empty range = no docs lane).
+                # means no range and no docs lane (the slim lint lane still
+                # runs — under gr495187 the matrix is gone either way).
                 # all-zeros `before` = ref creation, likewise keep the gate.
                 # ci/<branch>: the branch is already merged with origin/main
                 # by ship, so the three-dot diff is the branch's own change.
@@ -217,9 +244,10 @@ jobs:
               docs_only=true
             fi
           fi
-          echo "shape: event=$EVENT full=$full docs_only=$docs_only range=${range:-none}"
+          echo "shape: event=$EVENT full=$full docs_only=$docs_only lint_only=$lint_only range=${range:-none}"
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "lint_only=$lint_only" >> "$GITHUB_OUTPUT"
       # Shard count from live load (gr492653): 12 when this run is nearly
       # alone on the account, else 6. See the job-budget note above.
       - id: shards
@@ -269,7 +297,7 @@ jobs:
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   test-linux:
     needs: plan
-    if: needs.plan.outputs.docs_only != 'true'
+    if: needs.plan.outputs.docs_only != 'true' && needs.plan.outputs.lint_only != 'true'
     runs-on: ubuntu-latest
     # ~10 min steady-state per shard; the cap is for hangs (a wedged test
     # would otherwise hold the runner for GitHub's 6 h default while nobody

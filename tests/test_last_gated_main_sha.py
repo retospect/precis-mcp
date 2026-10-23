@@ -574,6 +574,49 @@ def test_partially_cancelled_matrix_is_not_a_verdict(
     assert capsys.readouterr().out.strip() == GATED
 
 
+def test_cancelled_runs_do_not_veto_a_verdict_on_the_same_sha(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr495187: a release cut's sha is a main sha, so the release gate's
+    check-runs land beside whatever the main push left — under the slim
+    lane that is a displaced pending run's CANCELLED lint. Cancelled runs
+    are dropped before the verdict rule; otherwise a burst could leave
+    every release/nightly-verified sha disqualified and starve the drift
+    guard."""
+    mod = _load()
+    runs = _shards() + [
+        _run_node("lint", "CANCELLED", 0.5),
+        _run_node("test-linux (3.13, 3)", "CANCELLED", 0.5),
+    ]
+    _stub(mod, monkeypatch, {GATED: runs})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_a_fully_cancelled_suite_is_still_not_a_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dropping cancelled runs must not create verdicts: a sha whose only
+    suite was displaced has no runs left at all — still not green."""
+    mod = _load()
+    _stub(mod, monkeypatch, {BURST: _shards("CANCELLED"), GATED: _shards()})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_age_hours_ignores_the_cancelled_runs_it_drops(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The verdict's age is its own jobs', not a displaced run's — a
+    cancelled run stamped minutes ago must not make a 30 h verdict read
+    fresh."""
+    mod = _load()
+    runs = _shards(hours_ago=30.0) + [_run_node("lint", "CANCELLED", 0.1)]
+    _stub(mod, monkeypatch, {GATED: runs})
+    assert mod.main(["--age-hours"]) == 0
+    assert abs(float(capsys.readouterr().out.strip()) - 30.0) < 0.2
+
+
 def test_docs_lane_sha_has_no_shards_and_is_walked_past(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1050,6 +1093,20 @@ def test_check_yml_release_push_never_takes_a_delta_range() -> None:
     assert "refs/heads/release/*" in run
     branch = run[run.index("refs/heads/release/*") :]
     assert branch.split("fi ;;")[0].count('range=""') == 1
+
+
+def test_check_yml_main_push_takes_the_slim_lane() -> None:
+    """gr495187 / Reto 2026-10-23: a push to main runs plan + lint (+ the docs
+    lane for docs-only deltas); the shard matrix is reserved for ci/**,
+    release/**, the nightly and `full` dispatches. Pins the wiring: the
+    `shape` step sets lint_only on refs/heads/main, `plan` exposes it, and
+    `test-linux` honours it."""
+    wf = _check_yml()
+    job = wf["jobs"]["plan"]
+    run = next(s["run"] for s in job["steps"] if s.get("id") == "shape")
+    assert re.search(r"GITHUB_REF\"?\s*==\s*refs/heads/main.*lint_only=true", run)
+    assert job["outputs"]["lint_only"] == "${{ steps.shape.outputs.lint_only }}"
+    assert "lint_only" in wf["jobs"]["test-linux"]["if"]
 
 
 # -- nightly coverage DB producer ---------------------------------------
