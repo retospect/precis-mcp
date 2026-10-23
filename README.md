@@ -27,8 +27,8 @@ with a web interface ([see how it works](guide/README.md)).
 
 | The tagline | Where to see it |
 |---|---|
-| **Untiring** | [The loop](guide/README.md#the-loop): quests and todos keep working between your visits · [Attention](guide/README.md#attention): what waits for you |
-| **Token-efficient** | [Fisheye](src/precis/data/skills/precis-fisheye-help.md): one node in focus, its neighbours in summary · [toolpath](src/precis/data/skills/precis-toolpath-help.md): which call for which goal |
+| **Untiring** | [Quests](src/precis/data/skills/precis-quest-help.md): open problems worked tick after tick, reading, proposing, simulating, ranking · [The loop](guide/README.md#the-loop) |
+| **Token-efficient** | [Fisheye](src/precis/data/skills/precis-fisheye-help.md): one view across every domain (papers, DFT cells, 3-D designs, boards, memory), the focus in full and its neighbours in summary |
 | **Reads papers and patents** | [Drive](guide/README.md#drive): one search over everything · [Reading papers](guide/README.md#reading-papers) |
 | **Cites the paragraph** | [Claims & nanopubs](guide/README.md#claims-and-nanopubs): every claim tied to a passage, signable |
 | **Writes the paper** | [Writing a paper](guide/README.md#writing-a-paper) · [Figures & diagrams](guide/README.md#figures-and-diagrams) |
