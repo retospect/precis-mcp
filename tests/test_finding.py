@@ -8,6 +8,7 @@ separate test file.
 from __future__ import annotations
 
 import re
+from typing import Any, cast
 
 import pytest
 
@@ -158,6 +159,33 @@ class TestPutValidation:
 
 
 class TestPutHappy:
+    def test_meta_rides_into_the_minted_ref(self, store) -> None:
+        # gr506767: the machine-writer admission annotation merges into
+        # the minted ref's meta under the handler's own keys.
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="meta probe",
+            body="claim body",
+            cited_in="miller23a~0",
+            meta={"model": "test-model", "run_id": "r1", "why": "probe"},
+        )
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        meta = store.get_ref(kind="finding", id=ref_id).meta or {}
+        assert meta["model"] == "test-model"
+        assert meta["run_id"] == "r1"
+        assert meta["scope"] == {} and "pub_id" in meta
+
+    def test_meta_non_dict_is_refused(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="meta= must be a dict"):
+            h.put(
+                title="t",
+                body="b",
+                cited_in="miller23a~0",
+                meta=cast(Any, "not-a-dict"),
+            )
+
     def test_creates_ref_chunk_link_and_status(self, store) -> None:
         paper_id = _seed_paper(store)
         h = _make_handler(store)

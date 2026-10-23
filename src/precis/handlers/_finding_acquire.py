@@ -108,6 +108,7 @@ def put_acquiring(
     link: str | None,
     rel: str | None,
     collision_response: Callable[[str], Response],
+    meta: dict[str, Any] | None = None,
 ) -> Response:
     """Mint an acquisition-mode finding: a claim whose supporting
     paper(s) aren't in the corpus yet.
@@ -215,7 +216,11 @@ def put_acquiring(
     )
     pub_id = make_pub_id(paper_id)
 
-    meta: dict[str, Any] = {
+    # Caller ``meta=`` (the machine-writer admission annotation, gr506767)
+    # merges under the mint's own keys — scope/chain/pub_id can't be
+    # shadowed from outside.
+    ref_meta: dict[str, Any] = {
+        **(meta or {}),
         "scope": scope or {},
         "paper_id": paper_id,
         "pub_id": pub_id,
@@ -245,7 +250,7 @@ def put_acquiring(
                 kind=kind,
                 slug=None,
                 title=title_clean,
-                meta=meta,
+                meta=ref_meta,
                 parent_id=parent_int,
                 conn=conn,
             )

@@ -150,6 +150,7 @@ def put_hypothesis(
     from_memory: str | None = None,
     set_by: str = "agent",
     mint_cap: MintCap | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> Response:
     """Mint a hypothesis claim hub and park its prepared mint payload.
     ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874)."""
@@ -318,6 +319,9 @@ def put_hypothesis(
         claim,
         set_by=set_by,  # type: ignore[arg-type]
         extra_meta={
+            # Caller ``meta=`` rides under the hypothesis's own keys —
+            # artifact_type / proposed_payload are not caller-overridable.
+            **(meta or {}),
             META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
             META_PROPOSED_PAYLOAD: payload,
         },

@@ -129,7 +129,8 @@ kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
 the client passes it through; some clients mangle an empty string),
 `dry_run=True` returns the diff and writes
 nothing. `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
-in `args=`) are `mode='replace'` only. An edit that would empty the body is refused. Always
+in `args=`) ride any mode's transaction too — a retitle pairs with a span
+fix in one call. `title` alone (no body arg) is the retitle door. An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is
 refused, never taken as a whole-body overwrite.
 If another edit changes the body before the write, the edit is refused

@@ -769,9 +769,9 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
 
 def test_edit_with_nothing_to_change_names_meta(handler: MemoryHandler) -> None:
     mid = id_of(handler.put(text="x").body)
-    with pytest.raises(BadInput, match="text=, rule=, warrant=, or meta="):
+    with pytest.raises(BadInput, match="text=, title=, rule=, warrant=, or meta="):
         handler.edit(id=mid)
-    with pytest.raises(BadInput, match="text=, rule=, warrant=, or meta="):
+    with pytest.raises(BadInput, match="text=, title=, rule=, warrant=, or meta="):
         handler.edit(id=mid, meta={})
 
 
@@ -1024,24 +1024,48 @@ def test_mcp_default_find_replace_with_meta_only_patches_meta(
     assert handler._body_text(ref) == _BODY
 
 
-def test_anchored_edit_takes_meta_but_rejects_replace_only_fields(
+def test_anchored_edit_rides_title_rule_warrant_and_meta(
     handler: MemoryHandler, store: Store
 ) -> None:
+    # gr506768: title=/rule=/warrant= used to be replace-only; they now
+    # ride the anchored edit's transaction the way meta= always did.
     mid = _make(handler)
-    handler.edit(
+    resp = handler.edit(
         id=mid,
         mode="find-replace",
         find="beta",
         text="BETA",
+        title="a sharper header",
+        rule="and-intro",
+        warrant="both premises hold",
         meta={"hook": "with body edit"},
     )
+    assert "title now: 'a sharper header'" in resp.body
     ref = store.get_ref(kind="memory", id=mid)
-    assert ref is not None and ref.meta["hook"] == "with body edit"
-    for bad in ({"title": "t"}, {"rule": "r"}, {"warrant": "w"}):
-        kwargs: dict[str, Any] = {"find": "BETA", "text": "x", **bad}
-        with pytest.raises(BadInput, match="replace-only"):
-            handler.edit(id=mid, mode="find-replace", **kwargs)
+    assert ref is not None
+    assert ref.meta["hook"] == "with body edit"
+    assert ref.meta["rule"] == "and-intro"
+    assert ref.meta["warrant"] == "both premises hold"
+    assert ref.title == "a sharper header"
     assert "BETA" in _body(handler, store, mid)
+
+
+def test_title_alone_is_the_retitle_door(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    resp = handler.edit(id=mid, mode="replace", title="retitled, body kept")
+    assert "title now: 'retitled, body kept'" in resp.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "retitled, body kept"
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_append_rides_title(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    resp = handler.edit(id=mid, mode="append", text="a late note", title="new header")
+    assert "title now: 'new header'" in resp.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "new header"
+    assert _body(handler, store, mid).endswith("a late note")
 
 
 def test_anchored_edit_records_old_body_and_reinserts_chunk(

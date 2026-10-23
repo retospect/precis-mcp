@@ -854,8 +854,11 @@ class MemoryHandler(NumericRefHandler):
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
         ``dry_run=True`` (unified diff, nothing written) — resolved by the
         shared :mod:`precis.utils.edit_resolve`, so a one-word fix in a large
-        body needs no re-send. ``title=`` / ``rule=`` / ``warrant=`` are
-        ``replace``-only; ``meta=`` works with any mode.
+        body needs no re-send. ``title=`` / ``rule=`` / ``warrant=`` /
+        ``meta=`` ride every mode's one transaction (gr506768) — a retitle
+        or an argument-label fix pairs with an anchored body edit in one
+        call; ``title=`` alone (with ``mode='replace'``) is the retitle
+        door.
 
         Every body write keeps the old body in ``ref_events`` (recoverable /
         auditable via ``get(kind='memory', id=N, view='log')``) and
@@ -931,25 +934,15 @@ class MemoryHandler(NumericRefHandler):
         if mode in ("insert", "append") or (
             mode == "find-replace" and (find is not None or text is not None)
         ):
-            replace_only = [
-                name
-                for name, val in (
-                    ("title", new_title),
-                    ("rule", rule_clean),
-                    ("warrant", warrant_clean),
-                )
-                if val is not None
-            ]
-            if replace_only:
-                raise BadInput(
-                    f"{'/'.join(replace_only)}= is replace-only; "
-                    f"mode={mode!r} edits the body in place",
-                    next=(
-                        "do the anchored edit alone (meta= may ride along), then "
-                        "edit(kind='memory', id=N, mode='replace', "
-                        "warrant='...') for the label"
-                    ),
-                )
+            # ``title=`` / ``rule=`` / ``warrant=`` ride the anchored
+            # edit's one transaction the way ``meta=`` always did
+            # (gr506768 — agents repeatedly pair a span fix with a
+            # retitle; refusing split one intent into two calls).
+            anchored_meta = dict(meta_clean)
+            if rule_clean is not None:
+                anchored_meta["rule"] = rule_clean
+            if warrant_clean is not None:
+                anchored_meta["warrant"] = warrant_clean
             return self._edit_anchored(
                 ref_id=self._coerce_id(id),
                 mode=mode,
@@ -961,7 +954,8 @@ class MemoryHandler(NumericRefHandler):
                 match=match,
                 nth=nth,
                 dry_mode=dry_mode,
-                meta_patch=meta_clean,
+                meta_patch=anchored_meta,
+                new_title=new_title,
                 reason=reason,
                 delete_span=delete_span,
             )
@@ -976,12 +970,13 @@ class MemoryHandler(NumericRefHandler):
             )
         if (
             not has_text
+            and new_title is None
             and rule_clean is None
             and warrant_clean is None
             and not meta_clean
         ):
             raise BadInput(
-                "edit(kind='memory') requires text=, rule=, warrant=, or meta=",
+                "edit(kind='memory') requires text=, title=, rule=, warrant=, or meta=",
                 next=(
                     "edit(kind='memory', id=N, mode='replace', text='new body') "
                     "or edit(kind='memory', id=N, mode='find-replace', "
@@ -1238,6 +1233,7 @@ class MemoryHandler(NumericRefHandler):
         nth: int | None,
         dry_mode: str | None,
         meta_patch: dict[str, Any],
+        new_title: str | None = None,
         reason: str | None = None,
         delete_span: bool = False,
     ) -> Response:
@@ -1263,6 +1259,7 @@ class MemoryHandler(NumericRefHandler):
                 nth=nth,
                 dry_mode=dry_mode,
                 meta_patch=meta_patch,
+                new_title=new_title,
                 reason=reason,
             )
         if not find:
@@ -1342,12 +1339,14 @@ class MemoryHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            if new_title is not None:
+                body += f"\n(title would become {new_title!r})"
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
         self._write_body(
             ref.id,
             new_body,
-            new_title=None,
+            new_title=new_title,
             meta_patch=meta_patch,
             expected_body=old_body,
             misses=misses,
@@ -1368,6 +1367,11 @@ class MemoryHandler(NumericRefHandler):
             f"{n_spans} span{'s' if n_spans != 1 else ''}). "
             "view='log' for the full diff."
         )
+        if new_title is not None:
+            ack += f" title now: {new_title!r}."
+            nudge = self._first_line_nudge(new_title)
+            if nudge:
+                ack += f"\n\nhint: {nudge}"
         lead = self._thread_lead_hint(ref.id, old_body, new_body)
         if lead:
             ack += f"\n\nhint: {lead}"
@@ -1387,6 +1391,7 @@ class MemoryHandler(NumericRefHandler):
         nth: int | None,
         dry_mode: str | None,
         meta_patch: dict[str, Any],
+        new_title: str | None = None,
         reason: str | None = None,
     ) -> Response:
         """``mode='append'`` — tack ``text=`` onto the end of the body.
@@ -1450,7 +1455,7 @@ class MemoryHandler(NumericRefHandler):
         self._write_body(
             ref.id,
             new_body,
-            new_title=None,
+            new_title=new_title,
             meta_patch=meta_patch,
             expected_body=old_body,
             misses=misses,
@@ -1461,6 +1466,8 @@ class MemoryHandler(NumericRefHandler):
             f"({len(old_body.split())} → {len(new_body.split())} words). "
             "view='log' for the full diff."
         )
+        if new_title is not None:
+            ack += f" title now: {new_title!r}."
         lead = self._thread_lead_hint(ref.id, old_body, new_body)
         if lead:
             ack += f"\n\nhint: {lead}"

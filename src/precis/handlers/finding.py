@@ -228,6 +228,11 @@ class FindingHandler(NumericRefHandler):
     )
     kind: ClassVar[str] = "finding"
     sense: ClassVar[str] = "finding"
+    #: ``get``/``tag`` take ``id=[...]`` (gr506770 — reading N findings
+    #: cost N calls). ``link`` keeps the single-id door: its Taproot
+    #: relations route per-source-hub, so a fan-in batch would have to
+    #: resolve which sources are claim hubs anyway.
+    batch_ids: ClassVar[bool] = True
 
     # ──────────────────────────────────────────────────────────────────
     # put — create a new finding (idempotent on deterministic pub_id)
@@ -251,6 +256,7 @@ class FindingHandler(NumericRefHandler):
         motivated_by: list[str] | None = None,
         llm_models: list[str] | None = None,
         from_memory: str | None = None,
+        meta: dict[str, Any] | None = None,
         parent_id: int | None = None,
         tags: list[str] | None = None,
         link: str | None = None,
@@ -330,6 +336,18 @@ class FindingHandler(NumericRefHandler):
 
         body_text = body if body is not None else text
 
+        # ``meta=`` is the machine-writer admission annotation
+        # (``meta.{model,prompt_version,run_id,why}`` — the shape
+        # ``link(kind='finding', meta=...)`` already carries to the edge,
+        # gr504789/gr506767). It merges into the minted ref's meta under
+        # the handler's own keys; on a dedup *converge* (hub mode) no row
+        # is minted so it is dropped, same rule as mint_hub's extra_meta.
+        if meta is not None and not isinstance(meta, dict):
+            raise BadInput(
+                f"meta= must be a dict, got {type(meta).__name__}",
+                next="meta={'model': '<model id>', 'run_id': '<run>', 'why': '...'}",
+            )
+
         # `report` / `definition` are approve-only (nanopub/gates.py): a
         # mint-time `artifact_type=` would otherwise vanish into **_kw and
         # leave the caller believing the type was set.
@@ -375,6 +393,7 @@ class FindingHandler(NumericRefHandler):
                 motivated_by=motivated_by,
                 llm_models=llm_models,
                 from_memory=from_memory,
+                meta=meta,
             )
 
         # --- Taproot hub-mint mode ---
@@ -426,6 +445,7 @@ class FindingHandler(NumericRefHandler):
                 set_by="agent",
                 dedup=dedup,
                 embedder=getattr(self.hub, "embedder", None),
+                extra_meta=meta,
             )
 
         # --- Acquisition mode (claim-first mint) ---
@@ -467,6 +487,7 @@ class FindingHandler(NumericRefHandler):
                 link=link,
                 rel=rel,
                 collision_response=self._collision_response,
+                meta=meta,
             )
 
         # Report EVERY missing required field at once, not one per call.
@@ -592,7 +613,8 @@ class FindingHandler(NumericRefHandler):
         body_clean = body_text.strip()
         title_clean = title.strip()
 
-        meta: dict[str, Any] = {
+        ref_meta: dict[str, Any] = {
+            **(meta or {}),
             "scope": scope or {},
             "paper_id": paper_id,  # for audit / debugging only
             "pub_id": pub_id,
@@ -615,7 +637,7 @@ class FindingHandler(NumericRefHandler):
                     kind=self.kind,
                     slug=None,
                     title=title_clean,
-                    meta=meta,
+                    meta=ref_meta,
                     parent_id=parent_int,
                     conn=conn,
                 )
@@ -739,10 +761,18 @@ class FindingHandler(NumericRefHandler):
         ``mode='remove'`` — falls through to the generic numeric-ref link.
         """
         if isinstance(id, list):
-            # finding isn't a batch_ids kind; _coerce_ids raises the
-            # clean "does not take id=[...]" refusal before the Taproot
-            # door tries to .strip() the list.
-            self._coerce_ids(id)
+            # finding takes batch id=[...] on get/tag, but not link: a
+            # fan-in would bypass the per-source Taproot door below
+            # (``_link_batch`` calls ``_link`` directly, skipping the
+            # claim-hub role guards and ``meta=`` edge payload).
+            raise BadInput(
+                "link(kind='finding') takes one source id per call — "
+                "Taproot relations route per hub",
+                next=(
+                    "one call per source: link(kind='finding', id=<id>, "
+                    "target=..., rel=...); get and tag do take id=[...]"
+                ),
+            )
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)
@@ -942,9 +972,9 @@ class FindingHandler(NumericRefHandler):
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if isinstance(id, list):
-            return super().get(
-                id=id, view=view, q=q, since=since, **_kw
-            )  # refused: no batch form
+            # batch_ids: the base _get_batch / _get_batch_view path;
+            # finding-only views (evidence, judgments, …) map per id.
+            return super().get(id=id, view=view, q=q, since=since, **_kw)
         id = self._resolve_pub_id_slug(id)
         if view == "evidence":
             ref_id = self._coerce_id(id)

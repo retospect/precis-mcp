@@ -124,6 +124,37 @@ def test_put_with_a_backlog_item_slug_gets_the_put_door(
     assert "knowledge-mesh" in (exc.value.options or ())
 
 
+def test_put_with_a_clipped_backlog_item_slug_gets_the_fuzzy_item_door(
+    gripe: GripeHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gr506766: 'graph-gardener' failed with the bare refusal — the slug is
+    # a *clipped* docs/backlog item name ('graph-gardener-value.md'), not an
+    # exact one, and no thread slug sat near enough to list. The refusal
+    # now fuzzy-matches the item and still names nearest threads.
+    d = tmp_path / "docs" / "backlog"
+    (d / "threads").mkdir(parents=True)
+    (d / "threads" / "graph-memory-consumers.md").write_text("# x\n", encoding="utf-8")
+    (d / "graph-gardener-value.md").write_text("# x\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_THREADS_DIR", str(d / "threads"))
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="should not file", tags=["thread:graph-gardener"])
+    assert "backlog item" in str(exc.value)
+    assert "md:main/docs/backlog/graph-gardener-value.md" in str(exc.value)
+    assert "nearest: graph-memory-consumers" in str(exc.value)
+
+
+def test_unknown_thread_with_no_close_match_still_lists_nearest(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    # gr506766: below the 0.6 cutoff the refusal used to show no slugs at
+    # all — the agent had nothing to retry with. Now the top candidates
+    # always render.
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="should not file", tags=["thread:zzz"])
+    assert "nearest: " in str(exc.value)
+    assert isinstance(exc.value.next, str) and "thread:" in exc.value.next
+
+
 def test_put_with_an_unknown_thread_corrects_the_put_with_nearest(
     gripe: GripeHandler, threads: Path
 ) -> None:

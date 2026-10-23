@@ -439,6 +439,18 @@ class TagsMixin:
             ).fetchall()
         return [(str(ns), str(val), int(n)) for ns, val, n in rows]
 
+    def tag_namespaces(self) -> frozenset[str]:
+        """Every ``tags.namespace`` in the table — the data-carried axes.
+
+        The read filter's in-use registry (gr504808): machine-stamped
+        axes like ``MATERIAL`` outnumber the ``_CLOSED_VOCAB`` registry
+        ~3:1, and ``search(tags=[...])`` accepts any axis the data
+        actually carries.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute("SELECT DISTINCT namespace FROM tags").fetchall()
+        return frozenset(str(r[0]) for r in rows)
+
     def ref_tags_bulk(self, ref_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
         """All ref-level tags for many refs in one query — the N+1 avoidance
         for a list view that renders per-row tag chips.

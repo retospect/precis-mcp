@@ -876,7 +876,9 @@ class NumericRefHandler(Handler):
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
         # STATUS: filter queries against kinds that don't use STATUS.
-        normalized_tags = Tag.normalize_filter(effective_tags, kind=self.kind)
+        normalized_tags = Tag.normalize_filter(
+            effective_tags, kind=self.kind, axis_in_use=self._axis_in_use
+        )
 
         # ``view='count'``: the aggregate answer — one filtered total
         # plus per-facet counts — runs the same filters the listing/
@@ -1631,6 +1633,12 @@ class NumericRefHandler(Handler):
         parts.append(self._render_hits_table(page_rows))
         return Response(body="\n".join(parts), result_count=len(page_rows))
 
+    def _axis_in_use(self, prefix: str) -> bool:
+        """gr504808: an UPPERCASE axis the ``tags`` table carries is a
+        valid filter even unregistered — reads accept what the data has;
+        writes stay strict via ``Tag.parse_strict``."""
+        return prefix in self.store.tag_namespaces()
+
     # ── search_hits: structured form for cross-kind merge ──────────
 
     def search_hits(  # type: ignore[override]
@@ -1679,7 +1687,9 @@ class NumericRefHandler(Handler):
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
             )
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+        normalized_tags = Tag.normalize_filter(
+            tags, kind=self.kind, axis_in_use=self._axis_in_use
+        )
         refs = fused_ref_hits(
             self.store,
             getattr(self.hub, "embedder", None),
@@ -1921,7 +1931,9 @@ class NumericRefHandler(Handler):
         """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge."""
         if not (q and q.strip()):
             return []
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+        normalized_tags = Tag.normalize_filter(
+            tags, kind=self.kind, axis_in_use=self._axis_in_use
+        )
         ordered, _ = self._best_body_hits(
             q,
             normalized_tags,

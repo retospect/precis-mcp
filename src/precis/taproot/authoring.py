@@ -371,6 +371,7 @@ def seed_claim_hub(
     supporters: list[dict[str, Any]],
     set_by: ActorSlug = "agent",
     mint_cap: MintCap | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Mint (or converge onto) a claim hub for ``sentence``/``scope`` and
     attach each of ``supporters`` as evidence.
@@ -495,7 +496,9 @@ def seed_claim_hub(
     # (gr263195's atomicity backstop), rather than leaving a hub with only
     # some of its supporters attached.
     with store.tx() as conn:
-        hub_ref_id = mint_hub(store, claim, set_by=set_by, conn=conn)
+        hub_ref_id = mint_hub(
+            store, claim, set_by=set_by, conn=conn, extra_meta=extra_meta
+        )
 
         for supporter in resolved:
             paper = supporter["paper"]

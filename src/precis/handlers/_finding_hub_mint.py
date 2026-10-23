@@ -110,6 +110,7 @@ def put_hub(
     set_by: ActorSlug = "agent",
     dedup: bool = True,
     embedder: Any = None,
+    extra_meta: dict[str, Any] | None = None,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
@@ -117,7 +118,12 @@ def put_hub(
     """``supporters=`` hub-mint, gated by the semantic dedup cascade — see
     the module docstring for the branching contract. Appends the
     ``multi-article`` advisory (gr463414) for any supporter whose paper is
-    tagged so; the write has already succeeded by then."""
+    tagged so; the write has already succeeded by then.
+
+    ``extra_meta`` merges into the minted hub's ``refs.meta`` on a real
+    mint only — an ``attach``/converge outcome writes no hub row, so the
+    keys are dropped there (same rule as :func:`mint_hub`'s own
+    ``extra_meta``)."""
     resp = _put_hub(
         store,
         sentence=sentence,
@@ -126,6 +132,7 @@ def put_hub(
         set_by=set_by,
         dedup=dedup,
         embedder=embedder,
+        extra_meta=extra_meta,
         block_fn=block_fn,
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
@@ -162,6 +169,7 @@ def _put_hub(
     set_by: ActorSlug,
     dedup: bool,
     embedder: Any,
+    extra_meta: dict[str, Any] | None,
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
@@ -170,7 +178,12 @@ def _put_hub(
 
     if not dedup:
         result = authoring.seed_claim_hub(
-            store, sentence=sentence, scope=scope, supporters=supporters, set_by=set_by
+            store,
+            sentence=sentence,
+            scope=scope,
+            supporters=supporters,
+            set_by=set_by,
+            extra_meta=extra_meta,
         )
         return Response(body=_mint_response_body(result, sentence) + "\ndedup skipped")
 
@@ -194,9 +207,11 @@ def _put_hub(
         )
     if placement.action == "needs_review":
         return _mint_with_review_todo(
-            store, claim, placement, supporters, set_by=set_by
+            store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
         )
-    return _mint_new(store, claim, placement, supporters, set_by=set_by)
+    return _mint_new(
+        store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
+    )
 
 
 # ── dedup-gate contention: capacity is not absence ──────────────────────
@@ -362,6 +377,7 @@ def _mint_new(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
+    extra_meta: dict[str, Any] | None = None,
 ) -> Response:
     """``new`` / ``new_contradicts`` — no matching claim: mint through the
     existing door unchanged. A ``new_contradicts`` verdict additionally
@@ -376,6 +392,7 @@ def _mint_new(
         scope=claim.scope,
         supporters=supporters,
         set_by=set_by,
+        extra_meta=extra_meta,
     )
     hub_ref_id = result["hub_ref_id"]
     if (
@@ -401,6 +418,7 @@ def _mint_with_review_todo(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
+    extra_meta: dict[str, Any] | None = None,
 ) -> Response:
     """``needs_review`` — a risky, unconfirmed ``same`` verdict. The
     automated cascade callers (``apply_placement``) attach nothing here and
@@ -413,6 +431,7 @@ def _mint_with_review_todo(
         scope=claim.scope,
         supporters=supporters,
         set_by=set_by,
+        extra_meta=extra_meta,
     )
     hub_ref_id = result["hub_ref_id"]
     nearest_ref_id = placement.hub_ref_id

@@ -522,21 +522,42 @@ class GripeHandler(NumericRefHandler):
         unknown = [s for s in named if s not in slugs]
         if unknown:
             slug = unknown[0]
-            close = difflib.get_close_matches(slug, sorted(slugs), n=3, cutoff=0.6)
+            sorted_slugs = sorted(slugs)
+            close = difflib.get_close_matches(slug, sorted_slugs, n=3, cutoff=0.6)
+            if not close:
+                # Nothing near at the usual cutoff — still name the top
+                # candidates so the refusal always lists live slugs
+                # (gr506766: 'graph-gardener' had no >=0.6 neighbour and the
+                # agent saw only the bare "unknown thread" text).
+                close = difflib.get_close_matches(slug, sorted_slugs, n=3, cutoff=0.0)
             cause = (
                 f"unknown thread {slug!r}: a thread tag names a "
                 "docs/backlog/threads/<slug>.md file"
             )
             if close:
                 cause += f"; nearest: {', '.join(close)}"
-            if (threads_dir().parent / f"{slug}.md").is_file():
+            backlog_dir = threads_dir().parent
+            item = slug if (backlog_dir / f"{slug}.md").is_file() else None
+            if item is None and backlog_dir.is_dir():
+                # Same door, fuzzier match — agents tag docs/backlog/<slug>.md
+                # *item* names, often clipped ('graph-gardener' for
+                # 'graph-gardener-value', gr506766).
+                near_item = difflib.get_close_matches(
+                    slug,
+                    [p.stem for p in backlog_dir.glob("*.md")],
+                    n=1,
+                    cutoff=0.6,
+                )
+                if near_item:
+                    item = near_item[0]
+            if item is not None:
                 # docs/backlog/<slug>.md is a planned-work item, not a
                 # thread — agents tag item slugs (gr503548: graph-gardener,
                 # memory-graph, gardener-value). Name the link door.
                 cause += (
-                    f"; {slug!r} is a backlog item, not a thread — "
+                    f"; {item!r} is a backlog item, not a thread — "
                     "threads are docs/backlog/threads/*.md; link the item "
-                    f"with link='md:main/docs/backlog/{slug}.md' and pick "
+                    f"with link='md:main/docs/backlog/{item}.md' and pick "
                     "a thread from options"
                 )
             fix = close[0] if close else "<slug>"

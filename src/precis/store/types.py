@@ -9,6 +9,7 @@ them in place.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -993,7 +994,11 @@ class Tag:
 
     @classmethod
     def normalize_filter(
-        cls, tags: list[str] | None, *, kind: str | None = None
+        cls,
+        tags: list[str] | None,
+        *,
+        kind: str | None = None,
+        axis_in_use: Callable[[str], bool] | None = None,
     ) -> list[str] | None:
         """Validate and canonicalise a tag-filter list at the agent boundary.
 
@@ -1007,6 +1012,15 @@ class Tag:
         enforcement. Callers that filter across kinds should pass
         ``kind=None`` to keep the global vocabulary.
 
+        ``axis_in_use`` (gr504808): predicate answering "is this
+        UPPERCASE namespace present in the tags table?". The corpus
+        carries dozens of machine-stamped axes the ``_CLOSED_VOCAB``
+        registry never lists (``MATERIAL:``, ``METHOD:``, … — facets
+        already render them); a *read* filter naming one of those must
+        pass, while a truly unknown axis still refuses with the
+        registered list. Writes stay strict — ``axis_in_use`` is a
+        filter-only escape, never applied by ``parse_strict`` itself.
+
         Returns ``None`` for ``None`` or empty input so callers can
         forward to the store's ``tags=`` kwarg unchanged — the
         downstream :func:`build_tag_filter` treats ``None``/``[]`` as
@@ -1019,7 +1033,25 @@ class Tag:
         # instead of rejecting the call.
         given = {t.strip() for t in tags}
         tags = [t for t in tags if _RESERVED_FLAGS.get(t.strip()) not in given]
-        return [str(cls.parse_strict(t, kind=kind)) for t in tags]
+        out: list[str] = []
+        for t in tags:
+            s = t.strip()
+            prefix, _, value = s.partition(":")
+            if (
+                prefix
+                and prefix.isupper()
+                and value
+                and prefix not in _CLOSED_VOCAB
+                and axis_in_use is not None
+                and axis_in_use(prefix)
+            ):
+                # In-use but unregistered axis: pass the canonical
+                # ``PREFIX:value`` form through verbatim —
+                # :func:`build_tag_filter` parses it identically.
+                out.append(f"{prefix}:{value}")
+                continue
+            out.append(str(cls.parse_strict(t, kind=kind)))
+        return out
 
     def __str__(self) -> str:
         if self.namespace == "closed":

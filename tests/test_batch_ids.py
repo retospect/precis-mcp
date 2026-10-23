@@ -1,4 +1,5 @@
-"""``get``/``tag``/``link`` with ``id=[...]`` on gripe, alert, todo, memory.
+"""``get``/``tag``/``link`` with ``id=[...]`` on gripe, alert, todo, memory,
+finding (get/tag only there — link stays the single-id Taproot door).
 
 Batch ``get`` is summary-shaped by default (one block per id, order
 kept, missing ids are a one-line block); a ``view=`` maps the kind's own
@@ -91,6 +92,74 @@ def test_get_batch_todo_skips_ancestry(hub: Hub) -> None:
     assert body.index(f"td{leaf}") < body.index(f"td{root}")
     assert "STATUS:open" in body
     assert "ancestry" not in body.lower()
+
+
+def _findings(store: Store, hub: Hub, n: int) -> tuple[Any, list[int]]:
+    """Mint ``n`` chase findings off one seeded paper chunk."""
+    from precis.handlers.finding import FindingHandler
+    from precis.store.types import ChunkInsert
+
+    handler = FindingHandler(hub=hub)
+    paper = store.insert_ref(
+        kind="paper", slug="batchsrc23a", title="batch source paper", meta={}
+    )
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="source body.", meta={})]
+    )
+    ids = [
+        id_of(
+            handler.put(
+                title=f"batch finding {i}",
+                body=f"claim body {i}",
+                cited_in="batchsrc23a~0",
+            ).body
+        )
+        for i in range(n)
+    ]
+    return handler, ids
+
+
+def test_get_batch_finding_summary_in_order(store: Store, hub: Hub) -> None:
+    # gr506770: reading N findings cost N get calls; now one batch.
+    handler, ids = _findings(store, hub, 3)
+    missing = max(ids) + 100_000
+    body = handler.get(id=_batch(ids[2], missing, ids[0])).body
+    assert body.startswith("# 3 finding (batch)")
+    assert body.index(f"fi{ids[2]}") < body.index(f"fi{missing}  not found")
+    assert body.index(f"fi{missing}  not found") < body.index(f"fi{ids[0]}")
+    assert "batch finding 0" in body
+
+
+def test_link_batch_finding_is_refused_with_the_single_door(
+    store: Store, hub: Hub
+) -> None:
+    # gr506770: batch get/tag landed but link stays single-id — a fan-in
+    # would bypass the per-source Taproot door.
+    handler, ids = _findings(store, hub, 2)
+    with pytest.raises(BadInput, match="one source id per call"):
+        handler.link(id=_batch(*ids), target="me1", rel="related-to")
+
+
+def test_tag_batch_finding_applies_to_all(store: Store, hub: Hub) -> None:
+    handler, ids = _findings(store, hub, 2)
+    body = handler.tag(id=_batch(*ids), add=["topic:batch-probe"]).body
+    assert "tagged 2 finding" in body
+    assert all("topic:batch-probe" in _tags(handler.store, int(rid)) for rid in ids)
+
+
+def test_search_filter_accepts_an_in_use_unregistered_axis(
+    store: Store, hub: Hub
+) -> None:
+    # gr504808: machine-stamped axes (MATERIAL:, METHOD:, …) live in the
+    # tags table without a _CLOSED_VOCAB entry — a read filter naming one
+    # must pass, while a truly-unknown axis still refuses (writes stay
+    # strict via Tag.parse_strict).
+    handler, ids = _gripes(hub, 1)
+    store.add_tag(ids[0], Tag.closed("MATERIAL", "mof"), set_by="agent")
+    body = handler.search(q="batch gripe", tags=["MATERIAL:mof"]).body
+    assert f"gripe {ids[0]}" in body
+    with pytest.raises(BadInput, match="unknown closed-prefix axis"):
+        handler.search(q="batch gripe", tags=["STATSU:open"])
 
 
 def test_get_batch_cap_empty_view_and_foreign_handle(hub: Hub) -> None:
