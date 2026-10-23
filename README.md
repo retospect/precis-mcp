@@ -25,6 +25,17 @@ Agents use seven verbs (`get`, `search`, `put`, `edit`, `delete`, `tag`,
 `link`) over every kind; content lives in PostgreSQL with `pgvector`,
 with a web interface ([see how it works](guide/README.md)).
 
+| The tagline | Where to see it |
+|---|---|
+| **Untiring** | [The loop](guide/README.md#the-loop): quests and todos keep working between your visits · [Attention](guide/README.md#attention): what waits for you |
+| **Token-efficient** | [Fisheye](src/precis/data/skills/precis-fisheye-help.md): one node in focus, its neighbours in summary · [toolpath](src/precis/data/skills/precis-toolpath-help.md): which call for which goal |
+| **Reads papers and patents** | [Drive](guide/README.md#drive): one search over everything · [Reading papers](guide/README.md#reading-papers) |
+| **Cites the paragraph** | [Claims & nanopubs](guide/README.md#claims-and-nanopubs): every claim tied to a passage, signable |
+| **Writes the paper** | [Writing a paper](guide/README.md#writing-a-paper) · [Figures & diagrams](guide/README.md#figures-and-diagrams) |
+| **Designs and simulates** | [Structures & CAD](guide/README.md#structures-and-cad) · [Molecular machines](guide/molecular-machines.md) · [structure editor](src/precis/data/skills/precis-se-help.md) · [PCBs](src/precis/data/skills/precis-pcb-help.md) |
+| **Web** | [Drive](guide/README.md#drive) is the front door; every kind has a page |
+| **Podcasts** | Daily morning brief and evening meditation, plus any draft narrated to audio: [audio](src/precis/data/skills/precis-audio-help.md) · [feed and ops](docs/runbooks/audio-ops.md) |
+
 ## See it
 
 <a href="guide/README.md">
