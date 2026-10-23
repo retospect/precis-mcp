@@ -354,6 +354,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per probe",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "deploy-{kind}:{host}",
+        "A heartbeating host is in no overlay deploy group (deploys silently "
+        "skip it), serves a sha other than the deployed release, or the "
+        "deploy fleet ledger itself is unpublished/invalid.",
+        budget="per probe",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",

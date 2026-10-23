@@ -30,6 +30,7 @@ from precis.workers.conditions import (
     _handler_service,
     _liveness_handler_names,
     _probe_dead_generation_claims,
+    _probe_deploy_fleet,
     _probe_limiter_bypassed,
     _probe_limiter_host_cap,
     _probe_llm_degraded,
@@ -1134,3 +1135,115 @@ def test_limiter_host_cap_fires_only_when_full_of_live_rows(
                 "DELETE FROM external_rate_limits WHERE provider = ANY(%s)",
                 ([live, idle],),
             )
+
+
+# ── deploy-fleet-coverage (gr507870) ────────────────────────────────────
+#
+# A heartbeating host dropped from every overlay deploy group keeps
+# serving its last sha in silence. The probe diffs the ledger
+# ``scripts/deploy`` publishes into app_settings.deploy.fleet
+# ({"sha", "at", "covered", "skipped"}) against fresh host_heartbeat rows.
+
+_FLEET_SHA_A = "a" * 40
+_FLEET_SHA_B = "b" * 40
+
+
+def _seed_beat(store: Store, host: str, *, code_sha: str | None = None) -> None:
+    meta = {"code_sha": code_sha} if code_sha else {}
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM host_heartbeat WHERE host = %s", (host,))
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) VALUES (%s, now(), %s::jsonb)",
+            (host, json.dumps(meta)),
+        )
+        conn.commit()
+
+
+def _set_ledger(store: Store, payload: dict | None) -> None:
+    with store.pool.connection() as conn:
+        if payload is None:
+            conn.execute("DELETE FROM app_settings WHERE key = 'deploy.fleet'")
+        else:
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES ('deploy.fleet', %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (json.dumps(payload),),
+            )
+        conn.commit()
+
+
+@pytest.fixture
+def fleet_ledger(store: Store):
+    """Deploy ledger + fake beat hosts, cleaned up afterwards."""
+    saved: list[str] = []
+    yield saved
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key = 'deploy.fleet'")
+        for h in saved:
+            conn.execute("DELETE FROM host_heartbeat WHERE host = %s", (h,))
+        conn.commit()
+
+
+def test_deploy_fleet_flags_uncovered_and_lagging_hosts(
+    store: Store, fleet_ledger
+) -> None:
+    """The incident shape: a live host in no deploy group fires
+    ``deploy-uncovered``; a covered host on a stale ``code_sha`` fires
+    ``deploy-behind`` (naming the recorded skip); a current host is quiet."""
+    _set_ledger(
+        store,
+        {
+            "sha": _FLEET_SHA_A,
+            "at": "2026-10-23T00:00:00Z",
+            "covered": ["fleet-a", "fleet-b"],
+            "skipped": {"fleet-b": _FLEET_SHA_B},
+        },
+    )
+    for h in ("fleet-a", "fleet-b", "fleet-c"):
+        fleet_ledger.append(h)
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)  # covered + current
+    _seed_beat(store, "fleet-b", code_sha=_FLEET_SHA_B)  # covered + behind
+    _seed_beat(store, "fleet-c", code_sha=_FLEET_SHA_B)  # uncovered
+
+    keys = {f.key: f.detail for f in _probe_deploy_fleet(store)}
+    mine = {
+        k: v
+        for k, v in keys.items()
+        if k.endswith((":fleet-a", ":fleet-b", ":fleet-c"))
+    }
+    assert set(mine) == {"deploy-behind:fleet-b", "deploy-uncovered:fleet-c"}
+    assert "recorded it skipped" in mine["deploy-behind:fleet-b"]
+    assert "no deploy group" in mine["deploy-uncovered:fleet-c"]
+
+
+def test_deploy_fleet_ledger_missing_or_invalid(store: Store, fleet_ledger) -> None:
+    """No ledger row means the check is blind — that gets its own finding
+    (the gr507870 shape), and a malformed payload does too."""
+    _set_ledger(store, None)
+    findings = _probe_deploy_fleet(store)
+    assert [f.key for f in findings] == ["deploy-ledger:unpublished"]
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('deploy.fleet', 'not-json') "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+        conn.commit()
+    findings = _probe_deploy_fleet(store)
+    assert [f.key for f in findings] == ["deploy-ledger:invalid"]
+
+
+def test_deploy_fleet_ignores_dark_hosts(store: Store, fleet_ledger) -> None:
+    """A host gone dark is host-dark's business, not a coverage finding."""
+    _set_ledger(store, {"sha": _FLEET_SHA_A, "covered": ["fleet-a"]})
+    fleet_ledger.extend(("fleet-dark", "fleet-a"))
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES ('fleet-dark', now() - interval '3 hours', '{}'::jsonb)"
+        )
+        conn.commit()
+    keys = {f.key for f in _probe_deploy_fleet(store)}
+    assert "deploy-uncovered:fleet-dark" not in keys
+    assert "deploy-behind:fleet-a" not in keys

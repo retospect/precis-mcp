@@ -74,6 +74,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -154,6 +155,69 @@ def resolve_host(override: str | None = None) -> str:
     import socket
 
     return os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
+
+
+#: The commit this process's install serves, frozen at first ask (same
+#: semantics as handlers/skill.py's ``_SOURCE_GIT_INFO``: "which commit is
+#: *this process* running" — a deploy bounces the worker, so a fresh
+#: process is the honest moment to re-resolve). Reported as
+#: ``host_heartbeat.meta.code_sha`` so the deploy-fleet-coverage condition
+#: can flag a host still serving an older release (gr507870).
+_code_sha: str | None = None
+_code_sha_done = False
+
+
+def _served_code_sha() -> str | None:
+    """The commit the running install was deployed from, or ``None``.
+
+    Lane order deliberately avoids ``handlers/skill.py``'s import weight
+    and its traps: an installed wheel answers from PEP 610
+    ``direct_url.json`` (the cluster's ``git+https://…@<sha>`` venvs record
+    the resolved commit), a source checkout answers its HEAD sha (a venv
+    inside a checkout is excluded so it can't pass the checkout's HEAD off
+    as an installed wheel's identity, same as ``_dotgit_info``), and the
+    image-baked ``PRECIS_GIT_SHA`` is the last resort — it describes the
+    build, not whatever got installed or mounted over it since.
+    """
+    global _code_sha, _code_sha_done
+    if _code_sha_done:
+        return _code_sha
+    _code_sha_done = True
+    try:
+        import precis
+
+        src = Path(precis.__file__).resolve() if precis.__file__ else None
+    except Exception:
+        src = None
+    if src is not None and "site-packages" in src.parts:
+        try:
+            import json
+            from importlib.metadata import distribution
+
+            raw = distribution("precis-mcp").read_text("direct_url.json")
+            if raw:
+                commit = (json.loads(raw).get("vcs_info") or {}).get("commit_id")
+                if commit:
+                    _code_sha = str(commit)
+        except Exception:
+            pass
+    elif src is not None:
+        try:
+            from precis.install_watchdog import checkout_fingerprint
+
+            for root in (src, *src.parents):
+                if (root / ".git").exists():
+                    sha = checkout_fingerprint(root)
+                    if sha:
+                        _code_sha = sha
+                    break
+        except Exception:
+            pass
+    if _code_sha is None:
+        env_sha = (os.environ.get("PRECIS_GIT_SHA") or "").strip()
+        if env_sha and env_sha != "unknown":
+            _code_sha = env_sha
+    return _code_sha
 
 
 #: A Docker container booted with no ``--hostname`` gets the short (12
@@ -946,6 +1010,12 @@ def _collect_and_upsert(
     env_present = advertised_env_presence()
     if env_present:
         meta["settings_env_present"] = env_present
+
+    # gr507870: the served commit, so the deploy-fleet-coverage condition
+    # can flag a host deploys stopped reaching (still heartbeating, still
+    # running the old release).
+    if code_sha := _served_code_sha():
+        meta["code_sha"] = code_sha
 
     store.record_heartbeat(
         host,

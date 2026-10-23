@@ -94,6 +94,8 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (≥1 s) more than doubled against the trailing week (info) |
 | `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
 
+## Derived-group check names
+
 Derived groups name their check after the thing they watch:
 
 - `cadence` — the `scheduler_leases` check: each lease row overdue past
@@ -117,7 +119,12 @@ Derived groups name their check after the thing they watch:
   `settings-env-shadowed`; `analysis-stale`; `limiter-bypassed` (fetcher
   traffic but no limiter consume in 24h: failing open); `limiter-cap-full`
   (`host:` rows at the seeding cap, none idle to evict: new hosts run
-  unpaced).
+  unpaced); `deploy-fleet-coverage` → `deploy-uncovered:<host>` (a live
+  host in no overlay deploy group — deploys silently skip it),
+  `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
+  `deploy-ledger:unpublished|invalid` (no `app_settings.deploy.fleet`
+  row yet — the overlay group map a successful `scripts/deploy` writes;
+  blind until then).
 
 ## See also
 

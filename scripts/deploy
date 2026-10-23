@@ -330,6 +330,60 @@ _sync_skipped_hosts() {
     return 0
 }
 
+# Publish "what the overlay covers + what sha just landed" into
+# app_settings.deploy.fleet (gr507870). The health_digest
+# deploy-fleet-coverage condition compares it against host_heartbeat —
+# the digest runs fleet-wide and cannot read the gitignored overlay, so a
+# host dropped from every deploy group keeps heartbeating while deploys
+# skip it (spark ran r82 through r86). The covered set is the union of the
+# ping-target groups — the same groups the rollout targets — read from
+# the overlay this run resolved, NOT the --limit'd args (a skipped host
+# is still covered; it just did not get this deploy). Called from both
+# success writers; best-effort — a missing prod-psql or a failed write
+# warns, never fails a green deploy. Host names are [A-Za-z0-9_.-], so
+# plain printf JSON is safe (same claim as _sync_skipped_hosts).
+_publish_fleet_ledger() {
+    local sha="$1" covered first h val
+    [[ -x "${REPO_ROOT}/scripts/prod-psql" && -f "${REPO_ROOT}/scripts/lib/pgb-host.sh" ]] || return 0
+    [[ -n "${OVERLAY_DIR:-}" && -f "${OVERLAY_DIR}/hosts.yml" ]] || {
+        say "fleet ledger: no overlay resolved (OVERLAY_DIR unset) — deploy.fleet row not refreshed"
+        return 0
+    }
+    covered="$( (
+        export CLUSTER_INVENTORY="${OVERLAY_DIR}/hosts.yml"
+        . "${REPO_ROOT}/scripts/lib/pgb-host.sh"
+        for g in ${PING_TARGETS//:/ }; do
+            inventory_group_hosts "$g" 2>/dev/null || true
+        done
+    ) | sort -u )"
+    [[ -n "$covered" ]] || {
+        say "fleet ledger: no hosts resolved under ${PING_TARGETS} in ${OVERLAY_DIR}/hosts.yml — not clobbering the last good row"
+        return 0
+    }
+    val="{\"sha\": \"${sha}\", \"at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"covered\": ["
+    first=1
+    while IFS= read -r h; do
+        [[ -n "$h" ]] || continue
+        [[ "$first" == 0 ]] && val+=", "
+        first=0
+        val+="\"$h\""
+    done <<< "$covered"
+    val+="], \"skipped\": {"
+    first=1
+    for h in "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[@]}"}"; do
+        [[ "$first" == 0 ]] && val+=", "
+        first=0
+        val+="\"$h\": \"${_PREV_DEPLOYED:-unknown}\""
+    done
+    val+="}}"
+    if "${REPO_ROOT}/scripts/prod-psql" "INSERT INTO app_settings (key, value) VALUES ('deploy.fleet', '${val}') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()" >/dev/null; then
+        say "fleet ledger: deploy.fleet published (${sha:0:8}, $(grep -c . <<< "$covered") covered host(s))"
+    else
+        say "WARNING: fleet ledger publish failed (prod-psql nonzero) — deploy-fleet-coverage keeps its previous row"
+    fi
+    return 0
+}
+
 _write_deploy_state_marker() {
     local sha
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
@@ -338,6 +392,7 @@ _write_deploy_state_marker() {
     printf '%s %s %s%s\n' "$sha" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     _sync_skipped_hosts
+    _publish_fleet_ledger "$sha" || true
     _consume_ship_pin "$sha"
     _move_prod_pointer "$sha"
     # The marker just moved: print the unrendered-role advisory now too —
@@ -1670,6 +1725,7 @@ fi
     # (gr332009). Unconditional — a deploy that got here ran green.
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     _sync_skipped_hosts
+    _publish_fleet_ledger "$DEPLOYED_SHA" || true
     # The pin has done its job: this sha is what the fleet runs now.
     _consume_ship_pin "$DEPLOYED_SHA"
     _move_prod_pointer "$DEPLOYED_SHA"

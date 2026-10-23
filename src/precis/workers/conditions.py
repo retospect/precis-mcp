@@ -53,6 +53,14 @@ was invisible for 4 days):
   reported via ``host_heartbeat.meta.settings_env_present``) after a DB
   row has taken over resolution — cleanup visibility for the ansible-diet
   pass, not a failure.
+* ``deploy-fleet-coverage`` — gr507870: a heartbeating host that the
+  overlay puts in no deploy group keeps running its old release with
+  deploys silently skipping it (spark ran r82 through r86). Deploy-group
+  membership lives only in the gitignored overlay, which a fleet host
+  cannot read, so ``scripts/deploy`` publishes it into
+  ``app_settings.deploy.fleet`` on every successful deploy; this probe
+  diffs that ledger against ``host_heartbeat`` — uncovered live hosts and
+  hosts whose ``meta.code_sha`` is not the deployed sha are findings.
 
 Heal arm: ``pass-dead-on-host`` / ``pass-wedged`` findings on the
 ``precis-worker`` process request **restart-once** — ssh + a sudoers
@@ -70,6 +78,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -886,6 +895,135 @@ def _probe_limiter_host_cap(store: Store) -> list[ConditionFinding]:
     ]
 
 
+#: ``app_settings`` key ``scripts/deploy`` refreshes after every green
+#: deploy: JSON ``{"sha": <deployed sha>, "at": <isoZ>, "covered":
+#: [<host>, …], "skipped": {<host>: <sha it still runs>}}``. Host names
+#: only — never an address (the repo is public).
+_DEPLOY_LEDGER_KEY = "deploy.fleet"
+
+#: A host heartbeating within this window counts as live for the coverage
+#: question — generous on purpose: an hourly eval that caught a host
+#: mid-bounce would otherwise drop and re-fire the alert every deploy.
+_DEPLOY_FLEET_FRESH_MIN = 60
+
+_DEPLOY_FLEET_SQL = """
+SELECT host, meta->>'code_sha' AS code_sha
+  FROM host_heartbeat
+ WHERE ts > now() - make_interval(mins => %(fresh_min)s)
+   AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
+   AND host !~ '^[0-9a-f]{12}$'
+ ORDER BY host
+"""
+
+#: ``meta.code_sha`` shapes worth comparing (a full sha or "unknown"/absent
+#: — anything else is an unidentifiable build the lag arm can't judge).
+_DEPLOY_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
+    """gr507870 — diff the deploy-published fleet ledger against live
+    heartbeats. Two finding shapes under one rule:
+
+    * ``deploy-uncovered:<host>`` — a live host in no deploy group.
+      Deploys never reach it; it keeps serving the last sha it got.
+    * ``deploy-behind:<host>`` — a covered host whose ``meta.code_sha``
+      (heartbeat.py's served-commit stamp) is not the deployed sha.
+
+    Both need the ledger: written by ``scripts/deploy`` at each success
+    marker because the overlay's group membership never leaves the deploy
+    machine. ``deploy-ledger:unpublished`` fires while no deploy has
+    written one yet (a missing row means this check is blind, which is
+    itself the gr507870 shape). An unreadable payload is
+    ``deploy-ledger:invalid``.
+    """
+    fresh_min = int(
+        _env_f("PRECIS_COND_DEPLOY_FLEET_FRESH_MIN", _DEPLOY_FLEET_FRESH_MIN)
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (_DEPLOY_LEDGER_KEY,)
+        ).fetchone()
+        beats = conn.execute(_DEPLOY_FLEET_SQL, {"fresh_min": fresh_min}).fetchall()
+    if row is None:
+        return [
+            ConditionFinding(
+                key="deploy-ledger:unpublished",
+                detail=(
+                    "no deploy fleet ledger on record (app_settings."
+                    f"{_DEPLOY_LEDGER_KEY} — a successful scripts/deploy "
+                    "writes it); host↔deploy-group coverage is unjudgeable "
+                    "until the next deploy publishes"
+                ),
+            )
+        ]
+    import json
+
+    try:
+        ledger = json.loads(str(row[0]))
+        assert isinstance(ledger, dict)
+        covered = ledger.get("covered")
+        assert isinstance(covered, list) and all(isinstance(h, str) for h in covered)
+    except (json.JSONDecodeError, AssertionError):
+        return [
+            ConditionFinding(
+                key="deploy-ledger:invalid",
+                detail=(
+                    f"app_settings.{_DEPLOY_LEDGER_KEY} is not the expected "
+                    "{'sha', 'covered': [host…]} payload — re-run a deploy "
+                    "or inspect the row"
+                ),
+            )
+        ]
+    covered_set = {str(h) for h in covered}
+    deployed_sha = ledger.get("sha")
+    deployed_sha = (
+        str(deployed_sha)
+        if isinstance(deployed_sha, str) and _DEPLOY_SHA_RE.match(deployed_sha)
+        else None
+    )
+    skipped = ledger.get("skipped")
+    skipped_set = {str(h) for h in skipped} if isinstance(skipped, dict) else set()
+    out: list[ConditionFinding] = []
+    for host, code_sha in beats:
+        host = str(host)
+        if host not in covered_set:
+            out.append(
+                ConditionFinding(
+                    key=f"deploy-uncovered:{host}",
+                    detail=(
+                        f"{host} heartbeats but the overlay puts it in no "
+                        "deploy group — every deploy silently skips it and "
+                        "it keeps serving the last sha it ever got "
+                        "(gr507870: re-add it to a deploy group, or retire "
+                        "the host's daemons)"
+                    ),
+                )
+            )
+            continue
+        if (
+            deployed_sha
+            and isinstance(code_sha, str)
+            and _DEPLOY_SHA_RE.match(code_sha)
+            and code_sha != deployed_sha
+        ):
+            skipped_note = (
+                " (the deploy recorded it skipped — it still runs the pre-deploy sha)"
+                if host in skipped_set
+                else ""
+            )
+            out.append(
+                ConditionFinding(
+                    key=f"deploy-behind:{host}",
+                    detail=(
+                        f"{host} serves {code_sha[:12]} but the deployed "
+                        f"release is {deployed_sha[:12]}{skipped_note} — "
+                        "running stale code behind a fleet it was left out of"
+                    ),
+                )
+            )
+    return out
+
+
 CONDITIONS: tuple[Condition, ...] = (
     Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
     Condition("limiter-cap-full", "warn", _probe_limiter_host_cap),
@@ -898,6 +1036,7 @@ CONDITIONS: tuple[Condition, ...] = (
     Condition("agent-ticks-toolless", "warn", _probe_toolless_agent_spend),
     Condition("dead-generation-claims", "warn", _probe_dead_generation_claims),
     Condition("settings-env-shadowed", "info", _probe_settings_env_shadowed),
+    Condition("deploy-fleet-coverage", "warn", _probe_deploy_fleet),
 )
 
 
