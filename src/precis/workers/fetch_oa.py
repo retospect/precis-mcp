@@ -85,7 +85,8 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlsplit
@@ -115,6 +116,7 @@ from precis.utils.http import (
     polite_user_agent,
 )
 from precis.utils.rate_limit import RateLimited
+from precis.utils.rate_limit import observe_timing as observe_rate_limit_timing
 from precis.utils.rate_limit import require as require_rate_limit
 from precis.workers import activity
 
@@ -537,7 +539,13 @@ def _gate_sleep(seconds: float) -> bool:
 
 
 def _record_deferral(
-    store: Store, stub: StubRef, source: str, key: str | None, t0: float
+    store: Store,
+    stub: StubRef,
+    source: str,
+    key: str | None,
+    t0: float,
+    *,
+    timing: _LegTiming | None = None,
 ) -> None:
     """Breadcrumb a leg the provider gate couldn't admit before its wall.
 
@@ -549,8 +557,10 @@ def _record_deferral(
     count the same way, which is what returns today's skipped stubs to
     the next-day retry).
     """
-    store.append_event(
+    _timed_event(
+        store,
         stub.ref_id,
+        timing=timing,
         source=source,
         event="provider_wait",
         payload={"provider": key},
@@ -614,6 +624,118 @@ class StubRef:
     #: which stays fetch-eligible and re-checks every pass — doesn't re-emit
     #: an identical event each time.
     retraction_status: str | None = None
+
+
+# The default worker batch is 32 refs. One compact summary per ref bounds
+# diagnostic log volume while covering the full pass that can hit the deadline.
+_TIMING_SAMPLE_REFS = 32
+_timing_local = threading.local()
+
+
+@dataclass
+class _LegTiming:
+    source: str
+    gate_ms: float = 0.0
+    limiter_db_ms: float = 0.0
+    limiter_sleep_ms: float = 0.0
+    request_ms: float = 0.0
+    event_db_ms: float = 0.0
+    outcome: str = "in_flight"
+    limiter_providers: set[str] = field(default_factory=set)
+    deadline_remaining_ms: float | None = None
+
+    def record_limiter(self, provider: str, phase: str, elapsed_ms: float) -> None:
+        self.limiter_providers.add(provider)
+        if phase == "db":
+            self.limiter_db_ms += elapsed_ms
+        elif phase == "sleep":
+            self.limiter_sleep_ms += elapsed_ms
+
+
+@dataclass
+class _RefTiming:
+    ref_id: int
+    started: float
+    claim_ms: float
+    pass_deadline: float | None = None
+    legs: list[_LegTiming] = field(default_factory=list)
+    active_leg: _LegTiming | None = None
+    retraction_ms: float = 0.0
+    markup_ms: float = 0.0
+    done_event_db_ms: float = 0.0
+
+
+def _current_ref_timing() -> _RefTiming | None:
+    return getattr(_timing_local, "ref", None)
+
+
+def _timed_event(
+    store: Store,
+    ref_id: int,
+    *,
+    timing: _LegTiming | None = None,
+    **event: Any,
+) -> None:
+    trace = _current_ref_timing()
+    measured_leg = timing or (trace.active_leg if trace is not None else None)
+    if trace is None and timing is None:
+        store.append_event(ref_id, **event)
+        return
+    started = time.perf_counter()
+    try:
+        store.append_event(ref_id, **event)
+    finally:
+        if trace is not None:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if measured_leg is not None:
+                measured_leg.event_db_ms += elapsed_ms
+            else:
+                trace.done_event_db_ms += elapsed_ms
+
+
+def _observe_limiter_wait(timing: _LegTiming) -> Callable[[str, str, float], None]:
+    return timing.record_limiter
+
+
+def _log_ref_timing(trace: _RefTiming) -> None:
+    def _format_leg(leg: _LegTiming) -> str:
+        deadline = (
+            f",deadline_remaining={leg.deadline_remaining_ms:.0f}ms"
+            if leg.deadline_remaining_ms is not None
+            else ""
+        )
+        return (
+            f"{leg.source}:{leg.outcome}"
+            f"(gate={leg.gate_ms:.0f}ms"
+            f",limiter_db={leg.limiter_db_ms:.0f}ms"
+            f",limiter_sleep={leg.limiter_sleep_ms:.0f}ms"
+            f",request={leg.request_ms:.0f}ms"
+            f",request_minus_limiter="
+            f"{max(0.0, leg.request_ms - leg.limiter_db_ms - leg.limiter_sleep_ms):.0f}ms"
+            f",event_db={leg.event_db_ms:.0f}ms"
+            f"{deadline}"
+            f",providers={','.join(sorted(leg.limiter_providers)) or '-'})"
+        )
+
+    legs = ";".join(_format_leg(leg) for leg in trace.legs)
+    pass_remaining = (
+        (trace.pass_deadline - _clock()) * 1000
+        if trace.pass_deadline is not None
+        else None
+    )
+    log.info(
+        "fetch_oa timing ref_id=%d ref_ms=%.0f claim_db_ms=%.0f "
+        "pass_remaining_ms=%s retraction_ms=%.0f markup_ms=%.0f "
+        "final_db_ms=%.0f legs=%s",
+        trace.ref_id,
+        (time.perf_counter() - trace.started) * 1000,
+        trace.claim_ms,
+        f"{pass_remaining:.0f}" if pass_remaining is not None else "-",
+        trace.retraction_ms,
+        trace.markup_ms,
+        trace.done_event_db_ms,
+        legs or "-",
+    )
 
 
 def _fetch_explore_fraction() -> float:
@@ -1070,7 +1192,8 @@ def _apply_retraction_gate(
             url=f"https://doi.org/{notice_dois[0]}" if notice_dois else None,
             propagate_to_findings=retracted,
         )
-        store.append_event(
+        _timed_event(
+            store,
             stub.ref_id,
             source=_RETRACTION_GATE_SOURCE,
             event="retraction_skip" if retracted else "provenance_flag",
@@ -2605,8 +2728,10 @@ def run_oa_fetch_pass(
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("fetch_oa: si pass errored: %s", exc)
 
+    claim_started = time.perf_counter()
     with store.pool.connection() as conn:
         stubs = claim_stubs_to_fetch(conn, limit=limit)
+    claim_ms = (time.perf_counter() - claim_started) * 1000
 
     if not stubs:
         return {"claimed": 0, "ok": 0, "failed": 0}
@@ -2619,6 +2744,7 @@ def run_oa_fetch_pass(
     total = len(stubs)
     wall_s = _pass_wall_s()
     started = _clock()
+    pass_deadline = started + wall_s if wall_s > 0 else None
     gate = _ProviderGate()
     stub_iter = iter(enumerate(stubs, start=1))
     counts = {"attempted": 0, "ok": 0, "failed": 0}
@@ -2653,19 +2779,36 @@ def run_oa_fetch_pass(
                     return
                 counts["attempted"] += 1
             i, stub = item
-            outcome = _process_stub(
-                store,
-                stub,
-                i,
-                total,
-                inbox_path,
-                email,
-                api_key,
-                wiley_token,
-                core_key,
-                openalex_content_key,
-                gate,
+            trace = (
+                _RefTiming(
+                    ref_id=stub.ref_id,
+                    started=time.perf_counter(),
+                    claim_ms=claim_ms,
+                    pass_deadline=pass_deadline,
+                )
+                if i <= _TIMING_SAMPLE_REFS
+                else None
             )
+            previous = getattr(_timing_local, "ref", None)
+            _timing_local.ref = trace
+            try:
+                outcome = _process_stub(
+                    store,
+                    stub,
+                    i,
+                    total,
+                    inbox_path,
+                    email,
+                    api_key,
+                    wiley_token,
+                    core_key,
+                    openalex_content_key,
+                    gate,
+                )
+            finally:
+                _timing_local.ref = previous
+                if trace is not None:
+                    _log_ref_timing(trace)
             with pull_lock:
                 counts[outcome] += 1
 
@@ -2720,9 +2863,46 @@ def _process_stub(
         # other leg (including the markup-first pass): a retracted
         # paper has nothing worth chasing an OA copy for, so decide
         # this before paying for any download attempt.
-        if _apply_retraction_gate(
-            store, stub, mailto=email, gate=gate, stop_at=stop_at
-        ):
+        trace = _current_ref_timing()
+        retraction_timing = (
+            _LegTiming("retraction_check") if trace is not None else None
+        )
+        previous_leg = trace.active_leg if trace is not None else None
+        if trace is not None and retraction_timing is not None:
+            trace.legs.append(retraction_timing)
+            trace.active_leg = retraction_timing
+        retraction_started = time.perf_counter()
+        retracted = False
+        try:
+            timing_scope = (
+                observe_rate_limit_timing(_observe_limiter_wait(retraction_timing))
+                if retraction_timing is not None
+                else nullcontext()
+            )
+            with timing_scope:
+                retracted = _apply_retraction_gate(
+                    store, stub, mailto=email, gate=gate, stop_at=stop_at
+                )
+        except Exception:
+            if retraction_timing is not None:
+                retraction_timing.outcome = "error"
+            raise
+        else:
+            if retraction_timing is not None:
+                retraction_timing.outcome = "skip" if retracted else "continue"
+        finally:
+            if retraction_timing is not None:
+                retraction_timing.request_ms = (
+                    time.perf_counter() - retraction_started
+                ) * 1000
+                if stop_at is not None:
+                    retraction_timing.deadline_remaining_ms = (
+                        stop_at - time.perf_counter()
+                    ) * 1000
+            if trace is not None:
+                trace.active_leg = previous_leg
+                trace.retraction_ms = (time.perf_counter() - retraction_started) * 1000
+        if retracted:
             return "ok"
 
         # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
@@ -2730,21 +2910,46 @@ def _process_stub(
         # effort — its failure must never block the PDF fetch, which
         # runs unconditionally afterwards to acquire the printable.
         staged_markup: _StagedMarkup | None = None
+        markup_timing = _LegTiming("markup_bundle") if trace is not None else None
+        previous_leg = trace.active_leg if trace is not None else None
+        if trace is not None and markup_timing is not None:
+            trace.legs.append(markup_timing)
+            trace.active_leg = markup_timing
+        markup_started = time.perf_counter()
         try:
-            staged_markup = _run_markup_cascade(
-                store,
-                stub,
-                inbox_path,
-                api_key,
-                gate=gate,
-                stop_at=stop_at,
+            timing_scope = (
+                observe_rate_limit_timing(_observe_limiter_wait(markup_timing))
+                if markup_timing is not None
+                else nullcontext()
             )
+            with timing_scope:
+                staged_markup = _run_markup_cascade(
+                    store,
+                    stub,
+                    inbox_path,
+                    api_key,
+                    gate=gate,
+                    stop_at=stop_at,
+                )
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
                 "fetch_oa: markup pass errored for ref_id=%s: %s",
                 stub.ref_id,
                 exc,
             )
+        finally:
+            if markup_timing is not None:
+                markup_timing.request_ms = (time.perf_counter() - markup_started) * 1000
+                markup_timing.outcome = (
+                    "staged" if staged_markup is not None else "none"
+                )
+                if stop_at is not None:
+                    markup_timing.deadline_remaining_ms = (
+                        stop_at - time.perf_counter()
+                    ) * 1000
+            if trace is not None:
+                trace.active_leg = previous_leg
+                trace.markup_ms = (time.perf_counter() - markup_started) * 1000
         # gr161905: when markup already landed, the companion PDF this
         # cascade drops must never be OCR'd as a body candidate — no
         # matter which host's watcher reaches it first, it's the
@@ -3119,7 +3324,8 @@ def _run_markup_cascade(
                     elsevier_outcome.duration_ms,
                 )
     if elsevier_outcome is not None:
-        store.append_event(
+        _timed_event(
+            store,
             stub.ref_id,
             source=_SOURCE_ELSEVIER_XML,
             event=elsevier_outcome.event,
@@ -3180,7 +3386,8 @@ def _run_markup_cascade(
             except Exception as exc:
                 leg_ms = _ms(t0)
                 gate.note_outcome(key, "api_error", leg_ms)
-                store.append_event(
+                _timed_event(
+                    store,
                     stub.ref_id,
                     source=leg.source,
                     event="api_error",
@@ -3199,7 +3406,8 @@ def _run_markup_cascade(
                     refused.add(leg.limiter)
                     leg_ms = _ms(t0)
                     gate.note_outcome(key, "rate_limited", leg_ms)
-                    store.append_event(
+                    _timed_event(
+                        store,
                         stub.ref_id,
                         source=leg.source,
                         event="rate_limited",
@@ -3220,7 +3428,8 @@ def _run_markup_cascade(
                     if skip_reason is not None:
                         staged_path.unlink(missing_ok=True)
                         gate.note_outcome(key, "no_oa_version", _ms(t0))
-                        store.append_event(
+                        _timed_event(
+                            store,
                             stub.ref_id,
                             source=leg.source,
                             event="no_oa_version",
@@ -3268,7 +3477,8 @@ def _run_markup_cascade(
                 )
                 leg_ms = _ms(t0)
                 gate.note_outcome(key, "fetch_failed", leg_ms)
-                store.append_event(
+                _timed_event(
+                    store,
                     stub.ref_id,
                     source=leg.source,
                     event="fetch_failed",
@@ -3277,7 +3487,8 @@ def _run_markup_cascade(
                 )
                 continue
             gate.healthy(key)
-            store.append_event(
+            _timed_event(
+                store,
                 stub.ref_id,
                 source=leg.source,
                 event="fetch_ok",
@@ -3475,6 +3686,10 @@ def _run_cascade(
     for source, runner in providers:
         if stop_at is not None and time.perf_counter() >= stop_at:
             break
+        trace = _current_ref_timing()
+        timing = _LegTiming(source) if trace is not None else None
+        if trace is not None and timing is not None:
+            trace.legs.append(timing)
         key = _PROVIDER_KEYS.get(source)
         leg_t0 = time.perf_counter()
         # The leg's retry tail ends at the earlier of its own wall and the
@@ -3486,19 +3701,47 @@ def _run_cascade(
         # A leg the gate can't admit before its wall defers — the
         # provider is saturated or backing off, and this stub's leg is
         # retried on its next claim rather than recorded as a miss.
-        if not gate.acquire(key, deadline=deadline):
-            _record_deferral(store, stub, source, key, leg_t0)
+        gate_t0 = time.perf_counter()
+        admitted = gate.acquire(key, deadline=deadline)
+        if timing is not None:
+            timing.gate_ms = (time.perf_counter() - gate_t0) * 1000
+            if deadline is not None:
+                timing.deadline_remaining_ms = (deadline - time.perf_counter()) * 1000
+        if not admitted:
+            if timing is not None:
+                timing.outcome = "provider_wait"
+            _record_deferral(store, stub, source, key, leg_t0, timing=timing)
             continue
         # Held for the leg's whole tail; the finally's release keeps an
         # unexpected raise from shrinking the provider's cap this pass.
         try:
             try:
-                outcome = runner(deadline)
+                request_t0 = time.perf_counter()
+                if timing is None:
+                    outcome = runner(deadline)
+                else:
+                    with observe_rate_limit_timing(_observe_limiter_wait(timing)):
+                        outcome = runner(deadline)
+                if timing is not None:
+                    timing.request_ms = (time.perf_counter() - request_t0) * 1000
+                    if deadline is not None:
+                        timing.deadline_remaining_ms = (
+                            deadline - time.perf_counter()
+                        ) * 1000
             except Exception as exc:
+                if timing is not None:
+                    timing.request_ms = (time.perf_counter() - request_t0) * 1000
+                    timing.outcome = "api_error"
+                    if deadline is not None:
+                        timing.deadline_remaining_ms = (
+                            deadline - time.perf_counter()
+                        ) * 1000
                 leg_ms = _ms(leg_t0)
                 gate.note_outcome(key, "api_error", leg_ms)
-                store.append_event(
+                _timed_event(
+                    store,
                     stub.ref_id,
+                    timing=timing,
                     source=source,
                     event="api_error",
                     payload={"error": str(exc)[:200]},
@@ -3507,10 +3750,16 @@ def _run_cascade(
                 continue
             if outcome is None:
                 # No identifier for this source — silent skip; no event.
+                if timing is not None:
+                    timing.outcome = "no_identifier"
                 continue
+            if timing is not None:
+                timing.outcome = outcome.event
             gate.note_outcome(key, outcome.event, outcome.duration_ms)
-            store.append_event(
+            _timed_event(
+                store,
                 stub.ref_id,
+                timing=timing,
                 source=source,
                 event=outcome.event,
                 payload=outcome.payload,

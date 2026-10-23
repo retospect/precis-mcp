@@ -23,6 +23,8 @@ focus on cascade orchestration + DB shape.
 
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -3878,3 +3880,96 @@ class TestThroughputBounds:
         # Past deadline at the first failure → the retry never fired.
         assert calls[0] == 1
         assert sleeps == []
+
+
+def test_sampled_ref_logs_limiter_request_and_database_timing(
+    store: Store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One bounded sample per pass separates limiter DB/sleep, provider call,
+    and ref-event writes without making a real outbound request."""
+    from precis.utils import rate_limit
+
+    class _Result:
+        def __init__(self, row: tuple[Any, ...] | None) -> None:
+            self.row = row
+
+        def fetchone(self) -> tuple[Any, ...] | None:
+            return self.row
+
+    class _LimiterConnection:
+        def __init__(self) -> None:
+            self.consumes = 0
+
+        def execute(self, query: str, *_args: Any) -> _Result:
+            if query == rate_limit._CONSUME_SQL:
+                self.consumes += 1
+                return _Result(None if self.consumes == 1 else (1,))
+            if query == rate_limit._SELECT_STATE_SQL:
+                return _Result((1, 1.0, None, 0.0, 0))
+            pytest.fail(f"unexpected limiter query: {query[:32]}")
+
+    limiter_connection = _LimiterConnection()
+    monkeypatch.setattr(rate_limit, "_get_conn", lambda: limiter_connection)
+    monkeypatch.setattr(rate_limit, "_next_wait", lambda *_args: 0.002)
+
+    def _drain_sleep(seconds: float) -> bool:
+        time.sleep(seconds)
+        return False
+
+    monkeypatch.setattr(rate_limit, "drain_sleep", _drain_sleep)
+    monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+    monkeypatch.setenv("PRECIS_RATE_LIMIT", "1")
+    monkeypatch.setenv("PRECIS_FETCH_MARKUP", "0")
+    monkeypatch.setattr(fetch_oa, "_pass_workers", lambda: 1)
+    monkeypatch.setattr(
+        fetch_oa, "_apply_retraction_gate", lambda *_args, **_kwargs: False
+    )
+    ref_id = _seed_paper_stub(store, doi="10.1234/timing")
+
+    def _publisher(
+        stub: StubRef, *, inbox_dir: Path, deadline: float | None = None
+    ) -> fetch_oa.FetchOutcome:
+        assert inbox_dir == tmp_path and deadline is not None
+        fetch_oa.require_rate_limit("core")
+        time.sleep(0.002)
+        return fetch_oa.FetchOutcome(
+            "fetch_ok",
+            {
+                "doi": stub.doi,
+                "url": "https://publisher.example/paper.pdf",
+                "filename": "paper.pdf",
+                "size_bytes": 12,
+            },
+            2,
+        )
+
+    monkeypatch.setattr(fetch_oa, "_try_publisher", _publisher)
+    caplog.set_level(logging.INFO, logger="precis.workers.fetch_oa")
+    result = run_oa_fetch_pass(
+        store,
+        limit=1,
+        inbox_dir=tmp_path,
+        email="a@b",
+        api_key="",
+        wiley_token="",
+        core_key="",
+        openalex_content_key="",
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if "fetch_oa timing ref_id=" in record.getMessage()
+    )
+    assert f"ref_id={ref_id}" in line
+    assert "claim_db_ms=" in line
+    assert "retraction_ms=" in line
+    assert "limiter_db=" in line
+    assert "limiter_sleep=" in line
+    assert "request_minus_limiter=" in line
+    assert "event_db=" in line
+    assert "deadline_remaining=" in line

@@ -78,6 +78,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import psycopg
@@ -86,6 +89,41 @@ from precis.config import load_config
 from precis.liveness import drain_sleep
 
 log = logging.getLogger(__name__)
+
+_TimingObserver = Callable[[str, str, float], None]
+_timing_observer: ContextVar[_TimingObserver | None] = ContextVar(
+    "rate_limit_timing_observer", default=None
+)
+
+
+@contextmanager
+def observe_timing(observer: _TimingObserver) -> Iterator[None]:
+    """Observe this context's limiter DB and sleep time in milliseconds.
+
+    Opt-in tracing for a caller that needs to separate shared-limiter wait
+    from its own network call. The callback is deliberately isolated from
+    limiter behavior: an instrumentation error never changes admission.
+    """
+    token = _timing_observer.set(observer)
+    try:
+        yield
+    finally:
+        _timing_observer.reset(token)
+
+
+def _report_timing(
+    observer: _TimingObserver | None,
+    provider: str,
+    phase: str,
+    started: float | None,
+) -> None:
+    if observer is None or started is None:
+        return
+    try:
+        observer(provider, phase, (time.perf_counter() - started) * 1000)
+    except Exception:
+        log.debug("rate_limit: timing observer failed", exc_info=True)
+
 
 #: Module-level dedicated connection. Opened lazily on first :func:`acquire`
 #: call; reopened if closed or the configured DSN changes (the latter
@@ -433,20 +471,37 @@ def acquire(
         return True
     try:
         deadline = time.monotonic() + max_wait_s
+        observer = _timing_observer.get()
         while True:
-            conn = _get_conn()
+            started = time.perf_counter() if observer is not None else None
+            try:
+                conn = _get_conn()
+            finally:
+                _report_timing(observer, provider, "db", started)
             if conn is None:
                 _warn_unpaced(provider, "no database_url configured")
                 return True
-            granted = conn.execute(_CONSUME_SQL, (provider, n, n, n, n)).fetchone()
+            started = time.perf_counter() if observer is not None else None
+            try:
+                granted = conn.execute(_CONSUME_SQL, (provider, n, n, n, n)).fetchone()
+            finally:
+                _report_timing(observer, provider, "db", started)
             if granted is not None:
                 return True
-            state = conn.execute(_SELECT_STATE_SQL, (provider,)).fetchone()
+            started = time.perf_counter() if observer is not None else None
+            try:
+                state = conn.execute(_SELECT_STATE_SQL, (provider,)).fetchone()
+            finally:
+                _report_timing(observer, provider, "db", started)
             if state is None:
                 if seed_row is None:
                     _warn_unpaced(provider, "no external_rate_limits row")
                     return True  # unknown provider -> fail open
-                _seed_host_row(conn, provider, seed_row)
+                started = time.perf_counter() if observer is not None else None
+                try:
+                    _seed_host_row(conn, provider, seed_row)
+                finally:
+                    _report_timing(observer, provider, "db", started)
                 seed_row = None  # seed once; a second miss fails open
                 continue
             _capacity, refill_per_sec, daily_cap, avail, used_today = state
@@ -456,7 +511,12 @@ def acquire(
             if remaining <= 0:
                 return False  # rate-starved past the wait budget
             wait = _next_wait(n, float(avail), float(refill_per_sec), remaining)
-            if drain_sleep(wait):
+            started = time.perf_counter() if observer is not None else None
+            try:
+                draining = drain_sleep(wait)
+            finally:
+                _report_timing(observer, provider, "sleep", started)
+            if draining:
                 # Draining — stop waiting for tokens; the caller's retry
                 # path is itself drain-gated (precis.utils.http.external_retry).
                 return False
@@ -531,4 +591,12 @@ def park(provider: str, seconds: float) -> None:
         _warn_fail_open(provider, "park")
 
 
-__all__ = ["RateLimited", "acquire", "bucket_rate", "close", "park", "require"]
+__all__ = [
+    "RateLimited",
+    "acquire",
+    "bucket_rate",
+    "close",
+    "observe_timing",
+    "park",
+    "require",
+]
