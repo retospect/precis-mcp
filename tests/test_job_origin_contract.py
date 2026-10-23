@@ -290,9 +290,35 @@ def test_origin_vocabulary_matches_spec() -> None:
 
 
 def test_put_stamps_agent_for_a_plain_mcp_put(hub: Hub, store: Store) -> None:
-    """An unmarked put — an MCP session, a chat agent — is 'agent'
+    """A dispatch-context put — an MCP session, a chat agent — is 'agent'
     (ruled 2026-10-23: a chat agent's put is not human)."""
-    assert _meta(store, _put_job(hub))["origin"] == "agent"
+    with revision_context(actor="agent"):
+        job_id = _put_job(hub)
+    assert _meta(store, job_id)["origin"] == "agent"
+
+
+def test_worker_put_inherits_parent_job_origin(hub: Hub, store: Store) -> None:
+    """A direct handler put (a worker minting with no dispatch context —
+    ruled 2026-10-23, option a) takes its parent job's origin."""
+    with store.tx() as conn:
+        parent = mint_background_job(
+            store,
+            conn=conn,
+            job_type="plan_tick",
+            executor="coordinator",
+            title="p",
+            origin="agent",
+        )
+    resp = JobHandler(hub=hub).put(job_type="graph_garden", parent_id=int(parent.id))
+    m = re.search(r"job id=(\d+)", resp.body)
+    assert m is not None
+    assert _meta(store, int(m.group(1)))["origin"] == "agent"
+
+
+def test_worker_put_without_parent_job_is_background(hub: Hub, store: Store) -> None:
+    """A direct put whose parent isn't a job (todo/quest — the quest
+    compute/loop and pathway mints) falls back to 'background'."""
+    assert _meta(store, _put_job(hub))["origin"] == "background"
 
 
 def test_put_stamps_human_inside_human_write_context(hub: Hub, store: Store) -> None:
@@ -311,3 +337,28 @@ def test_put_stamps_background_inside_a_background_loop(hub: Hub, store: Store) 
     with as_background_actor("watch"):
         job_id = _put_job(hub)
     assert _meta(store, job_id)["origin"] == "background"
+
+
+def test_worker_put_inside_revision_context_still_inherits(
+    hub: Hub, store: Store
+) -> None:
+    """A job parent wins over the write context: a worker put inside a
+    ``revision_context`` still takes the parent job's class, not the
+    context's — only job-parented fan-out can do this (job parents are
+    coordinator-only)."""
+    with store.tx() as conn:
+        parent = mint_background_job(
+            store,
+            conn=conn,
+            job_type="plan_tick",
+            executor="coordinator",
+            title="p",
+            origin="recurring",
+        )
+    with revision_context(actor="agent"):
+        resp = JobHandler(hub=hub).put(
+            job_type="graph_garden", parent_id=int(parent.id)
+        )
+    m = re.search(r"job id=(\d+)", resp.body)
+    assert m is not None
+    assert _meta(store, int(m.group(1)))["origin"] == "recurring"

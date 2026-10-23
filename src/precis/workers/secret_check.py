@@ -96,7 +96,7 @@ def mint_status_job(store: Store, *, origin: str, title: str) -> int | None:
     the insert run under one advisory xact lock so two concurrent minters
     can't both pass the pending check and double-mint.
     """
-    from precis.store.types import Tag
+    from precis.workers._mint import mint_background_job
 
     prio = 2 if origin == "human" else 8
     with store.pool.connection() as conn:
@@ -104,25 +104,14 @@ def mint_status_job(store: Store, *, origin: str, title: str) -> int | None:
         if _pending_fresh_status_job(conn):
             conn.commit()
             return None
-        ref = store.insert_ref(
-            kind="job",
-            slug=None,
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type=STATUS_JOB_TYPE,
+            executor="job_inproc",
             title=title,
-            meta={
-                "job_type": STATUS_JOB_TYPE,
-                "executor": "job_inproc",
-                "params": {},
-                "origin": origin,
-            },
             prio=prio,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "queued"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
+            origin=origin,
         )
         conn.commit()
     return int(ref.id)

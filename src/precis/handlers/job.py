@@ -46,11 +46,15 @@ from precis.workers.executors import (
     suspended_job_types,
 )
 from precis.workers.executors._common import (
+    _CLASS_RANK_CASE,
+    _DEFAULT_JOB_PRIO,
     QUEUED,
     RUNNING,
     STATUS_NAMESPACE,
-    _aged_prio_sql,
+    _claim_order_sql,
     claim_age_step_s,
+    claim_class_age_s,
+    claim_class_rank_enabled,
 )
 from precis.workers.job_types import get_job_type, known_job_types
 
@@ -1669,13 +1673,16 @@ class JobHandler(NumericRefHandler):
             allowed_kinds=_JOB_PARENT_KINDS_WITH_COORDINATOR
             | self._plugin_owner_kinds(),
         )
+        parent_origin: str | None = None
         if parent_kind == "job":
             with self.store.pool.connection() as conn:
                 row = conn.execute(
-                    "SELECT meta->>'executor' FROM refs WHERE ref_id = %s",
+                    "SELECT meta->>'executor', meta->>'origin' FROM refs "
+                    "WHERE ref_id = %s",
                     (parent_int,),
                 ).fetchone()
             parent_executor = row[0] if row else None
+            parent_origin = row[1] if row else None
             if parent_executor != "coordinator":
                 raise BadInput(
                     f"parent_id={parent_int} is a job with executor="
@@ -1695,19 +1702,31 @@ class JobHandler(NumericRefHandler):
             "executor": resolved_executor,
             "params": params,
         }
-        # Scheduling class (job-scheduling-fairness D1): 'human' only
-        # for an authenticated web write (deps.human_write_context sets
-        # trust_actor_type='human'); a chat agent's put is 'agent'
-        # (ruled 2026-10-23), one inside a background loop 'background'.
+        # Scheduling class (job-scheduling-fairness D1). A job parent
+        # means worker fan-out: the child takes the parent's class
+        # (validated; 'background' when it has none) regardless of the
+        # caller's write context — ruled 2026-10-23, option a. Else
+        # 'human' only for an authenticated web write
+        # (deps.human_write_context sets trust_actor_type='human'); a
+        # chat agent's put is 'agent' (ruled 2026-10-23), one inside a
+        # background loop 'background', a direct caller with no dispatch
+        # context 'background'.
         from precis.store.revision_context import current_revision_context
+        from precis.workers._mint import JOB_ORIGINS
 
         _ctx = current_revision_context()
-        if _ctx is not None and _ctx.trust_actor_type == "human":
+        if parent_kind == "job":
+            meta["origin"] = (
+                parent_origin if parent_origin in JOB_ORIGINS else "background"
+            )
+        elif _ctx is not None and _ctx.trust_actor_type == "human":
             meta["origin"] = "human"
         elif current_background_actor() is not None:
             meta["origin"] = "background"
-        else:
+        elif _ctx is not None:
             meta["origin"] = "agent"
+        else:
+            meta["origin"] = "background"
         if resolved_idem is not None:
             meta["idem_key"] = resolved_idem
         if requires:
@@ -2291,13 +2310,10 @@ class JobHandler(NumericRefHandler):
         executor = meta.get("executor")
         if not executor:
             return []
-        qsql = (
-            "(SELECT max(rt.created_at) FROM ref_tags rt "
-            "JOIN tags t USING (tag_id) "
-            "WHERE rt.ref_id = r.ref_id AND t.namespace = %s AND t.value = %s)"
-        )
-        asql, aparams = _aged_prio_sql(
-            qsql, (STATUS_NAMESPACE, QUEUED), claim_age_step_s()
+        rank_sql, asql, aparams = _claim_order_sql(
+            claim_age_step_s(),
+            claim_class_age_s(),
+            class_rank=claim_class_rank_enabled(),
         )
         suspended = sorted(suspended_job_types())
         susp_sql = (
@@ -2308,8 +2324,34 @@ class JobHandler(NumericRefHandler):
             row = conn.execute(
                 f"""
                 WITH q AS (
-                  SELECT r.ref_id, {qsql} AS qs, {asql} AS aged
+                  SELECT r.ref_id, q2.qs AS qs, {rank_sql} AS crank,
+                         {asql} AS aged
                     FROM refs r
+                    CROSS JOIN LATERAL (
+                          SELECT max(rt.created_at) AS qs
+                            FROM ref_tags rt JOIN tags t USING (tag_id)
+                           WHERE rt.ref_id = r.ref_id
+                             AND t.namespace = %s AND t.value = %s
+                        ) q2
+                    CROSS JOIN LATERAL (
+                          SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q2.qs))::float8, 0)
+                                 AS age_s,
+                                 {_CLASS_RANK_CASE} AS base_class
+                        ) b
+                    CROSS JOIN LATERAL (
+                          SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")})
+                                 AS top_class
+                            FROM refs r3
+                           WHERE r3.kind = 'job' AND r3.retired_at IS NULL
+                             AND r3.meta->>'executor' = %s
+                             AND EXISTS (
+                                   SELECT 1 FROM ref_tags rt3
+                                     JOIN tags t3 USING (tag_id)
+                                    WHERE rt3.ref_id = r3.ref_id
+                                      AND t3.namespace = %s AND t3.value = %s
+                                 )
+                             AND COALESCE(r3.prio, %s)::float8 <> 1
+                        ) t
                    WHERE r.kind = 'job' AND r.retired_at IS NULL
                      AND r.meta->>'executor' = %s
                      AND EXISTS (SELECT 1 FROM ref_tags rt
@@ -2319,15 +2361,21 @@ class JobHandler(NumericRefHandler):
                      {susp_sql}
                 )
                 SELECT count(*),
-                       count(*) FILTER (WHERE (aged, qs, ref_id) <
-                            (SELECT aged, qs, ref_id FROM q WHERE ref_id = %s)),
+                       count(*) FILTER (WHERE (crank, aged, qs, ref_id) <
+                            (SELECT crank, aged, qs, ref_id FROM q WHERE ref_id = %s)),
                        (SELECT qs FROM q WHERE ref_id = %s)
                   FROM q
                 """,
                 (
+                    *aparams,
                     STATUS_NAMESPACE,
                     QUEUED,
-                    *aparams,
+                    _DEFAULT_JOB_PRIO,
+                    _DEFAULT_JOB_PRIO,
+                    executor,
+                    STATUS_NAMESPACE,
+                    QUEUED,
+                    _DEFAULT_JOB_PRIO,
                     executor,
                     STATUS_NAMESPACE,
                     QUEUED,

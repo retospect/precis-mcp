@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -125,6 +126,13 @@ _DEFAULT_CONCURRENCY = 16
 #: hard caps (``llm_summarize``/``classify`` ``_DEFAULT_MAX_CONCURRENCY``),
 #: which clamp whatever is asked for regardless.
 _MAX_DERIVED_CONCURRENCY = 32
+
+#: Wall bound per run (job-scheduling-fairness, ruled 2026-10-23): a
+#: drain stops between batches past this deadline, keeps its partial
+#: progress, and finalizes succeeded with ``meta.truncated`` + the
+#: remaining count — the materializer's next tick re-tops the band, so
+#: a slot frees at most this often on the shared ``job_inproc`` lane.
+_MAX_RUN_S = 600.0
 
 #: Consecutive fully-unproductive batches (claimed &gt; 0 but ok == 0 — a saturated
 #: slot or a model that keeps missing) before the drain bails early instead of
@@ -312,10 +320,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         concurrency = _derived_concurrency(ctx.store, pass_name)
 
     run_once = _RUNNER_FACTORIES[pass_name]()
+    deadline = time.monotonic() + _MAX_RUN_S
     processed = ok_total = failed_total = 0
     no_progress = 0
 
     while processed < limit:
+        if time.monotonic() >= deadline:
+            ctx.set_meta(truncated=True, truncated_remaining=limit - processed)
+            ctx.append_chunk(
+                "job_event",
+                f"derived_drain[{pass_name}]: {_MAX_RUN_S:.0f}s run bound hit "
+                f"after {processed} chunk(s) ({limit - processed} left) — "
+                "exiting cleanly; the next claim continues (fairness D4)",
+            )
+            break
         # Renew THIS job's lease at the top of every iteration — a drain slower
         # than the lease window must not get epoch/expiry-reclaimed while we're
         # still working it (a second worker generation would then own it). A

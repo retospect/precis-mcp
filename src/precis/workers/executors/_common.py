@@ -84,18 +84,46 @@ JOB_SUMMARY_KIND = "job_summary"
 _DEFAULT_JOB_PRIO = 5
 
 #: Claim ageing (claude-inproc-lane-starves-old-jobs): every this many
-#: seconds a queued job has waited, its claim rank improves by one prio
-#: band. Strict prio order let a steady stream of fresh prio-2 cron work
-#: (``news_poll``) hold prio-8 jobs queued for ~3h on a live lane; with
-#: ageing a prio-``p`` job outranks every *fresh* prio-``q`` arrival after
-#: ``(p - q)`` steps, and anything queued later than that ranks behind it,
-#: so its wait is bounded. Ageing stops at :data:`_CLAIM_AGE_FLOOR`: it lifts
-#: a job ahead of cron (2) and default (5) work but never into the prio-1
-#: chat/preempt band, which stays absolute. Override with
+#: seconds a queued job has waited, its in-class claim rank improves by
+#: one prio band. Strict prio order let a steady stream of fresh prio-2
+#: cron work (``news_poll``) hold prio-8 jobs queued for ~3h on a live
+#: lane; with in-class ageing a prio-``p`` job outranks every *fresh*
+#: prio-``q`` arrival of its class after ``(p - q)`` steps, and anything
+#: queued later than that ranks behind it, so its wait is bounded.
+#: In-class ageing stops at the class's best prio: it lifts a job to
+#: tie its class's most urgent members but never past them; the prio-1
+#: chat/preempt band stays absolute across classes. Override with
 #: :data:`CLAIM_AGE_STEP_ENV`; ``0`` restores strict prio order.
 DEFAULT_CLAIM_AGE_STEP_S = 600.0
-_CLAIM_AGE_FLOOR = 1.5
 CLAIM_AGE_STEP_ENV = "PRECIS_CLAIM_AGE_STEP_S"
+
+#: How long a queued row must wait before it promotes one class
+#: (job-scheduling-fairness D3): a background row climbs a full class
+#: per interval until it ties the top non-prio-1 class queued.
+DEFAULT_CLAIM_CLASS_AGE_S = 1800.0
+CLAIM_CLASS_AGE_ENV = "PRECIS_CLAIM_CLASS_AGE_S"
+
+#: ``0`` restores the exact pre-slice-2 claim order (aged prio, queued
+#: age, ref_id — the 1.5 floor); anything else keeps the class order.
+CLAIM_CLASS_RANK_ENV = "PRECIS_CLAIM_CLASS_RANK"
+
+#: ``meta.origin`` -> base class rank (D2: human 0, agent 1, recurring 2,
+#: background 3). A missing origin (pre-slice-1 rows) reads as
+#: ``recurring`` at prio <= 2 — the old cron band — else ``background``.
+_CLASS_RANK_CASE = (
+    "CASE r.meta->>'origin' "
+    "WHEN 'human' THEN 0 WHEN 'agent' THEN 1 WHEN 'recurring' THEN 2 "
+    "WHEN 'background' THEN 3 "
+    "ELSE (CASE WHEN COALESCE(r.prio, %s)::float8 <= 2 THEN 2 ELSE 3 END) END"
+)
+_BASE_CLASS_RANK = {"human": 0, "agent": 1, "recurring": 2, "background": 3}
+
+#: Code-shipped per-host running caps by ``job_type`` (D4 cap half) —
+#: the derived_drain band can never occupy every ``job_inproc`` process.
+#: An operator overrides per setting ``claim.max_running.<job_type>``
+#: in ``app_state`` (an int; ``0`` suspends the type entirely).
+_MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 2}
+_MAX_RUNNING_KEY_PREFIX = "claim.max_running."
 
 
 def claim_age_step_s() -> float:
@@ -113,6 +141,29 @@ def claim_age_step_s() -> float:
             DEFAULT_CLAIM_AGE_STEP_S,
         )
         return DEFAULT_CLAIM_AGE_STEP_S
+
+
+def claim_class_age_s() -> float:
+    """The class-promotion bound in seconds (D3)."""
+    raw = os.environ.get(CLAIM_CLASS_AGE_ENV)
+    if not raw:
+        return DEFAULT_CLAIM_CLASS_AGE_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        log.warning(
+            "claim: %s=%r is not a number; using %gs",
+            CLAIM_CLASS_AGE_ENV,
+            raw,
+            DEFAULT_CLAIM_CLASS_AGE_S,
+        )
+        return DEFAULT_CLAIM_CLASS_AGE_S
+
+
+def claim_class_rank_enabled() -> bool:
+    """``PRECIS_CLAIM_CLASS_RANK != '0'`` — the slice-2 order; ``0`` is
+    the kill switch restoring the pre-slice-2 aged-prio order."""
+    return os.environ.get(CLAIM_CLASS_RANK_ENV) != "0"
 
 
 #: How long an ``llm:``-affine job (see :func:`~precis.workers.dispatch.
@@ -516,33 +567,74 @@ def _service_pin_hosts_for(
     return hosts if hosts else None
 
 
-def _aged_prio_sql(
-    queued_since_sql: str, queued_since_params: tuple[Any, ...], age_step_s: float
-) -> tuple[str, tuple[Any, ...]]:
-    """The claim rank over ``r.prio``: prio less one band per ``age_step_s``
-    of ``queued_since`` age, floored at :data:`_CLAIM_AGE_FLOOR` (or the
-    row's own prio when that is already more urgent). ``age_step_s <= 0``
-    is the plain prio. A NULL ``queued_since`` (a row re-tagged between the
-    claim's EXISTS and this subquery) ages as zero: without the COALESCE
-    the age term is NULL, ``GREATEST`` skips it and the row would rank at
-    the floor. Returns ``(sql, params)``; ``queued_since_sql`` binds
-    ``queued_since_params``.
+def _claim_order_sql(
+    age_step_s: float,
+    class_age_s: float,
+    *,
+    class_rank: bool = True,
+) -> tuple[str, str, tuple[Any, ...]]:
+    """The D2/D3 claim order: ``(claim_rank_sql, aged_prio_sql, params)``.
+
+    The expressions read ``b.age_s`` / ``b.base_class`` from the LATERALs
+    in :func:`claim_executor_jobs` (queued-tag age and base origin class,
+    computed once per row — :data:`_CLASS_RANK_CASE`; missing origin
+    reads as the old cron band, 2, at prio <= 2, else background 3).
+    ``claim_rank`` is ``-1`` for a prio-1 preempt (absolute across
+    classes — ruled 2026-10-23); otherwise ``base - floor(age /
+    class_age_s)``, floored at 0 — a row promotes one full class per
+    interval until it ties the top class, so a class flood can hold a
+    lower class down only for a bounded wait (D3; the Python re-rank
+    clamps at the top class actually present in the candidate set).
+    ``aged_prio`` is the in-class order: prio less one band per
+    ``age_step_s`` of age, floored at the effective class's best prio
+    (5 for human/agent — the puts' default — 2 for recurring/
+    background) so a prio-8 row can tie but never beat its class's
+    prio-2 members. ``class_rank=False`` (the
+    ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch) restores the pre-slice-2
+    order verbatim: aged prio with the 1.5 floor in both columns, so the
+    ORDER BY is the old ``aged, queued_since, ref_id``.
     """
-    if age_step_s <= 0:
-        return "COALESCE(r.prio, %s)::float8", (_DEFAULT_JOB_PRIO,)
-    sql = (
-        "GREATEST(COALESCE(r.prio, %s)::float8"
-        f" - COALESCE(EXTRACT(EPOCH FROM (now() - {queued_since_sql}))::float8, 0)"
-        " / %s, LEAST(COALESCE(r.prio, %s)::float8, %s))"
+    if not class_rank:
+        if age_step_s <= 0:
+            sql = "COALESCE(r.prio, %s)::float8"
+            return sql, sql, (_DEFAULT_JOB_PRIO, _DEFAULT_JOB_PRIO)
+        sql = (
+            "GREATEST(COALESCE(r.prio, %s)::float8 - b.age_s / %s,"
+            " LEAST(COALESCE(r.prio, %s)::float8, %s))"
+        )
+        params = (_DEFAULT_JOB_PRIO, age_step_s, _DEFAULT_JOB_PRIO, 1.5)
+        # Both columns carry the same expression — params bind twice.
+        return sql, sql, (*params, *params)
+    #: The floor mirrors the Python re-rank: a row promotes to
+    #: ``min(base, max(top_class, 2))`` — it may tie the top class queued
+    #: (``t.top_class``, the min base class among queued non-prio-1
+    #: candidates) but never reaches agent/human rank, so a promoted
+    #: background backlog can't fill the claim window ahead of a fresh
+    #: foreground row.
+    _eff_floor = "LEAST(b.base_class, GREATEST(COALESCE(t.top_class, b.base_class), 2))"
+    claim_rank = (
+        "CASE WHEN COALESCE(r.prio, %s)::float8 = 1 THEN -1"
+        f" ELSE GREATEST(b.base_class - FLOOR(b.age_s / %s), {_eff_floor}) END"
     )
-    params = (
-        _DEFAULT_JOB_PRIO,
-        *queued_since_params,
-        age_step_s,
-        _DEFAULT_JOB_PRIO,
-        _CLAIM_AGE_FLOOR,
-    )
-    return sql, params
+    rank_params = (_DEFAULT_JOB_PRIO, class_age_s)
+    aged_params: tuple[Any, ...]
+    if age_step_s > 0:
+        aged = (
+            "GREATEST(COALESCE(r.prio, %s)::float8 - b.age_s / %s,"
+            " LEAST(COALESCE(r.prio, %s)::float8,"
+            " CASE WHEN GREATEST(b.base_class - FLOOR(b.age_s / %s),"
+            f" {_eff_floor}) < 2 THEN 5 ELSE 2 END))"
+        )
+        aged_params = (
+            _DEFAULT_JOB_PRIO,
+            age_step_s,
+            _DEFAULT_JOB_PRIO,
+            class_age_s,
+        )
+    else:
+        aged = "COALESCE(r.prio, %s)::float8"
+        aged_params = (_DEFAULT_JOB_PRIO,)
+    return claim_rank, aged, (*rank_params, *aged_params)
 
 
 def claim_executor_jobs(
@@ -647,13 +739,20 @@ def claim_executor_jobs(
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
 
-    **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15).**
-    ``ORDER BY aged_prio ASC, queued_since ASC, ref_id ASC`` where
+    **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
+    class rank 2026-10-23, job-scheduling-fairness D2/D3).** ``ORDER BY
+    claim_rank ASC, aged_prio ASC, queued_since ASC, ref_id ASC`` where
+    ``claim_rank`` is the row's origin class (human 0 < agent 1 <
+    recurring 2 < background 3; a missing origin reads as the old cron
+    band at prio <= 2, else background) stepped down one class per
+    :func:`claim_class_age_s` of wait until it ties the top class
+    queued, ``-1`` for a prio-1 preempt (absolute across classes), and
     ``aged_prio`` is ``COALESCE(prio, 5)`` less one band per
-    :func:`claim_age_step_s` of ``queued_since`` age, floored at
-    ``_CLAIM_AGE_FLOOR`` (see :data:`DEFAULT_CLAIM_AGE_STEP_S`: a steady
-    fresh prio-2 stream otherwise starves prio-5/8 rows for hours; prio-1
-    preempt stays absolute). Jobs queued moments apart still order by
+    :func:`claim_age_step_s` of ``queued_since`` age, floored at the
+    effective class's best prio (5 above recurring, 2 at or below it —
+    see :data:`DEFAULT_CLAIM_AGE_STEP_S`: a steady fresh prio-2 stream
+    otherwise starves prio-5/8 rows for hours). Jobs queued moments
+    apart still order by
     ``prio`` exactly as before — LOWER
     ``refs.prio`` first, the ``0014_refs_prio.sql``
     convention every writer follows (prio=1 chat/preempt · 2 cron · 5
@@ -1125,21 +1224,95 @@ def claim_executor_jobs(
     # this cycle's bounded slice of stale-running candidates, so this query
     # no longer carries the running-row OR-arms (moved above).
     # ``queued_since`` is needed twice — as a column and inside the aged
-    # rank — and an output alias can't be used in an ORDER BY expression,
-    # so the subquery is spelled out in both places.
-    queued_since_sql = """(SELECT max(rt.created_at)
-                  FROM ref_tags rt JOIN tags t USING (tag_id)
-                 WHERE rt.ref_id = r.ref_id
-                   AND t.namespace = %s AND t.value = %s)"""
-    aged_prio_sql, aged_params = _aged_prio_sql(
-        queued_since_sql, (STATUS_NAMESPACE, QUEUED), claim_age_step_s()
+    # Per-job_type running caps (D4 cap half): code-shipped
+    # :data:`_MAX_RUNNING_DEFAULTS` plus ``app_state``
+    # ``claim.max_running.<job_type>`` overrides bound how many rows of a
+    # type may be RUNNING on this host — the derived_drain band can never
+    # occupy every ``job_inproc`` process. At-cap types are EXCLUDED from
+    # the candidate set, so a capped band can't starve rows queued behind
+    # it. A per-type advisory lock serializes the count+claim pair in
+    # this transaction, so two concurrent claimers can't both pass the
+    # cap.
+    cap_sql = ""
+    cap_params: tuple[Any, ...] = ()
+    caps: dict[str, int] = {}
+    running_by_type: dict[str, int] = {}
+    claim_host = node or reserve_host_id
+    if claim_host is not None:
+        caps = dict(_MAX_RUNNING_DEFAULTS)
+        for key, value in conn.execute(
+            "SELECT key, value FROM app_state WHERE key LIKE %s",
+            (f"{_MAX_RUNNING_KEY_PREFIX}%",),
+        ).fetchall():
+            try:
+                caps[str(key)[len(_MAX_RUNNING_KEY_PREFIX) :]] = int(str(value))
+            except ValueError:
+                log.warning("claim: %s=%r is not an int; ignored", key, value)
+        for jt in sorted(caps):
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+                (f"claim-cap:{jt}",),
+            )
+        running_by_type = {
+            str(jt): int(cnt)
+            for jt, cnt in conn.execute(
+                "SELECT r2.meta->>'job_type', count(*) FROM refs r2 "
+                "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
+                "AND r2.meta->>'executor' = %s "
+                "AND r2.meta->>'lease_host' = %s "
+                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "USING (tag_id) WHERE rt.ref_id = r2.ref_id "
+                "AND t.namespace = %s AND t.value = %s) "
+                "GROUP BY 1",
+                (executor, claim_host, STATUS_NAMESPACE, RUNNING),
+            ).fetchall()
+        }
+        at_cap = sorted(
+            jt for jt, cap in caps.items() if running_by_type.get(jt, 0) >= cap
+        )
+        if at_cap:
+            cap_sql = " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"
+            cap_params = (at_cap,)
+
+    # ── Fresh-work pass (unchanged ordering/semantics) ──────────────────
+    # ``q.qs`` (the queued-tag's stamp) and ``b.age_s``/``b.base_class``
+    # are computed once per row by LATERALs — the claim-order expressions
+    # read the aliases instead of repeating correlated subqueries.
+    claim_rank_sql, aged_prio_sql, order_params = _claim_order_sql(
+        claim_age_step_s(),
+        claim_class_age_s(),
+        class_rank=claim_class_rank_enabled(),
     )
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
-               {queued_since_sql} AS queued_since,
+               q.qs AS queued_since,
+               {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio
           FROM refs r
+          CROSS JOIN LATERAL (
+                SELECT max(rt.created_at) AS qs
+                  FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = %s AND t.value = %s
+              ) q
+          CROSS JOIN LATERAL (
+                SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q.qs))::float8, 0)
+                       AS age_s,
+                       {_CLASS_RANK_CASE} AS base_class
+              ) b
+          CROSS JOIN LATERAL (
+                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class
+                  FROM refs r3
+                 WHERE r3.kind = 'job' AND r3.retired_at IS NULL
+                   AND r3.meta->>'executor' = %s
+                   AND EXISTS (
+                         SELECT 1 FROM ref_tags rt3 JOIN tags t3 USING (tag_id)
+                          WHERE rt3.ref_id = r3.ref_id
+                            AND t3.namespace = %s AND t3.value = %s
+                       )
+                   AND COALESCE(r3.prio, %s)::float8 <> 1
+              ) t
          WHERE r.kind = 'job'
            AND r.retired_at IS NULL
            AND r.meta->>'executor' = %s
@@ -1161,15 +1334,21 @@ def claim_executor_jobs(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}{suspend_sql}
-         ORDER BY aged_prio ASC, queued_since ASC, r.ref_id ASC
+               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}
+         ORDER BY claim_rank ASC, aged_prio ASC, q.qs ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
         (
+            *order_params,
             STATUS_NAMESPACE,
             QUEUED,
-            *aged_params,
+            _DEFAULT_JOB_PRIO,
+            _DEFAULT_JOB_PRIO,
+            executor,
+            STATUS_NAMESPACE,
+            QUEUED,
+            _DEFAULT_JOB_PRIO,
             executor,
             node,
             STATUS_NAMESPACE,
@@ -1177,6 +1356,7 @@ def claim_executor_jobs(
             STATUS_NAMESPACE,
             list(TERMINAL),
             *suspend_params,
+            *cap_params,
             limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
@@ -1193,20 +1373,61 @@ def claim_executor_jobs(
         for res in res_set:
             host_count[res] = host_count.get(res, 0) + 1
 
-    def _order_key(r: Any) -> tuple[float, float, Any, int]:
-        # ``aged_prio`` (r[6]): prio less one band per age step — the SQL
-        # ORDER BY's first key. NULL only if a race retagged the row between
-        # the EXISTS and the subquery; fall back to the un-aged prio.
-        if r[6] is not None:
-            aged = float(r[6])
+    # D2/D3 effective rank over the locked candidates: the SQL
+    # ``claim_rank`` promotes a row one class per class-age interval with
+    # an absolute floor; the effective clamp here is the top BASE class
+    # actually present among non-prio-1 candidates — a row climbs until
+    # it ties that top class and then wins ties by in-class age and
+    # queued_since, so a class flood can hold a lower class down only
+    # for a bounded wait (D3 acceptance: no background row waits more
+    # than 3 h on a live lane).
+    age_step = claim_age_step_s()
+    class_age = claim_class_age_s()
+    class_rank_on = claim_class_rank_enabled()
+    now_utc = datetime.now(UTC)
+
+    def _row_base(r: Any) -> int:
+        origin = (dict(r[2] or {})).get("origin")
+        if isinstance(origin, str) and origin in _BASE_CLASS_RANK:
+            return _BASE_CLASS_RANK[origin]
+        p = float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
+        return 2 if p <= 2 else 3
+
+    def _row_prio(r: Any) -> float:
+        return float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
+
+    top_class = min((_row_base(r) for r in rows if _row_prio(r) != 1.0), default=0)
+
+    def _row_age_s(r: Any) -> float:
+        qs = r[5] or r[4]
+        if qs is None:
+            return 0.0
+        if getattr(qs, "tzinfo", None) is None:
+            qs = qs.replace(tzinfo=UTC)
+        return max(0.0, (now_utc - qs).total_seconds())
+
+    def _order_key(r: Any) -> tuple[float, float, float, Any, int]:
+        prio = _row_prio(r)
+        age = _row_age_s(r)
+        if class_rank_on and prio == 1.0:
+            rank, floor = -1.0, 5.0
+        elif class_rank_on:
+            base = _row_base(r)
+            # May tie the top class queued, never reaches agent/human.
+            rank = float(
+                max(base - int(age // class_age), min(base, max(top_class, 2)))
+            )
+            floor = 5.0 if rank < 2 else 2.0
         else:
-            aged = float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
+            # Kill switch: the pre-slice-2 order — aged prio, 1.5 floor.
+            rank, floor = 0.0, 1.5
+        aged = max(prio - age / age_step, min(prio, floor)) if age_step > 0 else prio
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
         # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, aged, r[5] or r[4], int(r[0]))
+        return (-scarcity, rank, aged, r[5] or r[4], int(r[0]))
 
     ranked = sorted(rows, key=_order_key)
 
@@ -1215,10 +1436,15 @@ def claim_executor_jobs(
         if fresh_claimed >= limit:
             break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
+        job_type = str(meta.get("job_type") or "")
+        cap = caps.get(job_type)
+        if cap is not None and running_by_type.get(job_type, 0) >= cap:
+            continue  # hit the cap mid-claim — the SQL exclusion only sees the count at query time
         claim = _finish_claim(ref_id, title, meta, QUEUED, r[4])
         if claim is not None:
             claimed.append(claim)
             fresh_claimed += 1
+            running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
     return claimed
 
 

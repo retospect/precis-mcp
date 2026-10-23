@@ -19,13 +19,15 @@ sees exactly the simulated waits.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
-    _aged_prio_sql,
+    _CLASS_RANK_CASE,
+    _claim_order_sql,
     claim_executor_jobs,
     set_status,
 )
@@ -33,15 +35,21 @@ from precis.workers.executors._common import (
 _TICK_S = 300
 #: ``_common.DEFAULT_CLAIM_AGE_STEP_S`` — literal so the repro runs on main.
 _AGE_STEP_S = 600
+_CLASS_AGE_S = 1800
 _HORIZON_TICKS = 12 * 3600 // _TICK_S
 
 
-def _queue_job(store: Store, executor: str, prio: int) -> int:
+def _queue_job(
+    store: Store, executor: str, prio: int, origin: str | None = None
+) -> int:
+    meta: dict[str, Any] = {"job_type": "demo", "executor": executor, "params": {}}
+    if origin is not None:
+        meta["origin"] = origin
     ref = store.insert_ref(
         kind="job",
         slug=None,
         title=f"job prio={prio}",
-        meta={"job_type": "demo", "executor": executor, "params": {}},
+        meta=meta,
         prio=prio,
     )
     store.add_tag(
@@ -74,7 +82,11 @@ def _simulate(store: Store, executor: str, old_prios: list[int]) -> dict[int, in
     waits: dict[int, int] = {}
     for tick in range(_HORIZON_TICKS):
         now_s = tick * _TICK_S
-        arrivals[_queue_job(store, executor, 2)] = now_s
+        # The flood is stamped ``recurring`` — the class ABOVE the
+        # unstamped (background) old rows — because slice 2 (D3) makes
+        # ageing class-preserving and the class-step bound is what the
+        # wait budget now rests on.
+        arrivals[_queue_job(store, executor, 2, origin="recurring")] = now_s
         _stamp_queued_since(store, {rid: now_s - at for rid, at in arrivals.items()})
         with store.pool.connection() as conn:
             rows = claim_executor_jobs(conn, executor=executor, limit=1)
@@ -122,17 +134,30 @@ def test_ageing_keeps_prio_order_among_fresh_jobs(store: Store) -> None:
 
 
 def test_null_queued_since_ranks_at_unaged_prio(store: Store) -> None:
-    """A NULL ``queued_since`` (re-tag race) ages as zero: the row keeps its
-    own prio instead of falling through ``GREATEST`` to the 1.5 floor."""
-    sql, params = _aged_prio_sql("NULL::timestamptz", (), _AGE_STEP_S)
-    aged_sql, aged_params = _aged_prio_sql(
-        "(now() - interval '30 minutes')", (), _AGE_STEP_S
-    )
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            f"SELECT {sql}, {aged_sql} FROM (VALUES (8)) AS r(prio)",
-            (*params, *aged_params),
-        ).fetchone()
-    assert row is not None
-    assert row[0] == pytest.approx(8.0)
-    assert row[1] == pytest.approx(5.0)  # 30 min = 3 steps of 600 s
+    """A NULL ``queued_since`` (re-tag race) ages as zero: the row keeps
+    its own prio and base class; a 30-min-old row promotes one class and
+    ages three bands toward the in-class floor (D3)."""
+    rank_sql, aged_sql, params = _claim_order_sql(_AGE_STEP_S, _CLASS_AGE_S)
+
+    def _at(qs_expr: str):
+        with store.pool.connection() as conn:
+            return conn.execute(
+                f"SELECT {rank_sql}, {aged_sql} "
+                "FROM (VALUES (8, NULL::jsonb)) AS r(prio, meta) "
+                f"CROSS JOIN LATERAL (SELECT {qs_expr} AS qs) q "
+                "CROSS JOIN LATERAL (SELECT COALESCE("
+                "EXTRACT(EPOCH FROM (now() - q.qs))::float8, 0) AS age_s, "
+                f"({_CLASS_RANK_CASE}) AS base_class) b "
+                # A recurring row queued alongside: the promotion clamp
+                # reads the top non-prio-1 class present.
+                "CROSS JOIN (VALUES (2)) AS t(top_class)",
+                (*params, 5),
+            ).fetchone()
+
+    row = _at("NULL::timestamptz")
+    old = _at("now() - interval '30 minutes'")
+    assert row is not None and old is not None
+    assert row[0] == pytest.approx(3.0)  # missing origin, prio>2 → background
+    assert row[1] == pytest.approx(8.0)
+    assert old[0] == pytest.approx(2.0)  # promoted one class at the bound
+    assert old[1] == pytest.approx(5.0)  # 30 min = 3 steps of 600 s
