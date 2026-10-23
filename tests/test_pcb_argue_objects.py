@@ -47,3 +47,18 @@ def test_classify_object_only_when_key_in_catalogue() -> None:
     assert not argue.is_object_handle("net:X")
     assert argue.all_handles(valid)["objects"] == ["outline:0", "via:1.0000:2.0000"]
     assert "objects" not in argue.all_handles(VALID)
+
+
+def test_display_handle_prefixes_only_layout_objects() -> None:
+    # Layout-only objects read as the L: grammar the chat chips use; parts,
+    # pins, nets and feature anchors keep their spelling (workbench spec).
+    assert argue.display_handle("via:1.5:2.0") == "L:via 1.5 2.0"
+    assert (
+        argue.display_handle("silk:F_Silkscreen:refdes:U1")
+        == "L:silk F_Silkscreen refdes U1"
+    )
+    assert argue.display_handle("outline:0") == "L:outline 0"
+    assert argue.display_handle("U1") == "U1"
+    assert argue.display_handle("U1.3") == "U1.3"
+    assert argue.display_handle("net:GND") == "net:GND"
+    assert argue.display_handle("feature:outline") == "feature:outline"

@@ -101,6 +101,19 @@ def is_object_handle(h: str) -> bool:
     return h.partition(":")[0] in OBJECT_PREFIXES and ":" in h
 
 
+def display_handle(h: str) -> str:
+    """The user-facing spelling of ``h`` (workbench spec, Reto 2026-10-18):
+    objects that exist only in the layout — vias, silkscreen, outline
+    segments, fiducials — carry an ``L:`` prefix with spaces for colons
+    (``via:1.5:2.0`` -> ``L:via 1.5 2.0``); parts, pins and nets keep their
+    grammar (``U1``, ``U1.3``, ``net:GND``). The server mirror of
+    ``displayOf`` in ``static/pcb-argue.js`` so the notes ledger shows the
+    same spelling as the chat chips. Stored anchors stay the raw key."""
+    if is_object_handle(h):
+        return "L:" + h.replace(":", " ")
+    return h
+
+
 def candidates(text: str) -> list[str]:
     """Every token in ``text`` that *could* be a handle, in order, deduped.
     Trailing sentence punctuation is not part of a handle."""
@@ -439,6 +452,7 @@ __all__ = [
     "candidates",
     "classify",
     "dangling",
+    "display_handle",
     "feature_handle",
     "handles_in",
     "is_object_handle",

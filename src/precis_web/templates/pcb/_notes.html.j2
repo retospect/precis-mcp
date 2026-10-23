@@ -8,7 +8,7 @@
     {% if n.created_at %}<span title="{{ n.created_at | abs_ts }}">{{ n.created_at | ago }}</span>{% endif %}
     {% for h in n.about %}
       <span class="font-mono rounded border px-1 {% if h in n.dangling %}border-danger-strong text-danger-strong line-through{% else %}border-line-strong text-fg-secondary{% endif %}"
-            {% if h in n.dangling %}title="dangling: no longer on the board"{% endif %}>{{ h }}</span>
+            {% if h in n.dangling %}title="dangling: no longer on the board"{% endif %}>{{ h | pcb_handle }}</span>
     {% endfor %}
   </div>
   <p class="mt-1 whitespace-pre-wrap text-sm text-fg">{{ n.body }}</p>

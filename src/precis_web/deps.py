@@ -114,6 +114,13 @@ def _make_jinja_env() -> jinja2.Environment:
     # ago)') — ref page headers (gr496193); callers put abs_ts in title=.
     env.filters["when"] = when
 
+    # A pcb argue handle in its user-facing spelling: layout-only objects
+    # (vias, silk, outline, fiducials) carry the L: prefix the chat chips
+    # use, so the notes ledger reads the same grammar (workbench spec).
+    from precis.pcb.argue import display_handle
+
+    env.filters["pcb_handle"] = display_handle
+
     # ``planner_models()`` → the ordered list of picker rows
     # (``{alias, tier, model, placement, fallbacks, size, context}``) the
     # router understands for ``meta.llm_tier``. Registered as a Jinja global

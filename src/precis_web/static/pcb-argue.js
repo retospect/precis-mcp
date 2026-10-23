@@ -36,7 +36,8 @@
 
   // Layout-only objects (vias, tracks, pours, zones — catalogue keys with
   // a via:/silk:/outline:/fiducial: prefix) carry the L: prefix; a layout
-  // pin is the same object as the netlist pin and gets none.
+  // pin is the same object as the netlist pin and gets none. Mirrored
+  // server-side by precis.pcb.argue.display_handle (the notes ledger).
   function displayOf(handle) {
     var kind = handle.split(":")[0];
     if (["via", "silk", "outline", "fiducial"].indexOf(kind) !== -1) {
