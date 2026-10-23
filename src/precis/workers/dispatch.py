@@ -213,7 +213,13 @@ def _job_blocks_dispatch_sql(parent_alias: str, child_alias: str) -> str:
     parent. ``done`` / ``won't-do`` are settled and never block; ``failed``
     doesn't block here either — a failed child bubbles ``child-failed:N`` onto
     the parent, which the exclusion registry (``_doable_exclusion_clause``)
-    handles. Used identically in ``_candidate_parent_ids`` and
+    handles. ``cancelled`` doesn't block either: a cancelled run never did
+    its work (``queue_ttl_s`` overqueued reaps, reboot-orphan reconciles),
+    so the parent re-mints a fresh job — the sweeper's own
+    "cancelled → re-mint immediately" semantics. Letting it block wedged
+    every ``graph_garden`` cadence todo the reap touched: the run was
+    abandoned yet the parent could never dispatch again (gr508689).
+    Used identically in ``_candidate_parent_ids`` and
     ``_claim_and_dispatch`` so the enumerate/lock gates stay symmetric.
     """
     # Invariant: _SELF_RESOLVING_JOB_TYPES is non-empty (``{'plan_tick'}``), so the
@@ -227,7 +233,7 @@ def _job_blocks_dispatch_sql(parent_alias: str, child_alias: str) -> str:
         " 'open')"
     )
     return f"""(
-           {status} NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
+           {status} NOT IN ('done', 'failed', 'succeeded', 'cancelled', 'won''t-do')
            OR (
                {status} = 'succeeded'
                AND NOT ({parent_alias}.meta ? 'llm_tier')

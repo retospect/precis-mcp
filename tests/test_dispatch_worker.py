@@ -472,6 +472,42 @@ def test_succeeded_child_job_blocks_deterministic_parent(
     assert len(_child_jobs_under(store, pid)) == 1
 
 
+def test_cancelled_child_job_does_not_block_redispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr508689: a child job that ended STATUS:cancelled (a ``queue_ttl_s``
+    overqueued reap or a reboot-orphan reconcile) is settled, abandoned
+    work — not live work. The parent stays dispatchable and mints a fresh
+    job on the next pass. ``cancelled`` used to satisfy the blocking
+    predicate, so every cadence todo the reap touched sat open with no job
+    minted (the attention view's stranded bucket) even though its run had
+    ended."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(
+        text="deterministic cadence tick",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    pid = id_of(parent.body)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="reaped run",
+        meta={"job_type": "fix_gripe"},
+        parent_id=pid,
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "cancelled"), set_by="system", replace_prefix=True
+    )
+    assert pid in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.ok == 1
+    children = _child_jobs_under(store, pid)
+    assert len(children) == 2
+    assert any(c["id"] != job.id for c in children)
+
+
 def test_succeeded_plan_tick_child_exempts_non_tier_parent(
     handler: TodoHandler, store: Store
 ) -> None:
