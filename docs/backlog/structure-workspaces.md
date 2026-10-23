@@ -374,14 +374,23 @@ level and method last moved them.
   assembly strain is never hidden by freezing. Each pass is a `service`
   frame `relax(scope=interfaces, method, shell=r)` touching the free
   atoms; frozen atoms keep their unit's relax event.
-  - **Non-local, so checked (Reto 2026-10-23).** Relax and DFT are
-    non-local: adding atoms changes the relaxed base, so a unit's
-    cached relax is exact only for the unit alone and is never the
-    answer for the assembly — it is the seed. The frozen interior is a
-    computational choice the residual-force pass verifies, never a
-    physical claim; the final `shell` radius is recorded in the frame.
-    For a DFT rung the pass also measures the density/charge change at
-    the shell boundary (link atoms: H-capped, ONIOM/QM-MM style).
+  - **Pre-relaxed modules are the product (Reto 2026-10-23: "we can
+    benefit from module pre-relaxing").** (a) Each module is relaxed
+    once on its own, cut bonds H-capped, stored under its key (§Relaxed
+    units) — a library of pre-relaxed chunks. (b) A join starts from
+    them, so far atoms are already near their minimum; only the seam
+    buffer moves, which is what makes this interfaces-only relax cheap
+    and the frozen-atom force check likely to pass. (c) The full relax
+    (d, below) runs only when the check fails after the widenings, and
+    warm-starts from the joined pre-relaxed geometry. (d) The `relax`
+    frame of each join records the buffer radius used, the max residual
+    force on frozen atoms and the steps taken. Why the check: relax and
+    DFT are non-local, so a module's stored relax is exact for the
+    module alone and is the seed for the assembly, not the answer; the
+    frozen interior is a computational choice the residual-force pass
+    verifies. For a DFT rung the pass also measures the density/charge
+    change at the shell boundary (link atoms: H-capped, ONIOM/QM-MM
+    style).
   - **Seams.** A `join`/`place` frame declares its seams — the insulating
     spacers between modules, at Å saturated C2H4/(CH2)n linkers that
     decouple the electrons (which spacer and how many CH2 come from
@@ -393,9 +402,10 @@ level and method last moved them.
     good spacer.
   - **Warm start, exact keys.** The cache key is exact (no approximate
     hits). A miss seeds the relax from the nearest earlier key on the
-    same lineage (geometry; density for DFT) and records
-    `warm_from=<key>` in the service frame; a cold start is the
-    fallback and is recorded as such.
+    same lineage (geometry; density for DFT) — for a join, the
+    pre-relaxed modules; for the full relax of (c), the joined
+    geometry — and records `warm_from=<key>` in the service frame; a
+    cold start is the fallback and is recorded as such.
 - **(d) Full relax.** `relax.scope: 'full'` on request, for final
   numbers and validation; same frame record, `scope=full`.
 
@@ -551,10 +561,10 @@ atomic case of one rule; the same rule holds for macro modules.
   fillets, wrap + mold negative, lattices). A frozen module is a step
   whose key crosses runs; a step is a module that lives for one
   container — se-flow-kernel slice 4b §Build-step stack cache owns the
-  design. Relax is the exception to "the rest is a hit": it is
-  non-local, so the step above a change re-relaxes seam-locally from
-  the cached result as a warm start, not as the answer (§Relax
-  hierarchy (c)).
+  design. At Å the hit below a change is the pre-relaxed module; the
+  step above it re-relaxes seam-locally from that geometry (relax is
+  non-local, so the module's relax is the seed, not the answer —
+  §Relax hierarchy (c)).
 - **Assembly = DAG of sub-stacks** (Reto 2026-10-23, "it's an
   assembly"). Modules are small stacks built independently under their
   own keys; a `join` step takes module keys as parents and declares the
@@ -1274,15 +1284,18 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   steps ordered stable → volatile with a per-step cost/rebuild report;
   in-container LRU, never Postgres; incremental evaluation later
   (se-flow-kernel slices 4b, 4c).
-- **Assembly, seams, warm start (2026-10-23, direction — the
-  representation stays proposed):** relax/DFT are non-local, a cached
-  relax is a warm start (`warm_from=<key>`, keys exact) never the answer
-  above a change; builds are DAGs of independently keyed sub-stacks
-  joined by `join` steps that declare insulating seams; post-join relax
-  is seam-local with the residual-force check mandatory (electronic ≠
-  mechanical insulation); spacer evidence is
-  [se-seam-spacers](se-seam-spacers.md) (§Relax hierarchy (c), §Frozen
-  units/modules).
+- **Pre-relaxed modules, assembly, seams (2026-10-23, direction — the
+  representation stays proposed):** pre-relaxed modules are the stored
+  product and the payoff ("we can benefit from module pre-relaxing"):
+  each relaxed once, capped, under its key; builds are DAGs of
+  independently keyed sub-stacks joined by `join` steps that declare
+  insulating seams; a join starts from the pre-relaxed modules so only
+  the seam buffer moves, the residual-force check stays mandatory
+  (electronic ≠ mechanical insulation), a full relax runs only when it
+  fails and warm-starts from the joined geometry (`warm_from=<key>`,
+  keys exact); each join records buffer radius, max residual force,
+  steps; [se-seam-spacers](se-seam-spacers.md) calibrates the defaults
+  (§Relax hierarchy (c), §Frozen units/modules).
 - **Structure fisheye and rays (2026-10-22):** π perception from our own
   bond graph (a better structure-aware source is welcome later); rays are
   stored as block children ("an excellent idea"); the `charges` payload on

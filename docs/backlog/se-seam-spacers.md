@@ -19,12 +19,14 @@ hierarchy (c) (seams, buffer radius) and
 
 ## Motivation / why
 
-The build-step stack cache treats a post-join relax as seam-local: free
-a buffer around the declared seams, freeze the far atoms, check residual
-forces. That is cheap only if a seam exists that decouples the two
-chunks — otherwise every join reruns a full relax and the assembly DAG
-buys nothing at Å. Saturated linkers (C2H4, (CH2)n) are the assumed
-insulators. The assumption is unverified for our chunks and our rungs
+Pre-relaxed modules are the stored product (Reto 2026-10-23: "we can
+benefit from module pre-relaxing"): each module relaxed once, capped,
+under its key, so a join starts with far atoms already near their
+minimum and only the seam buffer moves — free a buffer around the
+declared seams, freeze the far atoms, check residual forces. That payoff
+holds only if a seam exists that decouples the two chunks — otherwise
+the force check fails on every join and the full relax of (c) runs each
+time. Saturated linkers (C2H4, (CH2)n) are the assumed insulators. The assumption is unverified for our chunks and our rungs
 (xtb, DFT), and electronic insulation says nothing about mechanical
 insulation: mismatch strain crosses a spacer that decouples electrons.
 This item turns the assumption into numbers: which spacer, how many CH2,
@@ -88,8 +90,9 @@ assembly DAG will join. The demo runs as a `struct_relax` job
 - Slice 0: the table and β summary above are in this file with
   `perplexity-research:<id>` refs for every row.
 - Slice 1: one table per n (and the C2H4 row) with the four deltas at
-  both rungs, plus the strained-case row; a recommended default spacer
-  and buffer radius for seam-local relax written into
+  both rungs, plus the strained-case row; a recommended default spacer,
+  buffer radius and residual-force threshold for seam-local relax (the
+  per-join record's defaults) written into
   structure-workspaces §Relax hierarchy (c) in the same commit, with the
   threshold each number clears; the strained case shows a force delta
   above threshold with the electronic deltas below it.

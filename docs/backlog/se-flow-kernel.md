@@ -361,20 +361,32 @@ commit carrying this line; `git log` has the sha.*
      that cost minutes are macro — booleans on bodies with many
      features, fillets, the cylinder wrap + mold negative
      ([se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)), lattices,
-     assemblies of frozen modules — and, at Å, relax, with the
-     non-locality caveat below. Named heavy example: the filleted
+     assemblies of frozen modules — and, at Å, relax over pre-relaxed
+     modules (below). Named heavy example: the filleted
      bracket (se-native-fields §Bracket example) — a rib edit rebuilds
      the rib boolean and the fillets above it, never the base, pads or
      clearance holes.
-     - **Relax and DFT are non-local** (Reto 2026-10-23: "if we relax
-       again with some more atoms the structure will be slightly or
-       massively different. DFT is similar"). Adding atoms changes the
-       relaxed base; a cached base relax is exact only for the base
-       alone, so after a change above it the cached relax result is
-       *not* reusable as the answer — only as a warm start. Geometry
-       steps (booleans, tiling, placement) are local in the key sense;
-       `relax` and `evaluate` are not, and the keys do not pretend
-       otherwise.
+     - **Pre-relaxed modules are the stored product** (Reto
+       2026-10-23: "we can benefit from module pre-relaxing"). (a) Each
+       module is relaxed once on its own, cut bonds capped, and stored
+       under its key — a library of pre-relaxed chunks, the se
+       architecture of pre-relaxed bits (structure-workspaces §Relaxed
+       units, §Frozen units/modules). (b) A `join` starts from the
+       pre-relaxed modules, so far atoms are already near their
+       minimum; only the seam buffer has to move — that is what makes
+       the seam-local relax cheap and the frozen-atom force check
+       likely to pass. (c) A full relax of the assembly runs only when
+       the force check fails, and even then warm-starts from the joined
+       pre-relaxed geometry. (d) Per join the frame records the buffer
+       radius used, the max residual force on frozen atoms and the
+       steps taken; [se-seam-spacers](se-seam-spacers.md) calibrates
+       the defaults. Why the check exists: relax and DFT are non-local
+       (Reto: "if we relax again with some more atoms the structure
+       will be slightly or massively different. DFT is similar"), so a
+       module's stored relax is exact for the module alone and is the
+       seed above a join, not the answer — geometry steps (booleans,
+       tiling, placement) are local in the key sense; `relax` and
+       `evaluate` are not, and the keys do not pretend otherwise.
      - **Exact key, warm start.** Keys stay exact — no approximate hits.
        A miss on a `relax` step does not start from scratch: the nearest
        earlier key on the same lineage (same parents, earlier params)
@@ -390,14 +402,15 @@ commit carrying this line; `git log` has the sha.*
        their cost is that the post-join relax is seam-local.
      - **Seam-local relax.** A `join` declares its seams — insulating
        spacers, e.g. saturated C2H4/(CH2)n linkers for electronic
-       decoupling at Å. The post-join relax frees a buffer region around
-       the seams and freezes far atoms (QM/MM / ONIOM-style; H-capped
-       link atoms for DFT fragments). Locality is checked, not assumed:
-       after the local relax a single point measures residual forces on
-       the frozen atoms (and the density/charge change at the buffer
-       boundary for DFT) against a threshold; above it the buffer grows
-       and the relax repeats; the final buffer radius is recorded in the
-       frame (structure-workspaces §Relax hierarchy (c) owns the
+       decoupling at Å. The post-join relax starts from the pre-relaxed
+       modules, frees a buffer region around the seams and freezes far
+       atoms (QM/MM / ONIOM-style; H-capped link atoms for DFT
+       fragments). Locality is checked, not assumed: after the local
+       relax a single point measures residual forces on the frozen
+       atoms (and the density/charge change at the buffer boundary for
+       DFT) against a threshold; above it the buffer grows and the
+       relax repeats, up to the full-assembly relax of (c); the frame
+       records (d) (structure-workspaces §Relax hierarchy (c) owns the
        numbers). Electronic insulation is not mechanical insulation:
        strain from lattice or geometry mismatch propagates past a
        spacer that decouples the electrons, so the force check is
@@ -634,14 +647,17 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   with a per-step cost/rebuild report, in-container LRU only;
   incremental evaluation is slice 4c, later.
 - **2026-10-23, later the same day (direction; the representation stays
-  proposed, under discussion):** relax/DFT are non-local, so a cached
-  base relax is not the answer once atoms are added above it — it is
-  the warm start (`warm_from=<key>`; keys stay exact); a build is an
-  assembly, a DAG of independently built sub-stacks joined by `join`
-  steps, and reruns above a join are expected; joins declare insulating
-  seams and the post-join relax is seam-local with a mandatory
-  residual-force check (4b bullet §Build-step stack cache;
-  [se-seam-spacers](se-seam-spacers.md) supplies the spacer evidence).
+  proposed, under discussion):** pre-relaxed modules are the stored
+  product and the main payoff ("we can benefit from module
+  pre-relaxing") — each module relaxed once, capped, stored under its
+  key; a build is an assembly, a DAG of independently built sub-stacks
+  joined by `join` steps; a join starts from the pre-relaxed modules so
+  only the seam buffer moves (seam-local relax with the residual-force
+  check); a full relax runs only when the check fails and warm-starts
+  from the joined geometry (`warm_from=<key>`; keys stay exact); each
+  join records buffer radius, max residual force, steps (4b bullet
+  §Build-step stack cache; [se-seam-spacers](se-seam-spacers.md)
+  calibrates the defaults).
 - Kit-facing names are general (`GapDomain`); the skill is
   `precis-workspace-optimize-help`, CFD its first physics section.
 - Scripts build, evaluate and optimise with no DB and no se — the wheel
