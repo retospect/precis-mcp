@@ -273,11 +273,9 @@ with only the session's fix and confirm steps by hand.
 | 6 | `round deploy --supersede` | 5 | §5 supersede tests |
 | 7 | `scripts/release-train` driver, owner runbook in `docs/runbooks/release-cycle.md` | 5 | §6 acceptance |
 
-## Open for Reto
+## Rulings on the open questions (Reto 2026-10-23 ~23:15Z)
 
-- Defect found in release N's deploy while N+1 gates: supersede with N+1
-  and no rollback (§5)? The alternative is fixing N in place, which needs
-  `ship --release` to apply to two open releases.
-- Should `pyproject.toml`/`uv.lock` count as harness (§1)? They change the
-  test env for every run; the ruling's list leaves them out, so this spec
-  lands them `--quick`.
+- A code defect in release N's deploy while N+1 gates: N+1 supersedes N,
+  no rollback (§5 as written). Reto: "yes."
+- `pyproject.toml` and `uv.lock` are not harness: they land `--quick` (§1
+  as written). Reto: "no harness".
