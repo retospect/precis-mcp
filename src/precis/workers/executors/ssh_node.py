@@ -660,7 +660,11 @@ def _dispatch_bounded(ctx: DispatchContext, spec: Any) -> bool:
     cannot be killed, and a legacy dispatch has no handle for
     ``spec.kill``, so the hung thread (and any remote process it spawned)
     is abandoned, not reaped — the log line names the job so an operator
-    can find the orphan.
+    can find the orphan. A dispatch that must be killable runs its compute
+    through :func:`precis.workers.child_compute.run_in_child` with its own
+    cap below this bound (``hexfold_relax``, gr506395): the child is killed
+    and confirmed gone before the dispatch terminalizes the job, so this
+    outer bound never fires on it.
 
     Returns ``True`` if the dispatch timed out and the job was failed here,
     ``False`` if it finished (or raised, which propagates) in time."""

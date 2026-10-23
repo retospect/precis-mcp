@@ -30,6 +30,7 @@ is the scene's atom order too (atoms are inserted in block order).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -277,11 +278,26 @@ def relax_block(
         )
     ]
 
+    t0 = time.monotonic()
+    log.info(
+        "hexfold_relax: polish[%s] start — %d atoms, %d steps max",
+        polish,
+        len(labels),
+        steps,
+    )
     polish_result = relax(scene, fidelity=polish, model=model or "mace_mp", steps=steps)
+    log.info(
+        "hexfold_relax: polish[%s] done — %d steps, converged=%s, %.0fs",
+        polish,
+        polish_result.n_steps,
+        polish_result.converged,
+        time.monotonic() - t0,
+    )
 
     frag_results: list[FragmentResult] = []
     if fragment != "none":
         for zone in zones:
+            t_frag = time.monotonic()
             # coords re-read per junction: a prior fragment's paste-back
             # may sit inside this one's buffer when junctions are close.
             _, coords, _, _ = _scene_arrays(scene)
@@ -313,13 +329,15 @@ def relax_block(
             )
             log.info(
                 "hexfold_relax: fragment %s — %d atoms (%d caps, %d frozen), "
-                "%d pasted back, converged=%s",
+                "%d pasted back, %d steps, converged=%s, %.0fs",
                 zone.name,
                 len(frag.members),
                 len(frag.caps),
                 len(frag.members) - len(frag.movable),
                 moved,
+                res.n_steps,
                 res.converged,
+                time.monotonic() - t_frag,
             )
 
     _, coords, _, _ = _scene_arrays(scene)

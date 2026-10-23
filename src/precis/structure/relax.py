@@ -41,8 +41,10 @@ in Å; never converted to SI here.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -51,6 +53,48 @@ import numpy as np
 
 from . import elements, export, georelax
 from .scene import Scene
+
+log = logging.getLogger(__name__)
+
+#: Largest atom count :func:`_relax_ml` drives with ASE ``BFGS``; above it,
+#: ``LBFGS``. BFGS keeps a dense (3N)² inverse Hessian and diagonalises it
+#: every step, O((3N)³): at 1000 atoms that is a 3000² matrix (72 MB) and
+#: ~3e10 flop per step, already more than an MLIP force call on a GPU; at
+#: 5105 atoms (gr506395) it is 15315² (1.9 GB) and ~4e12 flop per step, a
+#: CPU-bound relax that held the GPU idle for hours. LBFGS keeps a bounded
+#: history (O(N) per step). Small systems stay on BFGS so existing results
+#: and goldens do not move.
+BFGS_MAX_ATOMS = 1000
+
+#: Optimiser steps between progress log lines on the energy rungs, so a
+#: long relax shows its step count and elapsed time in the worker log.
+PROGRESS_EVERY = 10
+
+
+def _attach_progress(
+    opt: Any, *, rung: str, n_atoms: int, steps: int, curve: list[float]
+) -> None:
+    """Log ``step k/steps``, the latest max force and elapsed seconds every
+    :data:`PROGRESS_EVERY` optimiser steps. Attach after the curve recorder
+    so ``curve[-1]`` is the current step's force."""
+    t0 = time.monotonic()
+
+    def _log() -> None:
+        n = opt.get_number_of_steps()
+        if n == 0:
+            return
+        log.info(
+            "relax[%s]: step %d/%d on %d atoms, max force %s eV/A, %.0fs elapsed",
+            rung,
+            n,
+            steps,
+            n_atoms,
+            f"{curve[-1]:.4f}" if curve else "?",
+            time.monotonic() - t0,
+        )
+
+    opt.attach(_log, interval=PROGRESS_EVERY)
+
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
 #: (ASE + an MLIP, the ``[dft-ml]`` extra) and ``xtb`` one too (tblite's ASE
@@ -510,6 +554,7 @@ def _relax_emt(
 
     opt = _Optimizer(atoms, logfile=None)
     opt.attach(_record, interval=1)
+    _attach_progress(opt, rung="emt", n_atoms=len(labels), steps=steps, curve=curve)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
@@ -757,6 +802,7 @@ def _relax_xtb(
 
     opt = FIRE(atoms, maxstep=0.1, logfile=None)
     opt.attach(_record, interval=1)
+    _attach_progress(opt, rung="xtb", n_atoms=len(labels), steps=steps, curve=curve)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
@@ -959,6 +1005,90 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
     )
 
 
+def ml_optimizer(n_atoms: int) -> Any:
+    """The ASE optimiser class :func:`_relax_ml` uses for ``n_atoms``:
+    ``BFGS`` up to :data:`BFGS_MAX_ATOMS`, ``LBFGS`` above (the reason is
+    on the constant)."""
+    if n_atoms > BFGS_MAX_ATOMS:
+        from ase.optimize import LBFGS
+
+        return LBFGS
+    from ase.optimize import BFGS
+
+    return BFGS
+
+
+def calculator_device(calc: Any) -> str | None:
+    """The torch device an MLIP calculator's model sits on (``"cuda:0"``,
+    ``"cpu"``), or ``None`` when it cannot be read. Reads the first model
+    parameter (MACE keeps ``models``, CHGNet ``model``), else the
+    calculator's ``device``; looks through ASE mixing wrappers (the DFT-D3
+    ``SumCalculator``)."""
+    for model in getattr(calc, "models", None) or [getattr(calc, "model", None)]:
+        params = getattr(model, "parameters", None)
+        if callable(params):
+            try:
+                return str(next(iter(params())).device)
+            except (StopIteration, TypeError, AttributeError):
+                pass
+    device = getattr(calc, "device", None)
+    if device is not None:
+        return str(device)
+    mixer = getattr(calc, "mixer", None)
+    for inner in getattr(mixer, "calcs", None) or getattr(calc, "calcs", None) or []:
+        found = calculator_device(inner)
+        if found is not None:
+            return found
+    return None
+
+
+def ml_device_check(
+    model: str, *, dispersion: bool = False, cuda_requested: bool = False
+) -> dict[str, Any] | None:
+    """Load the MLIP calculator (the cached one :func:`_relax_ml` will use)
+    and report where its model actually sits: ``{model, device,
+    cuda_available, gpu_present, cuda_requested}`` plus ``warning`` when the
+    model is on CPU although CUDA was requested, torch sees CUDA, or the
+    host has an NVIDIA GPU torch cannot use (a CPU-only torch build). Logs
+    the device. ``None`` when the backend is absent — the relax itself then
+    raises :class:`RelaxUnsupported`."""
+    import shutil
+
+    try:
+        calc = _ml_calculator(model, dispersion=dispersion)
+    except RelaxUnsupported:
+        return None
+    device = calculator_device(calc)
+    cuda_available: bool | None = None
+    if importlib.util.find_spec("torch") is not None:
+        import torch
+
+        cuda_available = bool(torch.cuda.is_available())
+    gpu_present = shutil.which("nvidia-smi") is not None
+    report: dict[str, Any] = {
+        "model": model,
+        "device": device,
+        "cuda_available": cuda_available,
+        "gpu_present": gpu_present,
+        "cuda_requested": cuda_requested,
+    }
+    if (device or "").startswith("cpu") and (
+        cuda_requested or cuda_available or gpu_present
+    ):
+        why = (
+            "CUDA was requested"
+            if cuda_requested
+            else "torch sees CUDA"
+            if cuda_available
+            else "the host has an NVIDIA GPU but torch sees no CUDA"
+        )
+        report["warning"] = f"MLIP {model} runs on CPU although {why}"
+        log.warning("relax[ml]: %s", report["warning"])
+    else:
+        log.info("relax[ml]: %s loaded on device %s", model, device or "unknown")
+    return report
+
+
 def _cell_filter(atoms, cell: str):
     """Wrap ``atoms`` in an ASE strain filter so the optimiser relaxes the
     lattice alongside the positions, masked per :data:`_CELL_MASKS`.
@@ -1003,18 +1133,30 @@ def _relax_ml(
     ``dispersion`` adds DFT-D3 on top of the MLIP (see :func:`_ml_calculator`)
     and is recorded on the result, since it changes the energy the run-cube
     caches under.
+
+    The optimiser is ``BFGS`` up to :data:`BFGS_MAX_ATOMS` atoms and
+    ``LBFGS`` above (:func:`ml_optimizer`; the dense-Hessian cost is on the
+    constant). The model's device is logged at start and progress every
+    :data:`PROGRESS_EVERY` steps.
     """
     if not export.ase_available():
         raise RelaxUnsupported(
             "relax rung 'ml' needs ASE + an MLIP — pip install 'precis-mcp[dft-ml]'"
         )
     from ase.constraints import FixCartesian
-    from ase.optimize import BFGS
 
     # raises RelaxUnsupported if the MLIP (or, with dispersion, D3) is absent
     calc = _ml_calculator(model, dispersion=dispersion)
     atoms = export._to_ase(scene)
     labels = list(scene.atoms)
+    optimizer = ml_optimizer(len(labels))
+    log.info(
+        "relax[ml]: %s on device %s, %d atoms, optimizer %s",
+        model,
+        calculator_device(calc) or "unknown",
+        len(labels),
+        optimizer.__name__,
+    )
     before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
 
     constraints = []
@@ -1037,8 +1179,9 @@ def _relax_ml(
     # convergence curve stays the atom-force max so it's comparable across modes.
     opt_target = _cell_filter(atoms, cell) if cell is not None else atoms
 
-    opt = BFGS(opt_target, logfile=None)
+    opt = optimizer(opt_target, logfile=None)
     opt.attach(_record, interval=1)
+    _attach_progress(opt, rung="ml", n_atoms=len(labels), steps=steps, curve=curve)
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 

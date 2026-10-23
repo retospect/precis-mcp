@@ -11,18 +11,23 @@ polish runs on the always-available ``emt`` rung.
 from __future__ import annotations
 
 import json
-import sys
-import types
+import os
+import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pytest
 
 from precis.dispatch import Hub
+from precis.store.types import Tag
 from precis.workers.executors import ssh_node
+from precis.workers.executors._common import set_status
 from precis.workers.executors._context import DispatchContext
 from precis_se import hexfold_relax_job as hexfold_relax
 from precis_se.handler import SeHandler
+from tests import _child_compute_targets as targets
 
 
 def test_runner_honours_hexfold_relax_cap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,7 +73,11 @@ def _structure_ref(store: Any) -> Any:
     return ref
 
 
-def _fake_ctx(store: Any, params: dict[str, Any]) -> tuple[DispatchContext, list]:
+def _fake_ctx(
+    store: Any,
+    params: dict[str, Any],
+    is_cancel_requested: Callable[[], bool] = lambda: False,
+) -> tuple[DispatchContext, list]:
     events: list[tuple[str, Any]] = []
     ctx = DispatchContext(
         store=store,
@@ -79,17 +88,9 @@ def _fake_ctx(store: Any, params: dict[str, Any]) -> tuple[DispatchContext, list
         append_chunk=lambda k, t: events.append((k, t)),
         set_meta=lambda **kw: events.append(("meta", kw)),
         record_failure=lambda r, **kw: events.append(("fail", {"reason": r, **kw})),
-        is_cancel_requested=lambda: False,
+        is_cancel_requested=is_cancel_requested,
     )
     return ctx, events
-
-
-def _stub_xtb_with_emt(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ase.calculators.emt import EMT
-
-    fake = types.ModuleType("tblite.ase")
-    setattr(fake, "TBLite", lambda **kw: EMT())  # noqa: B010 — ModuleType has no attr
-    monkeypatch.setitem(sys.modules, "tblite.ase", fake)
 
 
 @pytest.mark.slow
@@ -97,8 +98,9 @@ def test_dispatch_relaxes_and_stores_strain(store: Any, monkeypatch) -> None:
     """End to end: generate a rail tunnel, dispatch the job with an EMT
     polish + stubbed-xtb fragment pass — the scene gains a version, the
     generated record carries before/after strain, and the compute passes
-    land in struct_runs."""
-    _stub_xtb_with_emt(monkeypatch)
+    land in struct_runs. The compute runs in the supervised child, which
+    installs the xtb stub itself (a parent monkeypatch cannot reach it)."""
+    monkeypatch.setattr(hexfold_relax, "_relax_child", targets.relax_child_emt_xtb)
     se = SeHandler(hub=Hub(store=store))
     se.put(id="hx-tun", text=json.dumps(_tunnel_ops()))
     ref = _structure_ref(store)
@@ -157,9 +159,8 @@ def test_validate_submit(store: Any) -> None:
     )
 
 
-def test_dispatch_without_bookkeeping_fails(store: Any) -> None:
-    """A structure not minted with the H3 strain record gets a clean
-    params-class failure, not a crash."""
+def _plain_structure(store: Any) -> Any:
+    """A one-atom structure with no junction bookkeeping."""
     from precis.structure.cell import Cell
     from precis.structure.scene import Atom as StructAtom
     from precis.structure.scene import Scene as StructScene
@@ -174,7 +175,13 @@ def test_dispatch_without_bookkeeping_fails(store: Any) -> None:
         version=1,
         card_text="plain.",
     )
-    ref = store.get_ref(kind="structure", id="plain")
+    return store.get_ref(kind="structure", id="plain")
+
+
+def test_dispatch_without_bookkeeping_fails(store: Any) -> None:
+    """A structure not minted with the H3 strain record gets a clean
+    params-class failure, not a crash."""
+    ref = _plain_structure(store)
     ctx, events = _fake_ctx(store, {"structure_ref_id": ref.id, "fragment": "none"})
     hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
     fails = [p for k, p in events if k == "fail"]
@@ -185,7 +192,7 @@ def test_dispatch_without_bookkeeping_fails(store: Any) -> None:
 def test_dispatch_missing_backend_is_infra(store: Any, monkeypatch) -> None:
     """No tblite on the claiming node → an honest infra failure naming
     the extra, never different physics silently."""
-    monkeypatch.setitem(sys.modules, "tblite.ase", None)
+    monkeypatch.setattr(hexfold_relax, "_relax_child", targets.relax_child_no_tblite)
     se = SeHandler(hub=Hub(store=store))
     se.put(id="hx-tun", text=json.dumps(_tunnel_ops()))
     ref = _structure_ref(store)
@@ -203,3 +210,200 @@ def test_dispatch_missing_backend_is_infra(store: Any, monkeypatch) -> None:
     assert len(fails) == 1
     assert fails[0]["failure_class"] == "infra"
     assert ("status", "succeeded") not in events
+
+
+# ── killable compute (gr506395): a fake long-running child ──────────
+
+
+def _sleeping_child(monkeypatch: pytest.MonkeyPatch, cap: float = 1.0) -> None:
+    """Swap the relax for a child that never returns, with a short cap and
+    fast supervisor cadence."""
+    monkeypatch.setattr(hexfold_relax, "_relax_child", targets.sleep_forever)
+    monkeypatch.setattr(hexfold_relax, "_relax_timeout_s", lambda: cap)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_POLL_S", 0.1)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_GRACE_S", 5.0)
+
+
+def _gone(pid: int, timeout_s: float = 5.0) -> bool:
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _child_handles(events: list[tuple[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        p["compute_child"] for k, p in events if k == "meta" and "compute_child" in p
+    ]
+
+
+def test_timeout_kills_the_relax_child(store: Any, monkeypatch) -> None:
+    _sleeping_child(monkeypatch)
+    ref = _plain_structure(store)
+    ctx, events = _fake_ctx(store, {"structure_ref_id": ref.id, "fragment": "none"})
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    fails = [p for k, p in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "timeout"
+    assert "killed" in fails[0]["reason"]
+    assert ("status", "succeeded") not in events
+    start, end = _child_handles(events)
+    assert start["pid"] == end["pid"]
+    assert end["stopped"] == "timeout" and end["kill_verified"] is True
+    assert _gone(start["pid"])
+
+
+def test_cancel_requested_kills_the_relax_child(store: Any, monkeypatch) -> None:
+    _sleeping_child(monkeypatch, cap=600)
+    checks: list[int] = []
+
+    def _cancel() -> bool:
+        checks.append(1)
+        return len(checks) > 2
+
+    ref = _plain_structure(store)
+    ctx, events = _fake_ctx(
+        store, {"structure_ref_id": ref.id, "fragment": "none"}, _cancel
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    assert ("status", "cancelled") in events
+    assert not [p for k, p in events if k == "fail"]
+    end = _child_handles(events)[-1]
+    assert end["stopped"] == "cancel" and end["kill_verified"] is True
+    assert _gone(end["pid"])
+
+
+def test_cpu_fallback_lands_on_meta_as_a_warning(store: Any) -> None:
+    ctx, events = _fake_ctx(store, {})
+    report = {"device": "cpu", "warning": "MLIP mace_mp runs on CPU although x"}
+    hexfold_relax._on_child_event(ctx, "ml_device", report)
+    assert ("meta", {"ml_device": report}) in events
+    assert any(k == "job_event" and "runs on CPU" in t for k, t in events)
+
+
+# ── the same through the real ssh_node pass and a DB job row ─────────
+
+
+def _mk_job(store: Any, structure_ref_id: int) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="hexfold_relax",
+        meta={
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": structure_ref_id, "fragment": "none"},
+        },
+    )
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
+    return int(ref.id)
+
+
+def _job_state(store: Any, ref_id: int) -> tuple[str | None, dict[str, Any]]:
+    with store.pool.connection() as conn:
+        status = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (ref_id,),
+        ).fetchone()
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return (status[0] if status else None), dict(meta[0] or {})
+
+
+def _once_child_runs(
+    store: Any, ref_id: int, act: Callable[[], None]
+) -> threading.Thread:
+    """Run ``act`` from a side thread once the job's meta names its child."""
+
+    def _wait() -> None:
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            if "compute_child" in _job_state(store, ref_id)[1]:
+                act()
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=_wait, daemon=True)
+    thread.start()
+    return thread
+
+
+def _ssh_node_hexfold(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda _name: hexfold_relax.SPEC)
+
+
+@pytest.mark.db
+def test_ssh_node_timeout_fails_the_job_with_no_live_child(
+    store: Any, monkeypatch
+) -> None:
+    _sleeping_child(monkeypatch)
+    _ssh_node_hexfold(monkeypatch)
+    rid = _mk_job(store, _plain_structure(store).id)
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    status, meta = _job_state(store, rid)
+    assert status == "failed"
+    assert meta["failure_class"] == "timeout"
+    child = meta["compute_child"]
+    assert child["stopped"] == "timeout" and child["kill_verified"] is True
+    assert _gone(int(child["pid"]))
+
+
+@pytest.mark.db
+def test_ssh_node_cancel_requested_cancels_with_no_live_child(
+    store: Any, monkeypatch
+) -> None:
+    _sleeping_child(monkeypatch, cap=600)
+    _ssh_node_hexfold(monkeypatch)
+    rid = _mk_job(store, _plain_structure(store).id)
+    side = _once_child_runs(
+        store, rid, lambda: set_status(store, rid, "cancel_requested")
+    )
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+    side.join(5)
+
+    status, meta = _job_state(store, rid)
+    assert status == "cancelled"
+    child = meta["compute_child"]
+    assert child["stopped"] == "cancel" and child["kill_verified"] is True
+    assert _gone(int(child["pid"]))
+
+
+@pytest.mark.db
+def test_ssh_node_operator_kill_fails_with_no_live_child(
+    store: Any, monkeypatch
+) -> None:
+    _sleeping_child(monkeypatch, cap=600)
+    _ssh_node_hexfold(monkeypatch)
+    rid = _mk_job(store, _plain_structure(store).id)
+
+    def _kill() -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                """'{"kill_requested": {"note": "test"}}'::jsonb """
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+            conn.commit()
+
+    side = _once_child_runs(store, rid, _kill)
+    ssh_node.run_ssh_node_pass(store, limit=1)
+    side.join(5)
+
+    status, meta = _job_state(store, rid)
+    assert status == "failed"
+    child = meta["compute_child"]
+    assert child["stopped"] == "kill" and child["kill_verified"] is True
+    assert _gone(int(child["pid"]))

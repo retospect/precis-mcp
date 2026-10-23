@@ -335,7 +335,10 @@ params={'structure_ref_id': <id>})` — it polishes the whole block
 with a frozen buffer (`fragment`, `xtb` default — GFN2 only where the
 physics matters), writes the geometry as the next design version, and
 stores `junction.strain`/`seam.strain` before/after on
-`meta.generated.relax`.
+`meta.generated.relax`. The relax runs in a child process named on the
+job's `meta.compute_child` (pid, `kill_verified`); a cap overrun, cancel
+or operator kill stops it before the job turns terminal. `meta.ml_device`
+says where the MLIP ran; a `warning` there means it fell back to CPU.
 
 ## Options (spec §25.3)
 

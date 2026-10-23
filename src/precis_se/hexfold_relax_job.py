@@ -31,6 +31,16 @@ The runner's outer dispatch bound and initial lease read the type's
 claiming host, not stamped into the job's ``params.resources``. Without
 that declaration the runner could fail at 7200s while the relaxer's
 internal cap was still 14400s, abandoning a live in-process compute.
+
+The compute runs in a supervised child process, not on the dispatch
+thread (gr506395): a 5105-atom relax overran its bound in the worker's
+daemon thread, the job was failed, and the thread kept ~44 GB of GPU
+memory and the worker's shared, non-thread-safe MACE calculator for
+hours. The child enforces the cap itself (the runner's outer bound is the
+cap plus a margin, so it does not fire first), polls cancel and operator
+kill, and is killed with its process group — confirmed gone — before the
+job turns terminal. It also gives each job its own MACE calculator; the
+cost is a model load per job, small against an hours-long relax.
 """
 
 from __future__ import annotations
@@ -39,10 +49,21 @@ import logging
 import os
 from typing import Any
 
+from precis.workers.child_compute import (
+    ChildDied,
+    ChildStopped,
+    job_stop_reason,
+    run_in_child,
+)
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types.struct_relax import _relax_timeout_s
 
 log = logging.getLogger(__name__)
+
+#: Supervisor cadence (seconds) for the relax child: deadline / cancel /
+#: kill checks, and the SIGTERM→SIGKILL grace.
+_CHILD_POLL_S = 5.0
+_CHILD_GRACE_S = 30.0
 
 _PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -121,19 +142,80 @@ def _validate_submit(
     return None
 
 
-def _dispatch(ctx: Any, spec: Any) -> None:
-    """Load the bound structure, run the relax pipeline in-process, and
-    write the relaxed geometry + strain record back.
+def _relax_child(
+    scene: Any, generated: dict[str, Any], kwargs: dict[str, Any], cuda_requested: bool
+) -> tuple[Any, Any]:
+    """The compute, run in the supervised child: report the MLIP device
+    (``ml`` polish only, and only when the record will pass
+    ``relax_block``'s own checks, so a bad record still fails as params
+    before a model loads), then relax. Returns the relaxed scene with the
+    report — the child's mutation of ``scene`` does not reach the parent."""
+    from precis.workers.child_compute import emit
+    from precis_se.atomic.relax_block import relax_block, strain_bookkeeping
 
-    No container and no staging — the rungs compute where the claim put
-    the job, like ``struct_relax``'s in-process path. Backend-missing and
-    wall-clock overruns record ``infra`` honestly (the geometry is fine;
-    the host is not provisioned or the rung is too big), a record with no
-    junction bookkeeping fails as a params error, and a genuine relax
-    fault lands as ``non-convergence`` only when the backend ran and
-    reported one."""
+    if kwargs["polish"] == "ml" and strain_bookkeeping(generated) is not None:
+        from precis.structure.relax import ml_device_check
+
+        device = ml_device_check(
+            kwargs["model"] or "mace_mp", cuda_requested=cuda_requested
+        )
+        if device is not None:
+            emit("ml_device", device)
+    report = relax_block(scene, generated, **kwargs)
+    return scene, report
+
+
+def _on_child_event(ctx: Any, kind: str, payload: Any) -> None:
+    """Record the child's MLIP device on ``meta.ml_device``; a CPU fallback
+    also lands as a ``job_event`` warning."""
+    if kind != "ml_device":
+        return
+    ctx.set_meta(ml_device=payload)
+    warning = payload.get("warning")
+    if warning:
+        log.warning("hexfold_relax job %s: %s", ctx.ref_id, warning)
+        ctx.append_chunk("job_event", f"hexfold_relax: warning — {warning}")
+
+
+def _terminalize_stopped(ctx: Any, stop: ChildStopped, cap: float) -> None:
+    """Terminal state for a child the supervisor stopped. Runs after the
+    kill, so the job never reads terminal while its compute still runs; an
+    unverified kill is named in the reason."""
+    pid = stop.handle.get("pid")
+    killed = (
+        f"relax process pid {pid} killed"
+        if stop.handle.get("kill_verified")
+        else f"relax process pid {pid} signalled but NOT confirmed gone "
+        "(survived SIGKILL)"
+    )
+    if stop.reason == "cancel":
+        ctx.append_chunk("job_event", f"hexfold_relax: cancel requested — {killed}")
+        ctx.set_status("cancelled")
+    elif stop.reason == "kill":
+        ctx.record_failure(f"hexfold_relax: killed by operator — {killed}")
+    else:
+        ctx.record_failure(
+            f"hexfold_relax: relax exceeded its {cap:.0f}s cap "
+            "(PRECIS_DFT_RELAX_TIMEOUT_S) — " + killed,
+            failure_class="timeout",
+        )
+
+
+def _dispatch(ctx: Any, spec: Any) -> None:
+    """Load the bound structure, run the relax pipeline in a supervised
+    child process, and write the relaxed geometry + strain record back.
+
+    No container and no staging — the rungs compute on the claiming host,
+    like ``struct_relax``'s in-process path, but in a child
+    (:func:`precis.workers.child_compute.run_in_child`) whose pid lands on
+    ``meta.compute_child``. Past the cap, on cancel or on an operator kill
+    the child's process group is killed and confirmed gone before the job
+    turns terminal. Backend-missing and a child that dies without a result
+    record ``infra`` honestly (the geometry is fine; the host is not
+    provisioned or the rung is too big), a cap overrun records
+    ``timeout``, a record with no junction bookkeeping fails as a params
+    error."""
     from precis.structure.relax import RelaxUnsupported
-    from precis_se.atomic.relax_block import relax_block
 
     params = (ctx.meta or {}).get("params") or {}
     try:
@@ -171,24 +253,49 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     loaded_version = int((ref.meta or {}).get("version", 0))
 
+    cap = _relax_timeout_s()
     ctx.append_chunk(
         "job_event",
         f"hexfold_relax[{polish}+{fragment}] on "
         f"{os.environ.get('PRECIS_NODE') or 'this host'}: "
         f"{len(scene.atoms)} atoms, buffer={buffer_A:g}A core={core_A:g}A "
-        f"steps={steps} cap={_relax_timeout_s():.0f}s",
+        f"steps={steps} cap={cap:.0f}s",
     )
+    kwargs = {
+        "polish": polish,
+        "model": model,
+        "fragment": fragment,
+        "buffer_A": buffer_A,
+        "core_A": core_A,
+        "steps": steps,
+    }
+    cuda_requested = bool(((ctx.meta or {}).get("requires") or {}).get("gpu"))
     try:
-        report = relax_block(
-            scene,
-            generated,
-            polish=polish,
-            model=model,
-            fragment=fragment,
-            buffer_A=buffer_A,
-            core_A=core_A,
-            steps=steps,
+        scene, report = run_in_child(
+            _relax_child,
+            (scene, generated, kwargs, cuda_requested),
+            label=f"hexfold_relax job {ctx.ref_id}",
+            timeout_s=cap,
+            should_stop=lambda: job_stop_reason(ctx),
+            on_start=lambda handle: ctx.set_meta(compute_child=handle),
+            on_event=lambda kind, payload: _on_child_event(ctx, kind, payload),
+            on_end=lambda handle: ctx.set_meta(compute_child=handle),
+            poll_s=_CHILD_POLL_S,
+            grace_s=_CHILD_GRACE_S,
         )
+    except ChildStopped as stop:
+        _terminalize_stopped(ctx, stop, cap)
+        return
+    except ChildDied as exc:
+        code = exc.handle.get("exitcode")
+        ctx.record_failure(
+            f"hexfold_relax: relax process {exc} — no result",
+            failure_class="infra",
+            open_tag=(
+                "infra:child-killed" if isinstance(code, int) and code < 0 else None
+            ),
+        )
+        return
     except RelaxUnsupported as exc:
         ctx.record_failure(
             f"hexfold_relax: a rung has no backend on this host ({exc}) — "
