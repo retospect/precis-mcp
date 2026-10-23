@@ -44,7 +44,12 @@ default is the whole ``measurand_root`` subtree); chunks in
 bibliography/admin sections or with non-prose/table kinds are skipped
 unless ``params.include_all_sections``; a ``paused`` router result parks
 the slice rather than spending the consecutive-error budget — a
-saturated local slot is not a down lane. ``stats`` carries per-reason
+saturated local slot is not a down lane — but only
+``PRECIS_SURVEY_EXTRACT_MAX_PAUSES`` (default 24) consecutive pauses are
+tolerated before the job fails with the saturation reason instead of
+parking forever (gr508162). Every park annotates
+``wake_when.payload.why`` so the wake_runner's re-queue audit names
+what the slice waits on. ``stats`` carries per-reason
 drop counters (``drop:<reason>``, ``unparseable_reply``, ``truncated``,
 ``write_refused``, ``flag:<name>``, ``paused``) and every escalation
 carries ``chunk_kind`` plus ``stop_reason`` on reply failures.
@@ -291,15 +296,21 @@ def _escalate(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
         bucket.append(entry)
 
 
-def _wake_s(seconds: int = 1) -> WakeWhen:
-    return WakeWhen("at_time", {"ts": int(time.time()) + seconds})
+def _wake_s(seconds: int = 1, why: str | None = None) -> WakeWhen:
+    payload: dict[str, Any] = {"ts": int(time.time()) + seconds}
+    if why:
+        payload["why"] = why
+    return WakeWhen("at_time", payload)
 
 
-def _retry_wake(result: Any) -> WakeWhen:
+def _retry_wake(result: Any, why: str | None = None) -> WakeWhen:
     retry_at = getattr(result, "retry_at", None)
     if retry_at is not None:
-        return WakeWhen("at_time", {"ts": int(retry_at.timestamp())})
-    return _wake_s(300)
+        return WakeWhen(
+            "at_time",
+            {"ts": int(retry_at.timestamp()), **({"why": why} if why else {})},
+        )
+    return _wake_s(300, why=why)
 
 
 # ── survey_extract ──────────────────────────────────────────────────
@@ -357,6 +368,17 @@ def _max_extract_errors() -> int:
     return env_int("PRECIS_SURVEY_EXTRACT_MAX_ERRORS", 10, lo=1, hi=100)
 
 
+def _max_pauses() -> int:
+    """Consecutive paused slices tolerated before the job gives up.
+
+    A ``paused`` router answer means the lane is saturated, not down —
+    the job parks ~5 min and retries. Unbounded, that loop parks forever
+    with no progress and no verdict (jo504632's last hours, gr508162).
+    24 parks ≈ 2h of continuous saturation before failing with the
+    reason on the record."""
+    return env_int("PRECIS_SURVEY_EXTRACT_MAX_PAUSES", 24, lo=1, hi=1000)
+
+
 def _fresh_stats() -> dict[str, int]:
     return {
         "chunks": 0,
@@ -393,14 +415,16 @@ def _process_chunk(
     model_pin: str | None,
     stats: dict[str, int],
     escalations: list[dict[str, Any]],
-) -> tuple[str | None, str | None]:
-    """One chunk end to end — ``(outcome, landed_placement)``. Outcome is
-    ``'paused'`` when the router paused (the caller yields for the window
-    rather than burning through it), ``'failed'`` when the
+) -> tuple[str | None, str | None, Any]:
+    """One chunk end to end — ``(outcome, landed_placement, result)``.
+    Outcome is ``'paused'`` when the router paused (the caller yields for
+    the window rather than burning through it), ``'failed'`` when the
     consecutive-error cap says the lane is down, ``None`` otherwise. The
     landed placement is ``result.placement`` (``'local'``/``'cloud'``)
     when the routed call reports one — the caller's pacing signal;
-    ``None`` when the call never ran or stamped none."""
+    ``None`` when the call never ran or stamped none. ``result`` is the
+    routed reply (``None`` when ``route()`` raised) so the caller can
+    read ``retry_at`` / ``reason_class`` for its park annotation."""
     req = LlmRequest(
         tier=tier,
         prompt=_prompt.reader_prompt(
@@ -441,6 +465,7 @@ def _process_chunk(
         return (
             "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None,
             None,
+            None,
         )
     placement = getattr(result, "placement", None)
     if getattr(result, "paused", False):
@@ -448,7 +473,7 @@ def _process_chunk(
         # burn the consecutive-error budget that fails the job on a
         # genuinely down lane.
         stats["paused"] += 1
-        return "paused", placement
+        return "paused", placement, result
     if getattr(result, "error", None) or not getattr(result, "text", ""):
         stats["llm_errors"] += 1
         stats["consecutive_errors"] += 1
@@ -465,6 +490,7 @@ def _process_chunk(
         return (
             "failed" if stats["consecutive_errors"] >= _max_extract_errors() else None,
             placement,
+            result,
         )
     stats["consecutive_errors"] = 0
     reply = _prompt.parse_reply(result.text)
@@ -484,7 +510,7 @@ def _process_chunk(
                 "detail": (result.text or "")[:200],
             },
         )
-        return None, placement
+        return None, placement, result
     outcome = build_runs(
         reply,
         chunk_id=chunk["chunk_id"],
@@ -583,7 +609,7 @@ def _process_chunk(
                     "measure": run.output_id,
                 },
             )
-    return None, placement
+    return None, placement, result
 
 
 def _survey_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
@@ -652,6 +678,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     # loop below treats it like remote. A ``local`` landing flips the
     # pacing off — see the module docstring.
     local_lane: bool | None = None
+    pause_streak = int(state.get("pause_streak") or 0)
     while idx < len(chunks) and (processed < per_slice or local_lane):
         chunk = chunks[idx]
         idx += 1
@@ -663,7 +690,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             continue
         processed += 1
         stats["chunks"] += 1
-        outcome, landed = _process_chunk(
+        outcome, landed, routed = _process_chunk(
             ctx,
             chunk=chunk,
             paper=paper,
@@ -688,6 +715,24 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 summary_meta={"stats": stats},
             )
         if outcome == "paused":
+            pause_streak += 1
+            if pause_streak >= _max_pauses():
+                return Done(
+                    summary=(
+                        f"survey_extract: the reader lane stayed saturated — "
+                        f"{pause_streak} consecutive paused slices (cap "
+                        f"{_max_pauses()}); the local slot never freed, "
+                        "giving up rather than parking forever"
+                    ),
+                    success=False,
+                    summary_meta={"stats": stats},
+                )
+            reason_class = getattr(routed, "reason_class", None)
+            why = (
+                "paused: local reader lane saturated"
+                + (f" ({reason_class})" if reason_class else "")
+                + f" · pause streak {pause_streak}/{_max_pauses()}"
+            )
             return Yield(
                 state={
                     "phase": "extract",
@@ -695,9 +740,13 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                     "stats": stats,
                     "escalations": escalations,
                     "run_token": run_token,
+                    "pause_streak": pause_streak,
                 },
-                wake_when=_wake_s(300),
+                wake_when=_retry_wake(routed, why=why),
             )
+        # The lane answered — a pause sandwiched between answered calls is
+        # a blip, not a wedge; only an unbroken streak counts.
+        pause_streak = 0
         # The unrolled local loop still answers a cancel at the old
         # per-slice cadence — a 600-chunk run must not become
         # uncancellable for its ~30 min.
@@ -714,8 +763,11 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 "stats": stats,
                 "escalations": escalations,
                 "run_token": run_token,
+                "pause_streak": pause_streak,
             },
-            wake_when=_wake_s(1),
+            wake_when=_wake_s(
+                1, why=f"pacing: {idx}/{len(chunks)} chunks read — next slice"
+            ),
         )
 
     # Extraction done — spawn the acceptance child (unless skipped).
@@ -782,7 +834,12 @@ def _phase_await(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     if status in {"queued", "running", "claimed"} or status.startswith("waiting"):
         if ctx.is_cancel_requested():
             return Done(summary="survey_extract cancelled", success=False)
-        return Yield(state=state, wake_when=_wake_s(120))
+        return Yield(
+            state=state,
+            wake_when=_wake_s(
+                120, why=f"awaiting accept child jo{child} (STATUS:{status})"
+            ),
+        )
     acceptance = None
     if row is not None and isinstance(row[0], dict):
         acceptance = row[0].get("acceptance")

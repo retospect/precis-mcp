@@ -26,7 +26,7 @@ def _ctx() -> DispatchContext:
 
 
 def _call(stats: dict[str, int], escalations: list[dict[str, Any]]) -> str | None:
-    outcome, _placement = job._process_chunk(
+    outcome, _placement, _routed = job._process_chunk(
         _ctx(),
         chunk={"chunk_id": 1, "chunk_kind": "paragraph", "text": "x"},
         paper=1,

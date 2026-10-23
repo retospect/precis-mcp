@@ -249,10 +249,16 @@ class TestValueFormNormalised:
     @pytest.mark.parametrize(
         ("given", "built"),
         [
-            ("upper", "upper_bound"),
-            ("lower", "lower_bound"),
-            ("upper_bound", "upper_bound"),
+            # gr508162: every reader form except "categorical" is dropped —
+            # parse_literal infers the numeric form from the literal, so a
+            # reader-invented spelling can't reach the DB CHECK nor
+            # override the literal's own parse.
+            ("upper", None),
+            ("lower", None),
+            ("upper_bound", None),
+            ("point", None),
             ("sideways", None),
+            ("categorical", "categorical"),
         ],
     )
     def test_form_spelling(self, world: dict, given: str, built: str | None) -> None:

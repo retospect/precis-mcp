@@ -54,6 +54,11 @@ class WakeWhen:
     - ``tag_added``: ``{"tag": "manual_kick"}`` — wake when the
       named tag (exact match) appears.
 
+    Any kind may also carry ``payload.why`` — a short free-text note
+    naming what the park waits on. The wake_runner echoes it in its
+    re-queue audit chunk (``re-queued (at_time — <why>)``) so a job
+    parked in a loop records what it was waiting for.
+
     The cancel-override case (``STATUS:cancel_requested`` set on
     a waiting job) lives outside this contract: the wake_runner
     re-queues such jobs unconditionally so the coordinator can

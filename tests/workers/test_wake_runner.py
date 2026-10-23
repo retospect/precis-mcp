@@ -353,6 +353,48 @@ def test_at_time_wake_clears_the_stale_lease(store: Store) -> None:
     assert "lease_until" not in _job_meta(store, coord)
 
 
+def test_at_time_requeue_echoes_the_park_why(store: Store) -> None:
+    """gr508162: a dispatcher annotates its park with
+    ``wake_when.payload.why`` (what the wait is for); the re-queue audit
+    line echoes it so an ``at_time`` loop's record says what it waited
+    for, not just that it woke."""
+    coord = _mk_job(
+        store,
+        parent_id=None,
+        status="waiting_time",
+        meta={"job_type": "survey_extract", "executor": "coordinator"},
+    )
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={
+                "kind": "at_time",
+                "payload": {
+                    "ts": 0,
+                    "why": "paused: local reader lane saturated · pause streak 3/24",
+                },
+            },
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result["ok"] == 1
+    with store.pool.connection() as conn:
+        texts = [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'job_event'",
+                (coord,),
+            ).fetchall()
+        ]
+    assert any(
+        "re-queued (at_time" in t and "local reader lane saturated" in t for t in texts
+    )
+
+
 def test_woken_loop_is_not_reaped_as_a_reboot_orphan(store: Store) -> None:
     """The bug this clearing exists for, end to end.
 

@@ -1115,6 +1115,13 @@ def _transition_dead_node_orphan_to_failed(
             set_by="system",
             conn=conn,
         )
+        reason = (
+            f"sweeper: failed dead-node orphan — target_node="
+            f"{orphan.target_node} provably dead (lease expired past the "
+            f"{grace_s}s grace and the node has no live worker or heartbeat)"
+        )
+        set_meta(conn, orphan.ref_id, error=reason)
+        append_chunk(store, orphan.ref_id, JOB_EVENT_KIND, reason, conn=conn)
         store.append_event(
             orphan.ref_id,
             source="sweeper",
@@ -2520,6 +2527,19 @@ def _transition_to_failed(
             set_by="system",
             conn=conn,
         )
+        # The reason goes where a reader of the job record looks —
+        # ``meta.error`` plus a ``job_event`` chunk — not only in the
+        # append-only events log. jo504632 (gr508162) died this way and
+        # its chunk stream held nothing but wake_runner re-queues.
+        reason = (
+            f"sweeper: {status} claim-orphaned job — STATUS:running since "
+            f"{orphan.running_since.isoformat()} past the "
+            f"{threshold_hours:g}h threshold with a null or expired lease; "
+            "the claiming slice ended without persisting a result "
+            "(crash, kill or host loss)"
+        )
+        set_meta(conn, orphan.ref_id, error=reason)
+        append_chunk(store, orphan.ref_id, JOB_EVENT_KIND, reason, conn=conn)
         store.append_event(
             orphan.ref_id,
             source="sweeper",

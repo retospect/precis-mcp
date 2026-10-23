@@ -433,8 +433,19 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
 
     Holds the connection only for the status + chunk writes so
     contention with the coordinator pass is minimal.
+
+    When the dispatcher annotated its park with ``wake_when.payload.why``
+    (a free-text note naming what the park waits on — a saturated lane,
+    a child, a throttle) the audit line echoes it: a job that loops on
+    ``at_time`` parks otherwise records 50 identical "re-queued
+    (at_time)" lines and nothing about what it waited for (gr508162).
     """
     with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'wake_when'->'payload'->>'why' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        why = str(row[0]).strip()[:200] if row and row[0] else ""
         _set_status(store, ref_id, _QUEUED, conn=conn)
         _clear_lease(conn, ref_id)
         # Audit chunk so the lifecycle reads cleanly:
@@ -443,7 +454,7 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
             store,
             ref_id,
             "job_event",
-            f"wake_runner: re-queued ({reason})",
+            f"wake_runner: re-queued ({reason}{' — ' + why if why else ''})",
             conn=conn,
         )
         conn.commit()

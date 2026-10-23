@@ -54,17 +54,6 @@ placement refusal and the zero-write failure line have landed since.
 No extracted row exists on prod (`measures` with `meta.extraction_run`:
 0 of 239 live output rows, 2026-10-21).
 
-**New verified bug.** `proposals.build_runs` accepts
-`value_form` ∈ {point, interval, upper, lower, boolean, categorical,
-not_established}, but `measures_value_form_check` allows `upper_bound`/
-`lower_bound`, not `upper`/`lower`. A reply carrying `"upper"` reaches
-`insert_measure`, raises a check violation (not `BadInput`), and
-`_process_chunk` catches only `BadInput`, so the slice crashes. A
-reader-supplied `point` also overrides the store's own parse of `<1`.
-Fix: drop reader `value_form` except `categorical` (the prompt already
-offers only `categorical | null`) and let `parse_literal` decide; test
-with a `"upper"` reply.
-
 ### Wilson batch acceptance, as built, and three findings
 
 As built: a batch is one `(paper, extraction_run)`; strata are

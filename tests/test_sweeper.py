@@ -1920,3 +1920,29 @@ def test_overqueued_garden_job_is_cancelled_with_reason(store: Store) -> None:
     assert "STATUS:queued" in {str(t) for t in store.tags_for(fresh)}
     meta = _query(store, "SELECT meta FROM refs WHERE ref_id = %s", (stale,))[0][0]
     assert "queue_ttl_s" in meta["error"]
+
+
+def test_swept_job_records_the_reason_on_the_record(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr508162: a claim-orphaned terminalization says WHY where a
+    reader of the job record looks — ``meta.error`` plus a
+    ``job_event`` chunk — not only in the events log. jo504632 failed
+    with 50 identical "re-queued (at_time)" lines and no exit reason."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=2.0)
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    meta = _query(store, "SELECT meta FROM refs WHERE ref_id = %s", (job_id,))[0][0]
+    assert "claim-orphaned" in meta["error"]
+    chunks = _query(
+        store,
+        "SELECT chunk_kind, text FROM chunks WHERE ref_id = %s",
+        (job_id,),
+    )
+    assert any(
+        kind == "job_event" and "claim-orphaned" in text for kind, text in chunks
+    )

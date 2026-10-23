@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -668,6 +669,78 @@ class TestRungAwarePacing:
         )
         assert isinstance(out, Yield)
         assert out.state["stats"]["calls"] == 1
+
+
+class TestPausedBound:
+    """gr508162: a ``paused`` router answer parks the slice with a
+    ``wake_when.payload.why`` note naming the wait, and an unbroken
+    pause streak past ``PRECIS_SURVEY_EXTRACT_MAX_PAUSES`` fails the job
+    with the reason on the record instead of parking forever (jo504632
+    spent its last ~10 h in exactly that silent loop)."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def _paused(self) -> Any:
+        return replace(
+            llm_result("", placement="local"),
+            paused=True,
+            reason_class="rate",
+        )
+
+    def test_paused_park_annotates_what_it_waits_for(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: self._paused())
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(
+            fake_ctx(store, _extract_meta(world, skip_accept=True), []),
+            job.SPEC,
+        )
+        assert isinstance(out, Yield)
+        assert out.wake_when.kind == "at_time"
+        assert "local reader lane saturated" in out.wake_when.payload["why"]
+        assert "rate" in out.wake_when.payload["why"]
+        assert out.state["pause_streak"] == 1
+
+    def test_pause_streak_cap_fails_with_the_reason(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        monkeypatch.setenv("PRECIS_SURVEY_EXTRACT_MAX_PAUSES", "3")
+        monkeypatch.setattr(job, "route", lambda req: self._paused())
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert not done.success
+        assert "saturated" in done.summary
+        assert "3 consecutive paused slices" in done.summary
+
+    def test_an_answered_call_breaks_the_streak(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pause sandwiched between answered calls is a blip, not a
+        wedge — the streak counts only UNBROKEN saturated slices."""
+        store = world["store"]
+        monkeypatch.setenv("PRECIS_SURVEY_EXTRACT_MAX_PAUSES", "2")
+        replies = iter([self._paused(), llm_result('{"results": []}')])
+        monkeypatch.setattr(job, "route", lambda req: next(replies, self._paused()))
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        meta = _extract_meta(world, skip_accept=True)
+        out = dispatch(fake_ctx(store, meta, []), job.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["pause_streak"] == 1
+        # Next slice answers chunk 1 (streak resets), then pauses on the
+        # following chunk → streak 1 again, not 2 → still a Yield.
+        meta["coordinator_state"] = out.state
+        out = dispatch(fake_ctx(store, meta, []), job.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["pause_streak"] == 1
 
 
 def _seed_body_chunk(

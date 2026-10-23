@@ -33,12 +33,7 @@ from typing import Any
 
 from precis.extract import anchors as _anchors
 from precis.extract import verify as _verify
-from precis.store._measures_ops import (
-    MEASURE_VALUE_FORMS,
-    VALUE_FORM_ALIASES,
-    MeasureAnchor,
-    MeasureSpec,
-)
+from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils.text import slugify
 
 _ATTRIBUTIONS = {"own_work", "cited_work", "not_established"}
@@ -299,11 +294,14 @@ def build_runs(
             if raw.get("measurand_status") in _MEASURAND_STATUSES
             else None
         )
-        value_form = raw.get("value_form")
-        if isinstance(value_form, str):
-            value_form = VALUE_FORM_ALIASES.get(value_form, value_form)
-        if value_form not in MEASURE_VALUE_FORMS:
-            value_form = None
+        # The reader's form vocabulary isn't the store's (a "upper" or
+        # "point" it emits used to ride into insert_measure — a DB CHECK
+        # violation, not a BadInput, crashing the slice mid-run, and a
+        # wrong reader "point" overrode parse_literal's own read of
+        # "<1"). Only "categorical" survives — it names a non-numeric
+        # literal parse_literal can't infer; every numeric form is left
+        # None so the literal itself decides (gr508162).
+        value_form = "categorical" if raw.get("value_form") == "categorical" else None
         inputs: list[MeasureSpec] = []
         raw_inputs = raw.get("inputs")
         if raw_inputs is not None and not isinstance(raw_inputs, list):
