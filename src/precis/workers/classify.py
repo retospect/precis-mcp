@@ -57,16 +57,31 @@ is a deliberate, node-targeted batch.
 from __future__ import annotations
 
 import logging
+import math
 import os
+import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from precis.store.types import Tag
+from precis.utils import rate_limit
+from precis.utils.http import is_internal_host, netloc_provider
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.llm.router import (
+    Backend,
+    DispatchError,
+    Tier,
+    Transport,
+    resolve_backend,
+    select_transport,
+)
+from precis.utils.rate_limit import RateLimited
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -112,6 +127,125 @@ def _max_concurrency() -> int:
     except ValueError:
         return _DEFAULT_MAX_CONCURRENCY
     return val if val >= 1 else _DEFAULT_MAX_CONCURRENCY
+
+
+# ---- the shared limiter: in-flight cap, refusal → requeue ---------------
+#
+# gr507340: the hosted SMALL rung takes a token from the cross-host limiter
+# row of its endpoint (``host:<netloc>``, ``utils/http.py``) per request.
+# That bucket is shared by every caller of the endpoint, so a thread pool
+# wider than its refill rate only queues on the row: ~20k classify requests
+# a day waited the limiter's full 30 s and were refused before any call
+# went out, each logged per item and dropped as ``None`` — the chunk kept
+# its lease and came back after the 20-min cooldown. Two fixes here: the
+# pool is clamped to the bucket's rate (one second of refill per host — a
+# share of the bucket, since every host runs the same clamp), and a refusal
+# is a *deferral*, not a failure: the chunk's lease is released so the next
+# tick re-claims it, the pass stops submitting (the bucket is saturated;
+# more submissions only lengthen the queue), and the pass backs off
+# exponentially before claiming again. One summary line per pass.
+
+
+def _limiter_provider() -> str | None:
+    """The limiter row classify's hosted SMALL calls take, or ``None`` when
+    the lane runs local/internal (no shared bucket). Mirrors the router's
+    SMALL transport pick (``select_transport`` → ``OPENAI_COMPAT`` under the
+    OpenAI backend at ``PRECIS_LLM_BASE_URL``) and ``openai_tools._polite``'s
+    internal-host exemption; a served-local rung 0 under an operator chain
+    is not seen here, so the clamp then applies to local work too — a
+    bounded over-pacing (the LLM host row is wide), never under-pacing."""
+    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    if not base_url or is_internal_host(base_url):
+        return None
+    backend = resolve_backend()
+    if backend is not Backend.OPENAI:
+        return None
+    if select_transport(Tier.SMALL, tools_needed=False, backend=backend) is not (
+        Transport.OPENAI_COMPAT
+    ):
+        return None
+    return netloc_provider(base_url)
+
+
+def _inflight_cap() -> int | None:
+    """Most requests this pass keeps in flight against the shared bucket:
+    one second of the bucket's refill (``ceil(refill_per_sec)``, at least 1),
+    or ``None`` when there is no shared bucket to match."""
+    provider = _limiter_provider()
+    if provider is None:
+        return None
+    rate = rate_limit.bucket_rate(provider)
+    if rate is None:
+        return None
+    return max(1, math.ceil(rate))
+
+
+class _Refused(Exception):
+    """The route refused the call *for now* — the shared limiter refused a
+    token, or the router paused (breaker trip, every slot busy). Not a
+    verdict on the chunk: it is requeued, never counted ``failed``."""
+
+    def __init__(self, reason: str, retry_at: datetime | None = None) -> None:
+        super().__init__(reason)
+        self.retry_at = retry_at
+
+
+#: Backoff after a pass saw refusals: first wait, growth, ceiling (seconds).
+_BACKOFF_BASE_S = 30.0
+_BACKOFF_CAP_S = 600.0
+
+
+class _RefusalBackoff:
+    """Pass-level backoff state: a pass that saw a refusal sets ``until``
+    (exponential in the refusal streak, raised to the router's own
+    ``retry_at`` hint when later); a pass that completed work with no
+    refusal clears the streak. One instance per process (module-level
+    :data:`_BACKOFF`); the clock is injectable for tests."""
+
+    def __init__(self, clock: Any = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self.streak = 0
+        self.until = 0.0
+
+    def remaining(self) -> float:
+        with self._lock:
+            return max(0.0, self.until - self._clock())
+
+    def refused(self, retry_at: datetime | None = None) -> float:
+        """Record a refusing pass; returns the wait set (seconds)."""
+        with self._lock:
+            self.streak += 1
+            wait = min(_BACKOFF_BASE_S * 2 ** (self.streak - 1), _BACKOFF_CAP_S)
+            if retry_at is not None:
+                hint = (retry_at - datetime.now(UTC)).total_seconds()
+                wait = min(max(wait, hint), _BACKOFF_CAP_S)
+            self.until = self._clock() + wait
+            return wait
+
+    def succeeded(self) -> None:
+        with self._lock:
+            self.streak = 0
+            self.until = 0.0
+
+    def reset(self) -> None:
+        self.succeeded()
+
+
+_BACKOFF = _RefusalBackoff()
+
+
+def _release_claims(conn, chunk_ids: list[int]) -> None:
+    """Requeue: drop this artifact's ``chunk_claims`` lease for ``chunk_ids``
+    so the next tick's fresh claim sees them, instead of leaving them to
+    the 20-min abandoned-claim cooldown. (``chunk_claims`` is a lease table,
+    not body data — the append-only rule is about ``chunks``.)"""
+    if not chunk_ids:
+        return
+    conn.execute(
+        "DELETE FROM chunk_claims WHERE artifact = %s AND chunk_id = ANY(%s)",
+        (ARTIFACT, list(chunk_ids)),
+    )
 
 
 def _load_axis(axis_id: str) -> dict:
@@ -166,6 +300,9 @@ _SYS = (
 
 
 def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
+    """One axis judgment for ``row``: the label, ``None`` when the call ran
+    but yielded nothing usable (counted ``failed``), or :class:`_Refused`
+    raised when the route would not take the call right now (requeued)."""
     try:
         out = client.complete(
             [
@@ -173,6 +310,18 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
                 {"role": "user", "content": _build_prompt(axis, row)},
             ]
         )
+    except RateLimited as exc:
+        raise _Refused(str(exc)) from exc
+    except DispatchError as exc:
+        if exc.paused:
+            raise _Refused(str(exc), exc.retry_at) from exc
+        log.warning(
+            "classify axis=%s chunk=%s dispatch failed: %r",
+            axis.get("id") or "?",
+            row.get("chunk_id"),
+            exc,
+        )
+        return None
     except Exception as exc:
         # A dispatch/provider failure (breaker refusal, admission block, a dead
         # or mis-configured endpoint, a transport error) is invisible in
@@ -224,6 +373,7 @@ def _classify_row(
     role3_axis: dict,
     escalate_client: Any | None,
     row: dict,
+    stop: threading.Event | None = None,
 ) -> str | None:
     """The per-chunk cascade — junk gate -> role3 -> optional Tier-2
     escalate — lifted verbatim out of :func:`run_classify_pass`'s old serial
@@ -231,9 +381,18 @@ def _classify_row(
     to ``client``/``escalate_client``, never the DB — see that function's
     docstring for the thread-safety argument). Returns the resolved value
     (a member of :data:`_ROLE3_VALS` on success) or whatever
-    :func:`_classify_one` returned on a dispatch failure (``None``)."""
+    :func:`_classify_one` returned on a dispatch failure (``None``).
+
+    :class:`_Refused` propagates (the pass requeues the row). ``stop`` is
+    the pass's shared flag: set once any row was refused, it makes every
+    not-yet-dispatched call defer at once instead of joining the queue on a
+    bucket already known to be saturated."""
+    if stop is not None and stop.is_set():
+        raise _Refused("deferred: an earlier call this pass was refused")
     if _classify_one(client, junk_axis, row) == "junk":
         return "furniture"
+    if stop is not None and stop.is_set():
+        raise _Refused("deferred: an earlier call this pass was refused")
     val = _classify_one(client, role3_axis, row)
     if val == "own" and escalate_client is not None:
         ev = _classify_one(escalate_client, role3_axis, row)  # Tier 2 re-judge
@@ -490,7 +649,13 @@ def run_classify_pass(
     ref_ids: list[int] | None = None,
     concurrency: int = 1,
 ) -> dict:
-    """One claim→classify→write cycle. Returns {claimed, ok, failed}.
+    """One claim→classify→write cycle. Returns {claimed, ok, failed, deferred}.
+
+    ``deferred`` counts chunks the route refused for now (shared-limiter
+    refusal, breaker/slot pause — see the limiter section above): their
+    leases are released so the next tick re-claims them, and the pass backs
+    off (:data:`_BACKOFF`) — a pass inside the backoff window claims nothing
+    and returns ``{claimed: 0, ..., backoff_s: <left>}``.
 
     ``escalate_client`` (Tier 2, optional — ``PRECIS_CLASSIFY_ESCALATE_MODEL``)
     re-judges chunks the cheap ``client`` calls ``own`` — the
@@ -518,12 +683,33 @@ def run_classify_pass(
     only reads ``self`` before delegating to the module-level ``dispatch()``;
     this is the same client class ``llm_summarize`` already fans out this
     way. Clamped at :data:`MAX_CONCURRENCY_ENV` regardless of what's asked
-    for. Default ``1`` is byte-identical to the old always-serial loop.
+    for, and at the shared limiter bucket's rate (:func:`_inflight_cap`)
+    when the lane is hosted. Default ``1`` is byte-identical to the old
+    always-serial loop.
     """
+    idle = {"claimed": 0, "ok": 0, "failed": 0, "deferred": 0}
+    backoff_left = _BACKOFF.remaining()
+    if backoff_left > 0:
+        log.info(
+            "classify: backing off after a refused pass — next claim in %.0fs",
+            backoff_left,
+        )
+        return {**idle, "backoff_s": backoff_left}
+
     junk_axis = _load_axis("junk")
     role3_axis = _load_axis("role3")
 
     concurrency = max(1, min(concurrency, _max_concurrency()))
+    inflight_cap = _inflight_cap()
+    if inflight_cap is not None and inflight_cap < concurrency:
+        log.info(
+            "classify: concurrency %d clamped to %d — the shared limiter bucket "
+            "refills %d/s; more in flight only queues on it",
+            concurrency,
+            inflight_cap,
+            inflight_cap,
+        )
+        concurrency = inflight_cap
     # A cap wider than batch_size would otherwise starve the pool — claim
     # enough rows to keep every worker fed.
     claim_limit = max(batch_size, concurrency)
@@ -533,31 +719,36 @@ def run_classify_pass(
         _enrich(conn, rows)
         conn.commit()
     if not rows:
-        return {"claimed": 0, "ok": 0, "failed": 0}
+        return dict(idle)
+
+    stop = threading.Event()
+
+    def _one(row: dict) -> str | _Refused | None:
+        try:
+            return _classify_row(
+                client, junk_axis, role3_axis, escalate_client, row, stop
+            )
+        except _Refused as refused:
+            stop.set()
+            return refused
 
     if concurrency <= 1:
         # Byte-identical to the pre-concurrency serial loop.
-        values = [
-            _classify_row(client, junk_axis, role3_axis, escalate_client, row)
-            for row in rows
-        ]
+        values = [_one(row) for row in rows]
     else:
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
-            values = list(
-                ex.map(
-                    lambda row: _classify_row(
-                        client, junk_axis, role3_axis, escalate_client, row
-                    ),
-                    rows,
-                )
-            )
+            values = list(ex.map(_one, rows))
 
     ok = failed = 0
     dist: Counter = Counter()
+    refused_rows: list[tuple[dict, _Refused]] = []
     # Writes stay single-threaded and in claim order (ex.map preserves
     # submission order) regardless of concurrency, so this loop — and its
     # DB behaviour — is unchanged from the old serial version.
     for row, val in zip(rows, values, strict=True):
+        if isinstance(val, _Refused):
+            refused_rows.append((row, val))
+            continue
         if val not in _ROLE3_VALS:
             failed += 1
             continue
@@ -573,4 +764,35 @@ def run_classify_pass(
             )
             conn.commit()
         ok += 1
-    return {"claimed": len(rows), "ok": ok, "failed": failed, "dist": dict(dist)}
+    out = {
+        "claimed": len(rows),
+        "ok": ok,
+        "failed": failed,
+        "deferred": len(refused_rows),
+        "dist": dict(dist),
+    }
+    if not refused_rows:
+        if ok:
+            _BACKOFF.succeeded()
+        return out
+    with store.pool.connection() as conn:
+        _release_claims(conn, [row["chunk_id"] for row, _ in refused_rows])
+        conn.commit()
+    # A refusal from the route names the cause (the stop-flag deferrals
+    # don't); the router's retry_at, when it set one, floors the backoff.
+    cause = next(
+        (r for _, r in refused_rows if not str(r).startswith("deferred:")),
+        refused_rows[0][1],
+    )
+    hints = [r.retry_at for _, r in refused_rows if r.retry_at is not None]
+    wait = _BACKOFF.refused(max(hints) if hints else None)
+    log.warning(
+        "classify: %d of %d chunks deferred — route refused (%s); leases "
+        "released for the next tick, backing off %.0fs (streak %d)",
+        len(refused_rows),
+        len(rows),
+        cause,
+        wait,
+        _BACKOFF.streak,
+    )
+    return {**out, "backoff_s": wait}

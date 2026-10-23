@@ -17,6 +17,17 @@ from precis.workers.classify import _SYS, _build_prompt, run_classify_pass
 from tests.workers._helpers import seed_chunk, seed_chunks, seed_ref
 
 
+@pytest.fixture(autouse=True)
+def _fresh_refusal_backoff() -> Any:
+    """The pass-level refusal backoff is process state; a refusing test
+    must not make the next test's pass claim nothing."""
+    from precis.workers import classify as c
+
+    c._BACKOFF.reset()
+    yield
+    c._BACKOFF.reset()
+
+
 class _FakeClient:
     """Records every prompt it's given; always answers with a fixed value."""
 
@@ -649,3 +660,223 @@ def test_unusable_reply_logs_a_bounded_excerpt(
     hits = [r for r in caplog.records if "unusable reply" in r.getMessage()]
     assert hits, "expected a WARNING carrying the reply excerpt"
     assert "probably background" in hits[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# gr507340: the shared limiter. A refusal requeues the chunk (lease released,
+# pass backs off) instead of dropping it as a per-item failure; the pool is
+# clamped to the bucket's refill rate.
+# ---------------------------------------------------------------------------
+
+
+def _claimed_ids(store: Any) -> set[int]:
+    from precis.workers import classify as c
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id FROM chunk_claims WHERE artifact = %s", (c.ARTIFACT,)
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+class _RefusingAfterClient(_AlwaysOwnClient):
+    """A fake limiter sitting under the client: the first ``grant`` calls
+    go through (answering "own"), every later call is refused the way the
+    shared limiter refuses — ``RateLimited`` before any request is sent."""
+
+    def __init__(self, grant: int, exc: Exception | None = None) -> None:
+        super().__init__()
+        self.grant = grant
+        self.exc = exc
+        self.refused = 0
+
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        from precis.utils.rate_limit import RateLimited
+
+        with self._lock:
+            self.calls += 1
+            n = self.calls
+            if n > self.grant:
+                self.refused += 1
+        if n > self.grant:
+            raise self.exc or RateLimited("host:openrouter.ai")
+        content = messages[1]["content"]
+        val = "not_junk" if "JUNK or SUBSTANTIVE" in content else "own"
+        return SimpleNamespace(text=f'{{"value": "{val}"}}', total_tokens=5)
+
+
+def test_limiter_refusal_requeues_the_chunk_instead_of_failing_it(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The gr507340 shape: 3 chunks, the limiter grants the first chunk's
+    two calls (junk gate + role3) and refuses from the third call on. The
+    refused chunks are ``deferred`` (not ``failed``), their leases are
+    released so the next tick re-claims them, the pass stops submitting
+    (one refusal, not one per remaining call), logs ONE summary line, and
+    arms the backoff."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    ids = [
+        seed_chunk(store, ref_id=ref, text=_marker_text(f"M{i}"), ord=i)
+        for i in range(3)
+    ]
+    client = _RefusingAfterClient(grant=2)
+
+    with caplog.at_level("WARNING", logger="precis.workers.classify"):
+        result = run_classify_pass(store, client=client, batch_size=10, ref_ids=[ref])
+
+    assert (result["claimed"], result["ok"], result["failed"]) == (3, 1, 0)
+    assert result["deferred"] == 2
+    assert result["backoff_s"] >= c._BACKOFF_BASE_S
+    assert _role3_tags(store, ref) == ["own"]
+    # Requeued: the refused chunks' leases are gone, the tagged one's stays.
+    assert _claimed_ids(store) == {ids[0]}
+    # The stop flag kept the third chunk off the saturated bucket.
+    assert client.refused == 1
+    summary = [r.getMessage() for r in caplog.records if "deferred" in r.getMessage()]
+    assert len(summary) == 1
+    assert "2 of 3 chunks deferred" in summary[0]
+    assert "host:openrouter.ai" in summary[0]
+    assert not any("dispatch failed" in r.getMessage() for r in caplog.records)
+    assert c._BACKOFF.remaining() > 0
+
+
+def test_pass_inside_backoff_claims_nothing_then_requeued_chunks_come_back(
+    store: Any,
+) -> None:
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    for i in range(2):
+        seed_chunk(store, ref_id=ref, text=_marker_text(f"M{i}"), ord=i)
+    run_classify_pass(
+        store, client=_RefusingAfterClient(grant=0), batch_size=10, ref_ids=[ref]
+    )
+    assert _claimed_ids(store) == set()  # both requeued
+
+    # Inside the backoff window: nothing is claimed, no model call is made.
+    idle_client = _AlwaysOwnClient()
+    idle = run_classify_pass(store, client=idle_client, batch_size=10, ref_ids=[ref])
+    assert (idle["claimed"], idle["deferred"]) == (0, 0)
+    assert idle["backoff_s"] > 0
+    assert idle_client.calls == 0
+
+    # Window over (the bucket recovered): the requeued chunks are classified.
+    c._BACKOFF.reset()
+    again = run_classify_pass(
+        store, client=_AlwaysOwnClient(), batch_size=10, ref_ids=[ref]
+    )
+    assert (again["claimed"], again["ok"], again["deferred"]) == (2, 2, 0)
+    assert c._BACKOFF.remaining() == 0  # a clean pass clears the streak
+
+
+def test_paused_dispatch_error_defers_with_the_routers_retry_hint(store: Any) -> None:
+    """The router folds a limiter refusal (and any breaker/slot pause) into
+    ``DispatchError(paused=True, retry_at=...)``; the hint floors the
+    backoff so the next claim is not before the route says to retry."""
+    from datetime import UTC, datetime, timedelta
+
+    from precis.utils.llm.router import DispatchError
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+    retry_at = datetime.now(UTC) + timedelta(seconds=90)
+    exc = DispatchError("rate limit: host:x refused", paused=True, retry_at=retry_at)
+
+    result = run_classify_pass(
+        store,
+        client=_RefusingAfterClient(grant=0, exc=exc),
+        batch_size=10,
+        ref_ids=[ref],
+    )
+    assert (result["deferred"], result["failed"]) == (1, 0)
+    assert result["backoff_s"] >= 85.0
+    assert c._BACKOFF.remaining() >= 85.0
+
+
+def test_non_paused_dispatch_error_is_still_a_per_item_failure(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    from precis.utils.llm.router import DispatchError
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+    exc = DispatchError("PRECIS_LLM_BASE_URL is unset or invalid", paused=False)
+    with caplog.at_level("WARNING", logger="precis.workers.classify"):
+        result = run_classify_pass(
+            store, client=_RefusingAfterClient(grant=0, exc=exc), batch_size=10
+        )
+    assert (result["failed"], result["deferred"]) == (1, 0)
+    assert any("dispatch failed" in r.getMessage() for r in caplog.records)
+    assert c._BACKOFF.remaining() == 0
+
+
+def test_refusal_backoff_doubles_to_a_cap_and_clears_on_success() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from precis.workers import classify as c
+
+    clock = {"t": 0.0}
+    b = c._RefusalBackoff(clock=lambda: clock["t"])
+    assert b.remaining() == 0
+    assert b.refused() == c._BACKOFF_BASE_S
+    assert b.refused() == 2 * c._BACKOFF_BASE_S
+    for _ in range(10):
+        b.refused()
+    assert b.until - clock["t"] == c._BACKOFF_CAP_S
+    clock["t"] += c._BACKOFF_CAP_S / 2
+    assert b.remaining() == pytest.approx(c._BACKOFF_CAP_S / 2)
+    b.succeeded()
+    assert b.remaining() == 0 and b.streak == 0
+    # A later router hint floors the wait; an earlier one leaves it alone.
+    wait = b.refused(datetime.now(UTC) + timedelta(seconds=200))
+    assert 195.0 <= wait <= 200.0
+    b.succeeded()
+    assert b.refused(datetime.now(UTC) + timedelta(seconds=1)) == c._BACKOFF_BASE_S
+
+
+def test_inflight_cap_follows_the_shared_bucket_rate(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool is clamped to ``ceil(refill_per_sec)`` of the limiter row
+    the hosted SMALL lane takes; an internal endpoint or a missing row
+    leaves the configured width alone."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import precis.workers.classify as classify_mod
+
+    captured: dict[str, int] = {}
+
+    class _SpyExecutor(ThreadPoolExecutor):
+        def __init__(self, max_workers: int | None = None, **kw: Any) -> None:
+            captured["max_workers"] = max_workers or 0
+            super().__init__(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(classify_mod, "ThreadPoolExecutor", _SpyExecutor)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    rates: dict[str, float | None] = {"host:openrouter.ai": 2.4}
+    monkeypatch.setattr(
+        classify_mod.rate_limit, "bucket_rate", lambda provider: rates.get(provider)
+    )
+    assert classify_mod._limiter_provider() == "host:openrouter.ai"
+    assert classify_mod._inflight_cap() == 3
+
+    seed_chunks(store, [_PROSE] * 4)
+    result = run_classify_pass(
+        store, client=_AlwaysOwnClient(), batch_size=10, concurrency=8
+    )
+    assert result["ok"] == 4
+    assert captured["max_workers"] == 3  # 8 clamped to ceil(2.4)
+
+    # No row for the host -> no clamp; an internal endpoint -> no bucket.
+    rates.clear()
+    assert classify_mod._inflight_cap() is None
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://10.0.0.5:8080/v1")
+    assert classify_mod._limiter_provider() is None
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
+    assert classify_mod._limiter_provider() is None  # SMALL runs local

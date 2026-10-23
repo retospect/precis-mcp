@@ -427,6 +427,33 @@ class TestOpenAlexWiring:
         assert out.payload["limiter"] == "shared"
 
 
+class TestBucketRate:
+    """gr507340: a fan-out caller reads the bucket's refill rate to size its
+    in-flight work; every fail-open case of ``acquire`` reads as ``None``."""
+
+    def test_reads_the_rows_refill_rate(self, use_store_dsn: Store) -> None:
+        provider = "test_rl_rate"
+        _seed(use_store_dsn, provider, capacity=4, refill_per_sec=2.5)
+        try:
+            assert rate_limit.bucket_rate(provider) == 2.5
+        finally:
+            _cleanup(use_store_dsn, provider)
+
+    def test_missing_row_disabled_limiter_and_dead_store_read_none(
+        self, use_store_dsn: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert rate_limit.bucket_rate("test_rl_no_such_row") is None
+        monkeypatch.setenv("PRECIS_RATE_LIMIT", "0")
+        assert rate_limit.bucket_rate("s2") is None
+        monkeypatch.delenv("PRECIS_RATE_LIMIT")
+
+        def boom() -> None:
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(rate_limit, "_get_conn", boom)
+        assert rate_limit.bucket_rate("s2") is None
+
+
 class TestCrossrefSeed:
     """Ruling 1 (Reto 2026-10-16): crossref is 1 request/s. Found by name,
     not number, so a landing-order renumber only renames the file."""

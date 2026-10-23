@@ -583,6 +583,32 @@ def test_resolve_provider_direct():
     assert http._resolve_provider(http._UNSET, Policy(), None) == (None, None)
 
 
+def test_llm_api_policy_seeds_the_metered_host_row(limiter):
+    """gr507343: an LLM API host (the ``openai-tools`` policy, what
+    ``openai_tools._polite`` routes OpenRouter through) is seeded with
+    ``LLM_HOST_ROW`` — a wide bucket the provider's 429/Retry-After parks —
+    not the 1 req/s website default; a scraped host keeps the default."""
+    assert http.LLM_HOST_ROW[1] > DEFAULT_HOST_ROW[1]
+    assert http._resolve_provider(
+        http._UNSET, POLICIES["openai-tools"], "https://openrouter.ai/api/v1/x"
+    ) == ("host:openrouter.ai", http.LLM_HOST_ROW)
+    assert http._resolve_provider(
+        http._UNSET, POLICIES["web-fetch"], "https://openrouter.ai/docs"
+    ) == ("host:openrouter.ai", DEFAULT_HOST_ROW)
+    clock = Clock()
+    call_with_backoff(
+        lambda: "ok",
+        service="host:openrouter.ai",
+        policy=POLICIES["openai-tools"],
+        url="https://openrouter.ai/api/v1/chat/completions",
+        sleep=clock.sleep,
+        now=clock.now,
+    )
+    assert [(r["provider"], r["seed_row"]) for r in limiter.requires] == [
+        ("host:openrouter.ai", http.LLM_HOST_ROW)
+    ]
+
+
 def test_netloc_provider():
     assert netloc_provider("https://Api.Example.org/x") == "host:api.example.org"
     assert netloc_provider("not a url") is None

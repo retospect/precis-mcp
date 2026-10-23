@@ -48,7 +48,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -64,6 +64,7 @@ from precis.utils.claude_agent import (
 from precis.utils.claude_p import ClaudePResult, call_claude_p
 from precis.utils.llm import failure as _failure
 from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
+from precis.utils.rate_limit import RateLimited
 
 if TYPE_CHECKING:
     from precis.utils.inproc_context import TickContext
@@ -3614,6 +3615,37 @@ def _provider_api_key(base_url: str) -> str:
     return get_secret("PRECIS_LLM_API_KEY") or ""
 
 
+#: Retry horizon for a shared-limiter refusal. The limiter already polled
+#: for its whole ``limiter_wait_s`` (30 s) before refusing, so the host's
+#: bucket has been saturated by *our own* concurrent demand for that long;
+#: the SMALL lane's in-process retry (``_run_with_retry``, 30 s budget)
+#: would only re-enter the same queue. Longer than that budget so the retry
+#: is left to the caller's requeue (``_server_retry_hint_s`` reads it as an
+#: upstream hint beyond budget), far shorter than the 15-min ``rate``
+#: horizon a provider 429 gets — nothing upstream is wrong.
+_LIMITER_REFUSAL_RETRY = timedelta(seconds=60)
+
+
+def _limiter_refused(req: LlmRequest, model: str, exc: RateLimited) -> LlmResult:
+    """The shared cross-host limiter refused this rung before any request
+    went out (gr507343). A normalized ``paused`` + ``rate`` result, not a
+    raise: it reaches the route-log (``errored``, ``reason_class='rate'``,
+    the error text names the bucket) so refused demand is countable and
+    the ``llm-degraded`` condition can see it, and a pinned pass gets the
+    same ``DispatchError(paused=True)`` it already defers on."""
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model=model,
+        tier=req.tier,
+        error=str(exc),
+        paused=True,
+        reason_class="rate",
+        retry_at=datetime.now(UTC) + _LIMITER_REFUSAL_RETRY,
+    )
+
+
 def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
 
@@ -3691,6 +3723,8 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             if extra_body
             else client.complete(messages)
         )
+    except RateLimited as exc:
+        return _limiter_refused(req, model, exc)
     except (RuntimeError, OSError) as exc:
         # Same unavailability-vs-semantic split as `_dispatch_local` above.
         return _classified(
@@ -3944,6 +3978,8 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                 stream=req.stream,
                 max_tokens=req.max_tokens,
             )
+    except RateLimited as exc:
+        return _replace(_limiter_refused(req, model, exc), stop_reason="error")
     except (RuntimeError, OSError) as exc:
         return _classified(
             LlmResult(

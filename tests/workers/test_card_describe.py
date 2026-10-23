@@ -326,3 +326,38 @@ def test_truncated_json_reply_fails_not_stored(store: Any, hub: Any) -> None:
 
     assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
     assert _desc_chunks(store, ref_id) == []
+
+
+# ── gr500371: a claude-less host defers the batch instead of failing rows ──
+
+
+def test_cli_unavailable_chain_defers_batch(
+    store: Any, hub: Any, caplog: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A claude-less host: the BIG chain's claude rungs drop at the router's
+    availability gate (``_drop_unavailable_rungs``) → ``DispatchError``
+    with ``paused`` set → the pass defers the whole batch with zero failed
+    rows, writes nothing, and the WARNING names the host defect — the
+    pre-fix shape was 16 ERROR rows per cycle on balthazar."""
+    import logging
+
+    from precis.utils.llm.router import DispatchClient, Tier
+
+    ref_id = _put_structure(hub)
+    empty = tmp_path / "no-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
+    # Force the ANTHROPIC backend so BIG resolves the claude_p rung.
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+
+    client = DispatchClient(tier=Tier.BIG)
+    with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
+    assert _desc_chunks(store, ref_id) == []
+    paused = [m for m in caplog.messages if "dispatch paused" in m]
+    assert paused and "not found on this host" in paused[0]
+    assert not any("dispatch failed" in m for m in caplog.messages)

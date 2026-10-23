@@ -16,6 +16,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import Message
 from types import SimpleNamespace
 from typing import Any
@@ -2004,6 +2005,69 @@ def _openai_compat_with_body(
     return router._dispatch_openai_compat(
         LlmRequest(tier=Tier.MEDIUM, prompt="x"), model="m"
     )
+
+
+def test_openai_compat_limiter_refusal_is_a_paused_rate_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr507343: the shared limiter refusing a token (``RateLimited`` out of
+    the polite transport, before any request) is folded into the normal
+    result shape — ``paused`` + ``rate`` with the bucket named — instead of
+    escaping ``route()`` raw, so it reaches the route-log and a pinned pass
+    defers on it like a breaker pause. Its ``retry_at`` sits past the
+    in-process retry budget: the limiter already waited 30 s, re-entering
+    the same queue at once is pointless."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+    from precis.utils.rate_limit import RateLimited
+
+    class RefusingTransport:
+        def post_json(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            raise RateLimited("host:openrouter.ai")
+
+    real = summ.LlmClient
+    monkeypatch.setattr(
+        summ, "LlmClient", lambda cfg: real(cfg, transport=RefusingTransport())
+    )
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    before = datetime.now(UTC)
+    out = router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.SMALL, prompt="x"), model="m"
+    )
+    assert out.paused is True
+    assert out.reason_class == "rate"
+    assert out.error is not None and "host:openrouter.ai" in out.error
+    assert out.retry_at is not None
+    left = (out.retry_at - before).total_seconds()
+    assert router._RETRY_MAX_WAIT_S < left <= 61.0
+    assert router._server_retry_hint_s(out) is not None
+
+
+def test_run_with_retry_does_not_requeue_a_limiter_refusal_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SMALL-lane in-process retry re-runs ``rate`` failures — but a
+    limiter refusal's retry hint lies beyond the retry budget, so the
+    provider runs exactly once and the refusal surfaces for the caller."""
+    from precis.utils.rate_limit import RateLimited
+
+    calls: list[str] = []
+
+    class Refusing:
+        def run(self, req: LlmRequest, *, model: str) -> router.LlmResult:
+            calls.append(model)
+            return router._limiter_refused(req, model, RateLimited("host:x"))
+
+    monkeypatch.setattr(router, "_retry_sleep", lambda s: None)
+    out = router._run_with_retry(
+        Refusing(),
+        LlmRequest(tier=Tier.SMALL, prompt="x"),
+        model="m",
+        transport=Transport.OPENAI_COMPAT,
+    )
+    assert calls == ["m"]
+    assert out.paused is True and out.reason_class == "rate"
 
 
 def test_openai_compat_empty_completion_is_an_error(

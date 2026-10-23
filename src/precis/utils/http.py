@@ -306,6 +306,18 @@ TRACE_ID_HEADER = "J-Trace-ID"
 #: (``host:<netloc>``): ``(capacity, refill_per_sec)``, one request a second.
 DEFAULT_HOST_ROW = (1, 1.0)
 
+#: Limiter row seeded for an LLM API host (the ``openai-tools`` policy —
+#: OpenRouter and other OpenAI-wire endpoints). A metered API, not a scraped
+#: website: the provider paces us itself with 429 + ``Retry-After``, which
+#: :func:`_park` writes to this same row so every host honours it. The
+#: bucket is wide enough that the fleet's thread-pool bursts never queue on
+#: it (the ~40k calls/day workload averages 0.5/s; gr507343 — the 1/s
+#: website default refused ~20k calls/day before any request went out).
+#: The point fix ahead of ``docs/backlog/outbound-policy.md`` S1, whose
+#: ``llm-api`` class has no token lane at all (a ``parked_until`` column
+#: carries the park) and caps concurrency with a shared slot hold.
+LLM_HOST_ROW = (32, 16.0)
+
 
 class VendorError(Exception):
     """A third-party call failed in a way we will not retry."""
@@ -377,6 +389,11 @@ class Policy:
     provider: str | None = None
     #: Longest wait for a limiter token before ``RateLimited``.
     limiter_wait_s: float = 30.0
+    #: ``(capacity, refill_per_sec)`` seeded for a ``host:<netloc>`` row this
+    #: policy creates (``provider`` unset, ``url=`` passed). The website
+    #: politeness default unless the policy names a metered API
+    #: (:data:`LLM_HOST_ROW`).
+    host_row: tuple[int, float] = DEFAULT_HOST_ROW
 
 
 DEFAULT_POLICY = Policy()
@@ -433,7 +450,15 @@ POLICIES: dict[str, Policy] = {
     # A live agent waits on these two: few attempts, short cap. A 429 backs
     # off here and is never raised to the agent as a rate-limit error.
     "perplexity": Policy(attempts=4, base=2.0, cap=30.0, label="Perplexity"),
-    "openai-tools": Policy(attempts=2, base=2.0, cap=30.0, label="OpenAI-style API"),
+    # LLM APIs are metered, not scraped: a wide host row the provider's own
+    # 429/Retry-After parks, instead of the 1 req/s website default (gr507343).
+    "openai-tools": Policy(
+        attempts=2,
+        base=2.0,
+        cap=30.0,
+        label="OpenAI-style API",
+        host_row=LLM_HOST_ROW,
+    ),
     "remarkable": Policy(
         attempts=4,
         base=2.0,
@@ -597,7 +622,8 @@ def _resolve_provider(
 
     An explicit ``provider`` wins (``None`` turns the limiter off), then
     the policy's row, then ``host:<netloc>`` of ``url`` — the only case
-    that seeds a row (:data:`DEFAULT_HOST_ROW`)."""
+    that seeds a row (``policy.host_row``, :data:`DEFAULT_HOST_ROW` unless
+    the policy names a metered API)."""
     if not isinstance(provider, _Unset):
         return provider, None
     if policy.provider is not None:
@@ -605,7 +631,7 @@ def _resolve_provider(
     if url:
         host = netloc_provider(url)
         if host is not None:
-            return host, DEFAULT_HOST_ROW
+            return host, policy.host_row
     return None, None
 
 

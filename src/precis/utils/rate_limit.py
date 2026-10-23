@@ -383,6 +383,32 @@ def acquire(
         return True
 
 
+_RATE_SQL = "SELECT refill_per_sec FROM external_rate_limits WHERE provider = %s"
+
+
+def bucket_rate(provider: str) -> float | None:
+    """``provider``'s refill rate in tokens per second, or ``None`` when
+    there is no shared bucket to read (limiter off, no DSN, no row, or the
+    store unreachable — the same fail-open cases :func:`acquire` grants).
+
+    For a caller that fans out concurrent requests against one bucket
+    (``classify``'s thread pool, gr507340): the rate bounds how many of its
+    requests can be granted per second, so in-flight work beyond it only
+    queues on the row and gets refused at ``max_wait_s``.
+    """
+    if not _rate_limit_enabled():
+        return None
+    try:
+        conn = _get_conn()
+        if conn is None:
+            return None
+        row = conn.execute(_RATE_SQL, (provider,)).fetchone()
+        return float(row[0]) if row is not None else None
+    except Exception:
+        _warn_fail_open(provider, "bucket_rate")
+        return None
+
+
 class RateLimited(Exception):
     """The shared limiter refused ``provider``: its daily quota is spent, the
     rate wait ran past ``max_wait_s``, or the process is draining. Raised by
@@ -423,4 +449,4 @@ def park(provider: str, seconds: float) -> None:
         _warn_fail_open(provider, "park")
 
 
-__all__ = ["RateLimited", "acquire", "close", "park", "require"]
+__all__ = ["RateLimited", "acquire", "bucket_rate", "close", "park", "require"]
