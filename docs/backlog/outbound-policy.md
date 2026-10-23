@@ -29,10 +29,13 @@ set its slot count: that is `llm-lane-scheduler.md` (the `llm-local`
 class). Does not pick which job a worker runs: `cluster-scheduling.md` and
 `job-scheduling-fairness.md`.
 
-Point fixes already in flight land first; this item generalises them and
-must not block them: g4-llm-route owns gr507340 and gr507343 (classify
-refusals, OpenRouter on the 1/s host bucket), g4-workers owns gr507344 and
-gr507345 (CORE bypass, host-row cap). S1 absorbs whatever shape they land.
+Point fixes landed first (2026-10-23): 1eabf9afe (gr507343, gr507340:
+OpenRouter on a wide `LLM_HOST_ROW=(32, 16.0)` host row, classify
+requeues instead of failing), 258392232 (gr507345: idle `host:` rows
+evicted at the cap, `limiter-host-cap` condition), 622ff9556 (gr507344:
+CORE search paced through `require("core")`), 5165ecf80 (fetch legs
+timed: gate, limiter, request, deadline). S1 replaces the first; S4
+finishes the second (§6).
 
 ## Motivation / why
 
@@ -53,11 +56,10 @@ Today's outbound stack is three half-policies that do not compose:
   caller's deadline, so a limiter wait eats the ref-pass budget
   (`PRECIS_REF_PASS_DEADLINE_S`, 300 s; gr506756's class).
 - A bare `http_client(...).get` (`fetch_oa.py::_query_core_fulltext_urls`,
-  gr507344) passes `tests/test_outbound_polite_ratchet.py` because that
-  ratchet checks name presence per enclosing function, not per call.
-- `MAX_SEEDED_HOST_ROWS=500` is full on prod; every new host runs unpaced
-  and nothing alerts (gr507345). Fail-open is silent beyond a rate-limited
-  WARNING (gr503435).
+  gr507344, fixed in 622ff9556) passed
+  `tests/test_outbound_polite_ratchet.py` because that ratchet checks name
+  presence per enclosing function, not per call; the next one will too.
+- Fail-open is silent beyond a rate-limited WARNING (gr503435).
 - Paid-LLM concurrency has no primitive at all: nothing caps how many
   OpenRouter calls the fleet has in flight, so a 429 storm is the only
   signal.
@@ -125,7 +127,78 @@ Covers HTTP to scraped hosts, provider APIs, LLM APIs, subprocess/ssh
 | `internal` | none | — | `is_internal_host`, embedder, cluster services |
 
 A rate-less row still needs a park: add `parked_until timestamptz` so
-`park()` works without a token bucket.
+`park()` works without a token bucket. The S1 decisions below fix the
+mechanics.
+
+### S1 decisions (2026-10-23, answering the coordinator's readiness check)
+
+**D1. From `LLM_HOST_ROW` to the rate-less `llm-api` class.** No row is
+deleted and no row is rewritten. The class is a code attribute: `Policy`
+gains `cls`, `POLICIES["openai-tools"]` sets `cls="llm-api"`, and the
+DB `class` column is only an override. For an `llm-api` call the
+resolver returns `rate=None`, so `acquire` is not called and the token
+columns of `host:openrouter.ai` are ignored (left in place, harmless).
+`LLM_HOST_ROW` and `Policy.host_row`'s LLM use are deleted in S1; the
+row is still seeded on first use (default `(1, 1.0)` tokens, unused) so
+it can carry `parked_until` and the overrides.
+`_PARK_SQL` becomes two writes in one statement: `parked_until =
+GREATEST(COALESCE(parked_until, now()), now() + seconds)` on every row,
+and the existing negative-token write only `WHERE refill_per_sec > 0`.
+Before a call, a rate-less class reads `parked_until` from the cached
+row (D3) and, if parked, waits `min(park left, max_wait_s, deadline)` or
+refuses per `on_refuse`. Rated rows keep parking through their tokens
+as today; they also get `parked_until`, so `/limits` shows one park
+column for every class.
+
+**D2. The `llm-api` hold lifecycle.** One hold per logical LLM call, in
+`utils/llm/openai_tools.py` around the request method (blocking and
+streamed), outside `_polite`/`call_with_backoff`: retries reuse the
+hold, and a streamed body is read inside it. Acquire =
+`reserve_resource_slots(conn, 'api', {'llm-api:<provider>': 1})` +
+`insert_slot_hold(..., holder_identity=worker_identity())`, the same
+pair `local_serving.acquire` uses; release in `finally` =
+`release_resource_slots` + `delete_slot_hold`. TTL = the client's hard
+`timeout` + 60 s (not `PRECIS_SLOT_HOLD_TTL_S`'s 3600 s), so a crashed
+holder's unit returns in minutes; the epoch reaper reclaims sooner when
+the worker identity is replaced. A full row: poll as
+`local_serving.acquire` does, up to `min(max_wait_s, deadline)`, then
+`on_refuse` (default `defer` for workers: `RateLimited`, requeued by the
+1eabf9afe classify path). A 429 parks the row (D1); a park longer than
+the remaining wait refuses instead of sleeping on the hold.
+`<provider>` is the netloc's provider name (`openrouter` for
+openrouter.ai). The S1 migration seeds `('api', 'llm-api:openrouter')`
+with capacity 16 (`ON CONFLICT DO NOTHING`); the operator edits
+capacity on that row. A provider with no seeded row runs without a hold
+and `_warn_unpaced` names it. DB down: per-process semaphore of
+`PRECIS_OUTBOUND_FALLBACK_CONCURRENCY` (default 4).
+
+**D3. Resolver.** New module `src/precis/utils/outbound_policy.py`:
+`resolve(service: str, *, url: str | None = None) -> EffectivePolicy`.
+Row key = `Policy.provider` if set, else `host:<netloc>` of `url`. Cache:
+one `SELECT provider, <override columns> FROM external_rate_limits WHERE
+<any override column> IS NOT NULL OR parked_until > now()` per process,
+refreshed when older than 30 s (one query per process per 30 s, not per
+call); a row absent from the snapshot has no overrides. Invalidation is
+the TTL only; `precis limits set` does not signal. Merge, per field,
+later wins where non-NULL: class default (`CLASS_DEFAULTS[cls]`) →
+`POLICIES[service]` field (new fields `max_wait_s`, `connect_s`,
+`read_s`, `total_s`, `on_refuse`, `concurrency` default `None` =
+inherit; existing backoff fields keep their values) → DB column → the
+per-call `deadline`, which only shortens waits. Class: DB `class` column,
+else `Policy.cls`, else `internal` for `is_internal_host`, `provider-api`
+for a named `provider`, `scraped-host` otherwise. A resolver fault
+returns the code layers alone and warns once per provider per hour.
+
+**D4. One migration, owned by S1.** S1's migration adds every new
+`external_rate_limits` column: `class`, `max_wait_s`, `connect_s`,
+`read_s`, `total_s`, `on_refuse`, `concurrency`, `parked_until`,
+`last_used_at`, `refused_today` (reset with `day_used` on `day_start`
+rollover), `last_refused_at`, and seeds the `llm-api:openrouter` slot
+row. S2b and S4 write columns S1 created; neither adds a migration.
+`last_used_at` is set by `acquire` and by the rate-less pre-call check,
+because a rate-less row never moves `last_refill` and the 258392232
+eviction (keyed on `last_refill`) would otherwise retire a busy
+`llm-api` row; S4 re-keys eviction on `last_used_at`.
 
 **Recommendation on `llm-api` concurrency (Reto's pending Q3; recorded as
 this spec's recommendation, not a ruling).** Use the shared slot hold, not
@@ -168,9 +241,10 @@ hold row's `free/capacity` for a concurrency class. Edits:
 and waits `min(max_wait_s, remaining)`; the ref-pass loop
 (`workers/runner.py::run_loop`, `ref_pass_deadline_s`) passes its
 remaining budget down. The same `deadline` bounds a slot wait. A refusal
-is counted: a `limiter_refusals` counter per provider in the row (or an
-`llm_call_log` row with `status='refused'` for the LLM classes), so demand
-is visible in `/limits` and the doctor's `limiter-bypassed` probe
+is counted in the row: `refused_today` and `last_refused_at` (columns
+from S1's migration, D4; one counter for every class, no `llm_call_log`
+rows), so demand is visible in `/limits` and the doctor's
+`limiter-bypassed` probe
 (`workers/conditions.py::_probe_limiter_bypassed`) gets a sibling
 `limiter-refusing` finding.
 
@@ -201,10 +275,12 @@ parts B and C live here and the gripe says so.
 
 ### 6. Seeding cap
 
-`last_used_at` on every row; a sweep prunes `host:` rows idle >30 days;
-seeding at the cap raises an alert (`workers/conditions.py` condition
-`limiter-cap-full`) instead of failing open silently. The cap rises to
-2000.
+Shipped in 258392232: at `MAX_SEEDED_HOST_ROWS` (500) the seeder evicts
+`host:` rows idle past `HOST_ROW_IDLE_EVICT_S` (24 h, keyed on
+`last_refill`) and the `limiter-host-cap` condition fires when none is
+idle. Left for S4: re-key the idle test on `last_used_at` (S1 column,
+D4), and show occupancy in `/limits`. The cap stays 500 unless the
+condition fires in practice.
 
 ## Explicitly NOT in scope
 
@@ -220,16 +296,18 @@ seeding at the cap raises an alert (`workers/conditions.py` condition
 
 | slice | delivers | absorbs |
 |---|---|---|
-| S1 | `EffectivePolicy`, class defaults, DB columns + migration, resolver cache, `llm-api` class for OpenRouter/OpenAI-compatible hosts with its shared hold row | gr507343, gr507340 (after the g4-llm-route fix lands) |
-| S2 | `deadline=` on `acquire`/`require` and on the slot wait, ref-pass budget passed down, refusal counter + condition | gr506756's limiter half |
+| S1 | `EffectivePolicy` + resolver (D3), class defaults, the one migration (D4), `parked_until` park (D1), `llm-api` class with its shared hold (D2); deletes `LLM_HOST_ROW` | replaces 1eabf9afe's wide row |
+| S2a | `deadline=` on `acquire`/`require` and on the local slot wait, ref-pass budget passed down by ContextVar, refusals logged | gr506756's limiter half |
+| S2b | `refused_today`/`last_refused_at` written on refusal, `limiter-refusing` condition | — |
 | S3 | the AST ratchet + ruff rules, allowlist frozen, `test_outbound_polite_ratchet` tightened per call | gr507344's class, gr503084 B+C |
-| S4 | `/limits` effective-policy view, `precis limits set/--dry-run`, seeding sweep + cap alert | gr507345, gr503435's visibility half |
+| S4 | `/limits` effective-policy view + occupancy, `precis limits set/--dry-run`, eviction re-keyed on `last_used_at` | gr503435's visibility half |
 
-Each slice ships alone; S2–S4 do not depend on each other.
+S2a and S3 ship alone, no migration. S2b and S4 need S1's migration
+(D4) and are otherwise independent of each other.
 
 ## Acceptance criteria
 
-- S1: `resolve('openrouter.ai')` returns class `llm-api`, no token lane, a
+- S1: `resolve('openai-tools', url='https://openrouter.ai/api/v1')` returns class `llm-api`, no token lane, a
   `concurrency` resource whose `resource_slots` row exists; two processes
   on two hosts each holding the row's capacity see the next call refused
   or waited, never a (capacity+1)th in flight; an `UPDATE
@@ -244,12 +322,12 @@ Each slice ships alone; S2–S4 do not depend on each other.
   `subprocess.run` without `timeout=`; the frozen baseline passes; CI's
   lint lane runs it.
 - S4: `get(kind='job', id='/limits?provider=core')` names the layer of
-  every field; the host-row count on prod drops below the cap after the
-  sweep and `limiter-cap-full` fires in a test with a full table.
+  every field; a rate-less row used within the idle window is not
+  evicted.
 
 ## Target + blast radius
 
-`utils/rate_limit.py`, `utils/http.py` (`Policy`, `POLICIES`,
+`utils/outbound_policy.py` (new), `utils/rate_limit.py`, `utils/http.py` (`Policy`, `POLICIES`,
 `_resolve_provider`, `_take_token`), `utils/llm/openai_tools.py::_polite`,
 `store/_resource_slots_ops.py` (hold for the `llm-api` class),
 `workers/runner.py` (ref-pass deadline), `workers/conditions.py`,
@@ -261,8 +339,8 @@ and logs once per provider per hour (`_warn_unpaced`).
 
 ## Open questions / decisions log
 
-- Refusal accounting: a counter column vs `llm_call_log` rows. Column is
-  cheaper and covers non-LLM providers; the LLM class may want both.
+- Decided 2026-10-23: refusal accounting is a counter column for every
+  class (D4); no `llm_call_log` refused rows.
 - **Q3 for Reto** — `concurrency` for `llm-api`: shared through a
   `resource_slots` hold (this spec's recommendation, §2) or per process.
   Pending his ruling; S1 builds the shared hold unless he says otherwise.
