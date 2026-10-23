@@ -198,8 +198,9 @@ class Member:
     #: catalog form when the member is a bought fastener ('nut',
     #: 'washer', 'screw'), else None — a nut terminates a stack.
     form: str | None = None
-    #: True when the member is `component`/`part`-bound: bought, so it
-    #: comes with its own holes and must not be stamped.
+    #: True when the member is `component`/`part`-bound (bought, so it
+    #: comes with its own holes) or `pcb`-bound (a board whose mounting
+    #: holes are already its own) — either way it must not be stamped.
     bought: bool = False
     #: The member's manufacturing mode (``'fdm/asa'``), verbatim. Carried
     #: because *what a member is made of* decides what the far end of the
@@ -419,7 +420,7 @@ def _walk_axis(
                     t_out=t_out,
                     thickness_m=t_out - t_in,
                     form=_form(tree, name),
-                    bought=node.bound_kind in ("component", "part")
+                    bought=node.bound_kind in ("component", "part", "pcb")
                     and bool(node.bound),
                     mode=getattr(node, "mode", None),
                 )

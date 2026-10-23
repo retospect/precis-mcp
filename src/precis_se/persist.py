@@ -112,8 +112,10 @@ from psycopg.types.json import Jsonb
 
 from precis.blocktree.types import TEMPLATE_SEP, parse_template_ref
 from precis.design.uids import mint_uids
+from precis.pcb import export as pcb_export
 from precis_se import catalog
 from precis_se.atomic.vocab import ThreadingSpec
+from precis_se.board import BoardDerived, derive_board
 from precis_se.bom import BomLine
 from precis_se.catalog import Derived
 from precis_se.chain.vocab import DomainSpec
@@ -549,6 +551,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             ),
         }
     attach_catalog(store, tree)
+    attach_boards(store, tree)
     # Every block now carries its stored, parent-relative local_pose/
     # local_rot; compose them up the parent chain into WORLD-frame pose/
     # rot ONCE, here, so every reader of a loaded tree (validate/fasten/
@@ -695,6 +698,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
     tree.optics = dict(optics) if optics is not None else None
     if store is not None:
         attach_catalog(store, tree)
+        attach_boards(store, tree)
         tree.foreign = foreign_resolver(store)
         tree.measurands = measurand_resolver(store)
         tree.structure_versions = structure_version_resolver(store)
@@ -828,6 +832,58 @@ def attach_catalog(store: Any, tree: SeTree) -> None:
     for node in tree.blocks.values():
         if node.bound_kind == "component" and node.bound:
             node.derived = by_slug.get(node.bound)
+
+
+def attach_boards(store: Any, tree: SeTree) -> None:
+    """Fill every ``pcb``-bound block's ``derived`` from the board's
+    ``mechanical_profile`` (:mod:`precis_se.board`) — the consumer half
+    of the 0041 bridge, rough box (pcb-se-binding v0).
+
+    Same contract as :func:`attach_catalog` above: run on **load** (the
+    derivation is recomputed from the live pcb rows on every read and
+    never persisted — moving a part or re-outlining the board reaches
+    every design bound to it), batched per distinct slug, and **total**:
+    an unresolvable slug leaves ``derived`` carrying only its
+    ``why_not``, never raises. ``pcb_graph``/thickness are deliberately
+    not read yet — v0 derives the profile from ``pcb_load`` +
+    ``pcb_features_list`` and ``DEFAULT_THICKNESS_MM``; the board-column
+    half lands with pass A.
+
+    ``store`` may be a fake without the pcb ops; the pass no-ops then,
+    same courtesy ``attach_catalog`` extends."""
+    slugs = {
+        node.bound
+        for node in tree.blocks.values()
+        if node.bound_kind == "pcb" and node.bound
+    }
+    if not slugs or not hasattr(store, "pcb_load"):
+        return
+    by_slug: dict[str, BoardDerived] = {}
+    for slug in sorted(slugs):
+        by_slug[slug] = _derive_board_one(store, slug)
+    for node in tree.blocks.values():
+        if node.bound_kind == "pcb" and node.bound:
+            node.derived = by_slug.get(node.bound)
+
+
+def _derive_board_one(store: Any, slug: str) -> BoardDerived:
+    """One pcb slug → its board derivation, in metres."""
+    ref = store.get_ref(kind="pcb", id=slug)
+    if ref is None:
+        return BoardDerived(why_not=f"pcb {slug!r} not found")
+    try:
+        load = store.pcb_load(ref.id)
+        features = (
+            store.pcb_features_list(ref.id)
+            if hasattr(store, "pcb_features_list")
+            else []
+        )
+        profile = pcb_export.mechanical_profile(
+            {"instances": load.get("instances") or []}, features
+        )
+    except Exception as exc:  # a load must never die on one binding
+        return BoardDerived(why_not=f"pcb {slug!r}: {type(exc).__name__}: {exc}")
+    return derive_board(profile, load.get("instances"))
 
 
 def provenance_rows(

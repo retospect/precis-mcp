@@ -589,6 +589,48 @@ def drc(
             )
         )
 
+    # 3c'. pcb bindings (pcb-se-binding v0): a board that did not resolve
+    # is a warn, and every prism whose height came from the package table
+    # or its fallback (never the part's own height_mm) is named with its
+    # source — a guessed keep-out must read as one.
+    for name, block in sorted(tree.blocks.items()):
+        if block.bound_kind != "pcb" or not block.bound:
+            continue
+        derived = getattr(block, "derived", None)
+        why_not = getattr(derived, "why_not", None)
+        if derived is None or why_not:
+            findings.append(
+                ValidationIssue(
+                    rule="pcb_binding_unresolved",
+                    subject=name,
+                    detail=(
+                        f"block binds pcb:{block.bound} — "
+                        f"{why_not or 'the board did not resolve at load'}"
+                    ),
+                    severity="warn",
+                )
+            )
+            continue
+        proposed = [
+            (p["refdes"], p.get("source") or "?")
+            for seg in getattr(derived, "segments", None) or []
+            for p in seg.get("prisms", [])
+            if p.get("origin") == "proposed"
+        ]
+        if proposed:
+            findings.append(
+                ValidationIssue(
+                    rule="pcb_height_proposed",
+                    subject=name,
+                    detail=(
+                        f"board {block.bound!r}: heights proposed for "
+                        + ", ".join(f"{r} ({s})" for r, s in proposed)
+                        + " — own height_mm wins; confirm or set the real heights"
+                    ),
+                    severity="warn",
+                )
+            )
+
     # 3d. connect geometric plausibility (gr337040 + gr338426) — a
     # declared connect whose posed envelopes are geometrically disjoint,
     # or whose mechanism/kinematic class implies an envelope shape

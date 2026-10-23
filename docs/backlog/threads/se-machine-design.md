@@ -161,6 +161,9 @@ off that gap until it closes.
      cover 113 of 140 parts. Every part whose height is not its own is
      named in a finding. Stacks are v2.
      Before building, tell ewod-pcb and pcb-easyeda-round-trip.
+     **Built 2026-10-21** (pcb-se-bind): derivation + heights table +
+     `attach_boards` + reader decisions + se migration 0023 (lands via
+     builder-ce). Left: v2 (item 7).
 7. **pcb-se-binding v2** — section "Follow-up v2" in
    `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
    with real heights and subtracted mounting holes. Blocked-by 6.

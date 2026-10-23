@@ -440,14 +440,18 @@ def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
 
 
 #: What an L3 realization binding may point at — the *designed*
-#: realizations (a cad node set, an atomistic ``structure`` scene) and the
-#: two *bought* ones (an engineering-store component, a catalog part).
-#: Mirrors migration 0008's ``se_blocks_bound_kind_check``. ``structure``
+#: realizations (a cad node set, an atomistic ``structure`` scene), the
+#: two *bought* ones (an engineering-store component, a catalog part),
+#: and ``pcb`` (a fabricated board, realized by its own design).
+#: Mirrors migration 0023's ``se_blocks_bound_kind_check``. ``structure``
 #: arrived with the atomic mode (docs/backlog/nm-se-merge.md): an atomic
 #: block's realization IS chemistry, so the thing it binds is an atomistic
 #: design. ``nm`` was legal here while that kind existed; the merge retired
-#: the kind and 0008 dropped it from the CHECK constraint too.
-_BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part")
+#: the kind and 0008 dropped it from the CHECK constraint too. ``pcb``
+#: arrived with the rough box (docs/backlog/pcb-se-binding.md v0): a
+#: bound board's realization is derived at load by
+#: :func:`precis_se.persist.attach_boards` from ``mechanical_profile``.
+_BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part", "pcb")
 
 
 @dataclass

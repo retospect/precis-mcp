@@ -367,6 +367,26 @@ def stand_in_for(
     what it needs (module docstring's order: catalog part → spec dims →
     finding). Exactly one of the pair is set."""
     block = node.name
+    if node.bound_kind == "pcb":
+        # A bound board's stand-in is its derived rough-box envelope —
+        # the same bounding-volume posture ``_dims_stand_in`` takes.
+        env = getattr(node.derived, "envelope", None)
+        if node.bound and env:
+            return StandIn(
+                spec=SceneSpec(
+                    nodes=[
+                        NodeSpec(
+                            name="body", op="add", config=str(env), component="body"
+                        )
+                    ],
+                    components=["body"],
+                ),
+                source=f"bound board {node.bound!r} (its derived envelope)",
+            ), None
+        return None, _no_stand_in(
+            block,
+            "it binds no resolvable pcb board (nothing derived an envelope)",
+        )
     if node.bound_kind == "part":
         return None, _no_stand_in(
             block,
@@ -496,6 +516,7 @@ def _member(
     if (family is not None and family.key == "purchase") or node.bound_kind in (
         "component",
         "part",
+        "pcb",
     ):
         stand_in, finding = stand_in_for(node, cad_store_reader=cad_store_reader)
         if stand_in is None:

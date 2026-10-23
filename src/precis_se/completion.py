@@ -131,9 +131,12 @@ def se_completion_snapshot(
         unknown = bool(
             block["template_ref"] or block["template_uid"] or block["array_spec"]
         )
-        non_atomistic = block["bound_kind"] in ("cad", "component", "part") and bool(
-            block["bound_design"]
-        )
+        non_atomistic = block["bound_kind"] in (
+            "cad",
+            "component",
+            "part",
+            "pcb",
+        ) and bool(block["bound_design"])
         applicability = (
             "unknown"
             if unknown

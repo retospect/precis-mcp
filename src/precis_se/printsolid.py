@@ -12,7 +12,8 @@ here.
 :mod:`precis_se.fasten`'s own precedent (``Member.bought`` is
 ``bound_kind in ('component', 'part')``, and ``_stamp`` skips those):
 
-- ``bound_kind in ('component', 'part')`` — bought, not printed.
+- ``bound_kind in ('component', 'part', 'pcb')`` — bought or fabbed
+  elsewhere, not printed.
 - ``bound_kind == 'structure'`` — an atomic realization, not a solid.
 - resolved mode family isn't ``fdm`` (unset mode → no family) — another
   implementer's block, or unassigned.
@@ -343,7 +344,7 @@ def printed_solid(
     node = tree.blocks.get(block_name)
     if node is None:
         return None
-    if node.bound_kind in ("component", "part"):
+    if node.bound_kind in ("component", "part", "pcb"):
         return None
     if node.bound_kind == "structure":
         return None

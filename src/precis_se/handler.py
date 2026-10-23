@@ -2916,7 +2916,17 @@ class SeHandler(Handler):
                 key, source = "fdm", str(mode)
                 status, handle = _fab_group_cell(group)
             elif mode is None:
-                key, source, status, handle = "unassigned", "—", "—", "set_mode"
+                if node.bound_kind == "pcb" and node.bound:
+                    # A bound board is its own realization — no mode to
+                    # assign; the pcb DRC findings carry the honesty.
+                    key, source, status, handle = (
+                        "purchase",
+                        "pcb",
+                        f"bound: pcb:{node.bound}",
+                        f"{node.bound} (kind='pcb')",
+                    )
+                else:
+                    key, source, status, handle = "unassigned", "—", "—", "set_mode"
             elif family is None:
                 key, source = "unknown", mode
                 status, handle = "⚠ unknown family — set_mode to repair", "set_mode"

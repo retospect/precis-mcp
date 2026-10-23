@@ -42,6 +42,14 @@ resolved the Motivation/In-scope contradiction this way).
 
 ## Rough box (v0) — the build to do first (ready 2026-10-21)
 
+**Built 2026-10-21** (pcb-se-bind): derivation `precis_se/board.py` +
+`precis/pcb/package_heights.py`, `attach_boards` load pass, the 'pcb'
+decisions, se migration `0023_se_bound_kind_pcb.sql` (lands through the
+release owner). One deviation: the envelope's z=0 sits at the lowest
+derived extent (= the bottom copper face when nothing is mounted
+bottom-side) — a `box` is base-at-0 and cannot both anchor at the copper
+face and enclose bottom-side prisms.
+
 Reto 2026-10-03T20:30Z "rough box first"; "rough box yes" is the standing
 default (Reto 2026-10-12, `threads/PRIORITIES.md`). `status: ready` covers
 this section only. It is In scope below minus three items, with two
