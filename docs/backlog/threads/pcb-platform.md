@@ -123,6 +123,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   (90,45,15)° tiers (90 free, 45 priced, 15 more), stage-1 rotation
   well switch (ROT_WELL_FROM_STAGE1) against early θ drift, tilt gate
   folded into priced E; snap_to_preferred shares the well's grid.
+  gr504889: a fully posed, legal import remains the incumbent across the joint
+  place+route pass; reject re-placement when the T1+D14 wirelength
+  accept metric is more than 2% worse than those input poses. A
+  legalization/outline repair rules out restoring the illegal input.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
   cross-probing, shared zoom/pan module with se. **Spec slices 1–3

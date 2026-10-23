@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
+import shapely
+from shapely.geometry import Polygon
 
 from precis.pcb import field as F
 from precis.pcb.ir import pin_point
@@ -87,6 +91,64 @@ def test_t4_ignores_opposite_sides() -> None:
         lay = F.Layout(F.FieldBoard(parts, (), np.array([0.0, 0.5]), zeros, zeros))
         v, _ = F.CourtyardClearance(lay).value_grad(lay.pack())
         assert (v == 0.0) == expect_zero
+
+
+def test_t4_vector_cull_visits_exactly_the_scalar_pairs_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = _board(19, n=24)
+    lay = F.Layout(board)
+    term = F.CourtyardClearance(lay)
+    x, y, th, _vias = lay.unpack(lay.pack())
+    rings = [F._world(p, p.court, x[i], y[i], th[i]) for i, p in enumerate(board.parts)]
+    lo = [ring.min(axis=0) for ring in rings]
+    hi = [ring.max(axis=0) for ring in rings]
+    reach = term.c + 30.0 / term.beta
+    expected = [
+        ((x[i], y[i]), (x[j], y[j]))
+        for i in range(len(board.parts))
+        for j in range(i + 1, len(board.parts))
+        if board.parts[i].side == board.parts[j].side
+        and np.maximum(lo[i] - hi[j], lo[j] - hi[i]).max() <= reach
+    ]
+    visited: list[tuple[tuple[float, float], tuple[float, float]]] = []
+
+    def record(_pa, _pb, _ra, _rb, ta, tb, _vertices=None):
+        visited.append((tuple(ta), tuple(tb)))
+        return reach, np.zeros(3), np.zeros(3)
+
+    monkeypatch.setattr(term, "_signed", record)
+    term.value_grad(lay.pack())
+    assert visited == expected
+
+
+def test_t4_cached_witnesses_match_uncached_byte_for_byte() -> None:
+    for overlap in (False, True):
+        board = _board(11, n=6, overlap=overlap)
+        lay = F.Layout(board)
+        term = F.CourtyardClearance(lay)
+        x, y, th, _vias = lay.unpack(lay.pack())
+        rings = [
+            F._world(p, p.court, x[i], y[i], th[i]) for i, p in enumerate(board.parts)
+        ]
+        polys = [Polygon(r) for r in rings]
+        vertices = [np.asarray(p.exterior.coords)[:-1] for p in polys]
+        points = [shapely.points(v) for v in vertices]
+        for i, j in itertools.combinations(range(len(board.parts)), 2):
+            ti, tj = np.array([x[i], y[i]]), np.array([x[j], y[j]])
+            uncached = term._signed(polys[i], polys[j], rings[i], rings[j], ti, tj)
+            cached = term._signed(
+                polys[i],
+                polys[j],
+                rings[i],
+                rings[j],
+                ti,
+                tj,
+                ((vertices[i], points[i]), (vertices[j], points[j])),
+            )
+            assert cached[0] == uncached[0]
+            assert np.array_equal(cached[1], uncached[1])
+            assert np.array_equal(cached[2], uncached[2])
 
 
 def test_t4_plus_sign_crossing_has_value_and_gradient() -> None:

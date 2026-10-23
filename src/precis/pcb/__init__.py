@@ -73,6 +73,9 @@ Map, in pipeline order (design doc:
   function), :mod:`~precis.pcb.pinswap`, :mod:`~precis.pcb.generators`
   (computed components such as EWOD arrays), :mod:`~precis.pcb.session`
   (IR↔DB glue for the ``pcb_place``/``pcb_route`` jobs).
+  A fully placed, legal input stays the incumbent: when the placed
+  result's T1+D14 wirelength lands >2% worse than the input's,
+  ``optimize`` restores the input poses (gr504889).
 * **Copper** — :mod:`~precis.pcb.realize` (sketch → copper geometry),
   :mod:`~precis.pcb.vroute` (the one router: gridless, octilinear,
   kernel-exact clearance),

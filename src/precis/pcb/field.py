@@ -10,7 +10,11 @@ gradient (numpy; no autodiff dependency). Landed terms:
 * **T4** courtyard clearance — ``Σ softplus_β(c − sd(poly_i, poly_j))²`` on
   shapely polygon distance (the vector clearance kernel replaces it later),
   with the JLCPCB pairwise SMD spacing table raising per-pair targets, and
-  mounting-hole keep-outs entering as fixed obstacles on both sides.
+  mounting-hole keep-outs entering as fixed obstacles on both sides. Its
+  NumPy broad-phase filters same-side bounding-box pairs in the original
+  row-major order; vertex Points are built once per part per evaluation
+  instead of once per pair. Scalar witnesses and accumulation are
+  unchanged, so speeding dense boards does not change placement results.
 * **T5** board edge — softplus pull on part centres, inside the same
   per-part box ``OptimizeEngine.bounds_for`` gives the legality gate.
 * **T6** rubber bands — decoupling-cap pad to served pin, ``d₀`` slack.
@@ -27,10 +31,12 @@ gradient (numpy; no autodiff dependency). Landed terms:
   more than ``ROT_TILT_MIN_GAIN``;
   the write is always a grid value in [0, 360), the descended continuous
   θ never is (gr503694).
-* **Density** (gr503556) — ``Σ_b A_b·softplus_β(ρ_b − ρ_target)²`` over a
-  bin grid, ρ deposited through a Gaussian kernel on part centres at
-  ``LAMBDA_DENSITY``: the "router needs more space" spread force the
-  shelf-packed seed and the SWAP-only anneal lack.
+* **Density** (gr503556) — ``Σ_b A_b·(ρ_b² − Σ_i φ_ib²)`` over a bin
+  grid, ρ deposited through a normalized Gaussian kernel on part
+  centres at ``LAMBDA_DENSITY``. Subtracting each part's self-interaction
+  makes crowded neighbours push apart without sending a lone part to
+  the boundary; the earlier softplus-over-target tail repelled even
+  underloaded bins and piled parts against the wall.
 
 ``polish_placement`` runs the placement half of this energy as one move on
 the engine's board, behind ``OptimizeConfig.field_polish``, gated on
@@ -363,6 +369,8 @@ class CourtyardClearance(Term):
         rb: np.ndarray,
         ta: np.ndarray,
         tb: np.ndarray,
+        vertices: tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
+        | None = None,
     ) -> tuple[float, np.ndarray, np.ndarray]:
         """``(sd, ∂sd/∂pose_a, ∂sd/∂pose_b)``; each gradient is ``(x, y, θ)``."""
 
@@ -390,17 +398,30 @@ class CourtyardClearance(Term):
             # The vertex->polygon distances are one vectorized call per
             # direction — ``nearest_points`` only runs for the tied few;
             # measured on nano this cut ``_signed``'s shapely calls ~30x.
-            verts_by_dir: list[tuple[np.ndarray, np.ndarray, Polygon, bool]] = []
+            verts_by_dir: list[
+                tuple[np.ndarray, np.ndarray, Polygon, bool, np.ndarray]
+            ] = []
             dmin = math.inf
-            for src, dst, flip in ((pa, pb, False), (pb, pa, True)):
-                verts = np.asarray(src.exterior.coords)[:-1]
-                dists = shapely.distance(shapely.points(verts), dst)
-                verts_by_dir.append((verts, dists, dst, flip))
+            for direction, (src, dst, flip) in enumerate(
+                ((pa, pb, False), (pb, pa, True))
+            ):
+                verts, points = (
+                    vertices[direction]
+                    if vertices is not None
+                    else (
+                        np.asarray(src.exterior.coords)[:-1],
+                        None,
+                    )
+                )
+                if points is None:
+                    points = shapely.points(verts)
+                dists = shapely.distance(points, dst)
+                verts_by_dir.append((verts, dists, dst, flip, points))
                 dmin = min(dmin, float(dists.min()))
             cands: list[tuple[float, np.ndarray, np.ndarray, bool]] = []
-            for verts, dists, dst, flip in verts_by_dir:
+            for verts, dists, dst, flip, points in verts_by_dir:
                 for k in np.flatnonzero(dists <= dmin + 1e-9):
-                    qv = nearest_points(Point(verts[k]), dst)[1]
+                    qv = nearest_points(points[k], dst)[1]
                     cands.append(
                         (
                             float(dists[k]),
@@ -452,31 +473,37 @@ class CourtyardClearance(Term):
         n = len(parts)
         rings = [_world(p, p.court, x[i], y[i], th[i]) for i, p in enumerate(parts)]
         polys = [Polygon(r) for r in rings]
+        vertices = [np.asarray(p.exterior.coords)[:-1] for p in polys]
+        points = [shapely.points(v) for v in vertices]
         lo = np.array([r.min(axis=0) for r in rings])
         hi = np.array([r.max(axis=0) for r in rings])
         # softplus² is below 1e-12 of its scale past u = −30/β; cull there
         reach = self.c + 30.0 / self.beta
         gx, gy, gth = np.zeros(n), np.zeros(n), np.zeros(n)
         total = 0.0
-        for i in range(n):
-            for j in range(i + 1, n):
-                if parts[i].side != parts[j].side:
-                    continue
-                gap = np.maximum(lo[i] - hi[j], lo[j] - hi[i]).max()
-                if gap > reach:
-                    continue
-                ti, tj = np.array([x[i], y[i]]), np.array([x[j], y[j]])
-                sd, gi, gj = self._signed(
-                    polys[i], polys[j], rings[i], rings[j], ti, tj
-                )
-                u = self.pair_min.get((i, j), self.c) - sd
-                sp = _softplus(u, self.beta)
-                total += sp * sp
-                dE_dsd = -2.0 * sp * _sigmoid(u, self.beta)
-                for idx, g in ((i, gi), (j, gj)):
-                    gx[idx] += dE_dsd * g[0]
-                    gy[idx] += dE_dsd * g[1]
-                    gth[idx] += dE_dsd * g[2]
+        gaps = np.maximum(lo[:, None] - hi[None], lo[None] - hi[:, None]).max(axis=-1)
+        sides = np.array([p.side for p in parts])
+        active = np.triu((gaps <= reach) & (sides[:, None] == sides[None, :]), k=1)
+        # Row-major nonzero preserves the old i,j accumulation order exactly.
+        for i, j in zip(*np.nonzero(active), strict=True):
+            ti, tj = np.array([x[i], y[i]]), np.array([x[j], y[j]])
+            sd, gi, gj = self._signed(
+                polys[i],
+                polys[j],
+                rings[i],
+                rings[j],
+                ti,
+                tj,
+                ((vertices[i], points[i]), (vertices[j], points[j])),
+            )
+            u = self.pair_min.get((i, j), self.c) - sd
+            sp = _softplus(u, self.beta)
+            total += sp * sp
+            dE_dsd = -2.0 * sp * _sigmoid(u, self.beta)
+            for idx, g in ((i, gi), (j, gj)):
+                gx[idx] += dE_dsd * g[0]
+                gy[idx] += dE_dsd * g[1]
+                gth[idx] += dE_dsd * g[2]
         for i in range(n):
             ti = np.array([x[i], y[i]])
             for ring_h, poly_h, lo_h, hi_h, exempt in self.obstacles:
@@ -1293,6 +1320,16 @@ def board_from_engine(
     return board, springs
 
 
+def _wirelength_terms(z: _Z, t1: ConnectivityPull, tree: SupplyTree) -> float:
+    return t1.value_grad(z)[0] + tree.value_grad(z)[0]
+
+
+def placement_wirelength(board: FieldBoard) -> float:
+    """The T1 + D14 route-quality score used by the polish accept gate."""
+    lay = Layout(board)
+    return _wirelength_terms(lay.pack(), ConnectivityPull(lay), SupplyTree(lay))
+
+
 def _hole_obstacles(engine: Any) -> list[tuple[np.ndarray, int | None]]:
     """Each mounting hole's keep-out polygon in world frame — T4's fixed
     obstacles (gr503640 fix 2) — with the one instance index exempt from
@@ -1706,7 +1743,7 @@ def polish_placement(
         """The wirelength terms of one pose — T1's pulls plus the D14
         supply tree (rails are T1-exempt but still wire)."""
         p = lay.pack_from(xs, ys, ths)
-        return t1.value_grad(p)[0] + t_tree.value_grad(p)[0]
+        return _wirelength_terms(p, t1, t_tree)
 
     wl0 = _wirelength(*lay.unpack(z0)[:3])
 

@@ -5922,6 +5922,16 @@ def optimize(
     fixed is what makes ``cost_after < cost_before`` mean what it says.
     """
     config = config or OptimizeConfig()
+    # An imported board can already have a complete, routable placement.
+    # Keep its exact authored poses as a candidate alongside the anneal.
+    input_poses = (
+        tuple(
+            (float(ir.inst_x[i]), float(ir.inst_y[i]), float(ir.inst_rot[i]))
+            for i in range(ir.n_instances)
+        )
+        if np.isfinite(ir.inst_x).all() and np.isfinite(ir.inst_y).all() and not reseed
+        else None
+    )
     rng = random.Random(config.seed)
     seed_placement(
         ir,
@@ -5937,7 +5947,28 @@ def optimize(
     if not hold:
         snap_to_edges(ir)
     engine = OptimizeEngine(ir, config)
+    input_board = None
+    if input_poses is not None and not hold:
+        from precis.pcb import field as pcb_field
+
+        built = pcb_field.board_from_engine(engine)
+        if built is not None:
+            input_board = replace(
+                built[0],
+                x0=np.array([p[0] for p in input_poses]),
+                y0=np.array([p[1] for p in input_poses]),
+                th0=np.array(
+                    [
+                        -math.radians(0.0 if math.isnan(p[2]) else p[2])
+                        for p in input_poses
+                    ]
+                ),
+            )
     legalized = () if hold else engine.legalize_start()
+    # An input repaired off an illegal pose is not a viable incumbent,
+    # irrespective of its shorter ratsnest.
+    if legalized:
+        input_board = None
     report_schedule = engine._report_schedule()
     engine.schedule = report_schedule
     cost_before = engine.total()
@@ -5968,8 +5999,9 @@ def optimize(
             *support_groups,
             pcb_field.polish_placement(engine).summary(),
         )
-    if not hold:
-        engine.settle_into_outline()
+    settled = () if hold else engine.settle_into_outline()
+    if settled:
+        input_board = None
     cost_after = engine.total()
     # Cosmetic, post-measurement: `cost_before`/`cost_after` grade the
     # anneal's own work; the rigid recentre below changes absolute
@@ -5994,6 +6026,45 @@ def optimize(
             str(ir.instance_refdes[i]): stamp
             for i, stamp in engine.snap_to_preferred().items()
         }
+    if input_board is not None:
+        from precis.pcb import field as pcb_field
+
+        input_wire = pcb_field.placement_wirelength(input_board)
+        placed_wire = pcb_field.placement_wirelength(
+            replace(
+                input_board,
+                x0=np.asarray(ir.inst_x, dtype=float).copy(),
+                y0=np.asarray(ir.inst_y, dtype=float).copy(),
+                th0=np.array(
+                    [
+                        -math.radians(0.0 if math.isnan(float(r)) else float(r))
+                        for r in ir.inst_rot
+                    ]
+                ),
+            )
+        )
+        if placed_wire > input_wire * (1.0 + pcb_field.POLISH_WIRELENGTH_WORSEN):
+            assert input_poses is not None
+            changed = tuple(
+                i
+                for i, old in enumerate(input_poses)
+                if (float(ir.inst_x[i]), float(ir.inst_y[i]), float(ir.inst_rot[i]))
+                != old
+            )
+            # Recentering and preferred snap are post-measurement IR moves:
+            # the old engine's incremental caches no longer describe them.
+            for i in changed:
+                x, y, rot = input_poses[i]
+                ir.move_instance(i, x=x, y=y, rot=rot)
+            preferred_snapped = {}
+            snapped = ()
+            legalized = ()
+            engine = OptimizeEngine(ir, config)
+            engine.schedule = report_schedule
+            cost_after = engine.total()
+            support_groups = (
+                f"input poses kept: T1+D14 {input_wire:.4f} < {placed_wire:.4f}",
+            )
     positions = {
         str(ir.instance_refdes[i]): (
             float(ir.inst_x[i]),
