@@ -948,17 +948,19 @@ class DispatchMixin(RuntimeShape):
                 _retry_sleep(attempt)
                 attempt += 1
 
-    def dispatch(self, verb: str, args: dict[str, Any]) -> str:
+    def dispatch(self, verb: str, args: dict[str, Any], *, fold: bool = True) -> str:
         """Run one verb call. Returns the rendered string for the agent.
 
         Errors are caught and rendered as text — they never propagate
         out (MCP expects a string return). Tests rely on this shape;
         callers that need the protocol-level error flag (e.g. the MCP
         tool wrappers) should use :meth:`dispatch_with_status`."""
-        body, _is_error = self.dispatch_with_status(verb, args)
+        body, _is_error = self.dispatch_with_status(verb, args, fold=fold)
         return body
 
-    def dispatch_with_status(self, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
+    def dispatch_with_status(
+        self, verb: str, args: dict[str, Any], *, fold: bool = True
+    ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.
 
         Returns ``(body, is_error)``. ``body`` is the same rendered text
@@ -1015,6 +1017,7 @@ class DispatchMixin(RuntimeShape):
                     kind=args.get("kind"),
                     recipe=recipe,
                     transient=response.transient,
+                    fold=fold,
                 )
                 self._record_tool_call(
                     verb, args, body, False, started, response.result_count

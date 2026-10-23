@@ -182,7 +182,10 @@ def test_browse_roster_is_not_a_detail_gate(client, runtime, monkeypatch):
     monkeypatch.setattr(
         runtime,
         "dispatch_with_status",
-        lambda verb, args: ("[error:NotFound] unknown kind: future-plugin", True),
+        lambda verb, args, **_kw: (
+            "[error:NotFound] unknown kind: future-plugin",
+            True,
+        ),
     )
     response = client.get("/refs/future-plugin/9000")
     assert response.status_code == 200

@@ -1363,8 +1363,15 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     # host, a race in the window before the probe populates ``resource_
     # slots``, …) — a fresh quest_tick coordinator job (minted on the next
     # reconcile pass) gets a clean shot at a capable host.
-    cli_unavailable = getattr(outcome, "failure_kind", None) == "cli_unavailable"
-    if status == "failed" and cli_unavailable:
+    # The same defect arrives as a *paused* outcome when the router's
+    # availability gate dropped every claude rung up front (gr500371:
+    # ``LlmResult.cli_unavailable`` on a paused degrade maps to
+    # ``pause_kind="cli_unavailable"``) — rest the loop identically rather
+    # than free-retrying a call this host can never serve.
+    cli_unavailable = getattr(outcome, "failure_kind", None) == "cli_unavailable" or (
+        status == "paused" and getattr(outcome, "pause_kind", None) == "cli_unavailable"
+    )
+    if status in ("failed", "paused") and cli_unavailable:
         _reset_dry_rest_counter(ctx.store, quest_id)
         return Done(
             summary=(

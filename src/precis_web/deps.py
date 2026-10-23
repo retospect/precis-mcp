@@ -253,7 +253,9 @@ def dispatch(request: Request, verb: str, args: dict[str, Any]) -> tuple[str, bo
     """
     runtime = get_runtime(request)
     with human_write_context(request):
-        return runtime.dispatch_with_status(verb, args)
+        # fold=False: the write-time fold (gr499039) is an agent-context
+        # affordance — web pages render dispatch bodies to humans.
+        return runtime.dispatch_with_status(verb, args, fold=False)
 
 
 def human_write_context(request: Request) -> contextlib.AbstractContextManager[Any]:
@@ -298,7 +300,7 @@ async def await_dispatch(
 
     def _run() -> tuple[str, bool]:
         with human_write_context(request):
-            return runtime.dispatch_with_status(verb, args)
+            return runtime.dispatch_with_status(verb, args, fold=False)
 
     return await asyncio.to_thread(_run)
 

@@ -13,6 +13,7 @@ the corresponding call site resolves to today.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import Message
@@ -3303,6 +3304,9 @@ def test_dispatch_chain_override_honored_flag_off(
     written but never read. Here rung 0 (OSS) errors and route falls through
     to rung 1 (claude), proving the chain drove the routing."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    # The hosted-OSS rung needs its endpoint configured or the host-availability
+    # gate (gr500371) prunes it up front instead of letting it error in-flight.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda tier: (
@@ -3554,6 +3558,12 @@ def test_dispatch_cloud_throttle_drops_to_local_rung(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    # The local-labelled openai_tools rung has no PRECIS_LLM_BASE_URL — it
+    # rides a served_by slot, so the availability gate needs the host to
+    # actually serve the model (gr500371).
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: True
+    )
     prov = _FakeProv(_ok("local qwen out"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, prov)
 
@@ -5858,3 +5868,237 @@ def test_failover_does_not_log_the_last_failed_rung(
     out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x"), model="m")
     assert out.error == "b"
     assert [r.error for r in recorded] == ["a"]
+
+
+# ── gr500371: host-availability gate — skip rungs this host can't run ─────
+#
+# A host with no claude binary (balthazar) resolved its BIG chain to claude_p
+# and every card_describe item failed "claude binary not found" in ~50 ms.
+# route()/dispatch_async now drop a rung whose transport's binary, credential
+# or endpoint is absent on THIS host — derived from the same probes the
+# heartbeat's capability advertisement runs (never a hostname list) — and an
+# emptied chain degrades to a paused result the pass defers on instead of
+# failing each row.
+
+
+def _path_without_claude(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``claude`` unresolvable: PATH to an empty dir, PRECIS_CLAUDE_BIN
+    unset (the session fixture's fake-bin dir is replaced entirely)."""
+    empty = tmp_path / "no-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
+
+
+def _path_with_stub_claude(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fake PATH carrying an executable ``claude`` stub — exercises the real
+    ``shutil.which`` leg of the gate."""
+    import stat
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "claude"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
+
+
+def _no_claude_creds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No claude credential resolves anywhere: no env vars, no vault, no
+    ``~/.claude`` login — both legs of the credential probe deny."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.claude_auth_present", lambda: False
+    )
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kw: None)
+
+
+def test_route_prunes_claude_p_when_binary_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gripe's shape: a single-rung claude_p chain on a claude-less host —
+    paused degrade with a named reason, never a dispatch."""
+    _path_without_claude(tmp_path, monkeypatch)
+
+    def _boom(prompt: str, **kwargs: object) -> ClaudePResult:
+        raise AssertionError("call_claude_p must not run on a claude-less host")
+
+    monkeypatch.setattr(router, "call_claude_p", _boom)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.paused is True
+    assert out.cli_unavailable is True
+    assert "no usable rung on this host" in (out.error or "")
+    assert "claude" in (out.error or "")
+    assert "binary" in (out.error or "")
+
+
+def test_route_paused_degrade_raises_paused_dispatch_error(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """card_describe's seam: DispatchClient.complete surfaces the emptied
+    chain as DispatchError(paused=True) — the pass defers the batch rather
+    than failing every row."""
+    _path_without_claude(tmp_path, monkeypatch)
+
+    client = router.DispatchClient(tier=Tier.BIG)
+    with pytest.raises(router.DispatchError) as exc:
+        client.complete([{"role": "user", "content": "x"}])
+
+    assert exc.value.paused is True
+
+
+def test_route_advances_to_usable_rung_when_claude_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mixed chain: the claude rung drops, the next rung runs — the call
+    succeeds on the fallback instead of failing on a guaranteed-dead wire."""
+    _path_without_claude(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: [
+            {"model": "claude-sonnet-5", "transport": "claude_p", "placement": "cloud"},
+            {"model": "qwen-local", "transport": "local", "placement": "local"},
+        ],
+    )
+
+    class _FakeClient:
+        def __init__(self, config: object) -> None:
+            self.model = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return SimpleNamespace(text="local answered", total_tokens=3)
+
+    monkeypatch.setattr("precis.workers.llm_summarize.LlmClient", _FakeClient)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.error is None
+    assert out.text == "local answered"
+    assert out.placement == "local"
+
+
+def test_route_claude_rung_kept_on_capable_host(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fake PATH with an executable claude + a resolvable credential → the
+    rung is kept and the (monkeypatched) transport runs."""
+    _path_with_stub_claude(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        return ClaudePResult(
+            data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.01
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.error is None
+    assert out.text == '{"ok": true}'
+
+
+def test_route_prunes_claude_rung_when_no_credential(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binary present but no OAuth token, API key, vault or ~/.claude login —
+    the rung can't authenticate, so it's skipped rather than 401ing per call."""
+    _path_with_stub_claude(tmp_path, monkeypatch)
+    _no_claude_creds(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.paused is True
+    assert out.cli_unavailable is True
+    assert "credential" in (out.error or "")
+
+
+def test_route_api_key_alone_keeps_nonbare_claude_rung(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The billed fallback: no OAuth token but ANTHROPIC_API_KEY resolves —
+    prefer_oauth_over_api_key runs it, so the rung stays."""
+    _path_with_stub_claude(tmp_path, monkeypatch)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.claude_auth_present", lambda: False
+    )
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        return ClaudePResult(
+            data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.01
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.error is None
+
+
+def test_route_prunes_bare_rung_without_api_key(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--bare skips keychain AND OAuth: only ANTHROPIC_API_KEY can auth it —
+    none resolvable → the rung is skipped."""
+    _path_with_stub_claude(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setattr(
+        "precis.secrets.get_secret",
+        lambda name, **kw: os.environ.get(name),
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: [
+            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": True},
+        ],
+    )
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=False))
+
+    assert out.paused is True
+    assert "ANTHROPIC_API_KEY" in (out.error or "")
+
+
+def test_rung_unavailable_openai_tools_needs_base_url_or_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An openai_tools rung with no PRECIS_LLM_BASE_URL is usable only when a
+    served_by slot can feed it — the two configured-offering checks."""
+    from precis.utils.llm import local_serving as _local
+
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.setattr(_local, "served_locally", lambda model: False)
+    rung = Rung(Transport.OPENAI_TOOLS, model="qwen")
+    assert "PRECIS_LLM_BASE_URL" in (router._rung_unavailable(rung, "qwen") or "")
+
+    monkeypatch.setattr(_local, "served_locally", lambda model: True)
+    assert router._rung_unavailable(rung, "qwen") is None
+
+
+def test_rung_unavailable_openai_compat_listed_host_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listed provider host (openrouter) with no resolvable key 401s every
+    call — provable absence, so the rung is skipped. An unlisted self-hosted
+    endpoint may take no key, so it's left alone."""
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kw: None)
+    rung = Rung(Transport.OPENAI_COMPAT, model="deepseek")
+    assert "API key" in (router._rung_unavailable(rung, "deepseek") or "")
+
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    assert router._rung_unavailable(rung, "deepseek") is None
+
+
+def test_rung_unavailable_local_is_exempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LOCAL is never pruned here — the loopback's liveness is only knowable
+    by calling it, and _skip_unserved_local_rung owns the dead-wire case."""
+    rung = Rung(Transport.LOCAL, model="summarizer")
+    assert router._rung_unavailable(rung, "summarizer") is None

@@ -7,6 +7,7 @@ model, network, or DB is touched.
 
 from __future__ import annotations
 
+import itertools
 import time
 from typing import Any
 
@@ -953,3 +954,45 @@ def test_loop_transport_error_still_reports_partial_cost() -> None:
     )
     assert out.stop_reason == "error"
     assert out.cost_usd == pytest.approx(0.05)
+
+
+def test_loop_never_rewrites_earlier_turns() -> None:
+    """The prompt-cache-safety pin for gr499039's write-time fold.
+
+    Tool results are folded where they are produced (the dispatch /
+    pagination seam), never afterwards — the loop itself only ever
+    APPENDS assistant + tool messages. This test is the regression
+    contract: the ``messages`` list sent at turn N must be an exact
+    prefix of the one sent at turn N+1, so a served-bytes change can
+    never invalidate an already-cached transcript prefix.
+    """
+    big_result = "result-payload " * 400  # ~6 KB — fold-sized upstream
+    client = _ScriptedClient(
+        [
+            _toolcall_turn(ToolCall("c1", "get", {"id": 1})),
+            _toolcall_turn(ToolCall("c2", "search", {"q": "x"})),
+            _content_turn("done"),
+        ]
+    )
+    out = run_tool_loop(
+        client,
+        prompt="q",
+        tools=[],
+        execute=lambda n, a: big_result,
+        max_turns=5,
+    )
+    assert out.stop_reason == "stop"
+
+    seen = client.seen_messages
+    assert len(seen) == 3
+    for earlier, later in itertools.pairwise(seen):
+        assert later[: len(earlier)] == earlier
+    # And the appended tool-result messages carry the executor's bytes
+    # verbatim — the loop adds no post-hoc rewriting of its own.
+    assert seen[1][-1] == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": big_result,
+    }
+    assert seen[2][-1]["tool_call_id"] == "c2"
+    assert seen[2][-1]["content"] == big_result

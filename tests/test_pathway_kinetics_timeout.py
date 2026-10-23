@@ -169,7 +169,9 @@ def test_timeout_zero_runs_in_process_with_no_ceiling(
     so a monkeypatched in-process engine is still reachable."""
     calls: list[str] = []
 
-    def _fake_run_kinetics(config: dict, artifact: dict) -> None:
+    def _fake_run_kinetics(
+        config: dict, artifact: dict, budget_s: int | None = None
+    ) -> None:
         calls.append(config["name"])
         artifact["results_json"]["kinetics"] = {"tof": 9.0}
 

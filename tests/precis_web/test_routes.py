@@ -2402,7 +2402,7 @@ def test_paper_edit_duplicate_identifier_renders_resolver(
     pdf.parent.mkdir(parents=True, exist_ok=True)
     pdf.write_bytes(b"%PDF-1.4\n")
 
-    def _dup(verb, args):
+    def _dup(verb, args, **_kw):
         runtime.calls.append((verb, dict(args)))
         if verb == "edit":
             return (
@@ -3165,7 +3165,7 @@ def test_memory_refs_detail_renders_references_panel(client, runtime) -> None:
         "I notice that paper:smith2024 connects with memory:20 — "
         "see also patent:nope404 which won't resolve."
     )
-    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (body_text, False)
     resp = client.get("/refs/memory/20")
     assert resp.status_code == 200
     assert "References" in resp.text
@@ -3185,7 +3185,7 @@ def test_memory_refs_detail_missing_ref_flagged(client, runtime) -> None:
     """Handles that don't resolve render with the (not found) marker
     and a rose-700 class so the eye lands on them."""
     body_text = "Wrong: paper:doesnotexist."
-    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (body_text, False)
     resp = client.get("/refs/memory/20")
     assert resp.status_code == 200
     assert "(not found)" in resp.text
@@ -3195,7 +3195,7 @@ def test_memory_refs_detail_inline_footnote_markers(client, runtime) -> None:
     """Each handle in the body gets an inline ``[N]`` marker that
     cross-links to the references list (#190)."""
     body_text = "Body says paper:smith2024 and memory:20."
-    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (body_text, False)
     resp = client.get("/refs/memory/20")
     assert resp.status_code == 200
     # ``[1]`` for paper, ``[2]`` for memory — preserving appearance order.
@@ -3209,7 +3209,7 @@ def test_memory_refs_detail_inline_footnote_markers(client, runtime) -> None:
 def test_memory_refs_detail_verification_badges(client, runtime) -> None:
     """Resolved/stub/deleted/missing get distinct status badges (#191)."""
     body_text = "Resolved: memory:20. Missing: paper:doesnotexist."
-    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (body_text, False)
     resp = client.get("/refs/memory/20")
     assert resp.status_code == 200
     # Resolved badge (memory:20 has body content via FakeStore).
@@ -3224,7 +3224,7 @@ def test_non_memory_refs_detail_omits_references_panel(client, runtime) -> None:
     """References auto-extract only runs on memory views (the MVP scope
     — that's where dreams live). Other kinds render unchanged."""
     body_text = "paper:smith2024 cited inside this oracle"
-    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (body_text, False)
     resp = client.get("/refs/oracle/30")
     assert resp.status_code == 200
     # Heading shouldn't appear on non-memory views.
@@ -3236,7 +3236,7 @@ def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
     transcript / parent) instead of the dream-memory ``Ask & think``
     box — the fix for landing on a closed:failed plan_tick with no way
     to act on it."""
-    runtime.dispatch_with_status = lambda verb, args: (
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (
         "# job 80\nstatus: failed\n## event 0\njob-swept: running since …",
         False,
     )
@@ -3264,7 +3264,10 @@ def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
 def test_orphan_job_detail_blocks_retry(client, runtime) -> None:
     """A job with no todo parent can't be re-minted; the strip explains
     that instead of offering a button that would just error."""
-    runtime.dispatch_with_status = lambda verb, args: ("# job 82\nstatus: ?", False)
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (
+        "# job 82\nstatus: ?",
+        False,
+    )
     resp = client.get("/refs/job/82")
     assert resp.status_code == 200
     # No retry form (orphan / non-failed).
@@ -3492,7 +3495,7 @@ def test_refs_detail_tag_chips_closed_vs_open(client, runtime) -> None:
     with a removal (×) form. Job 80 in ``FakeStore.tags_for`` carries one
     of each (``STATUS:failed`` closed, ``swept:claim-orphaned`` open) —
     guards the ``namespace == "OPEN"`` regression (gripe #171954)."""
-    runtime.dispatch_with_status = lambda verb, args: (
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (
         "# job 80\nstatus: failed\n",
         False,
     )

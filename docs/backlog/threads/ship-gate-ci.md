@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Do next 1, CI runner starvation (gr495187: main runs wait ~70 min for shards). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
+- **Next:** Verify Do next 1 (gr495187: ship-side cap of 2 concurrent `ci/*` gates landed; check run→first-job delay on the first main pushes after it lands). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
 - **Blocked by:** Nothing.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -72,10 +72,18 @@ nightly — the diff-cover verdict is still open.
 
 ## Do next
 
-1. **gr495187** — CI runner starvation: main runs wait ~70 min for shard
-   runners, so main goes without a verdict and release gating waits on it;
-   every other item here ships through that queue. gr492653's adaptive
-   shard count is the nearest lever.
+1. **gr495187** — CI runner starvation: main runs waited ~70 min for shard
+   runners. Measured twice (gripe comments 1 and 4): mean demand is only
+   ~12.4 of 40 runners; the failure was unbounded `ci/*` gate fan-out (peak
+   20 concurrent gates, 77% of at-cap jobs, 10–14% of the week at cap).
+   Fix shipped: `scripts/ship --remote` admits at most
+   `PRECIS_REMOTE_GATE_SLOTS` (2) queued+in-flight `ci/*` runs before
+   pushing its gate ref (a shared concurrency group can't express the cap —
+   it cancels extra pending runs, which ships read as red). Shard counts
+   unchanged (fewer shards costs wall-clock headroom, not job-minutes);
+   nightly stays at 05:23Z (measured quietest, 0% at-cap). Left: verify on
+   the first main pushes after landing that run→first-job delay is back to
+   single-digit minutes.
 
 3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and

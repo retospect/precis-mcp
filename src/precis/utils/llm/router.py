@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 
-from precis.utils._claude_subprocess import ClaudeProcessError
+from precis.utils._claude_subprocess import ClaudeProcessError, resolve_binary
 from precis.utils.claude_agent import (
     AgentResult,
     call_claude_agent,
@@ -894,12 +894,15 @@ class LlmResult:
       identical prompt to an exhausted rung exhausts it again,
       deterministically. Read by :func:`~precis.quest.tick.run_quest_tick`
       to stamp :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`.
-    * ``cli_unavailable`` — ``True`` when the failure is the claude CLI
-      itself missing on this host (:attr:`~precis.utils._claude_subprocess.
-      ClaudeProcessError.binary_missing` — a host-config defect: no
-      ``claude`` on PATH, or a bad ``PRECIS_CLAUDE_BIN``), NOT ``paused``
-      (retrying the identical call on the SAME host can't self-heal it —
-      unlike a timeout/breaker/rate-limit). Read by
+    * ``cli_unavailable`` — ``True`` when the failure is a claude host
+      defect: the CLI binary itself missing on this host
+      (:attr:`~precis.utils._claude_subprocess.ClaudeProcessError.
+      binary_missing` — no ``claude`` on PATH, or a bad
+      ``PRECIS_CLAUDE_BIN``), or the availability gate dropping every claude
+      rung because the binary/credential doesn't resolve here (gr500371 —
+      that shape IS ``paused`` so a batch pass skips instead of failing
+      each row). Retrying the identical call on the SAME host can't
+      self-heal it — unlike a timeout/breaker/rate-limit. Read by
       :func:`~precis.quest.tick.run_quest_tick` to stamp
       :attr:`~precis.quest.tick.QuestTickOutcome.failure_kind` (gr335087).
     * ``quota_exhausted`` — ``True`` when a ``claude_agent`` run ended
@@ -2133,6 +2136,131 @@ def placement_refusal(req: LlmRequest) -> str | None:
     return None
 
 
+#: Transports that exec a local ``claude`` — the host needs the binary and a
+#: resolvable credential, or the rung can never succeed here (gr500371).
+_CLAUDE_TRANSPORTS: frozenset[Transport] = frozenset(
+    {Transport.CLAUDE_P, Transport.CLAUDE_AGENT}
+)
+
+
+def _claude_credential_absent(rung: Rung) -> str | None:
+    """The credential half of a claude rung's host check — a reason string,
+    or ``None`` when one resolves.
+
+    ``bare`` opts the rung into ``--bare`` auth, which skips keychain AND
+    the OAuth token, so ``ANTHROPIC_API_KEY`` is the only credential left —
+    the same resolution ``claude_p._bare_auth_env`` (env → vault) performs
+    before it raises. Non-bare reuses the heartbeat's ``claude_config_mount``
+    probe (env token → vault → ``~/.claude`` login) plus the API key, which
+    ``prefer_oauth_over_api_key`` falls back to when no token resolves.
+    """
+    from precis import secrets as _secrets
+    from precis.utils.claude_oauth import API_KEY_VAR, ENV_VAR
+
+    if rung.bare:
+        if not _secrets.get_secret(API_KEY_VAR):
+            return f"bare rung needs {API_KEY_VAR} (env or vault); none resolves"
+        return None
+    from precis.workers import capability_probe as _cap
+
+    if _cap.claude_auth_present() or _secrets.get_secret(API_KEY_VAR):
+        return None
+    return (
+        "no claude credential resolves on this host "
+        f"({ENV_VAR} env/vault, {API_KEY_VAR}, or a ~/.claude login)"
+    )
+
+
+def _claude_rung_unavailable(rung: Rung) -> str | None:
+    """Why a claude rung can't run on THIS host, or ``None`` when it can —
+    the same probes the heartbeat's capability advertisement runs
+    (:func:`~precis.workers.capability_probe.claude_bin_present` /
+    ``claude_auth_present``), so a host that doesn't advertise ``claude_bin``
+    skips the same transports at dispatch."""
+    from precis.workers import capability_probe as _cap
+
+    if not _cap.claude_bin_present():
+        # claude_agent can still run inside the container executor — the
+        # image carries its own claude and the capability probe verifies
+        # runtime + image + auth for the resolved mode (dark unless the host
+        # opted in via PRECIS_AGENT_CONTAINER).
+        if rung.transport is Transport.CLAUDE_AGENT:
+            from precis.workers.executors import agent_container as _cont
+
+            if _cont.container_agent_enabled() and _cont.container_capability_ok():
+                return _claude_credential_absent(rung)
+        return (
+            f"claude binary {resolve_binary()!r} not found on this host "
+            "(PATH / PRECIS_CLAUDE_BIN)"
+        )
+    return _claude_credential_absent(rung)
+
+
+def _hosted_oss_unavailable(rung: Rung, model: str) -> str | None:
+    """Why an OpenAI-wire rung can't run on THIS host, or ``None``.
+
+    Hosted mode needs ``PRECIS_LLM_BASE_URL``; a listed provider host
+    (:data:`_PROVIDER_KEY_BY_HOST`) additionally needs its vault key — an
+    unlisted endpoint (self-hosted, possibly auth-less) can't be proven to
+    need one, so only a listed host's missing key skips the rung.
+    ``openai_tools`` can instead ride a local ``served_by`` slot
+    (``local_url`` is stamped at slot-acquire), which needs no base url.
+    """
+    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    if base_url:
+        host = urlparse(base_url).hostname or ""
+        if host in _PROVIDER_KEY_BY_HOST and not _provider_api_key(base_url):
+            return f"no API key resolves for {host} (env or vault)"
+        return None
+    if rung.transport is Transport.OPENAI_TOOLS:
+        from precis.utils.llm import local_serving as _local
+
+        if _local.served_locally(rung.model or model):
+            return None
+    return f"{rung.transport.value} needs PRECIS_LLM_BASE_URL set on this host"
+
+
+def _rung_unavailable(rung: Rung, model: str) -> str | None:
+    """One-line reason ``rung`` can't run on THIS host, or ``None`` when it
+    can — derived from the host (binary on PATH, resolvable credential,
+    configured endpoint/serve), never from a hostname list.
+
+    ``Transport.LOCAL`` is exempt by construction: its default loopback's
+    liveness is only knowable by calling it (the failure already lands
+    ``paused``), and ``_skip_unserved_local_rung`` prunes the rung-0
+    dead-wire case.
+    """
+    if rung.transport in _CLAUDE_TRANSPORTS:
+        return _claude_rung_unavailable(rung)
+    if rung.transport in (Transport.OPENAI_COMPAT, Transport.OPENAI_TOOLS):
+        return _hosted_oss_unavailable(rung, model)
+    return None
+
+
+def _drop_unavailable_rungs(
+    chain: list[Rung], model: str
+) -> tuple[list[Rung], list[tuple[Rung, str]]]:
+    """Split ``chain`` into ``(usable, dropped-with-reason)`` preserving order
+    — see :func:`_rung_unavailable`. One warning per dropped rung so a chain
+    pruned to empty still leaves each reason in the logs."""
+    kept: list[Rung] = []
+    dropped: list[tuple[Rung, str]] = []
+    for rung in chain:
+        reason = _rung_unavailable(rung, model)
+        if reason is None:
+            kept.append(rung)
+        else:
+            dropped.append((rung, reason))
+            log.warning(
+                "llm-router: %s rung (%s) unusable on this host — %s; "
+                "advancing to the next rung",
+                rung.transport.value,
+                rung.label or "unlabeled",
+                reason,
+            )
+    return kept, dropped
+
+
 #: ``SMALL`` (categorizer) model ids that only mean something on the local
 #: loopback (the ``summarizer`` alias and the ``rake-lemma`` name it resolves
 #: to) — POSTing either to a hosted OSS backend 400s, since the hosted side
@@ -2459,6 +2587,38 @@ def route(req: LlmRequest) -> LlmResult:
     # endpoint later); a real URL override or a rung-0-only chain is left
     # alone.
     ladder = _skip_unserved_local_rung(ladder, model)
+    # Host-availability prune (gr500371): a rung whose transport's binary,
+    # credential or endpoint is absent on THIS host can never succeed — drop
+    # it up front (before the breaker/transport gates, so they see the rung
+    # that will actually run — same discipline as the unserved-local skip
+    # above) and advance to the next rung instead of dispatching a
+    # guaranteed-fail call per item (a claude-less host's BIG chain resolved
+    # to claude_p and failed every card_describe row in ~50 ms). An emptied
+    # chain degrades to a paused result: a pinned pass skips rather than
+    # failing each row, and cli_unavailable keeps the fail-fast readers
+    # (quest tick's loop rest) able to tell "this host can't run claude"
+    # from a transient pause.
+    if ladder:
+        ladder, _unavail = _drop_unavailable_rungs(ladder, model)
+        if not ladder:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    f"no usable rung on this host ({_chain_name}): "
+                    + "; ".join(reason for _, reason in _unavail)
+                ),
+                paused=True,
+                cli_unavailable=any(
+                    r.transport in _CLAUDE_TRANSPORTS for r, _ in _unavail
+                ),
+                # The wire this rung would have needed doesn't exist here.
+                reason_class="transport",
+                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["transport"],
+            )
     transport = ladder[0].transport
     # Wrap in FailoverProvider only when there's genuinely a ladder to walk:
     # the failover flag is on, the chain has >1 rung, or a single rung pins
@@ -2824,6 +2984,10 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # sync route() below, which returns the paused result — so the streaming
     # path never needs its own copy of that early-out.
     ladder = _apply_cloud_throttle(ladder)
+    # Host-availability parity with sync route() (gr500371): an emptied chain
+    # likewise delegates to route(), which re-prunes and returns the same
+    # paused degrade result.
+    ladder, _ = _drop_unavailable_rungs(ladder, model)
     transport = ladder[0].transport if ladder else None
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:

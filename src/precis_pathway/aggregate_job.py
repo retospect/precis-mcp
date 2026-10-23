@@ -240,7 +240,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if isinstance(r.get("kinetics"), dict):
         tof = r["kinetics"].get("tof")
         tof_s = f"{tof:.3e} /site/s" if isinstance(tof, (int, float)) else "no TOF"
-        ctx.append_chunk("job_event", f"autocatpath_aggregate: kinetics -> TOF {tof_s}")
+        mb = r["kinetics"].get("mc_budget")
+        note = (
+            f" — reduced samples ({mb['n_samples']} of {mb['configured']}, budget)"
+            if isinstance(mb, dict)
+            else ""
+        )
+        ctx.append_chunk(
+            "job_event", f"autocatpath_aggregate: kinetics -> TOF {tof_s}{note}"
+        )
     elif r.get("kinetics_error"):
         ctx.append_chunk(
             "job_event",

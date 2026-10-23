@@ -126,7 +126,7 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
         ),
     ]
 
-    def fake_dispatch(verb: str, args: dict[str, Any]) -> tuple[str, bool]:
+    def fake_dispatch(verb: str, args: dict[str, Any], **_kw: Any) -> tuple[str, bool]:
         runtime.calls.append((verb, dict(args)))
         if verb == "get" and args.get("kind") == "quest":
             if args.get("view") == "frontier":

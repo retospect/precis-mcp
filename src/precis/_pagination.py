@@ -74,6 +74,32 @@ automates. ``search()`` and everything else keeps the plain opaque
 ``uuid4`` cursor: too easy for ranking/embeddings/DB state to shift
 between calls for a hash check to be a reliable "nothing changed"
 signal.
+
+Write-time fold (gr499039)
+--------------------------
+A tool result stays verbatim in an agent run's context for the rest of
+the run — folding it *later* would rewrite the cached prompt prefix and
+turn every subsequent call into a cache miss. So the fold happens here,
+at the single seam where the result text is first materialised
+(:meth:`PaginationCache.split`, reached from
+``DispatchMixin.dispatch_with_status`` by the MCP server, the
+in-process ``run_tool_loop`` executor, and the CLI alike): when a body
+exceeds ``PRECIS_TOOL_RESULT_FOLD_BYTES`` (default 4096, ``0``
+disables), the served text is
+
+    head (~¾ of the budget, structural cut) + an elision marker naming
+    the elided byte count and the full body's sha256 + tail (~¼ of the
+    budget, line-boundary cut) + the usual truncated footer,
+
+and the **elided middle** — exactly the bytes not shown — is cached
+under the minted cursor, so ``more(cursor=...)`` picks up where the
+fold hid content. Fold cursors are always opaque: recipe replay
+reproduces page N by re-running ``_greedy_split`` boundaries and cannot
+reproduce the fold's head/middle/tail geometry; the footer's
+``search(kind=...)`` fallback sentence covers cursor expiry instead.
+The marker and cursor are fixed at write time, so the transcript prefix
+is byte-stable across every later call — the cache-safety invariant the
+whole design hangs on.
 """
 
 from __future__ import annotations
@@ -97,6 +123,30 @@ log = logging.getLogger(__name__)
 #: ``PRECIS_MAX_BODY_BYTES`` env var for clients that tolerate
 #: bigger frames.
 DEFAULT_MAX_BODY_BYTES = 24576
+
+#: Display cap for the write-time fold (see the module docstring's
+#: "Write-time fold" section): a body larger than this is served as
+#: head + elision marker + tail + cursor footer instead of a head-only
+#: first page. ~4 KiB folds the outsized tail of the result-size
+#: distribution (prod transcripts: ~8% of results, ~30% of result
+#: bytes) while leaving ordinary results untouched. ``0`` disables the
+#: fold entirely (byte-identical pre-fold behaviour); tunable via
+#: ``PRECIS_TOOL_RESULT_FOLD_BYTES``.
+DEFAULT_FOLD_BODY_BYTES = 4096
+
+#: Marker rendered between the folded head and tail. ``{elided}`` /
+#: ``{total}`` are humanised byte counts; ``{digest}`` is the full
+#: body's sha256 (truncated — enough to confirm identity on a re-fetch,
+#: short enough to stay cheap on every later turn's cache read).
+_FOLD_MARKER_TEMPLATE = (
+    "\n\n⋯ [{elided} elided here — sha256:{digest} of the full {total} body] ⋯\n\n"
+)
+
+#: How far past the nominal tail cut :func:`_tail_window` looks for a
+#: newline to open the tail on. Bounded so a pathological unbroken line
+#: (a 4 KB minified blob, say) can't push the tail arbitrarily under
+#: budget — it just falls back to the raw cut.
+_TAIL_BOUNDARY_SEARCH_BYTES = 256
 
 #: How long a cursor lives in the cache: one hour, matching the agent
 #: prompt-cache TTL, so a caller whose context is still warm can always
@@ -211,6 +261,18 @@ _KIND_FALLBACK_SENTENCE_TEMPLATE = (
 #: ``alt_hint`` (a deliberate per-handler opt-in).
 _KIND_FALLBACK_MAX_BYTES = 32
 
+#: Truncation note for ``transient`` bodies (live licensed data): the
+#: overflow is discarded, never cached, so there is no cursor and no
+#: re-derivation — the only escape is a fresh, narrower request. Shared
+#: verbatim by the ordinary pagination path and the write-time fold's
+#: transient branch.
+_TRANSIENT_NOTE_TEMPLATE = (
+    "\n\n---\nTruncated — NOT the complete result. "
+    "About {remaining} omitted. Live supplier data is not cached; "
+    "no continuation cursor is available. Narrow the query or increase "
+    "PRECIS_MAX_BODY_BYTES and make a fresh live request.\n"
+)
+
 
 def _clamp_text(text: str | None, max_bytes: int) -> str | None:
     """Normalise/bound optional footer-sentence text to ``max_bytes``.
@@ -312,6 +374,30 @@ def _max_body_bytes() -> int:
         return DEFAULT_MAX_BODY_BYTES
     if value <= 0:
         return DEFAULT_MAX_BODY_BYTES
+    return value
+
+
+def _fold_body_bytes() -> int:
+    """Resolve the write-time fold cap from env at call time.
+
+    Same read-on-every-call pattern as :func:`_max_body_bytes`.
+    Unlike it, ``0`` (or any non-positive value) is meaningful — it
+    disables the fold — since the fold is a behavioural opt-out, not a
+    frame-safety floor.
+    """
+    raw = os.environ.get("PRECIS_TOOL_RESULT_FOLD_BYTES")
+    if not raw:
+        return DEFAULT_FOLD_BODY_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "PRECIS_TOOL_RESULT_FOLD_BYTES=%r is not an int; using default",
+            raw,
+        )
+        return DEFAULT_FOLD_BODY_BYTES
+    if value <= 0:
+        return 0
     return value
 
 
@@ -507,6 +593,7 @@ class PaginationCache:
         kind: str | None = None,
         recipe: RecipeSeed | None = None,
         transient: bool = False,
+        fold: bool = True,
     ) -> tuple[str, str | None]:
         """Split ``body`` into a head + cached tail if oversized.
 
@@ -554,6 +641,11 @@ class PaginationCache:
         — ``DispatchMixin.fetch_more`` can decode it and re-render the
         page from scratch. Falls back to an opaque cursor if encoding
         ``recipe`` fails (e.g. non-JSON-safe args) rather than raising.
+
+        ``fold=False`` skips the write-time fold entirely (the web UI
+        renders dispatch bodies into pages — an elision marker and a
+        ``more(cursor=...)`` footer are agent affordances, not human
+        ones). Ordinary pagination still applies.
         """
         # Licensed live responses retain frame limits but never retain a tail.
         if transient:
@@ -561,7 +653,21 @@ class PaginationCache:
         alt_hint = _clamp_alt_hint(alt_hint)
         kind = _clamp_kind(kind)
         cap = _max_body_bytes()
-        if len(body.encode("utf-8")) <= cap:
+        body_bytes = len(body.encode("utf-8"))
+        # The write-time fold runs ahead of ordinary pagination (and —
+        # unlike it — also ahead of the fits-in-one-page check): it is a
+        # tighter *display* cap, not a frame cap, so a body inside the
+        # frame but over the fold budget is folded all the same.
+        fold_cap = _fold_body_bytes() if fold else 0
+        if fold_cap and body_bytes > fold_cap:
+            return self._fold(
+                body,
+                alt_hint=alt_hint,
+                kind=kind,
+                cursor_capable=cursor_capable,
+                transient=transient,
+            )
+        if body_bytes <= cap:
             return body, None
 
         # A recipe cursor's *content* (verb/args/page/body_hash) never
@@ -608,12 +714,7 @@ class PaginationCache:
         remaining = _human_bytes(len(tail.encode("utf-8")))
 
         if transient:
-            return head + (
-                "\n\n---\nTruncated — NOT the complete result. "
-                f"About {remaining} omitted. Live supplier data is not cached; "
-                "no continuation cursor is available. Narrow the query or increase "
-                "PRECIS_MAX_BODY_BYTES and make a fresh live request.\n"
-            ), None
+            return head + _TRANSIENT_NOTE_TEMPLATE.format(remaining=remaining), None
 
         if not cursor_capable:
             footer = _build_short_lived_footer(
@@ -640,6 +741,96 @@ class PaginationCache:
                 recipe=stored_recipe,
             )
         return head_with_footer, cursor
+
+    def _fold(
+        self,
+        body: str,
+        *,
+        alt_hint: str | None,
+        kind: str | None,
+        cursor_capable: bool,
+        transient: bool,
+    ) -> tuple[str, str | None]:
+        """Serve an oversized body as head + elision marker + tail.
+
+        The write-time fold of gr499039 — see the module docstring. The
+        ~¾/~¼ head/tail split is taken off ``PRECIS_TOOL_RESULT_FOLD_BYTES``
+        minus the same fixed reserves :meth:`split` uses (footer plus the
+        marker itself), so ``head + marker + tail + footer`` stays within
+        the fold cap the way a page stays within the frame cap.
+
+        The cached continuation is the **elided middle** — the span of
+        ``body`` between the shown head and the shown tail — so a
+        ``more(cursor=...)`` drain returns exactly the bytes that were
+        hidden, and :meth:`pop`'s recursive re-``split`` keeps the chain
+        lossless to the last byte. The cursor is always opaque (recipe
+        replay cannot reproduce fold geometry — see the docstring); the
+        ``kind`` fallback sentence in the footer names the re-issue path
+        for an expired cursor.
+
+        ``transient`` and ``cursor_capable=False`` bodies fold the same
+        way but cache nothing and get their usual footers.
+        """
+        fold_cap = _fold_body_bytes()
+        reserve = _FOOTER_RESERVE_BYTES + _FOLD_MARKER_RESERVE_BYTES
+        if alt_hint:
+            reserve += _ALT_HINT_RESERVE_BYTES
+        if kind:
+            reserve += _KIND_FALLBACK_RESERVE_BYTES
+        inner = max(fold_cap - reserve, 64)
+        head_budget = inner * 3 // 4
+        tail_budget = inner - head_budget
+
+        # ``_ladder_split``'s returned head is always an exact prefix of
+        # ``body`` (the delimiter-join pieces are reinserted verbatim);
+        # ``_tail_window`` returns an exact suffix — so character slicing
+        # gives the elided middle with no re-encoding risk.
+        head, _rest = _ladder_split(body, head_budget)
+        tail = _tail_window(body, tail_budget)
+        middle = body[len(head) : len(body) - len(tail)]
+        if not middle:
+            # Degenerate: head + tail already cover the whole body (only
+            # reachable through multi-byte edge cases). Serving the body
+            # whole loses nothing — the fold marker would claim bytes
+            # were elided that plainly are not.
+            return body, None
+
+        remaining = _human_bytes(len(middle.encode("utf-8")))
+        marker = _FOLD_MARKER_TEMPLATE.format(
+            elided=remaining,
+            digest=hash_body(body)[:16],
+            total=_human_bytes(len(body.encode("utf-8"))),
+        )
+
+        if transient:
+            return (
+                head
+                + marker
+                + tail
+                + _TRANSIENT_NOTE_TEMPLATE.format(remaining=remaining),
+                None,
+            )
+        if not cursor_capable:
+            footer = _build_short_lived_footer(
+                remaining=remaining, alt_hint=alt_hint, kind=kind
+            )
+            return head + marker + tail + footer, None
+
+        cursor = uuid.uuid4().hex
+        footer = _build_footer(
+            cursor=cursor, remaining=remaining, alt_hint=alt_hint, kind=kind
+        )
+        with self._lock:
+            self._prune_expired()
+            self._maybe_evict_oldest()
+            self._entries[cursor] = _CachedTail(
+                body=middle,
+                expires_at=self._now() + _ttl_seconds(),
+                alt_hint=alt_hint,
+                kind=kind,
+                recipe=None,
+            )
+        return head + marker + tail + footer, cursor
 
     def pop(self, cursor: str) -> str | None:
         """Retrieve and remove the tail for ``cursor``.
@@ -829,6 +1020,17 @@ _SHORT_LIVED_FOOTER_RESERVE_BYTES = len(
     _SHORT_LIVED_FOOTER_TEMPLATE.format(remaining="8888.8 MB").encode("utf-8")
 )
 
+#: Reserve for :data:`_FOLD_MARKER_TEMPLATE`, derived the same self-
+#: correcting way as :data:`_FOOTER_RESERVE_BYTES` — rendered with
+#: bounded-width placeholders (16 hex chars of digest, the widest
+#: humanised byte counts) so the fold's head budget can never
+#: under-reserve when the wording changes.
+_FOLD_MARKER_RESERVE_BYTES = len(
+    _FOLD_MARKER_TEMPLATE.format(
+        elided="8888.8 MB", digest="0" * 16, total="8888.8 MB"
+    ).encode("utf-8")
+)
+
 
 def _greedy_split(
     body: str,
@@ -1006,7 +1208,33 @@ def _hard_split(body: str, budget_bytes: int) -> tuple[str, str]:
     return head, tail
 
 
+def _tail_window(body: str, budget_bytes: int) -> str:
+    """Return an exact suffix of ``body`` of at most ``budget_bytes``.
+
+    The fold's tail cut — the mirror of :func:`_hard_split`, working off
+    the *end* of the body. The cut prefers a line boundary: the first
+    ``\\n`` within :data:`_TAIL_BOUNDARY_SEARCH_BYTES` of the byte
+    position becomes the tail's start (dropping the partial line ahead
+    of it), so the window opens mid-document but never mid-line. No
+    newline in reach falls back to the bare UTF-8-boundary cut — the
+    elision marker already frames the tail as an excerpt.
+    """
+    raw = body.encode("utf-8")
+    if len(raw) <= budget_bytes:
+        return body
+    start = len(raw) - budget_bytes
+    # Advance to the next start-of-codepoint byte (continuation bytes
+    # are 10xxxxxx) so the suffix decodes cleanly.
+    while start < len(raw) and (raw[start] & 0xC0) == 0x80:
+        start += 1
+    newline = raw.find(b"\n", start, min(start + _TAIL_BOUNDARY_SEARCH_BYTES, len(raw)))
+    if newline != -1:
+        start = newline + 1
+    return raw[start:].decode("utf-8", errors="strict")
+
+
 __all__ = [
+    "DEFAULT_FOLD_BODY_BYTES",
     "DEFAULT_MAX_BODY_BYTES",
     "DEFAULT_TTL_SECONDS",
     "PaginationCache",

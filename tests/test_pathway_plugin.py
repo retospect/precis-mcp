@@ -346,6 +346,154 @@ def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(
     assert "kinetics" not in art["results_json"]
 
 
+class _KinT:
+    """Minimal stand-in for an engine ``Transition`` — the calibration only
+    reads ``.a``/``.b`` for the state count."""
+
+    def __init__(self, a: str, b: str) -> None:
+        self.a, self.b = a, b
+
+
+def _fake_kinetics(seen: dict[str, Any]) -> type:
+    """A fake engine carrying the two seams the MC-budget calibration needs
+    (``build_transitions`` + ``steady_state``) plus ``solve``.  ``seen``
+    collects what ``solve`` actually ran with."""
+
+    class _FakeKinetics:
+        @staticmethod
+        def build_transitions(g, edges, links, ledgers, refs, t, p, area, **_kw):
+            return [
+                _KinT("a", "b"),
+                _KinT("b", "c"),
+                _KinT("c", "d"),
+                _KinT("d", "a"),
+            ], []
+
+        @staticmethod
+        def site_area_A2(slab):
+            return 1.0
+
+        def steady_state(transitions, root, **_kw):
+            return {"a": 1.0}, {"nullity": 1}
+
+        @staticmethod
+        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+            seen["n_samples"] = cfg.kinetics.n_samples
+            return {
+                "tof": 1e-3,
+                "sensitivity": {"tof": {"p5": 1e-4, "p95": 1e-2}},
+                "warnings": [],
+            }
+
+    return _FakeKinetics
+
+
+def test_run_kinetics_shrinks_mc_samples_to_fit_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr502251: a network whose projected Monte-Carlo cost would blow the
+    wall-clock budget gets a calibrated smaller ``n_samples`` rather than a
+    killed child — the reduced count AND the CI band it produced are recorded
+    on the result."""
+    art = _cached_run(SMOKE)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _fake_kinetics(seen))
+    # 4 transitions: per draw (2*4+1)*0.05 = 0.45 s; avail = 0.6*200 -
+    # (1+8+8)*0.05 = 119.15 s -> cap 264, below the configured 500.
+    monkeypatch.setattr(runner, "_steady_state_seconds", lambda *a, **k: 0.05)
+
+    runner.run_kinetics(art["config"], art, budget_s=200)
+
+    kin = art["results_json"]["kinetics"]
+    used = seen["n_samples"]
+    assert runner._MC_SAMPLE_FLOOR <= used < 500
+    assert kin["mc_budget"]["n_samples"] == used
+    assert kin["mc_budget"]["configured"] == 500
+    assert kin["mc_budget"]["tof_ci"] == {"p5": 1e-4, "p95": 1e-2}
+    assert any(f"reduced samples ({used} of 500, budget)" in w for w in kin["warnings"])
+
+
+def test_run_kinetics_refuses_when_even_the_floor_busts_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below the 100-sample floor the band is noise on a hopeless budget —
+    refuse before solving instead of burning the ceiling."""
+    art = _cached_run(SMOKE)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _fake_kinetics(seen))
+    monkeypatch.setattr(runner, "_steady_state_seconds", lambda *a, **k: 0.05)
+
+    # avail = 0.6*50 - 0.85 = 29.15 s -> cap 64 < the 100-draw floor.
+    runner.run_kinetics(art["config"], art, budget_s=50)
+
+    err = art["results_json"]["kinetics_error"]
+    assert "projected" in err and "refused" in err
+    assert "n_samples" not in seen, "solve must not have run"
+    assert "kinetics" not in art["results_json"]
+
+
+def test_run_kinetics_keeps_configured_samples_when_they_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A budget with headroom leaves ``n_samples`` alone — no calibration
+    marker, no warning, the configured 500 reaches the engine."""
+    art = _cached_run(SMOKE)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _fake_kinetics(seen))
+    monkeypatch.setattr(runner, "_steady_state_seconds", lambda *a, **k: 0.05)
+
+    runner.run_kinetics(art["config"], art, budget_s=900)
+
+    assert seen["n_samples"] == 500
+    kin = art["results_json"]["kinetics"]
+    assert "mc_budget" not in kin
+    assert not any("reduced samples" in w for w in kin["warnings"])
+
+
+def test_run_kinetics_unbounded_budget_skips_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``budget_s=0`` is the explicitly-unbounded path — no probe, no cap."""
+    art = _cached_run(SMOKE)
+    seen: dict[str, Any] = {}
+
+    class _FakeKinetics:
+        @staticmethod
+        def build_transitions(*_a, **_kw):
+            pytest.fail("calibration must not run without a budget")
+
+        @staticmethod
+        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+            seen["n_samples"] = cfg.kinetics.n_samples
+            return {"tof": 1e-3}
+
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _FakeKinetics)
+    runner.run_kinetics(art["config"], art, budget_s=0)
+
+    assert seen["n_samples"] == 500
+
+
+def test_kinetics_child_passes_the_budget_to_run_kinetics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The child's calibration needs the parent's ceiling — it travels in the
+    request envelope."""
+    seen: dict[str, Any] = {}
+
+    def _fake_run_kinetics(
+        config: dict, artifact: dict, *, budget_s: int | None = None
+    ) -> None:
+        seen["budget_s"] = budget_s
+
+    monkeypatch.setattr(runner, "run_kinetics", _fake_run_kinetics)
+    out = tmp_path / "out.json"
+    runner._kinetics_child(
+        {"mode": "kinetics", "config": {"name": "x"}, "budget_s": 120},
+        str(out),
+    )
+    assert seen["budget_s"] == 120
+
+
 def test_summarize_passes_through_che_electro_scalars() -> None:
     """`summarize()` (`_dispatch_common`, the seam
     `_dispatch_common.finish` unpacks straight onto the JOB's own meta) picks
@@ -2802,7 +2950,7 @@ def test_aggregate_job_dispatch_folds_in_kinetics_when_engine_has_it(
     monkeypatch.setattr(
         runner_mod,
         "run_kinetics",
-        lambda config, artifact: artifact["results_json"].__setitem__(
+        lambda config, artifact, **_kw: artifact["results_json"].__setitem__(
             "kinetics", canned
         ),
     )

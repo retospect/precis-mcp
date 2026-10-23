@@ -400,3 +400,21 @@ def test_first_hop_shape_ignores_inbound_edges_from_retired_sources(hub: Hub) ->
         )
     # inbound from retired source: unremovable, not counted; outbound: counted
     assert first_hop_shape(store, [target])[target] == (0, 0, 1)
+
+
+def test_first_hop_shape_does_not_count_supersedes_tombstones(hub: Hub) -> None:
+    """precis-memory-help's merge recipe: link the survivor ``supersedes`` the
+    old node, then delete it — that edge is the record, not a dead end."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    survivor = _note(handler, "Survivor", "x")
+    merged = _note(handler, "Merged away", "x")
+    gone = _note(handler, "Gone dst", "x")
+    store.add_link(src_ref_id=survivor, dst_ref_id=merged, relation="supersedes")
+    store.add_link(src_ref_id=survivor, dst_ref_id=gone, relation="related-to")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = ANY(%s)",
+            ([merged, gone],),
+        )
+    # the supersedes tombstone is not counted; the related-to dead end is
+    assert first_hop_shape(store, [survivor])[survivor] == (0, 0, 1)

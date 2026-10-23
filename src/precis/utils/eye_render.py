@@ -949,6 +949,14 @@ def first_hop_shape(
             for src, dst, _rel in edges[r]
             if dst == r and src not in removable and not _live(refs, src)
         }
+        # an outbound ``supersedes`` edge to a retired ref is the merge record
+        # precis-memory-help prescribes (link supersedes, then delete the old
+        # node), not a dead end to repoint
+        tombstones = {
+            dst
+            for src, dst, rel in edges[r]
+            if src == r and rel == "supersedes" and not _live(refs, dst)
+        }
         live_groups = [
             {o for o in oids if _live(refs, o)}
             for (_g, label), oids in by_label.items()
@@ -960,7 +968,7 @@ def first_hop_shape(
         shape[r] = (
             len(live),
             max(map(len, live_groups), default=0),
-            len(every - live - orphaned),
+            len(every - live - orphaned - tombstones),
         )
     return shape
 

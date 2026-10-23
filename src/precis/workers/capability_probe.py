@@ -331,6 +331,23 @@ def _probe_claude_config() -> int:
     return 1 if _stored_claude_auth() else 0
 
 
+def claude_bin_present() -> bool:
+    """Public read of the ``claude_bin`` probe — whether THIS host can exec
+    ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
+    rung gate reuses it so a host the capability advertisement marks
+    claude-less skips the same transports at dispatch."""
+    return _probe_claude_bin() == 1
+
+
+def claude_auth_present() -> bool:
+    """Public read of the ``claude_config_mount`` probe — whether a
+    non-``--bare`` ``claude -p`` can resolve a credential here (env token,
+    vault/bootstrap token, or an interactive ``~/.claude`` login). Presence,
+    not correctness: a stale login still reports True (the run path surfaces
+    the 401)."""
+    return _probe_claude_config() == 1
+
+
 #: Capability token → its presence probe. A probe returns a capacity
 #: (``> 0`` present, ``0`` absent) or ``None`` (unknown — leave the row).
 _PROBES: dict[str, Callable[[], int | None]] = {
@@ -524,6 +541,8 @@ def soft_capacity(resource: str) -> int:
 __all__ = [
     "RETRACTABLE_SOFT_SIGNALS",
     "capability_vocabulary",
+    "claude_auth_present",
+    "claude_bin_present",
     "mem_capacity",
     "probe_host_resources",
     "probe_soft_signals",

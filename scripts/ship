@@ -1724,7 +1724,8 @@ _release_after_landing() {
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
 # throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
-# gate shape (lint · mypy · 6 shards of Linux+db 3.13; a docs-only diff gets
+# gate shape (lint · mypy · 10 or 12 shards of Linux+db 3.13, picked by
+# scripts/ci-shard-plan from live load; a docs-only diff gets
 # the fast-set docs lane instead of the shards; 3.12 + macOS + Windows are
 # nightly-only) on exactly
 # the tree the CAS push below will make main. A force-push retry to the same
@@ -1733,13 +1734,66 @@ _release_after_landing() {
 # is never retried, same contract as the local gate). If no run appears
 # within 10 min (GitHub incidents DROP push events and never replay them —
 # observed 2026-09-13), fall back to one explicit workflow_dispatch on the ref.
+#
+# Admission first (gr495187): concurrent ci/* gates are uncapped at the
+# workflow level — a ship wave ran 20 at once (2026-10-14..21), ~240 jobs
+# against the 40-runner account cap, and main's and release's shard jobs
+# queued behind them (main run→first job p90 19 min, max 80). A shared
+# concurrency group can't fix it: a group holds ONE pending run and cancels
+# the rest, which ships read as a red gate. So cap client-side: push only
+# when fewer than PRECIS_REMOTE_GATE_SLOTS (default 2) ci/* check.yml runs
+# are queued or in flight — two gates ≈ 24–28 jobs, so a main run (≤14) and
+# a release head always fit beside them. Soft cap: simultaneous polls
+# overshoot by a run or two. Queued runs count — they hold the same demand.
+# An unreadable count proceeds: gh being down fails the push anyway, and a
+# hiccup must not brick the ship. Own budget PRECIS_REMOTE_GATE_WAIT_MIN
+# (default 60): the CI deadline below sizes run+queue; this replaces the
+# queue part.
+_ci_gate_runs_in_flight() {
+    # Queued + in-progress check.yml runs on ci/* refs; prints the count.
+    # Fails (prints nothing) on any gh error.
+    local s out n=0
+    for s in queued in_progress; do
+        out="$(gh api "repos/{owner}/{repo}/actions/workflows/check.yml/runs?status=${s}&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_branch | startswith("ci/"))] | length' 2>/dev/null)" \
+            || return 1
+        [[ "$out" =~ ^[0-9]+$ ]] || return 1
+        n=$(( n + out ))
+    done
+    echo "$n"
+}
+
+# $1 = slot cap, $2 = wait budget in minutes. 0 = admitted; 1 = budget spent.
+_remote_gate_admit() {
+    local slots="${1:-2}" budget="${2:-60}" t0 in_flight announced=0
+    [[ "$slots" =~ ^[0-9]+$ ]] || slots=2
+    [[ "$budget" =~ ^[0-9]+$ ]] || budget=60
+    (( slots > 0 )) || return 0
+    t0="$(date +%s)"
+    while :; do
+        in_flight="$(_ci_gate_runs_in_flight || true)"
+        [[ "$in_flight" =~ ^[0-9]+$ && "$in_flight" -ge "$slots" ]] || return 0
+        if (( $(date +%s) - t0 >= 60 * budget )); then
+            echo "✖ remote gate queue stayed full ${budget} min — ${in_flight} ci/* check.yml runs in flight (cap ${slots}). Re-run scripts/ship --remote." >&2
+            return 1
+        fi
+        if (( ! announced )); then
+            say "gate queue full — ${in_flight} ci/* check.yml runs queued/in flight (cap ${slots}); holding the ci/${BRANCH} push until a slot frees"
+            announced=1
+        fi
+        sleep 60
+    done
+}
+
 remote_gate_wait() {
     # Bound recovery if another same-ref push repeatedly cancels this run.
     local sha run_id="" status dispatched=0 recoveries=0 t0 deadline
     sha="$(git rev-parse HEAD)"
     t0="$(date +%s)"
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
-    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 6 shards, ~90 min green; docs-only diffs ~5 min)"
+    _remote_gate_admit "${PRECIS_REMOTE_GATE_SLOTS:-2}" "${PRECIS_REMOTE_GATE_WAIT_MIN:-60}" \
+        || return 1
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 10–12 shards, ~90 min green; docs-only diffs ~5 min)"
     git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do

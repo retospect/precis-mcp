@@ -579,6 +579,11 @@ def _force_mock_embedder_for_tests() -> None:
     # directly, so this only removes the nondeterministic boot race, never
     # coverage. Per-test opt-in is still possible via monkeypatch.setenv.
     os.environ.setdefault("PRECIS_ORACLE_AUTO_REINGEST", "0")
+    # gr499039 write-time tool-result fold: default-on in prod but the
+    # suite predates it — tests pin exact dispatch bodies and footers.
+    # Pin the knob off here so those keep testing pagination
+    # byte-for-byte; fold tests setenv the cap per-test.
+    os.environ.setdefault("PRECIS_TOOL_RESULT_FOLD_BYTES", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -648,6 +653,35 @@ def _pin_load_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     so the gate's own coverage is untouched.
     """
     monkeypatch.setenv("PRECIS_LOAD_CEILING", "1000000")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _fake_claude_host_capability(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Present a claude-capable host to the router's rung-availability gate.
+
+    ``route()`` prunes a claude rung whose binary or credential is absent on
+    THIS host (gr500371) — derived from ``shutil.which`` + the OAuth/API-key
+    resolution, the same probes the heartbeat advertises. On a claude-less
+    host (CI) every test that routes a claude rung to a monkeypatched
+    wrapper would see its rung skipped instead, so the suite's baseline host
+    must advertise both legs: a stub ``claude`` executable on PATH and a
+    placeholder ``CLAUDE_CODE_OAUTH_TOKEN`` (setdefault — a test that needs
+    the absent leg removes/overrides it per-test, e.g. ``delenv`` +
+    ``PRECIS_CLAUDE_BIN`` pointed at a nonexistent path or a fake PATH).
+    """
+    import stat
+
+    fake_bin = tmp_path_factory.mktemp("fake-host-bin")
+    stub = fake_bin / "claude"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.environ["PATH"] = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ.setdefault("CLAUDE_CODE_OAUTH_TOKEN", "precis-test-stub")
+    # The OSS-wire leg of the same gate: a listed provider host
+    # (openrouter/deepinfra) with no resolvable key is skipped — the suite's
+    # hosted-OSS tests point ``PRECIS_LLM_BASE_URL`` at openrouter.ai without
+    # seeding one, so the baseline host must carry the generic fallback.
+    os.environ.setdefault("PRECIS_LLM_API_KEY", "precis-test-stub")
 
 
 # Fixed 64-bit key for the session-wide advisory lock that serialises

@@ -1421,7 +1421,9 @@ class FakeRuntime:
         #: handler raising. The body mimics a handler BadInput message.
         self.error_verbs: set[str] = set()
 
-    def dispatch_with_status(self, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
+    def dispatch_with_status(
+        self, verb: str, args: dict[str, Any], **_kw: Any
+    ) -> tuple[str, bool]:
         self.calls.append((verb, dict(args)))
         if verb in self.error_verbs:
             return (f"invalid {verb}: rejected by handler", True)

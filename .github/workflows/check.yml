@@ -24,7 +24,9 @@ on:
   #
   # 05:23 UTC is this fleet's quietest hour: over the 14 days to 2026-09-18,
   # main took 6 squash-merges in the 05:00 hour and 5 in the 06:00 hour,
-  # against 27 in the busiest (19:00). The full shape is 25 jobs of the
+  # against 27 in the busiest (19:00); re-measured 2026-10-14..21 — the 05Z
+  # hour held a mean 2.0 in-flight jobs and was never at the 40-job cap
+  # (gr495187). The full shape is 25 jobs of the
   # account's 40 slots, so a ship gate (12) starting inside the nightly
   # still fits — the concurrency note below has the arithmetic and why the
   # nightly is never cancelled. Keep the
@@ -78,7 +80,12 @@ permissions:
 # Main's shared group above is unchanged.
 #
 # Job budget: the account is GitHub Pro, standard-runner concurrency cap 40.
-# The shard count is picked per run by scripts/ci-shard-plan from the live
+# Concurrent ci/* gates are additionally capped client-side: scripts/ship
+# holds its ci/<branch> push until fewer than PRECIS_REMOTE_GATE_SLOTS (2)
+# gate runs are queued or in flight (gr495187) — a group-level cap is not
+# expressible here (a concurrency group keeps ONE pending run and cancels
+# the rest, which a ship would read as a red gate). The shard count is
+# picked per run by scripts/ci-shard-plan from the live
 # queued + in-progress check.yml run count (gr492653): 12 shards when at most
 # one other run is active, else 10. A 12-shard gate is 14 jobs (plan + lint +
 # 12), so two idle-mode gates fit (28); beside the nightly it can overshoot by

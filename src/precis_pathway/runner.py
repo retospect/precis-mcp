@@ -1460,7 +1460,137 @@ def _import_kinetics() -> Any:
     return kinetics
 
 
-def run_kinetics(config: dict[str, Any], artifact: PathwayArtifact) -> None:
+def _est_mean(x: Any) -> float:
+    """``Estimate`` | ``{"mean": ...}`` | float -> float; a null mean reads as
+    NaN so finiteness guards treat both alike (mirrors
+    ``autocatpath.kinetics._mean``)."""
+    v = x.get("mean") if isinstance(x, dict) else getattr(x, "mean", x)
+    return float("nan") if v is None else float(v)
+
+
+#: Fraction of the kinetics wall-clock budget the calibration may project the
+#: solve into; the rest stays headroom for the engine's own bookkeeping and a
+#: contended worker.  (witty 2026-10-21, gr502251)
+_MC_BUDGET_FRAC = 0.6
+#: Below this many Monte-Carlo draws the sensitivity band is not worth
+#: reporting — refuse the solve instead of emitting noise on a hopeless
+#: budget.
+_MC_SAMPLE_FLOOR = 100
+
+
+def _steady_state_seconds(
+    steady: Any, transitions: Any, root: str, t_end: float
+) -> float:
+    """Wall time of one ``steady_state`` solve — the probe the MC budget
+    extrapolates from.  Cheap (ms), so run a few for a stable mean; the small
+    iteration cap bounds the probe itself on a pathological input."""
+    import inspect
+    import time
+
+    params = set(inspect.signature(steady).parameters)
+    kw = {"t_end": t_end} if "t_end" in params else {}
+    t0 = time.monotonic()
+    n = 0
+    while n < 5:
+        steady(transitions, root, **kw)
+        n += 1
+        if time.monotonic() - t0 >= 0.05:
+            break
+    return (time.monotonic() - t0) / n
+
+
+def _mc_calibrated_samples(
+    kinetics: Any,
+    cfg: Config,
+    net: Any,
+    ledgers: dict[str, Any],
+    refs: dict[str, Any],
+    nodes: dict[str, Any],
+    edges: list[dict[str, Any]],
+    *,
+    budget_s: int,
+) -> tuple[int | None, str | None]:
+    """The Monte-Carlo draw count that fits the kinetics wall-clock budget on
+    THIS worker — ``(n_samples, None)`` to run with, or ``(None, reason)`` to
+    refuse before solving.
+
+    WHY THIS EXISTS (gr502251, witty 2026-10-21): ~3% of aggregate jobs burn
+    the full 900 s kinetics ceiling.  The cause is not ill-posedness — every
+    recent job has >1 absorbing component (stored nullity 4–26, including
+    trusted solves) — it is sheer size: the 17 timed-out runs are the largest
+    networks (66–76 transitions vs a 54 median), and the cost is dominated by
+    ``monte_carlo``'s ``n_samples × ≤(2·n_transitions + 1)`` steady-state
+    resolves.  So the solve self-calibrates: build the real transition list
+    (the engine's own ``build_transitions``), time one ``steady_state`` solve
+    on it, extrapolate, and shrink ``n_samples`` to fit — a reduced band beats
+    a killed child that records nothing.  Below the 100-draw floor the band
+    isn't worth reporting and the solve is refused instead.
+
+    ``budget_s=0`` (the unbounded in-process path) or an engine missing
+    ``build_transitions``/``steady_state`` skips calibration entirely and
+    keeps the configured count.
+    """
+    import inspect
+
+    default = cfg.kinetics.n_samples
+    build = getattr(kinetics, "build_transitions", None)
+    steady = getattr(kinetics, "steady_state", None)
+    area_of = getattr(kinetics, "site_area_A2", None)
+    if default <= 0 or budget_s <= 0 or not (build and steady and area_of):
+        return default, None
+    order = net.order()
+    root = order[0] if order else "*"
+    g = {name: _est_mean(est) for name, est in nodes.items()}
+    want = {
+        "sticking": getattr(cfg.kinetics, "sticking", None),
+        "target": cfg.kinetics.product or cfg.target,
+        "root": root,
+        "dg_tol": getattr(cfg.search, "energy_thresh", 0.05),
+        "environment": cfg.env() if getattr(cfg, "environment", None) else None,
+    }
+    have = set(inspect.signature(build).parameters)
+    transitions, _skipped = build(
+        g,
+        edges,
+        list(net.links),
+        ledgers,
+        refs,
+        cfg.conditions.temperature,
+        dict(cfg.conditions.pressures),
+        area_of(net.slab()),
+        **{k: v for k, v in want.items() if k in have},
+    )
+    if not transitions:
+        return default, None  # solve raises its own "no usable transitions"
+    t_s = _steady_state_seconds(steady, transitions, root, cfg.kinetics.t_end)
+    n_trans = len(transitions)
+    n_states = len(
+        {getattr(t, "a", None) for t in transitions}
+        | {getattr(t, "b", None) for t in transitions}
+    )
+    per_draw = (2 * n_trans + 1) * t_s  # one MC draw ≤ 1 + 2T resolves
+    fixed = (1 + 2 * n_trans + 2 * n_states) * t_s  # steady + DRC + TRC
+    avail = _MC_BUDGET_FRAC * budget_s - fixed
+    cap = int(avail / per_draw) if per_draw > 0 else default
+    capped = min(default, cap)
+    if capped < _MC_SAMPLE_FLOOR:
+        proj = fixed + _MC_SAMPLE_FLOOR * per_draw
+        return None, (
+            f"kinetics: projected solve needs ~{proj:.0f}s even at the "
+            f"{_MC_SAMPLE_FLOOR}-sample floor — over "
+            f"{_MC_BUDGET_FRAC * budget_s:.0f}s of the {budget_s}s "
+            f"wall-clock budget; refused before solving "
+            f"({_KINETICS_TIMEOUT_ENV} raises the ceiling)"
+        )
+    return capped, None
+
+
+def run_kinetics(
+    config: dict[str, Any],
+    artifact: PathwayArtifact,
+    *,
+    budget_s: int | None = None,
+) -> None:
     """Run catpath's post-hoc microkinetics over a just-aggregated pathway,
     in-process, folding the result onto ``artifact["results_json"]`` (mutated
     in place — no return value).
@@ -1505,10 +1635,37 @@ def run_kinetics(config: dict[str, Any], artifact: PathwayArtifact) -> None:
         table = build_table(cfg)
         if table and refs:
             refs = table.corrected_refs(refs)
+        n_samples, refuse = _mc_calibrated_samples(
+            kinetics,
+            cfg,
+            net,
+            ledgers,
+            refs,
+            nodes,
+            edges,
+            budget_s=(_kinetics_timeout_s() if budget_s is None else max(0, budget_s)),
+        )
+        if refuse is not None:
+            results_json["kinetics_error"] = refuse
+            return
+        configured = cfg.kinetics.n_samples
+        cfg.kinetics.n_samples = n_samples
         result = kinetics.solve(
             cfg, nodes, edges, net, refs, span=span, mari=None, log=lambda *a, **k: None
         )
         results_json["kinetics"] = result
+        if n_samples < configured:
+            band = (result.get("sensitivity") or {}).get("tof") or {}
+            result["mc_budget"] = {
+                "n_samples": n_samples,
+                "configured": configured,
+                "tof_ci": {"p5": band.get("p5"), "p95": band.get("p95")},
+            }
+            warns = result.get("warnings")
+            if isinstance(warns, list):
+                warns.append(
+                    f"kinetics: reduced samples ({n_samples} of {configured}, budget)"
+                )
     except Exception as exc:
         log.warning("autocatpath kinetics: solve failed", exc_info=True)
         results_json["kinetics_error"] = (
@@ -1578,7 +1735,7 @@ def run_kinetics_subprocess(
     results_json = artifact["results_json"]
     budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
     if budget == 0:
-        run_kinetics(config, artifact)
+        run_kinetics(config, artifact, budget_s=0)
         return
 
     import subprocess
@@ -1587,6 +1744,10 @@ def run_kinetics_subprocess(
     request = {
         "mode": "kinetics",
         "config": config,
+        # The child's MC-sample calibration needs the ceiling the parent is
+        # enforcing — it cannot recompute it once a caller passed an explicit
+        # ``timeout``.
+        "budget_s": budget,
         # Only what run_kinetics actually reads off results_json. Sending the
         # whole artifact would drag structures_extxyz through two JSON hops
         # for nothing.
@@ -1658,7 +1819,11 @@ def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int
         }
     }
     try:
-        run_kinetics(req["config"], cast("PathwayArtifact", artifact))
+        run_kinetics(
+            req["config"],
+            cast("PathwayArtifact", artifact),
+            budget_s=req.get("budget_s"),
+        )
         rj = artifact["results_json"]
         payload = (
             {"kinetics": rj["kinetics"]}

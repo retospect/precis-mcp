@@ -372,7 +372,11 @@ class QuestTickOutcome:
     #:   unparseable-model-output *failure*. Free-retry like ``"window"``
     #:   (the quota resets at a known instant); split out only so the
     #:   record reads "quota", not a generic breaker/dollar-cap guess.
-    #:
+    #: * ``"cli_unavailable"`` — the same host-config defect as
+    #:   :attr:`failure_kind` ``"cli_unavailable"``, arriving via the
+    #:   ``paused`` shape: the router's availability gate dropped every
+    #:   claude rung up front (gr500371). The coordinator rests the loop on
+    #:   it exactly as on the failed shape — no window rolls off.
     #: The coordinator (:mod:`precis.workers.job_types.quest_tick`) splits its
     #: give-up budget on this: a window pause retries for free, a timeout pause
     #: consumes the budget, because the retry is not free — it re-burns the same
@@ -3017,6 +3021,11 @@ class _TickRun:
                     kind = "timeout"
                 elif getattr(res, "quota_exhausted", False):
                     kind = "quota"
+                elif getattr(res, "cli_unavailable", False):
+                    # Not a window that rolls off: the host lacks claude
+                    # itself. Distinct kind so the executor can rest the
+                    # loop instead of free-retrying a doomed call (gr500371).
+                    kind = "cli_unavailable"
                 else:
                     kind = "window"
                 return self._finalize(

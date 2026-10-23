@@ -747,7 +747,7 @@ slice):
   Reto 2026-10-18: nano floor = mean over seeds, per-seed catastrophe floor
   28; the product keeps single-seed placement for now, best-of-N not yet.
   The floors are dropped (§Decisions row 14, 2026-10-19); the nano test
-  still runs `NANO_SEEDS` and prints the per-seed counts and the mean.
+  still runs `NANO_SEEDS` (one test per seed) and prints the per-seed counts.
 - **Fixture.** The source of the failing pad geometry is gr489923: CN4
   `CONN-SMD_APCI0136-P001A`, 69 pads 0.3 × 1.55 mm in two staggered rows at
   0.5 mm pitch, pad gap 0.2 mm; a 0.3 mm track along the pad axis clears a

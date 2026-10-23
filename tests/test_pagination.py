@@ -884,3 +884,182 @@ class TestRecipeCursor:
         )
         assert page == body
         assert "more(cursor=" not in page
+
+
+# ── Write-time fold (gr499039) ───────────────────────────────────────
+#
+# The fold is the cache-safe answer to tool results carrying verbatim for
+# the rest of an agent run: the served text is decided once, at write
+# time, and never rewritten. Shape: structural head (~¾ of the budget) +
+# an elision marker (elided size + full-body sha256) + a line-boundary
+# tail (~¼) + the ordinary truncated footer; the elided middle is what the
+# cursor caches. ``PRECIS_TOOL_RESULT_FOLD_BYTES=0`` disables it — the
+# suite-wide conftest pins 0, so every test below opts in per-test.
+
+_FOLD_CAP = "1500"
+
+
+def _foldable_body(n_sections: int = 12, lines_per: int = 12) -> str:
+    return "".join(
+        f"## section {i}\n" + f"section {i} content line\n" * lines_per
+        for i in range(n_sections)
+    )
+
+
+def _fold_shown_parts(out: str) -> tuple[str, str]:
+    """Extract ``(head, tail)`` as displayed by a folded response."""
+    head, rest = out.split("\n\n⋯ [", 1)
+    tail = rest.split("] ⋯\n\n", 1)[1].split("\n\n---\n", 1)[0]
+    return head, tail
+
+
+class TestFold:
+    def test_fold_keeps_head_tail_hash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        cache = PaginationCache()
+        body = _foldable_body()
+        out, cursor = cache.split(body, kind="paper")
+
+        head, tail = _fold_shown_parts(out)
+        # Head is an exact prefix, tail an exact suffix of the body.
+        assert body.startswith(head)
+        assert body.endswith(tail)
+        assert head.startswith("## section 0")
+        assert tail.endswith("content line\n")
+
+        # The marker carries the elided byte count and the full-body
+        # sha256 (truncated to 16 hex chars).
+        assert "sha256:" + hash_body(body)[:16] in out
+        assert "elided here" in out
+        # The re-fetch handle is an opaque cursor (never an rr1. recipe —
+        # replay can't reproduce fold geometry).
+        assert cursor is not None
+        assert not cursor.startswith("rr1.")
+        assert f"more(cursor='{cursor}')" in out
+        # head + marker + tail + footer stays inside the fold cap.
+        assert len(out.encode("utf-8")) <= int(_FOLD_CAP)
+
+    def test_fold_cursor_refetches_the_elided_middle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``more(cursor)`` serves exactly the bytes the fold hid — so
+        head + middle + tail reconstructs the original body."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        cache = PaginationCache()
+        # Sized so the elided middle fits one continuation page and pop()
+        # returns it verbatim.
+        body = _foldable_body(n_sections=9, lines_per=10)
+        assert len(body.encode("utf-8")) > int(_FOLD_CAP)
+        out, cursor = cache.split(body)
+        assert cursor is not None
+        head, tail = _fold_shown_parts(out)
+
+        middle = cache.pop(cursor)
+        assert middle is not None
+        assert "⋯ [" not in middle  # small enough to serve un-folded
+        assert head + middle + tail == body
+        assert len(cache) == 0  # single-use cursor consumed
+
+    def test_fold_drain_is_lossless_over_chained_pages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A middle larger than a page re-folds: each continuation shows
+        head+tail of what remains and chains a cursor for the rest, so a
+        full drain recovers every byte exactly once."""
+        import re
+
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        cache = PaginationCache()
+        body = _foldable_body(n_sections=30, lines_per=10)
+        out, cursor = cache.split(body)
+        assert cursor is not None
+
+        heads = []
+        tails = []
+        head, tail = _fold_shown_parts(out)
+        heads.append(head)
+        tails.append(tail)
+        page = cursor
+        final = None
+        while page is not None:
+            popped = cache.pop(page)
+            assert popped is not None
+            m = re.search(r"more\(cursor='([0-9a-f]{32})'\)", popped)
+            if m is None:
+                final = popped
+                break
+            h, t = _fold_shown_parts(popped)
+            heads.append(h)
+            tails.append(t)
+            page = m.group(1)
+        assert final is not None
+        # Folded pages nest: body = h0 + h1 + ... + final + ... + t1 + t0.
+        assert body == "".join(heads) + final + "".join(reversed(tails))
+
+    def test_fold_disabled_is_byte_identical(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``PRECIS_TOOL_RESULT_FOLD_BYTES=0`` is a strict opt-out: an
+        under-cap body passes through whole, an over-cap body gets the
+        pre-fold head-only page — no marker either way."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "0")
+        cache = PaginationCache()
+        body = _foldable_body()
+        out, cursor = cache.split(body)
+        assert out == body  # under the 24 KiB frame cap: untouched
+        assert cursor is None
+
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
+        big = _foldable_body(n_sections=40)
+        out, cursor = cache.split(big)
+        assert "⋯ [" not in out
+        assert cursor is not None  # ordinary pagination still works
+
+    def test_fold_default_is_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unset means the documented default — the suite-wide conftest
+        pins the knob off, so this must delenv to see it."""
+        from precis._pagination import DEFAULT_FOLD_BODY_BYTES, _fold_body_bytes
+
+        monkeypatch.delenv("PRECIS_TOOL_RESULT_FOLD_BYTES", raising=False)
+        assert _fold_body_bytes() == DEFAULT_FOLD_BODY_BYTES == 4096
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "0")
+        assert _fold_body_bytes() == 0
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "junk")
+        assert _fold_body_bytes() == DEFAULT_FOLD_BODY_BYTES
+
+    def test_fold_output_deterministic_modulo_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same body folds to the same bytes every call — the served
+        text is fixed at write time and nothing mutates it afterwards
+        (the prompt-cache-safety pin: earlier turns never change)."""
+        import re
+
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        body = _foldable_body()
+        out1, _ = PaginationCache().split(body)
+        out2, _ = PaginationCache().split(body)
+        norm = lambda s: re.sub(r"cursor='[0-9a-f]{32}'", "cursor='X'", s)
+        assert norm(out1) == norm(out2)
+        assert out1 != out2  # only the minted cursor differs
+
+    def test_fold_cursor_incapable_and_transient(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both no-cache modes still fold (head + marker + tail) but mint
+        no cursor and keep their own footers."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        body = _foldable_body()
+
+        cache = PaginationCache()
+        out, cursor = cache.split(body, cursor_capable=False)
+        assert cursor is None
+        assert "⋯ [" in out  # still folded — strictly better than head-only
+        assert "more(cursor=" not in out
+        assert len(cache) == 0
+
+        out, cursor = cache.split(body, transient=True)
+        assert cursor is None
+        assert "⋯ [" in out
+        assert "no continuation cursor" in out
+        assert len(cache) == 0

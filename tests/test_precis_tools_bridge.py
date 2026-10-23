@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis.utils.llm.precis_tools import (
     _json_schema_for,
     _spec_from_registry,
@@ -86,14 +88,34 @@ def test_runtime_executor_uses_injected_dispatch() -> None:
     assert seen == [("search", {"q": "x"})]
 
 
+def test_runtime_executor_routes_more_to_fetch_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``more`` is a tool, not a dispatch verb — the executor maps it to
+    ``runtime.fetch_more`` so the fold's cursor handle actually works on
+    the in-process OSS loop."""
+    import precis.tools.core as core
+
+    class _FakeRuntime:
+        def fetch_more(self, cursor: str) -> tuple[str, bool]:
+            return f"page2-of:{cursor}", False
+
+    monkeypatch.setattr(core, "_get_runtime", lambda: _FakeRuntime())
+    execute = runtime_executor(dispatch=lambda n, a: "nope")
+    assert execute("more", {"cursor": "abc123"}) == "page2-of:abc123"
+
+
 # ── the live registry (import-only, no runtime/DB) ─────────────────────
 
 
-def test_precis_tool_specs_covers_verbs_excludes_more() -> None:
+def test_precis_tool_specs_covers_verbs() -> None:
     specs = precis_tool_specs()
     names = {s.name for s in specs}
     assert {"get", "search", "put", "edit", "delete", "tag", "link"} <= names
-    assert "more" not in names  # pagination excluded by default
+    # ``more`` is advertised: the gr499039 write-time fold mints a
+    # continuation cursor on every oversized response, and an
+    # un-advertised handle is a dead end for the OSS loop.
+    assert "more" in names
     for s in specs:  # every advertised tool has an object-typed schema
         assert s.parameters["type"] == "object"
         assert isinstance(s.description, str)

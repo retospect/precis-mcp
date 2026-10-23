@@ -29,10 +29,13 @@ if TYPE_CHECKING:
 
     from precis.utils.llm.openai_tools import ToolExecutor
 
-#: ``more`` is pagination over a cursor a verb response hands back — useless
-#: without a live prior response, and it confuses a fresh tool-caller, so it is
-#: excluded from the advertised set by default.
-_DEFAULT_EXCLUDE: frozenset[str] = frozenset({"more"})
+#: Verbs never worth advertising to a fresh tool-caller. ``more`` used to
+#: live here — it returns "useless without a live prior response" — but the
+#: gr499039 write-time fold mints a continuation cursor on every oversized
+#: response, so the loop now needs it advertised (and routed, see
+#: :func:`runtime_executor`) or the re-fetch handle the fold footer names
+#: is a dead end.
+_DEFAULT_EXCLUDE: frozenset[str] = frozenset()
 
 
 def _json_schema_for(pinfo: dict[str, Any], *, description: str = "") -> dict[str, Any]:
@@ -84,7 +87,7 @@ def _spec_from_registry(name: str, info: dict[str, Any]) -> ToolSpec:
 
 
 def precis_tool_specs(*, exclude: frozenset[str] = _DEFAULT_EXCLUDE) -> list[ToolSpec]:
-    """The precis verbs as OpenAI tool specs, ``more`` excluded by default."""
+    """The precis verbs as OpenAI tool specs."""
     from precis.tools import TOOL_REGISTRY
 
     return [
@@ -116,6 +119,14 @@ def runtime_executor(
     resolved = _resolve()
 
     def execute(name: str, args: dict[str, Any]) -> str:
+        if name == "more":
+            # ``more`` is a tool, not a dispatch verb — it drains the
+            # pagination/fold cursor minted by an earlier oversized
+            # response, held on this same process's runtime cache.
+            from precis.tools.core import _get_runtime
+
+            body, _is_error = _get_runtime().fetch_more(str(args.get("cursor", "")))
+            return body
         return resolved(name, args)
 
     return execute
