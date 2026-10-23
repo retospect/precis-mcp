@@ -118,6 +118,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   (90,45,15)° tiers (90 free, 45 priced, 15 more), stage-1 rotation
   well switch (ROT_WELL_FROM_STAGE1) against early θ drift, tilt gate
   folded into priced E; snap_to_preferred shares the well's grid.
+  placer-k: gr503556 polish knot — the (Σa)²-normalized BinDensity
+  gradient is ~10³ below the T1+tree pull, so no portable fixed λ
+  counters re-clustering (measured 0.03 vs 46; λ 0.1→50 all knotted).
+  λ is now force-balanced at handoff (DENSITY_FORCE_FRAC=0.25 of the
+  wirelength gradient, capped), ePlace-style — re-clustering pays for
+  itself inside E.
   gr504889: a fully posed, legal import remains the incumbent across the joint
   place+route pass; reject re-placement when the T1+D14 wirelength
   accept metric is more than 2% worse than those input poses. A

@@ -33,10 +33,11 @@ gradient (numpy; no autodiff dependency). Landed terms:
   θ never is (gr503694).
 * **Density** (gr503556) — ``Σ_b A_b·(ρ_b² − Σ_i φ_ib²)`` over a bin
   grid, ρ deposited through a normalized Gaussian kernel on part
-  centres at ``LAMBDA_DENSITY``. Subtracting each part's self-interaction
-  makes crowded neighbours push apart without sending a lone part to
-  the boundary; the earlier softplus-over-target tail repelled even
-  underloaded bins and piled parts against the wall.
+  centres, weighed by force balance (:data:`DENSITY_FORCE_FRAC`).
+  Subtracting each part's self-interaction makes crowded neighbours push
+  apart without sending a lone part to the boundary; the earlier
+  softplus-over-target tail repelled even underloaded bins and piled
+  parts against the wall.
 
 ``polish_placement`` runs the placement half of this energy as one move on
 the engine's board, behind ``OptimizeConfig.field_polish``, gated on
@@ -570,8 +571,10 @@ class BinDensity(Term):
     tree draw to the J_IN→HUB corridor lost to a ~4·10³ density drop
     into the far corner, gr503640-class residual). The normalized term
     keeps the same force DIRECTION — which bins are crowded — while its
-    scale stays ``A²/A_domain``-sized on every board, so
-    :data:`LAMBDA_DENSITY` means the same thing everywhere."""
+    scale stays ``A²/A_domain``-sized on every board. That normalization
+    also makes its gradient ~10³ weaker than the wirelength pull it must
+    counter, which is why :func:`polish_placement` weighs it by force
+    balance (:data:`DENSITY_FORCE_FRAC`), not a fixed λ."""
 
     def __init__(
         self,
@@ -1142,17 +1145,27 @@ REPAIR_LAMBDA_T4 = 64.0
 #: buys less than ~0.0001 of the energy — the tail it skips never moved
 #: a pose the snap cascade could see.
 POLISH_FTOL = 1e-7
-#: λ for the bin-density spread term (gr503556): deliberately small —
-#: the term's job is a bias against re-clustering in the descent and the
-#: accept gate, not a prime mover. Measured 2026-10-22 on the seeded
-#: synthetic boards: λ ≤ ~0.5 keeps every legality gate satisfied (larger
-#: values let the spread push peripheral parts past T5's soft wall), and
-#: on p2u any weight at all lets U1's corner seed trap its supply-tree
-#: pull — the term is a gentle prior, connectivity still wins everywhere
-#: it has a real opinion. The term stays on through Harden: the committed
-#: pose's spread is a real property, and a snap that re-clusters should
-#: fail the energy gate.
-LAMBDA_DENSITY = 0.1
+#: The density term's weight is not portable across boards: its
+#: (Σ a_i)²-normalized gradient runs ~3 orders of magnitude below the
+#: T1+tree pull it must counter (measured 2026-10-23 on a hub-spoke
+#: board: ||∇D||≈0.03 vs ||∇(T1+tree)||≈46 — λ 0.1→50 all produced the
+#: same central knot; the knot is the pull-vs-clearance equilibrium, not
+#: a bias a small λ can tilt). So instead of a fixed λ the polish balances
+#: FORCES, ePlace-style: the weight is set at handoff so the density
+#: gradient's norm at the seed pose is this fraction of the wirelength
+#: pull's — enough to hold the seed's spread through the descent without
+#: letting the spread term overrule connectivity where a real pull
+#: exists. 0.25 measured 2026-10-23: on the hub-spoke repro it keeps the
+#: seeded spread (max band share 0.30 vs 0.52 knotted) while wirelength
+#: still improves, and below ~0.35 the balanced λ stays under the point
+#: where density starts shoving p2u's U1 off its supply-tree corridor.
+DENSITY_FORCE_FRAC = 0.25
+#: Ceiling on the balanced λ: a near-uniform seed has ||∇D||→0, and the
+#: unbounded quotient would hand the descent a density-only energy
+#: (every wirelength buy dies on a microscopic density rise). The cap
+#: still leaves the term ~50× its old weight — protective without being
+#: the whole landscape.
+LAMBDA_DENSITY_MAX = 2000.0
 #: Bins per LONGER domain side for BinDensity (8×~6 on nano ≈ 12 mm cells,
 #: σ one cell — a part's mass reaches its ~3 neighbours).
 DENSITY_BINS = 8
@@ -1493,7 +1506,7 @@ def polish_placement(
     lambda_t4: Sequence[float] = LAMBDA_T4_RAMP,
     gamma: float = 0.5,
     lambda_wells: float = 0.5,
-    lambda_density: float = LAMBDA_DENSITY,
+    lambda_density: float | None = None,
 ) -> PolishResult:
     """Descend x, y, θ on T1 + T4 + T5 + T6 + the D14 tree + bin density
     with a λ_T4 ramp (T10's rotation well joins from stage 1 while
@@ -1582,6 +1595,22 @@ def polish_placement(
     t9 = GridWell(lay)
     t10 = RotationWell(lay)
 
+    z0 = lay.pack()
+    if lambda_density is None:
+        # Force balance (gr503556, ePlace-style): the normalized term's
+        # gradient is ~10^3 below the pull it must counter, so no
+        # portable λ exists — weigh density so its gradient norm at the
+        # seed pose is DENSITY_FORCE_FRAC of the wirelength pull's, on
+        # the x, y slots both act on (T1's θ components don't position).
+        n_xy0 = 2 * int(lay.free_xy.sum())
+        g_wl = float(
+            np.linalg.norm((t1.value_grad(z0)[1] + t_tree.value_grad(z0)[1])[:n_xy0])
+        )
+        g_d = float(np.linalg.norm(t_density.value_grad(z0)[1][:n_xy0]))
+        lam_d = min(DENSITY_FORCE_FRAC * g_wl / max(g_d, 1e-9), LAMBDA_DENSITY_MAX)
+    else:
+        lam_d = lambda_density
+
     def energy(l4: float, wells: Sequence[Term] = ()) -> Energy:
         return Energy(
             lay,
@@ -1591,13 +1620,12 @@ def polish_placement(
                 (1.0, t5),
                 (1.0, t6),
                 (1.0, t_tree),
-                (lambda_density, t_density),
+                (lam_d, t_density),
             ]
             + [(lambda_wells, w) for w in wells],
         )
 
     final = energy(lambda_t4[-1], (t9, t10))
-    z0 = lay.pack()
     e0 = final.value_grad(z0)[0]
     # A wrong analytic gradient silently wrecks a descent; refuse rather than
     # move parts on it. Checked along x, y only: rotation of axis-aligned

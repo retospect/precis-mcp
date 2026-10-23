@@ -840,6 +840,86 @@ def test_bin_density_spreads_a_clustered_board() -> None:
     assert np.ptp(x) > 10.0 and np.ptp(y) > 10.0
 
 
+def _hub_spoke_engine(seed: int = 1) -> OptimizeEngine:
+    """The nano shape, DB-free: one hub part ~every signal net touches,
+    plus chain nets among the smalls — the topology whose T1 pull
+    dragged the anneal's spread into a central knot (gr503556). Poses
+    start on a jittered grid over the 100×80 outline, the spread board
+    the polish is handed."""
+    import random
+
+    from precis.pcb.ir import from_graph
+    from precis.pcb.optimize import seed_placement
+    from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
+
+    n_small, n_hub = 55, 40
+    instances = [{"refdes": "U1"}] + [
+        {"refdes": f"R{i}"} for i in range(1, n_small + 1)
+    ]
+    nets: list[dict] = [
+        {
+            "name": f"SIG{i}",
+            "net_class": "signal",
+            "domain": "electrical",
+            "members": [
+                {"refdes": "U1", "pin": f"s{i}"},
+                {"refdes": f"R{i}", "pin": f"p{i}a"},
+            ],
+        }
+        for i in range(1, n_hub + 1)
+    ]
+    nets += [
+        {
+            "name": f"CH{i}",
+            "net_class": "signal",
+            "domain": "electrical",
+            "members": [
+                {"refdes": f"R{i}", "pin": f"c{i}a"},
+                {"refdes": f"R{1 + (i % n_small)}", "pin": f"c{i}b"},
+            ],
+        }
+        for i in range(n_hub + 1, n_small + 1)
+    ]
+    ir = from_graph({"instances": instances, "nets": nets}, stackup=LEGACY_V1_STACKUP)
+    ir.outline = [(0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0)]
+    seed_placement(ir, random.Random(seed))
+    n = ir.n_instances
+    rng = np.random.default_rng(7)
+    cols = int(np.ceil(np.sqrt(n * 100.0 / 80.0)))
+    rows = int(np.ceil(n / cols))
+    pts = np.array(
+        [(x, y) for y in np.linspace(10, 70, rows) for x in np.linspace(12, 88, cols)][
+            :n
+        ]
+    )
+    pts += rng.uniform(-4, 4, pts.shape)
+    ir.inst_x[:], ir.inst_y[:] = pts[:, 0], pts[:, 1]
+    return OptimizeEngine(ir, OptimizeConfig(seed=seed))
+
+
+def test_polish_does_not_reknot_a_spread_board() -> None:
+    """gr503556: the normalized density term's gradient is ~10³ below the
+    T1+tree pull it must counter (0.03 vs 46 measured on this board), so
+    at λ=0.1 the descent pulled every part back into a central knot —
+    ~52% of parts in one 16 mm y-band, the right band emptied — and the
+    energy gate saw only the net drop. The weight is now force-balanced
+    at handoff (:data:`F.DENSITY_FORCE_FRAC`), so a re-knot pays for
+    itself inside E. Pin the outcome the gripe measured: no band may
+    hoard what the knot did, whether the pose applied or was refused
+    (a refusal keeps the spread seed — never worse)."""
+    engine = _hub_spoke_engine()
+    res = F.polish_placement(engine)
+    ys = np.asarray(engine.ir.inst_y)
+    bands = (ys // 16.0).clip(0, 4)
+    shares = np.array([(bands == b).mean() for b in range(5)])
+    assert shares.max() < 0.45, (
+        f"polish re-knotted the board ({res.reason}): "
+        f"y-band shares {[round(float(s), 3) for s in shares]}"
+    )
+    if res.applied:
+        assert res.e_after < res.e_before
+
+
 def test_bin_density_uniform_fill_scores_low() -> None:
     """A spread board prices far below a clustered one — E≈∫ρ² is
     minimized by uniform density."""
@@ -950,7 +1030,12 @@ def test_gate_refusal_falls_back_to_seed_theta(monkeypatch) -> None:
             float(seed_rot[i]) % 360.0, abs=1e-6
         )
     if res.applied:
-        assert res.detail.startswith("seed-theta")
+        # The contract is "only seed θ is ever written". Which lane proves
+        # it is incidental: with the stage-1 rotation well (and the
+        # force-balanced density weight, gr503556) the descended θ stays
+        # at seed, so the raster+45° lane already satisfies the mock and
+        # the seed-theta fallback never has to run.
+        assert res.detail.startswith("seed-theta") or res.detail.startswith("raster+")
 
 
 def test_polish_writes_a_45_pose_when_90_is_unreachable(monkeypatch) -> None:
