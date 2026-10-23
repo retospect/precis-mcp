@@ -15,9 +15,14 @@ enabled answers no recognised names — also nothing written. Host swap-in
 GB10-class box GPU and CPU share unified memory, so host swap-in is
 model pressure too; elsewhere it costs one file read.
 
-The retraction counter survives in ``host_heartbeat_log`` even across a
-server restart: deltas clamp at zero, so a reset reads as "counter
-rebased", not negative retraction.
+``serving_retractions_total`` is a gauge in counter's clothing: the
+column sealed in 0232 before the real ``/metrics`` surface was read,
+and the only retraction series SGLang v0.5.21 exposes is the GAUGE
+``sglang:num_retracted_reqs`` — requests held retracted at scrape time
+(confirmed against castor's live capture). The column keeps the
+``_total`` name (renaming takes a migration) and stores the level; the
+condition fires on the level, so a server restart needs no delta
+clamping.
 """
 
 from __future__ import annotations
@@ -45,12 +50,13 @@ _VMSTAT_PATH = "/proc/vmstat"
 #: names with ``--enable-metrics``; the vLLM equivalents are listed too —
 #: one scrape serves both stacks (vllm-per-node-serving.md).
 #:
-#: Retractions take only MONOTONIC counter series:
-#: ``sglang:num_retracted_reqs`` is a GAUGE (requests currently held
-#: retracted) — summing its positive deltas over-counts, so it is
-#: deliberately absent. If the running image lacks a retraction counter
-#: the column stays NULL until the mapping is corrected — confirm the
-#: names against castor's image after the role deploys.
+#: ``serving_retractions_total`` keeps its 0232 name for a GAUGE:
+#: ``sglang:num_retracted_reqs`` (requests currently retracted) is the
+#: only retraction series the image exposes — the counter names guessed
+#: at spec time don't exist, and ``sglang:evicted_tokens_total`` counts
+#: KV evictions, not retractions. vLLM's ``num_preemptions_total`` is
+#: monotonic — it can't feed a level column, so the vLLM stack leaves
+#: it NULL.
 _METRIC_NAMES: dict[str, tuple[str, tuple[str, ...]]] = {
     "serving_running": (
         "sum",
@@ -82,12 +88,8 @@ _METRIC_NAMES: dict[str, tuple[str, tuple[str, ...]]] = {
     "serving_retractions_total": (
         "sum",
         (
-            "sglang:num_retracted_requests_total",
-            "sglang_num_retracted_requests_total",
-            "sglang:num_retractions_count",
-            "sglang_num_retractions_count",
-            "vllm:num_preemptions_total",
-            "num_preemptions_total",
+            "sglang:num_retracted_reqs",
+            "sglang_num_retracted_reqs",
         ),
     ),
 }

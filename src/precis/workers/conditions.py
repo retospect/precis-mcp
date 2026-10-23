@@ -1121,18 +1121,21 @@ SELECT host, ts, serving_running, serving_queued, serving_kv_usage,
 
 def _probe_local_serving_pressure(store: Store) -> list[ConditionFinding]:
     """llm-lane-scheduler S0: sustained local-serving pressure on a host —
-    sustained KV-cache use over threshold, retractions > 0, or host
+    sustained KV-cache use over threshold, retractions held > 0, or host
     swap-in rising for N beats (one beat ≈ one minute). Reads the
     ``serving_*``/``swap_in_pages_total`` columns the heartbeat scrape
     writes. Swap-in counts only on a host with a successful serving
     scrape in the window — any Linux worker can swap; only a serving
-    box's swap is *serving* pressure. Counter columns clamp deltas at
-    zero, so a server restart (counter reset) reads as "rebased", not
-    negative. Runs break on a scrape gap past ``_MAX_BEAT_GAP_S``.
+    box's swap is *serving* pressure. ``serving_retractions_total`` is a
+    GAUGE despite the name (SGLang ``num_retracted_reqs``, requests
+    currently retracted) — it fires on the level; swap-in is the one
+    monotonic counter, deltas clamped at zero so a restart reads as
+    "rebased", not negative. Runs break on a scrape gap past
+    ``_MAX_BEAT_GAP_S``.
 
     Thresholds (env-tunable): KV >= ``PRECIS_COND_SERVING_KV_MAX`` (0.90)
-    for ``PRECIS_COND_SERVING_SUSTAIN_MIN`` (5) consecutive beats, or any
-    retraction delta, or swap-in rising for that many beats — over
+    or retractions > 0, each for ``PRECIS_COND_SERVING_SUSTAIN_MIN`` (5)
+    consecutive beats, or swap-in rising for that many beats — over
     ``PRECIS_COND_SERVING_LOOKBACK_MIN`` (60, matching the hourly lane).
     """
     lookback_min = _env_f("PRECIS_COND_SERVING_LOOKBACK_MIN", 60.0)
@@ -1165,15 +1168,16 @@ def _probe_local_serving_pressure(store: Store) -> list[ConditionFinding]:
         if longest >= sustain:
             signals.append(f"KV usage >= {kv_max:.0%} for {longest} consecutive beats")
 
-        prev: float | None = None
-        retract_delta = 0.0
-        for _, _, _, r, _ in beats:
-            if r is not None:
-                if prev is not None:
-                    retract_delta += max(0.0, float(r) - prev)
-                prev = float(r)
-        if retract_delta > 0:
-            signals.append(f"{int(retract_delta)} retraction(s)")
+        prev_ts = None
+        run = longest = 0
+        for ts, _, _, r, _ in beats:
+            if prev_ts is not None and (ts - prev_ts).total_seconds() > _MAX_BEAT_GAP_S:
+                run = 0
+            prev_ts = ts
+            run = run + 1 if r is not None and r > 0 else 0
+            longest = max(longest, run)
+        if longest >= sustain:
+            signals.append(f"retractions > 0 for {longest} consecutive beats")
 
         if served_in_window:
             prev_ts = None

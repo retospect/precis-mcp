@@ -53,7 +53,7 @@ sglang_tiktoken_dir: /srv/models/tiktoken
 # Extra flags appended verbatim (list).
 sglang_extra_args: []
 # Expose Prometheus metrics on /metrics (sglang:num_running_reqs,
-# sglang:num_queue_reqs, sglang:token_usage, sglang:num_retracted_requests_total).
+# sglang:num_queue_reqs, sglang:token_usage, sglang:num_retracted_reqs).
 # The heartbeat pass scrapes them into host_heartbeat_log for the
 # local-serving-pressure condition (llm-lane-scheduler S0). /metrics rides
 # the SAME API port and bind (sglang_bind_addr/sglang_port, default

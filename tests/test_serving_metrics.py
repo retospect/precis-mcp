@@ -13,9 +13,10 @@ import pytest
 
 from precis.workers import serving_metrics
 
-# Shape follows the real SGLang exposition (``--enable-metrics``):
-# ``sglang:``-prefixed names, per-label series, HELP/TYPE comments,
-# and a raft of metrics we don't consume.
+# Names and TYPEs from the real capture on castor's running image
+# (SGLang v0.5.21, ``--enable-metrics``): the only retraction series is
+# the num_retracted_reqs GAUGE — no counter exists. Plus a raft of
+# metrics we don't consume.
 _SGLANG_FIXTURE = """\
 # HELP sglang:num_running_reqs The number of running requests.
 # TYPE sglang:num_running_reqs gauge
@@ -26,9 +27,12 @@ sglang:num_queue_reqs{model_name="openai/gpt-oss-120b"} 3
 # HELP sglang:token_usage The token usage.
 # TYPE sglang:token_usage gauge
 sglang:token_usage{model_name="openai/gpt-oss-120b"} 0.87
-# HELP sglang:num_retracted_requests_total The total number of retracted requests.
-# TYPE sglang:num_retracted_requests_total counter
-sglang:num_retracted_requests_total{model_name="openai/gpt-oss-120b"} 4
+# HELP sglang:num_retracted_reqs The number of retracted requests.
+# TYPE sglang:num_retracted_reqs gauge
+sglang:num_retracted_reqs{model_name="openai/gpt-oss-120b"} 4
+# HELP sglang:evicted_tokens_total The total number of KV evicted tokens.
+# TYPE sglang:evicted_tokens_total counter
+sglang:evicted_tokens_total{model_name="openai/gpt-oss-120b"} 9021
 sglang:gen_throughput{model_name="openai/gpt-oss-120b"} 123.4
 sglang:cache_hit_rate{model_name="openai/gpt-oss-120b"} 0.5
 """
@@ -80,14 +84,28 @@ def test_scrape_takes_max_across_labels_for_kv_ratio(
     }
 
 
-def test_scrape_ignores_the_retraction_gauge(
+def test_scrape_maps_the_retraction_gauge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``num_retracted_reqs`` is a gauge — summing its deltas over-counts,
-    so only the monotonic counter feeds the column."""
+    """``num_retracted_reqs`` is a gauge — its level lands in
+    ``serving_retractions_total`` (the 0232 column name kept)."""
     _patch_get(
         monkeypatch,
         'sglang:num_retracted_reqs{model_name="a"} 3\n',
+    )
+    assert serving_metrics.scrape_serving_metrics("http://x/metrics") == {
+        "serving_retractions_total": 3.0,
+    }
+
+
+def test_scrape_ignores_evicted_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``evicted_tokens_total`` counts KV evictions, not retractions —
+    it must never feed the retraction column."""
+    _patch_get(
+        monkeypatch,
+        'sglang:evicted_tokens_total{model_name="a"} 9021\n',
     )
     assert serving_metrics.scrape_serving_metrics("http://x/metrics") == {}
 
@@ -103,13 +121,14 @@ def test_scrape_maps_sglang_names(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_scrape_maps_vllm_names(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One scrape serves both stacks (vllm-per-node-serving slice 3)."""
+    """One scrape serves both stacks (vllm-per-node-serving slice 3) —
+    except retractions: vLLM's ``num_preemptions_total`` is monotonic
+    and can't feed a level column, so it is not mapped."""
     _patch_get(monkeypatch, _VLLM_FIXTURE)
     assert serving_metrics.scrape_serving_metrics("http://x/metrics") == {
         "serving_running": 2.0,
         "serving_queued": 0.0,
         "serving_kv_usage": 0.42,
-        "serving_retractions_total": 9.0,
     }
 
 

@@ -69,11 +69,12 @@ short ones leave the box idle above it.
 - **Setpoint on the box's live pressure**, scraped each heartbeat beat on
   the serving host. Signals: the server's metrics (SGLang `/metrics`:
   `sglang:num_running_reqs`, `sglang:num_queue_reqs`,
-  `sglang:token_usage` (KV utilisation), the retraction counter — confirm
-  the exact names against the running image; `--enable-metrics` is NOT
-  on today, `sglang_extra_args: []` in the role; vLLM equivalents
-  `num_requests_running`, `num_requests_waiting`, `gpu_cache_usage_perc`,
-  `num_preemptions_total`) **and host memory and swap** — on a
+  `sglang:token_usage` (KV utilisation), `sglang:num_retracted_reqs` —
+  a GAUGE, requests currently retracted; confirmed on castor's
+  v0.5.21 capture, it is the only retraction series — vLLM
+  equivalents `num_requests_running`, `num_requests_waiting`,
+  `gpu_cache_usage_perc`, `num_preemptions_total`) **and host memory
+  and swap** — on a
   Spark-class box GPU and CPU share unified memory, so host swap-in is
   model pressure too. The loop admits while queue ≈ 0, KV use is under
   threshold and swap-in is 0; it backs off when queue climbs,

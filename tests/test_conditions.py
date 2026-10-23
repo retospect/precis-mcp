@@ -1387,33 +1387,68 @@ def test_serving_pressure_quiet_below_sustain(store: Store) -> None:
     assert _serving_findings(store, host) == []
 
 
-def test_serving_pressure_fires_on_retraction_delta(store: Store) -> None:
+def test_serving_pressure_fires_on_sustained_retractions(store: Store) -> None:
+    """``serving_retractions_total`` is the num_retracted_reqs GAUGE —
+    a level held > 0 for the sustain window fires."""
     host = _uniq("serving-retract")
-    _seed_serving_beats(
-        store, host, [(4, 0.3, 0, None), (3, 0.3, 0, None), (2, 0.3, 3, None)]
-    )
+    _seed_serving_beats(store, host, [(6 - i, 0.3, 3.0, None) for i in range(6)])
     found = _serving_findings(store, host)
     assert len(found) == 1
-    assert "3 retraction(s)" in found[0].detail
+    assert "retractions > 0" in found[0].detail
 
 
-def test_serving_pressure_counter_reset_is_not_negative(store: Store) -> None:
-    """A server restart resets the counter; the drop must not read as a
-    retraction — and a fresh tick after it still counts."""
-    host = _uniq("serving-reset")
+def test_serving_pressure_quiet_when_retractions_zero(store: Store) -> None:
+    host = _uniq("serving-retract-zero")
+    _seed_serving_beats(store, host, [(6 - i, 0.3, 0.0, None) for i in range(6)])
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_quiet_on_retraction_burst(store: Store) -> None:
+    """A gauge spike for fewer than sustain beats is a burst, not
+    sustained pressure."""
+    host = _uniq("serving-retract-short")
+    _seed_serving_beats(store, host, [(4 - i, 0.3, 2.0, None) for i in range(4)])
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_retraction_clear_breaks_the_run(store: Store) -> None:
+    """The gauge falling back to 0 (retractions drained or the server
+    restarted) ends the run — three beats held, one clear, three held
+    is not six."""
+    host = _uniq("serving-retract-clear")
     _seed_serving_beats(
         store,
         host,
         [
-            (5, None, 40, None),
-            (4, None, 2, None),
+            (7, None, 2, None),
+            (6, None, 2, None),
+            (5, None, 2, None),
+            (4, None, 0, None),
             (3, None, 2, None),
-            (2, None, 3, None),
+            (2, None, 2, None),
+            (1, None, 2, None),
         ],
     )
-    found = _serving_findings(store, host)
-    assert len(found) == 1
-    assert "1 retraction(s)" in found[0].detail
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_retraction_gap_breaks_the_run(store: Store) -> None:
+    """Same gap rule as the KV arm: two 3-beat retracted bursts split by
+    a 6-minute scrape gap must not glue into one sustained run."""
+    host = _uniq("serving-retract-gap")
+    _seed_serving_beats(
+        store,
+        host,
+        [
+            (12, None, 2, None),
+            (11, None, 2, None),
+            (10, None, 2, None),
+            (4, None, 2, None),
+            (3, None, 2, None),
+            (2, None, 2, None),
+        ],
+    )
+    assert _serving_findings(store, host) == []
 
 
 def test_serving_pressure_flat_swap_is_quiet(store: Store) -> None:
