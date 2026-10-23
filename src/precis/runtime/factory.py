@@ -67,6 +67,7 @@ def build_runtime(
     config: PrecisConfig | None = None,
     *,
     interactive: bool = True,
+    boot_writes: bool = True,
 ) -> PrecisRuntime:
     """Construct a runtime, connecting the store if `config.database_url` is set.
 
@@ -97,6 +98,13 @@ def build_runtime(
 
     ``precis worker`` never comes through here at all — it builds its own
     via ``cli/worker.py::_resolve_embedder`` (gripe 244419).
+
+    ``boot_writes=False`` forwards to :func:`precis.dispatch.boot` —
+    the boot-time ``kinds``/``kind_provider`` upserts and the oracle /
+    checklist reconcile threads are skipped. For chore CLIs that need
+    a hub but aren't a serving process (``precis maintenance``,
+    gr508690): a dev-host run pointed at prod must not stamp the
+    kinds registry.
 
     Caller owns the returned runtime; if it has a store, call
     `runtime.store.close()` before exit.
@@ -207,6 +215,7 @@ def build_runtime(
         md_roots=config.md_roots,
         kinds_disabled=parse_disabled(config.kinds_disabled),
         kinds_disabled_reasons=parse_disabled_reasons(config.kinds_disabled),
+        boot_writes=boot_writes,
     )
     return PrecisRuntime(
         config=config,

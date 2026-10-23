@@ -675,6 +675,237 @@ def test_boot_skips_kinds_upsert_when_probe_reports_read_only(
     assert not any(rec.levelno >= logging.ERROR for rec in caplog.records)
 
 
+def test_boot_writes_false_skips_registry_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    store: Store,
+) -> None:
+    """gr508690: ``precis maintenance`` boots a hub only to reach a
+    worker pass. ``boot_writes=False`` must skip the kinds /
+    kind_provider upserts outright — and skip the read-only probe,
+    which exists only to gate those writes. Otherwise a dev host
+    pointed at prod (scripts/prod-precis) stamps the registry as if
+    it were a serving fleet process."""
+    from precis import dispatch as _d
+
+    probed: list[bool] = []
+
+    def _probe(_store: object) -> bool:
+        probed.append(True)
+        return False
+
+    monkeypatch.setattr(_d, "_probe_read_only", _probe)
+
+    def _boom(*a: object, **kw: object) -> None:
+        raise AssertionError("boot_writes=False must not write the kinds registry")
+
+    monkeypatch.setattr(store, "upsert_kinds", _boom)
+    monkeypatch.setattr(store, "upsert_kind_providers", _boom)
+
+    hub = _d.boot(store=store, boot_writes=False)
+
+    assert isinstance(hub, Hub)
+    assert not probed
+
+
+def test_maintenance_cli_boots_without_writes() -> None:
+    """gr508690: the maintenance runner must pass ``boot_writes=False``
+    to ``build_runtime`` — pin the call site."""
+    import inspect
+
+    from precis.cli import maintenance
+
+    src = inspect.getsource(maintenance.run)
+    assert "boot_writes=False" in src
+
+
+# ---------------------------------------------------------------------------
+# gr508690 — registry writes refuse non-fleet identity on a fleet DB, and
+# refuse a partial spec set (failed handler imports)
+# ---------------------------------------------------------------------------
+
+
+def _seed_fleet_heartbeat(
+    store: Store, *, host: str = "fleetnode", ephemeral: bool = False
+) -> None:
+    """A ``host_heartbeat`` row: the marker that a fleet runs against
+    this DB (``meta.ephemeral`` set means throwaway container, not a
+    registered fleet host)."""
+    meta = '{"ephemeral": true}' if ephemeral else "{}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, meta) VALUES (%s, %s::jsonb)",
+            (host, meta),
+        )
+        conn.commit()
+
+
+def _no_fleet_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_PROCESS", raising=False)
+    monkeypatch.delenv("PRECIS_REGISTRY_WRITE", raising=False)
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+
+
+def test_fleet_db_probes_heartbeat_rows(store: Store) -> None:
+    from precis.dispatch import _fleet_db
+
+    assert _fleet_db(store) is False  # private DB: no heartbeats
+
+    _seed_fleet_heartbeat(store, host="throwaway", ephemeral=True)
+    assert _fleet_db(store) is False  # ephemeral container ≠ fleet host
+
+    _seed_fleet_heartbeat(store)
+    assert _fleet_db(store) is True
+
+
+def test_boot_refuses_registry_write_for_non_fleet_process_on_fleet_db(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    store: Store,
+) -> None:
+    """The dev-Mac ``maintenance cfp-watch`` defect: a boot pointed at a
+    fleet DB without fleet identity must not stamp the registry."""
+    from precis import dispatch as _d
+
+    _seed_fleet_heartbeat(store)
+    _no_fleet_env(monkeypatch)
+
+    calls: list[str] = []
+
+    def _spy_kinds(*a: object, **kw: object) -> int:
+        calls.append("kinds")
+        return 0
+
+    def _spy_providers(*a: object, **kw: object) -> int:
+        calls.append("providers")
+        return 0
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_kinds)
+    monkeypatch.setattr(store, "upsert_kind_providers", _spy_providers)
+
+    with caplog.at_level(logging.INFO, logger="precis.dispatch"):
+        hub = _d.boot(store=store)
+
+    assert isinstance(hub, Hub)
+    assert calls == []
+    assert any("registry writes refused" in rec.message for rec in caplog.records)
+
+
+def test_boot_writes_registry_for_fleet_process_on_fleet_db(
+    monkeypatch: pytest.MonkeyPatch,
+    store: Store,
+) -> None:
+    from precis import dispatch as _d
+
+    _seed_fleet_heartbeat(store)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+
+    calls: list[str] = []
+
+    def _spy_kinds(*a: object, **kw: object) -> int:
+        calls.append("kinds")
+        return 0
+
+    def _spy_providers(*a: object, **kw: object) -> int:
+        calls.append("providers")
+        return 0
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_kinds)
+    monkeypatch.setattr(store, "upsert_kind_providers", _spy_providers)
+
+    _d.boot(store=store)
+
+    assert calls == ["kinds", "providers"]
+
+
+def test_boot_registry_write_env_override_on_fleet_db(
+    monkeypatch: pytest.MonkeyPatch,
+    store: Store,
+) -> None:
+    """``PRECIS_REGISTRY_WRITE=1`` is the explicit flag letting a
+    non-fleet-identity process write the registry on a fleet DB."""
+    from precis import dispatch as _d
+
+    _seed_fleet_heartbeat(store)
+    monkeypatch.delenv("PRECIS_PROCESS", raising=False)
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setenv("PRECIS_REGISTRY_WRITE", "1")
+
+    calls: list[str] = []
+
+    def _spy_kinds(*a: object, **kw: object) -> int:
+        calls.append("kinds")
+        return 0
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_kinds)
+
+    _d.boot(store=store)
+
+    assert calls == ["kinds"]
+
+
+def test_boot_writes_registry_on_private_db_without_fleet_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    store: Store,
+) -> None:
+    """A private DB (no fleet heartbeats) has no registry to protect —
+    any boot writes. This is also what populates ``kinds`` on a fresh
+    single-machine install, where no plist ever sets PRECIS_PROCESS."""
+    from precis import dispatch as _d
+
+    _no_fleet_env(monkeypatch)
+
+    calls: list[str] = []
+
+    def _spy_kinds(*a: object, **kw: object) -> int:
+        calls.append("kinds")
+        return 0
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_kinds)
+
+    _d.boot(store=store)
+
+    assert calls == ["kinds"]
+
+
+def test_boot_never_writes_partial_registry_on_failed_import(
+    monkeypatch: pytest.MonkeyPatch,
+    store: Store,
+) -> None:
+    """A boot with a failed handler import must skip ``upsert_kinds`` —
+    the degraded spec set never reaches ``kinds``. The provider roster
+    still records the reduced set: the kind-shrinkage detector diffs
+    it against the previous boot."""
+    from precis import dispatch as _d
+
+    _no_fleet_env(monkeypatch)
+    # A fleet-identity process: providers must still record the reduced
+    # roster (process=unknown would make upsert_kind_providers a no-op
+    # and the assertion couldn't tell "called" from "skipped").
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+
+    def _raises_at_load() -> object:
+        raise ImportError("simulated: cannot import name 'Relaxed'")
+
+    _patch_entry_points(monkeypatch, [_FakeEP("se", _raises_at_load)])
+
+    calls: list[str] = []
+
+    def _spy_kinds(*a: object, **kw: object) -> int:
+        calls.append("kinds")
+        return 0
+
+    def _spy_providers(*a: object, **kw: object) -> int:
+        calls.append("providers")
+        return 0
+
+    monkeypatch.setattr(store, "upsert_kinds", _spy_kinds)
+    monkeypatch.setattr(store, "upsert_kind_providers", _spy_providers)
+
+    _d.boot(store=store)
+
+    assert calls == ["providers"]
+
+
 def test_boot_skips_oracle_sync_thread_when_read_only(
     monkeypatch: pytest.MonkeyPatch, store: Store
 ) -> None:

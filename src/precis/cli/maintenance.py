@@ -188,7 +188,12 @@ def run(args: argparse.Namespace) -> None:
     # resolved DSN rather than mutating in place. Keeps the rest
     # of the config (embedder, corpus, …) intact.
     cfg = cfg.model_copy(update={"database_url": dsn})
-    runtime = build_runtime(cfg)
+    # boot_writes=False (gr508690): maintenance is a chore CLI, not a
+    # serving process — a run pointed at prod from a dev host must not
+    # upsert the ``kinds`` registry / ``kind_provider`` roster (a
+    # locally-broken plugin would stamp a degraded set), nor spawn the
+    # oracle/checklist reconcile threads.
+    runtime = build_runtime(cfg, boot_writes=False)
     store = runtime.store
     if store is None:
         print(

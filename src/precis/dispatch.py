@@ -488,6 +488,63 @@ def _boot_is_read_only(store: Store) -> bool:
     return _probe_read_only(store)
 
 
+def _registry_write_env_override() -> bool:
+    """True when ``PRECIS_REGISTRY_WRITE`` is set to an on-ish value.
+
+    Explicit opt-in letting a non-fleet-identity process (``PRECIS_PROCESS``
+    unset — a dev host or a chore CLI) write the boot-time ``kinds``
+    registry on a fleet DB. Same on/off vocabulary as
+    ``PRECIS_MCP_READ_ONLY`` (:func:`_read_only_env_override`).
+    """
+    return os.environ.get("PRECIS_REGISTRY_WRITE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _fleet_db(store: Store) -> bool:
+    """Whether a live fleet heartbeats into this DB.
+
+    Prod — and dev DBs seeded from prod (``scripts/_seed_prod_shaped.py``
+    copies ``host_heartbeat``) — carry a non-ephemeral ``host_heartbeat``
+    row; a private single-machine DB never does. A probe that itself
+    fails falls back to non-fleet (permissive — same rule as
+    :func:`_probe_read_only`): a wobble must not become a new boot
+    failure mode.
+    """
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM host_heartbeat "
+                "WHERE (meta->>'ephemeral') IS DISTINCT FROM 'true')"
+            ).fetchone()
+    except Exception:
+        log.debug(
+            "precis dispatch boot: fleet-DB probe failed; assuming private DB",
+            exc_info=True,
+        )
+        return False
+    return bool(row and row[0])
+
+
+def _registry_write_permitted(store: Store, *, process: str) -> bool:
+    """Whether this boot may write the ``kinds`` registry on ``store``.
+
+    On a fleet DB the registry belongs to fleet-identity processes —
+    ``PRECIS_PROCESS`` set (every plist sets it; see
+    ``boot_process_identity``) or the explicit ``PRECIS_REGISTRY_WRITE``
+    opt-in. A dev-host CLI or chore run pointed at prod has neither and
+    must not stamp the prod registry (gr508690). A private DB has no
+    fleet registry to protect: any boot writes — which is also what
+    populates ``kinds`` on a fresh single-machine install.
+    """
+    if process != "unknown" or _registry_write_env_override():
+        return True
+    return not _fleet_db(store)
+
+
 def _try(
     cls: Callable[..., Any],
     *,
@@ -818,6 +875,7 @@ def boot(
     md_roots: str | None = None,
     kinds_disabled: frozenset[str] = frozenset(),
     kinds_disabled_reasons: dict[str, str] | None = None,
+    boot_writes: bool = True,
 ) -> Hub:
     """Build and return a fully-populated :class:`Hub`.
 
@@ -826,6 +884,18 @@ def boot(
     then the kinds that consume them. Each step goes through
     :func:`_try` so any :class:`InitError` is logged and the kind
     silently drops off the LLM surface.
+
+    ``boot_writes=False`` suppresses the non-idempotent boot writes
+    (the ``kinds`` / ``kind_provider`` upserts and the oracle /
+    checklist reconcile threads) for callers that boot a hub only to
+    reach a worker pass — e.g. ``precis maintenance`` (gr508690).
+
+    Even with ``boot_writes`` on, the registry upsert refuses when the
+    process isn't a fleet worker on a fleet DB (``PRECIS_PROCESS``
+    unset; ``PRECIS_REGISTRY_WRITE`` is the explicit opt-in — see
+    :func:`_registry_write_permitted`), and refuses outright when any
+    handler import failed — a degraded spec set never reaches the
+    ``kinds`` table.
 
     Stateless handlers (calc, time) are always attempted. Store-backed
     handlers (memory, todo, paper, ...) are skipped when ``store`` is
@@ -861,11 +931,12 @@ def boot(
     # those writes just fail on every process start — logged as
     # exceptions while the process otherwise serves fine. Detect once,
     # up front, and skip both write sites; see ``_boot_is_read_only``.
-    mcp_read_only = False
-    if store is not None:
-        mcp_read_only = _boot_is_read_only(store)
-        if mcp_read_only:
-            log.info("precis dispatch boot: read-only DSN — skipping boot writes")
+    # ``boot_writes=False`` skips them outright (and skips the probe —
+    # with no writes to gate it answers nothing).
+    writes_store = store if boot_writes else None
+    if writes_store is not None and _boot_is_read_only(writes_store):
+        log.info("precis dispatch boot: read-only DSN — skipping boot writes")
+        writes_store = None
 
     # {kind_or_plugin_name: error} for the ImportError-flavored failures
     # only (see ``_try`` / ``_load_plugins`` docstrings) — feeds the
@@ -1111,7 +1182,7 @@ def boot(
         if "checklist" in hub.kinds:
             from precis.jobs.checklist_sync import is_disabled_by_env, sync_all
 
-            if not is_disabled_by_env() and not mcp_read_only:
+            if writes_store is not None and not is_disabled_by_env():
                 import threading
 
                 def _bg_checklist_sync() -> None:
@@ -1137,7 +1208,7 @@ def boot(
         if "oracle" in hub.kinds:
             from precis.jobs.oracle_sync import is_disabled_by_env, maybe_reingest
 
-            if not is_disabled_by_env() and not mcp_read_only:
+            if writes_store is not None and not is_disabled_by_env():
                 # F11: run oracle_sync on a daemon thread rather than
                 # inline. Synchronous reconcile blocked every CLI
                 # invocation behind the bge-m3 cold-start whenever the
@@ -1354,23 +1425,47 @@ def boot(
     # ``kinds`` table so the FK target stays in sync with the code
     # registry without a hand-maintained migration. See
     # ``store/_kinds_ops.py`` for the design note. Skipped on stateless
-    # boots (no store: nothing to upsert against) and on a read-only
-    # DSN (``mcp_read_only``, computed above — already logged once).
-    if store is not None and not mcp_read_only:
+    # boots (no store: nothing to upsert against), on a read-only
+    # DSN, and for ``boot_writes=False`` callers — all computed above.
+    # Two more refuses below (gr508690): a non-fleet-identity process
+    # on a fleet DB, and a boot with any failed handler import — a
+    # partial spec set must never reach the registry.
+    if writes_store is not None:
         try:
             from precis.store._kinds_ops import boot_process_identity
 
             specs = hub.kind_specs()
-            n = store.upsert_kinds(specs)
             host, process = boot_process_identity()
-            store.upsert_kind_providers(specs, host=host, process=process)
-            log.info(
-                "precis dispatch boot: upserted %d kind row(s) into kinds table "
-                "(host=%s process=%s)",
-                n,
-                host,
-                process,
-            )
+            if not _registry_write_permitted(writes_store, process=process):
+                log.info(
+                    "precis dispatch boot: registry writes refused — "
+                    "non-fleet process=%r on a fleet DB (host=%s); "
+                    "PRECIS_REGISTRY_WRITE=1 overrides",
+                    process,
+                    host,
+                )
+            else:
+                if failed_imports:
+                    # Never write a partial registry: a boot whose
+                    # handler imports failed would stamp a degraded
+                    # spec set into ``kinds``. The provider roster below
+                    # still records the real (reduced) set — the
+                    # kind-shrinkage detector needs it.
+                    log.warning(
+                        "precis dispatch boot: %d handler import(s) failed — "
+                        "skipping kinds upsert (never write a partial registry)",
+                        len(failed_imports),
+                    )
+                else:
+                    n = writes_store.upsert_kinds(specs)
+                    log.info(
+                        "precis dispatch boot: upserted %d kind row(s) into "
+                        "kinds table (host=%s process=%s)",
+                        n,
+                        host,
+                        process,
+                    )
+                writes_store.upsert_kind_providers(specs, host=host, process=process)
         except Exception:
             # Boot-time upsert failure is non-fatal — a process can
             # still serve already-registered kinds; the operator sees
