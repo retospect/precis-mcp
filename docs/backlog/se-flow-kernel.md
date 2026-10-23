@@ -361,12 +361,49 @@ commit carrying this line; `git log` has the sha.*
      that cost minutes are macro — booleans on bodies with many
      features, fillets, the cylinder wrap + mold negative
      ([se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)), lattices,
-     assemblies of frozen modules — and, at Å, relax: a relaxed base
-     stays frozen and only the wiggled top relaxes, locally
-     (structure-workspaces §Relax hierarchy (c)). Named heavy example:
-     the filleted bracket (se-native-fields §Bracket example) — a rib
-     edit rebuilds the rib boolean and the fillets above it, never the
-     base, pads or clearance holes.
+     assemblies of frozen modules — and, at Å, relax, with the
+     non-locality caveat below. Named heavy example: the filleted
+     bracket (se-native-fields §Bracket example) — a rib edit rebuilds
+     the rib boolean and the fillets above it, never the base, pads or
+     clearance holes.
+     - **Relax and DFT are non-local** (Reto 2026-10-23: "if we relax
+       again with some more atoms the structure will be slightly or
+       massively different. DFT is similar"). Adding atoms changes the
+       relaxed base; a cached base relax is exact only for the base
+       alone, so after a change above it the cached relax result is
+       *not* reusable as the answer — only as a warm start. Geometry
+       steps (booleans, tiling, placement) are local in the key sense;
+       `relax` and `evaluate` are not, and the keys do not pretend
+       otherwise.
+     - **Exact key, warm start.** Keys stay exact — no approximate hits.
+       A miss on a `relax` step does not start from scratch: the nearest
+       earlier key on the same lineage (same parents, earlier params)
+       seeds the new relax with its geometry (and density/wavefunction
+       for a DFT rung); the service frame records `warm_from=<key>`. A
+       warm-started relax converges to the same minimum as a cold one
+       when it is in the same basin; the trace says which it was.
+     - **Assembly = DAG of sub-stacks** ("it's an assembly"). Modules are
+       built independently as small stacks with their own keys; a
+       `join` step takes module keys as parents; further steps pile on
+       top. Changing module A reruns A, the join and everything above
+       it, not module B. Reruns above a join are expected; what bounds
+       their cost is that the post-join relax is seam-local.
+     - **Seam-local relax.** A `join` declares its seams — insulating
+       spacers, e.g. saturated C2H4/(CH2)n linkers for electronic
+       decoupling at Å. The post-join relax frees a buffer region around
+       the seams and freezes far atoms (QM/MM / ONIOM-style; H-capped
+       link atoms for DFT fragments). Locality is checked, not assumed:
+       after the local relax a single point measures residual forces on
+       the frozen atoms (and the density/charge change at the buffer
+       boundary for DFT) against a threshold; above it the buffer grows
+       and the relax repeats; the final buffer radius is recorded in the
+       frame (structure-workspaces §Relax hierarchy (c) owns the
+       numbers). Electronic insulation is not mechanical insulation:
+       strain from lattice or geometry mismatch propagates past a
+       spacer that decouples the electrons, so the force check is
+       mandatory even with a good spacer. Which spacers insulate, and
+       the default buffer radius, come from
+       [se-seam-spacers](se-seam-spacers.md) (literature + demo).
      - **Params in the frame.** A step-built object's creator frame
        carries the step name, its params, the recipe key that set them
        (`holes[3].x`) and the step key; interrogating a contact point
@@ -596,6 +633,15 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   with the chamber as the smallest demo, stable → volatile ordering
   with a per-step cost/rebuild report, in-container LRU only;
   incremental evaluation is slice 4c, later.
+- **2026-10-23, later the same day (direction; the representation stays
+  proposed, under discussion):** relax/DFT are non-local, so a cached
+  base relax is not the answer once atoms are added above it — it is
+  the warm start (`warm_from=<key>`; keys stay exact); a build is an
+  assembly, a DAG of independently built sub-stacks joined by `join`
+  steps, and reruns above a join are expected; joins declare insulating
+  seams and the post-join relax is seam-local with a mandatory
+  residual-force check (4b bullet §Build-step stack cache;
+  [se-seam-spacers](se-seam-spacers.md) supplies the spacer evidence).
 - Kit-facing names are general (`GapDomain`); the skill is
   `precis-workspace-optimize-help`, CFD its first physics section.
 - Scripts build, evaluate and optimise with no DB and no se — the wheel

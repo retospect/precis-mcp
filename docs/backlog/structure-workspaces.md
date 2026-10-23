@@ -374,6 +374,28 @@ level and method last moved them.
   assembly strain is never hidden by freezing. Each pass is a `service`
   frame `relax(scope=interfaces, method, shell=r)` touching the free
   atoms; frozen atoms keep their unit's relax event.
+  - **Non-local, so checked (Reto 2026-10-23).** Relax and DFT are
+    non-local: adding atoms changes the relaxed base, so a unit's
+    cached relax is exact only for the unit alone and is never the
+    answer for the assembly — it is the seed. The frozen interior is a
+    computational choice the residual-force pass verifies, never a
+    physical claim; the final `shell` radius is recorded in the frame.
+    For a DFT rung the pass also measures the density/charge change at
+    the shell boundary (link atoms: H-capped, ONIOM/QM-MM style).
+  - **Seams.** A `join`/`place` frame declares its seams — the insulating
+    spacers between modules, at Å saturated C2H4/(CH2)n linkers that
+    decouple the electrons (which spacer and how many CH2 come from
+    [se-seam-spacers](se-seam-spacers.md)). The free region is the
+    buffer around the seams; the rest of the rule above holds. Caveat
+    stated once: electronic insulation ≠ mechanical insulation —
+    lattice/geometry mismatch strain propagates past a spacer that
+    decouples the electrons, so the force check stays mandatory with a
+    good spacer.
+  - **Warm start, exact keys.** The cache key is exact (no approximate
+    hits). A miss seeds the relax from the nearest earlier key on the
+    same lineage (geometry; density for DFT) and records
+    `warm_from=<key>` in the service frame; a cold start is the
+    fallback and is recorded as such.
 - **(d) Full relax.** `relax.scope: 'full'` on request, for final
   numbers and validation; same frame record, `scope=full`.
 
@@ -526,10 +548,19 @@ atomic case of one rule; the same rule holds for macro modules.
   same discipline holds per step: `step key = hash(step name, params,
   parent step keys)`; a changed step rebuilds itself and its
   descendants, the rest is a hit, at both scales (macro booleans,
-  fillets, wrap + mold negative, lattices; Å relax of the wiggled top
-  over a frozen base). A frozen module is a step whose key crosses
-  runs; a step is a module that lives for one container — se-flow-kernel
-  slice 4b §Build-step stack cache owns the design.
+  fillets, wrap + mold negative, lattices). A frozen module is a step
+  whose key crosses runs; a step is a module that lives for one
+  container — se-flow-kernel slice 4b §Build-step stack cache owns the
+  design. Relax is the exception to "the rest is a hit": it is
+  non-local, so the step above a change re-relaxes seam-locally from
+  the cached result as a warm start, not as the answer (§Relax
+  hierarchy (c)).
+- **Assembly = DAG of sub-stacks** (Reto 2026-10-23, "it's an
+  assembly"). Modules are small stacks built independently under their
+  own keys; a `join` step takes module keys as parents and declares the
+  seams; later steps pile on top. Changing module A reruns A, the join
+  and everything above — not module B. The reruns above a join are
+  expected; their cost is bounded by the seam-local relax, not avoided.
 
 ## Construction traces — who made this atom
 
@@ -1243,6 +1274,15 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   steps ordered stable → volatile with a per-step cost/rebuild report;
   in-container LRU, never Postgres; incremental evaluation later
   (se-flow-kernel slices 4b, 4c).
+- **Assembly, seams, warm start (2026-10-23, direction — the
+  representation stays proposed):** relax/DFT are non-local, a cached
+  relax is a warm start (`warm_from=<key>`, keys exact) never the answer
+  above a change; builds are DAGs of independently keyed sub-stacks
+  joined by `join` steps that declare insulating seams; post-join relax
+  is seam-local with the residual-force check mandatory (electronic ≠
+  mechanical insulation); spacer evidence is
+  [se-seam-spacers](se-seam-spacers.md) (§Relax hierarchy (c), §Frozen
+  units/modules).
 - **Structure fisheye and rays (2026-10-22):** π perception from our own
   bond graph (a better structure-aware source is welcome later); rays are
   stored as block children ("an excellent idea"); the `charges` payload on
