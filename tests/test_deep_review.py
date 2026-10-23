@@ -57,7 +57,7 @@ def test_pass_skips_when_gate_disabled(
 
 
 def test_recent_digest_detected(store: Store) -> None:
-    _write_digest(store, "weekly digest", cost_usd=2.0)
+    _write_digest(store, ("weekly digest" + ". " + "x " * 140), cost_usd=2.0)
     assert _recent_digest_exists(store, 1) is True
 
 
@@ -69,7 +69,7 @@ def test_pass_skips_when_recent_digest_exists(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
-    _write_digest(store, "fresh weekly", cost_usd=0.5)
+    _write_digest(store, ("fresh weekly" + ". " + "x " * 140), cost_usd=0.5)
     called = {"hit": False}
 
     def _spy(*a, **kw) -> AgentResult:
@@ -277,7 +277,7 @@ def test_pass_writes_digest_on_happy_path(
     def _ok(*a, **kw) -> AgentResult:
         captured["disallowed"] = kw.get("disallowed_tools")
         return AgentResult(
-            final_text="Weekly review: nothing to archive.",
+            final_text="Weekly review: nothing to archive. " + "Quiet week. " * 14,
             cost_usd=1.4,
             duration_s=180.0,
             turns_used=22,

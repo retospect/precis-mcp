@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.alerts import raise_alert, resolve_stale_alerts
+from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
 from precis.utils.db_log_handler import _resolve_host_name
@@ -355,16 +356,27 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             reviewer.name,
             _tool_starved_evidence(res),
         )
-    digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
+    try:
+        digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
+    except BadInput as e:
+        # The model's stdout was transcript debris or a one-liner, not a
+        # review — refuse to store it as a digest. Same shape as a dispatch
+        # failure: a cooldown marker backs the pass off instead of a junk
+        # memory landing or the spin re-firing every tick.
+        log.error("review[%s]: %s", reviewer.name, e)
+        _write_failure_marker(store, reviewer, str(e))
+        return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture on a plan_tick job ref — reviewers
     # mint no job ref, so the digest memory itself is the closest per-run
     # artifact to attach it to. Never-fatal internally.
     persist_assembled_context(store, digest_id, blocks)
     # A real digest landed — clear any empty-pass / tool-starved alert this
-    # reviewer left open.
+    # reviewer left open, and retire its live failure markers: the cooldown
+    # they backed off is over and the marker is dead state.
     _resolve_empty_pass_alert(store, reviewer)
     _resolve_tool_starved_alert(store, reviewer)
+    _retire_prior_markers(store, _failure_tag(reviewer))
     log.info(
         "review[%s]: wrote digest memory id=%d cost=$%.4f duration=%.1fs",
         reviewer.name,
@@ -694,14 +706,57 @@ def _resolve_tool_starved_alert(store: Store, reviewer: Reviewer) -> None:
     )
 
 
+def _retire_prior_markers(
+    store: Store, tag_value: str, *, keep_ref_id: int | None = None
+) -> None:
+    """Soft-delete every *other* live memory carrying ``tag_value``.
+
+    Markers and digests are a rolling latest-wins surface: only the newest
+    one is ever load-bearing (the cooldown dedup reads it, nothing else
+    does), so older live copies are pure recall noise — prod accumulated
+    87 live ``review-fail:structural`` markers before this rule existed.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+            """,
+            (tag_value,),
+        ).fetchall()
+    for (ref_id,) in rows:
+        if ref_id == keep_ref_id:
+            continue
+        try:
+            with store.tx() as conn:
+                store.unlink_ref(int(ref_id), conn=conn)
+                store.retire_ref(int(ref_id), conn=conn)
+        except Exception:
+            log.warning(
+                "review: failed to retire stale %s marker me%d",
+                tag_value,
+                ref_id,
+                exc_info=True,
+            )
+
+
 def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -> None:
     """Record a dispatch-failure cooldown so the reviewer backs off.
 
     One marker per interval (the next tick dedups on it via
     :func:`_recent_failure`), so a broken reviewer attempts at its normal
     cadence (~``min_interval_hours``) rather than every tick. Tagged
-    ``internal-thought`` only — NOT ``{digest_tag}`` — so it never
-    masquerades as a real digest in the deep-review summary.
+    ``review-fail:{reviewer}`` only — NOT ``{digest_tag}`` and not
+    ``internal-thought`` — so it never masquerades as a real digest in
+    the deep-review summary nor leaks into asa's inner-thoughts fetch
+    (``asa_bot/preamble.py::_fetch_inner_thoughts``). Prior live markers
+    of this reviewer are retired in the same pass — one live marker at
+    a time is all the cooldown needs.
     """
     today = datetime.now(UTC).date().isoformat()
     msg = (error or "").strip()
@@ -716,8 +771,10 @@ def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -
             },
             conn=conn,
         )
-        for tag in (Tag.open(_failure_tag(reviewer)), Tag.open("internal-thought")):
-            store.add_tag(ref.id, tag, set_by="system", conn=conn)
+        store.add_tag(
+            ref.id, Tag.open(_failure_tag(reviewer)), set_by="system", conn=conn
+        )
+    _retire_prior_markers(store, _failure_tag(reviewer), keep_ref_id=int(ref.id))
 
 
 def _assemble_reviewer_blocks(reviewer: Reviewer, store: Store) -> list[Block]:
@@ -758,6 +815,45 @@ def _build_prompt(reviewer: Reviewer, store: Store) -> str:
     return user
 
 
+#: Minimum digest body length. A reviewer that spent a real pass has more
+#: than a line or two to say; a shorter "digest" is transcript debris or a
+#: silent no-op the model papered over — refused, never stored.
+_MIN_DIGEST_CHARS = 200
+
+#: Body openings that mean the model's *transcript* leaked into its final
+#: stdout instead of the digest itself (narrating the pass, not reporting
+#: it). Matched against the first line, case-insensitive.
+_TRANSCRIPT_OPENERS = (
+    "i'll ",
+    "i will ",
+    "i'm going to",
+    "i am going to",
+    "let me ",
+    "now i'll ",
+    "now let me",
+    "first, i",
+    "i need to ",
+    "i've started",
+    "i have started",
+    "starting the review",
+    "beginning the review",
+    "reading the ",
+    "searching the ",
+)
+
+
+def _digest_refusal_reason(body: str) -> str | None:
+    """Why ``body`` may not be stored as a digest; ``None`` when it is clean."""
+    stripped = (body or "").strip()
+    if len(stripped) < _MIN_DIGEST_CHARS:
+        return f"body under {_MIN_DIGEST_CHARS} chars ({len(stripped)})"
+    first = stripped.split("\n", 1)[0].strip().lower()
+    for opener in _TRANSCRIPT_OPENERS:
+        if first.startswith(opener):
+            return f"body starts with transcript prose: {first[:60]!r}"
+    return None
+
+
 def _write_digest(
     store: Store,
     reviewer: Reviewer,
@@ -766,34 +862,84 @@ def _write_digest(
 ) -> int:
     """Insert the digest as a ``kind='memory'`` ref and return its id.
 
-    Tags applied: ``tree-review:YYYY-MM-DD`` + ``{digest_tag}`` +
-    ``user:asa`` + ``internal-thought``. ``meta`` keys are namespaced
-    by ``{meta_prefix}date`` and ``{meta_prefix}cost_usd`` so a single
-    `kind='memory'` row can answer "when did this reviewer last run"
-    without inspecting tags.
+    Refuses (:class:`BadInput`) a body under :data:`_MIN_DIGEST_CHARS`
+    or one whose first line is transcript narration — those are leaked
+    agent chatter, not a review. Tags applied: ``tree-review:YYYY-MM-DD``
+    + ``{digest_tag}`` — deliberately NOT ``user:asa`` /
+    ``internal-thought``, which scoped digests into asa's
+    inner-thoughts fetch (``asa_bot/preamble.py::_fetch_inner_thoughts``)
+    and drowned her own notes under reviewer output. ``meta`` keys are
+    namespaced by ``{meta_prefix}date`` and ``{meta_prefix}cost_usd`` so
+    a single `kind='memory'` row can answer "when did this reviewer last
+    run" without inspecting tags.
+
+    On success the new digest ``supersedes`` — and retires — every prior
+    live digest of this reviewer: the surface is latest-wins (dedup and
+    ``_recent_review_summary`` only ever read the newest), so older live
+    digests were recall noise (~500 live before this rule).
     """
     from precis.dispatch import Hub
 
+    refusal = _digest_refusal_reason(body)
+    if refusal is not None:
+        raise BadInput(f"{reviewer.name} digest refused: {refusal}")
     today = datetime.now(UTC).date().isoformat()
     meta: dict[str, Any] = {
         f"{reviewer.meta_prefix}date": today,
         f"{reviewer.meta_prefix}cost_usd": cost_usd,
     }
-    text = body.strip() or f"{reviewer.name.replace('_', ' ').title()} {today}: (empty)"
     # Same create path as an agent ``put`` (short derived title, body in the
     # ``memory_body`` chunk) so mention autolink and the attribution audit
     # run on digests too; ``write_system`` tags ``set_by='system'``.
     handler = Hub(store=store).sibling("memory")
     written: int = handler.write_system(
-        text=text,
+        text=body.strip(),
         tags=[
             f"tree-review:{today}",
             reviewer.digest_tag,
-            "user:asa",
-            "internal-thought",
         ],
         meta=meta,
     )
+    with store.pool.connection() as conn:
+        prior = [
+            int(r[0])
+            for r in conn.execute(
+                """
+                SELECT r.ref_id FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'memory'
+                   AND r.retired_at IS NULL
+                   AND t.namespace = 'OPEN'
+                   AND t.value = %s
+                   AND r.ref_id <> %s
+                """,
+                (reviewer.digest_tag, written),
+            ).fetchall()
+        ]
+    for old_id in prior:
+        try:
+            with store.tx() as conn:
+                store.migrate_links(old_id, written, conn=conn)
+                store.add_link(
+                    src_ref_id=written,
+                    dst_ref_id=old_id,
+                    relation="supersedes",
+                    set_by="system",
+                    conn=conn,
+                )
+                store.stamp_ref_meta(old_id, {"superseded_by": written}, conn=conn)
+                store.retire_ref(old_id, conn=conn)
+        except Exception:
+            log.warning(
+                "review[%s]: failed to supersede prior digest me%d",
+                reviewer.name,
+                old_id,
+                exc_info=True,
+            )
+    # A landed digest ends the cooldown its failure markers backed off:
+    # retire them so at most the newest marker could ever be live.
+    _retire_prior_markers(store, _failure_tag(reviewer))
     return written
 
 

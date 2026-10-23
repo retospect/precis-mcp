@@ -633,16 +633,76 @@ def _string_leaves(label: str, value: Any, out: list[tuple[str, str]]) -> None:
 #: this cannot be erased by a tool-name mismatch.
 _DENY_VERBS_ENV = "PRECIS_MCP_DENY_VERBS"
 
+#: Scoped carve-out for the flat verb deny, written alongside it by the
+#: dream pass (``workers/dream_agent._DREAM_EXEMPT_ENV``): ``<kind>:<ns>``
+#: means a denied verb is still allowed when every ref the call *mutates*
+#: is that kind carrying a tag in that namespace. ``link`` mutates only its
+#: source — the dream may hang a ``contradicts``/``related-to`` edge off
+#: its own dream memory to any target, but cannot rewrite the target.
+_DENY_EXEMPT_ENV = "PRECIS_MCP_DENY_EXEMPT"
 
-def _refuse_envelope_denied_verb(verb: str) -> None:
-    """Raise :class:`Denied` when the run's envelope forbids ``verb``."""
+
+def _exempt_ref_ids(verb: str, args: dict[str, Any]) -> list[tuple[str, Any]]:
+    """The ``(kind, id)`` refs a denied verb would *mutate*.
+
+    ``edit``/``delete``/``tag`` mutate their (kind, id) target; ``link``
+    mutates only the source ref (the target gains an inbound edge, never
+    a changed body/tag/meta). ``put``/``supersede`` create, so they have
+    no mutated-ref check here (put is never in the dream's deny list).
+    """
+    kind = args.get("kind")
+    ref_id = args.get("id")
+    if verb in ("edit", "delete", "tag", "link"):
+        return [(kind, ref_id)] if kind is not None and ref_id is not None else []
+    return []
+
+
+def _ref_carries_ns(hub: Any, kind: str, ref_id: Any, ns: str) -> bool:
+    """True when ``kind:ref_id`` is a live ref of ``kind`` tagged ``ns:*``."""
+    try:
+        ref = hub.store.get_ref(kind=kind, id=ref_id)
+    except Exception:
+        return False
+    if ref is None:
+        return False
+    for tag in hub.store.tags_for(int(ref.id)):
+        if str(tag).startswith(f"{ns}:"):
+            return True
+    return False
+
+
+def _refuse_envelope_denied_verb(verb: str, args: dict[str, Any], hub: Any) -> None:
+    """Raise :class:`Denied` when the run's envelope forbids ``verb``.
+
+    The flat env deny holds unless the scoped exemption
+    (:data:`_DENY_EXEMPT_ENV`, ``<kind>:<ns>``) names this call: every ref
+    the verb mutates must be that kind tagged ``ns:*``. The dream runs
+    with ``memory:DREAM`` — it may edit/retire/link its own DREAM-tagged
+    memories (the Step-7 correction flow) while every other ref stays
+    read-only (gr179501's crafted-summary box, kept).
+    """
     raw = os.environ.get(_DENY_VERBS_ENV)
-    if raw and verb in {v.strip() for v in raw.split(",")}:
-        raise Denied(
-            f"{verb} is denied by this run's permission envelope",
-            next="this run is read-only or scoped; report the change you "
-            "would make instead of making it",
-        )
+    if not raw or verb not in {v.strip() for v in raw.split(",")}:
+        return
+    exempt = os.environ.get(_DENY_EXEMPT_ENV)
+    if exempt:
+        e_kind, _, e_ns = exempt.partition(":")
+        targets = _exempt_ref_ids(verb, args)
+        if (
+            e_kind
+            and e_ns
+            and targets
+            and all(
+                k == e_kind and _ref_carries_ns(hub, e_kind, rid, e_ns)
+                for k, rid in targets
+            )
+        ):
+            return
+    raise Denied(
+        f"{verb} is denied by this run's permission envelope",
+        next="this run is read-only or scoped; report the change you "
+        "would make instead of making it",
+    )
 
 
 def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> None:
@@ -979,7 +1039,7 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
-                _refuse_envelope_denied_verb(verb)
+                _refuse_envelope_denied_verb(verb, args, self.hub)
                 _refuse_agent_secrets(verb, args, self.hub)
                 response = self._dispatch_with_retry(verb, args)
                 # Chunk over-large bodies so they don't blow the

@@ -540,6 +540,24 @@ def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_dream_consolidate(store: Store, batch_size: int) -> None:
+    """One dream-consolidation sweep (2026-10 dream hygiene): retire
+    dreams unrecalled+untouched ≥60d (``thread:`` dreams ≥90d), writing
+    one supersedes summary per interest cluster. Host-agnostic, daily.
+    ``batch_size`` is unused — the pass caps itself via
+    ``MAX_CANDIDATES_PER_FIRE``. spends=False: SQL + stored embeddings,
+    no LLM."""
+    from precis.workers.dream_consolidate import run_dream_consolidate_pass
+
+    result = run_dream_consolidate_pass(store)
+    log.info(
+        "scheduler: dream_consolidate inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_unrecorded_revisions(store: Store, batch_size: int) -> None:
     """One ``(unrecorded)``-revisions count (local-mesh-upkeep §2's
     "nightly count names the write paths to fix"), fired from the daily
@@ -924,6 +942,16 @@ CADENCES: tuple[Cadence, ...] = (
         name="memory_thread_sweep",
         interval_s=24 * 3600 + 43 * 60,
         run=_run_memory_thread_sweep,
+    ),
+    # 2026-10 dream hygiene: consolidate stale dreams — retire unrecalled+
+    # untouched dreams (60d; 90d for thread: memories) behind one supersedes
+    # summary per interest cluster. Host-agnostic, daily, off the exact day
+    # boundary (+73m) like the other sweeps. No `eligible` check: pure local
+    # SQL + stored embeddings. spends=False: no LLM anywhere.
+    Cadence(
+        name="dream_consolidate",
+        interval_s=24 * 3600 + 73 * 60,
+        run=_run_dream_consolidate,
     ),
     # The P4 scorer (workers/memory_recall.py) made durable: score the P4
     # recall question set weekly, record the k=5 score (native/mirror

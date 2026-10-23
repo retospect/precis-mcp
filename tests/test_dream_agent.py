@@ -339,15 +339,17 @@ def test_happy_path_dispatches_with_files(
     # WebFetch / WebSearch disabled.
     assert "WebFetch" in captured["disallowed"]
     assert "WebSearch" in captured["disallowed"]
-    # gr179501: put-only for the corpus — edit/delete/link of existing
-    # refs are denied, but ``put`` (new memory) AND ``tag`` (promoting its
-    # own memory to tier:synthetic-insight, dream-prompt.md Step 7) stay.
-    for denied in (
+    # The mcp__precis__ mutate verbs are NOT tool-name denied anymore:
+    # Step 7's correction flow edits/retires/contradicts-links the dream's
+    # OWN DREAM-tagged memories. The box moved server-side — the verbs are
+    # denied in the spawned serve except under the memory:DREAM exemption
+    # (env_overlay test below).
+    for verb in (
         "mcp__precis__edit",
         "mcp__precis__delete",
         "mcp__precis__link",
     ):
-        assert denied in captured["disallowed"]
+        assert verb not in captured["disallowed"]
     assert "mcp__precis__put" not in captured["disallowed"]
     assert "mcp__precis__tag" not in captured["disallowed"]
 
@@ -444,6 +446,7 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
     assert captured["env_overlay"] == {
         agentlog.ENV_VAR: str(log_id),
         DENY_VERBS_ENV: "edit,delete,link",
+        da._DREAM_EXEMPT_ENV: "memory:DREAM",
     }
 
     # The provenance-handle footer is injected into the dispatched prompt so
@@ -535,13 +538,7 @@ def test_dream_env_overlay_carries_verb_deny(
     overlay = captured["env_overlay"]
     assert overlay is not None
     assert overlay[DENY_VERBS_ENV] == "edit,delete,link"
-    # Derived, not hand-copied: the overlay verbs are exactly the
-    # mcp__precis__* entries of the tool deny list.
-    assert set(overlay[DENY_VERBS_ENV].split(",")) == {
-        t.removeprefix("mcp__precis__")
-        for t in da._DREAM_DISALLOWED_TOOLS
-        if t.startswith("mcp__precis__")
-    }
+    assert overlay[da._DREAM_EXEMPT_ENV] == "memory:DREAM"
 
 
 def test_dream_deny_env_refuses_edit_in_dispatch(

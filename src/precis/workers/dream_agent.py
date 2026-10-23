@@ -127,40 +127,37 @@ _DEFAULT_TIMEOUT_S = 600
 # memories (``mcp__precis__put`` stays) and promotes its own verified
 # memory to ``tier:synthetic-insight`` (dream-prompt.md Step 7 —
 # ``mcp__precis__tag`` stays, a needed cooperative-tier residual the
-# tool-level deny can't scope by kind). It never edits/deletes/links refs,
-# so those are denied: its fisheye draws recent paper/patent summaries into
-# the prompt unvetted, and a crafted summary must not be able to steer it
-# into ``delete``/``edit``/``link`` of arbitrary refs. Web stays off too
+# tool-level deny can't scope by kind). Web stays off too
 # (dreams run on corpus state; the precis ``web``/``websearch`` kinds go via
 # ``get``/``search``, not the built-in WebFetch/WebSearch). Explicit here
 # rather than via the opt-in envelope these standing passes never set.
 #
-# Two legs (gr503441): ``disallowed_tools`` lands only in ``claude -p``'s
-# tool-NAME deny list, which resolves under the ``typed`` MCP profile
-# alone; the profile-independent leg is the verb-level deny the spawned
-# ``precis serve`` reads from ``PRECIS_MCP_DENY_VERBS``
-# (``runtime/dispatch._refuse_envelope_denied_verb``). An ``Envelope``
-# can't express "put but not edit/delete/link" without a vocabulary
-# change, so the dream carries its verb deny itself via ``env_overlay``
-# (``claude_agent._prepare_agent_env`` only pops the var when an envelope
-# is active; the dream sets none). ``_DREAM_DENIED_VERBS`` derives from
-# the tool names so the two lists can't drift.
+# edit/delete/link are NOT in the tool-name deny: Step 7's correction flow
+# (2026-10 dream hygiene) edits a wrong dream or retires it + links a
+# ``contradicts`` edge, which needs those tools callable. The mutation box
+# is enforced server-side instead — the verbs stay denied in the spawned
+# ``precis serve`` except on refs the scoped exemption
+# (``PRECIS_MCP_DENY_EXEMPT=memory:DREAM``) names, so a crafted paper
+# summary still cannot steer the dream into mutating arbitrary refs.
 _DREAM_DISALLOWED_TOOLS: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
-    "mcp__precis__edit",
-    "mcp__precis__delete",
-    "mcp__precis__link",
 )
 
-#: The precis verbs behind the ``mcp__precis__*`` tool denies above,
-#: exported to the spawned ``precis serve`` as ``PRECIS_MCP_DENY_VERBS``
-#: via ``env_overlay`` — the profile-independent leg of the same box.
-_DREAM_DENIED_VERBS: str = ",".join(
-    t.removeprefix("mcp__precis__")
-    for t in _DREAM_DISALLOWED_TOOLS
-    if t.startswith("mcp__precis__")
-)
+#: The precis verbs denied at the server layer, exported to the spawned
+#: ``precis serve`` as ``PRECIS_MCP_DENY_VERBS`` via ``env_overlay`` — the
+#: profile-independent leg of the mutation box (gr503441). Scoped by
+#: :data:`_DREAM_EXEMPT_ENV`: inside the dream's serve those verbs are
+#: allowed only on ``memory`` refs carrying a ``DREAM:*`` tag
+#: (``runtime/dispatch._refuse_envelope_denied_verb``).
+_DREAM_DENIED_VERBS: str = "edit,delete,link"
+
+#: The scoped carve-out paired with ``_DREAM_DENIED_VERBS``: a denied verb
+#: is permitted when every ref it mutates is a ``memory`` tagged ``DREAM:*``
+#: — the dream may correct/retire/contradicts-link its own dreams only.
+#: Env var name is pinned by ``runtime/dispatch._DENY_EXEMPT_ENV``.
+_DREAM_EXEMPT_ENV = "PRECIS_MCP_DENY_EXEMPT"
+_DREAM_EXEMPT_VALUE = "memory:DREAM"
 
 
 def run_dream_pass(store: Store) -> BatchResult:
@@ -212,7 +209,10 @@ def run_dream_pass(store: Store) -> BatchResult:
         )
     except Exception:
         log.warning("dream_agent: failed to open agentlog", exc_info=True)
-    env_overlay = {DENY_VERBS_ENV: _DREAM_DENIED_VERBS}
+    env_overlay = {
+        DENY_VERBS_ENV: _DREAM_DENIED_VERBS,
+        _DREAM_EXEMPT_ENV: _DREAM_EXEMPT_VALUE,
+    }
     if log_id is not None:
         env_overlay[agentlog.ENV_VAR] = str(log_id)
 

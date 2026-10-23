@@ -2347,6 +2347,19 @@ def test_agent_cannot_write_system_dream_values(handler: MemoryHandler) -> None:
         )
 
 
+def test_dream_thread_daily_cap_counts_both_tag_spellings(
+    handler: MemoryHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write-boundary thread cap counts ``dream-thread`` (current) and
+    the legacy bare ``thread:`` together — renaming the tag doesn't buy a
+    fresh allowance (2026-10 dream hygiene)."""
+    monkeypatch.setenv("PRECIS_THREAD_DAILY_CAP", "2")
+    handler.put(text="thread one", tags=["dream-thread", "DREAM:speculative"])
+    handler.put(text="thread two", tags=["thread:", "DREAM:speculative"])
+    with pytest.raises(BadInput, match="capped at 2"):
+        handler.put(text="thread three", tags=["dream-thread", "DREAM:speculative"])
+
+
 def test_search_scope_title_vs_body(handler: MemoryHandler, store: Store) -> None:
     ref_id = _put_repo_dev(
         handler,

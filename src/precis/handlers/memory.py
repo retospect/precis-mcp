@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
 import re
 from collections.abc import Callable
 from dataclasses import replace
@@ -189,6 +190,59 @@ _VIEW_ALIASES: dict[str, str | None] = {
     "body": None,
     "index": "links",
 }
+
+# ── dream-write guards (2026-10 dream hygiene) ──────────────────
+#
+# The dream's Step-6c threads flooded recall (11k dreams, ~3% recalled in
+# 30d), so the writer's discipline lives at the write boundary, not in the
+# prompt: a dream-thread create is capped per day and refused when an
+# embedding-nearest live thread memory already covers it.
+
+#: Open-tag literals marking a dream thread memory: ``dream-thread``
+#: (current — gr504795 moved it off the bare ``thread:``, an empty-valued
+#: collision with the gripe ``thread:<slug>`` axis) plus the legacy
+#: ``thread:`` pre-rename memories still carry. A ``thread:<slug>``
+#: (non-empty value) is a gripe axis tag, never a dream thread.
+_THREAD_TAGS = ("dream-thread", "thread:")
+
+
+#: Max thread-tagged memories any agent may create per rolling 24h —
+#: env ``PRECIS_THREAD_DAILY_CAP``, default 6 (twice the prompt's
+#: per-cycle cap of three).
+def _thread_daily_cap() -> int:
+    try:
+        return max(0, int(os.environ.get("PRECIS_THREAD_DAILY_CAP", "6")))
+    except ValueError:
+        return 6
+
+
+#: Cosine distance at which a new thread body is a near-duplicate of
+#: the closest live thread memory's body embedding — tighter than the
+#: corpus relevance floor (these are supposed to be *distinct* threads).
+_THREAD_DUP_MAX_DISTANCE = 0.15
+
+#: Default ``auto_refresh_days`` stamped on a DREAM-tagged memory when the
+#: writer didn't set one — thread dreams decay slower (the
+#: consolidation sweep gives them a 90-day horizon) than plain dreams (60d).
+_DREAM_REFRESH_DAYS = 60
+_DREAM_THREAD_REFRESH_DAYS = 90
+
+
+def _dream_stamp_defaults(tags: list[str] | None) -> tuple[int | None, bool]:
+    """``(auto_refresh_days, add_space_research)`` a DREAM-tagged create
+    should default to. ``add_space_research`` is True when the tag list
+    carries a ``DREAM:*`` but no ``SPACE:*`` — system writers pass
+    ``default_tags=False`` and would otherwise land a dream unspaced."""
+    if not tags or not any(t.startswith("DREAM:") for t in tags):
+        return None, False
+    days = (
+        _DREAM_THREAD_REFRESH_DAYS
+        if any(t in tags for t in _THREAD_TAGS)
+        else _DREAM_REFRESH_DAYS
+    )
+    has_space = any(t.startswith("SPACE:") for t in tags)
+    return days, not has_space
+
 
 #: Longest auto-derived title (first line, capped) when a writer doesn't
 #: pass an explicit ``title=``. Matches the migration-0050 backfill rule.
@@ -514,6 +568,8 @@ class MemoryHandler(NumericRefHandler):
         # Automated writers cannot rephrase: mask here. Agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py) first.
         _refuse_system_dream(tags, verb="put")
+        if tags and any(t in tags for t in _THREAD_TAGS):
+            self._guard_thread_create(text or "")
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
         create_meta = _validate_meta(meta) if meta is not None else {}
@@ -534,6 +590,72 @@ class MemoryHandler(NumericRefHandler):
             auto_refresh_days=auto_refresh_days,
             meta=create_meta,
         )
+
+    def _guard_thread_create(self, body: str) -> None:
+        """Refuse a dream-thread create that busts the daily cap or
+        duplicates a live thread memory by embedding (the write-boundary
+        half of the dream's thread discipline — the prompt can only ask
+        nicely). The thread set is ``dream-thread`` plus legacy ``thread:``."""
+        with self.store.pool.connection() as conn:
+            n_row = conn.execute(
+                "SELECT count(*) FROM refs r "
+                "WHERE r.kind = 'memory' AND r.retired_at IS NULL "
+                "AND r.created_at > now() - interval '24 hours' "
+                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "  ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id "
+                "  AND t.namespace = 'OPEN' AND t.value = ANY(%s))",
+                (list(_THREAD_TAGS),),
+            ).fetchone()
+        n_today = int(n_row[0]) if n_row else 0
+        cap = _thread_daily_cap()
+        if n_today >= cap:
+            raise BadInput(
+                f"dream-thread memories are capped at {cap} per day "
+                f"({n_today} already live today)",
+                next="skip this thread, or fold it into an existing "
+                "thread memory via edit(mode='append')",
+            )
+        embedder = getattr(self.hub, "embedder", None)
+        if embedder is None or not body.strip():
+            return
+        try:
+            vec = embedder.embed_one(body)
+        except Exception:
+            log.warning("memory: thread-dedup embed failed; skipping", exc_info=True)
+            return
+        with self.store.pool.connection() as conn:
+            emb = conn.execute(
+                "SELECT name FROM embedders WHERE is_default = TRUE LIMIT 1"
+            ).fetchone()
+            embedder_name = str(emb[0]) if emb else None
+            if embedder_name is None:
+                return
+            row = conn.execute(
+                "SELECT c.ref_id, ce.vector <=> %s::vector AS dist "
+                "FROM chunks c "
+                "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+                " AND ce.embedder = %s AND ce.status = 'ok' "
+                "JOIN refs r ON r.ref_id = c.ref_id AND r.retired_at IS NULL "
+                "WHERE c.chunk_kind = 'memory_body' AND c.retired_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "  ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id "
+                "  AND t.namespace = 'OPEN' AND t.value = ANY(%s)) "
+                "ORDER BY ce.vector <=> %s::vector LIMIT 1",
+                (
+                    str(list(vec)),
+                    embedder_name,
+                    list(_THREAD_TAGS),
+                    str(list(vec)),
+                ),
+            ).fetchone()
+        if row is not None and float(row[1]) <= _THREAD_DUP_MAX_DISTANCE:
+            raise BadInput(
+                f"thread memory me{int(row[0])} already covers this "
+                f"(embedding distance {float(row[1]):.3f} "
+                f"<= {_THREAD_DUP_MAX_DISTANCE})",
+                next=f"edit(kind='memory', id={int(row[0])}, mode='append', "
+                "text='…') to add a follow-up, or skip the thread",
+            )
 
     def _put_on_existing(
         self,
@@ -657,6 +779,18 @@ class MemoryHandler(NumericRefHandler):
         )
         if tags:
             all_tag_strs.extend(tags)
+        # Dream stamping (2026-10 hygiene): every agent-written
+        # DREAM-tagged memory carries SPACE:research and an
+        # auto_refresh_days floor unless the writer set one — decay is
+        # what keeps the dream corpus self-limiting between consolidation
+        # sweeps. ``default_tags=False`` writers (``write_system``) stamp
+        # their own tags and keep their no-default-SPACE contract.
+        if default_tags:
+            dream_days, add_space = _dream_stamp_defaults(all_tag_strs)
+            if add_space:
+                all_tag_strs.append("SPACE:research")
+            if auto_refresh_days is None:
+                auto_refresh_days = dream_days
 
         # Attribution gate: before any write, so ``reject`` mode leaves nothing.
         misses = self._attribution_misses(body, reject=set_by == "agent")

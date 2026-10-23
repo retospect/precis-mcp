@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scripts/dream-cleanup — scripted prod hygiene for the 2026-10
+# dream/digest pass: retire review-fail:* markers, untag digests,
+# trim transcript-tail bodies, tag me9209/me23441 kind:draft, add
+# contradicts edges on correction dreams. Dry-run by default.
+#
+# Usage:
+#   scripts/dream-cleanup            # dry run: selection counts only
+#   scripts/dream-cleanup --apply    # write the changes
+#
+# Database: PRECIS_DATABASE_URL (dev DB by default). For prod:
+#   scripts/_prod-run scripts/dream-cleanup --apply
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_dream_cleanup.py "$@"

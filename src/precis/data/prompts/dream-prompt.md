@@ -76,11 +76,12 @@ Step 6c — pursue threads worth returning to (speculative, capped). Beyond the 
 Constraints — these are load-bearing (the dream pass has a spin-loop history):
 
   * SPECULATIVE, not actionable work. A thread is a note-to-future-self, NOT a todo. Never mint a ``kind='todo'`` here — threads live only as ``kind='memory'`` and are surfaced by search when relevant, so they never enter the doable rotation.
-  * CAP: at most THREE thread memories per dream cycle. If more than three threads occur to you, keep only the most promising three.
-  * DEDUP first. Before writing a thread, check whether you (or a prior cycle) already captured it:
+  * CAP: at most THREE thread memories per dream cycle, and threads are rate-limited per day at the write boundary — a ``put`` past the day's cap is REFUSED. If more than three threads occur to you, keep only the most promising three.
+  * DEDUP first — by meaning, not by recency. Check whether you (or a prior cycle) already captured the idea, scanning the whole live thread set (the new tag and the legacy one it replaced):
       precis search(kind="memory", tags=["dream-thread"], page_size=8)
       precis search(kind="memory", tags=["thread:"], page_size=8)   # legacy threads, written before dream-thread existed
-    If an open thread already covers the idea, do NOT write a near-duplicate — skip it (or add one brief follow-up line to the existing one only if you genuinely advanced it).
+      precis search(kind="memory", q="<the thread idea you are about to write>", tags=["dream-thread"], page_size=8)   # semantic pass — wording may differ
+    If an open thread already covers the idea, do NOT write a near-duplicate — skip it, or fold a genuinely-new follow-up into the existing one with edit(kind="memory", id=<id>, mode="append", text="…"). A ``put`` whose body lands inside the embedding near-duplicate band of a live thread memory is REFUSED at the write boundary with the duplicate's id.
   * Both tags are required: ``dream-thread`` (so it lands in the thread set and is dedup-scoped — do NOT write a bare ``thread:``, it collides with the gripe ``thread:<slug>`` axis) AND ``DREAM:speculative`` (so it reads as a hunch, not a finding).
 
 Threads are optional — a cycle with no thread worth capturing writes none. This step never blocks Step 7.
@@ -136,7 +137,7 @@ For a memory to count as a *synthetic insight* (not just a vague speculative jot
   * at least one cited ref is a fact-bearing kind (paper / patent / oracle / perplexity-research / web),
   * the connection text names a SPECIFIC mechanism, not "X and Y are both about Z" abstractions.
 
-You may *also* run web/patent/perplexity searches during Step 7 to verify a cited claim — the same fan-out from Step 4 is allowed here. A memory that was a hunch and turned out to be wrong is still useful as a hunch — leave it tagged ``tier:dream`` (no promotion) and add a brief follow-up memory explaining what didn't check out.
+You may *also* run web/patent/perplexity searches during Step 7 to verify a cited claim — the same fan-out from Step 4 is allowed here. A memory that was a hunch and turned out to be wrong must NOT be left standing next to a separate "correction" memory — correct it in place instead: edit the memory itself (edit(kind="memory", id=<id>, mode="append", text="Checked: <what didn't hold>" or mode="replace" for a rewrite), and when a specific ref is what proved it wrong, link the edge (link(kind="memory", id=<id>, target="<the ref>", rel="contradicts")). When the hunch is outright wrong and not worth keeping, retire it instead (delete(kind="memory", id=<id>)) — these verbs are allowed on your own DREAM-tagged memories only; anything else is refused. Never write a new "correction" memory.
 
 If all three hold, promote the memory:
   precis tag(kind="memory", id=<id>, add=["tier:synthetic-insight"])

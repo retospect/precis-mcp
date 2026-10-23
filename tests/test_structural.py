@@ -96,7 +96,7 @@ def test_recent_digest_detects_existing_within_window(
 ) -> None:
     # Manually mint a digest:structural digest by going through the
     # writer (uses real handlers + tags).
-    _write_digest(store, "first digest", cost_usd=0.5)
+    _write_digest(store, ("first digest" + ". " + "x " * 140), cost_usd=0.5)
     assert _recent_digest_exists(store, 1) is True
 
 
@@ -194,7 +194,7 @@ def test_pass_skips_when_recent_digest_exists(
 ) -> None:
     """Even with the gate on, a fresh digest blocks a re-run."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
-    _write_digest(store, "fresh", cost_usd=0.1)
+    _write_digest(store, ("fresh" + ". " + "x " * 140), cost_usd=0.1)
     # Mock the LLM so we'd notice if it were called.
     called = {"hit": False}
 
@@ -280,7 +280,7 @@ def test_pass_writes_digest_on_happy_path(
 
     def _ok_call(*a, **kw) -> AgentResult:
         return AgentResult(
-            final_text="No structural issues this pass.",
+            final_text="No structural issues this pass. " + "Tree reads clean. " * 12,
             cost_usd=0.07,
             duration_s=12.0,
             turns_used=3,
@@ -343,10 +343,15 @@ def test_pass_records_failure_on_llm_error(
     assert n is not None and int(n[0]) == 0
 
 
-def test_pass_writes_empty_digest_with_placeholder_title(
+def test_pass_refuses_underlength_or_transcript_digest(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the model returns whitespace, the digest still lands with a placeholder."""
+    """A whitespace / transcript-narration / one-liner stdout is refused, not
+    stored: the pass writes a failure marker and counts failed=1 (2026-10
+    digest hygiene — transcript debris must never land as a digest)."""
+    from precis.workers.review import _recent_failure
+    from precis.workers.structural import STRUCTURAL
+
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
 
     def _blank(*a, **kw) -> AgentResult:
@@ -354,23 +359,65 @@ def test_pass_writes_empty_digest_with_placeholder_title(
 
     monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _blank)
     result = run_structural_pass(store)
-    assert result.ok == 1
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    assert _recent_failure(store, STRUCTURAL) is True
+
+
+def test_digest_drops_inner_life_tags_and_supersedes_prior(store: Store) -> None:
+    """Digests no longer carry ``internal-thought``/``user:asa`` (they leaked
+    into asa's inner-thoughts fetch), and a new digest supersedes + retires
+    the previous one — latest-wins, not an ever-growing live set."""
+    from precis.workers.review import (
+        _failure_tag,
+        _recent_failure,
+        _write_failure_marker,
+    )
+    from precis.workers.structural import STRUCTURAL, _write_digest
+
+    long_body = "Digest headline\n\n" + ("finding detail " * 30)
+    first = _write_digest(store, long_body, cost_usd=0.1)
+    tags = {str(t) for t in store.tags_for(first)}
+    assert "internal-thought" not in tags
+    assert "user:asa" not in tags
+    assert "digest:structural" in tags
+
+    second = _write_digest(store, long_body + " more", cost_usd=0.2)
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
-            SELECT r.title FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.retired_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'digest:structural'
-             ORDER BY r.created_at DESC LIMIT 1
-            """,
+            "SELECT retired_at IS NOT NULL, meta->>'superseded_by' "
+            "FROM refs WHERE ref_id = %s",
+            (first,),
         ).fetchone()
-    assert row is not None
-    # Unified review driver names the empty digest with the reviewer's
-    # display name ("Structural") + the date + an (empty) marker.
-    assert "Structural" in row[0]
-    assert "(empty)" in row[0]
+    assert row is not None and row[0] is True
+    assert int(row[1]) == second
+    assert store.get_ref(kind="memory", id=second) is not None
+    links = store.links_for(second, direction="out", relation="supersedes")
+    assert any(getattr(l, "dst_ref_id", None) == first for l in links)
+
+    # A landed digest also clears the reviewer's live failure markers.
+    _write_failure_marker(store, STRUCTURAL, "boom")
+    assert _recent_failure(store, STRUCTURAL) is True
+    _write_digest(store, long_body + " again", cost_usd=0.3)
+    tag = _failure_tag(STRUCTURAL)
+    live = store.list_refs(kind="memory", tags=[tag], limit=10)
+    assert live == []
+
+
+def test_digest_refusal_reason_cases() -> None:
+    from precis.workers.review import _digest_refusal_reason
+
+    assert _digest_refusal_reason("short") is not None
+    assert _digest_refusal_reason("") is not None
+    assert (
+        _digest_refusal_reason("I'll now review the todo tree. " + "x " * 100)
+        is not None
+    )
+    assert (
+        _digest_refusal_reason("Let me check the nursery alerts first. " + "x " * 100)
+        is not None
+    )
+    assert _digest_refusal_reason("## Digest\n\n" + "findings " * 40) is None
 
 
 # ── empty-result assertion (OPEN-ITEMS §🔇) ──────────────────────
@@ -433,34 +480,59 @@ def test_silent_empty_pass_raises_alert_not_digest(
     "fields",
     [
         # a real tool call → positive evidence it acted
-        dict(final_text="", cost_usd=0.0, duration_s=0.5, turns_used=0, tool_calls=2),
+        dict(
+            final_text="",
+            cost_usd=0.0,
+            duration_s=0.5,
+            turns_used=0,
+            tool_calls=2,
+            # tool evidence, but empty text never lands a digest — the
+            # 2026-10 <200-char floor refuses it (marker, not an alert)
+            expect=(0, 1),
+        ),
         # unknown tool-call count (text/stderr transport) → never a false zero
         dict(
-            final_text="", cost_usd=0.0, duration_s=0.5, turns_used=0, tool_calls=None
+            final_text="",
+            cost_usd=0.0,
+            duration_s=0.5,
+            turns_used=0,
+            tool_calls=None,
+            expect=(0, 1),
         ),
         # any output text → a real (if terse) pass
         dict(
-            final_text="Nothing to flag.",
+            final_text="Nothing to flag. " + "All checks quiet. " * 12,
             cost_usd=0.0,
             duration_s=0.5,
             turns_used=0,
             tool_calls=0,
+            expect=(1, 0),
         ),
         # spent money / took turns → it ran
-        dict(final_text="", cost_usd=0.03, duration_s=0.5, turns_used=2, tool_calls=0),
+        dict(
+            final_text="",
+            cost_usd=0.03,
+            duration_s=0.5,
+            turns_used=2,
+            tool_calls=0,
+            expect=(0, 1),
+        ),
     ],
 )
 def test_non_empty_pass_writes_digest_and_no_alert(
     store: Store, monkeypatch: pytest.MonkeyPatch, fields: dict[str, object]
 ) -> None:
-    """The guard is HARD: a cheap-but-real pass is never flagged. Only the
-    full conjunction (definitive 0 tool calls ∧ no text ∧ $0 ∧ 0/None turns)
-    trips it — each row here breaks exactly one leg."""
+    """The guard is HARD: a cheap-but-real pass is never flagged as
+    empty-pass. Only the full conjunction (definitive 0 tool calls ∧ no
+    text ∧ $0 ∧ 0/None turns) raises the alert — each row here breaks
+    exactly one leg. (An empty body still refuses at the digest floor —
+    a refused write is a cooldown marker, not an empty-pass alert.)"""
+    expect = fields.pop("expect")
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     _stub_agent(monkeypatch, **fields)
     result = run_structural_pass(store)
-    assert (result.ok, result.failed) == (1, 0)
-    assert _structural_digest_count(store) == 1
+    assert (result.ok, result.failed) == expect
+    assert _structural_digest_count(store) == expect[0]
     assert _empty_alerts(store) == []
 
 
@@ -589,7 +661,7 @@ def _stub_agent_sequence(
 
 def _starved_pending_result() -> AgentResult:
     return AgentResult(
-        final_text="No structural issues found this pass.",
+        final_text="No structural issues found this pass. " + "All checks quiet. " * 12,
         cost_usd=0.02,
         duration_s=2.0,
         turns_used=1,
@@ -663,7 +735,7 @@ def test_failed_init_starve_is_not_retried(
     cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     failed = AgentResult(
-        final_text="No structural issues found this pass.",
+        final_text="No structural issues found this pass. " + "All checks quiet. " * 12,
         cost_usd=0.02,
         duration_s=2.0,
         turns_used=1,
@@ -692,7 +764,8 @@ def test_pass_using_precis_tool_writes_digest_no_starvation_alert(
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
-        final_text="Reviewed the tree; no issues.",
+        final_text="Reviewed the tree; no issues this pass. "
+        + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=2,
@@ -716,7 +789,7 @@ def test_connected_precis_with_zero_calls_writes_digest_no_alert(
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
-        final_text="No structural issues found this pass.",
+        final_text="No structural issues found this pass. " + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=1,
@@ -746,7 +819,7 @@ def test_no_init_event_zero_calls_is_still_starved(
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
-        final_text="No structural issues found this pass.",
+        final_text="No structural issues found this pass. " + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=1,
@@ -768,7 +841,7 @@ def test_connected_but_no_precis_tools_registered_is_starved(
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
-        final_text="No structural issues found this pass.",
+        final_text="No structural issues found this pass. " + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=1,
@@ -798,7 +871,8 @@ def test_tool_starved_check_needs_mcp_config_offered(
     monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
     _stub_agent(
         monkeypatch,
-        final_text="Reviewed the tree; no issues.",
+        final_text="Reviewed the tree; no issues this pass. "
+        + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=2,
@@ -823,7 +897,8 @@ def test_tool_starved_check_needs_a_definitive_zero(
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
-        final_text="Reviewed the tree; no issues.",
+        final_text="Reviewed the tree; no issues this pass. "
+        + "All checks quiet. " * 12,
         cost_usd=0.05,
         duration_s=5.0,
         turns_used=2,
