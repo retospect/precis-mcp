@@ -1472,6 +1472,32 @@ class DispatchMixin(RuntimeShape):
             if key in extras:
                 args[key] = extras.pop(key)
 
+    @staticmethod
+    def _hoist_source_facet_args(args: dict[str, Any]) -> None:
+        """``args={'uncited':…,'cited':…,'hubbed':…}`` → top-level.
+
+        The cite facets are dispatcher-consumed search params (resolved
+        into ``exclude_ref_ids``/``include_ref_ids`` by
+        :meth:`_resolve_source_facets`), never a handler's ``args=``
+        keys — nested, they died at the extras whitelist as
+        ``keys ['uncited'] not accepted by paper.search`` (gr508686's
+        7d ledger). Same hoist as ``under=``/``axis=``/``depth=``
+        (:meth:`_resolve_under` pops them out of extras) and the spray
+        knobs (:meth:`_hoist_spray_args`). A key present at both levels
+        is ambiguous — refuse it rather than pick a winner."""
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict):
+            return
+        for key in ("uncited", "cited", "hubbed"):
+            if extras.get(key) is None:
+                continue
+            if args.get(key) is not None:
+                raise BadInput(
+                    f"{key}= was passed twice — top-level and inside args=",
+                    next=f"pass {key}= once, at the top level",
+                )
+            args[key] = extras.pop(key)
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -1495,6 +1521,7 @@ class DispatchMixin(RuntimeShape):
         listing_kinds: tuple[list[str] | None] | None = None
         if verb == "search":
             self._hoist_spray_args(args)
+            self._hoist_source_facet_args(args)
             note, listing_kinds = self._resolve_under(args)
         if verb == "search" and (
             args.get("uncited") is not None

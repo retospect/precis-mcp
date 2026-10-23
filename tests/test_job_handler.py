@@ -774,3 +774,52 @@ def test_transcript_view_compact(jobs: JobHandler) -> None:
     # The verbatim fallback: a non-stream transcript renders as-is.
     ref2 = types.SimpleNamespace(id=2, meta={"transcript": "digest line"})
     assert jobs._render_transcript_view(ref2).body == "digest line"
+
+
+# ── /logs filters as kwargs + duration spellings (gr508686) ──────────
+
+
+def test_logs_filters_as_plain_kwargs(jobs: JobHandler, store: Store) -> None:
+    """args={'handler':…,'level':…} used to die at the extras gate though
+    the view implements them; declared kwargs fold into the /logs query."""
+    _insert_log(
+        store,
+        message="kwarg-filtered row",
+        level="INFO",
+        pass_="dispatch",
+        hours_ago=1,
+    )
+    resp = jobs.get(id="/logs", handler="dispatch", level="INFO")
+    assert "kwarg-filtered row" in resp.body
+
+
+def test_logs_kwargs_on_a_plain_id_refuse(jobs: JobHandler) -> None:
+    """The /logs filter params are refused on any other id shape — no
+    silent drop."""
+    with pytest.raises(BadInput, match="/logs"):
+        jobs.get(id=123, level="INFO")
+
+
+def test_since_accepts_duration_spellings(jobs: JobHandler, store: Store) -> None:
+    _insert_log(store, message="recent row", level="WARNING", hours_ago=2)
+    _insert_log(store, message="stale row", level="ERROR", hours_ago=200)
+    resp = jobs.get(id="/logs?since=6h")
+    assert "recent row" in resp.body
+    assert "stale row" not in resp.body
+    resp = jobs.get(id="/logs", since="1d")
+    assert "recent row" in resp.body
+
+
+def test_job_view_aliases_announce_the_reading(jobs: JobHandler, store: Store) -> None:
+    """view='meta'/'status' have one reading each on a job — run the
+    canonical view, name the reading (gr508686's ledger family)."""
+    ref = store.insert_ref(kind="job", slug=None, title="t", meta={"job_type": "x"})
+    resp = jobs.get(id=ref.id, view="meta")
+    assert resp.body.startswith("interpreted: view='meta' read as view='raw'")
+    assert "meta:" in resp.body
+    resp = jobs.get(id=ref.id, view="status")
+    assert resp.body.startswith(
+        "interpreted: view='status' read as the default status card"
+    )
+    with pytest.raises(Unsupported, match="unknown view 'attention'"):
+        jobs.get(id=ref.id, view="attention")

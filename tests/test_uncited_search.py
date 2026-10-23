@@ -536,3 +536,42 @@ def test_uncited_note_visible_on_first_page_when_result_paginates(
     note_idx = body.index("_(uncited=")
     assert note_idx < more_idx
     assert body.startswith("_(uncited=")
+
+
+# ── args= extras placement (gr508686) ────────────────────────────────
+
+
+def test_uncited_inside_args_extras_is_hoisted(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``args={'uncited': …}`` used to die at the extras whitelist
+    (``keys ['uncited'] not accepted by paper.search``) though the facet
+    is dispatcher-level — it hoists like ``under=``/the spray knobs and
+    reaches the draft resolver."""
+    rt = runtime_with_store
+    body, is_error = rt.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": _Q,
+            "page_size": 5,
+            "__extras__": {"uncited": "no-such-draft"},
+        },
+    )
+    assert is_error
+    assert "not accepted" not in body
+    assert "no-such-draft" in body  # reached the draft resolver, not the gate
+
+
+def test_uncited_at_both_levels_refuses(runtime_with_store: PrecisRuntime) -> None:
+    rt = runtime_with_store
+    body, is_error = rt.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": _Q,
+            "uncited": "dr1",
+            "__extras__": {"uncited": "dr2"},
+        },
+    )
+    assert is_error and "twice" in body

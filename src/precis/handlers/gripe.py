@@ -64,6 +64,7 @@ from precis.handlers._prio_tag import (
     validate_prio,
 )
 from precis.handlers._request_state import RequestState
+from precis.handlers._status_tag import alias_status_tags
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
@@ -288,8 +289,14 @@ class GripeHandler(NumericRefHandler):
         # refused at the dispatch boundary (runtime/dispatch.py)
         text = mask_secrets(text)
         # Near-miss PRIO spellings (PRIO:medium) are read as canonical and
-        # named on the reply's first line (gr494831 step 2).
+        # named on the reply's first line (gr494831 step 2); same for
+        # near-miss STATUS values ('STATUS:closed' → 'STATUS:done',
+        # gr508686). Runs here so create and comment paths share it —
+        # the comment path's tag leg re-aliases harmlessly on the
+        # already-canonical list.
         tags, readings = alias_prio_tags(tags)
+        tags, status_readings = alias_status_tags(tags, kind=self.kind)
+        readings += status_readings
         # id-presence is what actually dispatches create-vs-comment; an
         # explicit mode= is accepted only as a redundant-but-unambiguous
         # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)
@@ -439,6 +446,12 @@ class GripeHandler(NumericRefHandler):
     ) -> Response:
         # Near-miss PRIO spellings are read as canonical, named in the reply.
         add, readings = alias_prio_tags(add)
+        # Same for near-miss STATUS values — 'STATUS:closed'/'resolved'
+        # read as 'STATUS:done' (gr508686's top caller-error family), so
+        # the refusal that still fires is the real protocol one (the
+        # ``resolved:``-comment guard).
+        add, status_readings = alias_status_tags(add, kind=self.kind)
+        readings += status_readings
         readings = [*readings, *self._check_thread_tags(add, id=id)]
         if isinstance(id, list):
             return interpreted(

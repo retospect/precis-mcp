@@ -164,3 +164,41 @@ def test_search_view_index_is_the_plain_listing(hub: Hub) -> None:
     h, _a, _b = _two(hub)
     plain = h.search(status="open")
     assert h.search(status="open", view="index").body == plain.body
+
+
+# ── STATUS near-miss values (gr508686) ────────────────────────────────
+
+
+def test_status_closed_reads_as_done_on_tag(hub: Hub) -> None:
+    """'STATUS:closed' is 'STATUS:done' spelled wrong — one reading, so it
+    runs and the reply names the reading."""
+    h, a, _ = _two(hub)
+    h.put(id=a, text="resolved: abc123 (r1) — verified")
+    resp = h.tag(id=a, add=["STATUS:closed"])
+    assert _first(resp) == "interpreted: 'STATUS:closed' read as 'STATUS:done'"
+    assert "STATUS:done" in {str(t) for t in h.store.tags_for(a)}
+
+
+def test_status_alias_still_hits_the_resolved_guard(hub: Hub) -> None:
+    """The alias fixes the spelling only — the close protocol (a newest
+    comment starting 'resolved:') still guards the write."""
+    h, a, _ = _two(hub)
+    with pytest.raises(BadInput, match="resolved:"):
+        h.tag(id=a, add=["STATUS:closed"])
+    assert "STATUS:done" not in {str(t) for t in h.store.tags_for(a)}
+
+
+def test_status_alias_on_one_call_close(hub: Hub) -> None:
+    """put(id=N, text='resolved: …', tags=['STATUS:resolved']) closes in
+    one call — the tag leg sees the canonical value."""
+    h, a, _ = _two(hub)
+    resp = h.put(id=a, text="resolved: abc123 — verified", tags=["STATUS:resolved"])
+    assert "'STATUS:resolved' read as 'STATUS:done'" in resp.body
+    assert "STATUS:done" in {str(t) for t in h.store.tags_for(a)}
+
+
+def test_status_guess_with_no_reading_still_refuses(hub: Hub) -> None:
+    h, a, _ = _two(hub)
+    with pytest.raises(BadInput, match="invalid STATUS value") as exc:
+        h.tag(id=a, add=["STATUS:zombified"])
+    assert "done" in (exc.value.options or [])

@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
 from precis.errors import BadInput, NotFound
+from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import NumericRefHandler, _parse_window_bound
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -308,6 +309,19 @@ _JOB_PARENT_KINDS_WITH_COORDINATOR: frozenset[str] = JOB_PARENT_KINDS | frozense
 
 _LOGS_ARG_KEYS = ("handler", "host", "process", "level", "since", "limit", "job")
 
+#: ``get`` view spellings with one reading on a single job (gr508686's
+#: 7d prod ledger: view='meta'/'full'/'tail'/'events'/'status' refusals
+#: while the obvious read existed). ``None`` maps to the default status
+#: card, which already carries status + summary + event chunks.
+_JOB_VIEW_ALIASES: dict[str, str | None] = {
+    "meta": "raw",
+    "params": "raw",
+    "full": "raw",
+    "tail": "transcript",
+    "events": "log",
+    "status": None,
+}
+
 
 def _is_logs_path(id: str) -> bool:
     path = id.lstrip("/")
@@ -484,13 +498,37 @@ class JobHandler(NumericRefHandler):
         view: str | None = None,
         q: str | None = None,
         sha: str | None = None,
+        # ``/logs`` filters declared as real params so the args= extras
+        # gate passes them through — nested (``args={'handler': …}``) they
+        # used to die as "keys not accepted" though the view implements
+        # them (gr508686). Any set on a non-``/logs`` id is refused below.
+        handler: str | None = None,
+        host: str | None = None,
+        process: str | None = None,
+        level: str | None = None,
+        since: str | int | None = None,
+        limit: str | int | None = None,
+        job: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         # ``/logs`` takes its filters from the id's query string; a
         # top-level ``q=`` (and plain ``handler=``/``host=``/... args)
         # fold into it, the id's own value winning (gr500645).
+        logs_args = {
+            k: v
+            for k, v in (
+                ("handler", handler),
+                ("host", host),
+                ("process", process),
+                ("level", level),
+                ("since", since),
+                ("limit", limit),
+                ("job", job),
+            )
+            if v is not None
+        }
         if isinstance(id, str) and _is_logs_path(id):
-            extra = {k: str(_kw[k]) for k in _LOGS_ARG_KEYS if _kw.get(k) is not None}
+            extra = {k: str(v) for k, v in logs_args.items()}
             if q is not None:
                 extra["q"] = str(q)
             if extra:
@@ -498,12 +536,30 @@ class JobHandler(NumericRefHandler):
                 merged = {**extra, **dict(parse_qsl(qs, keep_blank_values=True))}
                 id = f"{path}?{urlencode(merged)}"
             q = None
-            _kw = {k: v for k, v in _kw.items() if k not in _LOGS_ARG_KEYS}
+        elif logs_args:
+            raise BadInput(
+                f"{sorted(logs_args)} only apply to get(kind='job', "
+                "id='/logs[?<filters>]') — the worker_logs read",
+                next="get(kind='job', id='/logs?handler=<name>&level=INFO&since=24')",
+            )
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        readings: list[str] = []
+        single = (
+            id is not None
+            and not isinstance(id, list)
+            and not (isinstance(id, str) and id.startswith("/"))
+        )
+        if view in _JOB_VIEW_ALIASES and single and q is None:
+            canon = _JOB_VIEW_ALIASES[view]
+            shown = (
+                f"view={canon!r}" if canon is not None else "the default status card"
+            )
+            readings.append(f"view={view!r} read as {shown}")
+            view = canon
         if view == "transcript":
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return self._render_transcript_view(ref)
+            return interpreted(self._render_transcript_view(ref), readings)
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
@@ -516,8 +572,10 @@ class JobHandler(NumericRefHandler):
                     next="get(kind='job', id='/builds', args={'sha': '<commit>'})",
                 )
             _, _, query_string = path.partition("?")
-            return self._render_builds_view(query_string, sha=sha)
-        return super().get(id=id, view=view, q=q, **_kw)
+            return interpreted(
+                self._render_builds_view(query_string, sha=sha), readings
+            )
+        return interpreted(super().get(id=id, view=view, q=q, **_kw), readings)
 
     def _list_view(self, view: str) -> Response | None:
         # '/logs' and '/logs?handler=...&since=...' both route here —
@@ -654,6 +712,7 @@ class JobHandler(NumericRefHandler):
             default=_BUILDS_DEFAULT_SINCE_HOURS,
             field="since",
             example="since=24 (default) — hours to look back, max 168",
+            units=True,
         )
         if since_hours <= 0:
             raise BadInput(
@@ -787,6 +846,7 @@ class JobHandler(NumericRefHandler):
             default=_BUILDS_DEFAULT_SINCE_HOURS,
             field="since",
             example="since=24 (default) — hours to look back, max 168",
+            units=True,
         )
         if since_hours <= 0:
             raise BadInput(
@@ -935,6 +995,7 @@ class JobHandler(NumericRefHandler):
             default=_LOGS_DEFAULT_SINCE_HOURS,
             field="since",
             example="since=24 (default) — hours to look back, max 168",
+            units=True,
         )
         if since_hours <= 0:
             raise BadInput(
@@ -3338,10 +3399,19 @@ class JobHandler(NumericRefHandler):
 # ── small free helpers ────────────────────────────────────────────
 
 
-def _parse_logs_int(raw: str | None, *, default: int, field: str, example: str) -> int:
+def _parse_logs_int(
+    raw: str | None,
+    *,
+    default: int,
+    field: str,
+    example: str,
+    units: bool = False,
+) -> int:
     """Parse a ``/logs`` query-string integer param.
 
-    Raises :class:`BadInput` (not a bare exception) on garbage so a
+    ``units=True`` also accepts the duration spellings ``24h`` / ``7d``
+    (hours / days — gr508686: agents write ``since='6h'``). Raises
+    :class:`BadInput` (not a bare exception) on garbage so a
     typo'd ``since=abc`` surfaces as a clean rejection instead of an
     unhandled-error 500.
     """
@@ -3350,6 +3420,10 @@ def _parse_logs_int(raw: str | None, *, default: int, field: str, example: str) 
     try:
         return int(raw)
     except (TypeError, ValueError) as exc:
+        if units:
+            m = re.fullmatch(r"(\d+)\s*([hd])", str(raw).strip(), re.IGNORECASE)
+            if m:
+                return int(m.group(1)) * (24 if m.group(2).lower() == "d" else 1)
         raise BadInput(f"{field}={raw!r} is not an integer", next=example) from exc
 
 

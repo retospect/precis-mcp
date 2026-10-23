@@ -536,6 +536,9 @@ get(kind='job', id='/logs?process=precis-worker-agentlane')
 
 # top-level q= works too (id's query string wins on conflict)
 get(kind='job', id='/logs', q='timeout')
+# the filters are also real kwargs — equivalent via args=:
+get(kind='job', id='/logs', args={'handler': 'dispatch', 'level': 'INFO', 'since': 6})
+# since= is hours; '6h'/'1d' spellings work too
 ```
 
 Read-only view over the centralised `worker_logs` table (migration

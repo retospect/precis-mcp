@@ -300,6 +300,10 @@ newest comment starts `resolved:`. Won't-do is
 duplicates, spam and gripes filed in error; a soft-deleted gripe still
 `get`s read-only (title, last STATUS, last comment).
 
+Near-miss status spellings with one reading run as canonical and say so
+(`'STATUS:closed'`/`'resolved'`/`'fixed'`/`'landed'` read as
+`STATUS:done`); anything ambiguous still refuses with the valid list.
+
 ## Bundled into a planned-work spec
 
 A gripe folded into a planned-work spec stays `STATUS:triaged`; record
