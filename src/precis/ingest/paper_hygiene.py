@@ -1952,10 +1952,15 @@ def repair_junk_title_papers(
       similarity/year/formula gates.
 
     A successful leg also closes the paper's open ``paper-title-fix``
-    todos — the repair is exactly what they asked for. Terminal failures
-    stamp ``meta.title_repair_v`` so tomorrow's pass doesn't re-attempt;
+    todos — the repair is exactly what they asked for. Terminal outcomes —
+    miss and parked alike — stamp ``meta.title_repair_v`` so tomorrow's
+    pass doesn't re-attempt (a parked ref already sits in the mismatch
+    review queue; re-hitting it daily just re-burns the same lookups);
     transient misses (timeouts) stay unstamped. ``RateLimited`` defers the
-    rest of the batch unstamped, like ``paper_meta_enrich``.
+    rest of the batch unstamped, like ``paper_meta_enrich``. The stamp is
+    also what lets :func:`raise_junk_title_papers` file a todo — so the
+    owner queue only ever holds papers the cascade actually concluded on
+    (gr508499).
 
     Returns one :class:`TitleRepairOutcome` per candidate; ``dry_run``
     (default) resolves but writes nothing.
@@ -2000,11 +2005,16 @@ def repair_junk_title_papers(
 
     outcomes: list[TitleRepairOutcome] = []
     seen = 0
+    enrich_owned = 0
+    deferred = False
     for ref_id, stored_title, doi, cite_key in candidates:
         placeholder = is_placeholder_title(stored_title)
         junk = is_pii(stored_title) or is_garbage_title(stored_title)
-        if not (placeholder or junk) or (placeholder and doi):
-            continue  # enrich owns DOI'd placeholders; real titles skip
+        if not (placeholder or junk):
+            continue  # real titles skip
+        if placeholder and doi:
+            enrich_owned += 1  # enrich owns DOI'd placeholders
+            continue
         ref = ref_map.get(ref_id)
         if ref is None:
             continue
@@ -2029,6 +2039,7 @@ def repair_junk_title_papers(
                 )
             )
         except (RateLimited, S2RateLimited):
+            deferred = True
             log.info(
                 "repair_junk_title_papers: upstream refused at ref %d; "
                 "deferring the rest unstamped",
@@ -2038,6 +2049,16 @@ def repair_junk_title_papers(
         except Exception:
             log.exception("repair_junk_title_papers: ref %d failed", ref_id)
             outcomes.append(TitleRepairOutcome(ref_id, "failed", detail="error"))
+    # Always logged (gr508499): a silent pass is indistinguishable from a
+    # leg that never ran — the summary is what proves the leg executed.
+    log.info(
+        "repair_junk_title_papers: attempted %d junk-title paper(s) "
+        "(cap %s)%s; %d placeholder-with-DOI skipped to enrich",
+        len(outcomes),
+        limit if limit else "none",
+        "; rest deferred after upstream refusal" if deferred else "",
+        enrich_owned,
+    )
     return outcomes
 
 
@@ -2103,6 +2124,11 @@ def _repair_one(
         if res.verdict == "parked":
             if not dry_run:
                 park_mismatch(store, res, source=TITLE_FIX_SOURCE)
+                # Parked is terminal at this cascade version — the conflict
+                # waits on a human, and the data won't differ tomorrow.
+                # Stamp it (gr508499): unstamped, the same paper re-burned
+                # a registry lookup every daily pass forever.
+                _stamp_title_repair_failed(store, rid, reasons=[res.reason])
             return TitleRepairOutcome(rid, "parked", detail=res.reason)
         return None
 
@@ -2151,12 +2177,14 @@ def _repair_one(
     if out is not None:
         return out
 
-    if not any(r in _TRANSIENT_MISS_REASONS for r in reasons) and not dry_run:
+    transient = any(r in _TRANSIENT_MISS_REASONS for r in reasons)
+    if not transient and not dry_run:
         _stamp_title_repair_failed(store, rid, reasons=reasons)
     return TitleRepairOutcome(
         rid,
         "failed",
-        detail=";".join(r for r in reasons if r) or "no-resolution",
+        detail=("transient:" if transient else "terminal:")
+        + (";".join(r for r in reasons if r) or "no-resolution"),
     )
 
 
@@ -2167,23 +2195,34 @@ def raise_junk_title_papers(
     limit: int | None = None,
     grace_days: int = _TITLE_FIX_GRACE_DAYS,
 ) -> list[int]:
-    """File a ``waiting-for:<login>`` todo per junk-titled paper automation can't fix.
+    """File a ``waiting-for:<login>`` todo per junk-titled paper automation failed.
 
     A paper whose stored title is junk (``"__"``, a filename, PII, blank,
     or the no-title sentinel) still resolves in citations, so an untitled
-    paper silently stands in for a real one (gr477964). Automation that
-    *can* fix it (a placeholder with a DOI is re-armed by
-    :func:`requeue_placeholder_title_papers`; ``paper_meta_enrich`` fills
-    it; the markup/registry repair cascade in
-    :func:`repair_junk_title_papers`, gr500372) is left alone; the rest is
-    raised to the paper's owner
+    paper silently stands in for a real one (gr477964). Eligibility
+    deliberately mirrors the repair leg's skip set (gr508499): only papers
+    the :func:`repair_junk_title_papers` cascade has *concluded* on —
+    ``meta.title_repair_v`` stamped at the current
+    ``_TITLE_REPAIR_VERSION`` — get a todo. Filing on papers the cascade
+    hadn't reached yet made the todo's "automation could not repair it"
+    claim false and let this leg outrun repair: both legs cap at the same
+    per-pass rate but selected independently, so the queue grew at filing
+    rate (10/day every day) while repair worked its own backlog. With the
+    stamp gate the queue grows only at the true terminal-failure rate.
+    Automation that *can* still fix a paper (a placeholder with a DOI is
+    re-armed by :func:`requeue_placeholder_title_papers`; the cascade
+    retries transient misses unstamped) is left alone; the rest is raised
+    to the paper's owner
     (``refs.owner_login``, else the deployment owner ``PRECIS_OWNER``)
     as a todo tagged ``waiting-for:<login>`` + ``paper-title-fix``. One
     todo per paper: a multi-cite_key ref (pa344 × 3) must not fan out into
     per-cite_key duplicates.
 
-    Skipped: retired papers; placeholder-titled papers that carry a DOI
-    (the enrich route owns them); papers younger than ``grace_days``.
+    Skipped: retired papers; human-verified papers (a human already judged
+    the title — repair never stamps them, so they could never leave this
+    queue either); placeholder-titled papers that carry a DOI
+    (the enrich route owns them); papers younger than ``grace_days``;
+    papers the repair cascade has not yet concluded on.
 
     Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
     and a paper with an open todo, or one closed with any status other
@@ -2208,7 +2247,12 @@ def raise_junk_title_papers(
               FROM refs r
              WHERE r.kind = 'paper'
                AND r.retired_at IS NULL
+               AND r.human_verified_at IS NULL
                AND r.created_at < now() - make_interval(days => %s)
+               AND coalesce(CASE
+                     WHEN jsonb_typeof(r.meta->'title_repair_v') = 'number'
+                     THEN (r.meta->>'title_repair_v')::int END, 0)
+                   >= %s
                AND NOT EXISTS (
                      SELECT 1 FROM refs t
                       WHERE t.kind = 'todo'
@@ -2222,7 +2266,7 @@ def raise_junk_title_papers(
                                  AND tg.value = 'done'))
              ORDER BY r.ref_id
             """,
-            (grace_days, TITLE_FIX_SOURCE),
+            (grace_days, _TITLE_REPAIR_VERSION, TITLE_FIX_SOURCE),
         ).fetchall()
 
     todo: list[tuple[int, str, str | None, str]] = []

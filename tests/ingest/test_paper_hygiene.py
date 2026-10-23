@@ -1196,8 +1196,24 @@ class TestRaiseJunkTitlePapers:
                 (str(paper_id),),
             ).fetchall()
 
+    def _stamp(self, store: Store, paper_id: int) -> None:
+        """Mark the paper terminally concluded by the repair cascade —
+        the ``title_repair_v`` stamp is the gate for owner-queue filing
+        (gr508499)."""
+        from precis.ingest.paper_hygiene import _TITLE_REPAIR_VERSION
+
+        store.stamp_ref_meta(paper_id, {"title_repair_v": _TITLE_REPAIR_VERSION})
+
+    def test_unstamped_junk_paper_waits_for_repair(self, store: Store) -> None:
+        """gr508499: a junk title the cascade hasn't concluded on is NOT
+        filed — the todo claims "automation could not repair it", which is
+        only true once ``title_repair_v`` is stamped."""
+        self._old(store, slug="anon24z", title="__")
+        assert raise_junk_title_papers(store, dry_run=True) == []
+
     def test_files_one_todo_for_underscore_title(self, store: Store) -> None:
         rid = self._old(store, slug="anon24d", title="__")
+        self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=False) == [rid]
         (todo,) = self._todos(store, rid)
         assert "anon24d" in todo[1] and "'__'" in todo[1]
@@ -1208,6 +1224,7 @@ class TestRaiseJunkTitlePapers:
 
     def test_not_refiled_while_open(self, store: Store) -> None:
         rid = self._old(store, slug="anon24f", title="-")
+        self._stamp(store, rid)
         raise_junk_title_papers(store, dry_run=False)
         assert raise_junk_title_papers(store, dry_run=False) == []
         assert len(self._todos(store, rid)) == 1
@@ -1225,6 +1242,7 @@ class TestRaiseJunkTitlePapers:
 
     def test_refiled_once_when_closed_done_but_still_junk(self, store: Store) -> None:
         rid = self._old(store, slug="anon24h", title="__")
+        self._stamp(store, rid)
         raise_junk_title_papers(store, dry_run=False)
         self._close(store, rid, "done")
         assert raise_junk_title_papers(store, dry_run=False) == [rid]
@@ -1233,6 +1251,7 @@ class TestRaiseJunkTitlePapers:
 
     def test_not_refiled_when_closed_wontfix(self, store: Store) -> None:
         rid = self._old(store, slug="anon24i", title="__")
+        self._stamp(store, rid)
         raise_junk_title_papers(store, dry_run=False)
         self._close(store, rid, "wontfix")
         assert raise_junk_title_papers(store, dry_run=False) == []
@@ -1240,13 +1259,19 @@ class TestRaiseJunkTitlePapers:
 
     def test_dry_run_writes_nothing(self, store: Store) -> None:
         rid = self._old(store, slug="anon24g", title="...")
+        self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=True) == [rid]
         assert self._todos(store, rid) == []
 
     def test_skips_fixable_and_young_papers(self, store: Store) -> None:
-        self._old(store, slug="good24", title="A Real Title")
-        self._old(store, slug="stub24", title=PLACEHOLDER_TITLE, doi="10.1234/z")
-        store.insert_ref(kind="paper", slug="young24", title="__")
+        good = self._old(store, slug="good24", title="A Real Title")
+        stub = self._old(store, slug="stub24", title=PLACEHOLDER_TITLE, doi="10.1234/z")
+        young = store.insert_ref(kind="paper", slug="young24", title="__").id
+        # The stamp gate (gr508499) doesn't override the other skips: real
+        # titles, enrich-owned placeholders and under-grace papers still
+        # file nothing.
+        for rid in (good, stub, young):
+            self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=True) == []
 
 
@@ -1585,7 +1610,10 @@ class TestRepairJunkTitlePapers:
         assert raise_junk_title_papers(store, dry_run=True) == []
 
     def test_markup_repair_closes_open_todo(self, store: Store) -> None:
-        from precis.ingest.paper_hygiene import repair_junk_title_papers
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_junk_title_papers,
+        )
 
         rid = self._old(
             store,
@@ -1593,7 +1621,17 @@ class TestRepairJunkTitlePapers:
             title="<i>ATHENA</i>,<i>ARTEMIS</i>,<i>HEPHAESTUS</i>: "
             "spectroscopy using<i>IFEFFIT</i>",
         )
-        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        # Filed directly: since gr508499 the raise leg only files on
+        # cascade-stamped papers, and a stamped paper is excluded from
+        # repair — so this test seeds the todo shape the leg closes.
+        with store.tx() as conn:
+            store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="Fix title/metadata of paper:paX",
+                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": rid},
+                conn=conn,
+            )
         (todo,) = self._todos(store, rid)
         out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
         assert [o.action for o in out] == ["markup"]
@@ -1692,6 +1730,9 @@ class TestRepairJunkTitlePapers:
         assert _meta(store, rid).get("title_repair_v") == 1
         # Second pass: stamped → not re-attempted.
         assert repair_junk_title_papers(store, dry_run=False) == []
+        # The stamp is exactly what hands the paper to the owner queue
+        # (gr508499) — unstamped candidates file nothing.
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
 
     def test_repair_dry_run_writes_nothing(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import repair_junk_title_papers
@@ -1707,14 +1748,57 @@ class TestRepairJunkTitlePapers:
         assert "<mml:math>" in store.fetch_refs_by_ids([rid])[rid].title
 
     def test_one_todo_per_paper_not_per_cite_key(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import _TITLE_REPAIR_VERSION
+
         rid = self._old(
             store,
             slug="tri24",
             title="__",
             cite_keys=["ma09", "ma2009stone", "jiema2009stone"],
         )
+        store.stamp_ref_meta(rid, {"title_repair_v": _TITLE_REPAIR_VERSION})
         assert raise_junk_title_papers(store, dry_run=False) == [rid]
         assert len(self._todos(store, rid)) == 1
+
+    def test_parked_outcome_stamps_for_the_owner_queue(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr508499: parked is terminal at this cascade version — it must
+        stamp like a failed leg, else the same paper re-burns a registry
+        lookup every pass and never reaches the owner queue."""
+        from precis.ingest import metadata_resolve
+        from precis.ingest.metadata_resolve import Resolution
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(
+            store,
+            slug="park24",
+            title="Microsoft Word - mismatch.doc",
+            doi="10.1234/parked.1",
+        )
+        monkeypatch.setattr(
+            metadata_resolve,
+            "_resolve_by_doi",
+            lambda *a, **k: Resolution(rid, "parked", "doi", "edition-mismatch-year"),
+        )
+        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
+        assert [o.action for o in out] == ["parked"]
+        assert _meta(store, rid).get("title_repair_v") == 1
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
+
+    def test_repair_summary_logs_even_with_no_candidates(
+        self, store: Store, caplog: Any
+    ) -> None:
+        """gr508499: a zero-attempt pass still logs — silence reads as
+        "the leg never ran", which is how this went undiagnosed."""
+        import logging
+
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        self._old(store, slug="ok24x", title="A Perfectly Fine Real Title")
+        with caplog.at_level(logging.INFO, logger="precis.ingest.paper_hygiene"):
+            assert repair_junk_title_papers(store, dry_run=False) == []
+        assert any("junk-title" in r.message for r in caplog.records)
 
 
 def _no_calling() -> Any:

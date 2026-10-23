@@ -12,7 +12,13 @@ the system worker at a low cadence so the corpus self-heals:
 * :func:`reconcile_by_pdf_sha256` / :func:`reconcile_by_doi_case` — the
   identifier/file duplicate classes. Idempotent and cheap once the corpus
   is clean.
-* The :mod:`precis.ingest.paper_hygiene` heals, after the merges. All are
+* The :mod:`precis.ingest.paper_hygiene` heals, after the merges —
+  including the junk-title pair:
+  :func:`~precis.ingest.paper_hygiene.repair_junk_title_papers` attempts
+  each unflagged junk title (markup render → DOI registries → S2 title
+  search) and stamps terminal outcomes;
+  :func:`~precis.ingest.paper_hygiene.raise_junk_title_papers` then files
+  an owner todo only for papers carrying that stamp. All are
   SQL-only except :func:`~precis.ingest.paper_hygiene.heal_bodiless_pdfs`,
   which may re-run Marker over a held PDF: that leg is capped per pass
   (``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default 5, ``0`` = judge
@@ -74,10 +80,11 @@ def _due(store: Store) -> bool:
 def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> BatchResult:
     """Run the duplicate reconcilers if due; otherwise no-op.
 
-    ``claimed`` / ``ok`` count duplicate refs merged this pass; ``failed``
-    stays 0 (a merge that raises is logged inside the reconciler and just
-    doesn't count). Idle passes (throttled or lock-contended) return all
-    zeros.
+    ``claimed`` / ``ok`` count units of work this pass — duplicate refs
+    merged, hygiene heals, junk-title repair attempts and title-fix todos
+    filed; ``failed`` stays 0 (a merge that raises is logged inside the
+    reconciler and just doesn't count). Idle passes (throttled or
+    lock-contended) return all zeros.
     """
     idle = BatchResult(handler="paper_reconcile", claimed=0, ok=0, failed=0)
     if not store.dsn or not _due(store):
@@ -158,8 +165,9 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # leaked markup in place, else resolve the real title via the
             # stored DOI (Crossref, then OpenAlex) or an S2 title search
             # over the stripped export name + first-page body lines. What
-            # survives then goes to the owner's queue (gr477964);
-            # idempotent, so the daily pass never re-files.
+            # the cascade terminally fails (its title_repair_v stamp) then
+            # goes to the owner's queue (gr477964, gr508499); idempotent,
+            # so the daily pass never re-files.
             # Capped per pass so a backlog trickles into the queue
             # instead of flooding it on the first run after deploy.
             repaired = repair_junk_title_papers(
@@ -170,20 +178,27 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 email=(settings.get_str("contact.polite_email") or "").strip(),
                 s2_api_key=get_secret("SEMANTIC_SCHOLAR_API_KEY", store=store) or "",
             )
+            # Per-paper verdicts first (gr508499): each line carries the
+            # action + miss/park reason, so a stuck paper is diagnosable
+            # from worker_logs alone — no todo-text-vs-display diffing.
+            for o in repaired:
+                log.info("paper_reconcile: junk-title %s", o.line())
             repaired_n = sum(
                 1
                 for o in repaired
                 if o.action in ("markup", "crossref", "openalex", "title")
             )
-            if repaired:
-                log.info(
-                    "paper_reconcile: title repair — %d fixed, %d parked, "
-                    "%d failed of %d attempted",
-                    repaired_n,
-                    sum(1 for o in repaired if o.action == "parked"),
-                    sum(1 for o in repaired if o.action == "failed"),
-                    len(repaired),
-                )
+            # Unconditional (gr508499): an aggregate even at zero attempts,
+            # and the word "junk-title" so the q='junk' worker_logs probe
+            # the doctor tick uses can't miss the leg entirely.
+            log.info(
+                "paper_reconcile: junk-title repair — %d fixed, %d parked, "
+                "%d failed of %d attempted",
+                repaired_n,
+                sum(1 for o in repaired if o.action == "parked"),
+                sum(1 for o in repaired if o.action == "failed"),
+                len(repaired),
+            )
             raised = raise_junk_title_papers(
                 store,
                 dry_run=False,
@@ -244,6 +259,9 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 if stats.junk_sample_bounded
                 else "",
             )
+            # gr508499: repair attempts and filed title-fix todos ARE the
+            # pass's work — leaving them out of claimed/ok read as "the
+            # pass claimed zero jobs" on days when all it did was titles.
             work = (
                 merged
                 + len(healed_cards)
@@ -251,6 +269,8 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(relinked)
                 + len(requeued)
                 + len(bodiless_judged)
+                + len(repaired)
+                + len(raised)
             )
             return BatchResult(
                 handler="paper_reconcile", claimed=work, ok=work, failed=0
