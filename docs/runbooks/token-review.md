@@ -77,6 +77,7 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-10-23** — 7d window, 608 sessions; scanned the 6 largest (9-58 MB; fleet chat `232ea818` and coordinator `e2d43742` dominate). Rule F recurred a fifth time (`52fb0e72` 266 Edit/50 Write, 0 Agent dispatches; `f48eaab7` 190 Edit, 0 coder) and `sed -n` is still ~350 Bash calls across the big sessions: filed gr509448. Bare `general-purpose` spawns on fable/opus (68 of 212 dispatches in `232ea818`, 17 auto-compacts, governing docs re-Read 8-10x) filed as gr509449. SendMessage volume stays with gr499043 and raw prod-psql detours with gr472990. TaskOutput re-polls are gone (Monitor in use). Surface side (edit unparsed-JSON errors, gripe render size) left to surface-review.
 - **2026-10-07** — 24h window, 13 main-loop sessions, 566M cache-read tokens
   (dedup by message id) vs ~2M output. Half is the fixed 105-137k turn-one
   prefix (tool schemas: Figma plugin, Claude Docs, `precis` put/edit) × ~2400
