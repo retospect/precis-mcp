@@ -6,9 +6,9 @@
 [![License](https://img.shields.io/github/license/retospect/precis-mcp.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22863181.svg)](https://doi.org/10.5281/zenodo.22863181)
 
-An untiring research collaborator: it reads papers and patents, cites
-the paragraph, writes the paper, and designs and simulates what it
-proposes. A [Model Context Protocol](https://modelcontextprotocol.io/)
+Untiring, token-efficient research collaborator: reads papers and
+patents, cites the paragraph, writes the paper, designs and simulates
+what it proposes. A [Model Context Protocol](https://modelcontextprotocol.io/)
 server for language-model agents:
 
 - **Research** — papers, patents and reviews with paragraph-level

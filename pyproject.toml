@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "precis-mcp"
 version = "8.37.0"
-description = "An untiring research collaborator: it reads papers and patents, cites the paragraph, writes the paper, and designs and simulates what it proposes."
+description = "Untiring, token-efficient research collaborator: reads papers and patents, cites the paragraph, writes the paper, designs and simulates what it proposes."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
