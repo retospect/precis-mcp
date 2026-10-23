@@ -489,7 +489,7 @@ reported next to `Var_m[E(TOF | m)]` and never folded into the band
   interactions, when they come, enter as a cluster expansion over the same
   graph (Nielsen pa498281; the ω rule of D4 for the TS). Pattern matching
   is subgraph isomorphism; for v1's patterns (≤ 2 sites, ≤ 1 edge) it is a
-  neighbour-list lookup, so no VF2/RI machinery (pa454024) is needed until
+  neighbour-list lookup, so no VF2/RI-style matcher is needed until
   patterns grow. Zacros 4 moved to "modern subgraph isomorphism algorithms"
   for exactly that reason (zacros.org, read 2026-10-19).
 - **Events in v1**: adsorption (one or two empty sites, Hertz–Knudsen),
