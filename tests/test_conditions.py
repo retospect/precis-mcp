@@ -34,6 +34,7 @@ from precis.workers.conditions import (
     _probe_limiter_bypassed,
     _probe_limiter_host_cap,
     _probe_llm_degraded,
+    _probe_local_serving_pressure,
     _probe_pass_dead,
     _probe_pass_wedged,
     _probe_quest_tick_stalled,
@@ -1247,3 +1248,154 @@ def test_deploy_fleet_ignores_dark_hosts(store: Store, fleet_ledger) -> None:
     keys = {f.key for f in _probe_deploy_fleet(store)}
     assert "deploy-uncovered:fleet-dark" not in keys
     assert "deploy-behind:fleet-a" not in keys
+
+
+# ── local-serving-pressure (llm-lane-scheduler S0) ───────────────────────
+
+
+def _seed_serving_beats(
+    store: Store,
+    host: str,
+    rows: list[tuple[float, float | None, float | None, float | None]],
+    *,
+    served: bool = True,
+) -> None:
+    """One host_heartbeat_log row per tuple ``(age_min, kv_usage,
+    retractions_total, swap_in_pages_total)`` — the columns the heartbeat
+    scrape writes on a serving host. ``served`` plants a non-NULL
+    ``serving_running`` (a successful scrape); a non-serving host leaves
+    every ``serving_*`` column NULL."""
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM host_heartbeat_log WHERE host = %s", (host,))
+        for age_min, kv, retractions, swap in rows:
+            conn.execute(
+                "INSERT INTO host_heartbeat_log "
+                "(host, ts, serving_running, serving_kv_usage, "
+                " serving_retractions_total, swap_in_pages_total) "
+                "VALUES (%s, now() - make_interval(mins => %s), %s, %s, %s, %s)",
+                (host, age_min, 1.0 if served else None, kv, retractions, swap),
+            )
+        conn.commit()
+
+
+def _serving_findings(store: Store, host: str) -> list[ConditionFinding]:
+    return [f for f in _probe_local_serving_pressure(store) if host in f.key]
+
+
+def test_serving_pressure_fires_on_synthetic_swap_in_series(store: Store) -> None:
+    """The S0 acceptance case: a synthetic swap-in series rising over 6
+    consecutive beats (≈6 min at the per-minute beat) fires."""
+    host = _uniq("serving-swap")
+    _seed_serving_beats(
+        store, host, [(8 - i, None, None, 1000 + 50 * i) for i in range(8)]
+    )
+    found = _serving_findings(store, host)
+    assert len(found) == 1
+    assert found[0].key == f"local-serving-pressure:{host}"
+    assert "swap-in" in found[0].detail
+
+
+def test_serving_pressure_fires_on_sustained_kv(store: Store) -> None:
+    host = _uniq("serving-kv")
+    _seed_serving_beats(store, host, [(6 - i, 0.95, None, None) for i in range(6)])
+    found = _serving_findings(store, host)
+    assert len(found) == 1
+    assert "KV usage" in found[0].detail
+
+
+def test_serving_pressure_quiet_below_sustain(store: Store) -> None:
+    """Four hot beats is a burst, not sustained pressure."""
+    host = _uniq("serving-short")
+    _seed_serving_beats(store, host, [(4 - i, 0.95, None, None) for i in range(4)])
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_fires_on_retraction_delta(store: Store) -> None:
+    host = _uniq("serving-retract")
+    _seed_serving_beats(
+        store, host, [(4, 0.3, 0, None), (3, 0.3, 0, None), (2, 0.3, 3, None)]
+    )
+    found = _serving_findings(store, host)
+    assert len(found) == 1
+    assert "3 retraction(s)" in found[0].detail
+
+
+def test_serving_pressure_counter_reset_is_not_negative(store: Store) -> None:
+    """A server restart resets the counter; the drop must not read as a
+    retraction — and a fresh tick after it still counts."""
+    host = _uniq("serving-reset")
+    _seed_serving_beats(
+        store,
+        host,
+        [
+            (5, None, 40, None),
+            (4, None, 2, None),
+            (3, None, 2, None),
+            (2, None, 3, None),
+        ],
+    )
+    found = _serving_findings(store, host)
+    assert len(found) == 1
+    assert "1 retraction(s)" in found[0].detail
+
+
+def test_serving_pressure_flat_swap_is_quiet(store: Store) -> None:
+    host = _uniq("serving-flat")
+    _seed_serving_beats(store, host, [(6 - i, 0.5, 0, 9000.0) for i in range(6)])
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_ignores_swap_on_a_non_serving_host(
+    store: Store,
+) -> None:
+    """Any Linux worker can swap; only a box with a successful serving
+    scrape (a non-NULL ``serving_*`` row in the window) may fire on the
+    swap-in signal."""
+    host = _uniq("serving-noserve")
+    _seed_serving_beats(
+        store,
+        host,
+        [(8 - i, None, None, 1000 + 50 * i) for i in range(8)],
+        served=False,
+    )
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_scrape_gap_breaks_the_run(store: Store) -> None:
+    """Two 3-beat hot bursts split by a 6-minute scrape gap must not glue
+    into one sustained 6-beat run."""
+    host = _uniq("serving-gap")
+    _seed_serving_beats(
+        store,
+        host,
+        [
+            (12, 0.95, None, None),
+            (11, 0.95, None, None),
+            (10, 0.95, None, None),
+            (4, 0.95, None, None),
+            (3, 0.95, None, None),
+            (2, 0.95, None, None),
+        ],
+    )
+    assert _serving_findings(store, host) == []
+
+
+def test_serving_pressure_fires_then_resolves(store: Store) -> None:
+    """The digest lifecycle: a fired instance produces a ``stale``
+    CheckResult named by its key, and a green probe produces the ``ok``
+    row that auto-closes the alert next pass."""
+    cond = Condition("local-serving-pressure", "warn", _probe_local_serving_pressure)
+    host = _uniq("serving-cycle")
+    _seed_serving_beats(
+        store, host, [(8 - i, None, None, 1000 + 50 * i) for i in range(8)]
+    )
+    checks, findings = run_condition_checks(store, conditions=(cond,))
+    stale = [c for c in checks if c.name == f"local-serving-pressure:{host}"]
+    assert len(stale) == 1 and stale[0].status == "stale"
+    assert len(findings) == 1
+
+    _seed_serving_beats(store, host, [(2, 0.2, 0, 5000.0), (1, 0.2, 0, 5000.0)])
+    checks, findings = run_condition_checks(store, conditions=(cond,))
+    ok = [c for c in checks if c.name == "local-serving-pressure"]
+    assert len(ok) == 1 and ok[0].status == "ok"
+    assert findings == []

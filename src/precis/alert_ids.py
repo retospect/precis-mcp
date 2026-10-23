@@ -363,6 +363,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per probe",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "local-serving-pressure:{host}",
+        "A serving host shows sustained KV usage over threshold, retraction "
+        "ticks, or rising host swap-in in host_heartbeat_log.",
+        budget="per probe",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",

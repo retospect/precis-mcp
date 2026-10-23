@@ -48,6 +48,10 @@ was invisible for 4 days):
 * ``limiter-cap-full`` — the auto-seeded ``host:<netloc>`` limiter rows
   are at ``rate_limit.MAX_SEEDED_HOST_ROWS`` with none idle enough to
   evict, so a newly seen host runs unpaced (gr507345).
+* ``local-serving-pressure`` — llm-lane-scheduler slice S0: sustained
+  KV-cache use over threshold, retractions ticking, or host swap-in
+  rising on a serving box, read from the ``serving_*`` columns the
+  heartbeat pass scrapes into ``host_heartbeat_log``.
 * ``settings-env-shadowed`` — info-only (db-resident-settings.md slice 4):
   a host still has a registered setting's env var set locally (self-
   reported via ``host_heartbeat.meta.settings_env_present``) after a DB
@@ -80,6 +84,7 @@ import logging
 import os
 import re
 import subprocess
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1024,9 +1029,121 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     return out
 
 
+#: A gap past ~2 beats (~2 min at the per-minute cadence) breaks a
+#: "consecutive beats" run — otherwise a dark scrape glues two ordinary
+#: bursts into one sustained one.
+_MAX_BEAT_GAP_S = 150.0
+
+_SERVING_PRESSURE_SQL = """
+SELECT host, ts, serving_running, serving_queued, serving_kv_usage,
+       serving_retractions_total, swap_in_pages_total
+  FROM host_heartbeat_log
+ WHERE ts > now() - make_interval(secs => %(lookback_s)s)
+   AND (serving_running IS NOT NULL
+        OR serving_queued IS NOT NULL
+        OR serving_kv_usage IS NOT NULL
+        OR serving_retractions_total IS NOT NULL
+        OR swap_in_pages_total IS NOT NULL)
+ ORDER BY host, ts
+"""
+
+
+def _probe_local_serving_pressure(store: Store) -> list[ConditionFinding]:
+    """llm-lane-scheduler S0: sustained local-serving pressure on a host —
+    sustained KV-cache use over threshold, retractions > 0, or host
+    swap-in rising for N beats (one beat ≈ one minute). Reads the
+    ``serving_*``/``swap_in_pages_total`` columns the heartbeat scrape
+    writes. Swap-in counts only on a host with a successful serving
+    scrape in the window — any Linux worker can swap; only a serving
+    box's swap is *serving* pressure. Counter columns clamp deltas at
+    zero, so a server restart (counter reset) reads as "rebased", not
+    negative. Runs break on a scrape gap past ``_MAX_BEAT_GAP_S``.
+
+    Thresholds (env-tunable): KV >= ``PRECIS_COND_SERVING_KV_MAX`` (0.90)
+    for ``PRECIS_COND_SERVING_SUSTAIN_MIN`` (5) consecutive beats, or any
+    retraction delta, or swap-in rising for that many beats — over
+    ``PRECIS_COND_SERVING_LOOKBACK_MIN`` (60, matching the hourly lane).
+    """
+    lookback_min = _env_f("PRECIS_COND_SERVING_LOOKBACK_MIN", 60.0)
+    kv_max = _env_f("PRECIS_COND_SERVING_KV_MAX", 0.90)
+    sustain = int(_env_f("PRECIS_COND_SERVING_SUSTAIN_MIN", 5.0))
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            _SERVING_PRESSURE_SQL, {"lookback_s": lookback_min * 60.0}
+        ).fetchall()
+
+    # (ts, served, kv, retractions, swap)
+    by_host: dict[str, list[tuple]] = defaultdict(list)
+    for host, ts, running, queued, kv, retractions, swap in rows:
+        served = any(v is not None for v in (running, queued, kv, retractions))
+        by_host[str(host)].append((ts, served, kv, retractions, swap))
+
+    findings: list[ConditionFinding] = []
+    for host, beats in sorted(by_host.items()):
+        signals: list[str] = []
+        served_in_window = any(served for _, served, *_ in beats)
+
+        prev_ts: datetime | None = None
+        run = longest = 0
+        for ts, _, kv, _, _ in beats:
+            if prev_ts is not None and (ts - prev_ts).total_seconds() > _MAX_BEAT_GAP_S:
+                run = 0
+            prev_ts = ts
+            run = run + 1 if kv is not None and kv >= kv_max else 0
+            longest = max(longest, run)
+        if longest >= sustain:
+            signals.append(f"KV usage >= {kv_max:.0%} for {longest} consecutive beats")
+
+        prev: float | None = None
+        retract_delta = 0.0
+        for _, _, _, r, _ in beats:
+            if r is not None:
+                if prev is not None:
+                    retract_delta += max(0.0, float(r) - prev)
+                prev = float(r)
+        if retract_delta > 0:
+            signals.append(f"{int(retract_delta)} retraction(s)")
+
+        if served_in_window:
+            prev_ts = None
+            prev = None
+            run = longest = 0
+            for ts, _, _, _, s in beats:
+                if s is None or (
+                    prev_ts is not None
+                    and (ts - prev_ts).total_seconds() > _MAX_BEAT_GAP_S
+                ):
+                    prev_ts = ts
+                    prev = None
+                    run = 0
+                    continue
+                prev_ts = ts
+                run = run + 1 if prev is not None and float(s) > prev else 0
+                longest = max(longest, run)
+                prev = float(s)
+            if longest >= sustain:
+                signals.append(f"host swap-in rising for {longest} consecutive beats")
+
+        if signals:
+            last_ts = beats[-1][0]
+            findings.append(
+                ConditionFinding(
+                    key=f"local-serving-pressure:{host}",
+                    detail=(
+                        f"{host}: {'; '.join(signals)} in the last "
+                        f"{lookback_min:.0f} min (last beat "
+                        f"{last_ts:%Y-%m-%d %H:%MZ}) — KV thrash / unified-"
+                        "memory pressure on the serving box"
+                    ),
+                )
+            )
+    return findings
+
+
 CONDITIONS: tuple[Condition, ...] = (
     Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
     Condition("limiter-cap-full", "warn", _probe_limiter_host_cap),
+    Condition("local-serving-pressure", "warn", _probe_local_serving_pressure),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),

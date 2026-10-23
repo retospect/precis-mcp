@@ -124,7 +124,10 @@ Derived groups name their check after the thing they watch:
   `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
   `deploy-ledger:unpublished|invalid` (no `app_settings.deploy.fleet`
   row yet — the overlay group map a successful `scripts/deploy` writes;
-  blind until then).
+  blind until then); `local-serving-pressure` →
+  `local-serving-pressure:<host>` (a serving host's KV usage sustained
+  over threshold, retractions, or rising host swap-in — read from
+  `host_heartbeat_log`'s `serving_*` columns).
 
 ## See also
 

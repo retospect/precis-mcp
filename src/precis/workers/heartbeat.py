@@ -1017,6 +1017,17 @@ def _collect_and_upsert(
     if code_sha := _served_code_sha():
         meta["code_sha"] = code_sha
 
+    # llm-lane-scheduler S0: on a serving host, the SGLang /metrics scrape
+    # (running/queued/KV/retractions) plus host swap-in; self-gates to {}
+    # everywhere else. Mirror into meta for the Now snapshot, and into
+    # host_heartbeat_log below for the time-series consumers
+    # (local-serving-pressure, S3's capacity controller).
+    from precis.workers.serving_metrics import collect_serving_snapshot
+
+    serving = collect_serving_snapshot()
+    if serving:
+        meta["serving"] = dict(serving)
+
     store.record_heartbeat(
         host,
         temp_c=temp_c,
@@ -1036,6 +1047,7 @@ def _collect_and_upsert(
             load5=load5,
             load15=load15,
             retention_days=_history_retention_days(),
+            **serving,
         )
     except Exception:
         log.warning("heartbeat: history append failed", exc_info=True)

@@ -38,6 +38,9 @@ ExecStart=/usr/bin/{{ sglang_container_cmd }} run --rm --name {{ sglang_service_
 {% if sglang_reasoning_parser | length > 0 %}
     --reasoning-parser {{ sglang_reasoning_parser }} \
 {% endif %}
+{% if sglang_enable_metrics and '--enable-metrics' not in (sglang_extra_args | join(' ')) %}
+    --enable-metrics \
+{% endif %}
 {% if sglang_tool_call_parser | length > 0 %}
     --tool-call-parser {{ sglang_tool_call_parser }}{% for a in sglang_extra_args %} \
     {{ a }}{% endfor %}

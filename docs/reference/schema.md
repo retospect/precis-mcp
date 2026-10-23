@@ -514,6 +514,11 @@ erDiagram
         double_precision load1
         double_precision load5
         double_precision load15
+        double_precision serving_running
+        double_precision serving_queued
+        double_precision serving_kv_usage
+        double_precision serving_retractions_total
+        double_precision swap_in_pages_total
     }
     kind_provider {
         text slug PK
@@ -1928,7 +1933,7 @@ erDiagram
 | `embedders` | 6 | name |
 | `external_rate_limits` | 8 | provider |
 | `host_heartbeat` | 7 | host |
-| `host_heartbeat_log` | 6 | — |
+| `host_heartbeat_log` | 11 | — |
 | `kind_provider` | 4 | slug, host, process |
 | `kinds` | 7 | slug |
 | `links` | 12 | link_id |

@@ -49,6 +49,7 @@ _ALLOWLIST: dict[str, str] = {
     "precis/utils/safe_fetch.py": "the SSRF guard; the caller supplies the politeness",
     "precis/embedder.py": "cluster-internal embedder service",
     "precis/workers/llm_serving.py": "cluster-internal LLM serving endpoints",
+    "precis/workers/serving_metrics.py": "loopback scrape of the host's own SGLang /metrics",
     "precis/workers/capability_probe.py": "cluster-internal embedder readiness probe",
     "precis/fixer/tick.py": "operator-configured readyz URL of our own server",
     # Deadman ping: exactly one GET per health-digest tick (the tick is the

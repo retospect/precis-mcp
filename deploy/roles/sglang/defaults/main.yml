@@ -52,6 +52,15 @@ sglang_tool_call_parser: gpt-oss
 sglang_tiktoken_dir: /srv/models/tiktoken
 # Extra flags appended verbatim (list).
 sglang_extra_args: []
+# Expose Prometheus metrics on /metrics (sglang:num_running_reqs,
+# sglang:num_queue_reqs, sglang:token_usage, sglang:num_retracted_requests_total).
+# The heartbeat pass scrapes them into host_heartbeat_log for the
+# local-serving-pressure condition (llm-lane-scheduler S0). /metrics rides
+# the SAME API port and bind (sglang_bind_addr/sglang_port, default
+# 0.0.0.0:8000), unauthenticated — whoever can reach the API can read it;
+# no new port is opened. The flag is skipped when --enable-metrics is
+# already listed in sglang_extra_args.
+sglang_enable_metrics: true
 # Container environment (`-e K=V` each).
 sglang_env: {}
 

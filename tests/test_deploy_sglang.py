@@ -60,6 +60,16 @@ def test_multi_name_override_still_serves_one() -> None:
     assert _served_model_names(command) == ["gpt-oss-120b"]
 
 
+def test_enable_metrics_renders_by_default() -> None:
+    """llm-lane-scheduler S0: the heartbeat scrape needs /metrics."""
+    assert "--enable-metrics" in _command()
+
+
+def test_enable_metrics_extra_args_does_not_duplicate() -> None:
+    command = _command(sglang_extra_args=["--enable-metrics"])
+    assert command.count("--enable-metrics") == 1
+
+
 def test_nvidia_runtime_is_converged_not_just_asserted() -> None:
     tasks = yaml.safe_load((_ROLE / "tasks/main.yml").read_text(encoding="utf-8"))
     configure = next(

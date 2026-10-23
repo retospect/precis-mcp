@@ -179,6 +179,11 @@ class HeartbeatMixin:
         load1: float | None = None,
         load5: float | None = None,
         load15: float | None = None,
+        serving_running: float | None = None,
+        serving_queued: float | None = None,
+        serving_kv_usage: float | None = None,
+        serving_retractions_total: float | None = None,
+        swap_in_pages_total: float | None = None,
         retention_days: float = 14.0,
     ) -> None:
         """Append one beat to ``host_heartbeat_log`` and prune the window.
@@ -188,6 +193,11 @@ class HeartbeatMixin:
         per host per minute the DELETE (index on ``ts``) is trivially
         cheap. ``retention_days <= 0`` disables history entirely (no row
         written, nothing pruned).
+
+        The ``serving_*``/``swap_in_pages_total`` columns (llm-lane-scheduler
+        S0) are the local-serving pressure signals: NULL when the host has
+        no serving endpoint answering or isn't on Linux — a host that never
+        serves writes them absent every beat.
         """
         if retention_days <= 0:
             return
@@ -195,9 +205,22 @@ class HeartbeatMixin:
             with conn.transaction():
                 conn.execute(
                     "INSERT INTO host_heartbeat_log "
-                    "(host, ts, temp_c, load1, load5, load15) "
-                    "VALUES (%s, now(), %s, %s, %s, %s)",
-                    (host, temp_c, load1, load5, load15),
+                    "(host, ts, temp_c, load1, load5, load15, "
+                    "serving_running, serving_queued, serving_kv_usage, "
+                    "serving_retractions_total, swap_in_pages_total) "
+                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        host,
+                        temp_c,
+                        load1,
+                        load5,
+                        load15,
+                        serving_running,
+                        serving_queued,
+                        serving_kv_usage,
+                        serving_retractions_total,
+                        swap_in_pages_total,
+                    ),
                 )
                 conn.execute(
                     "DELETE FROM host_heartbeat_log "

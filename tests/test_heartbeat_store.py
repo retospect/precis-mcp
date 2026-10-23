@@ -172,6 +172,32 @@ def test_heartbeat_history_nullable_sensors(store: Store) -> None:
     assert rows[0]["temp_max"] is None
 
 
+def test_heartbeat_history_serving_columns(store: Store) -> None:
+    """llm-lane-scheduler S0: the serving-pressure columns land verbatim
+    (and stay NULL when not collected — a non-serving host)."""
+    store.record_heartbeat_history(
+        "caspar-serving",
+        serving_running=4.0,
+        serving_queued=1.0,
+        serving_kv_usage=0.75,
+        serving_retractions_total=2.0,
+        swap_in_pages_total=100.0,
+    )
+    store.record_heartbeat_history("caspar-quiet", load1=0.5)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT serving_running, serving_queued, serving_kv_usage, "
+            "serving_retractions_total, swap_in_pages_total "
+            "FROM host_heartbeat_log WHERE host = 'caspar-serving'"
+        ).fetchone()
+        quiet = conn.execute(
+            "SELECT serving_running, swap_in_pages_total "
+            "FROM host_heartbeat_log WHERE host = 'caspar-quiet'"
+        ).fetchone()
+    assert row == (4.0, 1.0, 0.75, 2.0, 100.0)
+    assert quiet == (None, None)
+
+
 def test_set_host_retired_stamps_and_clears(store: Store) -> None:
     """The marker that takes a decommissioned host off nursery's host-dark
     detector. An ISO timestamp, not `true`: "when was this retired" is the

@@ -47,7 +47,10 @@ overlay inventory, plus a layered extra inventory that puts the host in
 
 `sglang_env` passes container environment. `sglang_supersedes_service`
 names a unit to stop+disable first (default `vllm`) — one serving stack
-per host.
+per host. `sglang_enable_metrics` (default true) adds `--enable-metrics`,
+exposing the Prometheus endpoint the heartbeat pass scrapes into
+`host_heartbeat_log` (running/queued/KV usage/retractions — the
+`local-serving-pressure` condition's inputs).
 
 ## Prerequisites on the host
 
