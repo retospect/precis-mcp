@@ -71,22 +71,18 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 6. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
    blocks = a `@pcb.module`; `op='instantiate_block'` stays unbuilt);
    level 2 (pre-routed bundles) is pcb-workspace-code slice 3.
-7. **gr503436** — courtyard/silk residuals (silk broad phase, two JLCPCB
-   capability figures); the courtyard item closed 2026-10-21, the pin-1
-   dot ruling (keep the dot when the courtyard drops) shipped
-   2026-10-22.
-8. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
+7. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
    2026-10-21), independent of 3's split.
-9. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
+8. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
    deliberately filed to be built only after the engine gaps close —
    waits on ewod-pcb's routing work, not on anything in this file.
-10. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
-   sequenced after 9 by the item's own stated order.
-11. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
+9. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
+   sequenced after 8 by the item's own stated order.
+10. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
-12. **backlog/pcb-board-profile-prototype.md** — `ready/normal`, promoted
+11. **backlog/pcb-board-profile-prototype.md** — `ready/normal`, promoted
     2026-10-18 (gr495399); key, data, accessor and summary line
     shipped; next is the capability overlay + DRC strictness slice, then
     router cost/checks/silk; the thermal-relief slice lands after

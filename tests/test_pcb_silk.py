@@ -89,6 +89,40 @@ def _multi(*graphs: dict) -> dict:
     return {"instances": instances, "nets": nets}
 
 
+def test_side_obstacle_grid_keeps_exact_candidates_and_insertion_order():
+    """A few-hundred-part board must not scan all side obstacles per mark.
+    The grid may reject distant candidates, never a nearby one, and
+    diagnostics must still name the earliest inserted matching obstacle."""
+    obstacles = [
+        {
+            "shape": "rect",
+            "x": float(i % 20) * 8.0,
+            "y": float(i // 20) * 8.0,
+            "w": 0.8,
+            "h": 1.2,
+        }
+        for i in range(400)
+    ]
+    indexed = silk._SideObstacles(obstacles)
+    visits = 0
+    for x in range(0, 155, 3):
+        for y in (2.0, 34.0, 82.0, 146.0):
+            spot = [(float(x), y), (float(x) + 1.0, y + 1.0)]
+            expected = _near_obstacles(obstacles, spot, 0.45)
+            actual = _near_obstacles(indexed, spot, 0.45)
+            assert len(actual) == len(expected)
+            assert all(a is b for a, b in zip(actual, expected, strict=True))
+            visits += len(actual)
+    assert visits < 400  # vs 400 * 208 candidates with the old list scan
+
+    nearby = {"shape": "circle", "x": 2.0, "y": 2.0, "w": 1.0}
+    indexed.append(nearby)
+    assert _near_obstacles(indexed, [(2.0, 2.0)], 0.5)[-1] is nearby
+    # Label repair replaces list slices, so the broad phase must follow.
+    indexed.replace_all([item for item in indexed if item is not nearby])
+    assert _near_obstacles(indexed, [(2.0, 2.0)], 0.5) == []
+
+
 def _graph_named(
     refdes: str, labels: list[str], *, x: float = 0.0, y: float = 0.0, rot: float = 0.0
 ):
@@ -3366,6 +3400,32 @@ def test_dogfood_outline_stays_one_line_through_two_vias():
         result.draws["top"], [_via_as_pad(via), _via_as_pad(under_body)]
     )
     assert not _draws_hit_any_pad(result.draws["top"], pads)
+
+
+def test_dogfood_cluster_renders_one_gerber_stroke_per_part_outline():
+    """gr495393: verify the J2/U1/U2 fixture at the emitted film, not only
+    the in-memory paths. Silk's segment clipping must not fragment them
+    during Gerber export or parsing."""
+    ir, pads, via = _dogfood_cluster()
+    result = build_silk(ir, pads=pads, vias=[via])
+    model = {
+        "layers": [layer["name"] for layer in DEFAULT_STACKUP],
+        "silkscreen": result.draws,
+    }
+    film = gerber_view.parse_gerber(gerber.silkscreen_gerber(model, "top"))
+    for refdes in ("U1", "U2", "J2"):
+        (line,) = _outline_lines(result, refdes)
+        assert (
+            sum(
+                len(stroke.points) == len(line)
+                and all(
+                    actual == pytest.approx(expected, abs=1e-4)
+                    for actual, expected in zip(stroke.points, line, strict=True)
+                )
+                for stroke in film.strokes
+            )
+            == 1
+        ), refdes
 
 
 def test_a_via_no_bend_clears_still_cuts_the_outline():

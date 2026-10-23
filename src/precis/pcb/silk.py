@@ -168,6 +168,12 @@ always win), the full sequence is one deterministic chain: reserved seed,
 then instances in natural-refdes order — never two independently-ordered
 passes.
 
+The per-side pad/via/committed-silk obstacle list is indexed in 5 mm
+board-space buckets for candidate checks. It remains insertion ordered:
+the index only rejects obstacles whose bounding boxes are too far away,
+so the exact checks see the same candidates and first-hit diagnostics.
+Moving a label rebuilds the index rather than leaving stale buckets.
+
 **Body outlines are exempt from that order.** Predictable is not the same
 as right, and one class of contest should never have been settled by
 refdes at all: a pin-1 dot or a refdes label committed early could land
@@ -279,7 +285,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from shapely import union_all as _shapely_union_all
 from shapely import voronoi_polygons as _shapely_voronoi_polygons
@@ -930,6 +936,8 @@ def _near_obstacles(
         return []
     x0, y0, x1, y1 = _bbox(points)
     x0, y0, x1, y1 = x0 - margin_mm, y0 - margin_mm, x1 + margin_mm, y1 + margin_mm
+    if isinstance(obstacles, _SideObstacles):
+        return obstacles.near(x0, y0, x1, y1)
     out = []
     for pad in obstacles:
         px, py = float(pad["x"]), float(pad["y"])
@@ -938,6 +946,65 @@ def _near_obstacles(
         if px + hw >= x0 and px - hw <= x1 and py + hh >= y0 and py - hh <= y1:
             out.append(pad)
     return out
+
+
+class _SideObstacles(list[dict[str, Any]]):
+    """Insertion-ordered obstacles with a conservative 5 mm grid broad phase.
+
+    The silk pass appends marks as it commits them; label repair also replaces
+    list slices. Both operations maintain the grid, while ``near`` preserves
+    original list order so first-hit diagnostics and candidate choices do not
+    change with board size.
+    """
+
+    _pitch = 5.0
+
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        super().__init__(items)
+        self._cells: dict[tuple[int, int], list[int]] = {}
+        for i, item in enumerate(self):
+            self._insert(i, item)
+
+    def _insert(self, i: int, item: dict[str, Any]) -> None:
+        x, y = float(item["x"]), float(item["y"])
+        hw = float(item["w"]) / 2.0
+        hh = float(item.get("h", item["w"])) / 2.0
+        for ix in range(
+            math.floor((x - hw) / self._pitch), math.floor((x + hw) / self._pitch) + 1
+        ):
+            for iy in range(
+                math.floor((y - hh) / self._pitch),
+                math.floor((y + hh) / self._pitch) + 1,
+            ):
+                self._cells.setdefault((ix, iy), []).append(i)
+
+    def append(self, item: dict[str, Any]) -> None:
+        self._insert(len(self), item)
+        super().append(item)
+
+    def replace_all(self, items: list[dict[str, Any]]) -> None:
+        """Reindex after label repair moves or removes a committed mark."""
+        super().__setitem__(slice(None), items)
+        self._cells.clear()
+        for i, item in enumerate(self):
+            self._insert(i, item)
+
+    def near(self, x0: float, y0: float, x1: float, y1: float) -> list[dict[str, Any]]:
+        hits: set[int] = set()
+        for ix in range(math.floor(x0 / self._pitch), math.floor(x1 / self._pitch) + 1):
+            for iy in range(
+                math.floor(y0 / self._pitch), math.floor(y1 / self._pitch) + 1
+            ):
+                hits.update(self._cells.get((ix, iy), ()))
+        out = []
+        for i in sorted(hits):
+            pad = self[i]
+            px, py = float(pad["x"]), float(pad["y"])
+            hw = float(pad["w"]) / 2.0
+            hh = float(pad.get("h", pad["w"])) / 2.0
+            if px + hw >= x0 and px - hw <= x1 and py + hh >= y0 and py - hh <= y1:
+                out.append(pad)
+        return out
 
 
 def _obstacle_label(pad: dict[str, Any]) -> str:
@@ -3390,7 +3457,13 @@ def _label_blocked(
     courtyard, ever) — nor come within the gap of any outline line.
     Checked on the text BOX, not the glyphs: stricter, and the
     same box :func:`_outline_spot_candidates` spaces off the outline."""
-    if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
+    # Glyphs can protrude past their advance box; include that reach for
+    # the broad phase as well as the ink's own stroke width.
+    label_height = math.dist(corners[0], corners[3])
+    nearby = _near_obstacles(
+        obstacles, corners, stroke_width_mm + _GLYPH_OVERHANG_EM * label_height
+    )
+    if any(_box_overlaps_pad(corners, pad) for pad in nearby):
         return True
     # The DRC grades the INK against the edge, and the box is neither: it
     # bounds stroke centrelines, which reach its top and bottom while a
@@ -3438,7 +3511,7 @@ def _label_blocked(
             return True
     # bbox cleared but a real stroke may not have
     return any(
-        _stroke_overlaps_any_pad(pts, obstacles, stroke_width_mm) for pts in strokes
+        _stroke_overlaps_any_pad(pts, nearby, stroke_width_mm) for pts in strokes
     )
 
 
@@ -3463,7 +3536,7 @@ class _LabelState:
     side_name: str
     mirror: bool
     bucket: list[dict[str, Any]]
-    side_obstacles: list[dict[str, Any]]
+    side_obstacles: _SideObstacles
     candidates: list[_LabelCandidate]
     default_spot: str
     pinned_spot: str | None
@@ -3535,9 +3608,9 @@ def _repair_dropped_labels(
                 _draw(pts, stroke_width_mm, role="refdes", refdes=state.refdes)
             )
         if state.obstacle is not None:
-            state.side_obstacles[:] = [
-                o for o in state.side_obstacles if o is not state.obstacle
-            ]
+            state.side_obstacles.replace_all(
+                [o for o in state.side_obstacles if o is not state.obstacle]
+            )
         state.obstacle = obstacle_from_bbox(
             corners, label=f"{state.refdes} refdes silk"
         )
@@ -3562,7 +3635,10 @@ def _repair_dropped_labels(
         dropped: _LabelState, cand_a: _LabelCandidate
     ) -> list[tuple[_LabelState, int]] | None:
         owners = {id(s.obstacle): s for s in states if s.obstacle is not None}
-        fixed = [o for o in dropped.side_obstacles if id(o) not in owners]
+        local = _near_obstacles(
+            dropped.side_obstacles, cand_a[2], stroke_width_mm + height_mm
+        )
+        fixed = [o for o in local if id(o) not in owners]
         if blocked(dropped, cand_a, fixed):
             return None
         strokes_a = _label_strokes(
@@ -3571,7 +3647,7 @@ def _repair_dropped_labels(
         movers = sorted(
             (
                 owners[id(o)]
-                for o in dropped.side_obstacles
+                for o in local
                 if id(o) in owners
                 and (
                     _box_overlaps_pad(cand_a[2], o)
@@ -3942,14 +4018,18 @@ def _build_silk_pass(
     # Sorted canonically (:func:`_obstacle_sort_key`): the set is what
     # matters, and the first-hit naming in `_stroke_hits` shouldn't see
     # the caller's list order either.
-    obstacles_by_side: dict[str, list[dict[str, Any]]] = {
-        "top": sorted(
-            [*pads, *top_via_pads, *reserved_by_side.get("top", [])],
-            key=_obstacle_sort_key,
+    obstacles_by_side: dict[str, _SideObstacles] = {
+        "top": _SideObstacles(
+            sorted(
+                [*pads, *top_via_pads, *reserved_by_side.get("top", [])],
+                key=_obstacle_sort_key,
+            )
         ),
-        "bottom": sorted(
-            [*pads, *bottom_via_pads, *reserved_by_side.get("bottom", [])],
-            key=_obstacle_sort_key,
+        "bottom": _SideObstacles(
+            sorted(
+                [*pads, *bottom_via_pads, *reserved_by_side.get("bottom", [])],
+                key=_obstacle_sort_key,
+            )
         ),
     }
 
@@ -3996,7 +4076,7 @@ def _build_silk_pass(
         stroke_width_mm=stroke_width_mm,
         instance_sides=sides,
         outline=outline_ring,
-        obstacles_by_side=obstacles_by_side,
+        obstacles_by_side=cast(dict[str, list[dict[str, Any]]], obstacles_by_side),
         bulge_veto=bulge_veto,
     )
     bulges = {
@@ -4041,7 +4121,9 @@ def _build_silk_pass(
                 mirror=side_name == "bottom",
             ),
         )
-    seed_obstacles = {side: list(obs) for side, obs in obstacles_by_side.items()}
+    seed_obstacles = {
+        side: _SideObstacles(list(obs)) for side, obs in obstacles_by_side.items()
+    }
     ring_geoms = _ring_geoms(courtyard_ring)
     for group in _aligned_label_groups(label_shapes):
         group_side = label_shapes[group[0]][0]
@@ -4308,7 +4390,9 @@ def _build_silk_pass(
                 # -- the gerber writer's round cap makes it a filled
                 # circle, so it needs no new primitive.
                 candidate = [(dcx, dcy), (dcx, dcy)]
-                if _stroke_overlaps_any_pad(candidate, side_obstacles, dia):
+                if _stroke_overlaps_any_pad(
+                    candidate, _near_obstacles(side_obstacles, candidate, dia), dia
+                ):
                     continue
                 if outline_ring is not None and not _circle_inside_polygon(
                     (dcx, dcy), dia / 2.0 + edge_margin_mm, outline_ring
@@ -4387,7 +4471,11 @@ def _build_silk_pass(
                 )[0]
                 tick_pts = _pin1_tick(pin1_xy, box_pts, stroke_width_mm)
                 tick_hit = (
-                    _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
+                    _stroke_hits(
+                        tick_pts,
+                        _near_obstacles(side_obstacles, tick_pts, stroke_width_mm),
+                        stroke_width_mm,
+                    )
                     if tick_pts
                     else None
                 )
