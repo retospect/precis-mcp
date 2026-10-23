@@ -20,7 +20,7 @@ kinds: se
 # precis-se-help — the call surface
 
 S1 authored-surface read: `get(kind='se', id=..., view='surface_deviation',
-args={'name':<bound block>, 'target':{'features':[{'name':'tube',
+args={'block':<bound block>, 'target':{'features':[{'name':'tube',
 'centre_A':[0,0], 'r0_A':5, 'pieces':[['arc',1,-90],['line',3]]}]},
 'z_offset_A':0})`. Reports region atom count/mean/p95/max in Å over stored
 structure-local atoms using the existing S1 judge. Explicit target is caller-authored,
@@ -125,7 +125,7 @@ uid, including the block half of `'block.port'` (`connect a='#41.bore'`);
 an ambiguous label's error lists every matching uid. The label is what
 gets stored either way. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
 the last four delimit region selectors, `precis-se-regions-help`.)
-Read one block with `get(kind='se', id='<design>', view='block', args={'name': '<label or #uid>'})` — `name` is required.
+Read one block with `get(kind='se', id='<design>', view='block', args={'block': '<label or #uid>'})` — `block` is required (`name` still answers as a deprecated alias, with a hint).
 
 ## Ops — blocks and ports
 

@@ -33,6 +33,15 @@ columns blank. The pair form ``args={'a','b'}`` keeps only sites that
 face the *other* block within ``pocket_gap_A`` — the valve doc's "the
 rim's sites travel, the shell's sites are fixed".
 
+**Stored record.** The single-block form also renders the bound
+structure's own build record (gr503027): ``generated.sites`` — the
+generator's measured site list in its authored frame, ordinals and
+z/θ/r plus free-direction normals and the two-point pendant pairs — and
+the ``seam.geometry``/``junction.strain``/``seam.strain`` finding
+``data`` (the measured seam/junction angles and residuals), which
+otherwise only ever surfaced as ``view='report'`` INFO prose. Nothing is
+recomputed; both sections are verbatim stored rows, labelled as such.
+
 **Complementarity stub.** ``args={'a','b','lining':{...}}`` on
 ``view='clearance'``: a per-block list of ``{'site': <ordinal> |
 'ring:<class>', 'group': 'OH'|'NH3+'|'COO-'|'CH3'|'H'}`` assignments
@@ -665,10 +674,142 @@ def _axis_note(axis: SweepAxis | None) -> str:
     )
 
 
+#: stored-report codes whose ``data`` fields hold the generator's
+#: measured seam/junction angles and residuals — rendered verbatim under
+#: view='sites' (gr503027: they only ever surfaced as report INFO prose).
+_MEASURED_SEAM_CODES = ("seam.geometry", "seam.strain", "junction.strain")
+
+
+def _data_str(v: Any) -> str:
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    if isinstance(v, list):
+        if all(isinstance(x, str) for x in v):
+            return "".join(v) if all(len(x) == 1 for x in v) else ", ".join(v)
+        if all(isinstance(x, int | float) for x in v):
+            return "[" + ", ".join(_data_str(x) for x in v) + "]"
+    return str(v)
+
+
+def _stored_generated_lines(store: Store, node: Any, limit: int) -> list[str]:
+    """The bound structure's stored build-record detail that only ever
+    surfaced as report INFO prose (gr503027): ``generated.sites`` — the
+    generator's own measured site list (ordinal, region, seam, sign,
+    z/θ/r, free-direction normal) plus its two-point pendant pairs — and
+    the measured seam/junction angles carried in ``seam.geometry`` /
+    ``junction.strain`` / ``seam.strain`` finding ``data``, one row per
+    ``junctions``/``seam_atoms`` chain where the record keeps them."""
+    ref = store.get_ref(kind="structure", id=node.bound)
+    rec = (getattr(ref, "meta", None) or {}).get("generated") if ref else None
+    if not isinstance(rec, dict):
+        return []
+    lines: list[str] = []
+    sites_rec = rec.get("sites")
+    entries = (
+        [e for e in sites_rec["sites"] if isinstance(e, dict)]
+        if isinstance(sites_rec, dict) and isinstance(sites_rec.get("sites"), list)
+        else []
+    )
+    if entries and isinstance(sites_rec, dict):
+        lines.append("")
+        lines.append(
+            f"## generated sites (stored build record — {len(entries)} site(s))"
+        )
+        frame = sites_rec.get("frame")
+        if isinstance(frame, dict):
+            lines.append(
+                f"frame: {frame.get('axis')}; θ0 {frame.get('theta_zero')}; "
+                f"{frame.get('measured_on')}; frame.to_stored maps onto "
+                "stored ordinals"
+            )
+        shown = entries[:limit] if limit else entries
+        if len(shown) < len(entries):
+            lines.append(
+                f"showing {len(shown)} of {len(entries)} stored site rows — "
+                "args={'limit': 0} lists every row"
+            )
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "ordinal": e.get("ordinal"),
+                        "region": e.get("region"),
+                        "seam": e.get("seam"),
+                        "sign": e.get("sign", "—"),
+                        "z (Å)": _data_str(e.get("z_A")),
+                        "θ": _data_str(e.get("theta_deg")),
+                        "r (Å)": _data_str(e.get("r_A")),
+                        "normal": _data_str(e.get("normal")),
+                    }
+                    for e in shown
+                ],
+                schema=[
+                    "ordinal",
+                    "region",
+                    "seam",
+                    "sign",
+                    "z (Å)",
+                    "θ",
+                    "r (Å)",
+                    "normal",
+                ],
+            )
+        )
+        pairs = sites_rec.get("pairs")
+        if isinstance(pairs, list) and pairs:
+            lines.append(
+                f"pendant pairs: {len(pairs)} two-point — "
+                + ", ".join(str(p) for p in pairs)
+            )
+    junctions = rec.get("junctions")
+    seam_atoms = rec.get("seam_atoms")
+    findings = (
+        rec.get("report", {}).get("findings")
+        if isinstance(rec.get("report"), dict)
+        else None
+    )
+    seam_findings = [
+        f
+        for f in (findings if isinstance(findings, list) else [])
+        if isinstance(f, dict) and f.get("code") in _MEASURED_SEAM_CODES
+    ]
+    if (
+        (isinstance(junctions, list) and junctions)
+        or (isinstance(seam_atoms, list) and seam_atoms)
+        or seam_findings
+    ):
+        lines.append("")
+        lines.append("## generated seams (stored build record)")
+        if isinstance(junctions, list):
+            for j in junctions:
+                if not isinstance(j, dict):
+                    continue
+                lines.append(
+                    f"{j.get('name')}: {len(j.get('atoms') or [])} atoms, "
+                    f"{len(j.get('faces') or [])} faces, "
+                    f"{len(j.get('fused') or [])} fused bonds"
+                )
+        if isinstance(seam_atoms, list) and seam_atoms:
+            lines.append(f"seam_atoms: {seam_atoms}")
+        for f in seam_findings:
+            lines.append(
+                f"{f.get('code')} @ {f.get('where') or '—'}: {f.get('message', '')}"
+            )
+            data = f.get("data")
+            if isinstance(data, dict) and data:
+                lines.append(
+                    "  " + " · ".join(f"{k}={_data_str(v)}" for k, v in data.items())
+                )
+    return lines
+
+
 def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str:
     """``view='sites'`` — single-block form ``{'block': ...}`` or the
     pair form ``{'a','b'}`` (sites facing the partner within
-    ``pocket_gap_A``)."""
+    ``pocket_gap_A``). The single-block form also shows the bound
+    structure's stored build record — ``generated.sites`` and the
+    measured seam/junction angles — when the generator kept them
+    (:func:`_stored_generated_lines`)."""
     args = args or {}
     face = _vet_face(args)
     exposure_A = _vet_exposure_A(args)
@@ -701,6 +842,7 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
         lines.append(_axis_note(axis))
         lines.append(_carbon_note(name, cloud, classes))
         lines += _fmt_sites(sites, {name: classes}, limit)
+        lines += _stored_generated_lines(store, node, limit)
         return "\n".join(lines) + "\n"
 
     a_name, b_name = str(a_name).strip(), str(b_name).strip()

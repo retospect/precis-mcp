@@ -34,7 +34,7 @@ def resolve_state_arg(
     what: str = "args.state",
     example: str = (
         "get(kind='se', id='<slug>', view='block', "
-        "args={'name': '<block>', 'state': {'<block>': '<state name>'}})"
+        "args={'block': '<block>', 'state': {'<block>': '<state name>'}})"
     ),
 ) -> dict[str, design_states.BlockState]:
     """``raw`` (``{block: state_name}``) → ``{block name: BlockState}``,

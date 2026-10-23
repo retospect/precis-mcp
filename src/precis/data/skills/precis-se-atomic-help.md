@@ -266,7 +266,7 @@ The header prints each bound structure's `last_relax` rung — `stick`
 means preview geometry (the spring-relaxed stick model), not a relaxed
 minimum; trust rung `geo`/`ml` numbers for placement decisions.
 
-## Atomic mode — `view='sites'` + `lining` (attachment sites, complementarity stub)
+## Atomic mode — `view='sites'` (attachment-site enumerator)
 
 ```python
 get(kind="se", id="valve", view="sites", args={"block": "pillbox"})
@@ -304,7 +304,16 @@ caps the table at the N most exposed rows (default 50, `0` = all) — the
 summary always counts every row. A cap carbon whose wall normal runs
 along the axis takes out/in against the block's centroid. A closed cage
 (no open edge — a pillbox, a fullerene) lists its `in` sites at
-exposure 0: the cavity is sealed.
+exposure 0: the cavity is sealed. The single-block form also shows the
+bound structure's stored build record when the generator kept one:
+`## generated sites` (the `generated.sites` list — ordinal, region,
+seam, sign, z/θ/r, normal — plus the two-point pendant pairs, in the
+generator's authored frame) and `## generated seams` (the measured
+seam/junction angles — `seam.geometry`/`junction.strain`/`seam.strain`
+data — that `view='report'` only carries as INFO prose). Both are
+verbatim stored rows, never recomputed.
+
+## Atomic mode — `view='clearance'` `lining` (complementarity stub)
 
 `lining` on `view='clearance'` is the complementarity STUB — shape and
 polarity match, NO energetics (those come later via the atomic-mode

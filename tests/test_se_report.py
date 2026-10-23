@@ -117,6 +117,48 @@ def test_empty_report_preserves_recorded_status(setup_report: Any, ok: bool) -> 
     assert f"report: {'ok' if ok else 'NOT ok'} — no findings" in body
 
 
+def test_block_view_folds_geom_angle_dev_rows(
+    setup_report: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr503025: view='block' folds repeated ``geom.angle.dev`` WARN rows
+    into one count+worst+where row; view='report' keeps every row."""
+    monkeypatch.setattr(
+        "precis_se.handler.design_states.states_for", lambda *a, **k: []
+    )
+    handler, store, _ = setup_report
+    store.generated = {
+        "generator": "hexfold_scene",
+        "report": {
+            "ok": True,
+            "findings": [
+                {
+                    "severity": "WARN",
+                    "code": "geom.angle.dev",
+                    "where": str(a),
+                    "message": f"angle at atom {a}: {ang} deg (ideal 135.0)",
+                    "data": {"angle_deg": ang, "ideal_deg": 135.0},
+                }
+                for a, ang in ((9, 112.6), (9, 112.6), (89, 110.1), (169, 112.6))
+            ]
+            + [
+                {
+                    "severity": "INFO",
+                    "code": "seam.geometry",
+                    "where": "hex",
+                    "message": "measured seams",
+                }
+            ],
+        },
+    }
+    body = handler.get(id="design", view="block", args={"block": "joined"}).body
+    assert body.count("geom.angle.dev") == 1
+    assert "×4" in body and "9, 89, 169" in body
+    assert "worst: angle at atom 89: 110.1 deg (ideal 135.0)" in body
+    assert "seam.geometry" in body
+    report = handler.get(id="design", view="report", args={"block": "joined"}).body
+    assert report.count("angle at atom") == 4
+
+
 def test_report_rejects_missing_block_and_state_override(setup_report: Any) -> None:
     handler, _, _ = setup_report
     with pytest.raises(NotFound):

@@ -24,6 +24,8 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
+from precis.structure.cell import Cell
+from precis.structure.scene import Atom as StructAtom
 from precis.structure.scene import Scene as StructScene
 from precis_se import persist
 from precis_se.atomic import clearance as se_atomic_clearance
@@ -585,6 +587,101 @@ def test_sites_enumerates_rim_and_ring_carbons(
     # the two ends each carry the (12,0) rim — 24 open-edge carbons
     rim = [r for r in _site_rows(body) if r["ring"] == "open-edge"]
     assert len(rim) == 24
+
+
+def test_sites_shows_stored_generated_record(handler: SeHandler, store: Store) -> None:
+    """gr503027: the bound structure's stored ``generated.sites`` list and
+    the measured seam/junction angles render under view='sites' — they
+    used to surface only as ``view='report'`` INFO prose."""
+    scene = StructScene(
+        cell=Cell.from_lengths_angles(10.0, 10.0, 10.0, pbc=(False, False, False)),
+        atoms={
+            "C1": StructAtom("C1", "C", np.zeros(3)),
+            "C2": StructAtom("C2", "C", np.array([0.1, 0.0, 0.0])),
+        },
+    )
+    record = {
+        "generator": "hexfold_scene",
+        "sites": {
+            "frame": {
+                "axis": "authored tube axis, +z through the cross-section centroid",
+                "theta_zero": "seam 0 on +x",
+                "measured_on": "relaxed coordinates before canonical framing",
+            },
+            "sites": [
+                {
+                    "ordinal": 0,
+                    "region": "seam0",
+                    "seam": 0,
+                    "sign": "+",
+                    "z_A": 1.5,
+                    "theta_deg": 0.0,
+                    "r_A": 14.2,
+                    "normal": [-1.0, 0.0, 0.0],
+                },
+            ],
+            "pairs": [[0, 1]],
+        },
+        "junctions": [
+            {
+                "name": "seam:0:+",
+                "atoms": [0, 1],
+                "faces": [[0, 1]],
+                "fused": [[0, 1]],
+            }
+        ],
+        "seam_atoms": [[0, 1]],
+        "report": {
+            "ok": True,
+            "findings": [
+                {
+                    "severity": "INFO",
+                    "code": "seam.geometry",
+                    "where": "hex",
+                    "message": "Measured tethered degree-three sp2 seams",
+                    "data": {
+                        "degree": 3,
+                        "seams": 6,
+                        "signs": ["+"] * 6,
+                        "angle_deviation_max_deg": 7.4,
+                        "normalized_triple_max": 0.42,
+                    },
+                },
+            ],
+        },
+    }
+    store.structure_save(
+        slug="gen-sites-struct",
+        title="Generated sites fixture",
+        scene=scene,
+        version=1,
+        card_text="gr503027 fixture.",
+        meta_extra={"generated": record},
+    )
+    handler.put(
+        id="sites-gen",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "x", "envelope": "sphere:r2e-10"},
+                    {
+                        "op": "bind_structure",
+                        "block": "x",
+                        "design": "gen-sites-struct",
+                        "ports": {},
+                    },
+                ]
+            }
+        ),
+    )
+    body = handler.get(id="sites-gen", view="sites", args={"block": "x"}).body
+    assert "## generated sites" in body
+    assert "seam0" in body and "pendant pairs: 1 two-point" in body
+    assert "authored tube axis" in body
+    assert "## generated seams" in body
+    assert "seam:0:+: 2 atoms, 1 faces, 1 fused bonds" in body
+    assert "angle_deviation_max_deg=7.4" in body
+    assert "signs=++++++" in body
 
 
 def test_sites_face_and_exposure_match_the_geometry(

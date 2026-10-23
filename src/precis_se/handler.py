@@ -26,7 +26,7 @@ order"):
 - ``get``    — list designs (no ``id``), a design's nested tree TOC
   (``id=slug``, the default view — siblings in connect order when
   any connect joins them, else alphabetical), one block's full record
-  (``view='block'``, ``args={'name': ...}``), every block's ports with
+  (``view='block'``, ``args={'block': ...}``), every block's ports with
   each port's connect peer (``view='ports'``), measures + stack-up (``view='measures'`` —
   :mod:`precis_se.measures`), the deterministic datum ranking and which
   measures hang off each datum (``view='datums'`` —
@@ -394,7 +394,7 @@ class SeHandler(Handler):
             "'clearance'|'sweep'|'stations'|'pick'|'surface'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
-            "args={'name':...}; surface_deviation takes name and uses a matching exact "
+            "args={'block':...}; surface_deviation takes block and uses a matching exact "
             "generated target receipt when target is omitted (legacy data unavailable). "
             "Explicit target.features overrides it, with optional rigid z_offset_A; "
             "stored local Å atoms, no fitting/generation; clearance takes args={'a':...,'b':...} "
@@ -1823,7 +1823,7 @@ class SeHandler(Handler):
                 raise BadInput(
                     "surface_deviation requires a specific SE design id",
                     next="get(kind='se', id='<design>', view='surface_deviation', "
-                    "args={'name':'<bound-block-or-#uid>', 'target':{'features':[]}, "
+                    "args={'block':'<bound-block-or-#uid>', 'target':{'features':[]}, "
                     "'z_offset_A':0}); features=[] explicitly authors a flat sheet; "
                     "supply your authored feature profiles for a shaped target",
                 )
@@ -1881,12 +1881,34 @@ class SeHandler(Handler):
                 + tag_line
             )
         if v in ("block", "surface_deviation"):
-            name = (args or {}).get("name")
-            if not name or not str(name).strip():
+            # gr503026: 'block' is the canonical selector (every sibling
+            # view names it that); 'name' stays accepted as a deprecated
+            # alias and appends a hint to the rendered body.
+            name = (args or {}).get("block")
+            alias = (args or {}).get("name")
+            if (
+                name is not None
+                and alias is not None
+                and str(name).strip() != str(alias).strip()
+            ):
                 raise BadInput(
-                    f"get(kind='se', view={v!r}) requires args={{'name': ...}}"
+                    f"get(kind='se', view={v!r}): args 'block' and 'name' "
+                    f"disagree ({str(name).strip()!r} vs "
+                    f"{str(alias).strip()!r}) — 'block' is canonical; "
+                    "'name' is the deprecated alias"
                 )
-            block_name = str(name).strip()
+            sel = name if name is not None else alias
+            if not sel or not str(sel).strip():
+                raise BadInput(
+                    f"get(kind='se', view={v!r}) requires args={{'block': ...}}"
+                )
+            block_name = str(sel).strip()
+            deprecated_hint = (
+                "\n\n⚠ args={'name': ...} is a deprecated alias on this "
+                "view — use args={'block': ...}"
+                if alias is not None
+                else ""
+            )
             # A label OR a uid ('#41') — :mod:`precis_se.identity`, the
             # agent-facing half of the uid cutover.
             try:
@@ -1902,8 +1924,11 @@ class SeHandler(Handler):
                     body=render_surface_deviation(
                         self.store, node, args or {}, design_slug=str(ref.slug)
                     )
+                    + deprecated_hint
                 )
-            return Response(body=_render_block(tree, node, self.store, ref.id))
+            return Response(
+                body=_render_block(tree, node, self.store, ref.id) + deprecated_hint
+            )
         if v == "report":
             return Response(body=_render_report(self.store, tree, args))
         if v == "catalogue":
@@ -2058,11 +2083,11 @@ class SeHandler(Handler):
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'name':...}) | view='report' (stored build findings, "
+            "(args={'block':...}) | view='report' (stored build findings, "
             "optional args={'block':...}) | view='catalogue' (each join "
             "side's consulted catalogue row and resolution label, optional "
             "args={'block':...}) | view='ports' "
-            "| view='surface_deviation' (args={'name':...}; matching exact generated target receipt, legacy unavailable; explicit target.features override permits rigid z_offset_A; stored local Å atoms, no fitting/generation) "
+            "| view='surface_deviation' (args={'block':...}; matching exact generated target receipt, legacy unavailable; explicit target.features override permits rigid z_offset_A; stored local Å atoms, no fitting/generation) "
             "| view='topology' (L2: threading, declared dof, strand domains) | "
             "view='chain' (nucleic acids: helices with motif/turns/segments/"
             "occupancy, strands with their routes, derived pairing) | "
@@ -2967,7 +2992,7 @@ class SeHandler(Handler):
                 key, source = "atomic", mode
                 if node.bound_kind == "structure" and node.bound:
                     status = f"bound: {node.bound}"
-                    handle = f"view='block' args={{'name': {name!r}}}"
+                    handle = f"view='block' args={{'block': {name!r}}}"
                 else:
                     status, handle = "unbound", "bind_structure / generate"
             elif family.key == "fdm":
@@ -4469,12 +4494,56 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
         lines.append("```")
         lines.append(spec.rstrip("\n"))
         lines.append("```")
-    lines.extend(_stored_report_lines(rec))
+    lines.extend(_stored_report_lines(rec, aggregate=True))
     return lines
 
 
-def _stored_report_lines(rec: dict[str, Any]) -> list[str]:
-    """Shared table for stored build reports; never recomputes findings."""
+#: WARN codes whose finding rows ``view='block'`` folds into one
+#: count+worst+where aggregate — the full row list stays in
+#: ``view='report'`` (gr503025: ``geom.angle.dev`` fires per (ring,
+#: vertex), so each shared k3 seam junction lists twice and a six-seam
+#: record floods the block view).
+_AGGREGATE_WARN_CODES = frozenset({"geom.angle.dev"})
+
+
+def _aggregate_warn_row(code: str, fs: list[dict[str, Any]]) -> dict[str, str]:
+    """One table row folding ``code``'s stored findings: ``where`` is the
+    distinct locations (numeric sort when they are), the message carries
+    the count and the worst offender — max |angle_deg − ideal_deg| from
+    the finding ``data`` when present, else the first stored row (the
+    checker's own emission order is worst-first)."""
+    wheres = list(dict.fromkeys(str(f.get("where") or "—") for f in fs))
+    try:
+        wheres = sorted(wheres, key=int)
+    except ValueError:
+        pass
+
+    def deviation(f: dict[str, Any]) -> float | None:
+        data = f.get("data")
+        if not isinstance(data, dict):
+            return None
+        try:
+            return abs(float(data["angle_deg"]) - float(data["ideal_deg"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    devs = [(d, f) for f in fs if (d := deviation(f)) is not None]
+    worst = max(devs, key=lambda t: t[0])[1] if devs else fs[0]
+    return {
+        "severity": str(fs[0].get("severity", "")),
+        "code": code,
+        "where": ", ".join(wheres),
+        "message": f"×{len(fs)} — worst: {worst.get('message', '')}; "
+        "full list in view='report'",
+        "span": "—",
+    }
+
+
+def _stored_report_lines(rec: dict[str, Any], *, aggregate: bool = False) -> list[str]:
+    """Shared table for stored build reports; never recomputes findings.
+    ``aggregate`` folds :data:`_AGGREGATE_WARN_CODES` WARN rows into one
+    count+worst+where row each — the ``view='block'`` read; ``view='report'``
+    and the join dry run keep every row."""
     lines: list[str] = []
     report = rec.get("report") if isinstance(rec.get("report"), dict) else None
     findings = report.get("findings") if report is not None else None
@@ -4484,15 +4553,35 @@ def _stored_report_lines(rec: dict[str, Any]) -> list[str]:
             f"report: {'ok' if report.get('ok') else 'NOT ok'} — "
             f"{len(findings)} finding(s)"
         )
+        folded: dict[str, list[dict[str, Any]]] = {}
+        if aggregate:
+            folded = {
+                code: [
+                    f
+                    for f in findings
+                    if isinstance(f, dict)
+                    and str(f.get("severity", "")).upper() == "WARN"
+                    and str(f.get("code", "")) == code
+                ]
+                for code in _AGGREGATE_WARN_CODES
+            }
+            folded = {code: fs for code, fs in folded.items() if fs}
         rows = []
+        emitted: set[str] = set()
         for f in findings:
             if not isinstance(f, dict):
+                continue
+            code = str(f.get("code", ""))
+            if code in folded and str(f.get("severity", "")).upper() == "WARN":
+                if code not in emitted:
+                    emitted.add(code)
+                    rows.append(_aggregate_warn_row(code, folded[code]))
                 continue
             span = f.get("span")
             rows.append(
                 {
                     "severity": str(f.get("severity", "")),
-                    "code": str(f.get("code", "")),
+                    "code": code,
                     "where": str(f.get("where") or "—"),
                     "message": str(f.get("message", "")),
                     "span": f"{span[0]}:{span[1]}"
@@ -4515,7 +4604,7 @@ def _stored_report_lines(rec: dict[str, Any]) -> list[str]:
 
 def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     # The uid is shown because it is the ADDRESS that survives a relabel —
-    # args={'name': '#41'} reaches this block whatever it is called
+    # args={'block': '#41'} reaches this block whatever it is called
     # (precis_se.identity). A block added but not yet saved has none.
     uid = f"  (uid #{node.uid})" if node.uid is not None else ""
     lines = [f"# block '{node.name}'{uid}"]
@@ -7101,10 +7190,10 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "completion_digest": frozenset({"shown_design_token"}),
     "": frozenset({"state"}),
     "tree": frozenset({"state"}),
-    "block": frozenset({"name", "state"}),
+    "block": frozenset({"block", "name", "state"}),
     "report": frozenset({"block"}),
     "catalogue": frozenset({"block"}),
-    "surface_deviation": frozenset({"name", "target", "z_offset_A"}),
+    "surface_deviation": frozenset({"block", "name", "target", "z_offset_A"}),
     "ports": frozenset(),
     "topology": frozenset(),
     "chain": frozenset({"state"}),
