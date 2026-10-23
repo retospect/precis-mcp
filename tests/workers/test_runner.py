@@ -735,6 +735,52 @@ class TestRunLoopRefPassDeadline:
         assert calls["hang"] == 1
         assert calls["ok"] == 2
 
+    def test_bounded_pass_sees_the_ambient_deadline(self, store) -> None:
+        """outbound-policy S2 (gr506756): ``call_with_deadline`` publishes
+        the pass's bound as the ambient deadline on its thread — the
+        ContextVar carries ``ref_pass_deadline_s`` down to limiter/slot
+        waits inside the pass without an argument through every call."""
+        from precis.utils.deadline import deadline_at
+
+        seen: list[float | None] = []
+
+        def _probe_pass(batch_size: int) -> BatchResult:
+            seen.append(deadline_at())
+            return BatchResult(handler="probe", claimed=0, ok=0, failed=0)
+
+        run_loop(
+            [],
+            store,
+            once=False,
+            idle_seconds=0.01,
+            should_stop=lambda: len(seen) >= 1,
+            ref_passes=[_probe_pass],
+            ref_pass_deadline_s=30.0,
+        )
+        assert seen and all(v is not None for v in seen)
+
+    def test_unbounded_pass_sees_no_ambient_deadline(self, store) -> None:
+        """No ``deadline_s`` and no loop-level bound → the pass runs
+        unbounded: nothing publishes an ambient deadline (the
+        no-deadline behaviour is unchanged)."""
+        from precis.utils.deadline import deadline_at
+
+        seen: list[float | None] = []
+
+        def _probe_pass(batch_size: int) -> BatchResult:
+            seen.append(deadline_at())
+            return BatchResult(handler="probe", claimed=0, ok=0, failed=0)
+
+        run_loop(
+            [],
+            store,
+            once=False,
+            idle_seconds=0.01,
+            should_stop=lambda: len(seen) >= 1,
+            ref_passes=[_probe_pass],
+        )
+        assert seen and all(v is None for v in seen)
+
     def test_detached_run_uses_its_own_connection(self, store) -> None:
         """An abandoned pass keeps running on the shared ``Store``. That
         is safe because every store op checks out its own pooled conn and

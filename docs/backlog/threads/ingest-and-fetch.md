@@ -228,7 +228,10 @@ is verified done on prod.
    OpenRouter sits on the 1/s website bucket (gr507343, gr507340), and a
    limiter wait eats the fetch ref-pass budget (gr506756). The g4-llm-route
    and g4-workers point fixes land first; S1 generalises them. Its S3 gate
-   is sequenced in `ship-gate-ci`.
+   is sequenced in `ship-gate-ci`. S2's deadline half shipped
+   2026-10-23 (limiter/slot waits bound to the ambient deadline
+   `call_with_deadline` publishes; refusals counted in-process + logged —
+   the row column waits on an owner ruling).
 5. **No-OA stubs** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`

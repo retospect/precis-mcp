@@ -74,6 +74,7 @@ DB writes — coexists.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import json
 import logging
@@ -2820,7 +2821,12 @@ def run_oa_fetch_pass(
             max_workers=workers, thread_name_prefix="oa-fetch"
         ) as pool:
             for _ in range(workers):
-                pool.submit(_worker)
+                # A fresh copy_context per submit: the ambient deadline (and
+                # any other ContextVar the pass thread carries) reaches the
+                # pool thread, while each worker's own ContextVar writes
+                # stay private — a shared Context would leak them across
+                # workers. Same pattern as runtime/search.py's fan-out.
+                pool.submit(contextvars.copy_context().run, _worker)
     return {
         "claimed": counts["attempted"],
         "ok": counts["ok"],

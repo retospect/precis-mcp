@@ -3523,6 +3523,37 @@ class TestThroughputBounds:
         assert result == {"claimed": 6, "ok": 6, "failed": 0}
         assert len(ran) == 6
 
+    def test_pool_workers_see_the_ambient_deadline(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr506756 / outbound-policy S2: the legs' limiter waits run on
+        pool threads, and ContextVars don't cross a ThreadPoolExecutor
+        submit on their own — the pass propagates the ambient deadline the
+        worker loop published via per-submit ``copy_context``. Without it
+        a 1/s starved leg still waits the full 30 s inside a 300 s pass."""
+        import threading
+
+        from precis.utils.deadline import deadline_at, deadline_scope
+
+        for n in range(6):
+            _seed_paper_stub(store, doi=f"10.1234/ctx-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_WORKERS", "4")
+        seen: list[float | None] = []
+        seen_lock = threading.Lock()
+
+        def _cascade(_store, stub, *args, **kwargs):
+            with seen_lock:
+                seen.append(deadline_at())
+            return None
+
+        monkeypatch.setattr(fetch_oa, "_run_cascade", _cascade)
+        bound = time.monotonic() + 60.0
+        with deadline_scope(bound):
+            run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert len(seen) == 6
+        assert all(v == bound for v in seen)
+        assert deadline_at() is None  # scope exited; nothing leaks
+
     def test_workers_one_keeps_serial_order(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

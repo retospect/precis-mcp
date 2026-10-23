@@ -30,6 +30,15 @@ it had before this module existed (its own tenacity backoff). The only
 way :func:`acquire` returns ``False`` is a real, live "you are rate/
 quota limited" answer read from the shared row.
 
+**Deadline-aware waits.** ``acquire`` waits at most ``max_wait_s``, but
+never past the caller's own deadline — the ``deadline=`` argument or the
+ambient deadline :func:`precis.utils.deadline.call_with_deadline`
+publishes on its worker thread, whichever bound lands first (gr506756: a
+30 s limiter wait used to eat a ref pass's last seconds, keeping the
+pass's per-cycle summary row from ever logging). A refusal is counted
+per provider in this process (:func:`refusal_counts`) and logged; the
+durable ``limiter_refusals`` row counter is the deferred half of S2.
+
 **Store-free by design.** The S2 fetch functions this gates
 (``precis.ingest.citations``, ``precis.ingest.semantic_scholar``,
 ``precis.workers.fetch_oa``) don't carry a ``Store``/pool — they're plain
@@ -87,6 +96,7 @@ import psycopg
 
 from precis.config import load_config
 from precis.liveness import drain_sleep
+from precis.utils.deadline import deadline_at
 
 log = logging.getLogger(__name__)
 
@@ -443,12 +453,54 @@ def _warn_unpaced(provider: str, reason: str) -> None:
     )
 
 
+#: Per-process refusal tally, provider → count. The durable
+#: ``limiter_refusals`` column the spec wants on the row is the deferred
+#: half of outbound-policy S2 (its owner is undecided) — until then this
+#: counter plus the rate-limited WARNING below is the demand signal
+#: (log/metric only, no schema change).
+_refusals: dict[str, int] = {}
+
+#: Seconds between two refusal warnings for one provider — a starved 1/s
+#: row can refuse every call, so the WARNING carries the running count and
+#: fires at most once per this interval per provider per process.
+_REFUSAL_WARN_EVERY_S = 300.0
+_refusal_warned: dict[str, float] = {}
+
+
+def _record_refusal(provider: str, reason: str) -> None:
+    """Count a genuine limiter refusal and log it, at most once per
+    :data:`_REFUSAL_WARN_EVERY_S` per provider — the warning's running count
+    carries the suppressed ones. Called only on a real "you are limited"
+    answer: never on fail-open, and a drain stop is shutdown, not demand."""
+    _refusals[provider] = _refusals.get(provider, 0) + 1
+    now = time.monotonic()
+    last = _refusal_warned.get(provider)
+    if last is not None and now - last < _REFUSAL_WARN_EVERY_S:
+        return
+    _refusal_warned[provider] = now
+    log.warning(
+        "rate_limit: %r refused by the shared limiter (%s; %d refusal(s) "
+        "in this process)",
+        provider,
+        reason,
+        _refusals[provider],
+    )
+
+
+def refusal_counts() -> dict[str, int]:
+    """This process's limiter-refusal tally, provider → count. Process-local:
+    the durable per-provider row counter is the deferred half of S2. For
+    tests and the ``/limits`` view."""
+    return dict(_refusals)
+
+
 def acquire(
     provider: str,
     *,
     n: int = 1,
     max_wait_s: float = 30.0,
     seed_row: tuple[int, float] | None = None,
+    deadline: float | None = None,
 ) -> bool:
     """Block (bounded by ``max_wait_s``) until ``n`` tokens for ``provider``
     are granted under the shared cross-host limiter, then return ``True``.
@@ -463,6 +515,16 @@ def acquire(
     the SIGTERM drain budget) — the caller proceeds and relies on its
     existing tenacity backoff either way.
 
+    ``deadline`` bounds the wait by the caller's own budget: an absolute
+    ``time.monotonic()`` point past which the wait must not run (a ref
+    pass's remaining seconds, outbound-policy S2 / gr506756). The ambient
+    deadline :func:`precis.utils.deadline.call_with_deadline` publishes on
+    its worker thread bounds the wait the same way — the effective budget
+    is the EARLIEST of ``max_wait_s``, ``deadline`` and the ambient bound,
+    so a limiter wait can never eat the budget of the call that owns it.
+    A grant still wins on the instant it lands, even at the bound; a
+    refusal past the bound is counted (:func:`refusal_counts`) and logged.
+
     ``seed_row=(capacity, refill_per_sec)`` inserts the provider's row on
     first use instead of failing open for a missing row.
     """
@@ -470,7 +532,15 @@ def acquire(
         _warn_unpaced(provider, "disabled by PRECIS_RATE_LIMIT")
         return True
     try:
-        deadline = time.monotonic() + max_wait_s
+        now = time.monotonic()
+        wait_until = now + max_wait_s
+        ambient = deadline_at()
+        if ambient is not None:
+            wait_until = min(wait_until, ambient)
+        if deadline is not None:
+            wait_until = min(wait_until, deadline)
+        deadline_bound = wait_until < now + max_wait_s
+        wait_budget = wait_until - now
         observer = _timing_observer.get()
         while True:
             started = time.perf_counter() if observer is not None else None
@@ -506,9 +576,14 @@ def acquire(
                 continue
             _capacity, refill_per_sec, daily_cap, avail, used_today = state
             if daily_cap is not None and used_today + n > daily_cap:
+                _record_refusal(provider, "daily quota exhausted")
                 return False  # quota exhausted -> don't spin, refuse now
-            remaining = deadline - time.monotonic()
+            remaining = wait_until - time.monotonic()
             if remaining <= 0:
+                reason = f"rate-starved past its {max(0.0, wait_budget):g}s wait budget"
+                if deadline_bound:
+                    reason += " (caller deadline)"
+                _record_refusal(provider, reason)
                 return False  # rate-starved past the wait budget
             wait = _next_wait(n, float(avail), float(refill_per_sec), remaining)
             started = time.perf_counter() if observer is not None else None
@@ -553,8 +628,9 @@ def bucket_rate(provider: str) -> float | None:
 
 class RateLimited(Exception):
     """The shared limiter refused ``provider``: its daily quota is spent, the
-    rate wait ran past ``max_wait_s``, or the process is draining. Raised by
-    :func:`require`; callers skip or defer the request rather than fire it."""
+    rate wait ran past ``max_wait_s`` (or the caller's deadline, whichever
+    came first), or the process is draining. Raised by :func:`require`;
+    callers skip or defer the request rather than fire it."""
 
     def __init__(self, provider: str) -> None:
         super().__init__(f"rate limit: {provider} refused by the shared limiter")
@@ -567,12 +643,15 @@ def require(
     n: int = 1,
     max_wait_s: float = 30.0,
     seed_row: tuple[int, float] | None = None,
+    deadline: float | None = None,
 ) -> None:
     """:func:`acquire`, raising :class:`RateLimited` instead of returning
     ``False``. For quota-lane providers, where firing the request anyway
     would breach the hard daily cap. Fails open exactly like :func:`acquire`.
     """
-    if not acquire(provider, n=n, max_wait_s=max_wait_s, seed_row=seed_row):
+    if not acquire(
+        provider, n=n, max_wait_s=max_wait_s, seed_row=seed_row, deadline=deadline
+    ):
         raise RateLimited(provider)
 
 
@@ -598,5 +677,6 @@ __all__ = [
     "close",
     "observe_timing",
     "park",
+    "refusal_counts",
     "require",
 ]

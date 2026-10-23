@@ -337,6 +337,14 @@ def run_loop(
       must not outlive its own pass. Job executors stay unbounded by
       choice: abandoning one mid-run strands a claimed job's lease.
 
+      ``call_with_deadline`` publishes the bound as the ambient deadline
+      (:func:`precis.utils.deadline.deadline_at`) on the pass's thread, so
+      limiter and slot waits inside the pass bound themselves to it
+      instead of eating the pass's remaining budget (gr506756,
+      outbound-policy S2) — no argument threading needed. A pass that
+      fans out to a thread pool propagates it by submitting workers via
+      ``pool.submit(contextvars.copy_context().run, fn)``.
+
       The abandoned run keeps the SAME ``store`` — safe because
       ``Store`` carries no per-caller connection state: every store op
       checks out its own conn via ``PrecisPool.connection`` (psycopg

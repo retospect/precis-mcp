@@ -57,6 +57,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
+from precis.utils.deadline import deadline_at
+
 log = logging.getLogger(__name__)
 
 #: Default TTL (seconds) for a reservation's crash-reclaim hold
@@ -350,7 +352,12 @@ def served_locally(model: str) -> bool:
     return resource in _remote_served(store)
 
 
-def acquire(model: str, *, wait_s: float | None = None) -> LocalSlot | None:
+def acquire(
+    model: str,
+    *,
+    wait_s: float | None = None,
+    deadline: float | None = None,
+) -> LocalSlot | None:
     """Reserve a local serving slot for ``model`` if this host serves it.
 
     Returns ``None`` when there is nothing to reserve — no process store, or the
@@ -370,6 +377,14 @@ def acquire(model: str, *, wait_s: float | None = None) -> LocalSlot | None:
     so a burst queues briefly on local capacity instead of spending on the
     fallback rung. The dark ``None`` path never waits.
 
+    The wait is further bounded by the caller's deadline — the ``deadline``
+    argument or the ambient deadline
+    :func:`precis.utils.deadline.call_with_deadline` publishes on its
+    worker thread, whichever lands first (outbound-policy S2, gr506756):
+    a slot wait can never eat the budget of the bounded pass that owns it.
+    ``deadline`` is an absolute ``time.monotonic()`` point, matching
+    ``rate_limit.acquire``'s argument.
+
     A host that serves *other* ``llm:`` resources but not this one (and no
     remote match) logs a rate-limited warning (once per cache window) — that
     combination is a name mismatch, not the ordinary dark case, and would
@@ -385,12 +400,17 @@ def acquire(model: str, *, wait_s: float | None = None) -> LocalSlot | None:
     host = _local_host()
     resource = f"llm:{model}"
     wait = _wait_s() if wait_s is None else max(0.0, wait_s)
-    deadline = time.monotonic() + wait
+    until = time.monotonic() + wait
+    ambient = deadline_at()
+    if ambient is not None:
+        until = min(until, ambient)
+    if deadline is not None:
+        until = min(until, deadline)
     while True:
         slot = _acquire_once(store, host, resource, model)
-        if slot is None or slot.reserved or time.monotonic() >= deadline:
+        if slot is None or slot.reserved or time.monotonic() >= until:
             return slot
-        time.sleep(min(_WAIT_POLL_S, deadline - time.monotonic()))
+        time.sleep(min(_WAIT_POLL_S, until - time.monotonic()))
 
 
 def _acquire_once(

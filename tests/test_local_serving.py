@@ -594,6 +594,44 @@ def test_acquire_zero_wait_keeps_the_immediate_pause(store) -> None:
     local_serving.release(first)
 
 
+def test_acquire_wait_bounded_by_ambient_deadline(store) -> None:
+    """outbound-policy S2 (gr506756): the slot wait honours the caller's
+    deadline — a bounded call is paused at the ambient bound, never held
+    the full ``wait_s`` on a saturated slot."""
+    import time
+
+    from precis.utils.deadline import deadline_scope
+
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    t0 = time.monotonic()
+    with deadline_scope(t0 + 0.4):
+        second = local_serving.acquire("solo", wait_s=30.0)
+    elapsed = time.monotonic() - t0
+    assert second is not None and second.paused and not second.reserved
+    assert elapsed < 5.0
+    local_serving.release(first)
+
+
+def test_acquire_wait_bounded_by_deadline_kwarg(store) -> None:
+    """The explicit ``deadline=`` (absolute monotonic point) bounds the slot
+    wait the same way, without an ambient scope."""
+    import time
+
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    t0 = time.monotonic()
+    second = local_serving.acquire("solo", wait_s=30.0, deadline=t0 + 0.3)
+    elapsed = time.monotonic() - t0
+    assert second is not None and second.paused and not second.reserved
+    assert elapsed < 5.0
+    local_serving.release(first)
+
+
 def test_acquire_local_busy_spills_to_remote(store) -> None:
     """This host serves the model but its row is full → a LAN-routable
     ``served_by`` on another host takes the spill (reserved against THAT

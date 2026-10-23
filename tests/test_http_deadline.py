@@ -87,6 +87,24 @@ class TestCallWithDeadline:
         assert ei.value.thread.is_alive()
         assert aborts == ["x"]
 
+    def test_publishes_the_ambient_deadline_on_the_worker_thread(self) -> None:
+        """outbound-policy S2: the bound rides the ambient deadline
+        ContextVar so outbound waits inside the call (rate_limit.acquire,
+        local_serving.acquire) bound themselves to it — and it stays on the
+        worker thread, never leaking to the caller."""
+        from precis.utils.deadline import deadline_at
+
+        assert deadline_at() is None
+
+        def _probe() -> tuple[float | None, float | None]:
+            at = deadline_at()
+            return at, at - time.monotonic() if at is not None else None
+
+        inside, remaining = call_with_deadline(_probe, deadline_s=5.0)
+        assert inside is not None
+        assert remaining is not None and 0.0 < remaining <= 5.0
+        assert deadline_at() is None  # caller stays unbounded
+
 
 class TestRequestWithDeadline:
     def test_trickling_peer_times_out_as_read_timeout(self, trickle_url) -> None:

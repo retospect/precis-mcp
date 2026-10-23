@@ -558,3 +558,289 @@ class TestCrossrefSeed:
                 assert self._crossref(store) == (1, 1.0, 1)
         finally:
             _seed(store, "crossref", capacity=1, refill_per_sec=1.0, tokens=1)
+
+
+class _FetchOne:
+    """A ``conn.execute`` result carrying one ``fetchone`` row."""
+
+    def __init__(self, row: tuple[Any, ...] | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self._row
+
+
+class _StarvedConn:
+    """Never grants; reports a live, rate-starved provider row — the state
+    that makes ``acquire`` poll until its wait budget runs out (the same
+    fake shape tests/test_drain_sleep.py uses)."""
+
+    closed = False
+
+    def execute(self, sql: str, params: Any) -> _FetchOne:
+        if "UPDATE external_rate_limits" in sql:
+            return _FetchOne(None)
+        # _SELECT_STATE_SQL: capacity, refill_per_sec, daily_cap, avail,
+        # used_today — a live row, starved, no quota lane.
+        return _FetchOne((10, 1.0, None, 0.0, 0))
+
+
+class _GrantConn(_StarvedConn):
+    def execute(self, sql: str, params: Any) -> _FetchOne:
+        if "UPDATE external_rate_limits" in sql:
+            return _FetchOne((9.0,))  # granted
+        return _FetchOne((10, 1.0, None, 0.0, 0))
+
+
+class _QuotaConn(_StarvedConn):
+    def execute(self, sql: str, params: Any) -> _FetchOne:
+        if "UPDATE external_rate_limits" in sql:
+            return _FetchOne(None)
+        return _FetchOne((10, 100.0, 5, 10.0, 5))  # daily_cap spent
+
+
+class TestDeadlineBound:
+    """outbound-policy S2 (gr506756's limiter half): a limiter wait bounds
+    itself to the caller's deadline — the ``deadline=`` argument or the
+    ambient deadline ``call_with_deadline`` publishes on the bounded call's
+    worker thread — so it can never eat the budget of the pass that owns
+    it. Fake conns keep the starved-row waits millisecond-fast; one real-DB
+    test proves the wired path end to end."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rate_limit, "_refusals", {})
+        monkeypatch.setattr(rate_limit, "_refusal_warned", {})
+
+    @staticmethod
+    def _use_conn(monkeypatch: pytest.MonkeyPatch, conn: Any) -> None:
+        monkeypatch.setattr(rate_limit, "_rate_limit_enabled", lambda: True)
+        monkeypatch.setattr(rate_limit, "_get_conn", lambda: conn)
+
+    def test_ambient_deadline_bounds_the_wait(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The core gr506756 shape: a pass with fractions of a second left
+        never waits the configured 300 s on a starved bucket — it is refused
+        at its own deadline, and the refusal is counted and logged."""
+        from precis.utils.deadline import deadline_scope
+
+        self._use_conn(monkeypatch, _StarvedConn())
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING", logger=rate_limit.log.name):
+            with deadline_scope(t0 + 0.4):
+                granted = rate_limit.acquire("test_rl_dl_ambient", max_wait_s=300.0)
+        elapsed = time.monotonic() - t0
+        assert granted is False
+        assert elapsed < 5.0, f"waited past the deadline ({elapsed:.1f}s)"
+        assert rate_limit.refusal_counts()["test_rl_dl_ambient"] == 1
+        msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if "test_rl_dl_ambient" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+        assert "refused by the shared limiter" in msgs[0]
+        assert "caller deadline" in msgs[0]
+
+    def test_explicit_deadline_kwarg_bounds_the_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._use_conn(monkeypatch, _StarvedConn())
+        t0 = time.monotonic()
+        granted = rate_limit.acquire(
+            "test_rl_dl_kwarg", max_wait_s=300.0, deadline=t0 + 0.3
+        )
+        assert granted is False
+        assert time.monotonic() - t0 < 5.0
+        assert rate_limit.refusal_counts()["test_rl_dl_kwarg"] == 1
+
+    def test_past_deadline_refuses_without_waiting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._use_conn(monkeypatch, _StarvedConn())
+        t0 = time.monotonic()
+        granted = rate_limit.acquire(
+            "test_rl_dl_past", max_wait_s=300.0, deadline=t0 - 1.0
+        )
+        assert granted is False
+        assert time.monotonic() - t0 < 1.0
+
+    def test_no_deadline_still_waits_max_wait_s(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression pin: unbounded callers keep today's behaviour — the
+        wait runs out ``max_wait_s``, not the deadline machinery."""
+        self._use_conn(monkeypatch, _StarvedConn())
+        t0 = time.monotonic()
+        granted = rate_limit.acquire("test_rl_dl_plain", max_wait_s=0.3)
+        elapsed = time.monotonic() - t0
+        assert granted is False
+        assert elapsed >= 0.25 and elapsed < 5.0
+
+    def test_call_with_deadline_publishes_the_ambient_bound(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wired path: ``call_with_deadline`` publishes its bound as the
+        ambient deadline on the worker thread. With a looser bound than the
+        wait's own budget, the configured ``max_wait_s`` still fires — the
+        ambient bound joins a ``min()``, it never widens."""
+        from precis.utils.deadline import call_with_deadline, deadline_at
+
+        self._use_conn(monkeypatch, _StarvedConn())
+        granted, ambient = call_with_deadline(
+            lambda: (
+                rate_limit.acquire("test_rl_dl_cwd", max_wait_s=0.3),
+                deadline_at(),
+            ),
+            deadline_s=30.0,
+        )
+        assert granted is False
+        assert ambient is not None  # the bound was ambient inside the call
+        assert rate_limit.refusal_counts()["test_rl_dl_cwd"] == 1
+
+    def test_inner_deadline_scope_tightens_a_bounded_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ambient-bound composition end to end: a call bounded to 5 s
+        whose inner scope leaves the limiter 0.3 s — the wait refuses at
+        the tighter bound and the call returns normally (a wait consuming
+        literally the whole outer bound races the outer abandonment by
+        construction; the deterministic shape tests the tighter bound)."""
+        from precis.utils.deadline import call_with_deadline, deadline_scope
+
+        self._use_conn(monkeypatch, _StarvedConn())
+
+        def _work() -> bool:
+            with deadline_scope(time.monotonic() + 0.3):
+                return rate_limit.acquire("test_rl_dl_cwd2", max_wait_s=300.0)
+
+        t0 = time.monotonic()
+        assert call_with_deadline(_work, deadline_s=5.0) is False
+        assert time.monotonic() - t0 < 5.0
+        assert rate_limit.refusal_counts()["test_rl_dl_cwd2"] == 1
+
+    def test_grant_under_deadline_still_grants(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deadline must never refuse a grant that's already there — the
+        bound only cuts the WAIT."""
+        from precis.utils.deadline import deadline_scope
+
+        self._use_conn(monkeypatch, _GrantConn())
+        with deadline_scope(time.monotonic() + 0.1):
+            assert rate_limit.acquire("test_rl_dl_grant", max_wait_s=300.0)
+        assert "test_rl_dl_grant" not in rate_limit.refusal_counts()
+
+    def test_require_raises_the_deadline_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.deadline import deadline_scope
+
+        self._use_conn(monkeypatch, _StarvedConn())
+        with deadline_scope(time.monotonic() + 0.2):
+            with pytest.raises(rate_limit.RateLimited) as exc:
+                rate_limit.require("test_rl_dl_req", max_wait_s=300.0)
+        assert exc.value.provider == "test_rl_dl_req"
+
+    def test_quota_refusal_is_counted_and_logged(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Refusal accounting is not deadline-only: the quota lane's
+        instant refusal lands in the same counter and log."""
+        self._use_conn(monkeypatch, _QuotaConn())
+        with caplog.at_level("WARNING", logger=rate_limit.log.name):
+            granted = rate_limit.acquire("test_rl_dl_quota", max_wait_s=5.0)
+        assert granted is False
+        assert rate_limit.refusal_counts()["test_rl_dl_quota"] == 1
+        msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if "test_rl_dl_quota" in r.getMessage()
+        ]
+        assert len(msgs) == 1 and "daily quota exhausted" in msgs[0]
+
+    def test_refusal_warning_is_rate_limited_per_provider(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A starved row refuses every call; the WARNING fires once per
+        provider per window and carries the running count."""
+        self._use_conn(monkeypatch, _StarvedConn())
+        with caplog.at_level("WARNING", logger=rate_limit.log.name):
+            for _ in range(3):
+                assert rate_limit.acquire("test_rl_dl_spam", max_wait_s=0.05) is False
+        # every refusal counted…
+        assert rate_limit.refusal_counts()["test_rl_dl_spam"] == 3
+        # …but logged once, with the running count at fire time
+        msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if "test_rl_dl_spam" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+        assert "1 refusal(s)" in msgs[0]
+
+    def test_observe_timing_records_a_deadline_cut_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The 5165ecf80 instrumentation still reports the DB and sleep
+        phases for a wait the deadline cuts — the measurement layer is
+        orthogonal to admission."""
+        from precis.utils.deadline import deadline_scope
+
+        self._use_conn(monkeypatch, _StarvedConn())
+        phases: list[str] = []
+
+        def _record(provider: str, phase: str, elapsed_ms: float) -> None:
+            phases.append(phase)
+
+        with deadline_scope(time.monotonic() + 0.3):
+            with rate_limit.observe_timing(_record):
+                assert (
+                    rate_limit.acquire("test_rl_dl_timing", max_wait_s=300.0) is False
+                )
+        assert "db" in phases and "sleep" in phases
+
+    def test_deadline_scope_restores_and_isolation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ambient deadline is scoped: it does not leak out of the
+        block, and a nested scope restores the outer value."""
+        from precis.utils.deadline import deadline_at, deadline_scope
+
+        assert deadline_at() is None
+        outer = time.monotonic() + 60.0
+        inner = time.monotonic() + 5.0
+        with deadline_scope(outer):
+            assert deadline_at() == outer
+            with deadline_scope(inner):
+                assert deadline_at() == inner
+            assert deadline_at() == outer
+        assert deadline_at() is None
+
+    def test_real_row_refusal_under_deadline(
+        self, use_store_dsn: Store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """End to end on a real row: a drained bucket + an ambient deadline
+        → the acquire returns ``False`` at the deadline, not at
+        ``max_wait_s``, and the refusal is logged."""
+        from precis.utils.deadline import deadline_scope
+
+        provider = "test_rl_dl_real"
+        _seed(use_store_dsn, provider, capacity=1, refill_per_sec=0.0001, tokens=0.0)
+        try:
+            t0 = time.monotonic()
+            with caplog.at_level("WARNING", logger=rate_limit.log.name):
+                with deadline_scope(t0 + 0.4):
+                    granted = rate_limit.acquire(provider, max_wait_s=300.0)
+            elapsed = time.monotonic() - t0
+            assert granted is False
+            assert elapsed < 5.0
+            assert rate_limit.refusal_counts()[provider] == 1
+            assert any(
+                provider in r.getMessage()
+                for r in caplog.records
+                if r.levelname == "WARNING"
+            )
+        finally:
+            _cleanup(use_store_dsn, provider)
