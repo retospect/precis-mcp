@@ -126,6 +126,7 @@ from precis.workers._chase_llm import (
     is_corroborating,
 )
 from precis.workers.chase_trigger import _refresh_claim_embeddings
+from precis.workers.embed import EmbedHandler
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -171,8 +172,11 @@ _ROLE = "corroborates"
 #: not cost the hub its slot when a real body passage sits just behind it.
 _CHUNKS_PER_HUB = 3
 
-#: Chunk kinds that never ground evidence (the embed worker skips them too).
-_SKIP_CHUNK_KINDS: tuple[str, ...] = ("references", "field")
+#: Chunk kinds that never ground evidence — the SAME set the embed
+#: worker never vectors (``EmbedHandler.skip_chunk_kinds``, shared so the
+#: "every embeddable body chunk embedded" claim predicate and the
+#: worker's queue can never disagree about what is embeddable).
+_SKIP_CHUNK_KINDS: tuple[str, ...] = EmbedHandler.skip_chunk_kinds
 
 #: Verifier hook signature (``_verify_support_with_caveats``; a stub in
 #: tests). Returns the parsed verdict dict, or ``None`` on dispatch failure.

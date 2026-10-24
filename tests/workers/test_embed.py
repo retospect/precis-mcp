@@ -402,11 +402,12 @@ class TestEmbedHandlerPriorityTiers:
 
 
 class TestEmbedHandlerRestCursor:
-    """gr506753: the ``rest`` tier's ``ORDER BY c.chunk_id`` used to rescan
+    """gr506753: the corpus tiers' ``ORDER BY c.chunk_id`` used to rescan
     the whole already-embedded prefix on EVERY micro-batch (~9s/claim on a
     4.5M-chunk prod corpus — claim SQL, not the embedder, was the drain's
     bound). ``EmbedHandler._rest_after`` resumes each claim past the
-    previous one's high-water instead of re-walking from chunk_id 1."""
+    previous one's high-water instead of re-walking from chunk_id 1 —
+    one cursor per corpus tier since gr513749."""
 
     def test_second_claim_resumes_past_first_high_water(self, store):
         h = EmbedHandler(make_mock_bge_m3())
@@ -423,11 +424,11 @@ class TestEmbedHandlerRestCursor:
 
         assert [row.chunk_id for row in first] == ids[:4]
         assert [row.chunk_id for row in second] == ids[4:]
-        assert h._rest_after == ids[-1]
+        assert h._rest_after["paragraph"] == ids[-1]
 
     def test_repended_low_id_chunk_found_after_tail_reset(self, store):
         """An edit re-pends a chunk at its ORIGINAL chunk_id (content_sha
-        bumps in place), which may sit below the cursor. An empty rest
+        bumps in place), which may sit below the cursor. An empty tier
         result at a set cursor resets to a full rescan so the re-pended
         row is found rather than skipped forever."""
         h = EmbedHandler(make_mock_bge_m3())
@@ -441,7 +442,7 @@ class TestEmbedHandlerRestCursor:
             first = h.claim_batch(conn, limit=10)
             conn.commit()
         assert [row.chunk_id for row in first] == [high_id]
-        assert h._rest_after == high_id
+        assert h._rest_after["paragraph"] == high_id
 
         with store.pool.connection() as conn:
             conn.execute(
@@ -453,4 +454,137 @@ class TestEmbedHandlerRestCursor:
             conn.commit()
 
         assert [row.chunk_id for row in claimed] == [low_id]
-        assert h._rest_after == low_id
+        assert h._rest_after["paragraph"] == low_id
+
+
+class TestEmbedHandlerBacklogTierOrder:
+    """gr513749 (Reto 2026-10-24): the corpus backlog drains in value
+    order — ``paragraph`` chunks (the prose semantic search returns)
+    before ``table``/``figure``/``equation``, before every other
+    ``chunk_kind`` — each tier keeping its flat ``c.chunk_id`` FIFO under
+    its own resume cursor."""
+
+    def test_paragraph_before_table_before_other(self, store):
+        h = EmbedHandler(make_mock_bge_m3())
+        ref_id = seed_ref(store)
+        # Seeded in REVERSE value order: the 'other'-tier chunk has the
+        # lowest chunk_id, so the old flat FIFO would claim it first.
+        other_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="heading", text="Methods"
+        )
+        table_id = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="table", text="| a | b |"
+        )
+        para_id = seed_chunk(
+            store, ref_id=ref_id, ord=2, chunk_kind="paragraph", text="body text"
+        )
+
+        with store.pool.connection() as conn:
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [para_id, table_id, other_id]
+
+    def test_table_before_other_once_paragraphs_embedded(self, store):
+        h = EmbedHandler(make_mock_bge_m3())
+        ref_id = seed_ref(store)
+        para_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
+        )
+        table_id = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="table", text="| a |"
+        )
+        other_id = seed_chunk(
+            store, ref_id=ref_id, ord=2, chunk_kind="heading", text="Methods"
+        )
+
+        with store.pool.connection() as conn:
+            vec = h.process(ClaimedChunk(chunk_id=para_id, text="body text"))
+            h.write_ok(conn, para_id, vec)
+            conn.commit()
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [table_id, other_id]
+
+    def test_equation_and_figure_share_the_structured_tier(self, store):
+        h = EmbedHandler(make_mock_bge_m3())
+        ref_id = seed_ref(store)
+        eq_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="equation", text="E=mc^2"
+        )
+        fig_id = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="figure", text="Fig. 1"
+        )
+        other_id = seed_chunk(
+            store, ref_id=ref_id, ord=2, chunk_kind="ulist", text="- item"
+        )
+
+        with store.pool.connection() as conn:
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [eq_id, fig_id, other_id]
+
+    def test_tier_cursors_do_not_starve_lower_tiers(self, store):
+        """A partial paragraph claim parks only the paragraph cursor —
+        the next micro-batch still reaches the structured/other tiers."""
+        h = EmbedHandler(make_mock_bge_m3())
+        ref_id = seed_ref(store)
+        para1 = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="p1"
+        )
+        para2 = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="paragraph", text="p2"
+        )
+        table_id = seed_chunk(
+            store, ref_id=ref_id, ord=2, chunk_kind="table", text="|t|"
+        )
+        other_id = seed_chunk(
+            store, ref_id=ref_id, ord=3, chunk_kind="heading", text="h"
+        )
+
+        with store.pool.connection() as conn:
+            first = h.claim_batch(conn, limit=1)
+            conn.commit()
+            h.release_claims(conn, [row.chunk_id for row in first])
+            conn.commit()
+            second = h.claim_batch(conn, limit=3)
+            conn.commit()
+
+        assert [row.chunk_id for row in first] == [para1]
+        # para1 was released unembedded but sits below the paragraph
+        # cursor — the rescan-reset only fires once the tail dries up.
+        assert [row.chunk_id for row in second] == [para2, table_id, other_id]
+        assert h._rest_after["paragraph"] == para2
+        assert h._rest_after["structured"] == table_id
+        assert h._rest_after["other"] == other_id
+
+
+class TestUnembeddedCountExcludesReferences:
+    """gr513749: a ``references`` chunk is never backlog — the counter
+    shares the claim predicate's ``skip_chunk_kinds`` (the materialize
+    high-water and the ``watchdog:discovery/embed`` alert must not count
+    bibliography chunks as pending work)."""
+
+    def test_unembedded_chunk_count_ignores_references(self, store):
+        from precis.workers.embed import unembedded_chunk_count
+
+        ref_id = seed_ref(store)
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="references",
+            text="[1] Smith 2020",
+        )
+        para_id = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="paragraph", text="body text"
+        )
+        h = EmbedHandler(make_mock_bge_m3())
+        with store.pool.connection() as conn:
+            assert unembedded_chunk_count(conn) == 1
+            vec = h.process(ClaimedChunk(chunk_id=para_id, text="body text"))
+            h.write_ok(conn, para_id, vec)
+            conn.commit()
+            assert unembedded_chunk_count(conn) == 0

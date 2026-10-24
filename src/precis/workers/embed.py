@@ -50,17 +50,45 @@ log = logging.getLogger(__name__)
 #: :func:`nudge_fresh_embed` makes sure a job is there to claim it.
 _PRIORITY_KINDS = ("finding", "draft", "conv")
 
-#: Fresh-claim tiers, in queue order: finding > draft > conv > rest. Each is
+#: The corpus-wide predicate shared by the three backlog tiers: every ref
+#: kind that has no priority lane.
+_CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding']))"
+
+#: Fresh-claim tiers, in queue order: finding > draft > conv, then the
+#: corpus backlog in value order — paragraph > table/figure/equation >
+#: everything else (gr513749; Reto 2026-10-24: body prose is what
+#: semantic search returns, so it drains first). Each is
 #: ``(kind_pred, order_by)`` spliced into ``_TIERED_FRESH_CLAIM_SQL``. The
 #: priority tiers keep ``c.ref_id, c.ord`` contiguity (small populations);
-#: ``rest`` keeps the base class's flat ``c.chunk_id`` FIFO so corpus-wide
-#: embed throughput is unchanged when no priority chunk is pending.
+#: each corpus tier keeps the base class's flat ``c.chunk_id`` FIFO
+#: (oldest-first — chunk_id order is insertion order) under its own
+#: resume cursor. Three separate statements, not one ``ORDER BY CASE``:
+#: a CASE rank can't carry the ``_rest_after`` cursor (the high-water is
+#: not one ``chunk_id`` once ranks differ) and would sort the whole
+#: unembedded set per 32-chunk micro-batch — the gr506753 claim-cost
+#: regression this machinery exists to avoid.
 _FRESH_TIERS: dict[str, tuple[str, str]] = {
     "finding": ("r.kind = 'finding'", "c.ref_id, c.ord"),
     "draft": ("r.kind = 'draft'", "c.ref_id, c.ord"),
     "conv": ("r.kind = 'conv'", "c.ref_id, c.ord"),
-    "rest": ("(r.kind <> ALL(ARRAY['conv', 'draft', 'finding']))", "c.chunk_id"),
+    "paragraph": (
+        _CORPUS_PRED + " AND c.chunk_kind = 'paragraph'",
+        "c.chunk_id",
+    ),
+    "structured": (
+        _CORPUS_PRED + " AND c.chunk_kind = ANY(ARRAY['table', 'figure', 'equation'])",
+        "c.chunk_id",
+    ),
+    "other": (
+        _CORPUS_PRED
+        + " AND c.chunk_kind <> ALL(ARRAY['paragraph', 'table', 'figure', 'equation'])",
+        "c.chunk_id",
+    ),
 }
+
+#: Tiers carrying a ``_rest_after`` resume cursor — the corpus backlog
+#: tiers, keyed by their own name in that dict.
+_CURSORED_TIERS = frozenset({"paragraph", "structured", "other"})
 
 #: Same predicate as ``WorkerHandler._claim_fresh`` (no current, non-failed
 #: artifact row for this model; a stale ``content_sha`` re-derives an edited
@@ -124,15 +152,17 @@ class EmbedHandler(WorkerHandler):
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder
-        # Resume cursor for the ``rest`` tier's ``ORDER BY c.chunk_id``
-        # scan. Without it every 32-chunk micro-batch re-walks the whole
-        # already-embedded prefix (gr506753: ~4M row probes, ~9s per claim
-        # on a 4.5M-chunk corpus — claim SQL, not the embedder, was the
-        # drain's wall-clock bound). ``None`` = scan from the bottom (first
-        # claim, or a post-tail reset); a re-pended low-id chunk is only
-        # visible to an uncursored scan, so an empty rest result resets it
-        # and retries once (see :meth:`_claim_fresh`).
-        self._rest_after: int | None = None
+        # Resume cursors for the corpus tiers' ``ORDER BY c.chunk_id``
+        # scans, keyed by tier name (``paragraph`` / ``structured`` /
+        # ``other``). Without them every 32-chunk micro-batch re-walks the
+        # whole already-embedded prefix (gr506753: ~4M row probes, ~9s per
+        # claim on a 4.5M-chunk corpus — claim SQL, not the embedder, was
+        # the drain's wall-clock bound). A missing key = scan from the
+        # bottom (first claim, or a post-tail reset); a re-pended low-id
+        # chunk is only visible to an uncursored scan, so an empty tier
+        # result resets that tier's cursor and retries once (see
+        # :meth:`_claim_fresh`).
+        self._rest_after: dict[str, int] = {}
         # ``model_name`` / ``name`` are resolved lazily (see the
         # properties below), NOT here. Both read ``embedder.model``,
         # which for the remote backend is a ``GET /model`` round-trip.
@@ -313,29 +343,28 @@ class EmbedHandler(WorkerHandler):
 
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         """Claim fresh (never-embedded or stale-``content_sha``) chunks in
-        queue-priority order: finding > draft > conv > rest (see
-        :data:`_FRESH_TIERS`).
+        queue-priority order: finding > draft > conv > paragraph >
+        table/figure/equation > other (see :data:`_FRESH_TIERS`).
 
         Overrides :meth:`WorkerHandler._claim_fresh` — everything else
         (:meth:`WorkerHandler.claim_batch`'s reclaim top-up, ``release_claims``,
         ``status``) is inherited unchanged; only the fresh-claim ordering
         differs from the base class's flat ``ORDER BY c.chunk_id``. Each tier
         runs its own claim statement (rather than one query with an ``ORDER
-        BY CASE``) so an empty priority tier costs a cheap indexed probe, not
+        BY CASE``) so an empty tier costs a cheap indexed probe, not
         a sort over the whole candidate set — the tiers partition, so
-        corpus-wide throughput is unchanged when no finding/draft/conv chunk is
+        corpus-wide throughput is unchanged when no higher-priority chunk is
         pending. A chunk claimed by an earlier tier is excluded from a later
         one by the fresh ``NOT EXISTS chunk_claims`` (its claim row is
         written in the same statement).
         """
         skip_clause, skip_kinds = self._skip_clause("c")
         claimed: list[ClaimedChunk] = []
-        for tier in ("finding", "draft", "conv", "rest"):
+        for tier, (kind_pred, order_by) in _FRESH_TIERS.items():
             remaining = limit - len(claimed)
             if remaining <= 0:
                 break
-            kind_pred, order_by = _FRESH_TIERS[tier]
-            cursored = tier == "rest" and self._rest_after is not None
+            cursored = tier in _CURSORED_TIERS and tier in self._rest_after
             if cursored:
                 kind_pred += " AND c.chunk_id > %(rest_after)s"
             sql = _TIERED_FRESH_CLAIM_SQL.format(
@@ -352,29 +381,29 @@ class EmbedHandler(WorkerHandler):
             if skip_kinds:
                 params["skip_kinds"] = skip_kinds
             if cursored:
-                params["rest_after"] = self._rest_after
+                params["rest_after"] = self._rest_after[tier]
             rows = conn.execute(sql, params).fetchall()
-            if tier == "rest" and not rows and self._rest_after is not None:
-                # Cursor past the live tail: either the queue truly drained,
+            if tier in _CURSORED_TIERS and not rows and tier in self._rest_after:
+                # Cursor past the live tail: either the tier truly drained,
                 # or a chunk re-pended BELOW the cursor (an edit bumps
                 # content_sha in place — the chunk resurfaces at its ORIGINAL
                 # id, not the tail). One unbounded rescan sees both cases;
                 # it also reseeds the cursor from the true frontier.
-                self._rest_after = None
+                del self._rest_after[tier]
                 sql = _TIERED_FRESH_CLAIM_SQL.format(
                     output_table=self.output_table,
                     model_column=self.model_column,
-                    kind_pred=_FRESH_TIERS["rest"][0],
+                    kind_pred=_FRESH_TIERS[tier][0],
                     order_by=order_by,
                     skip_clause=skip_clause,
                 )
                 rows = conn.execute(sql, params).fetchall()
             batch = [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
-            if tier == "rest" and batch:
-                # 'rest' orders by c.chunk_id ASC — the last row is the
-                # high-water this claim reached; the next micro-batch
+            if tier in _CURSORED_TIERS and batch:
+                # Corpus tiers order by c.chunk_id ASC — the last row is
+                # the high-water this claim reached; the next micro-batch
                 # resumes past it.
-                self._rest_after = batch[-1].chunk_id
+                self._rest_after[tier] = batch[-1].chunk_id
             claimed += batch
         return claimed
 

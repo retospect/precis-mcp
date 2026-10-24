@@ -310,19 +310,29 @@ class WorkerHandler(ABC):
     def status(self, conn: Connection) -> ArtifactStatus:
         """Return ``(total, ok, failed, pending)`` for this handler.
 
-        ``total`` is the chunks count; ``ok`` / ``failed`` aggregate
-        rows in the output table for this model; ``pending = total
-        - ok - failed`` is what the worker still needs to claim.
+        ``total`` counts chunks the claim can ever select — the same
+        eligibility predicate ``_claim_fresh`` applies
+        (``skip_chunk_kinds``, ``meta.no_index``) — so a skip-kind chunk
+        (``references``/``field``) is never reported as pending backlog
+        (gr513749: ~450k ``references`` chunks read as permanently
+        unclaimable pending under the old ``count(*) FROM chunks``
+        total). ``ok`` / ``failed`` aggregate this model's artifact rows
+        on those same eligible chunks; ``pending = total - ok - failed``.
         """
+        skip = list(self.skip_chunk_kinds)
         sql = f"""
             SELECT
-                (SELECT count(*) FROM chunks) AS total,
-                count(o.chunk_id) FILTER (WHERE o.status = 'ok')     AS ok,
-                count(o.chunk_id) FILTER (WHERE o.status = 'failed') AS failed
-              FROM {self.output_table} o
-             WHERE o.{self.model_column} = %s
+                count(*)                                             AS total,
+                count(*) FILTER (WHERE o.status = 'ok')              AS ok,
+                count(*) FILTER (WHERE o.status = 'failed')          AS failed
+              FROM chunks c
+              LEFT JOIN {self.output_table} o
+                     ON o.chunk_id = c.chunk_id
+                    AND o.{self.model_column} = %(artifact)s
+             WHERE (c.meta->>'no_index') IS DISTINCT FROM 'true'
+               AND c.chunk_kind <> ALL(%(skip)s)
         """
-        row = conn.execute(sql, (self.model_name,)).fetchone()
+        row = conn.execute(sql, {"artifact": self.model_name, "skip": skip}).fetchone()
         if row is None:  # pragma: no cover — count() always returns one row
             total = ok = failed = 0
         else:
