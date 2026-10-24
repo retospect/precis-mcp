@@ -1189,6 +1189,45 @@ where the paper gives them and records `theta0` otherwise.
    'channel_scaling'])` renders the comparison table on the fixtures;
    `amc_leak` reported and the fallback triggers on a fixture with an open
    basin.
+   shipped: catpath 2c291fa (v0.37.0), precis: the commit adding this
+   line (pin move + `Acceleration` glue: `_kinetics_scalars` lifts the
+   accelerator, drift, leak and event rate and gates KMC trust on
+   `tof_scaling_drift > 0.3` and on an `mcamc_bfs` record with `amc_leak >
+   1e-3`; the sweep view names the accelerator per kmc_point; the
+   engine-free glue tests moved to `tests/test_pathway_kinetics_glue.py`,
+   which CI runs without the catalyst extra). Found: without diffusion or
+   interactions a site's single-site events depend only on its own
+   species, so the transient sets are per site (BFS over fast single-site
+   events from the site's species); multi-site events race as a thinned
+   Poisson clock whose bound is the sum over slots whose required species
+   lie in every node's set, accepted on the touched sites' conditional
+   microstates — exact, so open pair basins (dissociative H₂) show up as
+   `amc_leak`, not as bias (a two-site slow step with fast single-site
+   flickers matches brute force under `mcamc_s2`). Limit: `mcamc_bfs`
+   cannot accelerate a catalogue whose slow step is multi-site — the
+   per-site BFS set (e.g. {*, A, B}) then has no single-site exit, is
+   refused and shrunk to `s = 1`, every explicit event is fast
+   (`amc_leak = 1`) and the solve falls back to channel scaling; closing
+   such sets needs pair-level transient sets (not built). A slow event that lands back in the set must
+   be an exit, else the BFS closes the catalytic cycle and the set has no
+   exit. Float64 eigensolvers resolve the slow modes only to `ε·‖Q‖`, so
+   the time law takes the fast modes from `Q/λ_max` and the slow ones from
+   the GTH fundamental matrix, and is accepted only when its `E[τ]`
+   matches the GTH solve to 1e-6 from every start (else the site shrinks
+   to `s = 1`, exact). The independent-sampling error leaves the
+   embedded chain and long-run averages right (renewal), so the
+   reflecting-walk gate is the fixed-time law from a point start (drift
+   50.31 vs 50 under the error) plus `E[τ | exit]`; the uniform-start run
+   checks the stationary law. Coverages and absorbed events' production
+   enter as exact bridge expectations given each segment's start, length
+   and end state. pa498724's full text is in the corpus: Novotny's Ising
+   `s = 2` and `s = 3` matrices are reproduced exactly (numbers-only
+   fixture). `mcamc_s2`'s pair leaks by construction (½ on the 1 bar H₂
+   fixture: leaving {P, *} is the fast H adsorption), stays exact and
+   does not fall back; the fallback and the leak gate belong to
+   `mcamc_bfs`. On that fixture (0.5 eV cycle step, 300 K) MCAMC fires
+   ~4000-8000× fewer events per simulated second than brute force with
+   the TOF inside its 99 % interval; channel scaling ~100×.
 7. **Lateral interactions (pair cluster expansion + ω) + diffusion
    patterns.** After the first paper (Reto, Q8); the paper is not yet
    named and the cluster-expansion parameters of the O/Pt(111) fixture

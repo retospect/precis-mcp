@@ -1,0 +1,295 @@
+{
+ "axes": {
+  "T": [
+   300,
+   300
+  ],
+  "p_total": [
+   1.0,
+   2.0
+  ]
+ },
+ "competing": {
+  "pair": [
+   "NH3",
+   "NO@N"
+  ],
+  "points": [
+   {
+    "NH3": 0.5243385797636825,
+    "NO@N": 0.18427186232135484,
+    "T": 300.0,
+    "p_total": 1.0,
+    "star": 0.291389546938867
+   },
+   {
+    "NH3": 0.544975579688783,
+    "NO@N": 0.2250587351741058,
+    "T": 300.0,
+    "p_total": 2.0,
+    "star": 0.22996568309937881
+   }
+  ]
+ },
+ "composition": "fixed",
+ "design": "grid",
+ "inhibitors": [],
+ "kmc_points": [
+  {
+   "T": 300.0,
+   "acceleration": {
+    "accelerator": "channel_scaling",
+    "amc_leak": null,
+    "events_per_second_sim": 1075030.0943812411,
+    "speedup_vs_none": null,
+    "tof_scaling_drift": 0.005571673463650045
+   },
+   "backend": "catpath",
+   "consistency": {
+    "lattice_loop": true
+   },
+   "correlation_effect": 0.00494941596536446,
+   "coverages_kmc": {
+    "fcc": {
+     "*": 0.29361423498680517,
+     "N2O": 3.938090318532241e-12,
+     "NH3": 0.5221576998103348,
+     "NO@N": 0.18422805416353097,
+     "NOH": 1.1035391044168794e-08
+    }
+   },
+   "kernel": "numba",
+   "label": "corner",
+   "p_total": 1.0,
+   "pair_correlation": {
+    "g": 1.0348730553814476,
+    "pair": [
+     "NH3",
+     "NO@N"
+    ],
+    "snapshots": 80
+   },
+   "tof_kmc": {
+    "accelerator": "channel_scaling",
+    "median": 96.99321471013718,
+    "n_events": 1600000,
+    "p5": 96.2236965807527,
+    "p95": 97.76273283952166,
+    "replicas": 4
+   },
+   "tof_mf": 95.89411108692002,
+   "warnings": []
+  },
+  {
+   "T": 300.0,
+   "acceleration": {
+    "accelerator": "channel_scaling",
+    "amc_leak": null,
+    "events_per_second_sim": 1099863.2324441127,
+    "speedup_vs_none": null,
+    "tof_scaling_drift": 0.002200847431993908
+   },
+   "backend": "catpath",
+   "consistency": {
+    "lattice_loop": true
+   },
+   "correlation_effect": 0.003240138886758327,
+   "coverages_kmc": {
+    "fcc": {
+     "*": 0.2325314209545611,
+     "N2O": 5.859846294404527e-12,
+     "NH3": 0.5411549714067684,
+     "NO@N": 0.22631360560061434,
+     "NOH": 2.032196349566297e-09
+    }
+   },
+   "kernel": "numba",
+   "label": "corner",
+   "p_total": 2.0,
+   "pair_correlation": {
+    "g": 1.0252770605775359,
+    "pair": [
+     "NH3",
+     "NO@N"
+    ],
+    "snapshots": 80
+   },
+   "tof_kmc": {
+    "accelerator": "channel_scaling",
+    "median": 118.01009787176338,
+    "n_events": 1600000,
+    "p5": 115.58232306420112,
+    "p95": 120.43787267932564,
+    "replicas": 4
+   },
+   "tof_mf": 117.13293665072524,
+   "warnings": []
+  },
+  {
+   "T": 300.0,
+   "acceleration": {
+    "accelerator": "channel_scaling",
+    "amc_leak": null,
+    "events_per_second_sim": 1115689.5122973437,
+    "speedup_vs_none": null,
+    "tof_scaling_drift": 0.0020357834353533027
+   },
+   "backend": "catpath",
+   "consistency": {
+    "lattice_loop": true
+   },
+   "correlation_effect": -0.0009615203485512376,
+   "coverages_kmc": {
+    "fcc": {
+     "*": 0.2629647388209264,
+     "N2O": 4.661716390825818e-12,
+     "NH3": 0.5345464863664248,
+     "NO@N": 0.20248877004454263,
+     "NOH": 4.763444479359149e-09
+    }
+   },
+   "kernel": "numba",
+   "label": "centre",
+   "p_total": 1.4142135623730951,
+   "pair_correlation": {
+    "g": 1.013151447664507,
+    "pair": [
+     "NH3",
+     "NO@N"
+    ],
+    "snapshots": 80
+   },
+   "tof_kmc": {
+    "accelerator": "channel_scaling",
+    "median": 105.69710269617771,
+    "n_events": 1600000,
+    "p5": 102.3134497691299,
+    "p95": 109.08075562322551,
+    "replicas": 4
+   },
+   "tof_mf": 105.9313734635034,
+   "warnings": []
+  },
+  {
+   "T": 300.0,
+   "acceleration": {
+    "accelerator": "channel_scaling",
+    "amc_leak": null,
+    "events_per_second_sim": 1099863.2324441127,
+    "speedup_vs_none": null,
+    "tof_scaling_drift": 0.002200847431993908
+   },
+   "backend": "catpath",
+   "consistency": {
+    "lattice_loop": true
+   },
+   "correlation_effect": 0.003240138886758327,
+   "coverages_kmc": {
+    "fcc": {
+     "*": 0.2325314209545611,
+     "N2O": 5.859846294404527e-12,
+     "NH3": 0.5411549714067684,
+     "NO@N": 0.22631360560061434,
+     "NOH": 2.032196349566297e-09
+    }
+   },
+   "kernel": "numba",
+   "label": "optimum",
+   "p_total": 2.0,
+   "pair_correlation": {
+    "g": 1.0252770605775359,
+    "pair": [
+     "NH3",
+     "NO@N"
+    ],
+    "snapshots": 80
+   },
+   "tof_kmc": {
+    "accelerator": "channel_scaling",
+    "median": 118.01009787176338,
+    "n_events": 1600000,
+    "p5": 115.58232306420112,
+    "p95": 120.43787267932564,
+    "replicas": 4
+   },
+   "tof_mf": 117.13293665072524,
+   "warnings": []
+  }
+ ],
+ "optimum": {
+  "T": 300.0,
+  "composition": {
+   "H2": 1.9999980000020001,
+   "NO": 1.999998000002e-06
+  },
+  "coverages": {
+   "fcc": {
+    "*": 0.22996568309937881,
+    "N2O": 5.839813520889543e-12,
+    "NH3": 0.544975579688783,
+    "NO@N": 0.2250587351741058,
+    "NOH": 2.0318926781393698e-09
+   }
+  },
+  "drc_top": "NH3->*+NH3(g)",
+  "objective": "tof",
+  "p_total": 2.0,
+  "value": 117.13293665072524
+ },
+ "points": [
+  {
+   "T": 300.0,
+   "coverages": {
+    "fcc": {
+     "*": 0.291389546938867,
+     "N2O": 3.876814538286098e-12,
+     "NH3": 0.5243385797636825,
+     "NO@N": 0.18427186232135484,
+     "NOH": 1.0972218923925684e-08
+    }
+   },
+   "orders": {
+    "H2": 6.0494830728158186e-05,
+    "NO": 0.28046777642875864
+   },
+   "p_total": 1.0,
+   "pressures": {
+    "H2": 0.9999990000010001,
+    "NO": 9.99999000001e-07
+   },
+   "selectivity": {
+    "NH3": 1.0
+   },
+   "tof_mf": 95.89411108692002,
+   "warnings": []
+  },
+  {
+   "T": 300.0,
+   "coverages": {
+    "fcc": {
+     "*": 0.22996568309937881,
+     "N2O": 5.839813520889543e-12,
+     "NH3": 0.544975579688783,
+     "NO@N": 0.2250587351741058,
+     "NOH": 2.0318926781393698e-09
+    }
+   },
+   "orders": {
+    "H2": 1.109973891040525e-05,
+    "NO": 0.28599756655409037
+   },
+   "p_total": 2.0,
+   "pressures": {
+    "H2": 1.9999980000020001,
+    "NO": 1.999998000002e-06
+   },
+   "selectivity": {
+    "NH3": 1.0
+   },
+   "tof_mf": 117.13293665072524,
+   "warnings": []
+  }
+ ],
+ "target": "NH3",
+ "warnings": []
+}

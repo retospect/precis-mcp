@@ -324,7 +324,10 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    provenance snapshot + README). Slice 5 (lattice KMC core behind the
    pluggable `KmcBackend` seam, `zacros` writer/reader, `kmc_points` in
    the sweep with `correlation_effect`) is catpath v0.36.0; slice 6
-   (MCAMC + accelerator harness) is next.
+   (per-site MCAMC `bkl`/`mcamc_s2`/`mcamc_bfs` behind the pluggable
+   accelerator seam, channel-scaling fallback, `kmc.compare`; the
+   `Acceleration` record gates KMC trust in `_kinetics_scalars`) is
+   catpath v0.37.0; slice 9 (TPD validation) is next.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing

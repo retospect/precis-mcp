@@ -304,6 +304,18 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         effect = _finite_num(v2.get("correlation_effect"))
         if effect is not None:
             out["correlation_effect"] = effect
+        # slice 6 (D6/D8): the accelerator behind the KMC TOF gates trust —
+        # a channel-scaled TOF that moves > 0.3 decades between (δ, w) and
+        # (δ/2, w/2), or an mcamc_bfs run leaking > 1e-3 fast events at its
+        # basin boundaries, keeps the ranked TOF off the measures
+        accel = v2.get("acceleration")
+        if isinstance(accel, dict):
+            reasons = _acceleration_lift(accel, out, "")
+            if reasons and out.get("kinetics_trusted"):
+                out["kinetics_trusted"] = False
+                out["kinetics_note"] = "; ".join(reasons)
+                for key in ("log_tof", "log_tof_p5", "log_tof_p95"):
+                    out.pop(key, None)
     elif tof_mf is not None:
         out["kinetics_method"] = "mf"
     elif tof is not None:
@@ -348,7 +360,51 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 effect = _finite_num(pt.get("correlation_effect"))
                 if effect is not None:
                     out["optimum_correlation_effect"] = effect
+                pt_acc = pt.get("acceleration")
+                if isinstance(pt_acc, dict):
+                    reasons = _acceleration_lift(pt_acc, out, "optimum_")
+                    out["optimum_kmc_trusted"] = not reasons
     return out
+
+
+#: kinetics v2 slice 6 (D6): the KMC trust thresholds — channel scaling's
+#: TOF drift between (δ, w) and (δ/2, w/2), in decades, and the MCAMC
+#: amc_leak (fast events at the basin boundary) that triggers the fallback
+_TOF_SCALING_DRIFT_MAX = 0.3
+_AMC_LEAK_MAX = 1.0e-3
+
+
+def _acceleration_lift(
+    accel: dict[str, Any], out: dict[str, Any], prefix: str
+) -> list[str]:
+    """Lift one D8 ``Acceleration`` record (``accelerator``, ``amc_leak``,
+    ``tof_scaling_drift``, ``events_per_second_sim``) onto ``out`` under
+    ``prefix`` and return the reasons it makes the KMC TOF untrusted."""
+    name = accel.get("accelerator")
+    if isinstance(name, str) and name:
+        out[f"{prefix}kmc_accelerator"] = name
+    reasons: list[str] = []
+    drift = _finite_num(accel.get("tof_scaling_drift"))
+    if drift is not None:
+        out[f"{prefix}tof_scaling_drift"] = drift
+        if drift > _TOF_SCALING_DRIFT_MAX:
+            reasons.append(f"tof_scaling_drift={drift:.2f}")
+    elif name == "channel_scaling":
+        # the engine reports the drift undefined when one of the two scaled
+        # solves saw no target turnover: nothing vouches for the scaled TOF
+        reasons.append("tof_scaling_drift undefined")
+    leak = _finite_num(accel.get("amc_leak"))
+    if leak is not None:
+        out[f"{prefix}amc_leak"] = leak
+        # the BFS sets must close (above the limit the engine falls back to
+        # channel scaling, so a record still naming mcamc_bfs ran with the
+        # fallback off); mcamc_s2's pair leaks by construction and stays exact
+        if name == "mcamc_bfs" and leak > _AMC_LEAK_MAX:
+            reasons.append(f"amc_leak={leak:.2g}")
+    eps = _finite_num(accel.get("events_per_second_sim"))
+    if eps is not None:
+        out[f"{prefix}kmc_events_per_second_sim"] = eps
+    return reasons
 
 
 def summarize(artifact: PathwayArtifact) -> dict[str, Any]:

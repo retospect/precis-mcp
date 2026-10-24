@@ -650,6 +650,8 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
         for p in kmc_points:
             raw = p.get("tof_kmc")
             kmc: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            raw_acc = p.get("acceleration")
+            acc: dict[str, Any] = raw_acc if isinstance(raw_acc, dict) else {}
             effect = p.get("correlation_effect")
             k_rows.append(
                 {
@@ -665,6 +667,13 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
                         if isinstance(effect, (int, float)) and math.isfinite(effect)
                         else "—"
                     ),
+                    # slice 6 (D6): which accelerator ran, and its trust
+                    # diagnostics (amc_leak, tof_scaling_drift)
+                    "accelerator": acc.get("accelerator")
+                    or kmc.get("accelerator")
+                    or "—",
+                    "amc_leak": _num_str(acc.get("amc_leak")),
+                    "drift_dec": _num_str(acc.get("tof_scaling_drift")),
                 }
             )
         lines += [
@@ -681,6 +690,9 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
                     "kmc_p5",
                     "kmc_p95",
                     "corr_effect_dec",
+                    "accelerator",
+                    "amc_leak",
+                    "drift_dec",
                 ],
             ),
         ]
