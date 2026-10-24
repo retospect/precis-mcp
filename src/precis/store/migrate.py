@@ -3,7 +3,9 @@
 Reads ``*.sql`` files from one or more migration sources, applies any
 whose ``(plugin, version)`` pair isn't already in the ``_migrations``
 ledger, records the version + checksum on success. Each migration
-runs in its own transaction.
+runs in its own transaction; a lock wait that loses to live traffic
+(lock_timeout/deadlock) retries the whole file a bounded number of
+times before failing (gr511981).
 
 Versioning: filename without ``.sql`` extension. Filenames must sort
 correctly (e.g. ``0001_initial.sql``, ``0002_add_xxx.sql``). The
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -45,8 +48,14 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import psycopg
-from psycopg.errors import UndefinedColumn, UndefinedTable
+from psycopg.errors import (
+    DeadlockDetected,
+    LockNotAvailable,
+    UndefinedColumn,
+    UndefinedTable,
+)
 
+from precis.utils.db_retry import retry_locked
 from precis.utils.env import env_flag
 
 log = logging.getLogger(__name__)
@@ -72,6 +81,44 @@ class MigrationChecksumMismatch(RuntimeError):
     the forward-only refusal. A ``RuntimeError`` subclass so existing
     catches keep working.
     """
+
+
+class MigrationLockContention(RuntimeError):
+    """A migration exhausted its bounded lock-acquisition attempts.
+
+    Raised by :meth:`Migrator.apply_all` when a file's lock waits lose to
+    live traffic on every retry — the message names the contended lock and
+    whoever currently holds it, so the deploy log doubles as the diagnosis
+    (gr511981: probing by hand was half-blind).
+    """
+
+
+#: Total attempts per migration file while its lock waits lose to live
+#: traffic (gr511981: 0235 took ACCESS EXCLUSIVE on five hot tables and
+#: kept losing to ordinary agent_rw readers under its own 10 s bound).
+#: Each attempt is a fresh transaction, so an aborted apply replays
+#: cleanly.
+MIGRATION_LOCK_ATTEMPTS = 6
+
+#: Per-attempt bound on any single lock acquisition inside a migration:
+#: ``SET LOCAL lock_timeout`` at the top of the apply transaction —
+#: replaces the previous unbounded ``lock_timeout = 0``, which traded a
+#: single unkillable wait for silence about what it was waiting on. A
+#: file's own ``SET LOCAL lock_timeout`` later in its body (the
+#: 0214/0235 '10s' pattern) overrides this for the rest of that attempt.
+#: Only the ACQUISITION wait is bounded — statement_timeout stays 0, so a
+#: lock once held may still run a long backfill.
+MIGRATION_LOCK_TIMEOUT_S = 30
+
+#: Backoff between attempts — exponential with full jitter via
+#: :func:`retry_locked` (``base * 2**attempt`` capped at ``max``), so a
+#: contending deploy and the live fleet don't re-collide in lockstep.
+#:
+#: Worst case per file ≈ 6 × 30 s of lock waiting + ≤60 s of backoff
+#: (~240 s) before the apply gives up and names the lock — where the old
+#: ``lock_timeout = 0`` could sit silent behind one holder for hours.
+MIGRATION_LOCK_RETRY_BASE_S = 2.0
+MIGRATION_LOCK_RETRY_MAX_S = 30.0
 
 
 class MigrationSource(NamedTuple):
@@ -609,56 +656,7 @@ class Migrator:
                 if key in applied:
                     continue
                 log.info("applying migration %s/%s", f.plugin, f.version)
-                with conn.transaction():
-                    with conn.cursor() as cur:
-                        # Migrations run as ``agent_rw`` (the same DSN the daemon
-                        # uses), and that role carries defensive statement_timeout
-                        # / lock_timeout defaults (set by the postgres ansible
-                        # role) to bound runaway app queries. A migration is
-                        # neither — it is a
-                        # controlled, forward-only step that may legitimately run
-                        # long (a bulk backfill) or wait on a lock (DDL behind a
-                        # live read). Aborting one half-way is far worse than
-                        # letting it finish, so neutralise both for the duration
-                        # of the apply transaction. ``SET LOCAL`` is scoped to
-                        # this transaction (pgbouncer-transaction-pool safe) and
-                        # auto-resets at COMMIT.
-                        cur.execute(
-                            "SET LOCAL statement_timeout = 0; "
-                            "SET LOCAL lock_timeout = 0; "
-                            "SET LOCAL idle_in_transaction_session_timeout = 0"
-                        )
-                        _execute_dump_sql(cur, f.sql)
-                        # Choose INSERT shape based on whether the
-                        # plugin column exists *as of this attempt*.
-                        # On a fresh DB the 0023 migration creates the
-                        # column mid-bootstrap; we re-check after each
-                        # migration so the 0024+ inserts pick up the
-                        # new shape automatically.
-                        if has_plugin_col:
-                            cur.execute(
-                                "INSERT INTO public._migrations "
-                                "(plugin, version, checksum) "
-                                "VALUES (%s, %s, %s)",
-                                (f.plugin, f.version, f.checksum),
-                            )
-                        else:
-                            if f.plugin != PRECIS_PLUGIN_NAME:
-                                # Sanity check: plugin migrations
-                                # cannot precede 0023. A misordered
-                                # source list would land here.
-                                raise RuntimeError(
-                                    f"plugin migration {f.plugin}/{f.version} "
-                                    "ordered before 0023_migrations_plugin "
-                                    "applied; cannot record without the "
-                                    "plugin column."
-                                )
-                            cur.execute(
-                                "INSERT INTO public._migrations "
-                                "(version, checksum) "
-                                "VALUES (%s, %s)",
-                                (f.version, f.checksum),
-                            )
+                _apply_retried(conn, f, has_plugin_col)
                 # A pg_dump-style migration body (0001) runs
                 # ``set_config('search_path', '', false)`` which
                 # persists on this shared connection for the SESSION,
@@ -917,6 +915,198 @@ def _resolve_to_dir(resolved: Any) -> Path | None:
         if candidate.is_dir():
             return candidate
     return None
+
+
+# ---------------------------------------------------------------------------
+# Lock-contention retry (gr511981)
+# ---------------------------------------------------------------------------
+
+_LOCK_TABLE_RE = re.compile(
+    r"LOCK\s+TABLE\s+(?:ONLY\s+)?([A-Za-z0-9_.,\s\"]+?)\s+IN\s+([A-Z ]+?)\s*MODE\b",
+    re.IGNORECASE,
+)
+
+_SET_LOCK_TIMEOUT_RE = re.compile(
+    r"SET\s+LOCAL\s+lock_timeout\s*=\s*'([^']+)'",
+    re.IGNORECASE,
+)
+
+
+def _declared_lock_timeout(sql: str) -> str:
+    """The lock_timeout bounding the attempts, for the failure message.
+
+    A file's own ``SET LOCAL lock_timeout`` overrides the runner default
+    for the rest of that attempt, so quote the file's declared value(s)
+    when present — '300ms'/'10s' style, exactly as written — rather than
+    the 30 s default that did not fire.
+    """
+    body = re.sub(r"--[^\n]*", "", sql)
+    seen: list[str] = []
+    for m in _SET_LOCK_TIMEOUT_RE.finditer(body):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    if seen:
+        return f"{', '.join(repr(v) for v in seen)} (file-declared)"
+    return f"{MIGRATION_LOCK_TIMEOUT_S}s"
+
+
+def _lock_targets(sql: str) -> list[tuple[str, str]]:
+    """(relation, mode) pairs a migration file explicitly LOCK TABLEs.
+
+    The bounded-lock-wait pattern (0214, 0235, …) ends a multi-table DDL
+    file with ``LOCK TABLE a, b, … IN <MODE> MODE``; when the apply dies on
+    lock_timeout those names ARE the contended locks. ``--`` comments are
+    stripped first so prose mentioning the pattern can't fake a target.
+    """
+    body = re.sub(r"--[^\n]*", "", sql)
+    out: list[tuple[str, str]] = []
+    for m in _LOCK_TABLE_RE.finditer(body):
+        mode = " ".join(m.group(2).split()).upper()
+        for name in m.group(1).split(","):
+            name = name.replace('"', "").strip()
+            if name:
+                out.append((name, mode))
+    return out
+
+
+def _lock_contention_report(conn: psycopg.Connection, f: MigrationFile) -> str:
+    """Name the lock(s) a timed-out migration was waiting on, best-effort.
+
+    The file's declared ``LOCK TABLE`` targets name the contended lock; a
+    ``pg_locks``/``pg_stat_activity`` read on the same (autocommit)
+    connection then lists whoever holds those relations *right now* — the
+    diagnosis the on-call otherwise has to hand-probe for while the deploy
+    sits red. Every read here is wrapped: a broken connection or a missing
+    relation degrades the report, never the refusal itself.
+    """
+    targets = _lock_targets(f.sql)
+    if not targets:
+        return "the lock its statements needed"
+    names = sorted({name for name, _ in targets})
+    modes = sorted({mode for _, mode in targets})
+    rels: list[str] = []
+    try:
+        for name in names:
+            row = conn.execute("SELECT to_regclass(%s)::text", (name,)).fetchone()
+            if row and row[0]:
+                rels.append(row[0])
+    except psycopg.Error:
+        rels = []
+    holders = ""
+    if rels:
+        try:
+            rows = conn.execute(
+                "SELECT l.relation::regclass::text, a.pid, a.usename, "
+                "a.state, left(a.query, 60) "
+                "FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+                "WHERE l.granted AND l.pid <> pg_backend_pid() "
+                "AND l.database = (SELECT oid FROM pg_database "
+                "WHERE datname = current_database()) "
+                "AND l.relation::regclass::text = ANY(%s) "
+                "ORDER BY 1, 2 LIMIT 8",
+                (rels,),
+            ).fetchall()
+        except psycopg.Error:
+            rows = []
+        if rows:
+            holders = "; held now by " + ", ".join(
+                f"{rel} pid {pid} ({user}, {state}, {q!r})"
+                for rel, pid, user, state, q in rows
+            )
+    return (
+        f"{'/'.join(modes)} lock on {', '.join(names)}"
+        f"{holders or '; current holder(s) not resolved'}"
+    )
+
+
+def _apply_file_once(
+    conn: psycopg.Connection, f: MigrationFile, has_plugin_col: bool
+) -> None:
+    """One apply attempt: the file's body plus its ledger row, one tx.
+
+    Called once per attempt by :func:`_apply_retried` — an aborted
+    transaction can never be continued, so every attempt opens a fresh
+    ``conn.transaction()`` (the file's own statements all roll back with
+    it; migrations are transactional).
+
+    Migrations run as ``agent_rw`` (the same DSN the daemon uses), and
+    that role carries defensive statement_timeout / lock_timeout defaults
+    (set by the postgres ansible role) to bound runaway app queries. A
+    migration is neither — it is a controlled, forward-only step that may
+    legitimately run long (a bulk backfill), so statement_timeout is
+    neutralised for the apply. Lock waits are the opposite trade: an
+    ACCESS EXCLUSIVE grab losing to live traffic is transient, so each
+    attempt bounds it (``lock_timeout``) and :func:`_apply_retried`
+    replays — a bounded retried wait beats both an unbounded one and a
+    single-shot timeout (gr511981). ``SET LOCAL`` is scoped to this
+    transaction (pgbouncer-transaction-pool safe) and auto-resets at
+    COMMIT.
+    """
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                "SET LOCAL statement_timeout = 0; "
+                f"SET LOCAL lock_timeout = '{MIGRATION_LOCK_TIMEOUT_S}s'; "
+                "SET LOCAL idle_in_transaction_session_timeout = 0"
+            )
+            _execute_dump_sql(cur, f.sql)
+            # Choose INSERT shape based on whether the plugin column
+            # exists *as of this attempt*. On a fresh DB the 0023
+            # migration creates the column mid-bootstrap; we re-check
+            # after each migration so the 0024+ inserts pick up the new
+            # shape automatically.
+            if has_plugin_col:
+                cur.execute(
+                    "INSERT INTO public._migrations "
+                    "(plugin, version, checksum) "
+                    "VALUES (%s, %s, %s)",
+                    (f.plugin, f.version, f.checksum),
+                )
+            else:
+                if f.plugin != PRECIS_PLUGIN_NAME:
+                    # Sanity check: plugin migrations cannot precede
+                    # 0023. A misordered source list would land here.
+                    raise RuntimeError(
+                        f"plugin migration {f.plugin}/{f.version} "
+                        "ordered before 0023_migrations_plugin "
+                        "applied; cannot record without the "
+                        "plugin column."
+                    )
+                cur.execute(
+                    "INSERT INTO public._migrations "
+                    "(version, checksum) "
+                    "VALUES (%s, %s)",
+                    (f.version, f.checksum),
+                )
+
+
+def _apply_retried(
+    conn: psycopg.Connection, f: MigrationFile, has_plugin_col: bool
+) -> None:
+    """Apply one file, retrying bounded lock contention a few times.
+
+    ``retry_locked`` re-invokes :func:`_apply_file_once` (fresh
+    transaction each attempt) on 55P03/deadlock, logging every retry.
+    When the attempts are spent the failure names the contended lock —
+    and whoever holds it now — instead of surfacing the bare
+    ``canceling statement due to lock timeout`` the deploy then stops on.
+    """
+    try:
+        retry_locked(
+            lambda: _apply_file_once(conn, f, has_plugin_col),
+            attempts=MIGRATION_LOCK_ATTEMPTS,
+            base_s=MIGRATION_LOCK_RETRY_BASE_S,
+            max_s=MIGRATION_LOCK_RETRY_MAX_S,
+            label=f"migration {f.plugin}/{f.version}",
+        )
+    except (LockNotAvailable, DeadlockDetected) as exc:
+        cause = "deadlock" if isinstance(exc, DeadlockDetected) else "lock timeout"
+        raise MigrationLockContention(
+            f"migration {f.plugin}/{f.version} {cause}: could not acquire "
+            f"{_lock_contention_report(conn, f)} after "
+            f"{MIGRATION_LOCK_ATTEMPTS} attempts (lock_timeout "
+            f"{_declared_lock_timeout(f.sql)} per attempt): {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

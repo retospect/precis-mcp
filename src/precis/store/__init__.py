@@ -4,6 +4,7 @@ Public surface:
     Store              — high-level store handle, owns the psycopg pool
     Migrator           — forward-only migration runner
     MigrationChecksumMismatch — the sealed-edit refusal (RuntimeError)
+    MigrationLockContention — lock-retry budget exhausted (RuntimeError)
 
     Ref, ChunkRow, Link, Tag, CacheEntry, ChunkInsert  — frozen row types
     Density, CacheFreshness, Namespace, Relation, ActorSlug  — type aliases
@@ -74,7 +75,11 @@ from precis.store._salience import (
     background_actor_active,
     current_background_actor,
 )
-from precis.store.migrate import MigrationChecksumMismatch, Migrator
+from precis.store.migrate import (
+    MigrationChecksumMismatch,
+    MigrationLockContention,
+    Migrator,
+)
 from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import (
     ActorSlug,
@@ -104,6 +109,7 @@ __all__ = [
     "Density",
     "Link",
     "MigrationChecksumMismatch",
+    "MigrationLockContention",
     "Migrator",
     "Namespace",
     "Ref",

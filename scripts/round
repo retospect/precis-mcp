@@ -21,7 +21,10 @@ and nothing is tracked or pushed.
   scripts/round close                 coordinator: end the round
   scripts/round gate [--json]         coordinator: exact release head verdict, else newest green main
   scripts/round deploy [--dry-run]    coordinator: deploy pinned, tag/forward/retire a release
-                [--catch-up]          re-run the pinned rollout for hosts skipped while down
+                [--catch-up [HOST …]] re-run the pinned rollout for hosts it skipped
+                                      (down, dropped mid-run or PRECIS_DEPLOY_SKIP_HOSTS);
+                                      on a completed round, name hosts from its recorded
+                                      lagging set — the pin never moves
   scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S)
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
 
@@ -1185,17 +1188,81 @@ def _finish_release(
     return 0
 
 
+def _closed_round_catch_up(
+    root: Path, cur: dict[str, Any], args: argparse.Namespace, lock_fd: int
+) -> int:
+    """Re-run a completed round's pinned rollout for its lagging hosts.
+
+    The round is terminal: the pinned sha never moves and ``cur["deployed"]``
+    is read-only here — mutating it would diverge from the immutable
+    receipts/r<N>.json the next ``open`` republishes and trip its conflict
+    refusal. Catch-up stays limited to the hosts the rollout recorded as
+    skipped — down at ping, dropped mid-run, or deliberately left out via
+    PRECIS_DEPLOY_SKIP_HOSTS (all land in the same skipped-hosts record, so
+    a deliberately skipped host counts as lagging). A named host outside
+    that set is refused: catch-up may only install the pin where it was
+    actually skipped, never re-roll a host that already runs it or one whose
+    lag belongs to a different deploy.
+    """
+    if args.confirm_runtime or args.runtime_evidence:
+        return _deploy_refuse(
+            "--catch-up takes no --confirm-runtime/--runtime-evidence"
+        )
+    journal = cur["deployed"]
+    sha = journal["sha"]
+    lagging = journal.get("skipped_hosts") or {}
+    named = getattr(args, "catch_up", None) or []
+    off = [h for h in named if h not in lagging]
+    if off:
+        return _deploy_refuse(
+            f"{', '.join(off)} not recorded as lagging on {sha[:9]}"
+            f" (lagging: {', '.join(sorted(lagging)) or 'none'})"
+        )
+    targets = sorted(named) or sorted(lagging)
+    if not targets:
+        return _deploy_refuse(
+            f"no lagging hosts recorded for round {cur['n']} ({sha[:9]})"
+            " — nothing to catch up"
+        )
+    if args.dry_run:
+        print(
+            f"dry-run: would re-run scripts/deploy {sha} --pinned"
+            f" for lagging hosts: {', '.join(targets)}"
+        )
+        return 0
+    print(
+        f"catch-up: re-running round {cur['n']}'s pinned rollout for"
+        f" {', '.join(targets)} ({sha[:9]})"
+    )
+    rc = subprocess.run(
+        [str(root / "scripts" / "deploy"), sha, "--pinned"],
+        cwd=root,
+        check=False,
+        pass_fds=(lock_fd,),
+    ).returncode
+    if rc:
+        return rc
+    skipped = _deploy_skipped(root, sha)
+    if skipped:
+        print(f"catch-up: still lagging on {sha[:9]}: {', '.join(sorted(skipped))}")
+    else:
+        print(f"catch-up: every lagging host now runs {sha[:9]}")
+    return 0
+
+
 def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
     root = _root()
     state = _round_state(root)
     cur = _read_round(state)
     rel = _active_rel(cur)
     if not rel and cur.get("deployed"):
-        print(
-            f"round {cur['n']} already completed at {cur['deployed']['sha'][:9]}; "
-            "no new deploy performed — close/open the next round"
-        )
-        return 0
+        if getattr(args, "catch_up", None) is None:
+            print(
+                f"round {cur['n']} already completed at {cur['deployed']['sha'][:9]}; "
+                "no new deploy performed — close/open the next round"
+            )
+            return 0
+        return _closed_round_catch_up(root, cur, args, lock_fd)
     if rel and not cur.get("open"):
         return _deploy_refuse(
             "recorded release identity/open-round state is inconsistent"
@@ -1207,7 +1274,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
     journal = rel.get("deployment", {}) if rel else {}
     if rel and journal.get("rollout_at"):
         sha = journal["sha"]
-        if getattr(args, "catch_up", False):
+        if getattr(args, "catch_up", None) is not None:
             # Re-run the same pinned rollout so hosts skipped while down
             # install it now that they are back (they are only skipped when
             # they still fail the ping, so a restored host is always
@@ -1216,20 +1283,26 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
                 return _deploy_refuse(
                     "--catch-up takes no --confirm-runtime/--runtime-evidence"
                 )
+            lagging = sorted(journal.get("skipped_hosts") or {})
+            off = [h for h in args.catch_up or () if h not in lagging]
+            if off:
+                return _deploy_refuse(
+                    f"{', '.join(off)} not recorded as lagging on {sha[:9]}"
+                    f" (lagging: {', '.join(lagging) or 'none'})"
+                )
+            targets = sorted(args.catch_up or ()) or lagging
             if args.dry_run:
-                lagging = sorted(journal.get("skipped_hosts") or {})
                 print(
                     f"dry-run: would re-run scripts/deploy {sha} --pinned"
-                    f" for lagging hosts: {', '.join(lagging) or 'none'}"
+                    f" for lagging hosts: {', '.join(targets) or 'none'}"
                 )
                 return 0
-            lagging = sorted(journal.get("skipped_hosts") or {})
-            if not lagging:
+            if not targets:
                 return _deploy_refuse(
                     "no skipped hosts recorded for this rollout — nothing to catch up"
                 )
             print(
-                f"catch-up: re-running the pinned rollout for {', '.join(lagging)}"
+                f"catch-up: re-running the pinned rollout for {', '.join(targets)}"
                 f" (skipped during the {sha[:9]} deploy)"
             )
             rc = subprocess.run(
@@ -1308,7 +1381,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         )
         _write(state / "round.json", cur)
         return _finish_release(root, state, cur, rel)
-    if getattr(args, "catch_up", False):
+    if getattr(args, "catch_up", None) is not None:
         return _deploy_refuse(
             "--catch-up requires a recorded rollout journal — re-run deploy normally"
         )
@@ -1806,8 +1879,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_deploy.add_argument(
         "--catch-up",
-        action="store_true",
-        help="re-run the pinned rollout so previously skipped hosts install it",
+        nargs="*",
+        metavar="HOST",
+        default=None,
+        help="re-run the pinned rollout so previously skipped hosts install it; "
+        "named HOSTs must be recorded as lagging (also on a completed round, "
+        "against its pinned sha)",
     )
     p_cut = sub.add_parser("cut")
     p_cut.add_argument("--sha", default="")

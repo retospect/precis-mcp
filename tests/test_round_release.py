@@ -1279,6 +1279,91 @@ def test_catch_up_refuses_before_any_rollout(rig: Rig) -> None:
     assert rig.deploy_log() == []
 
 
+def test_catch_up_named_host_must_be_lagging_on_the_open_rollout(rig: Rig) -> None:
+    head = _cut(rig)
+    hosts = {"serving": rig.shas["c0"]}
+    assert (
+        rig.round(
+            "deploy",
+            DEPLOY_STUB_VERIFY="1",
+            DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+            **_verdict(head),
+        ).returncode
+        == 3
+    )
+    out = rig.round("deploy", "--catch-up", "gateway", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 1
+    assert "gateway" in out.stderr and "lagging" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+# ── catch-up after the round completed (gr513362 part 2) ───────────────
+
+
+def _complete_with_lagging(rig: Rig, hosts: dict[str, str]) -> str:
+    """Deploy+confirm a release whose rollout left `hosts` behind.
+
+    Returns the deployed (pinned) sha; afterwards the round is completed:
+    ``cur["deployed"]`` holds the journal, ``skipped_hosts`` included.
+    """
+    head = _cut(rig)
+    assert (
+        _deploy(
+            rig,
+            DEPLOY_STUB_VERIFY="1",
+            DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+            **_verdict(head),
+        ).returncode
+        == 0
+    )
+    return head
+
+
+def test_catch_up_on_a_completed_round_retargets_named_lagging_hosts(
+    rig: Rig,
+) -> None:
+    hosts = {"serving": rig.shas["c0"], "scheduler": rig.shas["c0"]}
+    head = _complete_with_lagging(rig, hosts)
+    out = rig.round("deploy", "--catch-up", "serving", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "serving" in out.stdout and head[:9] in out.stdout
+    # The rollout re-ran at the SAME pin — the completed sha never moves.
+    assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
+    # …and the archived journal is evidence, not a cursor the catch-up edits.
+    assert _round_json(rig)["deployed"]["skipped_hosts"] == hosts
+
+
+def test_catch_up_on_a_completed_round_refuses_a_non_lagging_host(rig: Rig) -> None:
+    head = _complete_with_lagging(rig, {"serving": rig.shas["c0"]})
+    out = rig.round("deploy", "--catch-up", "gateway", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 1
+    assert "gateway" in out.stderr and "lagging" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+def test_catch_up_on_a_completed_round_defaults_to_every_lagging_host(
+    rig: Rig,
+) -> None:
+    hosts = {"serving": rig.shas["c0"], "scheduler": rig.shas["c0"]}
+    head = _complete_with_lagging(rig, hosts)
+    out = rig.round("deploy", "--catch-up", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "serving" in out.stdout and "scheduler" in out.stdout
+    assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
+
+
+def test_catch_up_on_a_completed_round_refuses_when_nothing_lagged(rig: Rig) -> None:
+    head = _cut(rig)
+    assert _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head)).returncode == 0
+    out = rig.round("deploy", "--catch-up", "serving", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 1
+    assert "lagging" in out.stderr
+    out = rig.round("deploy", "--catch-up", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 1
+    assert "nothing to catch up" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
 # ── release-train §5: pipelined releases (records carry state) ──────────
 
 

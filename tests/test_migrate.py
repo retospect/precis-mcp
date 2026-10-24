@@ -7,12 +7,15 @@ it and we verify schema + seed contents."""
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import psycopg
 import pytest
 from psycopg.rows import dict_row
 
-from precis.store import Migrator
+import precis.store.migrate as migrate
+import precis.utils.db_retry as db_retry
+from precis.store import MigrationLockContention, Migrator
 from tests.conftest import MIGRATIONS_DIR
 
 
@@ -308,3 +311,137 @@ def test_renumbered_draft_rebuilds(
         )
     }
     assert "draft_tbl" in tables
+
+
+# ── bounded lock-contention retry (gr511981) ───────────────────────────
+
+
+def _lock_probe_db(fresh_db: str) -> None:
+    """The lock-contention target table (ledger comes from the file)."""
+    with psycopg.connect(fresh_db, autocommit=True) as conn:
+        conn.execute("CREATE TABLE public.lock_target (x int)")
+
+
+def _lock_probe_migration(tmp_path: Path) -> Path:
+    """One stub migration: builds the ledger, then takes the hot lock.
+
+    The ledger table lives in the file (pre-0023 shape) rather than the
+    fixture — a committed-but-empty ``_migrations`` outside the apply
+    transaction would tell the next ``apply_all`` every file is pending
+    while 0001 then trips on the table it created.
+    """
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "9999_lock_probe.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS public._migrations "
+        "(version text PRIMARY KEY, checksum text NOT NULL);\n"
+        "SET LOCAL lock_timeout = '300ms';\n"
+        "LOCK TABLE public.lock_target IN ACCESS EXCLUSIVE MODE;\n"
+        "ALTER TABLE public.lock_target ADD COLUMN probed int;\n",
+        encoding="utf-8",
+    )
+    return mig_dir
+
+
+def test_lock_contention_cleared_on_retry_succeeds(
+    fresh_db: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock wait that clears by the next attempt applies the file.
+
+    The holder keeps ACCESS SHARE (what an ordinary agent_rw reader
+    holds against an ACCESS EXCLUSIVE grab); the runner's backoff sleep
+    is the test's release trigger — exactly one retry, then the whole
+    file replays in a fresh transaction.
+    """
+    mig_dir = _lock_probe_migration(tmp_path)
+    _lock_probe_db(fresh_db)
+    holder = psycopg.connect(fresh_db)
+    try:
+        holder.execute("LOCK TABLE public.lock_target IN ACCESS SHARE MODE")
+        sleeps: list[float] = []
+
+        def _release_on_backoff(delay: float) -> None:
+            sleeps.append(delay)
+            holder.rollback()
+
+        monkeypatch.setattr(db_retry.time, "sleep", _release_on_backoff)
+        assert Migrator(fresh_db, mig_dir).apply_all() == [
+            ("precis", "9999_lock_probe")
+        ]
+        assert len(sleeps) == 1  # failed once; the second attempt applied
+    finally:
+        holder.close()
+    cols = {
+        r["column_name"]
+        for r in _fetch(
+            fresh_db,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'lock_target'",
+        )
+    }
+    assert cols == {"x", "probed"}  # the replay ran the whole file
+
+
+def test_lock_contention_never_clearing_fails_naming_the_lock(
+    fresh_db: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sustained contention spends the attempts, then fails loudly.
+
+    The message names the contended lock and whoever holds it — the
+    deploy log itself carries the diagnosis.
+    """
+    mig_dir = _lock_probe_migration(tmp_path)
+    _lock_probe_db(fresh_db)
+    holder = psycopg.connect(fresh_db)
+    try:
+        holder.execute("LOCK TABLE public.lock_target IN ACCESS SHARE MODE")
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        with pytest.raises(MigrationLockContention, match="lock_target") as excinfo:
+            Migrator(fresh_db, mig_dir).apply_all()
+        # The file's own SET LOCAL lock_timeout overrode the 30 s default,
+        # so the message quotes the bound that actually fired.
+        assert "300ms" in str(excinfo.value)
+    finally:
+        holder.close()
+    # The failed attempts all rolled back: nothing applied, nothing recorded.
+    assert Migrator(fresh_db, mig_dir).pending() == [("precis", "9999_lock_probe")]
+    assert "probed" not in {
+        r["column_name"]
+        for r in _fetch(
+            fresh_db,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'lock_target'",
+        )
+    }
+
+
+def test_non_lock_error_is_not_retried(
+    fresh_db: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real bug fails on the first attempt — retry is lock-errors only.
+
+    A syntax error means the file is wrong, not contended; replaying it
+    would burn the whole retry budget for nothing, so it must propagate
+    after exactly one attempt.
+    """
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "9999_broken.sql").write_text("SELEC 1;\n", encoding="utf-8")
+    attempts = 0
+    real_apply_once = migrate._apply_file_once
+
+    def _counted(conn, f, has_plugin_col):
+        nonlocal attempts
+        attempts += 1
+        return real_apply_once(conn, f, has_plugin_col)
+
+    monkeypatch.setattr(migrate, "_apply_file_once", _counted)
+    with pytest.raises(psycopg.errors.SyntaxError):
+        Migrator(fresh_db, mig_dir).apply_all()
+    assert attempts == 1
