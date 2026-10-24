@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Figure digitiser - calibrated, uncertainty-bearing numbers from a plotted series (first use pa186444 Fig. 1)
 pillar: local-compute
 prio: normal
@@ -46,7 +46,7 @@ Nothing a model says becomes a number without passing a pixel check.
    bbox at about 600 dpi, or (b) an image file the caller supplies. Ingest
    already extracts figure images (`src/precis/ingest/figures.py`:
    `match_figure_captions`, `encode_image`) but nothing serves them, and
-   pa186444's PDF is Reto's file, not a stored one; see open question 1.
+   pa186444's PDF is Reto's file, not a stored one; the caller hands the digitiser a path or image (Decisions 1).
 2. **Axis calibration from tick labels.** Find the axis lines (projection
    profile or Hough), tick marks along them, and tick labels (vision
    proposal, then verified: values must be monotone along the axis and the
@@ -61,12 +61,15 @@ Nothing a model says becomes a number without passing a pixel check.
      peak is the argmax with a parabolic sub-pixel fit.
    Black-on-white overlays use a dark mask after removing the axes and text
    boxes found in step 2.
-4. **Vision proposal, checked.** A vision model sees the crop and proposes
+4. **Vision proposal, checked.** A Sonnet vision proposer (about $0.05 per
+   figure) sees the crop and proposes
    axis ranges, tick labels, series count, legend mapping, rough peak
    positions. Each claim is checked against steps 2-3 (tick values against
    the fit; a peak must lie within 3 px of a local maximum of the extracted
    polyline). Failing claims are returned as `unverified` and never reach
-   the table. Spend follows `docs/conventions/thresholds.md`.
+   the table. An offline geometry-only mode skips the proposer: the caller
+   supplies series colours and tick values, and steps 2-3 still verify them.
+   Spend follows `docs/conventions/thresholds.md`.
 5. **Uncertainty in data units.** Per point, in quadrature: half-pixel
    quantisation times the local data-per-pixel, the calibration residual,
    and for peaks the width of the sub-pixel fit. The result is `value +/-
@@ -87,10 +90,9 @@ run.
 | scikit-image | BSD-3 (0.26.0) | not in `uv.lock` | `hough_line`, `label`; heavier than needed |
 | plotdigitizer | LGPL-3.0-or-later (0.3.0) | not in `uv.lock` | not adopted: LGPL and manual-click workflow |
 
-Recommendation: numpy + scipy + pillow for the core (Hough on a cropped
-panel is a short numpy accumulator). Add `opencv-python-headless` to a new
-`digitise` extra only if slice 2 shows the numpy path is too slow or
-brittle.
+Decided (Decisions 3): numpy + scipy + pillow for the core (Hough on a
+cropped panel is a short numpy accumulator). Add `opencv-python-headless` to
+a new `digitise` extra only if slice 2 shows colour masking needs it.
 
 ## Output and storage
 
@@ -104,8 +106,9 @@ Existing kinds only; no new kind.
   at the paper's figure chunk (the `pc` block with the image marker and
   caption). beta goes in as a condition input row like any other run.
   `TIERS` in `src/precis/store/_measures_ops.py` is `measured | computed |
-  derived | asserted`; a value read off a plot fits none cleanly (open
-  question 2).
+  derived | asserted`, enforced by the CHECK `measures_tier_check`
+  (`0187_measures.sql`); a value read off a plot fits none, so this item adds
+  tier `digitised` (Decisions 2).
 - **The calibration record: a JSON sidecar** per panel, next to the
   consumer's fixture (slice 9 puts fixtures in catpath package data).
   Fields: `figure` (paper handle, figure chunk handle, page, bbox, dpi),
@@ -146,15 +149,31 @@ The vision call is internal to the view, not an agent-facing verb.
    polyline, sub-pixel peak with sigma. Test: synthetic TPD-like traces
    (Gaussian peaks at known T, four rates, noise, similar colours); the
    recovered T_p lies within the reported sigma in at least 95 percent of
-   seeded trials.
-3. **Render + checked proposal** (`figdigit/page.py`, `figdigit/propose.py`).
-   Test: with a fake proposer, a wrong tick label and a hallucinated peak
-   are both returned `unverified`; no network.
-4. **MCP view + write path** (`view='digitise'`, sidecar, measure rows).
-   Test: the view writes no rows; the sidecar's rows pass `_measure_write`
-   validation including `value_err`.
-5. **First consumer**: digitise pa186444 Fig. 1; swap the derived 2 and
-   5 K/s CO/Pd(111) rows for the measured four; commit the sidecar. Test:
+   seeded trials. If colour masking is too slow or brittle in numpy, this
+   slice adds the `digitise` extra with `opencv-python-headless`.
+3. **Render + checked proposal** (`figdigit/page.py`, `figdigit/propose.py`):
+   Sonnet vision proposer plus the offline geometry-only mode (caller names
+   colours and tick values). Test: with a fake proposer, a wrong tick label
+   and a hallucinated peak are both returned `unverified`; the offline mode
+   needs no proposer; no network.
+4. **MCP view + write path + tier migration** (`view='digitise'`, sidecar,
+   measure rows). Forward-only migration `0240_measures_tier_digitised.sql`
+   (next free number after `0239_vault_key_table.sql`; recheck at build):
+   `measures.tier` is `CHECK (tier IN ('measured','computed','derived',
+   'asserted'))`, constraint `measures_tier_check` from `0187_measures.sql`,
+   so the migration drops and re-adds it with `'digitised'`, updates the
+   column comment, and `TIERS` in `src/precis/store/_measures_ops.py` gains
+   `digitised`. `0188_measures_si.sql` reads `tier` in a view; check it
+   still resolves. Test: the view writes no rows; the sidecar's rows pass
+   `_measure_write` validation including `value_err` with `tier='digitised'`.
+5. **Validation gate: a paper with a printed table.** Before the tool is
+   trusted on pa186444, digitise a figure from a held paper that prints the
+   same series in a table (pick the paper at build; a TPD or similar
+   peak-position series is best). Gate: every digitised value lies within its
+   reported sigma of the tabulated value; record the paper handle and the
+   residuals in the sidecar. A miss blocks slice 6 and returns to slices 1-3.
+6. **First consumer**: digitise pa186444 Fig. 1; swap the derived 2 and
+   5 K/s CO/Pd(111) rows for the digitised four; commit the sidecar. Test:
    the fixture loader requires a sidecar id on every `digitised` row, and
    the slice-9 kinetics tests still pass.
 
@@ -168,21 +187,18 @@ The vision call is internal to the view, not an agent-facing verb.
 - An interactive click-to-calibrate UI.
 - Serving paper figure images through `get(kind='paper')` generally.
 
-## Open questions for Reto
+## Decisions (Reto 2026-10-24)
 
-1. Where does the PDF come from? pa186444 was read from your PDF, not a
-   stored file. Should ingest keep the source PDF (or per-figure crops) for
-   held papers, or is the digitiser handed a local path or image each time?
-2. `measures.tier` has no value for a number read off a plot (`measured`
-   needs an anchored span of printed text). Add a fifth tier `digitised`,
-   or store these as `tier='derived'` with `derived_from` the figure chunk
-   and mark digitised in `note`?
-3. Dependency: numpy/scipy/pillow only, or accept `opencv-python-headless`
-   (Apache-2.0, already locked via surya-ocr) as a direct dependency of a
-   new `digitise` extra?
-4. Vision proposer: which model tier and budget per figure, and is a fully
-   offline geometry-only mode (caller names colours and tick values)
-   acceptable when no model is available?
-5. Acceptance: is "within stated sigma of your own read of Fig. 1" the bar,
-   or should a second paper with a printed table of the same series
-   validate the tool first?
+Answers "defaults", relayed by catpath-29.
+
+1. **Input.** The caller hands the digitiser a path or image. Whether ingest
+   keeps the source PDF or per-figure crops is **explicitly deferred**, a
+   separate decision and not in scope here.
+2. **Tier.** New `measures.tier` value `digitised` (migration in slice 4).
+3. **Dependencies.** numpy, scipy, pillow first; `opencv-python-headless`
+   (new `digitise` extra) only if colour masking proves to need it.
+4. **Proposer.** Sonnet vision, about $0.05 per figure, plus an offline
+   geometry-only mode where the caller supplies colours and tick values.
+5. **Acceptance.** Validate against a paper that prints the same series in a
+   table (slice 5) before trusting the tool on pa186444 Fig. 1 (slice 6,
+   whose own bar is the first-consumer acceptance above).
