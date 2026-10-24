@@ -522,3 +522,4 @@ else the draft owner's default — see [[precis-profile-help]].
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
 - [[precis-profile-help]] — owner-scoped branding profiles for poster drafts.
 - [[precis-write-paper-help]] — prose craft: structure, diction, LLM tells to avoid.
+- [[precis-ai-contributions-help]] — the "AI contributions" statement: per-model lines from provenance.

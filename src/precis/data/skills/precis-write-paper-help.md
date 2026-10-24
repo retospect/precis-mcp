@@ -166,6 +166,11 @@ that list and produces prose.
 - LLM tells like "It is important to note that …", "It should be
   emphasized that …", "Notably, …" used as soft openers. Cut them.
 
+## Crediting the models
+
+A paper that models helped write carries an "AI contributions" statement,
+not an "AI disclosure": [[precis-ai-contributions-help]].
+
 ## Verifier loop hand-off
 
 When your section is done, the parent task should kick off a sibling
