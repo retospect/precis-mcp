@@ -88,15 +88,21 @@ its rollback as the next forward migration (`docs/conventions/invariants.md`).
    `search(tags=['MATERIAL:mof'])` and `tag(add=)` accept every axis a
    pass writes; `precis-tags` documents each with its writer pass. Fix
    tn504453 by hand through (b) once deployed.
-1. **Measurand groups.** Migration mints ≤12 group nodes under
-   `measurand` (each with `dimension_kind` so the start contract holds —
-   a group of mixed dimensions gets `dimension_kind='categorical'` and is
-   a navigation node, not a measurand) and adds a `specialises` edge from
-   every one of the 96 leaves to its group with `meta.axis='quantity-class'`.
-   The direct edge to the root stays. Mapping table in the migration,
-   reviewed by hand; a leaf with no group lands in `measurand/other`.
-   Rollback migration deletes edges `WHERE meta.migration=<id>` and retires
-   the group nodes.
+1. **Measurand groups.** *Driver built (onto-s1):
+   `scripts/onto-groups` (dry-run/apply), awaiting prod `--apply` after
+   deploy.* The driver mints the **13** Q8-ruled group nodes (Q8 ruling,
+   superseding the ≤12 proposal) under `measurand` as
+   `dimension_kind='categorical'` navigation nodes (the start contract
+   holds; a group is not a measurand) and adds a `specialises` edge from
+   every live leaf to its group with
+   `meta={'axis':'quantity-class','migration':'onto-groups'}`. The direct
+   edge to the root stays, untouched. Mapping table is the driver's
+   `GROUPS`, verbatim from the ruled member table; a leaf with no group
+   lands in `measurand/other` (minted only when needed); an unresolved or
+   ambiguous member, or a same-slug node outside `measurand`, refuses the
+   apply. The six taxa owned by onto-repoint/-fix (tn460115 + the five
+   legacy terms) are skipped. Rollback: delete links
+   `WHERE meta->>'migration'='onto-groups'`, retire the group nodes.
 2. **New nodes.** `method` start node; `subject/material`,
    `subject/reaction`, `subject/component` (the 13 seed nodes re-parented
    as slice 1 did); the seven missing measurands with `si_vector`,
@@ -172,8 +178,11 @@ relation registry beyond what open question 6 decides.
   and splits on ≥2 named axes; `get(kind='taxon', id='subject/material',
   view='facets', args={'cross': ['method-class', 'quantity-class']})`
   returns a non-empty gap table.
-- `search(kind='taxon', under='measurand', depth=1)` lists ≤12 groups;
-  `view='path'` on every leaf shows an axis label on every hop.
+- `search(kind='taxon', under='measurand', depth=1)` lists the 13 ruled
+  groups (+ `other` when needed; leaf bridge edges also appear at depth 1
+  until their later removal); `view='path'` on every leaf shows an axis
+  label on every hop of the grouped chain (the bridge hop is unlabelled
+  while the bridge edge stays).
 - `get(kind='taxon', id='measurand/temperature')` and
   `search(kind='measure', property='measurand/faradaic-efficiency')`
   resolve before and after slice 1.

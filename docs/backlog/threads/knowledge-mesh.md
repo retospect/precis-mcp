@@ -253,8 +253,10 @@ graph-health-metrics, five parked gripes, and the seam with
    `instance-of` (today 0 such edges, so `under=` answers nothing),
    tags-that-are-links to links, the OPEN folksonomy teardown (absorbed
    `open-namespace-teardown`). Slice 0 (guards, ancestor paths, axis
-   registry) has no data change and can start now; slices 1–3 before
-   Horizon 2's validated axes land. 4b's signal 1 reads its facets.
+   registry) landed a68362561; slice 1's `scripts/onto-groups` (13 ruled
+   quantity-class groups + `other` catch-all) is built, awaiting prod
+   `--apply` after deploy; slices 2–3 before Horizon 2's validated axes
+   land. 4b's signal 1 reads its facets.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
    universal row) — waits on Do-next 7; its ladder item moved to Do-next 6.
 4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
