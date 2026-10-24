@@ -8,8 +8,12 @@ pillar: memory-graph
 Ops-gated resolve-metadata runs plus the standing-worker follow-up.
 
 - `precis resolve-metadata` dry-run over the 94 needs-triage; inspect the
-  auto/review/discard lanes, then --apply (network-bound, on-cluster;
-  ~20 DOI-track + ~40 title-track expected auto).
+  auto/review/discard/parked lanes, then --apply (network-bound, on-cluster;
+  ~20 DOI-track + ~40 title-track expected auto). The CLI summary used to
+  drop the `parked` lane silently (`park_mismatch` writes `MISMATCH_TAG`
+  under `--apply` but was never printed/counted) — fixed in
+  `src/precis/cli/resolve_metadata.py` so the dry-run inspection actually
+  covers every verdict before `--apply`.
 - 187 titleless chunked papers: re-resolve by DOI (32) or S2 title search
   (≥0.85 gate) — dry-run → gold-check → --apply; `paper_reconcile` already
   runs these on a standing cadence (`_worker_passes.py`), no extra wiring

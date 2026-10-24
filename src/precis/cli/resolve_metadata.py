@@ -4,8 +4,9 @@ Bucket B of the duplicate/metadata plan (the merge half lives in
 ``ingest/dedup.py``): resolve canonical metadata
 for ``needs-triage`` papers from what we already hold — Crossref by the
 stored DOI, or a Semantic Scholar title search that recovers a DOI for the
-id-less ones. Auto-applies only the high-confidence verdicts; the review
-and discard lanes are printed for a human to action.
+id-less ones. Auto-applies only the high-confidence verdicts; the review,
+discard and parked (title/edition-mismatch, held for a human) lanes are
+all printed for a human to action.
 
 Dry-run by default; ``--apply`` writes the ``auto`` verdicts. Network-bound
 (Crossref / S2), so run it on a node with outbound access.
@@ -29,7 +30,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "Resolve canonical metadata for needs-triage papers from the "
             "stored DOI (Crossref) or a Semantic Scholar title search "
             "(recovers a DOI for id-less papers). Auto-applies only "
-            "high-confidence hits; prints the review + discard lanes. "
+            "high-confidence hits; prints the review + discard + parked lanes. "
             "Dry-run by default; --apply to write."
         ),
     )
@@ -100,21 +101,24 @@ def run(args: argparse.Namespace) -> None:
         delay=args.delay,
     )
 
-    # Group by verdict; print the actionable lanes (review / discard) in full.
+    # Group by verdict; print the actionable lanes (review / discard /
+    # parked) in full.
     buckets: dict[str, list] = {
         "auto": [],
         "review": [],
         "discard": [],
+        "parked": [],
         "miss": [],
         "deferred": [],
     }
     for r in results:
         buckets.setdefault(r.verdict, []).append(r)
-    for lane in ("auto", "review", "discard"):
+    for lane in ("auto", "review", "discard", "parked"):
         for r in buckets.get(lane, []):
             print(r.line())
 
     verb = "applied" if apply else "would apply"
+    park_verb = "parked" if apply else "would park"
     deferred = (
         f", {len(buckets['deferred'])} deferred (rate-limited, retry next pass)"
         if buckets["deferred"]
@@ -125,6 +129,8 @@ def run(args: argparse.Namespace) -> None:
         f"{verb} {len(buckets['auto'])} auto, "
         f"{len(buckets['review'])} for review, "
         f"{len(buckets['discard'])} discard-candidates, "
+        f"{park_verb} {len(buckets['parked'])} for human review "
+        f"(title/edition mismatch), "
         f"{len(buckets['miss'])} unresolved{deferred}.",
         file=sys.stderr,
     )
