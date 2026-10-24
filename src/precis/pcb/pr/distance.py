@@ -53,6 +53,50 @@ def seg_seg_dist(a0, a1, b0, b1):
     return torch.where(seg_seg_cross(a0, a1, b0, b1), torch.zeros_like(d), d)
 
 
+def seg_seg_signed(a0, a1, b0, b1):
+    """Signed segment–segment distance: the plain distance when the
+    segments are apart, and when they CROSS the negative of the smallest
+    endpoint-to-other-segment distance — the shortest move that uncrosses
+    them. ``seg_seg_dist`` is flat (0, no gradient) on a crossing pair,
+    so a same-layer crossing the sampler produced could never be pushed
+    apart; this gives the barrier a direction (slice 2)."""
+    import torch
+
+    m = torch.minimum(
+        torch.minimum(point_seg_dist(a0, b0, b1), point_seg_dist(a1, b0, b1)),
+        torch.minimum(point_seg_dist(b0, a0, a1), point_seg_dist(b1, a0, a1)),
+    )
+    return torch.where(seg_seg_cross(a0, a1, b0, b1), -m, m)
+
+
+def point_box_signed(p, c, hw, cs):
+    """Signed distance from points to filled oriented boxes: positive
+    outside (``point_box_dist``), negative inside — minus the distance to
+    the nearest box edge, so an interior point is pushed out the short
+    way."""
+    import torch
+
+    pl = _to_box_frame(p, c, cs)
+    inside = (pl.abs() <= hw).all(-1)
+    depth = (hw - pl.abs()).min(dim=-1).values
+    return torch.where(inside, -depth, point_box_dist(p, c, hw, cs))
+
+
+def seg_box_signed(a0, a1, c, hw, cs):
+    """Signed segment–box distance: ``seg_box_dist`` when apart; when
+    the segment enters the box, the most negative of the signed distances
+    of its endpoints and midpoint (a thin box crossed between samples
+    still reads 0 — flat, but never positive)."""
+    import torch
+
+    d = seg_box_dist(a0, a1, c, hw, cs)
+    s = torch.minimum(
+        torch.minimum(point_box_signed(a0, c, hw, cs), point_box_signed(a1, c, hw, cs)),
+        point_box_signed((a0 + a1) / 2.0, c, hw, cs),
+    )
+    return torch.minimum(d, s)
+
+
 def _to_box_frame(p, c, cs):
     """Points ``p`` (..., 2) in the oriented box's local frame:
     ``cs`` is (cos θ, sin θ) of the box's x axis, ``c`` its centre."""
@@ -140,9 +184,15 @@ def outline_margin(p, poly):
     verts = poly
     nxt = torch.roll(verts, -1, dims=0)
     e = nxt - verts
+    elen = e.norm(dim=-1)
     n = torch.stack((-e[..., 1], e[..., 0]), dim=-1)
-    n = n / n.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    n = n / elen[..., None].clamp_min(_EPS)
     d = ((p[..., None, :] - verts) * n).sum(-1)
+    # a repeated closing vertex (an authored ring's last == first) is a
+    # zero-length edge with no normal: it must not vote
+    d = torch.where(
+        (elen > 1e-9)[(None,) * (d.dim() - 1)], d, torch.full_like(d, float("inf"))
+    )
     return d.min(dim=-1).values
 
 

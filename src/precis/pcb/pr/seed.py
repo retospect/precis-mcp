@@ -166,9 +166,17 @@ def seed(
     *,
     rip_budget: int = _RIP_BUDGET,
     funnel_alts: int = _MAX_FUNNEL_ALTS,
+    keep: dict[int, tuple[np.ndarray, int]] | None = None,
+    skip: set[int] | None = None,
 ) -> SeedResult:
     """Insert every wire, cheapest layer first subject to capacity, with
-    depth-first rip-reinsert of the blockers a saturated path names."""
+    depth-first rip-reinsert of the blockers a saturated path names.
+
+    ``keep`` maps a wire to its CURRENT ``(polyline, layer)``: those wires
+    are committed as they are (their portal claims recorded) before
+    anything is inserted, so an outer round re-inserts only the wires
+    that have no polyline yet — and a kept wire is ripped and re-funnelled
+    only when it blocks a new insertion (spec 4a, the rip-reinsert)."""
     graphs = _shared_graphs(problem)
     obs = _obstacles_by_layer(problem)
     occupancy: dict[int, dict[int, list[int]]] = {li: {} for li in graphs}
@@ -253,9 +261,14 @@ def seed(
     def commit(wi: int, layer: int, band: Any, crossed: list[int]) -> None:
         for p in crossed:
             occupancy[layer].setdefault(p, []).append(wi)
-        seeds[wi] = WireSeed(
-            polyline=np.asarray(band.points), layer=layer, portals=tuple(crossed)
-        )
+        pts = band if isinstance(band, np.ndarray) else np.asarray(band.points)
+        seeds[wi] = WireSeed(polyline=pts, layer=layer, portals=tuple(crossed))
+
+    for wi, (poly, layer) in (keep or {}).items():
+        poly = np.asarray(poly, dtype=np.float64)
+        if len(poly) < 2 or not (0 <= layer < problem.n_layers):
+            continue
+        commit(wi, layer, poly, crossing_portals(graphs[layer], poly))
 
     def rip(wi: int) -> None:
         s = seeds[wi]
@@ -275,8 +288,10 @@ def seed(
             for l in range(problem.n_layers)
             if (w.a_lmask >> l) & 1 and (w.b_lmask >> l) & 1
         ]
+        routable = [l for l in range(problem.n_layers) if (w.route_lmask >> l) & 1]
+        locked = [l for l in shared if l in routable] or shared or routable
         cands = []
-        for layer in shared or list(range(problem.n_layers)):
+        for layer in locked or list(range(problem.n_layers)):
             got = attempt(wi, layer, soft_capacity=depth > 0)
             if got is not None:
                 band, crossed, sat, xw = got
@@ -318,7 +333,13 @@ def seed(
                 ok = False
         return ok
 
+    for wi in sorted(skip or ()):
+        seeds[wi] = WireSeed(
+            polyline=np.zeros((0, 2)), layer=-1, portals=(), reason="skipped on request"
+        )
     for wi in range(len(problem.wires)):
+        if seeds[wi] is not None:
+            continue  # kept from the previous round, or skipped
         budget[0] = rip_budget
         if not insert(wi, 0):
             # Fallback pass: capacity-soft, crossing still hard — the
@@ -356,6 +377,8 @@ def refunnel(
     wi: int,
     target_layers: np.ndarray,
     piece_mm: float = 2.0,
+    base: np.ndarray | None = None,
+    prev_layers: np.ndarray | None = None,
 ) -> np.ndarray:
     """Re-insert the spans of wire ``wi`` whose target layer differs from
     the seed's: each maximal same-layer run is re-funnelled on ITS layer's
@@ -363,9 +386,12 @@ def refunnel(
     two layers). Runs on the seeded layer keep their funnel geometry.
     ``target_layers`` is per SUBDIVIDED piece (the layout's span grid);
     the returned polyline is the subdivided one. Falls back to the
-    seeded geometry for a run whose sub-funnel fails."""
+    seeded geometry for a run whose sub-funnel fails. ``base`` is the
+    polyline to start from (default: the seed's — the slice-2 driver
+    passes the relaxed one)."""
     seed = seeded.seeds[wi]
-    poly = subdivide(np.asarray(seed.polyline, dtype=np.float64), piece_mm)
+    src = seed.polyline if base is None else base
+    poly = subdivide(np.asarray(src, dtype=np.float64), piece_mm)
     if poly.size == 0 or len(poly) < 2:
         return poly
     obs = _obstacles_by_layer(problem)
@@ -373,6 +399,8 @@ def refunnel(
     n_pieces = len(poly) - 1
     if len(target_layers) != n_pieces:
         return poly  # span grid changed; keep the seeded geometry
+    if prev_layers is not None and len(prev_layers) != n_pieces:
+        prev_layers = None
     i = 0
     while i < n_pieces:
         layer = int(target_layers[i])
@@ -381,7 +409,12 @@ def refunnel(
             j += 1
         # Run [i, j): pieces i..j-1 on `layer`, endpoints poly[i]..poly[j].
         a, b = poly[i], poly[j]
-        if layer == seed.layer:
+        unchanged = (
+            all(int(prev_layers[k]) == layer for k in range(i, j))
+            if prev_layers is not None
+            else layer == seed.layer
+        )
+        if unchanged:
             run = [tuple(p) for p in poly[i : j + 1]]
         else:
             ng = _net_graph(problem, obs, seeded.net_graphs, wi, layer)

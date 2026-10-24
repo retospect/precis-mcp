@@ -385,3 +385,438 @@ def test_build_net_trees_on_fanout_problem():
         assert np.all(tree.edge_width_mm >= floor - 1e-9)
         zero = tree.edge_current_a == 0.0
         assert np.allclose(tree.edge_width_mm[zero], floor)
+
+
+# ---- slice 2: free parts, blocks, finish (spec §Slices item 2) ----------
+
+
+def _free_sources(built: qf.Built) -> qf.Built:
+    """Unlock the fanout's source parts so the free-part solve has
+    something to move (the QFP stays ``fixed='both'``)."""
+    ir = built.ir
+    for i in range(ir.n_instances):
+        if str(ir.instance_refdes[i]).startswith("S"):
+            ir.inst_fixed_xy[i] = False
+            ir.inst_fixed_rot[i] = False
+    return built
+
+
+def _small_spec() -> qf.FanoutSpec:
+    return qf.FanoutSpec(
+        layers=("F.Cu", "B.Cu"), pins_per_side=6, n_nets=12, sources="grid", seed=1
+    )
+
+
+def _small_free() -> tuple[qf.Built, prstate.PrProblem]:
+    built = _free_sources(_built(_small_spec()))
+    prob = prstate.build_problem(
+        built.ir,
+        outline=qf.outline(built.spec),
+        config=realize.RealizeConfig(
+            fab_caps=capability_for("2layer"),
+            class_rules=built.graph["net_classes"],
+        ),
+        footprints=built.footprints,
+        free_parts=True,
+    )
+    return built, prob
+
+
+def test_dyn_geom_rides_the_pose_and_anchors_wire_endpoints():
+    built, prob = _small_free()
+    dyn = prob.dyn
+    assert dyn.n_parts == built.spec.net_count  # every source, not the QFP
+    assert len(dyn.dseg_part) == dyn.n_parts  # one drilled pad each
+    assert np.all(dyn.side == 2)  # through-hole: both sides
+    # Static obstacles are the QFP's pads only; dynamic pads left them.
+    assert len(prob.obs.box_c) == built.spec.n_pads
+    # The QFP's courtyard is the one static courtyard a source keeps off.
+    assert len(dyn.scourt_c) == 1
+    # Each wire's source end is anchored on its part; the QFP end is static.
+    for w in prob.wires:
+        assert (w.a_part >= 0) != (w.b_part >= 0)
+        part = w.a_part if w.a_part >= 0 else w.b_part
+        local = w.a_local if w.a_part >= 0 else w.b_local
+        cx, cy, th = prob.pose_of(part)
+        wx, wy = prstate.local_to_world(local[0], local[1], cx, cy, th)
+        want = w.a if w.a_part >= 0 else w.b
+        assert abs(wx - want[0]) < 1e-9 and abs(wy - want[1]) < 1e-9
+    # Round trip of the transform.
+    for pt in [(1.0, 2.0), (-3.5, 0.25)]:
+        lx, ly = prstate.world_to_local(pt[0], pt[1], 0.3, -0.7, 1.1)
+        assert np.allclose(prstate.local_to_world(lx, ly, 0.3, -0.7, 1.1), pt)
+
+
+def test_box_box_gap_is_conservative_and_signed():
+    torch = pytest.importorskip("torch")
+    from shapely import affinity
+    from shapely.geometry import box as sbox
+
+    from precis.pcb.pr.relax import _box_box_gap
+
+    rng = np.random.default_rng(11)
+    seen_overlap = seen_apart = False
+    for _ in range(80):
+        ca, cb = rng.uniform(-3, 3, 2), rng.uniform(-3, 3, 2)
+        ha, hb = rng.uniform(0.3, 1.5, 2), rng.uniform(0.3, 1.5, 2)
+        ta, tb = rng.uniform(0, np.pi, 2)
+        g = _box_box_gap(
+            torch.tensor(ca)[None],
+            torch.tensor(ha)[None],
+            torch.tensor([np.cos(ta), np.sin(ta)])[None],
+            torch.tensor(cb)[None],
+            torch.tensor(hb)[None],
+            torch.tensor([np.cos(tb), np.sin(tb)])[None],
+        )
+        pa = affinity.rotate(
+            sbox(-ha[0], -ha[1], ha[0], ha[1]), np.degrees(ta), origin=(0, 0)
+        )
+        pb = affinity.rotate(
+            sbox(-hb[0], -hb[1], hb[0], hb[1]), np.degrees(tb), origin=(0, 0)
+        )
+        pa = affinity.translate(pa, ca[0], ca[1])
+        pb = affinity.translate(pb, cb[0], cb[1])
+        exact = pa.distance(pb)
+        got = float(g[0])
+        if exact > 1e-9:
+            seen_apart = True
+            # separating-axis: never above the true distance, and positive
+            assert 0.0 < got <= exact + 1e-9
+        else:
+            seen_overlap = True
+            assert got <= 1e-9  # overlapping: non-positive, a depth
+    assert seen_overlap and seen_apart
+
+
+def test_free_part_energy_gradient_matches_finite_difference():
+    torch = pytest.importorskip("torch")
+    from precis.pcb.pr import beliefs
+    from precis.pcb.pr import seed as prseed
+    from precis.pcb.pr.relax import Relaxer, RelaxParams
+
+    built, prob = _small_free()
+    seeded = prseed.seed(prob)
+    lay = beliefs.build_layout(prob, [s.polyline for s in seeded.seeds])
+    rlx = Relaxer(prob, lay, RelaxParams())
+    gen = np.random.default_rng(0)
+    assign = torch.tensor(
+        beliefs.sample_layers(beliefs.init_q(lay, prob.n_layers), 1, gen),
+        dtype=torch.int64,
+    )
+    pos = torch.tensor(lay.points[None].copy(), dtype=torch.float64)
+    # Off the kinks: every box is axis-aligned at the seed, where the
+    # separating-axis max ties (a V, central FD reads 0 either side). A
+    # small random pose perturbation makes the energy smooth there.
+    rng = np.random.default_rng(5)
+    gp = rlx.gpose0[None].clone()
+    gp[..., :2] += torch.tensor(rng.uniform(-0.3, 0.3, gp[..., :2].shape))
+    gp[..., 2] += torch.tensor(rng.uniform(0.05, 0.4, gp[..., 2].shape))
+    gp.requires_grad_(True)
+    E, _ = rlx.energy(pos, assign, 0.7, gp)
+    assert np.isfinite(float(E.detach()[0]))
+    g = torch.autograd.grad(E.sum(), gp)[0]
+    h = 1e-5
+    for i in (0, 3, 7):
+        for ax in range(3):
+            d = torch.zeros_like(gp)
+            d[0, i, ax] = h
+            Ep, _ = rlx.energy(pos, assign, 0.7, gp.detach() + d)
+            Em, _ = rlx.energy(pos, assign, 0.7, gp.detach() - d)
+            fd = float((Ep[0] - Em[0]) / (2 * h))
+            assert abs(fd - float(g[0, i, ax])) < 1e-3 * max(1.0, abs(fd)), (
+                i,
+                ax,
+                fd,
+                float(g[0, i, ax]),
+            )
+
+
+def test_pair_table_sees_a_crossing_with_far_endpoints():
+    """Two long spans that cross mid-way are a belief pair even though no
+    endpoint is near the other span (slice 1 tested endpoint proximity
+    only, so the sampler put such spans on one layer)."""
+    from precis.pcb.pr import beliefs
+
+    built, prob = _small_free()
+    w0, w1 = prob.wires[0], prob.wires[1]
+    # two 20 mm spans forming an X around the origin, far from each other's ends
+    polys = [np.asarray([w.a, w.b]) for w in prob.wires]
+    polys[0] = np.array([[-10.0, -10.0], [10.0, 10.0]])
+    polys[1] = np.array([[-10.0, 10.0], [10.0, -10.0]])
+    lay = beliefs.build_layout(prob, polys, piece_mm=1e9)
+    pi, pj = beliefs.pair_table(prob, lay, crowd_mm=0.6)
+    p0 = int(np.flatnonzero(lay.piece_wire == 0)[0])
+    p1 = int(np.flatnonzero(lay.piece_wire == 1)[0])
+    assert (p0, p1) in set(zip(pi.tolist(), pj.tolist(), strict=True))
+    assert w0.net_id != w1.net_id
+
+
+def test_outline_ring_closing_vertex_and_orientation_are_harmless():
+    """An authored outline repeats its first vertex last and may run
+    clockwise; the margin kernel must read the same interior either way
+    (nano's outline did both and every point measured 'at the edge')."""
+    torch = pytest.importorskip("torch")
+    from precis.pcb.pr import distance as D
+
+    open_ccw = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [0.0, 6.0]])
+    closed = np.vstack([open_ccw, open_ccw[:1]])
+    cw = open_ccw[::-1].copy()
+    pts = torch.tensor([[1.0, 1.0], [5.0, 3.0], [11.0, 3.0]], dtype=torch.float64)
+    want = torch.tensor([1.0, 3.0, -1.0], dtype=torch.float64)
+    assert torch.allclose(D.outline_margin(pts, torch.tensor(open_ccw)), want)
+    assert torch.allclose(D.outline_margin(pts, torch.tensor(closed)), want)
+    for ring in (closed, cw):
+        fixed = prstate._open_ring(ring)
+        assert len(fixed) == 4
+        assert torch.allclose(D.outline_margin(pts, torch.tensor(fixed)), want)
+
+
+def test_unrouted_wire_is_a_stub_not_a_phantom():
+    """A wire the seed could not route must not relax as a straight line
+    between its pads: its stub joins no pair and anchors to no pad."""
+    torch = pytest.importorskip("torch")
+    from precis.pcb.pr import beliefs
+    from precis.pcb.pr.relax import Relaxer, RelaxParams
+
+    built, prob = _small_free()
+    polys = [np.asarray([w.a, w.b]) for w in prob.wires]
+    polys[0] = np.zeros((0, 2))  # wire 0 unrouted
+    lay = beliefs.build_layout(prob, polys, piece_mm=1e9)
+    assert not lay.wire_active[0] and lay.wire_active[1:].all()
+    rlx = Relaxer(prob, lay, RelaxParams())
+    pw = lay.piece_wire
+    assert not ((pw[rlx.pp_i.numpy()] == 0) | (pw[rlx.pp_j.numpy()] == 0)).any()
+    assert not (pw[rlx.pd_i.numpy()] == 0).any()
+    pos = torch.tensor(lay.points[None])
+    full = rlx.full_points(pos, rlx.gpose0[None])[0].numpy()
+    stub = full[lay.wire_of_point == 0]
+    assert np.allclose(stub[0], stub[-1])  # both ends stay at pad a
+
+
+def test_appetite_widens_a_negative_alpha_net_only():
+    """Copper appetite (spec §Net attributes): a net with negative α
+    widens above its floor during relaxation; a zero-α signal stays at
+    its floor; with the term off every width is frozen."""
+    pytest.importorskip("torch")
+    from precis.pcb.pr import beliefs
+    from precis.pcb.pr import seed as prseed
+    from precis.pcb.pr.relax import Relaxer, RelaxParams
+
+    built = _built(_small_spec())
+    hungry = str(built.ir.net_name[0])
+    prob = prstate.build_problem(
+        built.ir,
+        outline=qf.outline(built.spec),
+        config=realize.RealizeConfig(
+            fab_caps=capability_for("2layer"),
+            class_rules=built.graph["net_classes"],
+        ),
+        footprints=built.footprints,
+        net_overrides={hungry: {"appetite": -1.0}},
+    )
+    assert prob.net_attrs.appetite[0] == -1.0 and prob.net_attrs.appetite[1] == 0.0
+    import torch
+
+    seeded = prseed.seed(prob)
+    lay = beliefs.build_layout(prob, [s.polyline for s in seeded.seeds])
+    gen = np.random.default_rng(0)
+    assign_np = beliefs.sample_layers(beliefs.init_q(lay, prob.n_layers), 1, gen)
+    fixed = lay.span_allowed.sum(1) == 1
+    assign_np[:, fixed] = np.argmax(lay.span_allowed[fixed], axis=1)[None, :]
+    assign = torch.tensor(assign_np)
+    on = Relaxer(prob, lay, RelaxParams(appetite_scale=1.0))
+    pos = torch.tensor(lay.points[None].copy())
+    w0 = [i for i, w in enumerate(prob.wires) if w.net_id == 0]
+    w1 = [i for i, w in enumerate(prob.wires) if w.net_id == 1]
+    n_w = len(prob.wires)
+    # At zero width the barrier is blind to width, so the area term is
+    # the only thing an extra width changes: E drops by α·Δw·L for the
+    # hungry wire and not at all for the signal.
+    zero = torch.zeros((1, n_w), dtype=torch.float64)
+    e0, _ = on.energy(pos, assign, 0.0, None, zero)
+    for wi, want_drop in ((w0[0], True), (w1[0], False)):
+        extra = zero.clone()
+        extra[0, wi] = 0.05
+        e1, parts = on.energy(pos, assign, 0.0, None, extra)
+        pcs = np.flatnonzero(lay.piece_wire == wi)
+        length = float(
+            np.linalg.norm(
+                lay.points[lay.piece_p1[pcs]] - lay.points[lay.piece_p0[pcs]], axis=1
+            ).sum()
+        )
+        drop = float(e0[0] - e1[0])
+        if want_drop:
+            assert drop == pytest.approx(0.05 * length, rel=1e-6)
+        else:
+            assert drop == pytest.approx(0.0, abs=1e-9)
+    # The relaxer's own step widens the hungry wire and never a signal.
+    _, _, parts, _ = on.run(
+        assign_np, params=RelaxParams(steps=3, grow_steps=3, appetite_scale=1.0)
+    )
+    ex = parts["extra"].numpy()
+    assert np.all(ex[:, w1] == 0.0)
+    assert ex.max() <= on.params.max_widen_mm + 1e-12
+    off = Relaxer(prob, lay, RelaxParams(steps=2, grow_steps=2))
+    _, _, parts_off, _ = off.run(assign_np)
+    assert parts_off["extra"] is None
+
+
+def test_blocks_prolong_rigidly():
+    pytest.importorskip("torch")
+    from precis.pcb.pr import beliefs
+    from precis.pcb.pr import seed as prseed
+    from precis.pcb.pr.relax import Relaxer, RelaxParams
+
+    built, prob = _small_free()
+    # Two authored blocks over the sources: rows 0-5 and 6-11.
+    grp = prob.dyn.group
+    grp[:] = np.arange(len(grp)) // 6
+    seeded = prseed.seed(prob)
+    lay = beliefs.build_layout(prob, [s.polyline for s in seeded.seeds])
+    rlx = Relaxer(prob, lay, RelaxParams(), blocks=True)
+    assert rlx.n_groups == 2
+    gp = rlx.gpose0[None].clone()
+    base = rlx.part_poses(gp)[0].numpy()
+    assert np.allclose(base, prob.dyn.pose0, atol=1e-9)
+    # Rotate block 0 by 30° and shift it: member distances are preserved,
+    # block 1 is untouched.
+    gp2 = gp.clone()
+    gp2[0, 0, 2] += np.radians(30.0)
+    gp2[0, 0, 0] += 1.5
+    moved = rlx.part_poses(gp2)[0].numpy()
+    m0 = np.flatnonzero(grp == 0)
+    d_before = np.linalg.norm(base[m0, None, :2] - base[None, m0, :2], axis=-1)
+    d_after = np.linalg.norm(moved[m0, None, :2] - moved[None, m0, :2], axis=-1)
+    assert np.allclose(d_before, d_after, atol=1e-9)
+    assert np.allclose(moved[m0, 2] - base[m0, 2], np.radians(30.0))
+    m1 = np.flatnonzero(grp == 1)
+    assert np.allclose(moved[m1], base[m1])
+    # The fine level ignores the blocks: one group per part.
+    assert Relaxer(prob, lay, RelaxParams(), blocks=False).n_groups == len(grp)
+
+
+def test_carry_q_keeps_settled_layers_across_refinement():
+    from precis.pcb.pr import beliefs
+
+    built, prob = _small_free()
+    polys = [np.asarray([w.a, w.b]) for w in prob.wires]
+    coarse = beliefs.build_layout(prob, polys, piece_mm=4.0)
+    q = beliefs.init_q(coarse, prob.n_layers)
+    # settle every coarse span of wire 0 on layer 1 where allowed
+    w0 = coarse.piece_wire == 0
+    q[w0] = np.where(coarse.span_allowed[w0], np.eye(2)[1], 0.0)
+    q[w0] /= q[w0].sum(1, keepdims=True)
+    fine = beliefs.build_layout(prob, polys, piece_mm=1.0)
+    q2 = beliefs.carry_q(coarse, q, fine)
+    f0 = fine.piece_wire == 0
+    interior = f0 & fine.span_allowed.all(1)
+    assert interior.any()
+    assert np.allclose(q2[interior][:, 1], 1.0)
+    assert np.allclose(q2.sum(1), 1.0)
+
+
+def test_uncross_by_layer_reduces_same_layer_crossings():
+    from precis.pcb.pr import beliefs, uncross
+
+    built, prob = _small_free()
+    polys = [np.asarray([w.a, w.b]) for w in prob.wires]
+    lay = beliefs.build_layout(prob, polys, piece_mm=1e9)
+    pos = lay.points
+    pair_i, pair_j = np.triu_indices(lay.n_spans, k=1)
+    assign = np.zeros(lay.n_spans, dtype=np.int64)
+    assign[~lay.span_allowed[:, 0]] = 1
+    geo = uncross.crossing_pairs(lay, pos, pair_i, pair_j)
+    if not geo.any():
+        pytest.skip("fixture has no projected crossings")
+    out, before, after = uncross.uncross_by_layer(
+        lay, pos, assign, pair_i, pair_j, n_layers=2
+    )
+    assert before > 0 and after <= before
+    assert np.all(lay.span_allowed[np.arange(lay.n_spans), out])
+
+
+def test_cleanup_and_snapshot_round_trip():
+    from precis.pcb.pr import finish
+
+    built, prob = _small_free()
+    poly = np.array([[0.0, 0.0], [1.0, 0.001], [2.0, 0.0], [3.0, 1.0], [4.0, 1.0]])
+    lay = np.array([0, 0, 1, 1])
+    cp, cl = finish.cleanup_wires({0: poly}, {0: lay}, tol_mm=0.01)
+    # the near-collinear point goes; the layer-change vertex stays
+    assert len(cp[0]) == 4 and cl[0].tolist() == [0, 1, 1]
+    state = finish.snapshot(built.ir, prob, {0: poly}, {0: lay})
+    assert state["wires"][0]["seg_id"] == prob.wires[0].seg_id
+    ir2 = _free_sources(_built(built.spec)).ir
+    polys, lays = finish.restore(ir2, state)
+    assert np.allclose(polys[prob.wires[0].seg_id], poly)
+    assert lays[prob.wires[0].seg_id].tolist() == lay.tolist()
+    for i in range(ir2.n_instances):
+        assert float(ir2.inst_x[i]) == pytest.approx(float(built.ir.inst_x[i]))
+
+
+@pytest.mark.slow
+def test_v1_free_parts_small_runs_moves_parts_and_resumes():
+    pytest.importorskip("torch")
+    from precis.pcb.pr import v1
+    from precis.pcb.pr.v1 import Stage, V1Params
+
+    built, prob = _small_free()
+    cfg = realize.RealizeConfig(
+        fab_caps=capability_for("2layer"), class_rules=built.graph["net_classes"]
+    )
+    prm = V1Params(K=4, stages=(Stage(4.0, 1, 30, 15), Stage(2.0, 1, 30, 15)))
+    run = v1.run(
+        built.ir,
+        outline=qf.outline(built.spec),
+        config=cfg,
+        footprints=built.footprints,
+        params=prm,
+    )
+    assert run.rounds_run == 2 and run.levels == ["part@4.0mm", "part@2.0mm"]
+    assert all(np.isfinite(p).all() for p in run.polylines.values())
+    assert np.isfinite(run.problem.dyn.pose0).all()
+    assert run.part_travel_mm > 0.0  # the sources moved
+    # the input IR is untouched; the run's copy carries the moved poses
+    assert np.allclose(built.ir.inst_x, prob.parts.pos[: built.ir.n_instances, 0])
+    moved = sum(
+        1
+        for i in range(run.ir.n_instances)
+        if abs(float(run.ir.inst_x[i]) - float(built.ir.inst_x[i])) > 1e-6
+    )
+    assert moved > 0
+    # every written rotation is a grid value (D5/Q7: the finest tier),
+    # never the descended continuous θ — the rotation-grid gate's read
+    from precis.pcb.field import ROT_SNAP_DEG
+
+    for i in range(run.ir.n_instances):
+        rot = float(run.ir.inst_rot[i]) % 360.0
+        assert min(rot % ROT_SNAP_DEG, ROT_SNAP_DEG - rot % ROT_SNAP_DEG) < 1e-6
+    # determinism within tolerance
+    again = v1.run(
+        built.ir,
+        outline=qf.outline(built.spec),
+        config=cfg,
+        footprints=built.footprints,
+        params=prm,
+    )
+    assert again.via_count == run.via_count and again.unrouted == run.unrouted
+    assert abs(again.wire_mm - run.wire_mm) < 1e-6 * max(1.0, run.wire_mm)
+    # resume: a run from the saved state starts where this one ended
+    res = v1.run(
+        built.ir,
+        outline=qf.outline(built.spec),
+        config=cfg,
+        footprints=built.footprints,
+        params=V1Params(K=4, stages=(Stage(2.0, 1, 10, 5),), finish=False),
+        resume=run.state,
+    )
+    assert res.rounds_run == 1
+    # the resumed run STARTS exactly at the saved run's final poses
+    dyn = run.problem.dyn
+    for row, inst in enumerate(dyn.part_inst):
+        x, y, th = res.start_pose[row]
+        assert x == pytest.approx(float(run.ir.inst_x[inst]), abs=1e-9)
+        assert y == pytest.approx(float(run.ir.inst_y[inst]), abs=1e-9)
+        assert np.degrees(th) % 360.0 == pytest.approx(
+            float(run.ir.inst_rot[inst]) % 360.0, abs=1e-6
+        )

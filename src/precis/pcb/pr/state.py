@@ -36,9 +36,19 @@ from typing import Any
 import numpy as np
 
 from precis.pcb import realize, rules
-from precis.pcb.ir import PcbIR, pin_point
+from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
+    PcbIR,
+    instance_courtyard_polygons,
+    pin_point,
+)
 from precis.pcb.pr import trees
 from precis.pcb.pr.trees import NetTree
+
+#: Half-extent of the courtyard square a pinless movable instance (a
+#: mounting hole, a fiducial) reserves when its footprint gives no pads —
+#: the placer's own fallback (``optimize.COURTYARD_MIN_SEPARATION_MM / 2``).
+_PINLESS_COURT_HALF_MM = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +74,17 @@ class Obstacles:
 
 @dataclass(frozen=True, slots=True)
 class WireSpec:
-    """One two-pin ratsnest edge. ``a_lmask``/``b_lmask`` are the layer
-    sets the terminals' copper occupies — an SMD pad pins its span to
-    its own side, a through-hole pin admits every layer."""
+    """One two-pin ratsnest edge — one tree edge of its net (spec §State
+    "Nets as trees"; the IR's star decomposition is the seed tree).
+    ``a_lmask``/``b_lmask`` are the layer sets the terminals' copper
+    occupies — an SMD pad pins its span to its own side, a through-hole
+    pin admits every layer. ``a_part``/``b_part`` are the movable-part
+    rows (:class:`DynGeom` index, −1 = a fixed terminal) the endpoints
+    ride on, ``a_local``/``b_local`` the pin offsets in that part's
+    (pre-mirrored) local frame, so the relaxer derives the endpoint from
+    the pose instead of holding it fixed. ``width_mm`` is the edge's
+    width floor: the class track width raised to the IPC-2221 width its
+    tree-edge current demands (:mod:`precis.pcb.pr.trees`)."""
 
     seg_id: int
     net_id: int
@@ -75,6 +93,116 @@ class WireSpec:
     a_lmask: int
     b_lmask: int
     width_mm: float
+    a_part: int = -1
+    b_part: int = -1
+    a_local: tuple[float, float] = (0.0, 0.0)
+    b_local: tuple[float, float] = (0.0, 0.0)
+    #: Layers a span of this wire may run on: the board's routable
+    #: (signal) layers intersected with the net class's ``layers`` lock
+    #: (``realize._net_class_layers``). The end spans keep their pad's
+    #: layer (a pad→via stub), as vroute's terminals do.
+    route_lmask: int = -1
+
+
+@dataclass(frozen=True, slots=True)
+class DynGeom:
+    """Geometry that rides on movable-part poses (spec §Where parts move,
+    4c: "poses are variables beside the wires"). Every row is in its
+    part's PRE-MIRRORED local frame: world = centre + R_cw(θ)·local, the
+    board's clockwise-from-north convention (:mod:`precis.pcb.pose`),
+    so a bottom part's mirror is baked into the local coordinates and
+    never a variable (side changes only by a 4d move, not in v1).
+
+    Parts: ``part_inst`` the IR instance id per row, ``pose0`` the
+    starting (x, y, θ_rad) with θ positive clockwise, the two lock bits,
+    ``side`` 0 top / 1 bottom / 2 both (a through-hole part blocks both
+    sides, spec §4-0), and ``group`` the block (hierarchy level, spec
+    §Hierarchy: an authored IR group, else the part itself).
+
+    Courtyards are oriented boxes: ``court_c``/``court_hw`` the local
+    centre and half extents (the courtyard hull's local bounding box —
+    over-covering, the safe direction). Pad copper is ``dseg_*`` (segment
+    cores, a point is a degenerate segment) and ``dbox_*`` (oriented
+    boxes with local axis angle ``dbox_phi``, math-CCW radians); the
+    world axis of a local box is ``phi − θ``.
+    """
+
+    part_inst: np.ndarray  # (M,) int64
+    pose0: np.ndarray  # (M, 3) x, y, theta_rad (CW+)
+    lock_xy: np.ndarray  # (M,) bool
+    lock_rot: np.ndarray  # (M,) bool
+    side: np.ndarray  # (M,) int8: 0 top, 1 bottom, 2 both
+    group: np.ndarray  # (M,) int64, block id (0..G-1)
+    court_c: np.ndarray  # (M, 2)
+    court_hw: np.ndarray  # (M, 2)
+    dseg_part: np.ndarray  # (Sd,) int64
+    dseg_local: np.ndarray  # (Sd, 4)
+    dseg_r: np.ndarray  # (Sd,)
+    dseg_net: np.ndarray  # (Sd,) int64
+    dseg_lmask: np.ndarray  # (Sd,) uint8
+    dbox_part: np.ndarray  # (Bd,) int64
+    dbox_c: np.ndarray  # (Bd, 2) local centre
+    dbox_hw: np.ndarray  # (Bd, 2)
+    dbox_phi: np.ndarray  # (Bd,) local axis angle, rad
+    dbox_net: np.ndarray  # (Bd,) int64
+    dbox_lmask: np.ndarray  # (Bd,) uint8
+    #: Courtyards of the LOCKED placed instances, in world coordinates
+    #: (``scourt_cs`` the box x-axis direction, math-CCW): static
+    #: obstacles a movable courtyard keeps clear of.
+    scourt_c: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    scourt_hw: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    scourt_cs: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    scourt_side: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+
+    @property
+    def n_parts(self) -> int:
+        return int(self.part_inst.shape[0])
+
+    @property
+    def n_groups(self) -> int:
+        return int(self.group.max()) + 1 if self.n_parts else 0
+
+
+def _empty_dyn() -> DynGeom:
+    z = np.zeros
+    return DynGeom(
+        part_inst=z(0, dtype=np.int64),
+        pose0=z((0, 3)),
+        lock_xy=z(0, dtype=bool),
+        lock_rot=z(0, dtype=bool),
+        side=z(0, dtype=np.int8),
+        group=z(0, dtype=np.int64),
+        court_c=z((0, 2)),
+        court_hw=z((0, 2)),
+        dseg_part=z(0, dtype=np.int64),
+        dseg_local=z((0, 4)),
+        dseg_r=z(0),
+        dseg_net=z(0, dtype=np.int64),
+        dseg_lmask=z(0, dtype=np.uint8),
+        dbox_part=z(0, dtype=np.int64),
+        dbox_c=z((0, 2)),
+        dbox_hw=z((0, 2)),
+        dbox_phi=z(0),
+        dbox_net=z(0, dtype=np.int64),
+        dbox_lmask=z(0, dtype=np.uint8),
+    )
+
+
+def world_to_local(
+    px: float, py: float, cx: float, cy: float, theta: float
+) -> tuple[float, float]:
+    """Inverse of ``world = c + R_cw(θ)·local`` (:func:`precis.pcb.pose.
+    rotate_cw`): the pre-mirrored local coordinates of a world point."""
+    dx, dy = px - cx, py - cy
+    c, s = math.cos(theta), math.sin(theta)
+    return dx * c - dy * s, dx * s + dy * c
+
+
+def local_to_world(
+    lx: float, ly: float, cx: float, cy: float, theta: float
+) -> tuple[float, float]:
+    c, s = math.cos(theta), math.sin(theta)
+    return cx + lx * c + ly * s, cy - lx * s + ly * c
 
 
 ROLE_GROUND = "ground"
@@ -330,23 +458,68 @@ class PrProblem:
     #: have no entry. Slice 1 routes two-pin :attr:`wires` and does not read
     #: it; the free-part solve (slice 2+) re-plans the tree in a 4d move.
     net_trees: dict[int, NetTree] = field(default_factory=dict)
+    #: Movable-part geometry (slice 2, spec §Where parts move). Empty when
+    #: the problem was built with ``free_parts=False`` (slice 1: every pad
+    #: a static obstacle).
+    dyn: DynGeom = field(default_factory=_empty_dyn)
+    #: ``(net_a, net_b, layer) -> required mm`` memo: the relaxer asks for
+    #: every wire pair × layer and there are far fewer net pairs than wire
+    #: pairs. A dict field on a frozen dataclass is mutable by design here.
+    _req_cache: dict[tuple[int, int, int], float] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @property
     def n_layers(self) -> int:
         return len(self.layers)
 
+    @property
+    def free_parts(self) -> bool:
+        return self.dyn.n_parts > 0
+
     def required_mm(self, net_a: int, net_b: int, layer: int) -> float:
         """The warn-tier spacing net ``net_a`` owes net ``net_b`` on
         ``layer`` — ``rules.required`` resolved (net class, pair rules,
-        voltage tiers). Same net merges (0)."""
+        voltage tiers). Same net merges (0). Memoised per net pair."""
         if net_a >= 0 and net_a == net_b:
             return 0.0
+        key = (net_a, net_b, layer) if net_a <= net_b else (net_b, net_a, layer)
+        hit = self._req_cache.get(key)
+        if hit is not None:
+            return hit
         name_a = self.net_name[net_a] if net_a >= 0 else ""
         name_b = self.net_name[net_b] if net_b >= 0 else ""
         req = rules.required(
             rules.Owner(name_a), rules.Owner(name_b), self.layers[layer], self.ctx
         )
-        return float(req.warn_mm if req.warn_mm is not None else req.error_mm)
+        val = float(req.warn_mm if req.warn_mm is not None else req.error_mm)
+        self._req_cache[key] = val
+        return val
+
+    def pose_of(self, part_row: int) -> tuple[float, float, float]:
+        """A movable part's starting ``(x, y, θ_rad)``."""
+        p = self.dyn.pose0[part_row]
+        return float(p[0]), float(p[1]), float(p[2])
+
+
+def write_poses(ir: PcbIR, problem: PrProblem, poses: np.ndarray) -> None:
+    """Write relaxed movable-part poses ``(M, 3)`` (x, y, θ_rad CW+) back
+    onto the IR with :meth:`PcbIR.move_instance` — the one L3 mutator —
+    so the next outer round rebuilds pads, obstacles and the topology
+    seed from the moved board (spec §4a: "rebuilt from the current
+    geometry every outer round"). Locked axes keep their IR value."""
+    dyn = problem.dyn
+    for row in range(dyn.n_parts):
+        inst = int(dyn.part_inst[row])
+        x, y, th = (float(v) for v in poses[row])
+        kw: dict[str, float] = {}
+        if not dyn.lock_xy[row]:
+            kw["x"] = x
+            kw["y"] = y
+        if not dyn.lock_rot[row]:
+            kw["rot"] = math.degrees(th) % 360.0
+        if kw:
+            ir.move_instance(inst, **kw)
 
 
 def _pad_lmask(pad: dict[str, Any], layer_index: dict[str, int]) -> int:
@@ -404,15 +577,190 @@ def _obstacle_rows(
     return segs, boxes
 
 
+def _open_ring(poly: np.ndarray) -> np.ndarray:
+    """An authored outline ring often repeats its first vertex last; the
+    distance kernel wants the open polygon (a zero-length edge has no
+    normal). Also orients it counter-clockwise, which ``outline_margin``
+    assumes (positive inside)."""
+    poly = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
+    if len(poly) >= 2 and np.allclose(poly[0], poly[-1]):
+        poly = poly[:-1]
+    if len(poly) >= 3:
+        x, y = poly[:, 0], poly[:, 1]
+        area2 = float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+        if area2 < 0.0:
+            poly = poly[::-1].copy()
+    return poly
+
+
+def _movable_rows(ir: PcbIR) -> list[int]:
+    """IR instances the free-part solve may move: placed, and not locked
+    on both axes."""
+    out: list[int] = []
+    for i in range(ir.n_instances):
+        if math.isnan(float(ir.inst_x[i])) or math.isnan(float(ir.inst_y[i])):
+            continue
+        if bool(ir.inst_fixed_xy[i]) and bool(ir.inst_fixed_rot[i]):
+            continue
+        out.append(i)
+    return out
+
+
+def _build_dyn(
+    ir: PcbIR,
+    pads: list[dict[str, Any]],
+    movable: list[int],
+    name_to_net: dict[str, int],
+    layer_index: dict[str, int],
+) -> DynGeom:
+    """Local-frame geometry for every movable instance: its pads (the
+    same :func:`realize.pads_for_ir` rows, inverse-transformed through the
+    instance's current pose so they follow it), its courtyard box, its
+    side and block."""
+    row_of = {inst: r for r, inst in enumerate(movable)}
+    m = len(movable)
+    pose0 = np.zeros((m, 3))
+    for r, inst in enumerate(movable):
+        rot = float(ir.inst_rot[inst])
+        pose0[r] = (
+            float(ir.inst_x[inst]),
+            float(ir.inst_y[inst]),
+            math.radians(0.0 if math.isnan(rot) else rot),
+        )
+    lock_xy = np.array([bool(ir.inst_fixed_xy[i]) for i in movable], dtype=bool)
+    lock_rot = np.array([bool(ir.inst_fixed_rot[i]) for i in movable], dtype=bool)
+    side = np.array(
+        [1 if bool(ir.inst_bottom[i]) else 0 for i in movable], dtype=np.int8
+    )
+    # Blocks: an authored/pattern IR group is a block; everything else is
+    # its own block. Ids are dense 0..G-1.
+    gid: dict[int, int] = {}
+    group = np.zeros(m, dtype=np.int64)
+    for r, inst in enumerate(movable):
+        g = int(ir.inst_group[inst]) if ir.inst_group.shape[0] > inst else -1
+        key = g if g >= 0 else -(inst + 1)
+        group[r] = gid.setdefault(key, len(gid))
+    # Courtyards: hull-derived local polygon → local bbox (pre-mirrored).
+    courts = instance_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=_PINLESS_COURT_HALF_MM,
+    )
+    court_c = np.zeros((m, 2))
+    court_hw = np.zeros((m, 2))
+
+    def local_box(
+        inst: int, mirrored: bool
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        ring = courts[inst]
+        if not ring:
+            return (0.0, 0.0), (_PINLESS_COURT_HALF_MM, _PINLESS_COURT_HALF_MM)
+        xs = np.array([p[0] for p in ring])
+        ys = np.array([p[1] for p in ring])
+        if mirrored:
+            xs = -xs  # mirror before rotate: the pre-mirrored frame
+        return (
+            (float(xs.max() + xs.min()) / 2.0, float(ys.max() + ys.min()) / 2.0),
+            (float(xs.max() - xs.min()) / 2.0, float(ys.max() - ys.min()) / 2.0),
+        )
+
+    for r, inst in enumerate(movable):
+        court_c[r], court_hw[r] = local_box(inst, side[r] == 1)
+    # Locked placed instances: their courtyards are static world boxes.
+    sc_c: list[tuple[float, float]] = []
+    sc_hw: list[tuple[float, float]] = []
+    sc_cs: list[tuple[float, float]] = []
+    sc_side: list[int] = []
+    for inst in range(ir.n_instances):
+        if inst in row_of:
+            continue
+        x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        if math.isnan(x) or math.isnan(y):
+            continue
+        rot = float(ir.inst_rot[inst])
+        th = math.radians(0.0 if math.isnan(rot) else rot)
+        bottom = bool(ir.inst_bottom[inst])
+        (lcx, lcy), hw = local_box(inst, bottom)
+        sc_c.append(local_to_world(lcx, lcy, x, y, th))
+        sc_hw.append(hw)
+        sc_cs.append((math.cos(-th), math.sin(-th)))
+        sc_side.append(1 if bottom else 0)
+    dseg: list[tuple[int, float, float, float, float, float, int, int]] = []
+    dbox: list[tuple[int, float, float, float, float, float, int, int]] = []
+    refdes_row = {str(ir.instance_refdes[i]): row_of[i] for i in movable}
+    static_row = {
+        str(ir.instance_refdes[i]): k
+        for k, i in enumerate(
+            inst for inst in range(ir.n_instances) if inst not in row_of
+        )
+    }
+    for pad in pads:
+        if pad.get("drill"):
+            sk = static_row.get(str(pad.get("refdes")))
+            if sk is not None and sk < len(sc_side):
+                sc_side[sk] = 2
+        row = refdes_row.get(str(pad.get("refdes")))
+        if row is None:
+            continue
+        r = int(row)
+        if pad.get("drill"):
+            side[r] = 2  # a through-hole part blocks both sides
+        net_id = name_to_net.get(str(pad.get("net") or ""), -1)
+        lmask = _pad_lmask(pad, layer_index)
+        segs, boxes = _obstacle_rows(pad, net_id, lmask)
+        cx, cy, th = pose0[r]
+        for x0, y0, x1, y1, rad in segs:
+            lx0, ly0 = world_to_local(x0, y0, cx, cy, th)
+            lx1, ly1 = world_to_local(x1, y1, cx, cy, th)
+            dseg.append((r, lx0, ly0, lx1, ly1, rad, net_id, lmask))
+        for bx, by, bhw, bhh, phi in boxes:
+            lx, ly = world_to_local(bx, by, cx, cy, th)
+            # world axis = phi_local − θ  ⇒  phi_local = phi_world + θ
+            dbox.append((r, lx, ly, bhw, bhh, phi + th, net_id, lmask))
+    f64 = np.float64
+    return DynGeom(
+        part_inst=np.asarray(movable, dtype=np.int64),
+        pose0=pose0,
+        lock_xy=lock_xy,
+        lock_rot=lock_rot,
+        side=side,
+        group=group,
+        court_c=court_c,
+        court_hw=court_hw,
+        dseg_part=np.asarray([d[0] for d in dseg], dtype=np.int64),
+        dseg_local=np.asarray([d[1:5] for d in dseg], dtype=f64).reshape(-1, 4),
+        dseg_r=np.asarray([d[5] for d in dseg], dtype=f64),
+        dseg_net=np.asarray([d[6] for d in dseg], dtype=np.int64),
+        dseg_lmask=np.asarray([d[7] for d in dseg], dtype=np.uint8),
+        dbox_part=np.asarray([d[0] for d in dbox], dtype=np.int64),
+        dbox_c=np.asarray([d[1:3] for d in dbox], dtype=f64).reshape(-1, 2),
+        dbox_hw=np.asarray([d[3:5] for d in dbox], dtype=f64).reshape(-1, 2),
+        dbox_phi=np.asarray([d[5] for d in dbox], dtype=f64),
+        dbox_net=np.asarray([d[6] for d in dbox], dtype=np.int64),
+        dbox_lmask=np.asarray([d[7] for d in dbox], dtype=np.uint8),
+        scourt_c=np.asarray(sc_c, dtype=f64).reshape(-1, 2),
+        scourt_hw=np.asarray(sc_hw, dtype=f64).reshape(-1, 2),
+        scourt_cs=np.asarray(sc_cs, dtype=f64).reshape(-1, 2),
+        scourt_side=np.asarray(sc_side, dtype=np.int8),
+    )
+
+
 def build_problem(
     ir: PcbIR,
     *,
     outline: list[list[float]],
     config: realize.RealizeConfig,
     footprints: dict[str, dict[str, Any]] | None = None,
+    free_parts: bool = False,
+    net_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> PrProblem:
-    """The slice-1 problem off a built IR: every 2-pin segment a wire,
-    every pad a static shape, rules resolved the realize way."""
+    """The problem off a built IR: every 2-pin segment (tree edge) a
+    wire, rules resolved the realize way. With ``free_parts=False``
+    (slice 1) every pad is a static shape; with ``free_parts=True``
+    (slice 2) the pads of placed, not-fully-locked instances ride their
+    part's pose (:class:`DynGeom`) and only the rest — locked parts,
+    mounting holes — stay static obstacles. Wire widths are the tree
+    edge's current-derived floor where the net has a tree."""
     layers = tuple(str(l["name"]) for l in ir.stackup)
     layer_index = {name: i for i, name in enumerate(layers)}
     class_rules = config.class_rules or {}
@@ -434,12 +782,23 @@ def build_problem(
     )
     pads = realize.pads_for_ir(ir, list(layers), footprints)
     name_to_net = {name: i for i, name in enumerate(net_name)}
+    movable = _movable_rows(ir) if free_parts else []
+    dyn = (
+        _build_dyn(ir, pads, movable, name_to_net, layer_index)
+        if movable
+        else _empty_dyn()
+    )
+    movable_refdes = {str(ir.instance_refdes[i]) for i in movable}
+    row_of_inst = {int(inst): r for r, inst in enumerate(dyn.part_inst)}
     seg_rows: list[tuple[float, float, float, float, float]] = []
     box_rows: list[tuple[float, ...]] = []
     seg_meta: list[tuple[int, int]] = []
     box_meta: list[tuple[int, int]] = []
     pad_by_pin: dict[tuple[str, str], dict[str, Any]] = {}
     for pad in pads:
+        pad_by_pin.setdefault((str(pad.get("refdes")), str(pad.get("pin"))), pad)
+        if str(pad.get("refdes")) in movable_refdes:
+            continue  # rides its part's pose (DynGeom)
         net_id = name_to_net.get(str(pad.get("net") or ""), -1)
         lmask = _pad_lmask(pad, layer_index)
         segs, boxes = _obstacle_rows(pad, net_id, lmask)
@@ -447,8 +806,37 @@ def build_problem(
         seg_meta += [(net_id, lmask)] * len(segs)
         box_rows += boxes
         box_meta += [(net_id, lmask)] * len(boxes)
-        pad_by_pin.setdefault((str(pad.get("refdes")), str(pad.get("pin"))), pad)
+    # Board-level mounting holes: unplated drills, every layer, no net.
+    all_layers = (1 << len(layers)) - 1
+    for hole in ir.mounting_holes:
+        if hole.part is not None:
+            continue  # footprint-owned: follows its part, not a board hole
+        hx, hy = float(hole.x), float(hole.y)
+        r = max(float(hole.drill_mm or 0.0), float(hole.ring_dia_mm or 0.0)) / 2.0
+        if r > 0.0:
+            seg_rows.append((hx, hy, hx, hy, r))
+            seg_meta.append((-1, all_layers))
     geoms = realize.pad_geometry(ir, footprints)
+    tree_width: dict[int, float] = {}
+    net_trees = trees.build_net_trees(
+        ir,
+        track_floor_mm={
+            i: net_rules[name].track_width_mm for i, name in enumerate(net_name)
+        },
+    )
+    for tree in net_trees.values():
+        for e in range(tree.n_edges):
+            s = int(tree.edge_seg[e])
+            if s >= 0:
+                tree_width[s] = float(tree.edge_width_mm[e])
+
+    def anchor(pin_id: int, pt: tuple[float, float]) -> tuple[int, tuple[float, float]]:
+        inst = int(ir.pin_instance[pin_id])
+        r = row_of_inst.get(inst)
+        if r is None:
+            return -1, (0.0, 0.0)
+        cx, cy, th = dyn.pose0[r]
+        return r, world_to_local(pt[0], pt[1], float(cx), float(cy), float(th))
 
     def terminal_lmask(pin_id: int) -> int:
         inst = int(ir.pin_instance[pin_id])
@@ -461,6 +849,13 @@ def build_problem(
             return (1 << len(layers)) - 1
         return 1 << (len(layers) - 1 if bool(ir.inst_bottom[inst]) else 0)
 
+    signal = realize._signal_layers(ir)
+    all_bits = (1 << len(layers)) - 1
+    route_masks: dict[int, int] = {}
+    for net_id in range(ir.n_nets):
+        allowed, _why = realize._net_class_layers(ir, net_id, config, signal)
+        mask = sum(1 << l for l in allowed) if allowed else all_bits
+        route_masks[net_id] = mask or all_bits
     wires: list[WireSpec] = []
     for seg_id in range(ir.n_segments):
         pa, pb = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
@@ -468,6 +863,8 @@ def build_problem(
         if a_pt is None or b_pt is None:
             continue
         net_id = int(ir.seg_net[seg_id])
+        a_part, a_local = anchor(pa, a_pt)
+        b_part, b_local = anchor(pb, b_pt)
         wires.append(
             WireSpec(
                 seg_id=seg_id,
@@ -476,7 +873,15 @@ def build_problem(
                 b=b_pt,
                 a_lmask=terminal_lmask(pa),
                 b_lmask=terminal_lmask(pb),
-                width_mm=net_rules[net_name[net_id]].track_width_mm,
+                width_mm=max(
+                    net_rules[net_name[net_id]].track_width_mm,
+                    tree_width.get(seg_id, 0.0),
+                ),
+                a_part=a_part,
+                b_part=b_part,
+                a_local=a_local,
+                b_local=b_local,
+                route_lmask=route_masks.get(net_id, all_bits),
             )
         )
     # One via geometry for the prototype: the class's resolved figure.
@@ -516,7 +921,7 @@ def build_problem(
     )
     return PrProblem(
         layers=layers,
-        outline=np.asarray(outline, dtype=np.float64),
+        outline=_open_ring(np.asarray(outline, dtype=np.float64)),
         edge_mm=realize._board_edge_min_mm(config),
         clearance_mm=max(r.clearance_mm for r in net_rules.values()),
         track_mm=max(w.width_mm for w in wires) if wires else 0.0,
@@ -529,11 +934,7 @@ def build_problem(
         net_rules=net_rules,
         net_name=net_name,
         parts=build_parts(ir),
-        net_attrs=build_net_attrs(ir, net_name),
-        net_trees=trees.build_net_trees(
-            ir,
-            track_floor_mm={
-                i: net_rules[name].track_width_mm for i, name in enumerate(net_name)
-            },
-        ),
+        net_attrs=build_net_attrs(ir, net_name, overrides=net_overrides),
+        net_trees=net_trees,
+        dyn=dyn,
     )

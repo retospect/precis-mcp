@@ -6,6 +6,10 @@ IR validity). Quality numbers are reported, not asserted."""
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -194,3 +198,71 @@ def test_slice1_bench_main_vroute():
         f"\n[vroute same-IR] unrouted={len(vrres.unrouted)} vias={v_vias} "
         f"wire={v_len:.1f}mm drc={vrule}"
     )
+
+
+# ---- slice 2 bench (opt-in: scripts/pcb-pr-bench sets PRECIS_PCB_PR_BENCH_OUT)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not os.environ.get("PRECIS_PCB_PR_BENCH_OUT"),
+    reason="opt-in: scripts/pcb-pr-bench sets PRECIS_PCB_PR_BENCH_OUT",
+)
+def test_slice2_bench_table() -> None:
+    """The §Slice 2 results table: every bench board routed by vroute
+    (fixed poses) and by pr v1 (free parts) from the SAME job placement;
+    asserts only that every run is finite and the table is written.
+    DB-free (``pr_bench.design_graph``); ``PRECIS_PCB_PR_BENCH_BOARDS=
+    nano,qfp-plaza`` picks a subset."""
+    from tests.fixtures.pcb import pr_bench as pb
+
+    which = os.environ.get("PRECIS_PCB_PR_BENCH_BOARDS")
+    keep = {w.strip() for w in which.split(",") if w.strip()} if which else None
+    boards = pb.bench_boards(keep)
+    rows: list[pb.PrRow] = []
+    notes: list[str] = []
+    # the main set, then the "-GND" diagnostic rows (the star-hub ground
+    # net left out on the two boards it dominates)
+    jobs = [(b, b.name, frozenset[str](), False) for b in boards] + [
+        (b, f"{b.name} -GND", frozenset({"GND"}), False)
+        for b in boards
+        if b.name in ("nano", "esp32c3-s1")
+    ]
+    # "seed-layers": 4b off, every sample keeps the 4a seed's layers
+    jobs += [
+        (b, f"{b.name} seed-layers", frozenset[str](), True)
+        for b in boards
+        if b.name in ("esp32c3-s1", "qfp-plaza")
+    ]
+    for board, label, skip, freeze in jobs:
+        if freeze:
+            p, run = pb.measure_pr(
+                board, pb.V1Params(K=2, freeze_layers=True), label=label
+            )
+            assert pb.nan_free(run), label
+            rows.append(p)
+            notes.append(
+                f"- {label}: demoted={run.demoted} crossings={run.crossings_hist}"
+            )
+            continue
+        v = pb.measure_vroute(board, skip, label=label)
+        p, run = pb.measure_pr(board, pb.V1Params(skip_nets=skip), label=label)
+        assert pb.nan_free(run), label
+        rows += [p, v]
+        notes.append(
+            f"- {label}: pr unrouted={pb.unrouted_names(run.ir, run.result)} "
+            f"demoted={run.demoted} entropy={p.entropy} blocked={p.blocked_frac} "
+            f"sugar={p.sugar} crossings={run.crossings_hist} levels={run.levels} "
+            f"cleanup={run.cleanup_kept} evals={run.evals} "
+            f"relax_s={run.relax_seconds:.1f} overcap={p.over_capacity!r}"
+        )
+        print(pb.render_table([p, v]))
+    table = pb.render_table(rows)
+    out = Path(os.environ["PRECIS_PCB_PR_BENCH_OUT"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(table + "\n\nNotes:\n" + "\n".join(notes) + "\n", encoding="utf-8")
+    out.with_suffix(".json").write_text(
+        json.dumps([list(r.key()) for r in rows], indent=1), encoding="utf-8"
+    )
+    print(table)
+    assert all(r.connections > 0 for r in rows)

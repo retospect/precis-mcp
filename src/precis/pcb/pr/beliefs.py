@@ -18,7 +18,7 @@ cost is zero.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -39,6 +39,9 @@ class Layout:
     span_allowed: np.ndarray  # (P, L) bool
     via_site_ok: np.ndarray  # (N,) bool — interior vertex may host a via
     wire_of_piece: np.ndarray  # alias kept for readability = piece_wire
+    #: (W,) False for a wire with no polyline (unrouted): its stub pieces
+    #: take part in no pair, pull nothing and anchor to no pad.
+    wire_active: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
 
     @property
     def n_spans(self) -> int:
@@ -78,6 +81,7 @@ def build_layout(
     vertices are the via-site candidates, cleared of pad keep-out."""
     from precis.pcb.pr.seed import subdivide
 
+    active = np.array([len(p) >= 2 for p in polylines], dtype=bool)
     pts: list[np.ndarray] = []
     wop: list[int] = []
     free: list[bool] = []
@@ -88,7 +92,10 @@ def build_layout(
     for wi, poly in enumerate(polylines):
         poly = subdivide(np.asarray(poly, dtype=np.float64), piece_mm)
         if len(poly) < 2:
-            poly = np.asarray([problem.wires[wi].a, problem.wires[wi].b])
+            # an unrouted wire is a zero-length stub at its own pad: it
+            # keeps the table's shape without acting as a phantom wire
+            # (slice 1 relaxed a straight line here, which blocked others)
+            poly = np.asarray([problem.wires[wi].a, problem.wires[wi].a])
         w = problem.wires[wi]
         for i, p in enumerate(poly):
             pts.append(p)
@@ -99,7 +106,14 @@ def build_layout(
             )
         for j in range(len(poly) - 1):
             pwire.append(wi)
-            mask = w.a_lmask if j == 0 else (w.b_lmask if j == len(poly) - 2 else -1)
+            # end spans sit on their pad's layer (the stub), interior
+            # spans on the net's routable layers (class lock ∩ signal)
+            if j == 0:
+                mask = w.a_lmask
+            elif j == len(poly) - 2:
+                mask = w.b_lmask
+            else:
+                mask = w.route_lmask
             allowed.append(mask)
     points = np.asarray(pts, dtype=np.float64)
     # Piece j of wire w joins consecutive points of that wire.
@@ -124,12 +138,63 @@ def build_layout(
         span_allowed=span_allowed,
         via_site_ok=np.asarray(site_ok, dtype=bool),
         wire_of_piece=np.asarray(pwire, dtype=np.int64),
+        wire_active=active,
     )
 
 
 def init_q(layout: Layout, n_layers: int) -> np.ndarray:
     q = np.where(layout.span_allowed, 1.0, 0.0)
     return q / q.sum(1, keepdims=True)
+
+
+def _piece_arclength(layout: Layout) -> tuple[np.ndarray, np.ndarray]:
+    """Per piece: normalised arclength ``[s0, s1]`` along its wire."""
+    lens = np.linalg.norm(
+        layout.points[layout.piece_p1] - layout.points[layout.piece_p0], axis=1
+    )
+    s0 = np.zeros(layout.n_spans)
+    s1 = np.zeros(layout.n_spans)
+    for w in np.unique(layout.piece_wire):
+        idx = np.flatnonzero(layout.piece_wire == w)
+        tot = float(lens[idx].sum()) or 1.0
+        cum = np.concatenate(([0.0], np.cumsum(lens[idx]))) / tot
+        s0[idx] = cum[:-1]
+        s1[idx] = cum[1:]
+    return s0, s1
+
+
+def carry_q(old: Layout, old_q: np.ndarray, new: Layout) -> np.ndarray:
+    """Beliefs for a rebuilt layout (wire refinement, moved endpoints):
+    each new piece takes the belief of the old piece of the same wire
+    that contains its arclength midpoint, masked and renormalised to the
+    new piece's allowed layers; a wire new to the layout starts uniform.
+    This is what keeps 4b's settled layers across refinement levels
+    instead of re-deciding them from scratch (spec §Hierarchy, wire
+    refinement as a second axis)."""
+    q = init_q(new, new.span_allowed.shape[1])
+    if old.n_spans == 0 or new.n_spans == 0:
+        return q
+    o0, o1 = _piece_arclength(old)
+    n0, n1 = _piece_arclength(new)
+    mid = (n0 + n1) / 2.0
+    old_by_wire: dict[int, np.ndarray] = {}
+    for w in np.unique(old.piece_wire):
+        old_by_wire[int(w)] = np.flatnonzero(old.piece_wire == w)
+    for p in range(new.n_spans):
+        idx = old_by_wire.get(int(new.piece_wire[p]))
+        if idx is None:
+            continue
+        inside = idx[(o0[idx] <= mid[p]) & (mid[p] <= o1[idx])]
+        src = (
+            int(inside[0])
+            if len(inside)
+            else int(idx[np.argmin(np.abs((o0[idx] + o1[idx]) / 2 - mid[p]))])
+        )
+        row = np.where(new.span_allowed[p], old_q[src], 0.0)
+        tot = row.sum()
+        if tot > 0:
+            q[p] = row / tot
+    return q
 
 
 def pair_table(
@@ -157,6 +222,18 @@ def pair_table(
             if layout.piece_wire[i] != layout.piece_wire[j]:
                 a0, a1 = segs[i]
                 b0, b1 = segs[j]
+                # a proper crossing is a pair whatever the endpoint
+                # distances (slice 1 tested only endpoint proximity, so
+                # two long crossing spans never entered P and the sampler
+                # put them on one layer)
+                da, db = a1 - a0, b1 - b0
+                o1 = da[0] * (b0[1] - a0[1]) - da[1] * (b0[0] - a0[0])
+                o2 = da[0] * (b1[1] - a0[1]) - da[1] * (b1[0] - a0[0])
+                o3 = db[0] * (a0[1] - b0[1]) - db[1] * (a0[0] - b0[0])
+                o4 = db[0] * (a1[1] - b0[1]) - db[1] * (a1[0] - b0[0])
+                if o1 * o2 < 0.0 and o3 * o4 < 0.0:
+                    pairs.append((i, j))
+                    continue
                 d = b1 - b0
                 den = float(d @ d) or 1e-12
                 close = min(

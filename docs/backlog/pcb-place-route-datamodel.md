@@ -574,3 +574,165 @@ debt is reported, not solved), and span subdivision at seed granularity
 makes crossing-free relaxation depend on where the via sites happened
 to land. Both are 4d/4a-business for slice 2, not blockers for the
 measurement this slice exists to produce.
+
+## Slice 2 results
+
+2026-10-23 run (pr-s2 worktree), CPU only (Apple Silicon dev box, torch
+2.13 CPU). No GPU path was reachable from a worktree: the Spark lanes
+need a deployed job type (`ssh_node`) and the sandbox lane is dark, so
+evals/s below are CPU figures; the pairwise kernel (KeOps/Triton) is not
+built. **vroute stays the production router: pr v1 beats it on no bench
+board.**
+
+What was built (`src/precis/pcb/pr/`, `v1.py` driver): part poses as 4c
+variables with pads riding them (`state.DynGeom`), courtyard
+separating-axis barrier, outline hold-in, rotation priced on the 90°/45°
+tiers through `preferred.py` (`field.ROT_WELL_COEFFS`), authored IR
+groups as a rigid block level then prolong, wire refinement 4 → 2 → 1 mm
+with beliefs carried by arclength, bead–bead and net-blind via keep-out
+terms, copper appetite as a per-wire width above the current floor
+(off in the bench, `appetite_scale=0`), a 4d layer-move repair for the
+sampler's same-layer crossings (`uncross.py`), §Finish (`finish.py`:
+rotation/grid sugar kept only when legal and no worse, RDP wire
+clean-up under the same rule, exact kernel DRC over copper and
+placement, a resumable route state), and per-wire violation
+attribution so a wire still in violation at finish is reported
+unrouted with its depth instead of emitted as illegal copper.
+
+Bench: `scripts/pcb-pr-bench` (`tests/fixtures/pcb/pr_bench.py`),
+DB-free. Each board is placed once by the place job's own call
+(`optimize` on the place-only schedule, seed = the board's) with the
+field polish opted IN (`pr_bench.PLACE_FIELD_POLISH`; the job's own
+default is off, `FIELD_POLISH_DEFAULT`, and the route bench's main
+column opts in the same way) and routed by both routers from that
+placement; pr may then move parts. **No declared planes** (Reto 2026-10-23, me507871: no
+flood pours), so GND is a routed star net for both — the frozen grid
+table's esp32c3 rows had F/B.Cu planes and are not comparable.
+DRC is the exact kernel pass, silk rules dropped, errors/warns by rule.
+"-GND" rows leave the ground net unrouted on purpose (counted as
+unrouted) to show the rest.
+
+Parameters (provisional, named per the brief): K = 8; stages
+4 mm × 2 rounds (60 steps, 30 grow), 2 mm × 2 (80/40), 1 mm × 2 (80/40);
+block level 2 rounds at 4 mm when the IR has a multi-member group (nano
+only); length 1/mm; via 1.0 mm; barrier one-sided quadratic, stiffness
+20 → 400 with width growth; courtyards at full stiffness, margin 0.02 mm;
+copper margin 0.01 mm; part step ≤ 0.1 mm and ≤ 0.5° per relax step;
+rotation well weight 1; belief T 2.0 → 0.3 over all rounds, pair cost
+2 mm, crowd 0.6 mm; CEM α 0.7, elite 25 %; cleanup tolerance 0.005 mm;
+demotion threshold 1e-3 mm² (≈ 0.03 mm depth).
+
+| board | router | conns | unrouted | vias | wire mm | wall s | DRC s | DRC errors | DRC warns | travel mm | turn ° | off-90 | evals/s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| nano | pr | 206 | 193 | 4 | 57.6 | 850.7 | 0.06 | 0: — | 21: board_edge_clearance 2, clearance 19 | 0.13 | 0.0 | 0.01 | 1.4 |
+| nano | vroute | 206 | 125 | 62 | 1534.2 | 57.6 | 0.12 | 0: — | 20: board_edge_clearance 2, clearance 18 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s1 | pr | 61 | 56 | 0 | 19.9 | 387.8 | 0.01 | 0: — | 0: — | 0.15 | 0.0 | 0.00 | 1.2 |
+| esp32c3-s1 | vroute | 61 | 25 | 14 | 341.9 | 13.6 | 0.05 | 0: — | 33: trace_width 33 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s2 | pr | 61 | 58 | 2 | 12.9 | 583.1 | 0.01 | 0: — | 3: clearance 1, courtyard_overlap 2 | 0.04 | 1.6 | 0.03 | 0.8 |
+| esp32c3-s2 | vroute | 61 | 25 | 22 | 471.4 | 25.1 | 0.07 | 0: — | 39: trace_width 39 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s3 | pr | 61 | 54 | 2 | 27.0 | 502.9 | 0.01 | 0: — | 1: clearance 1 | 0.13 | 0.0 | 0.00 | 1.0 |
+| esp32c3-s3 | vroute | 61 | 47 | 8 | 150.9 | 50.5 | 0.02 | 0: — | 1: trace_width 1 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s4 | pr | 61 | 55 | 2 | 23.1 | 532.9 | 0.01 | 0: — | 0: — | 0.03 | 0.0 | 0.00 | 0.9 |
+| esp32c3-s4 | vroute | 61 | 25 | 4 | 426.0 | 13.5 | 0.07 | 0: — | 23: trace_width 23 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s5 | pr | 61 | 58 | 8 | 31.7 | 387.8 | 0.01 | 0: — | 0: — | 0.06 | 0.0 | 0.00 | 1.3 |
+| esp32c3-s5 | vroute | 61 | 25 | 10 | 374.1 | 30.7 | 0.03 | 0: — | 29: trace_width 29 | 0.00 | 0.0 | 0.00 | 0.0 |
+| qfp-plaza | pr | 55 | 39 | 0 | 56.7 | 89.8 | 0.03 | 79: clearance 79 | 184: annular_ring 55, clearance 2, courtyard_overlap 88, trace_width 39 | 0.00 | 0.0 | 0.00 | 10.8 |
+| qfp-plaza | vroute | 55 | 2 | 36 | 266.2 | 20.6 | 0.05 | 78: clearance 78 | 268: annular_ring 91, courtyard_overlap 88, trace_width 89 | 0.00 | 0.0 | 0.00 | 0.0 |
+| nano -GND | pr | 206 | 193 | 4 | 57.6 | 817.0 | 0.05 | 0: — | 21: board_edge_clearance 2, clearance 19 | 0.13 | 0.0 | 0.01 | 1.3 |
+| nano -GND | vroute | 206 | 128 | 56 | 1489.3 | 54.4 | 0.17 | 0: — | 20: board_edge_clearance 2, clearance 18 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s1 -GND | pr | 61 | 53 | 10 | 54.0 | 155.8 | 0.01 | 0: — | 0: — | 0.48 | 0.0 | 0.00 | 3.2 |
+| esp32c3-s1 -GND | vroute | 61 | 25 | 14 | 341.5 | 7.4 | 0.05 | 0: — | 33: trace_width 33 | 0.00 | 0.0 | 0.00 | 0.0 |
+| esp32c3-s1 seed-layers | pr | 61 | 52 | 0 | 33.2 | 212.5 | 0.01 | 0: — | 0: — | 0.02 | 0.0 | 0.00 | 2.3 |
+| qfp-plaza seed-layers | pr | 55 | 40 | 0 | 71.2 | 49.2 | 0.03 | 78: clearance 78 | 160: annular_ring 55, clearance 2, courtyard_overlap 88, trace_width 15 | 0.00 | 0.0 | 0.00 | 61.5 |
+
+(Columns are `pr_bench.render_table`'s. "seed-layers" rows: 4b off,
+every sample keeps the 4a seed's layers, K = 2 — 4c alone on the seed.
+"off-90" is the fraction of the movable parts written off the 90°
+grid; the placement gate's cap is `MAX_OFF90_FRAC` = 0.10. qfp-plaza's
+78 clearance errors are the fixture's own pad–pad gaps, present before
+either router runs (pr adds one at 0.096 mm against the 0.100 mm fab
+floor — the class clearance there is 0.099); esp32c3's vroute
+`trace_width` warns are pad-neck checks.)
+
+Where the connections go, per stage (4a seed alone, then after the
+full loop):
+
+| board | 4a seed leaves unrouted | reasons | pr final unrouted (of which demoted at finish) |
+|---|---|---|---|
+| nano | 126 / 206 (GND 55) | no path on any layer 126 | 193 (67) |
+| esp32c3-s1..s3 | 0 / 61 | — | 56, 58, 54 (56, 58, 54) |
+| esp32c3-s4 | 8 / 61 (GND 8) | ripped 7, no path 1 | 55 (55) |
+| esp32c3-s5 | 17 / 61 (GND 10) | ripped 13, no path 4 | 58 (58) |
+| qfp-plaza | 36 / 55 | no path 27, ripped 9 | 39 (14) |
+
+Readings:
+
+1. **Legal output, little of it.** Every pr row is DRC-clean on copper
+   (0 errors; qfp-plaza's are the fixture's) because the finish demotes
+   every wire still in violation. That demotion is what the numbers
+   measure: on esp32c3 the 4a seed produces a polyline for all 61
+   connections, and 54–58 of them are lost afterwards. On
+   nano and qfp-plaza the seed itself fails most connections ("no path
+   on any layer": the net-domain funnel over inflated obstacles finds no
+   corridor where vroute's A* with escape stubs does).
+2. **The loss is baked in at 4a, and 4b adds to it.** The "seed-layers"
+   row (4b off) still loses 52 of 61 on esp32c3-s1: the seed's own
+   layer assignment carries ~235 same-layer crossings per sample
+   (`crossings` 470 over K = 2, none repairable — the end spans are
+   pinned to their pad's layer). Those are the slice-1 "soft-capacity
+   debt": a wire that fits no capacity-free portal is committed through a
+   saturated one, and `seed.attempt` skips the crossing check on that
+   pass, so "all 61 seeded" means "61 polylines, ~235 crossings", not a
+   planar seed. 4b then roughly doubles it: with sampling on, crossings
+   in the K = 8 samples run 800–5,500 per round before the layer-move
+   repair and 150–2,400 after. Relaxation cannot undo a crossing of two
+   polylines (moving a vertex across the other wire crosses the
+   neighbouring piece, which the swept check rightly refuses), and with
+   that many crossings the swept check blocks ~7 of 8 samples per step
+   (`blocked` 6.9; 1.7 with 4b off), so geometry barely moves. The
+   spec's inner loop 4b → 4a (re-insert changed spans) → 4c is
+   implemented only for the best sample between rounds; per-sample
+   crossing-free re-insertion needs per-sample layouts, which breaks the
+   (K, N, 2) batching. The "-GND" rows show the ground star is not the
+   cause on nano (identical pr numbers: the seed already fails every GND
+   wire) and halves the crossings on esp32c3-s1 without changing the
+   outcome; on qfp-plaza with 4b off the seed is nearly planar (6
+   crossings) and only 5 wires are demoted, but the seed itself left 36
+   unrouted.
+3. **Free parts behave.** Parts move 0.03–0.5 mm from the job
+   placement; every written rotation is a 45°-grid value (the placer's
+   D5/Q7 write policy: the nearest 90° unless a 45° pose beats it by
+   `ROT_TILT_MIN_GAIN`), so the off-90 fraction is 0.00–0.03 against the
+   gate's 0.10 cap (one 45° tilt earned its keep on nano and one on
+   esp32c3-s2); the grid sugar moved 9–22 parts per board under the
+   legality rule; placement DRC adds at most 2 courtyard warns. The block
+   level ran on nano (authored groups) and prolonged rigidly.
+4. **Two defects found and fixed on the way, both affecting slice 1's
+   numbers too:** an unrouted wire was relaxed as a straight phantom line
+   between its pads (it now joins no pair), and an authored outline
+   ring's repeated closing vertex gave the edge term a zero-length edge
+   so every point measured "at the edge" (now stripped; the kernel skips
+   such edges). The belief pair table also missed crossing spans whose
+   endpoints were far apart (tested endpoint proximity only); fixed, with
+   no measurable effect on the crossing counts above. The review of the
+   first bench found the 4a re-funnel silently skipped at every 4 → 2 and
+   2 → 1 mm refinement boundary (piece counts no longer matched); it is
+   carried by arclength now, which moved esp32c3-s1 from 58 to 56
+   unrouted and nothing else materially — the re-funnel was not the
+   crossing debt.
+5. **Throughput (CPU):** 0.8–1.4 evals/s on nano/esp32c3 at K = 8 with
+   255–860 spans and 30–85 free parts (pair tables 270k piece pairs on
+   nano), 11 evals/s on qfp-plaza (fixed parts). Wall 6–14 min per
+   board against vroute's 13–58 s; the seed alone is 8–85 s.
+
+What slice 3+ needs before this can be re-benched against vroute:
+(a) a 4a seed that is planar per layer when it commits — soft-capacity
+commits must take the crossing check, and a wire that fits nowhere must
+spread over layers (via sites inside the seed) rather than be committed
+through a saturated portal; (b) per-sample 4a re-insertion so a sampled
+layer change is crossing-free on its new layer (the spec's inner loop),
+or a sampler that moves whole runs under a planarity check; (c) a seed
+that reaches vroute's corridors on fine pitch (escape stubs from pads,
+or seeding from vroute's own paths); (d) tree re-planning for the star
+hub nets (slice 4). The engine, bench and finish are in place for that
+work; nothing is wired into `pcb_route`.
