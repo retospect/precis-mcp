@@ -502,9 +502,9 @@ def _real_pin_offsets(fp: dict[str, Any]) -> dict[str, tuple[float, float]]:
     ``fp`` is a ``part_footprints``/``pcb_local_footprints`` row
     (``{"pads": [...], "pin_map": {...}}``) — every pad in either carries
     ``x``/``y``, including a ``shape: 'polygon'`` one, whose x/y is its
-    vertex ring's bbox center (``precis.store._pcb_ops.
-    _normalize_local_footprint_pad`` puts it there for exactly this class
-    of reader). No transform is needed or wanted here, so this does NOT go
+    vertex ring's bbox center (``precis.pcb.rows.normalize_pad`` puts it
+    there for exactly this class of reader). No transform is needed or
+    wanted here, so this does NOT go
     through :func:`precis.pcb.padplace.place_footprint_pads` the way
     :func:`precis.pcb.realize._real_pad_sizes` must for w/h.
 

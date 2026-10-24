@@ -227,9 +227,7 @@ def test_database_pad_constraint_unwinds_before_error_translation(
     before = _snapshot(store)
     # Simulate validation missing a concurrent owner: the actual DB index
     # must still refuse, and diagnostic reads must run after savepoint unwind.
-    monkeypatch.setattr(
-        "precis.store._pcb_ops._validate_pin_declarations", lambda *a: None
-    )
+    monkeypatch.setattr("precis.pcb.rows.validate_pin_declarations", lambda *a: None)
     with store.tx() as conn:
         component_id = conn.execute(
             "SELECT component_id FROM pcb_instances WHERE ref_id=%s",

@@ -40,6 +40,7 @@ from precis.pcb import feedback as pcb_feedback
 from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
+from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import PcbIR, net_member_counts, segment_points
@@ -77,10 +78,11 @@ class LocalError(ValueError):
 def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
     """The board's stackup rows — ``meta.stackup_preset`` names a
     :data:`STACKUP_PRESETS` entry, ``meta.stackup_layers`` is the
-    ``op='stackup'`` list verbatim, else the house default. Both go
+    authored layer list verbatim, else the house default. All go
     through :func:`precis.pcb.ir.validate_stackup`, the same normaliser
-    ``op='stackup'`` runs (a bare layer-name list becomes signal rows)."""
-    from precis.pcb.ir import validate_stackup
+    ``op='stackup'`` runs (bare layer names become signal rows first —
+    ``op='stackup'`` itself takes dicts only)."""
+    from precis.pcb.ir import OUTER_LAYER_NAMES, validate_stackup
 
     meta = batch.get("meta") or {}
     preset = meta.get("stackup_preset")
@@ -97,13 +99,24 @@ def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         # ``Board(stackup=4)``/an authored ``meta.stackup_layers`` emits
         # bare names — validate_stackup wants dicts, so a bare name
-        # becomes a signal row (the same expansion the importer runs on
-        # ``meta.stackup_layers``).
+        # becomes a signal row. Inner rows take the explicit
+        # ``routable: True`` DEFAULT_STACKUP stamps (``pcb_ensure_board``
+        # inserts that literal verbatim — ``meta.stackup_layers`` is a
+        # dead key server-side — so this expansion must match its shape
+        # for the ``batch_to_graph``/``pcb_graph`` parity to be literal).
         return validate_stackup(
             [
                 entry
                 if isinstance(entry, dict)
-                else {"name": str(entry), "role": "signal"}
+                else {
+                    "name": str(entry),
+                    "role": "signal",
+                    **(
+                        {"routable": True}
+                        if str(entry) not in OUTER_LAYER_NAMES
+                        else {}
+                    ),
+                }
                 for entry in layers
             ]
         )
@@ -111,122 +124,142 @@ def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
         raise LocalError(str(exc)) from exc
 
 
-#: Component-dict keys the store hoists onto the instance/meta row, and
-#: the graph's instance dict mirrors (``pcb_graph``'s SELECT + meta hoist).
-_INSTANCE_PASSTHROUGH = (
-    "group",
-    "group_offset",
-    "pattern",
-    "pattern_instance",
-    "edge_mate",
-    "local_fp_lcsc",
-    "local_fp_diff",
-    "pin_swap_groups",
-    "supplies",
-    "part",
-)
-
-
-def _pin_facts(pin: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
-    """``(tags, meta)`` for one declared pin — the same fold
-    ``_pcb_insert_pins`` applies: bool markers (``nc``/``unused``/
-    ``must_terminate``) land in meta with ``nc`` ALSO tagged; ``etype``
-    joins the tags; voltage/current bounds ride meta."""
-    tags = [str(t) for t in pin.get("tags") or []]
-    meta = dict(pin.get("meta") or {})
-    for marker in ("unused", "must_terminate", "nc"):
-        if pin.get(marker):
-            meta[marker] = True
-    if meta.get("nc") and "nc" not in tags:
-        tags.append("nc")
-    etype = str(pin.get("etype") or meta.get("etype") or "").strip()
-    if etype and etype not in tags:
-        tags.append(etype)
-    for key in ("max_voltage_v", "vih", "vil", "rail", "current_role", "client_of"):
-        if pin.get(key) is not None and key not in meta:
-            meta[key] = pin[key]
-    return tags, meta
-
-
-def batch_to_graph(batch: dict[str, Any]) -> dict[str, Any]:
+def batch_to_graph(
+    batch: dict[str, Any], *, footprints: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """A ``to_batch()`` payload as a ``Store.pcb_graph``-shaped dict —
     ``{board, instances, nets (with members), net_classes, roles,
-    unconnected}``. Generators in the batch are expanded first
+    unconnected}``, STORE-ordered (instances by refdes, nets by name,
+    members and unconnected by ``(refdes, pin)``) so a wheel batch and its
+    ``pcb_apply``-then-``pcb_graph`` twin compare literally.
+
+    Generators in the batch are expanded first
     (:func:`precis.pcb.generators.expand`, the trusted-side engine run
-    in-process for the preview)."""
+    in-process for the preview). ``footprints=`` is the LCSC-keyed
+    ``part_footprints`` stand-in (``_catalog_footprints``'s output) — it
+    joins components via ``part_lcsc`` exactly as
+    ``_pcb_footprint_ref`` resolves, AFTER a design-local footprint named
+    by ``footprint``. Both feed the two store passes a preview otherwise
+    misses: the pad-number → pin-name connection rewrite
+    (:func:`precis.pcb.rows.map_pad_numbers`, gr495291) and declare-all
+    completion (every footprint pad label becomes a pin — the ghost pins
+    in ``unconnected``'s count and ``n_pins``)."""
     batch = _expand_generators(batch)
     components = batch.get("components") or []
-    pin_rows: dict[tuple[str, str], dict[str, Any]] = {}
-    pin_order: list[tuple[str, str]] = []
+    local_fps = _local_footprints(batch)
+    cat_fps = {str(k).strip().upper(): v for k, v in (footprints or {}).items()}
+    pin_decls: dict[str, dict[str, dict[str, Any]]] = {}
+    declared: dict[str, set[str]] = {}
+    fp_by_refdes: dict[str, dict[str, Any]] = {}
+    completed: dict[str, dict[str, dict[str, Any]]] = {}
+    live: dict[str, set[str]] = {}
     for c in components:
+        refdes = str(c.get("refdes") or "").strip()
+        decls = pin_decls.setdefault(refdes, {})
         for p in c.get("pins") or []:
-            key = (str(c["refdes"]), str(p["name"]))
-            pin_rows[key] = p
-            pin_order.append(key)
+            decls[str(p.get("name"))] = p
+        declared[refdes] = set(decls)
+        fp = None
+        if c.get("footprint") is not None:
+            fp = local_fps.get(str(c["footprint"]))
+        if fp is None:
+            raw = c.get("part_lcsc") or c.get("part") or c.get("lcsc")
+            key = str(pcb_rows.lcsc_id(raw) or raw or "").strip().upper()
+            if key:
+                fp = cat_fps.get(key)
+        if fp is not None:
+            fp_by_refdes[refdes] = fp
+        labels = pcb_rows.footprint_pin_labels(fp)
+        # ``_pcb_complete_footprint_pins``: join-failed instances (an
+        # active declared name matching no pad label) complete NOTHING;
+        # a label a declared pin already owns mints nothing either.
+        done = (
+            {k: v for k, v in labels.items() if k not in declared[refdes]}
+            if fp is not None and not (declared[refdes] - set(labels))
+            else {}
+        )
+        completed[refdes] = done
+        live[refdes] = declared[refdes] | set(done)
+
+    connections, _mapped = pcb_rows.map_pad_numbers(
+        list(batch.get("connections") or []), fp_by_refdes, live
+    )
+
+    def _facts(refdes: str, pin: str) -> tuple[list[str], dict[str, Any]]:
+        d = pin_decls.get(refdes, {}).get(pin)
+        if d is not None:
+            return pcb_rows.pin_tags_meta(d, refdes, declared.get(refdes))
+        ent = completed.get(refdes, {}).get(pin)
+        if ent is not None:
+            return list(ent.get("tags") or []), {"completed_from_footprint": True}
+        return [], {}  # a connection-minted ghost pin — no facts
+
+    # ``_pcb_connect`` upserts per (instance, pin): a pin wired twice
+    # lands ONE netconn on the LAST connection's net — dedupe the same
+    # way or a pin wired by pad number AND name doubles its member.
+    pin_net: dict[tuple[str, str], str] = {}
+    for conn in connections:
+        refdes = str(conn.get("refdes") or "").strip()
+        pin = str(conn.get("pin") or "").strip()
+        pin_net[(refdes, pin)] = str(conn.get("net") or "").strip()
     members: dict[str, list[dict[str, Any]]] = {}
-    wired: set[tuple[str, str]] = set()
-    for conn in batch.get("connections") or []:
-        key = (str(conn["refdes"]), str(conn["pin"]))
-        wired.add(key)
-        tags, meta = _pin_facts(pin_rows.get(key) or {})
-        members.setdefault(str(conn["net"]), []).append(
-            {"refdes": key[0], "pin": key[1], "tags": tags, "meta": meta}
+    wired: dict[str, set[str]] = {}
+    for (refdes, pin), net in pin_net.items():
+        tags, meta = _facts(refdes, pin)
+        members.setdefault(net, []).append(
+            {"refdes": refdes, "pin": pin, "tags": tags, "meta": meta}
         )
-    nets = []
+        wired.setdefault(refdes, set()).add(pin)
+
+    nets_by_name: dict[str, dict[str, Any]] = {}
     for n in batch.get("nets") or []:
-        name = str(n["name"])
-        nets.append(
-            {
-                "name": name,
-                "net_class": n.get("net_class") or n.get("class"),
-                "domain": n.get("domain"),
-                "est_current_a": n.get("est_current_a", n.get("current")),
-                "working_voltage_v": n.get("working_voltage_v", n.get("voltage")),
-                "edge_rate_v_per_ns": n.get("edge_rate_v_per_ns", n.get("edge_rate")),
-                "impedance_ohm": n.get("impedance_ohm", n.get("impedance")),
-                "function_hint": n.get("function_hint", n.get("function")),
-                "meta": dict(n.get("meta") or {}),
-                "members": members.get(name, []),
-            }
+        row = pcb_rows.net_row(n)
+        if row["name"] in nets_by_name:
+            pcb_rows.net_patch(nets_by_name[row["name"]], n)
+        else:
+            nets_by_name[row["name"]] = row
+    for net_name in members:  # ``_pcb_connect`` auto-creates the net
+        if net_name not in nets_by_name:
+            nets_by_name[net_name] = pcb_rows.net_row({"name": net_name})
+    nets = []
+    for name in sorted(nets_by_name):
+        row = nets_by_name[name]
+        row["members"] = sorted(
+            members.get(name, []), key=lambda m: (m["refdes"], m["pin"])
         )
+        nets.append(row)
+
     unconnected = []
-    for key in pin_order:
-        if key in wired:
-            continue
-        tags, meta = _pin_facts(pin_rows[key])
-        unconnected.append(
-            {"refdes": key[0], "pin": key[1], "tags": tags, "meta": meta}
-        )
+    for refdes in sorted(live):
+        wired_here = wired.get(refdes) or set()
+        for pin in sorted(live[refdes] - wired_here):
+            tags, meta = _facts(refdes, pin)
+            unconnected.append(
+                {"refdes": refdes, "pin": pin, "tags": tags, "meta": meta}
+            )
+
     instances = []
-    for c in components:
-        inst: dict[str, Any] = {
-            "refdes": str(c["refdes"]),
-            "x": c.get("x"),
-            "y": c.get("y"),
-            "layer": c.get("layer"),
-            "roles": list(c.get("roles") or []),
-            "label": c.get("label"),
-            "height_mm": c.get("height_mm"),
-            "n_pins": len(c.get("pins") or []),
-            "fixed": c.get("fixed"),
-            "rot": c.get("rot"),
-            "part_lcsc": c.get("part_lcsc") or c.get("part") or c.get("lcsc"),
-            "footprint": c.get("footprint"),
-            "part_description": None,
-        }
-        for k in _INSTANCE_PASSTHROUGH:
-            if k in c:
-                inst[k] = copy.deepcopy(c[k])
-        for k in ("max_travel_mm", "fixed_side", "polarized", "value", "note"):
-            if c.get(k) is not None:
-                inst[k] = c[k]
-        instances.append(inst)
+    for c in sorted(components, key=lambda c: str(c.get("refdes") or "").strip()):
+        refdes = str(c.get("refdes") or "").strip()
+        instances.append(
+            pcb_rows.instance_row(
+                c,
+                pin_names=live.get(refdes, set()) | wired.get(refdes, set()),
+                declared=declared.get(refdes) or None,
+            )
+        )
+    raw_roles = batch.get("roles") or {}
+    role_items = (
+        ((r.get("name"), r) for r in raw_roles)
+        if isinstance(raw_roles, list)
+        else raw_roles.items()
+    )
     roles = {
         str(name): {
             "voltage_v": (r or {}).get("voltage", (r or {}).get("voltage_v")),
-            "fanout": 0,
+            "fanout": (r or {}).get("fanout", 1),
         }
-        for name, r in (batch.get("roles") or {}).items()
+        for name, r in role_items
     }
     return {
         "board": {
@@ -315,76 +348,16 @@ def _catalog_footprints(
     return out
 
 
-def _norm_pad(p: dict[str, Any]) -> dict[str, Any]:
-    """One batch pad dict as a stored-footprint pad row — the same
-    normalisation ``_pcb_apply``'s ``_normalize_pad`` runs: ``pin`` →
-    ``number``, defaults for ``shape``/``role``/``mask``/``paste``/
-    ``layer``/``rot``, ``drill`` (+``slot``) carried, polygon bboxes
-    computed. Kept byte-for-byte compatible with the store's output so a
-    locally-hydrated IR matches the server's."""
-    pin_name = str(p.get("pin") or p.get("number") or "").strip()
-    if not pin_name:
-        raise LocalError("pcb footprint pad needs a 'pin' name")
-    shape = str(p.get("shape") or "rect").strip().lower()
-    role = str(p.get("role") or "solderable").strip().lower()
-    mask = str(p.get("mask") or "open").strip().lower()
-    paste_raw = p.get("paste")
-    paste = (
-        str(paste_raw).strip().lower()
-        if paste_raw is not None
-        else ("none" if role in ("electrode", "tape_land") else "full")
-    )
-    pad: dict[str, Any] = {
-        "number": pin_name,
-        "shape": shape,
-        "layer": str(p.get("layer") or "F.Cu"),
-        "rot": float(p.get("rot") or 0.0),
-        "role": role,
-        "mask": mask,
-        "paste": paste,
-    }
-    if p.get("drill") is not None:
-        pad["drill"] = float(p["drill"])
-        if isinstance(p.get("slot"), dict):
-            pad["slot"] = {
-                "w": float(p["slot"]["w"]),
-                "h": float(p["slot"]["h"]),
-            }
-    if shape == "polygon":
-        verts = [(float(v[0]), float(v[1])) for v in p.get("poly") or []]
-        xs, ys = [v[0] for v in verts], [v[1] for v in verts]
-        pad["x"] = round((min(xs) + max(xs)) / 2.0, 4)
-        pad["y"] = round((min(ys) + max(ys)) / 2.0, 4)
-        pad["w"] = round(max(xs) - min(xs), 4) or 0.01
-        pad["h"] = round(max(ys) - min(ys), 4) or 0.01
-        pad["poly"] = [[round(vx, 4), round(vy, 4)] for vx, vy in verts]
-    else:
-        if p.get("x") is None or p.get("y") is None:
-            raise LocalError(f"pcb footprint pad {pin_name!r} needs x/y")
-        w = float(p.get("w") or 0.0)
-        if w <= 0:
-            raise LocalError(f"pcb footprint pad {pin_name!r} needs a positive w")
-        pad["x"] = round(float(p["x"]), 4)
-        pad["y"] = round(float(p["y"]), 4)
-        pad["w"] = round(w, 4)
-        pad["h"] = round(float(p.get("h") or w), 4)
-    return pad
-
-
 def _local_footprints(batch: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """``footprints[]`` as ``pcb_local_footprints_for``'s name-keyed map,
-    with each pad run through :func:`_norm_pad` (the store's insert-time
-    normalisation the local path must mirror)."""
-    return {
-        str(f_["name"]): {
-            "pads": [_norm_pad(p) for p in f_.get("pads") or []],
-            "pin_map": f_.get("pin_map"),
-            "courtyard": f_.get("courtyard"),
-            "centroid": f_.get("centroid"),
-            "holes": f_.get("holes") or [],
-        }
-        for f_ in batch.get("footprints") or []
-    }
+    """``footprints[]`` as ``pcb_local_footprints_for``'s name-keyed map —
+    each entry through :func:`precis.pcb.rows.normalize_footprint`, the
+    store's insert-time normalisation itself (pad defaults, identity
+    ``pin_map``, courtyard/centroid fallbacks), not a mirror."""
+    out: dict[str, dict[str, Any]] = {}
+    for f_ in batch.get("footprints") or []:
+        name, data = pcb_rows.normalize_footprint(f_)
+        out[name] = data
+    return out
 
 
 def _fixed_copper_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -443,7 +416,8 @@ def _batch_of(board: Any) -> dict[str, Any]:
 
 def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
     batch = _batch_of(board)
-    graph = batch_to_graph(batch)
+    by_lcsc = _catalog_footprints(batch, catalog)
+    graph = batch_to_graph(batch, footprints=by_lcsc)
     features = copy.deepcopy(batch.get("features") or [])
     outline = pcb_session.outline_from_features(features)
     defect = pcb_session.outline_defect(outline)
@@ -485,7 +459,7 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
         planes=_planes_rows(features),
         measures=copy.deepcopy(batch.get("measures") or []),
         fixed_copper=_fixed_copper_rows(batch),
-        by_lcsc=_catalog_footprints(batch, catalog),
+        by_lcsc=by_lcsc,
         local_by_name=_local_footprints(batch),
         fab_caps=fab_caps,
         profile=profile,

@@ -53,9 +53,24 @@ from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import padplace as pcb_padplace
 from precis.pcb import route_state as pcb_route_state
+from precis.pcb import rows as pcb_rows
 from precis.pcb.capabilities import capability_for, conductor_spacing_mm
+from precis.pcb.rows import (
+    first_present as _first_present,
+)
+from precis.pcb.rows import (
+    normalize_footprint as _normalize_local_footprint,
+)
+from precis.pcb.rows import (
+    normalize_pad as _normalize_local_footprint_pad,  # noqa: F401  re-exported for tests
+)
+from precis.pcb.rows import (
+    normalize_supplies as _normalize_supplies,
+)
+from precis.pcb.rows import (
+    rot_deg as _rot_deg,
+)
 from precis.store.types import ActorSlug
-from precis.utils.units import parse_angle_deg
 
 log = logging.getLogger(__name__)
 
@@ -64,524 +79,12 @@ log = logging.getLogger(__name__)
 _SNAPSHOT_KEEP = 5
 
 
-def _normalize_supplies(
-    raw: Any, component: str, declared: set[str] | None
-) -> list[dict[str, Any]]:
-    """Validate a component's ``supplies`` declaration (pcb-lazy-netlist-and-
-    checks.md §1b): ``{"role", "blocks": [[pin, ...], ...], optional
-    "voltage_v", optional "within_block_swappable"}`` or a list of them.
-    Returns the list form (what ``pcb_graph`` hands the route job).
-    ``declared`` is the set of pin names declared for the component, or
-    ``None`` to skip the membership check (no pin declarations to check
-    against yet)."""
-    items = raw if isinstance(raw, list) else [raw]
-    out: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise ValueError(
-                f"component {component}: supplies must be an object or a list of "
-                f"objects {{role, blocks}}; got {type(item).__name__}"
-            )
-        role = item.get("role")
-        if not isinstance(role, str) or not role.strip():
-            raise ValueError(
-                f"component {component}: supplies needs a non-empty string 'role'"
-            )
-        blocks = item.get("blocks")
-        if (
-            not isinstance(blocks, list)
-            or not blocks
-            or not all(isinstance(b, list) and b for b in blocks)
-        ):
-            raise ValueError(
-                f"component {component}: supplies role {role!r} needs 'blocks': a "
-                "non-empty list of non-empty pin-name lists"
-            )
-        norm_blocks: list[list[str]] = []
-        for b in blocks:
-            names = [str(x).strip() for x in b]
-            if declared is not None:
-                missing = [x for x in names if x not in declared]
-                if missing:
-                    raise ValueError(
-                        f"component {component}: supplies role {role!r} names "
-                        f"undeclared pin(s) {missing!r}; declare them in 'pins'"
-                    )
-            norm_blocks.append(names)
-        entry: dict[str, Any] = {"role": role.strip(), "blocks": norm_blocks}
-        volt = item.get("voltage_v")
-        if volt is not None:
-            if isinstance(volt, bool) or not isinstance(volt, int | float):
-                raise ValueError(
-                    f"component {component}: supplies role {role!r} voltage_v "
-                    "must be a number"
-                )
-            entry["voltage_v"] = float(volt)
-        if item.get("within_block_swappable") is not None:
-            entry["within_block_swappable"] = bool(item["within_block_swappable"])
-        out.append(entry)
-    return out
-
-
-def _normalize_client_of(
-    raw: Any, component: str, pin: str, declared: set[str] | None = None
-) -> dict[str, Any]:
-    """A pin's ``client_of``: a role name, or ``{"role", optional
-    "min_voltage_v", optional "members"}``. Returns the dict form.
-
-    ``members`` makes the pin the head of a tuple client (§1c, a
-    differential pair): distinct pin names on this component, headed by
-    ``pin`` itself, each in ``declared`` when that is given. The tuple
-    matches only a same-size supply block, carried as a unit."""
-    if isinstance(raw, str):
-        raw = {"role": raw}
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"component {component}: pin {pin!r} client_of must be a role name "
-            "or {role, min_voltage_v}"
-        )
-    role = raw.get("role")
-    if not isinstance(role, str) or not role.strip():
-        raise ValueError(
-            f"component {component}: pin {pin!r} client_of needs a non-empty 'role'"
-        )
-    out: dict[str, Any] = {"role": role.strip()}
-    mv = raw.get("min_voltage_v")
-    if mv is not None:
-        if isinstance(mv, bool) or not isinstance(mv, int | float):
-            raise ValueError(
-                f"component {component}: pin {pin!r} client_of min_voltage_v "
-                "must be a number"
-            )
-        out["min_voltage_v"] = float(mv)
-    members = raw.get("members")
-    if members is not None:
-        if (
-            not isinstance(members, list)
-            or not members
-            or not all(isinstance(m, str) and m.strip() for m in members)
-        ):
-            raise ValueError(
-                f"component {component}: pin {pin!r} client_of members must be "
-                "a non-empty list of pin names"
-            )
-        names = [m.strip() for m in members]
-        if names[0] != pin or len(set(names)) != len(names):
-            raise ValueError(
-                f"component {component}: pin {pin!r} client_of members must be "
-                f"distinct and headed by {pin!r} itself, got {names!r}"
-            )
-        if declared is not None:
-            missing = [m for m in names if m not in declared]
-            if missing:
-                raise ValueError(
-                    f"component {component}: pin {pin!r} client_of members "
-                    f"name undeclared pin(s) {missing!r}; declare them in 'pins'"
-                )
-        if len(names) > 1:
-            out["members"] = names
-    return out
-
-
-def _validate_tuple_clients(pins: list[dict[str, Any]], component: str) -> None:
-    """A tuple client's tail members are carried by its head: refuse a
-    tail that declares its own ``client_of``, or one claimed by two heads."""
-    tails: dict[str, str] = {}
-    for p in pins:
-        co = p.get("client_of")
-        if not isinstance(co, dict) or not isinstance(co.get("members"), list):
-            continue
-        head = str(p.get("name") or "").strip()
-        if not co["members"] or str(co["members"][0]).strip() != head:
-            continue  # `_normalize_client_of` refuses an unheaded list
-        for raw in co["members"][1:]:
-            m = str(raw).strip()
-            if m in tails:
-                raise ValueError(
-                    f"component {component}: pin {m!r} is a client_of member "
-                    f"of both {tails[m]!r} and {head!r}"
-                )
-            tails[m] = head
-    for p in pins:
-        name = str(p.get("name") or "").strip()
-        if name in tails and p.get("client_of") is not None:
-            raise ValueError(
-                f"component {component}: pin {name!r} is a client_of member of "
-                f"{tails[name]!r}; declare client_of on the head pin only"
-            )
-
-
-def _normalize_roles(roles: Any) -> list[tuple[str, float | None, int | None]]:
-    """Validate the top-level ``roles`` list: ``[{name, voltage_v, fanout}]``
-    (``voltage_v`` number or null, ``fanout`` positive int or null =
-    unbounded; absent fanout defaults to 1)."""
-    if not isinstance(roles, list):
-        raise ValueError("pcb roles must be a list of {name, voltage_v, fanout}")
-    out: list[tuple[str, float | None, int | None]] = []
-    for r in roles:
-        if not isinstance(r, dict):
-            raise ValueError("pcb role must be an object {name, voltage_v, fanout}")
-        name = r.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("pcb role needs a non-empty string name")
-        volt = r.get("voltage_v")
-        if volt is not None and (
-            isinstance(volt, bool) or not isinstance(volt, int | float)
-        ):
-            raise ValueError(f"pcb role {name!r}: voltage_v must be a number or null")
-        fan = r.get("fanout", 1)
-        if fan is not None and (
-            isinstance(fan, bool) or not isinstance(fan, int) or fan < 1
-        ):
-            raise ValueError(
-                f"pcb role {name!r}: fanout must be a positive integer or null"
-            )
-        out.append((name.strip(), None if volt is None else float(volt), fan))
-    return out
-
-
-def _validate_pin_declarations(
-    pins: list[dict[str, Any]],
-    component: str,
-    pin_map: dict[str, Any] | None = None,
-) -> None:
-    """Check canonical ownership without choosing a winner or rebinding.
-
-    ``pin_map`` is the component's footprint ``pin_map`` (pad number ->
-    ``{"name": ...}``), when known. An explicit pad the footprint already
-    maps to a different pin name is a conflict (gr467885), unless that
-    other pin is itself explicitly re-padded in ``pins``."""
-    by_name: dict[str, str | None] = {}
-    by_pad: dict[str, str] = {}
-    for pin in pins:
-        name = str(pin.get("name") or "").strip()
-        if not name:
-            continue
-        pad = str(pin["pad"]) if pin.get("pad") is not None else None
-        if name in by_name and by_name[name] != pad:
-            raise ValueError(
-                f"component {component}: pin {name!r} declares contradictory pads "
-                f"{by_name[name]!r} and {pad!r}; use one pad declaration for this "
-                "canonical name or correct the erroneous pad number"
-            )
-        if pad is not None and pad in by_pad and by_pad[pad] != name:
-            raise ValueError(
-                f"component {component}: pad {pad!r} is claimed by pins "
-                f"{by_pad[pad]!r} and {name!r}; use one canonical name for this "
-                "physical pad in pins and connections, or correct the erroneous "
-                "pad number"
-            )
-        by_name[name] = pad
-        if pad is not None:
-            by_pad[pad] = name
-    for name, pad in by_name.items():
-        entry = (pin_map or {}).get(pad) if pad is not None else None
-        owner = entry.get("name") if isinstance(entry, dict) else None
-        if owner is None or str(owner) in (name, pad):
-            continue  # unmapped, same pin, or the normalizer's identity entry
-        owner = str(owner)
-        if by_name.get(owner) is not None and by_name[owner] != pad:
-            continue  # the footprint's pin is re-padded in this same put
-        raise ValueError(
-            f"component {component}: pin {name!r} declares pad {pad!r}, but the "
-            f"footprint maps pad {pad!r} to pin {owner!r}; use one canonical "
-            "name for this physical pad in pins and connections, or correct "
-            "the erroneous pad number"
-        )
-
-
 _BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
-
-
-def _rot_deg(d: dict[str, Any]) -> float:
-    """A placement's rotation in degrees (the pcb enclave's stored unit).
-    ``rot_deg`` self-names; ``rot`` is the same degrees (bare number) or an
-    explicit-unit string (``"90deg"``, ``"1.5708 rad"``) — gr336352."""
-    key = "rot_deg" if d.get("rot_deg") is not None else "rot"
-    return parse_angle_deg(d.get(key), arg_name=key, bare="degrees")
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
     """psycopg Jsonb for a nullable JSONB column."""
     return Jsonb(value) if value is not None else None
-
-
-def _first_present(d: dict[str, Any], *keys: str) -> Any:
-    """The first of ``keys`` actually present (and not None) in ``d``, else
-    ``None`` — the alias resolver for authoring fields whose ZERO is
-    meaningful.
-
-    The older ``d.get(a) or d.get(b)`` idiom elsewhere in this module is
-    safe only where 0 and NULL mean the same thing (a 0 A current estimate
-    and no estimate both fall through to the fab floor). It is wrong for a
-    net deliberately annotated ``working_voltage_v: 0`` — a shield tied to
-    chassis — which must stay 0 so the pairwise ``|V_a - V_b|`` term sees a
-    real potential difference, not an unannotated net."""
-    for key in keys:
-        value = d.get(key)
-        if value is not None:
-            return value
-    return None
-
-
-#: pcb-ewod-multitile Slice 1's per-pad authoring vocabulary — the SAME
-#: three questions ``docs/backlog/pcb-component-model.md`` §Features
-#: drafted (role/mask/paste), kept as a flat allowlist here rather than a
-#: DB CHECK constraint so a bad value fails at `put` time with the
-#: offending pad's own pin name in the message, not a bare constraint
-#: name from Postgres.
-_LOCAL_PAD_ROLES = ("solderable", "electrode", "probe", "tape_land")
-_LOCAL_PAD_MASKS = ("open", "covered")
-_LOCAL_PAD_PASTES = ("none", "full")
-_LOCAL_PAD_SHAPES = ("circle", "rect", "obround", "polygon")
-
-
-def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
-    """One authored footprint pad -> the exact dict
-    :func:`precis.pcb.padplace.place_footprint_pads` already consumes for
-    an EasyEDA-cached one (``number``/``shape``/``x``/``y``/``w``/``h``/
-    ``rot``/``layer``/``drill``), plus this slice's ``role``/``mask``/
-    ``paste`` intent and, for ``shape: "polygon"``, the vertex ``poly``
-    ring (footprint-local mm — same frame as ``x``/``y`` on every other
-    shape).
-
-    ``paste`` defaults to ``"none"`` for an ``electrode`` or
-    ``tape_land`` pad and ``"full"`` otherwise when the author omits it —
-    resolved HERE, once, so every downstream reader
-    (:mod:`precis.pcb.padplace`, :mod:`precis.pcb.gerber`) can treat the
-    field as always-explicit rather than re-deriving the same default
-    (acceptance criterion 3: "no paste on any role: electrode pad"; a
-    tape land takes copper tape, never stencil-printed solder —
-    ewod-controller-and-hv-supply.md Defect B).
-    """
-    pin_name = str(p.get("pin") or p.get("number") or "").strip()
-    if not pin_name:
-        raise ValueError("pcb footprint pad needs a 'pin' name")
-    shape = str(p.get("shape") or "rect").strip().lower()
-    if shape not in _LOCAL_PAD_SHAPES:
-        raise ValueError(
-            f"pcb footprint pad {pin_name!r}: shape must be one of "
-            f"{_LOCAL_PAD_SHAPES}, got {shape!r}"
-        )
-    role = str(p.get("role") or "solderable").strip().lower()
-    if role not in _LOCAL_PAD_ROLES:
-        raise ValueError(
-            f"pcb footprint pad {pin_name!r}: role must be one of "
-            f"{_LOCAL_PAD_ROLES}, got {role!r}"
-        )
-    mask = str(p.get("mask") or "open").strip().lower()
-    if mask not in _LOCAL_PAD_MASKS:
-        raise ValueError(
-            f"pcb footprint pad {pin_name!r}: mask must be one of "
-            f"{_LOCAL_PAD_MASKS}, got {mask!r}"
-        )
-    paste_raw = p.get("paste")
-    paste = (
-        str(paste_raw).strip().lower()
-        if paste_raw is not None
-        else ("none" if role in ("electrode", "tape_land") else "full")
-    )
-    if paste not in _LOCAL_PAD_PASTES:
-        raise ValueError(
-            f"pcb footprint pad {pin_name!r}: paste must be one of "
-            f"{_LOCAL_PAD_PASTES}, got {paste!r}"
-        )
-
-    pad: dict[str, Any] = {
-        "number": pin_name,
-        "shape": shape,
-        "layer": str(p.get("layer") or "F.Cu"),
-        "rot": _rot_deg(p),
-        "role": role,
-        "mask": mask,
-        "paste": paste,
-    }
-    if p.get("drill") is not None:
-        pad["drill"] = float(p["drill"])
-        # A slotted hole (EasyEDA holeType SLOT, a USB-C shield tab) is a
-        # footprint-local ``{w, h}`` extent beside the round cutter
-        # diameter in ``drill`` — the shape
-        # :func:`precis.pcb.padplace._slot_centre_line` reads. Dropping it
-        # here stored the slot as a plain round hole of its short axis.
-        slot = p.get("slot")
-        if slot is not None:
-            if not isinstance(slot, dict) or not all(
-                isinstance(slot.get(k), (int, float))
-                and math.isfinite(float(slot[k]))
-                and float(slot[k]) > 0
-                for k in ("w", "h")
-            ):
-                raise ValueError(
-                    f"pcb footprint pad {pin_name!r}: slot must be "
-                    "{w, h} with positive finite values"
-                )
-            pad["slot"] = {"w": float(slot["w"]), "h": float(slot["h"])}
-    if shape == "polygon":
-        poly = p.get("poly") or []
-        if len(poly) < 3:
-            raise ValueError(
-                f"pcb footprint pad {pin_name!r}: shape='polygon' needs "
-                ">=3 'poly' vertices"
-            )
-        verts = [(float(v[0]), float(v[1])) for v in poly]
-        xs, ys = [v[0] for v in verts], [v[1] for v in verts]
-        # x/y still carry the bbox CENTER (not a spare field): every
-        # downstream reader that only knows circle/rect pads — the
-        # courtyard/DRC bbox fallback, an SVG viewBox scan — reads
-        # `pad["x"]`/`["y"]` unconditionally, so a polygon pad answers
-        # that question too, even though `poly` is its real shape.
-        pad["x"] = round((min(xs) + max(xs)) / 2.0, 4)
-        pad["y"] = round((min(ys) + max(ys)) / 2.0, 4)
-        pad["w"] = round(max(xs) - min(xs), 4) or 0.01
-        pad["h"] = round(max(ys) - min(ys), 4) or 0.01
-        pad["poly"] = [[round(vx, 4), round(vy, 4)] for vx, vy in verts]
-    else:
-        if p.get("x") is None or p.get("y") is None:
-            raise ValueError(f"pcb footprint pad {pin_name!r} needs x/y")
-        w = float(p.get("w") or 0.0)
-        if w <= 0:
-            raise ValueError(f"pcb footprint pad {pin_name!r} needs a positive w")
-        pad["x"] = round(float(p["x"]), 4)
-        pad["y"] = round(float(p["y"]), 4)
-        pad["w"] = round(w, 4)
-        pad["h"] = round(float(p.get("h") or w), 4)
-    return pad
-
-
-#: The keys a ``footprints[]`` entry may carry. Anything else raises: a
-#: key outside this set used to be dropped without a word (an imported
-#: footprint's ``holes`` among them), which is how geometry went missing.
-_LOCAL_FOOTPRINT_KEYS = (
-    "name",
-    "pads",
-    "pin_map",
-    "courtyard",
-    "centroid",
-    "note",
-    "holes",
-)
-
-
-def _normalize_footprint_holes(name: str, raw: Any) -> list[dict[str, float]]:
-    """Footprint-local non-plated holes ``[{x, y, dia_mm}]``, validated
-    (numeric, finite, ``dia_mm > 0``) and rounded like the pads."""
-    if raw is None:
-        return []
-    if not isinstance(raw, (list, tuple)):
-        raise BadInput(f"pcb footprint {name!r}: holes must be a list of objects")
-    out: list[dict[str, float]] = []
-    for i, h in enumerate(raw):
-        if not isinstance(h, dict):
-            raise BadInput(
-                f"pcb footprint {name!r}: holes[{i}] must be an object {{x, y, dia_mm}}"
-            )
-        extra = sorted(set(h) - {"x", "y", "dia_mm"})
-        if extra:
-            raise BadInput(
-                f"pcb footprint {name!r}: holes[{i}] has unknown key(s) "
-                f"{extra}; accepted: ['dia_mm', 'x', 'y']"
-            )
-        try:
-            x, y, dia = float(h["x"]), float(h["y"]), float(h["dia_mm"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise BadInput(
-                f"pcb footprint {name!r}: holes[{i}] needs numeric x, y, dia_mm"
-            ) from exc
-        if not all(math.isfinite(v) for v in (x, y, dia)) or dia <= 0:
-            raise BadInput(
-                f"pcb footprint {name!r}: holes[{i}] needs finite x/y and dia_mm > 0"
-            )
-        out.append({"x": round(x, 4), "y": round(y, 4), "dia_mm": round(dia, 4)})
-    return out
-
-
-def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """One ``footprints[]`` batch entry -> ``(name, data)`` where ``data``
-    is the same ``{pads, pin_map, courtyard, centroid}`` row shape
-    ``part_footprints`` uses (:meth:`PcbMixin.pcb_footprints_for`'s own
-    return shape) — so every reader downstream of either source (padplace/
-    realize/gerber) takes one dict shape, not two.
-
-    ``pin_map`` is identity by default (pad number == pin name —
-    :func:`_normalize_local_footprint_pad` already made ``number`` the pin
-    name), matching :mod:`precis.pcb.easyeda`'s own construction. An
-    authored ``pin_map`` is honoured when given, which is what lets a
-    SEMANTIC pin name reach real copper: ``padplace.pad_label`` resolves a
-    netlist pin name through this map, so without it the only way to name
-    a pad ``"VDD"`` was to call the *pad* that — destroying the pad number
-    an EasyEDA export has to round-trip back out.
-
-    Every key must be a real pad number, because the failure it prevents
-    is silent: a typo'd or stale key would simply never match a pad, and
-    the pin it meant to name would fall back to the pad number with
-    nothing said. Pads the map omits keep their identity entry rather
-    than dropping out, so a partial map names the pins it knows and
-    leaves the rest numbered."""
-    name = str(f.get("name") or "").strip()
-    if not name:
-        raise ValueError("pcb footprint needs a name")
-    unknown = sorted(set(f) - set(_LOCAL_FOOTPRINT_KEYS))
-    if unknown:
-        raise BadInput(
-            f"pcb footprint {name!r}: unknown key(s) {unknown}; "
-            f"accepted: {sorted(_LOCAL_FOOTPRINT_KEYS)}"
-        )
-    raw_pads = f.get("pads") or []
-    if not raw_pads:
-        raise ValueError(f"pcb footprint {name!r} needs at least one pad")
-    pads = [_normalize_local_footprint_pad(p) for p in raw_pads]
-    pin_map = {pad["number"]: {"name": pad["number"], "tags": []} for pad in pads}
-    for pad_num, entry in (f.get("pin_map") or {}).items():
-        key = str(pad_num)
-        if key not in pin_map:
-            raise ValueError(
-                f"pcb footprint {name!r}: pin_map key {key!r} is not a pad "
-                f"number on this footprint (have {sorted(pin_map)})"
-            )
-        # Accept either the full ``{name, tags}`` row shape or the bare
-        # pin name, so an importer that has only a name does not have to
-        # know the row shape to use this at all.
-        if isinstance(entry, str):
-            pin_name, tags = entry.strip(), []
-        else:
-            pin_name = str((entry or {}).get("name") or "").strip()
-            tags = list((entry or {}).get("tags") or [])
-        if not pin_name:
-            raise ValueError(
-                f"pcb footprint {name!r}: pin_map[{key!r}] needs a pin name"
-            )
-        pin_map[key] = {"name": pin_name, "tags": tags}
-
-    xs: list[float] = []
-    ys: list[float] = []
-    for pad in pads:
-        if pad.get("poly"):
-            xs += [v[0] for v in pad["poly"]]
-            ys += [v[1] for v in pad["poly"]]
-        else:
-            xs += [pad["x"] - pad["w"] / 2.0, pad["x"] + pad["w"] / 2.0]
-            ys += [pad["y"] - pad["h"] / 2.0, pad["y"] + pad["h"] / 2.0]
-    courtyard = f.get("courtyard") or {
-        "bbox": [
-            round(min(xs), 4),
-            round(min(ys), 4),
-            round(max(xs), 4),
-            round(max(ys), 4),
-        ]
-    }
-    centroid = f.get("centroid") or {
-        "x": round(sum(pad["x"] for pad in pads) / len(pads), 4),
-        "y": round(sum(pad["y"] for pad in pads) / len(pads), 4),
-    }
-    data = {
-        "pads": pads,
-        "pin_map": pin_map,
-        "courtyard": courtyard,
-        "centroid": centroid,
-        "note": f.get("note"),
-        "holes": _normalize_footprint_holes(name, f.get("holes")),
-    }
-    return name, data
 
 
 #: Sentinel default for :meth:`PcbMixin.pcb_move_instance`'s ``fixed=``
@@ -1286,7 +789,7 @@ class PcbMixin:
             if not refdes:
                 raise ValueError("pcb component needs a refdes")
             declarations.setdefault(refdes, []).extend(c.get("pins") or [])
-            _validate_pin_declarations(
+            pcb_rows.validate_pin_declarations(
                 declarations[refdes],
                 refdes,
                 self._pcb_footprint_pin_map(conn, ref.id, c, inst_by_refdes.get(refdes))
@@ -1720,7 +1223,8 @@ class PcbMixin:
         existing: tuple[int, int] | None,
     ) -> dict[str, Any] | None:
         """The ``pin_map`` half of :meth:`_pcb_footprint_ref`, for callers
-        (``_validate_pin_declarations``) that only need the name map."""
+        (``pcb_rows.validate_pin_declarations``) that only need the name
+        map."""
         fp = self._pcb_footprint_ref(
             conn, ref_id, c, existing[1] if existing is not None else None
         )
@@ -2149,61 +1653,18 @@ class PcbMixin:
                 (component_id,),
             ).fetchall()
         ]
-        _validate_pin_declarations(existing + pins, component)
+        pcb_rows.validate_pin_declarations(existing + pins, component)
         declared = {str(p.get("name") or "").strip() for p in existing + pins}
-        _validate_tuple_clients(pins, component)
+        pcb_rows.validate_tuple_clients(pins, component)
         n = 0
         for p in pins:
             name = str(p.get("name") or "").strip()
             if not name:
                 continue
-            # §1j intent markers (pcb-lazy-netlist-and-checks.md Slice 2):
-            # ``meta`` passes through verbatim; the bool keys
-            # ``unused``/``must_terminate``/``nc`` are the authored
-            # shorthand for the same meta facts, and ``nc: true`` ALSO adds
-            # the ``nc`` tag, which the existing tags vocabulary already
-            # carries. ``nc`` is part-level (datasheet: no internal
-            # connection), ``must_terminate`` part-level (must not float),
-            # ``unused`` design-level (this board does not use it —
-            # still full geometry, still matcher-available);
-            # ``drc.check_unconnected_pins`` reads them back off the
-            # graph's ``unconnected`` rows.
-            tags = list(p.get("tags") or [])
-            meta = dict(p.get("meta") or {})
-            for marker in ("unused", "must_terminate", "nc"):
-                if p.get(marker):
-                    meta[marker] = True
-            if meta.get("nc") and "nc" not in tags:
-                tags.append("nc")
-            # §1i pin semantics (pcb-lazy-netlist-and-checks.md Slice 5):
-            # `etype` is the closed electrical-role vocabulary — it lands
-            # in `tags` (with the markers) so footprint pin_map tags and
-            # graph reads see one spelling. `max_voltage_v`, `vih`, `vil`
-            # and `rail` are numeric/named bounds — they ride `meta`.
-            etype = str(p.get("etype") or "").strip()
-            if etype:
-                if etype not in PIN_ETYPES:
-                    raise ValueError(
-                        f"component {component}: pin {name!r} etype "
-                        f"{etype!r} is not in the ERC vocabulary "
-                        f"{sorted(PIN_ETYPES)}"
-                    )
-                clash = [t for t in tags if t in PIN_ETYPES and t != etype]
-                if clash:
-                    raise ValueError(
-                        f"component {component}: pin {name!r} declares "
-                        f"etype={etype!r} but tags already carry {clash!r}"
-                    )
-                if etype not in tags:
-                    tags.append(etype)
-            for key in ("max_voltage_v", "vih", "vil", "rail"):
-                if p.get(key) is not None:
-                    meta[key] = p[key]
-            # Slice 6: the pin is a client of a supply role.
-            if p.get("client_of") is not None:
-                meta["client_of"] = _normalize_client_of(
-                    p["client_of"], component, name, declared
-                )
+            # §1i/§1j semantics + markers + Slice-6 ``client_of`` — the
+            # fold lives in :func:`precis.pcb.rows.pin_tags_meta` so the
+            # offline ``batch_to_graph`` emits the same tags/meta.
+            tags, meta = pcb_rows.pin_tags_meta(p, component, declared)
             try:
                 # A DB pad conflict remains authoritative. Unwind its
                 # savepoint before looking up the owner or translating it.
@@ -2513,13 +1974,10 @@ class PcbMixin:
 
     #: ``nets[]`` authoring key (and its alias) -> ``pcb_nets`` column, for
     #: the four §E-1/annotation columns 0171 added. One table, so the
-    #: insert and the patch below cannot drift apart on an alias.
-    _NET_SPEC_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-        ("working_voltage_v", ("working_voltage_v", "voltage")),
-        ("edge_rate_v_per_ns", ("edge_rate_v_per_ns", "edge_rate")),
-        ("impedance_ohm", ("impedance_ohm", "impedance")),
-        ("function_hint", ("function_hint", "function")),
-    )
+    #: insert and the patch below cannot drift apart on an alias. The
+    #: tuple itself lives in :data:`precis.pcb.rows.NET_SPEC_FIELDS` — the
+    #: offline path emits the same columns.
+    _NET_SPEC_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = pcb_rows.NET_SPEC_FIELDS
 
     #: Everything a re-put may patch onto an EXISTING net: the 0171 columns
     #: above plus the four the net has carried since the beginning
@@ -3447,7 +2905,7 @@ class PcbMixin:
         (``[{name, voltage_v, fanout}]``; ``fanout`` null = unbounded,
         absent = 1). Upsert only, like :meth:`pcb_upsert_net_classes`.
         Returns the count written."""
-        rows = _normalize_roles(roles)
+        rows = pcb_rows.normalize_roles(roles)
         if conn is not None:
             return self._pcb_upsert_roles(conn, ref_id, rows)
         with self._pcb_tx() as c:

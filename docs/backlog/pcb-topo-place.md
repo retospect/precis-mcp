@@ -229,6 +229,42 @@ From the brief unless marked *spec call*.
     `precis.pcb.ir::layer_name` is the one index→name map; the wheel
     keeps a byte-identical mirror plus `_PRESET_LAYER_COUNTS` (authority
     `STACKUP_PRESETS`) because `precis_geom.pcb` is stdlib-only.
+27. **0c row normalisation (*spec call*, gr514460).** New
+    `precis/pcb/rows.py` (shipped in `[pcb-kernel]`) is the one
+    normaliser: the batch-row validators moved out of `_pcb_ops.py`,
+    `lcsc_id` (moved out of wheel-excluded `catalog.py`, which
+    re-exports it), `pin_tags_meta` (the `_pcb_insert_pins` fold),
+    `net_row`/`net_patch`, `instance_row`, `footprint_pin_labels`,
+    `map_pad_numbers` (the gr495291 pad-number rewrite, pure form),
+    `NET_SPEC_FIELDS`. `batch_to_graph` emits `pcb_graph` order
+    (instances by refdes, nets by name, members/unconnected by
+    refdes,pin) and mirrors declare-all completion plus
+    connection-ghost pins, so parity is literal. **Store semantics win
+    on every drift found** — the wheel now emits: `domain`
+    `"electrical"`, `layer` `"top"`, `label` refdes fallback, `rot`
+    parsed via `rot_deg`, `n_pins` counting live pins (declared ∪
+    completed ∪ ghosts), roles `fanout` default 1 and the
+    `voltage`→`voltage_v` alias, `part_lcsc` canonicalised via
+    `lcsc_id`, `supplies` normalised, `client_of` normalised (no raw
+    copy, no `current_role` copy), `etype` read from the row's
+    top-level `etype` only — `Pin.etype` writes `extra['etype']` and
+    `meta.etype` rides `meta` verbatim earning no tag (the store
+    rule; 0c seam review), `polarized`/`value`/`note` dropped (never
+    graph keys — the label regex is the only working polarity path).
+    `get(kind='part', view='footprint')` returns the cached
+    `part_footprints` row as JSON (`pads`/`pin_map`/`courtyard`/
+    `centroid`/`holes` + `package`/`height_mm` off `parts` + `pn<ref>`
+    + content sha); `precis_geom.pcb.catalog` resolves it through the
+    staged `precis_client` under `precis_access: read`, records
+    `_CATALOG_READS`, and `Board.manifest` emits `parts` +
+    `precis_geom.version`. Stackup: `meta.stackup_layers`/
+    `stackup_preset` ride `refs.meta` only — `pcb_apply` never reads
+    them and a fresh board is born with `DEFAULT_STACKUP` verbatim
+    (a `Board(stackup=2)`/`'2l'` upload silently lands 4 layers — a
+    server-side gap, NOT fixed here). `_stackup` still expands them
+    for the offline run (`usbc_attiny`'s 2l needs it); a bare inner
+    name emits `routable: True` to match `DEFAULT_STACKUP`'s stamped
+    shape, so the tested `stackup=4` parity is literal.
 
 ## Slices
 

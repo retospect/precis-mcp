@@ -249,7 +249,8 @@ def test_pin_markers_tags_facts_emit_store_shapes() -> None:
     assert pins["7"] == {"name": "7", "pad": "B3"}
     assert pins["NC1"] == {"name": "NC1", "nc": True}
     assert pins["RST"] == {"name": "RST", "must_terminate": True, "tags": ["reset"]}
-    assert pins["SHUNT"]["meta"] == {"current_role": "shunt", "etype": "power_in"}
+    assert pins["SHUNT"]["etype"] == "power_in"  # top-level, the store's door
+    assert pins["SHUNT"]["meta"] == {"current_role": "shunt"}
     assert list(pins) == ["2", "7", "NC1", "RST", "SHUNT"]
 
 

@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.metadata
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -120,12 +122,15 @@ class Pin:
         self.tags: list[str] = []
         self.meta: dict[str, Any] = {}
         self.markers: dict[str, bool] = {}
-        #: Passthrough pin keys the store reads (``pad``/``description``/
-        #: ``note``) that have no builder verb.
+        #: Passthrough TOP-LEVEL pin keys the store reads — builder-less
+        #: ones (``pad``/``description``/``note``) plus ``etype`` (the
+        #: verb writes it here: the store tags only a top-level etype).
         self.extra: dict[str, Any] = {}
 
     def etype(self, kind: str) -> Pin:
-        self.meta["etype"] = kind
+        # The store's top-level key — an etype under `meta` rides meta
+        # verbatim and earns no tag (store rule; gr514460 seam review).
+        self.extra["etype"] = kind
         return self
 
     def current_role(self, kind: str) -> Pin:
@@ -406,7 +411,7 @@ def pad(
     mask: Any = None,
     paste: Any = None,
 ) -> dict[str, Any]:
-    """One footprint pad (``_pcb_ops._normalize_local_footprint_pad``
+    """One footprint pad (``precis.pcb.rows.normalize_pad``
     shape: ``{pin, shape, x, y, w?, h?, poly?, drill?, role?, mask?,
     paste?}``)."""
     d: dict[str, Any] = {"pin": pin, "shape": shape, "x": x, "y": y}
@@ -540,18 +545,148 @@ class CheckResult:
 
 @dataclass
 class CatalogPart:
-    """Offline stand-in for ``pcb.catalog(lcsc)``. Real MCP-backed
-    resolution (``get(kind='part', view='facts')``) is the sandbox
-    runtime's job, outside this DB-free kernel; always unresolved here."""
+    """``pcb.catalog(lcsc)`` — the catalog footprint a board script reads.
+
+    Resolution goes through the sandbox's read MCP: under
+    ``precis_access: read`` the runtime stages a stdlib
+    ``/work/precis_client.py`` whose ``call("get", kind="part", id=lcsc,
+    view="footprint")`` returns the ``part_footprints`` row as JSON. With
+    no client (a plain laptop run) the part stays ``resolved=False`` —
+    legitimate (Decision 25); the manifest then carries no row for it. A
+    client that errors or returns an unreadable row is a different story:
+    the part stays unresolved, ``error`` says why, and the manifest
+    records it ``{provenance: 'unresolved', error}``."""
 
     lcsc: str
     resolved: bool = False
     pins: list[str] = field(default_factory=list)
     package: str | None = None
+    pads: list[dict[str, Any]] = field(default_factory=list)
+    pin_map: dict[str, Any] = field(default_factory=dict)
+    courtyard: Any = None
+    centroid: Any = None
+    holes: list[dict[str, Any]] = field(default_factory=list)
+    #: ``pn<ref>`` when the part already has a ref, else None.
+    part_id: str | None = None
+    #: sha256 of the canonical-JSON footprint row actually read.
+    footprint_sha: str | None = None
+    #: UTC isoformat timestamp of the read.
+    read_at: str | None = None
+    #: Why the read failed when a read path existed (an unreachable or
+    #: misbehaving ``precis_client``). ``None`` when the part resolved or
+    #: there was no read path at all (Decision 25 — no client is not an
+    #: error).
+    error: str | None = None
+
+
+#: Pending :func:`catalog` reads made before ANY board existed, keyed by
+#: lcsc — claimed once by the next manifest written (a pre-board read has
+#: no owner to bind to). Once a board exists, module-level reads bind at
+#: read time to ``_LAST_BOARD`` instead of racing manifests.
+_CATALOG_READS: dict[str, dict[str, Any]] = {}
+
+#: The board a module-level :func:`catalog` read binds to — the most
+#: recently constructed one, i.e. the board a script is presumably
+#: building when it reads. ``None`` before the first :class:`Board`;
+#: :meth:`Board.catalog` always binds to its own board regardless.
+_LAST_BOARD: Board | None = None
+
+
+def _manifest_entry(part: CatalogPart) -> dict[str, Any]:
+    """One manifest ``parts`` row — the resolved read's ids+sha+when, or
+    the failure's provenance+error (R-e: the manifest records what was
+    ACTUALLY read, failures included)."""
+    if part.resolved:
+        return {
+            "lcsc": part.lcsc,
+            "part_id": part.part_id,
+            "footprint_sha": part.footprint_sha,
+            "read_at": part.read_at,
+        }
+    return {"lcsc": part.lcsc, "provenance": "unresolved", "error": part.error}
+
+
+def _call_json(raw: Any) -> dict[str, Any]:
+    """The ``client.call`` payload as a dict — plain JSON, a JSON head
+    followed by a ``Next:`` footer (the handler Response's hint text), or
+    a one-key envelope (``{"result"|"body"|"text"|"content": …}``)
+    wrapping either form. Anything else raises — the caller records the
+    error verbatim."""
+    if isinstance(raw, bytes | bytearray):
+        raw = raw.decode("utf-8")
+    payload = raw
+    if not isinstance(payload, dict):
+        text = str(payload)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(text.lstrip())
+            except json.JSONDecodeError as exc:
+                if "more(cursor=" in text:
+                    raise ValueError("paged response, more() not followed") from exc
+                raise ValueError(
+                    f"catalog read: unparseable response {text[:200]!r}"
+                ) from exc
+    for key in ("result", "body", "text", "content"):
+        if isinstance(payload, dict) and set(payload) == {key}:
+            return _call_json(payload[key])
+    if not isinstance(payload, dict):
+        raise ValueError(f"catalog read: unparseable response {str(raw)[:200]!r}")
+    return payload
+
+
+def _catalog_read(lcsc: str) -> CatalogPart:
+    """One ``get(kind='part', view='footprint')`` read through the staged
+    client — the CatalogPart populated from the row, or ``error`` set on
+    any read failure. Records nothing; the caller binds the manifest
+    entry."""
+    part = CatalogPart(lcsc=lcsc)
+    try:
+        client = importlib.import_module("precis_client")
+    except ImportError:
+        return part
+    try:
+        row = _call_json(client.call("get", kind="part", id=lcsc, view="footprint"))
+    except Exception as exc:
+        part.error = str(exc)
+        return part
+    if "pads" not in row:
+        part.error = str(
+            row.get("error")
+            or row.get("detail")
+            or "get(view='footprint') returned no footprint row"
+        )
+        return part
+    part.resolved = True
+    part.pads = list(row.get("pads") or [])
+    part.pin_map = dict(row.get("pin_map") or {})
+    part.courtyard = row.get("courtyard")
+    part.centroid = row.get("centroid")
+    part.holes = list(row.get("holes") or [])
+    part.package = row.get("package")
+    part.part_id = row.get("part_id")
+    part.footprint_sha = row.get("sha")
+    part.read_at = datetime.now(UTC).isoformat()
+    part.pins = [
+        str(v.get("name") or k) if isinstance(v, dict) else str(v or k)
+        for k, v in sorted(part.pin_map.items(), key=lambda kv: str(kv[0]))
+    ] or [str(p.get("number")) for p in part.pads]
+    return part
 
 
 def catalog(lcsc: str) -> CatalogPart:
-    return CatalogPart(lcsc=lcsc)
+    """Read a catalog footprint and bind its manifest entry to the board
+    under construction (``_LAST_BOARD``), or to the pending pool when no
+    board exists yet — claimed once by the next manifest written."""
+    part = _catalog_read(lcsc)
+    if part.resolved or part.error is not None:
+        board = _LAST_BOARD
+        if board is not None:
+            board._catalog_reads[part.lcsc] = _manifest_entry(part)
+        else:
+            _CATALOG_READS[part.lcsc] = _manifest_entry(part)
+    return part
 
 
 def rect(w: float, h: float, *, corner_mm: float | None = None) -> dict[str, Any]:
@@ -609,8 +744,11 @@ class Board:
         self._roles: dict[str, Role] = {}
         self._generators: list[dict[str, Any]] = []
         self._measures: list[dict[str, Any]] = []
+        self._catalog_reads: dict[str, dict[str, Any]] = {}
         self._used_prefixes: set[str] = set()
         self._frame_stack: list[_ModuleFrame] = []
+        global _LAST_BOARD
+        _LAST_BOARD = self
 
         if isinstance(stackup, list):
             raise PcbBuilderError(
@@ -638,6 +776,16 @@ class Board:
             self.meta["placement_sides"] = sides
         if outline is not None:
             self.outline(outline)
+
+    def catalog(self, lcsc: str) -> CatalogPart:
+        """:func:`catalog` bound to THIS board — the read's manifest
+        ``parts`` row lands here and only here; a pending module-level
+        read of the same part number is NOT consumed (it belongs to the
+        board that owns it, or the next manifest if none does)."""
+        part = _catalog_read(lcsc)
+        if part.resolved or part.error is not None:
+            self._catalog_reads[part.lcsc] = _manifest_entry(part)
+        return part
 
     # -- naming (module frames) ------------------------------------------
 
@@ -1251,12 +1399,22 @@ class Board:
 
     def manifest(self, requests: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
         """The workspace run's ``out/manifest.json`` document (§Import
-        boundary): ``{schema, kind: 'pcb', board, requests}``."""
+        boundary): ``{schema, kind: 'pcb', board, requests}`` plus the
+        run's provenance — ``parts`` records every catalog footprint
+        :func:`catalog` resolved (R-e: the ids read + a sha + when — and
+        ``{provenance: 'unresolved', error}`` when the read failed) and
+        ``precis_geom`` the wheel's own version."""
+        # Unattached reads bind to this board now — claimed once, so they
+        # cannot leak into a second board's manifest.
+        for lcsc in sorted(_CATALOG_READS):
+            self._catalog_reads.setdefault(lcsc, _CATALOG_READS.pop(lcsc))
         return {
             "schema": MANIFEST_SCHEMA,
             "kind": "pcb",
             "board": self.to_batch(),
             "requests": [dict(r) for r in requests],
+            "parts": [self._catalog_reads[k] for k in sorted(self._catalog_reads)],
+            "precis_geom": {"version": _wheel_version()},
         }
 
 
@@ -1276,6 +1434,15 @@ def fit(
 #: interior cavity the whole board must fit inside.
 box = _shape.box
 enclosure = _shape.enclosure
+
+
+def _wheel_version() -> str:
+    """The installed ``precis-geom`` version for the manifest; ``0+unknown``
+    when running from a source tree (no dist metadata)."""
+    try:
+        return importlib.metadata.version("precis-geom")
+    except Exception:
+        return "0+unknown"
 
 
 def canonical_json(batch: dict[str, Any]) -> str:

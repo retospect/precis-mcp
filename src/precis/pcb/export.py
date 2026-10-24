@@ -109,7 +109,7 @@ def board_feature_refdes(
 
     Decided from the pads, not from sourcing or naming: an instance is a
     board feature when its authored footprint HAS pads and none of them is
-    ``role: 'solderable'`` (:data:`precis.store._pcb_ops._LOCAL_PAD_ROLES`).
+    ``role: 'solderable'`` (:data:`precis.pcb.rows._LOCAL_PAD_ROLES`).
     There is no joint to make, so there is nothing to pick, place or buy.
 
     Deliberately NOT "has no LCSC number": a hand-soldered connector or a

@@ -151,13 +151,13 @@ from precis.pcb import topo as pcb_topo
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
+from precis.pcb.rows import (
+    normalize_footprint as normalize_local_footprint,
+)
 from precis.pcb.rules import NetRules, clearance_rule_problems
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
-from precis.store._pcb_ops import (
-    _normalize_local_footprint as normalize_local_footprint,
-)
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.link_tag_ops import (
@@ -3282,7 +3282,7 @@ class PcbHandler(Handler):
         ``args.footprint`` (with ``args.part`` naming exactly one C-number)
         authors a footprint directly, for a part the API has nothing for —
         the same ``{pads, ...}`` shape and the same validator
-        (:func:`precis.store._pcb_ops._normalize_local_footprint`) the
+        (:func:`precis.pcb.rows.normalize_footprint`) the
         design-local ``footprints:[...]`` batch key already uses, cached
         under ``source='authored'``.
 

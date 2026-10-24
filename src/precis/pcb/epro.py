@@ -1278,7 +1278,7 @@ def live_nets(pcb: EproDocument) -> tuple[list[str], list[str]]:
 _COMP_TOP, _COMP_BOTTOM = 1, 2
 
 #: ``defaultPad.padType`` -> the precis pad shape
-#: ``precis.store._pcb_ops._normalize_local_footprint_pad`` accepts.
+#: ``precis.pcb.rows.normalize_pad`` accepts.
 #: ``ELLIPSE`` maps to ``circle`` only when it is actually circular; an
 #: ellipse with width != height has no precis shape at all and degrades
 #: to ``obround`` with a warning. ``RECT`` carries a corner ``radius``

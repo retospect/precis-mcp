@@ -350,7 +350,7 @@ _DEFAULT_STUB_WIDTH_MM = 0.20
 #: 1 micron. The electrode-gap net class's ``clearance_mm`` (below) is set
 #: from the analytic ``gap`` value, but the ACTUAL manufactured gap DRC
 #: measures is the shapely distance between two polygons whose vertices
-#: :func:`precis.store._pcb_ops._normalize_local_footprint_pad` and
+#: :func:`precis.pcb.rows.normalize_pad` and
 #: :func:`precis.pcb.padplace.place_footprint_pads` both round to 4
 #: decimal places (0.1um) — an accumulation of independent per-vertex
 #: rounding on BOTH sides of the gap that can shave a few 0.01um off the

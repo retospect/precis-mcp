@@ -30,7 +30,7 @@ from precis.pcb import gerber as pcb_gerber
 #: One footprint carrying both failure modes gr341578 names, plus an
 #: ordinary reference pad: a mask-covered ELECTRODE pad (``paste``
 #: omitted -> defaults to "none",
-#: :func:`precis.store._pcb_ops._normalize_local_footprint_pad`'s own
+#: :func:`precis.pcb.rows.normalize_pad`'s own
 #: rule), a drilled THT pad (``paste``/``mask``/``role`` all omitted ->
 #: default "solderable"/"open"/"full", same function -- and
 #: ``solderpaste_gerber`` skips ANY drilled pad regardless of ``paste``,
@@ -122,7 +122,7 @@ def test_pads_for_ir_carries_paste_and_mask_for_an_electrode_pad(pcb):
     assert e["role"] == "electrode"
     assert e["mask"] == "covered"
     # paste defaults to "none" for role=electrode when the author omits it
-    # (`_normalize_local_footprint_pad`) -- the exact fact gr341578 says
+    # (`precis.pcb.rows.normalize_pad`) -- the exact fact gr341578 says
     # never reached this pad source.
     assert e["paste"] == "none"
 

@@ -59,6 +59,8 @@ first use:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
@@ -129,17 +131,20 @@ class PartHandler(Handler):
             "cheap. Used by a pcb design to pick manufacturable parts. "
             "view='facts' reads the extracted datasheet pin table / "
             "required externals (precis.pcb.datasheet_facts). "
-            "See precis-part-select-help."
+            "view='footprint' returns the cached footprint row "
+            "(pads/pin_map/courtyard/centroid/holes + a content sha) as "
+            "JSON — the sandbox read path pcb.catalog() resolves "
+            "through (gr514460). See precis-part-select-help."
         ),
         supports_get=True,
         supports_search=True,
         is_numeric=False,
         id_required=False,
-        views=("facts",),
+        views=("facts", "footprint"),
     )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["facts"]
+        return ["facts", "footprint"]
 
     def __init__(
         self,
@@ -172,19 +177,24 @@ class PartHandler(Handler):
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
-            if view != "facts":
+            if view not in ("facts", "footprint"):
                 raise BadInput(
                     f"kind='part' has no view {view!r}",
                     next="get(kind='part', id='C…', view='facts') — the "
-                    "datasheet-extracted pin table / required externals",
+                    "datasheet-extracted pin table / required externals; "
+                    "view='footprint' is the cached footprint row as JSON",
                 )
             if id is None or not str(id).strip():
                 raise BadInput(
-                    "get(kind='part', view='facts') requires id= (an LCSC C-number)",
-                    next="get(kind='part', id='C25804', view='facts')",
+                    f"get(kind='part', view={view!r}) requires id= (an LCSC C-number)",
+                    next=f"get(kind='part', id='C25804', view={view!r})",
                 )
             lcsc = catalog.lcsc_id(id) or str(id).strip().upper()
-            return Response(body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc))
+            if view == "facts":
+                return Response(
+                    body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc)
+                )
+            return self._footprint_view(lcsc)
         if id is None or not str(id).strip():
             raise BadInput(
                 "get(kind='part') requires id= (an LCSC C-number)",
@@ -248,6 +258,47 @@ class PartHandler(Handler):
             body += f"\nref: {handle_registry.format_handle('part', ref.id)}"
             body += render_links_section(self.store, ref, limit=12)
         return Response(body=body)
+
+    def _footprint_view(self, lcsc: str) -> Response:
+        """``view='footprint'`` — the cached ``part_footprints`` row as a
+        JSON body (the sandbox's ``precis_client`` parses it): the
+        ``normalize_footprint`` row shape plus ``package``/``height_mm``
+        off ``parts``, the part's ``pn<ref>`` when it has one, and
+        ``sha`` = sha256 of the canonical JSON of the geometry fields —
+        the manifest's ``footprint_sha`` ("what was actually read",
+        gr514460)."""
+        row = self.store.part_footprint_get(lcsc)
+        if row is None:
+            raise NotFound(
+                f"part {lcsc}: no cached footprint",
+                next=(
+                    f"put(kind='pcb', args={{'op': 'footprint', 'part': {lcsc!r}}})"
+                    " fetches and caches it, or search(kind='part', q='...')"
+                    " for another part"
+                ),
+            )
+        geometry = {
+            k: row.get(k) for k in ("pads", "pin_map", "courtyard", "centroid", "holes")
+        }
+        part = self.store.part_row(lcsc) or {}
+        ref_id = self.store.part_ref_id(lcsc)
+        payload = {
+            "lcsc": lcsc,
+            "part_id": (
+                handle_registry.format_handle("part", ref_id)
+                if ref_id is not None
+                else None
+            ),
+            "package": part.get("package"),
+            "height_mm": part.get("height_mm"),
+            **geometry,
+            "sha": hashlib.sha256(
+                json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+        }
+        return Response(body=json.dumps(payload, sort_keys=True))
 
     # ── search ───────────────────────────────────────────────────────
     def search(
