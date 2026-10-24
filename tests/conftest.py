@@ -461,14 +461,26 @@ def pytest_configure(config: pytest.Config) -> None:
         "(gr261537) and, since this marker's cluster grew, the ship gate "
         "itself (`scripts/ship --slow` or PRECIS_GATE_SLOW=1 restores the "
         "full set). The marked cluster is still run on every push by "
-        "check.yml's 10 Linux shards, which carry no -m filter, and by the "
-        "nightly matrix. See docs/conventions/testing.md.",
+        "check.yml's 10 Linux shards (they deselect only `nightly`) and by "
+        "the nightly matrix. See docs/conventions/testing.md.",
     )
     config.addinivalue_line(
         "markers",
         "mp_live: calls the live Materials Project API (needs "
         "PRECIS_MP_API_KEY). Opt-in: skipped unless the -m expression names "
         "mp_live, so no default lane, gate or CI shard touches the network.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "nightly: too heavy for the release gate even after the rt-s3 "
+        "splits (>240 s CI and unsplittable — moved to the nightly run per "
+        "Reto 2026-10-24). check.yml's gate shape (ci/**, release/** and PR "
+        "test-linux shards) deselects it with -m 'not nightly'; the full "
+        "shape (schedule, workflow_dispatch full=true) and local "
+        "scripts/test / scripts/nightly carry no -m filter, so it still "
+        "runs there. Items are auto-tagged 'slow' below, so every local "
+        "-m 'not slow' lane skips them as well. See "
+        "docs/conventions/testing.md.",
     )
 
 
@@ -490,6 +502,10 @@ def pytest_collection_modifyitems(
         fixturenames = getattr(item, "fixturenames", ())
         if db_fixtures.intersection(fixturenames):
             item.add_marker(pytest.mark.db)
+        # Nightly-only implies heavy: tag `slow` so the -m 'not slow' local
+        # lanes (--fast, --impacted, --selected, the local gate) skip it too.
+        if item.get_closest_marker("nightly") is not None:
+            item.add_marker(pytest.mark.slow)
         if not mp_live_opted_in and item.get_closest_marker("mp_live") is not None:
             item.add_marker(pytest.mark.skip(reason="opt-in live MP test: -m mp_live"))
 

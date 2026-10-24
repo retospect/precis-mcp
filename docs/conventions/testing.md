@@ -193,8 +193,10 @@ cluster and `/go` gets its verdict in minutes.
 
 What still covers it, so nothing is actually ungated:
 
-- **check.yml's Linux shards carry no `-m` filter** — every `ci/**`
-  pre-merge gate and every `release/**` push runs the whole cluster.
+- **check.yml's Linux shards deselect only `nightly`** — every `ci/**`
+  pre-merge gate and every `release/**` push still runs the whole `slow`
+  cluster; the gate shape's `-m "not nightly"` drops just the
+  `nightly`-marked ids (below).
 - The nightly full matrix runs it on 3.12 and macOS too.
 
 Every test carries a 300 s pytest-timeout (`[tool.pytest.ini_options]`).
@@ -212,6 +214,16 @@ only what the gate run executed, so deselecting the slow cluster removes
 exactly the tests that cover the pcb/se/hexfold `src/` lines. A genuinely
 well-tested change there can therefore fail diff-cover at 90%. `scripts/ship`
 says so in the failure text; re-run with `--slow` before writing new tests.
+
+**`nightly`: off the release gate, on the full matrix.** Tests that stay
+>240 s CI even after splitting (rt-s3's needs-ruling set, moved per Reto
+2026-10-24) carry `@pytest.mark.nightly(reason=...)`: the gate shape
+(`ci/**`, `release/**`, PRs) runs its shards with `-m "not nightly"`; the
+full shape (nightly schedule, `workflow_dispatch full=true`) and local
+`scripts/test` / `scripts/nightly` carry no filter, so the tests still run
+there. Items are auto-tagged `slow` (tests/conftest.py), so every
+`-m 'not slow'` lane skips them too — the marker lifts a test out of the
+CI gate only, never out of a full run.
 
 ## Long runs: `--bg` then `--await`, never a hand-rolled log poll
 

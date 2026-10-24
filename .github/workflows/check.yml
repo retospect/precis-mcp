@@ -463,7 +463,12 @@ jobs:
       # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
       # q='CCO' search, which only matches the rdkit-CANONICALISED
       # ethanol; the raw fixture SMILES spells it OCC).
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }} --junitxml=junit.xml
+      # `not nightly` (release-train §3, Reto 2026-10-24): the `nightly`-
+      # marked cluster — the >240 s tests that don't split under the gate's
+      # ~4 min single-test bar — stays out of every gate-shape shard run
+      # (ci/**, release/**, PRs). The full shape (nightly schedule,
+      # workflow_dispatch full=true) drops the filter and runs them.
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}${{ needs.plan.outputs.full != 'true' && ' -m "not nightly"' || '' }} --junitxml=junit.xml
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
       # Per-test timings for scripts/shard-weights (a finished shard only; a

@@ -84,6 +84,11 @@ def _dimer() -> StructScene:
     return scene
 
 
+@pytest.mark.nightly(
+    reason="rt-s3 ruling (Reto 2026-10-24): the 276 s pillar-neck relax is "
+    "a single convergence — can't split under the gate's 240 s bar, "
+    "nightly only"
+)
 @pytest.mark.slow
 @pytest.mark.timeout(1200)  # CI worst 474s x2.5 for runner variance (gr503084)
 def test_xtb_relaxes_the_pillar_neck() -> None:

@@ -70,6 +70,16 @@ def test_workflow_follows_the_plan_output() -> None:
     assert "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}" in WORKFLOW
 
 
+def test_gate_shards_deselect_nightly_full_shape_runs_them() -> None:
+    """The `nightly` marker (release-train §3, Reto 2026-10-24: the >240 s
+    tests that don't split move to the nightly run) is deselected in every
+    gate-shape shard run — but only via this conditional, so the nightly
+    full matrix still runs them."""
+    assert (
+        "needs.plan.outputs.full != 'true' && ' -m \"not nightly\"' || ''" in WORKFLOW
+    )
+
+
 def test_shards_partition_every_test_exactly_once() -> None:
     ids = [f"tests/test_mod{i % 97}.py::test_case_{i}[p{i % 7}]" for i in range(6000)]
     for n in COUNTS:

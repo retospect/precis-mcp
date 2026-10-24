@@ -136,6 +136,11 @@ _ASSY = (
 )
 
 
+@pytest.mark.nightly(
+    reason="rt-s3 ruling (Reto 2026-10-24): the 292 s BOM roll-up is one "
+    "monolithic `use` expansion — can't split under the gate's 240 s bar, "
+    "nightly only"
+)
 @pytest.mark.timeout(1020)  # CI worst 385s x2.5 for runner variance (gr503084)
 def test_bom_rolls_up_patterns_nesting_and_component_refs(cad, store):
     comp, _ = store.component_entity_upsert(

@@ -323,6 +323,10 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
+@pytest.mark.nightly(
+    reason="rt-s3 ruling (Reto 2026-10-24): the 439 s place/route/DRC "
+    "baseline can't split under the gate's 240 s bar — nightly only"
+)
 @pytest.mark.slow
 @pytest.mark.timeout(1740)  # CI worst 678s x2.5 for runner variance (gr503084)
 def test_nano_board_place_route_drc_baseline(store: Store) -> None:

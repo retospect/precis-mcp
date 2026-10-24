@@ -334,6 +334,10 @@ def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
     assert min(jx) > (ox0 + ox1) / 2.0
 
 
+@pytest.mark.nightly(
+    reason="rt-s3 ruling (Reto 2026-10-24): the 8 x 249-382 s seed sweep "
+    "can't shrink under the gate's 240 s bar — nightly only"
+)
 @pytest.mark.slow
 # CI worst 463s x2.5 for runner variance (gr503084)
 @pytest.mark.timeout(1200)
@@ -348,6 +352,10 @@ def test_nano_board_routes_cleanly_per_seed(store: Store, seed: int) -> None:
     print(f"\nnano seed {seed} routed: {routed}")
 
 
+@pytest.mark.nightly(
+    reason="rt-s3 ruling (Reto 2026-10-24): the 408 s place/route/DRC "
+    "baseline can't split under the gate's 240 s bar — nightly only"
+)
 @pytest.mark.slow
 @pytest.mark.timeout(1380)  # CI worst 550s x2.5 for runner variance (gr503084)
 def test_nano_board_place_route_drc_baseline(store: Store) -> None:
