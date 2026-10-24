@@ -427,7 +427,9 @@ def test_daily_ceiling_stops_sweep_and_resumes_next_utc_day(store, monkeypatch) 
         return_value=graph,
     ):
         result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # report_only (gr514421): the ceiling stopped the pass mid-paper —
+    # the locked-but-unprocessed claim is reported, not counted as work.
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "report_only": True}
     # Two candidates chased, the pass stopped before the rest, and the
     # paper was NOT stamped swept — it re-claims tomorrow.
     assert _inbound_tag(store, y) == "pending"
@@ -441,11 +443,13 @@ def test_daily_ceiling_stops_sweep_and_resumes_next_utc_day(store, monkeypatch) 
         return_value=graph,
     ):
         # Same UTC day: the ceiling is already spent — the pass ends
-        # cleanly before claiming anything.
+        # cleanly before claiming anything (still report_only: it is
+        # ceiling-blocked, not merely idle).
         assert run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1) == {
             "claimed": 0,
             "ok": 0,
             "failed": 0,
+            "report_only": True,
         }
         assert _inbound_tag(store, y) == "pending"
 
@@ -477,7 +481,7 @@ def test_daily_ceiling_counts_across_papers(store, monkeypatch) -> None:
         return_value={"references": [], "cited_by": citers},
     ):
         result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
-    assert result == {"claimed": 2, "ok": 1, "failed": 0}
+    assert result == {"claimed": 2, "ok": 1, "failed": 0, "report_only": True}
     # The single daily unit went to the first paper; the second is
     # skipped once the budget reads empty (unstamped).
     assert _daily_counter(store, _DAY1) == 1
@@ -516,7 +520,7 @@ def test_daily_ceiling_also_bounds_followup_resolution(store, monkeypatch) -> No
         [ChunkInsert(ord=0, text="we cite the target paper's claim.", meta={})],
     )
     result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
-    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert result == {"claimed": 0, "ok": 0, "failed": 0, "report_only": True}
     assert all(
         lk.src_ord is None for lk in _cites_links(store, src=citer_ref_id, dst=y)
     )

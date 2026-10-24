@@ -48,7 +48,9 @@ Cost bounds — the todo-489406 flip preconditions, both shipped:
   exhaustion the pass ends cleanly and unstamped — pending papers and
   unresolved pairs resume after the rollover; already-chased pairs
   skip free (``_already_linked``) so a >ceiling paper can't livelock
-  on its own prefix.
+  on its own prefix. A ceiling-blocked pass reports ``report_only`` so
+  its locked-but-unprocessed ``claimed`` count doesn't hold the worker
+  loop out of its idle sleep (gr514421).
 
 The remaining backstop, the global spend circuit breaker ("Budget
 guardrails" Piece B), has **shipped**: it lives in
@@ -796,7 +798,13 @@ def run_inbound_chase_pass(
     pins the UTC day the daily counter keys on (tests inject it to
     drive the rollover; prod passes nothing).
 
-    Returns the standard ``{claimed, ok, failed}`` shape.
+    Returns the standard ``{claimed, ok, failed}`` shape, plus
+    ``report_only: True`` when the pass ended ceiling-blocked — either
+    the daily counter was already spent at claim time, or it ran out
+    mid-pass leaving claimed rows unprocessed. Those rows are reporting,
+    not work: the runner's ``claimed>0 ⇒ any_work ⇒ no idle sleep``
+    coupling would otherwise hot-poll a spent pass re-claiming the same
+    pending papers until the UTC rollover (gr514421).
     """
     claimed = 0
     ok = 0
@@ -815,7 +823,7 @@ def run_inbound_chase_pass(
         # nothing stamped, nothing locked; the pending queue resumes
         # after the UTC-date rollover.
         _log_pass_digest(budget, capped_per_paper=0, ceiling_hit=True)
-        return {"claimed": 0, "ok": 0, "failed": 0}
+        return {"claimed": 0, "ok": 0, "failed": 0, "report_only": True}
 
     with store.pool.connection() as conn:
         pending = _claim_pending_papers(conn, limit=limit)
@@ -875,7 +883,14 @@ def run_inbound_chase_pass(
             budget, capped_per_paper=capped_per_paper, ceiling_hit=ceiling_hit
         )
 
-    return {"claimed": claimed, "ok": ok, "failed": failed}
+    result: dict[str, int] = {"claimed": claimed, "ok": ok, "failed": failed}
+    if ceiling_hit:
+        # gr514421: the ceiling stopped this pass with claimed rows left
+        # unprocessed — report the locked count for observability but
+        # flag it so the run loop does not treat it as work and skip its
+        # idle sleep (the same rows would be re-claimed immediately).
+        result["report_only"] = True
+    return result
 
 
 __all__ = [

@@ -208,6 +208,11 @@ def build_ref_passes(
                 claimed=r["claimed"],
                 ok=r["ok"],
                 failed=r["failed"],
+                # gr514421: a ceiling-blocked pass still reports the
+                # rows it locked; report_only keeps that count out of
+                # the loop's any_work tally so a spent pass can't
+                # hot-poll itself back into claiming them.
+                report_only=bool(r.get("report_only")),
             )
 
         ref_passes.append(_inbound_chase_pass)
