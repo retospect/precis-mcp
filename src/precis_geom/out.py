@@ -33,6 +33,7 @@ fit; ``run()`` calls it on exit.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import os
 import re
@@ -486,9 +487,12 @@ class Run:
         (qual path from the root, ``occ``), NOT ``key`` (keys are
         line-based until the structural-keys spec lands). The result is
         ``self.diff`` (``added``/``removed`` path lists, ``changed``
-        frames with was/now ``made``), echoed as a ``vs previous: +A -R
-        ~C`` line and stored as manifest ``notes`` when ``notes`` is
-        unset."""
+        frames with was/now ``made`` and ``args``), echoed as a ``vs
+        previous: +A -R ~C`` line and stored as manifest ``notes`` when
+        ``notes`` is unset. The old trace is then rotated to
+        ``trace.prev.json`` (one level, clobbering an older
+        ``trace.prev.json``) so the run just diffed against stays
+        inspectable after the overwrite (gr514055)."""
         if self._finished:
             raise ValueError(f"out.run: finish() already ran for {self.root}")
         self._finished = True
@@ -515,6 +519,8 @@ class Run:
         if line is not None:
             print(f"{self.root}: {line}")
         if trace_doc is not None:
+            if prev.is_file():
+                prev.replace(self.root / "trace.prev.json")
             (self.root / "trace.json").write_text(
                 _ts.dumps(trace_doc) + "\n", encoding="utf-8"
             )
@@ -544,16 +550,24 @@ def _render_path(k: tuple[tuple[str, ...], int]) -> str:
 
 
 def _trace_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-    """Frames added/removed/changed between two trace documents."""
+    """Frames added/removed/changed between two trace documents.
+
+    ``changed`` keeps one entry per matched (path, ``occ``) whose
+    ``made`` counts OR ``args`` digest moved — an arg-only edit (the
+    typical "change a parameter" re-run) shows up even when the entity
+    counts happen to come out equal (gr514055)."""
     old_map, new_map = _frame_paths(old), _frame_paths(new)
     changed = [
         {
             "path": _render_path(k),
             "was": old_map[k].get("made") or {},
             "now": new_map[k].get("made") or {},
+            "args_was": old_map[k].get("args") or {},
+            "args_now": new_map[k].get("args") or {},
         }
         for k in sorted(new_map.keys() & old_map.keys())
         if (old_map[k].get("made") or {}) != (new_map[k].get("made") or {})
+        or (old_map[k].get("args") or {}) != (new_map[k].get("args") or {})
     ]
     return {
         "added": sorted(_render_path(k) for k in new_map.keys() - old_map.keys()),
@@ -562,19 +576,66 @@ def _trace_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_ABSENT: Any = object()
+
+
+def _unique_pairs(
+    pairs: Iterator[tuple[Any, Any]],
+) -> list[tuple[Any, Any]]:
+    """The differing ``(was, now)`` pairs of one field across a group of
+    same-path changes, deduplicated in first-seen order — six identical
+    ``strip`` occurrences collapse to one ``24 -> 32``."""
+    seen: list[tuple[Any, Any]] = []
+    for w, n in pairs:
+        if w != n and (w, n) not in seen:
+            seen.append((w, n))
+    return seen
+
+
+def _arg_note(v: Any) -> str:
+    """An args-digest value for the note; a param present on only one
+    side renders ``—`` (the digest carries no absence marker)."""
+    return "—" if v is _ABSENT else str(v)
+
+
 def _diff_note(diff: dict[str, Any]) -> str:
-    """``vs previous: +A -R ~C (atoms 224 -> 280 on main.build>strip)``."""
+    """``vs previous: +A -R ~C (main.build>strip x6: atoms 24 -> 32;
+    periods 4 -> 6)``.
+
+    Same-path changed frames (the ``occ`` the match id carries and the
+    render drops) group into one ``path xN:`` line so six identical
+    ``strip`` occurrences print once with a count instead of six
+    identical lines (gr514055)."""
     note = (
         f"vs previous: +{len(diff['added'])} -{len(diff['removed'])} "
         f"~{len(diff['changed'])}"
     )
-    deltas = [
-        f"{e} {c['was'].get(e, 0)} -> {c['now'].get(e, 0)} on {c['path']}"
-        for c in diff["changed"]
-        for e in sorted(set(c["was"]) | set(c["now"]))
-        if c["was"].get(e, 0) != c["now"].get(e, 0)
-    ]
-    return note + (" (" + "; ".join(deltas) + ")" if deltas else "")
+    parts: list[str] = []
+    for path, group in itertools.groupby(diff["changed"], key=lambda c: c["path"]):
+        entries = list(group)
+        label = f"{path} x{len(entries)}" if len(entries) > 1 else path
+        segs: list[str] = []
+        for e in sorted({k for c in entries for k in set(c["was"]) | set(c["now"])}):
+            pairs = _unique_pairs(
+                (c["was"].get(e, 0), c["now"].get(e, 0)) for c in entries
+            )
+            if pairs:
+                segs.append(f"{e} " + ", ".join(f"{w} -> {n}" for w, n in pairs))
+        for a in sorted(
+            {k for c in entries for k in set(c["args_was"]) | set(c["args_now"])}
+        ):
+            pairs = _unique_pairs(
+                (c["args_was"].get(a, _ABSENT), c["args_now"].get(a, _ABSENT))
+                for c in entries
+            )
+            if pairs:
+                segs.append(
+                    f"{a} "
+                    + ", ".join(f"{_arg_note(w)} -> {_arg_note(n)}" for w, n in pairs)
+                )
+        if segs:
+            parts.append(f"{label}: " + "; ".join(segs))
+    return note + (" (" + "; ".join(parts) + ")" if parts else "")
 
 
 def _resolve_target(target: str | os.PathLike[str]) -> Path:

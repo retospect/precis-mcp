@@ -315,10 +315,70 @@ def test_out_run_diffs_against_the_previous_trace(tmp_path: Path) -> None:
         build(10)
     assert r2.diff is not None
     assert r2.diff["added"] == [] and r2.diff["removed"] == []
-    [changed] = r2.diff["changed"]
-    assert changed["path"].endswith("sheetnet.strip")
+    [changed] = [c for c in r2.diff["changed"] if c["path"].endswith("sheetnet.strip")]
     assert changed["was"]["atoms"] == 224
     assert changed["now"]["atoms"] == 280
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["notes"].startswith("vs previous: +0 -0 ~1")
+    assert manifest["notes"].startswith("vs previous: +0 -0 ~2")
     assert "atoms 224 -> 280" in manifest["notes"]
+    # gr514055: build's own frame changed on args alone (made is empty) —
+    # the note carries the ``rows 8 -> 10`` delta that edited the script.
+    assert "rows 8 -> 10" in manifest["notes"]
+
+
+def test_out_run_diff_groups_same_path_frames(tmp_path: Path) -> None:
+    """gr514055: six same-site ``strip`` calls moved by one param edit
+    render as ONE ``path x6:`` line carrying the count and the changed
+    values — not six identical lines — and the frame ``args`` delta
+    (``periods 12 -> 14``, the actual edit) renders next to the ``made``
+    counts, including on frames whose counts did not move."""
+    from hexfold.sheetnet import strip
+    from precis_geom import out as geom_out
+
+    def build(periods: int) -> None:
+        for _ in range(6):
+            strip(rows=4, periods=periods)
+
+    out_dir = tmp_path / "out" / "re"
+    with geom_out.run(out_dir, work_root=_WORK_ROOT):
+        build(12)
+    with geom_out.run(out_dir, work_root=_WORK_ROOT) as r2:
+        build(14)
+    assert r2.diff is not None
+    # build itself changed on args alone (its made is empty both runs).
+    build_entry = next(c for c in r2.diff["changed"] if c["path"].endswith(".build"))
+    assert build_entry["was"] == build_entry["now"] == {}
+    assert build_entry["args_was"] == {"periods": 12}
+    assert build_entry["args_now"] == {"periods": 14}
+    strips = [c for c in r2.diff["changed"] if c["path"].endswith("sheetnet.strip")]
+    assert len(strips) == 6
+    notes = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))["notes"]
+    assert "sheetnet.strip x6:" in notes
+    assert notes.count("atoms 112 -> 128") == 1
+    assert "periods 12 -> 14" in notes
+
+
+def test_out_run_rotates_previous_trace(tmp_path: Path) -> None:
+    """gr514055: the overwritten ``trace.json`` survives one level as
+    ``trace.prev.json`` — the run just diffed against stays inspectable
+    instead of being lost in place."""
+    from hexfold.sheetnet import strip
+    from precis_geom import out as geom_out
+
+    out_dir = tmp_path / "out" / "re"
+    with geom_out.run(out_dir, work_root=_WORK_ROOT):
+        strip(rows=4, periods=12)
+    first = (out_dir / "trace.json").read_text(encoding="utf-8")
+    assert not (out_dir / "trace.prev.json").exists()
+
+    with geom_out.run(out_dir, work_root=_WORK_ROOT):
+        strip(rows=4, periods=14)
+    prev = out_dir / "trace.prev.json"
+    assert prev.read_text(encoding="utf-8") == first
+    second = (out_dir / "trace.json").read_text(encoding="utf-8")
+    assert second != first
+
+    # a third run rotates the second trace over the first (one level only)
+    with geom_out.run(out_dir, work_root=_WORK_ROOT):
+        strip(rows=4, periods=16)
+    assert prev.read_text(encoding="utf-8") == second

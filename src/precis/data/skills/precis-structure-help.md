@@ -168,10 +168,17 @@ probes tagged `inferred` — you always see the best picture of reality.
 ## Place an adsorbate on a real site, not a guessed z
 
 ```python
-edit(kind="structure", id="pd111", ops=[
-    {"op": "add_atom_site", "element": "H",
-     "site": {"type": "hollow", "anchors": ["aPd10", "aPd11", "aPd12"]}},
-])
+edit(
+    kind="structure",
+    id="pd111",
+    ops=[
+        {
+            "op": "add_atom_site",
+            "element": "H",
+            "site": {"type": "hollow", "anchors": ["aPd10", "aPd11", "aPd12"]},
+        },
+    ],
+)
 ```
 
 `z` comes from the anchors' own geometry, never a remembered constant — a
@@ -550,7 +557,10 @@ search(kind="structure", q="palladium", mode="lexical")  # keyword
 Each design carries **one** embeddable card (title + composition + your
 `description`), so search lands on **intent**, not coordinates — and joins
 the cross-kind fan-out `search(kind='*', q='…')`. Hits are design-level
-(`st<id>`); open one with `get(id='<slug>')`.
+(`st<id>`); open one with `get(id='<slug>')`. The `gen` column names the
+generator that built a hit plus its key params
+(`hexfold_scene rows=6 periods=8 …`, `—` for a hand-authored design) —
+the same record `view='generator'` shows in full.
 
 ### From a structure to the literature — `get(view='literature')`
 
@@ -595,6 +605,21 @@ termination at U as the starting surface, with the coads-mismatch verdict.
 `che_affine absent`. Add `pH` (or `point='U,pH'`) for a state per rung at
 that point (`precis-quest-help`). Web: `/pourbaix/<handle>`.
 
+### The generator record — `get(view='generator')`
+
+```python
+get(kind="structure", id="hexfold_prism", view="generator")
+```
+
+The stored `meta['generated']` build record for a design a `generate` op
+(or a workspace import) minted: the generator name, the key facts
+(`n_atoms`, `rings`, …), the authored params (`scene`/`params`/`spec` —
+the regeneration input) as stored JSON, with the per-atom record keys
+(`sites`, `terminated`, `report`, …) elided and named in a trailer.
+Refuses for a design authored by hand or minted before the record
+existed (2026-09-27). Search rows carry the same record's one-line
+digest in the `gen` column.
+
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 
 The output side; bonds are dropped (DFT consumes positions + cell).
@@ -621,10 +646,18 @@ No structure view returns pixels. To put a structure (or the structure an
 figure chunk whose recipe names it; the PNG renders server-side at export:
 
 ```python
-put(kind="draft", id="nanotrans", chunk_kind="figure",
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="figure",
     text="Fig 3. (8,8) nanobud.",
-    meta={"view": {"source": "structure:pd111",    # or 'se:<design>' + 'block'
-                   "camera": {"azimuth_deg": 30, "elevation_deg": 15}}})
+    meta={
+        "view": {
+            "source": "structure:pd111",  # or 'se:<design>' + 'block'
+            "camera": {"azimuth_deg": 30, "elevation_deg": 15},
+        }
+    },
+)
 ```
 
 Camera/style keys, limits and the `se:` form: precis-draft-rich-content-help

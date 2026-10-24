@@ -158,6 +158,7 @@ _VIEWS = (
     *_NAV_VIEWS,
     "atoms",
     "runs",
+    "generator",
     "completion",
     "completion_digest",
     "markers",
@@ -173,6 +174,25 @@ _VIEWS = (
 #: At or below this many atoms the default TOC inlines the per-atom table
 #: after the summary head; above it the table is behind ``view='atoms'``.
 _TOC_INLINE_ATOMS = 40
+
+#: ``meta['generated']`` keys ``view='generator'`` elides from the
+#: record dump — per-atom payloads (site lists, termination ordinals,
+#: seam atoms), the build ``report`` and the surface target/meridian
+#: geometry, each kilobytes on a real record (gr514060). The elided names
+#: still print in a trailer so the record doesn't read as smaller than
+#: it is; ``precis_se``'s ``view='block'`` renders them for a bound
+#: block.
+_GENERATED_VIEW_ELIDED = frozenset(
+    {
+        "report",
+        "sites",
+        "junctions",
+        "seam_atoms",
+        "terminated",
+        "surface_meridian",
+        "surface_target",
+    }
+)
 
 #: Host-metal candidates for the deterministic ``view='literature'`` query
 #: heuristic (gr161578) — mirrors the metal/support elements the catalysis-hub
@@ -752,6 +772,56 @@ def card_text(title: str, scene: Scene, description: str = "") -> str:
         f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
         f"{groups}"
     )
+
+
+def _kv_brief(d: Mapping[str, Any]) -> str:
+    """``k=v`` pairs of a record section's scalar entries, in order."""
+    return " ".join(
+        f"{k}={v}" for k, v in d.items() if isinstance(v, str | int | float | bool)
+    )
+
+
+def _generator_params_brief(rec: Mapping[str, Any]) -> str:
+    """The authored params of a ``meta['generated']`` record as one line.
+
+    ``hexfold_scene`` keeps its normalized params under ``scene`` (a
+    ``features`` list of dicts plus scene-level scalars), a workspace
+    import under ``params``, and a spec generator's only params *are*
+    the ``spec`` source — collapsed onto one line."""
+    scene = rec.get("scene")
+    if isinstance(scene, Mapping):
+        parts = [
+            _kv_brief(f) for f in scene.get("features") or () if isinstance(f, Mapping)
+        ]
+        rest = _kv_brief({k: v for k, v in scene.items() if k != "features"})
+        if rest:
+            parts.append(rest)
+        joined = "; ".join(p for p in parts if p)
+        if joined:
+            return joined
+    params = rec.get("params")
+    if isinstance(params, Mapping) and params:
+        return _kv_brief(params)
+    spec = rec.get("spec")
+    if isinstance(spec, str) and spec.strip():
+        return " ".join(spec.split())
+    return ""
+
+
+def _generator_brief(rec: Any) -> str:
+    """The structure search row's ``gen`` cell: the generator name plus
+    the authored-params digest (``hexfold_scene rows=6 periods=8
+    seams=++++++ strip_rows=4``), ``'—'`` for a design with no
+    ``meta['generated']`` record (gr514060)."""
+    if not isinstance(rec, Mapping) or not rec.get("generator"):
+        return "—"
+    brief = _generator_params_brief(rec)
+    name = str(rec["generator"])
+    if not brief:
+        return name
+    if len(brief) > 200:
+        brief = brief[:197].rstrip() + "…"
+    return f"{name} {brief}"
 
 
 class StructureHandler(Handler):
@@ -1504,6 +1574,10 @@ class StructureHandler(Handler):
             )
         if view == "staircase":
             return self._render_staircase(ref, a)
+        if view == "generator":
+            # meta only — no Scene hydration, so it also answers for a
+            # generated design whose atoms never landed (gr514060).
+            return self._render_generator(ref)
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)
@@ -2107,6 +2181,54 @@ class StructureHandler(Handler):
                 ],
             )
         )
+
+    def _render_generator(self, ref: Any) -> Response:
+        """``view='generator'`` — the stored generator record
+        (``refs.meta['generated']``, written by the ``generate`` op's
+        :func:`precis_se.atomic.generate.generated_record` or the
+        workspace importer): which generator built the design plus its
+        authored params/``spec``, so an agent can compare a stored build
+        against a local one (gr514060 — the local ``out/`` diff itself is
+        deferred). Reads meta only; a design authored by hand, or minted
+        before the record existed (2026-09-27), refuses with a next=."""
+        rec = (getattr(ref, "meta", None) or {}).get("generated")
+        slug = str(ref.slug or ref.id)
+        if not isinstance(rec, Mapping) or not rec.get("generator"):
+            raise NotFound(
+                f"structure {slug!r} carries no generator record (authored "
+                "directly, or minted before the record existed)",
+                next=f"get(kind='structure', id={slug!r}) for the TOC",
+            )
+        lines = [f"# {slug}: generator {rec['generator']}"]
+        fact_keys = (
+            "hexfold",
+            "seed_kind",
+            "n_atoms",
+            "n_bonds",
+            "chiral_index",
+            "radius_A",
+        )
+        facts = [f"{k}={rec[k]}" for k in fact_keys if k in rec]
+        rings = rec.get("rings")
+        if isinstance(rings, Mapping) and rings:
+            census = ", ".join(
+                f"{k}:{v}" for k, v in sorted(rings.items(), key=lambda kv: int(kv[0]))
+            )
+            facts.append(f"rings={{{census}}}")
+        if facts:
+            lines.append("  ".join(facts))
+        elided = sorted(k for k in rec if k in _GENERATED_VIEW_ELIDED)
+        shown = {*fact_keys, "generator", "spec", "rings"}
+        for k in sorted(set(rec) - shown - _GENERATED_VIEW_ELIDED):
+            lines.append(f"{k}: {json.dumps(rec[k], sort_keys=True, default=str)}")
+        spec = rec.get("spec")
+        if isinstance(spec, str) and spec.strip():
+            lines.extend(
+                ["", "spec (regeneration input):", "```", spec.rstrip("\n"), "```"]
+            )
+        if elided:
+            lines.append(f"(elided verbose record keys: {', '.join(elided)})")
+        return Response(body="\n".join(lines))
 
     def _render_rays(
         self, view: str, ref: Any, scene: Scene, args: dict[str, Any]
@@ -3757,10 +3879,20 @@ class StructureHandler(Handler):
         rows = []
         for _block, ref, _score in triples:
             handle = handle_registry.try_format("structure", ref.id, chunk=False) or "—"
-            rows.append({"handle": handle, "design": ref.slug, "title": ref.title})
+            rows.append(
+                {
+                    "handle": handle,
+                    "design": ref.slug,
+                    "title": ref.title,
+                    # gr514060: the stored generator record's name + key
+                    # params, so a hit like 'hex (hexfold_scene generator)'
+                    # shows what it was built from — '—' when absent.
+                    "gen": _generator_brief((ref.meta or {}).get("generated")),
+                }
+            )
         return Response(
             body=f"# {len(triples)} structure(s) for {q!r}\n"
-            + render_agent_table(rows, schema=["handle", "design", "title"])
+            + render_agent_table(rows, schema=["handle", "design", "title", "gen"])
         )
 
     def _card_search(

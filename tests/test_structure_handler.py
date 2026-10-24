@@ -1477,3 +1477,65 @@ def test_validate_leads_with_count_by_rule_table(structure):
     lines = structure.get(id="clash", view="validate").body.splitlines()
     assert lines[0].startswith("# ")
     assert "count" in lines[1]
+
+
+#: A ``meta['generated']`` record in the hexfold_scene shape (the
+#: normalized params live under ``scene`` — see
+#: ``precis_se.atomic.generate.generated_record``).
+_GENERATED_RECORD = {
+    "generator": "hexfold_scene",
+    "n_atoms": 1422,
+    "n_bonds": 2200,
+    "seed_kind": "prism",
+    "rings": {"6": 432, "8": 126},
+    "scene": {
+        "features": [
+            {
+                "name": "hex",
+                "type": "prism-k3-120-z",
+                "rows": 6,
+                "seams": "++++++",
+                "periods": 8,
+                "strip_rows": 4,
+            }
+        ],
+        "k_tether": 1.0,
+    },
+    "spec": "hexfold 0.2\nlattice: element=C sigma=1.42\norigin hex\n",
+}
+
+
+def test_generator_view_renders_record(structure, store):
+    """gr514060: ``view='generator'`` shows the stored generator record —
+    name, the key facts, the authored params under ``scene``, and the
+    regeneration ``spec``."""
+    structure.put(id="pd_pair", text=_PD)
+    ref = store.get_ref(kind="structure", id="pd_pair")
+    store.stamp_ref_meta(ref.id, {"generated": dict(_GENERATED_RECORD)})
+    body = structure.get(id="pd_pair", view="generator").body
+    assert "generator hexfold_scene" in body
+    assert "n_atoms=1422" in body and "rings={6:432, 8:126}" in body
+    assert '"periods": 8' in body and '"seams": "++++++"' in body
+    assert "spec (regeneration input)" in body and "hexfold 0.2" in body
+
+
+def test_generator_view_refuses_without_record(structure):
+    """gr514060: a hand-authored design carries no record — refuse with a
+    next= rather than rendering an empty panel."""
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(NotFound) as excinfo:
+        structure.get(id="pd_pair", view="generator")
+    assert excinfo.value.next
+
+
+def test_structure_search_row_shows_generator_params(structure, store):
+    """gr514060: a search hit names the generator AND its key params, so
+    'hex (hexfold_scene generator)' shows what it was built from."""
+    spec = json.loads(_PD)
+    spec["description"] = "a palladium dimer for adsorption screening"
+    structure.put(id="pd_pair", text=json.dumps(spec))
+    ref = store.get_ref(kind="structure", id="pd_pair")
+    store.stamp_ref_meta(ref.id, {"generated": dict(_GENERATED_RECORD)})
+    body = structure.search(q="adsorption screening", mode="lexical").body
+    assert "hexfold_scene" in body
+    assert "periods=8" in body and "seams=++++++" in body
