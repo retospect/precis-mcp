@@ -7,9 +7,10 @@ NO -> NH3 on Pd(111), nodes/edges/span plus the links, gas ledger and gas
 references the replay needs; references reconstructed from the stored
 closure dGs).
 
-No calculator, no NEB: the replays call ``autocatpath.kinetics.solve`` on a
-stub network built from the fixture's links, so the file is cheap to target
-on its own. Needs the engine (>= 0.32) importable.
+No calculator, no NEB barriers: the replays call ``autocatpath.kinetics.solve``
+on a stub network built from the fixture's links, so the file is cheap to target
+on its own. Needs the engine (>= 0.32) importable; the slice-3 tests need
+>= 0.34 (barrierless steps are BEP-rated there, not excluded).
 """
 
 from __future__ import annotations
@@ -207,8 +208,10 @@ def test_far_vs_one_bar_changes_selectivity_on_a_well_posed_chain() -> None:
 
 def test_far_vs_legacy_changes_selectivity_and_the_basis(replay) -> None:
     """pw455722 itself: the bases differ and so does the selectivity. Its
-    chain has 13 absorbing components (every NEB step excluded), so the
-    selectivity value is noise-dominated; the well-posed check is above."""
+    stored run carried no measured barriers; engine >= 0.34 BEP-rates every
+    step (pre-0.34 they were excluded and the chain broke into absorbing
+    components), so the selectivity value is still noise-dominated — the
+    well-posed check is above."""
     legacy, _ = replay()
     far, _ = replay(
         {"T": 298.15, "gases": {"inputs": {"NO": 1.0, "H2": 1.0}, "outputs": "far"}}
@@ -244,10 +247,10 @@ def test_equilibrium_outputs_give_zero_net_flux_on_every_transition(
 
 def test_p_total_with_a_composition_reproduces_the_explicit_table(replay) -> None:
     """The ENV table read as a composition at p_total = 8 x its sum is the
-    explicit 8x table. The factor 8 keeps the scaling exact in binary, so the
-    comparison is bit-for-bit: this network's chain solve has 13 absorbing
-    components (no NEB barriers), so its TOF is noise-dominated and a 1e-16
-    pressure difference would move it."""
+    explicit 8x table. The factor 8 keeps the scaling exact in binary; the
+    TOF on this network is small (no measured barriers — steps are
+    BEP-rated under engine >= 0.34), so a 1e-16 pressure difference would
+    move it — the exactness stays within binary scaling."""
     gases = ENV["gases"]
     total = math.fsum([*gases["inputs"].values(), *gases["outputs"].values()])
     scaled, _ = replay({**ENV, "p_total": 8.0 * total})
@@ -286,8 +289,9 @@ def test_uncited_sticking_is_reported_per_gas(replay) -> None:
     assert "sticking uncited: NO" not in data["warnings"]  # NO cites pa498804
     # a legacy replay never says it (today's trust gate, unchanged)
     assert not any(w.startswith("sticking uncited") for w in replay()[0]["warnings"])
-    # pw455722's excluded steps trip the bracket guard first; the harvest
-    # is untrusted either way (the uncited note itself: test_pathway_plugin)
+    # this call carries no kinetics_v2 block, so the uncited-sticking
+    # branch is what fires here (the BEP-share note: the slice-3 test
+    # below; the uncited note itself: test_pathway_plugin)
     assert _kinetics_scalars({"kinetics": data})["kinetics_trusted"] is False
 
 
@@ -711,3 +715,173 @@ def test_finish_stamps_kinetics_v2_on_the_pathway_meta(
     captured.clear()
     assert finish(ctx, artifact({"tof": 1e-3}), 1, pathway_slug=None, produced_by="t")
     assert "kinetics_v2" not in captured
+
+
+# --- kinetics v2 slice 3 (D4/D8): bep_flux_share + the v2 band --------
+
+
+def test_bep_flux_share_gates_trust():
+    """A screening-tier solve (mostly BEP-priced barriers) reports a TOF
+    but is untrusted with the share named; a verify-tier share of 0 is."""
+    base = {"tof": 1e-3, "warnings": [], "drc": {"X_RC": {}}}
+    out = _kinetics_scalars(
+        {"kinetics": dict(base), "kinetics_v2": {"bep_flux_share": 0.9}}
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "bep_flux_share=0.90"
+    out = _kinetics_scalars(
+        {
+            "kinetics": dict(base),
+            "kinetics_v2": {
+                "bep_flux_share": 0.0,
+                "uncertainty": {"log_tof_p5": -4.0, "log_tof_p95": -2.0},
+            },
+        }
+    )
+    assert out["kinetics_trusted"] is True
+    assert out["bep_flux_share"] == 0.0
+    assert out["log_tof_p5"] == -4.0 and out["log_tof_p95"] == -2.0
+    # a pre-0.34 results payload has no v2 record: nothing is fabricated
+    out = _kinetics_scalars({"kinetics": dict(base)})
+    assert out["kinetics_trusted"] is True and "bep_flux_share" not in out
+
+
+def test_pw455722_correlated_band_and_pairing(fx, monkeypatch):
+    """Slice-3 acceptance on the pw455722 replay: on paired candidate-vs-
+    reference draws the correlated band is narrower than the independent
+    (rho=0, sigma_model=0) band on the log-ratio, and draws.paired returns
+    a rank probability.  The absolute-TOF widening and a directed rank are
+    asserted on the engine side — here >60% of draws are censored, so
+    absolute widths and the rank direction are noise."""
+    draws = pytest.importorskip("autocatpath.draws")
+    from autocatpath import kinetics as kin
+    from autocatpath.config import Config
+    from autocatpath.environment import Environment
+    from autocatpath.ledger import compute_ledgers
+    from autocatpath.provider import VacuumProvider
+
+    monkeypatch.setattr(kin, "site_area_A2", lambda _s: fx["site_area_A2"])
+    d = copy.deepcopy(fx["config"])
+    d["kinetics"]["n_samples"] = 0
+
+    class _Net2(_Net):
+        pass
+
+    def ctx_of(nodes_shift: float, sigma_model: float = 0.3):
+        nodes = {
+            n: {
+                "mean": e["mean"] + (nodes_shift if n != "*" else 0.0),
+                "std": e.get("std", 0.0),
+            }
+            for n, e in fx["nodes"].items()
+        }
+        net = _Net2(fx)
+        cfg = Config.from_dict(d)
+        led, _ = compute_ledgers(net)
+        g = {n: e["mean"] for n, e in nodes.items()}
+        env = Environment.from_legacy(
+            d["conditions"]["temperature"], d["conditions"].get("pressures"), {}
+        )
+        prov = VacuumProvider.from_run(nodes, fx["edges"], led, fx["refs"], env, g=g)
+        trans, _ = kin.build_transitions(
+            g,
+            fx["edges"],
+            list(net.links),
+            led,
+            fx["refs"],
+            cfg.conditions.temperature,
+            cfg.conditions.pressures,
+            fx["site_area_A2"],
+            target="NH3",
+            provider=prov,
+        )
+        theta, _ = kin.steady_state(trans, "*")
+        return draws.RunCtx(
+            trans,
+            g,
+            "*",
+            "NH3",
+            cfg.conditions.temperature,
+            theta,
+            cfg.kinetics.t_end,
+            sigma_model=sigma_model,
+        )
+
+    # today's independent band = rho 0 AND sigma_model 0; the correlated
+    # band runs rho 0.5 with an explicit model term (a RunCtx knob — the
+    # single-model solve default is 0).  NOTE on this fixture: >60% of
+    # draws are censored (non-positive TOF — the stored net has multiple
+    # absorbing components and its solve is noise-dominated), so absolute
+    # band widths AND the p_rank direction are not meaningful here — the
+    # "wider absolute band" clause and a directed rank are proven on the
+    # engine side (catpath tests/test_draws.py).  What IS robust on the
+    # real fixture: paired draws share z_model/z_c, which cancel in the
+    # log-ratio, so the correlated ratio band narrows — checked at rho 0.5
+    # and the rho=0.9 sweep end.
+    ind = draws.paired(
+        ctx_of(0.0, 0.0), ctx_of(0.05, 0.0), n_samples=80, seed=1, rho=0.0
+    )
+    assert 0 < ind["bad_draws"] < 80  # the draws run; some get censored
+    for rho in (0.5, 0.9):
+        cor = draws.paired(ctx_of(0.0), ctx_of(0.05), n_samples=80, seed=1, rho=rho)
+        w_ind = ind["band_ratio"]["p95"] - ind["band_ratio"]["p5"]
+        w_cor = cor["band_ratio"]["p95"] - cor["band_ratio"]["p5"]
+        assert w_cor < w_ind, (rho, w_cor, w_ind)
+        assert cor["p_rank"] is not None and 0.0 <= cor["p_rank"] <= 1.0
+
+
+def test_pw455722_screening_replay_reports_bep_share(replay) -> None:
+    """Slice-3 acceptance, real replay: pw455722 has no measured barriers,
+    so every step is BEP-rated — the scalars must report
+    kinetics_trusted=False with the note naming bep_flux_share, even
+    though H2's sticking is also uncited."""
+    pytest.importorskip("autocatpath.draws")  # engine >= 0.34
+    data, v2 = replay(ENV)
+    assert v2 is not None
+    share = v2["bep_flux_share"]
+    assert share > 0.5  # every surface step is predicted, none measured
+    out = _kinetics_scalars({"kinetics": data, "kinetics_v2": v2})
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"].startswith("bep_flux_share=")
+    assert out["bep_flux_share"] == share
+
+
+def test_pw455722_verify_replay_reports_zero_share(fx, replay) -> None:
+    """Verify-tier shape on the same fixture: give every reaction edge a
+    measured barrier — the solve stays NEB-rated, share == 0, and the TOF
+    is the engine's own (the assertion is exact: the NEB rate path is
+    byte-identical to v0.33.0's)."""
+    pytest.importorskip("autocatpath.draws")  # engine >= 0.34
+    edges = [
+        dict(
+            e,
+            barrier={
+                "mean": 0.9,
+                "std": 0.05,
+                "n": 1,
+                "low_confidence": False,
+                "reasons": [],
+            },
+        )
+        for e in fx["edges"]
+    ]
+    d = copy.deepcopy(fx["config"])
+    d["environment"] = ENV
+    d["conditions"]["pressures"] = {}
+    data, v2 = kinetics.solve(
+        Config.from_dict(d),
+        fx["nodes"],
+        edges,
+        _Net(fx),
+        fx["refs"],
+        span=fx["score"]["activity"]["span_eV"],
+        log=lambda *a, **k: None,
+        priced_pressures={},
+    )
+    assert data["skipped_steps"] == []
+    assert v2 is not None and v2["bep_flux_share"] == 0.0
+    assert math.isfinite(data["tof"])
+    assert (
+        _kinetics_scalars({"kinetics": data, "kinetics_v2": v2})["bep_flux_share"]
+        == 0.0
+    )

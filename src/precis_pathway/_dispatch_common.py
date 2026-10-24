@@ -158,6 +158,12 @@ def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: kinetics v2 slice 3 (D4): a solve whose net step flux is more than half
+#: BEP-priced reports a TOF that depends on predicted barriers — untrusted
+#: for ranked measures (the quest-side knob; threshold per the spec).
+_BEP_FLUX_SHARE_MAX = 0.5
+
+
 def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     """Lift microkinetics scalars from ``results_json["kinetics"]`` (folded
     in by :func:`precis_pathway.runner.run_kinetics`, right after the
@@ -213,27 +219,58 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         for w in (warns if isinstance(warns, list) else [])
         if isinstance(w, str) and w.startswith("sticking uncited: ")
     ]
-    trusted = tof is not None and tof > 0.0 and bracket_ok and not uncited
+    # kinetics v2 slice 3 (D4/D8): bep_flux_share is the fraction of the
+    # net step flux whose barrier was BEP-priced rather than measured —
+    # above the threshold the TOF depends on predicted barriers, so the
+    # solve is untrusted with the share named in the note.  The v2
+    # uncertainty band (log-space percentiles of the correlated draws)
+    # supersedes the v1 sensitivity band when the engine writes it.
+    v2 = results.get("kinetics_v2")
+    v2 = v2 if isinstance(v2, dict) else {}
+    share = _finite_num(v2.get("bep_flux_share"))
+    if share is not None:
+        out["bep_flux_share"] = share
+    bep_heavy = share is not None and share > _BEP_FLUX_SHARE_MAX
+    trusted = (
+        tof is not None and tof > 0.0 and bracket_ok and not uncited and not bep_heavy
+    )
     out["kinetics_trusted"] = trusted
+    # D8: a BEP-heavy run's note names the share first — the share is the
+    # load-bearing fact even when another gate (anomaly, uncited sticking)
+    # also fires
+    prefix = f"bep_flux_share={share:.2f}; " if bep_heavy else ""
     if tof is None:
-        out["kinetics_note"] = "tof not finite"
+        out["kinetics_note"] = prefix + "tof not finite"
     elif tof <= 0.0:
-        out["kinetics_note"] = "tof non-positive (solver anomaly)"
+        out["kinetics_note"] = prefix + "tof non-positive (solver anomaly)"
     elif not bracket_ok:
-        out["kinetics_note"] = "guard bracket: excluded steps load-bearing"
+        out["kinetics_note"] = prefix + "guard bracket: excluded steps load-bearing"
+    elif bep_heavy:
+        note = f"bep_flux_share={share:.2f}"
+        out["kinetics_note"] = note + ("; " + "; ".join(uncited) if uncited else "")
     elif uncited:
         out["kinetics_note"] = "; ".join(uncited)
     else:
         out["log_tof"] = math.log10(max(tof, 1e-30))
+        unc_band = v2.get("uncertainty")
+        unc_band = unc_band if isinstance(unc_band, dict) else {}
+        p5 = _finite_num(unc_band.get("log_tof_p5"))
+        p95 = _finite_num(unc_band.get("log_tof_p95"))
+        if p5 is not None:
+            out["log_tof_p5"] = p5
+        if p95 is not None:
+            out["log_tof_p95"] = p95
         sensitivity = kin.get("sensitivity")
         band = sensitivity.get("tof") if isinstance(sensitivity, dict) else None
         if isinstance(band, dict):
-            p5 = _finite_num(band.get("p5"))
-            if p5 is not None and p5 > 0.0:
-                out["log_tof_p5"] = math.log10(max(p5, 1e-30))
-            p95 = _finite_num(band.get("p95"))
-            if p95 is not None and p95 > 0.0:
-                out["log_tof_p95"] = math.log10(max(p95, 1e-30))
+            if p5 is None:
+                p5v = _finite_num(band.get("p5"))
+                if p5v is not None and p5v > 0.0:
+                    out["log_tof_p5"] = math.log10(max(p5v, 1e-30))
+            if p95 is None:
+                p95v = _finite_num(band.get("p95"))
+                if p95v is not None and p95v > 0.0:
+                    out["log_tof_p95"] = math.log10(max(p95v, 1e-30))
 
     drc = kin.get("drc")
     x_rc = drc.get("X_RC") if isinstance(drc, dict) else None

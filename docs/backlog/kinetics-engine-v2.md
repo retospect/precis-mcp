@@ -1119,7 +1119,10 @@ where the paper gives them and records `theta0` otherwise.
    TOF equals slice-2's; the correlated band on pw455722 is narrower than
    today's independent band for the candidate-vs-reference ratio and wider
    for the absolute TOF; ρ = 0 with `z_model` off (`σ_model = 0`) reproduces today's independent
-   band; `_capped` is untouched.
+   band; `_capped` is untouched. The paired machinery lives in
+   `autocatpath.draws.paired` (shared z_model/z_c, per-run z_i); wiring
+   `UncertaintyBand.rank_probability` into a solve is deferred — a run
+   carries one candidate, so the quest-side comparison owns it (slice 5).
 4. **Mean-field MKM + orders + sweep job + coverage optimum + ladder
    wiring.** The re-T rule of D1, the QE detector, and the tier ladder
    minting `autocatpath_kinetics` after every verify-tier aggregate (D9).

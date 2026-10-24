@@ -1599,7 +1599,17 @@ def _mc_calibrated_samples(
         {getattr(t, "a", None) for t in transitions}
         | {getattr(t, "b", None) for t in transitions}
     )
-    per_draw = (2 * n_trans + 1) * t_s  # one MC draw ≤ 1 + 2T resolves
+    # one draw costs the v1 MC resolve pass (2T+1); engine >= 0.34 runs the
+    # D4 correlated pass on top — a second full pass (2T+1, checks + solve
+    # + DRC) plus one TOF-only resolve per extra rho in the sweep
+    sweep_extra = len(
+        [
+            r
+            for r in getattr(cfg.kinetics, "rho_sweep", ()) or ()
+            if r != getattr(cfg.kinetics, "rho", 0.5)
+        ]
+    )
+    per_draw = (2 * (2 * n_trans + 1) + sweep_extra) * t_s
     fixed = (1 + 2 * n_trans + 2 * n_states) * t_s  # steady + DRC + TRC
     avail = _MC_BUDGET_FRAC * budget_s - fixed
     cap = int(avail / per_draw) if per_draw > 0 else default
