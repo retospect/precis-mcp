@@ -1153,9 +1153,9 @@ class DispatchMixin(RuntimeShape):
             from precis.agentlog import current_from_env
             from precis.tool_ledger import (
                 ToolCallRecord,
+                _mint_session_key,
                 arg_sample,
                 current_client,
-                current_session_key,
                 error_head,
                 record_call,
             )
@@ -1166,7 +1166,7 @@ class DispatchMixin(RuntimeShape):
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
             kind = args.get("kind")
-            session_id, seq = current_session_key()
+            session_id, seq = _mint_session_key()
             # The raw wire arguments (CallToolRequest params.arguments,
             # bound by the wrapper via serve_ledger) say exactly which
             # keys the caller sent — including explicitly-null ones,

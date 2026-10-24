@@ -835,6 +835,14 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     traces: Callable[[dict[str, Any] | None], dict[str, Any] | None] | None = field(
         default=None, repr=False, compare=False
     )
+    #: ``op`` frames minted by :func:`apply_ops` since the last save —
+    #: one per construction op (:data:`_OP_TRACE_OPS`), flushed into the
+    #: design's op-trace ``ws_trace`` chunk by
+    #: :func:`precis_se.persist.save_tree`. Transient per-call state,
+    #: not design data — never snapshotted.
+    op_frames: list[dict[str, Any]] = field(
+        default_factory=list, repr=False, compare=False
+    )
     #: Store-bound π-perception lookup
     #: (:func:`precis_se.persist.structure_pi_resolver`): a structure
     #: design's slug → its ``structure_pi`` row's data for the current
@@ -1008,7 +1016,66 @@ def apply_ops(
     # A pocket's class hash is derived, never authored: recompute it
     # after every op batch so a later add_measure still lands in it.
     stamp_class_hashes(tree)
+    _mint_op_frames(tree, ops)
     return out
+
+
+# ── op frames (the op path's construction trace) ─────────────────────────
+
+#: se's construction ops — each applied call records one ``op`` frame
+#: (the ``tool_ledger`` call id as ``line``, parent the design's op
+#: root) so the op path answers "who made it" the same way a
+#: workspace run's trace does (``_made_by_line`` renders
+#: ``made-by: op <op> (call <seq>)``).
+_OP_TRACE_OPS = frozenset({"array_block", "instance_block", "set_pose", "connect"})
+
+#: The design op-trace's root frame key — ``_read_ws_trace`` picks the
+#: ``ws_trace`` chunk whose root frame carries it, the same
+#: ``{run_job, root}`` record a bound ref's ``generated.trace`` uses.
+OP_TRACE_ROOT = "op"
+
+_OP_CREATORS = frozenset({"array_block", "instance_block"})
+_OP_TOUCHED = {"set_pose": {"blocks": 1}, "connect": {"connects": 1}}
+
+
+def _mint_op_frames(tree: SeTree, ops: list[dict[str, Any]]) -> None:
+    """One ``op`` frame per construction op — appended to
+    :attr:`SeTree.op_frames` only after the batch applied, so a refused
+    op never leaves a frame. ``line`` carries the ``tool_ledger`` call
+    id (``(session_id, seq)``'s ``seq``; ``0`` outside an MCP session —
+    a bare-tree/dry-run call)."""
+    from precis import tool_ledger
+    from precis_geom import trace_schema as _ts
+
+    wanted = [op for op in ops if op.get("op") in _OP_TRACE_OPS]
+    if not wanted:
+        return
+    sid, seq = tool_ledger.current_session_key()
+    line = int(seq) if seq is not None else 0
+    # The session id folds into the key's parent half so two sessions'
+    # call-N frames can't collide; ``parent`` stays the shared op root.
+    pkey = f"{OP_TRACE_ROOT}:{sid or 'nosess'}"
+    for op in wanted:
+        qual = str(op["op"])
+        occ = sum(
+            1 for f in tree.op_frames if f.get("qual") == qual and f.get("line") == line
+        )
+        tree.op_frames.append(
+            {
+                "id": len(tree.op_frames) + 1,
+                "key": _ts.frame_key(pkey, qual, line, occ),
+                "_pkey": pkey,
+                "parent": OP_TRACE_ROOT,
+                "qual": qual,
+                "file": "op",
+                "line": line,
+                "occ": occ,
+                "kind": "op",
+                "args": {k: v for k, v in op.items() if k != "op"},
+                "made": {"blocks": 1} if qual in _OP_CREATORS else {},
+                "touched": dict(_OP_TOUCHED.get(qual) or {}),
+            }
+        )
 
 
 # ── helpers (imported from the core; se calls these directly for its own
@@ -1251,6 +1318,12 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
             f"array_block {kind} 'count' must be ≥ 2, got {count} — an "
             "array of one is just an instance; use instance_block"
         )
+    # The canonical numbers come out of the shared library
+    # (:func:`precis_geom.assembly.array_spec`) — the same spec a
+    # script-side ``pga.tile`` produces, so the op path and the
+    # workspace path never disagree on shape (structure-workspaces 2a).
+    from precis_geom import assembly as _pga
+
     if kind == "linear":
         try:
             pitch = float(raw.get("pitch", 0.0))
@@ -1258,11 +1331,24 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
             raise OpError("array_block linear 'pitch' must be a number (m)") from exc
         if pitch <= 0.0:
             raise OpError(f"array_block linear 'pitch' must be > 0 m, got {pitch!r}")
-        axis = _unit_vec(
-            _as_vec3(raw.get("axis"), "array_block linear 'axis'"),
-            what="array_block linear 'axis'",
-        )
-        return {"kind": "linear", "count": count, "pitch": pitch, "axis": axis}
+        # The RAW axis goes through — array_spec normalises once with
+        # the same pure-Python norm _unit_vec used on main, so stored
+        # specs stay byte-identical to designs written before the
+        # rewire (normalising twice shifts the last bit).
+        _as_vec3(raw.get("axis"), "array_block linear 'axis'")
+        try:
+            return _pga.array_spec(
+                {
+                    "kind": "linear",
+                    "count": count,
+                    "pitch": pitch,
+                    "axis": raw.get("axis"),
+                },
+                what="array_block linear",
+            )
+        except Exception as exc:
+            nxt = getattr(exc, "next", None)
+            raise OpError(f"{exc} — {nxt}" if nxt else str(exc)) from exc
     try:
         radius = float(raw.get("radius", 0.0))
     except (TypeError, ValueError) as exc:
@@ -1273,15 +1359,21 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
     # axis, made explicit and overridable at block level. radius 0 is
     # legitimate: a pure rotational pattern of a non-centred template.
     axis_raw = raw.get("axis")
-    axis = (
-        _unit_vec(
-            _as_vec3(axis_raw, "array_block polar 'axis'"),
-            what="array_block polar 'axis'",
+    if axis_raw is not None:
+        _as_vec3(axis_raw, "array_block polar 'axis'")
+    try:
+        return _pga.array_spec(
+            {
+                "kind": "polar",
+                "count": count,
+                "radius": radius,
+                "axis": axis_raw if axis_raw is not None else [0.0, 0.0, 1.0],
+            },
+            what="array_block polar",
         )
-        if axis_raw is not None
-        else [0.0, 0.0, 1.0]
-    )
-    return {"kind": "polar", "count": count, "radius": radius, "axis": axis}
+    except Exception as exc:
+        nxt = getattr(exc, "next", None)
+        raise OpError(f"{exc} — {nxt}" if nxt else str(exc)) from exc
 
 
 def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:

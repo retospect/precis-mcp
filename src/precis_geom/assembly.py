@@ -190,6 +190,21 @@ def _dir_vec(value: Any, what: str) -> np.ndarray:
 # ── array spec (the array_block numbers — shared by ops and scripts) ────
 
 
+def _unit_axis(value: Any, what: str) -> list[float]:
+    """A unit axis — normalised by the same pure-Python
+    ``math.sqrt(sum(x*x))`` the blocktree's ``_unit_vec`` uses, so the
+    op path and a script's ``pga.tile`` store byte-identical specs
+    (numpy's ``linalg.norm`` rounds differently in the last bit)."""
+    v = _dir_vec(value, f"{what}: axis")
+    n = math.sqrt(sum(float(x) * float(x) for x in v))
+    if n == 0.0:
+        raise BadInput(
+            f"{what}: axis must be a nonzero vector",
+            next="give a direction the pattern steps along, e.g. [0, 0, 1]",
+        )
+    return [float(x) / n for x in v]
+
+
 def array_spec(spec: dict[str, Any], *, what: str = "array") -> dict[str, Any]:
     """The canonical array spec ``array_block`` stores — ``{'kind':
     'linear'|'polar', 'count', ...}`` with lengths in SI metres and a
@@ -199,29 +214,19 @@ def array_spec(spec: dict[str, Any], *, what: str = "array") -> dict[str, Any]:
     if spec.get("kind") == "linear":
         count = int(spec["count"])
         pitch = float(spec["pitch"])
-        axis = np.asarray(spec["axis"], dtype=np.float64)
-        n = float(np.linalg.norm(axis))
-        if n == 0.0:
-            raise BadInput(
-                f"{what}: axis must be a nonzero vector",
-                next="give a direction the pattern steps along, e.g. [0, 0, 1]",
-            )
+        axis = _unit_axis(spec["axis"], what)
         return {
             "kind": "linear",
             "count": count,
             "pitch": pitch,
-            "axis": [float(x) for x in axis / n],
+            "axis": axis,
         }
     if spec.get("kind") == "polar":
         return {
             "kind": "polar",
             "count": int(spec["count"]),
             "radius": float(spec["radius"]),
-            "axis": [
-                float(x)
-                for x in np.asarray(spec["axis"], dtype=np.float64)
-                / float(np.linalg.norm(np.asarray(spec["axis"], dtype=np.float64)))
-            ],
+            "axis": _unit_axis(spec["axis"], what),
         }
     raise BadInput(
         f"{what}: kind must be 'linear' or 'polar', got {spec!r}",

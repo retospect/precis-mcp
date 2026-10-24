@@ -233,17 +233,17 @@ _SEQ_COUNTERS: dict[str, int] = {}
 _SESSION_LOCK = threading.Lock()
 
 
-def current_session_key() -> tuple[str | None, int | None]:
-    """``(session_id, seq)`` for the currently-bound MCP session, or
-    ``(None, None)`` outside one (CLI, inproc ticks, tests)."""
+def _session_id() -> str | None:
+    """The currently-bound session's ledger id, minted on first use —
+    ``None`` outside a session (CLI, inproc ticks, tests)."""
     try:
         from precis import serve_ledger
 
         session = serve_ledger.current_session()
     except Exception:
-        return None, None
+        return None
     if session is None:
-        return None, None
+        return None
     with _SESSION_LOCK:
         try:
             sid = _SESSION_IDS.get(session)
@@ -258,6 +258,30 @@ def current_session_key() -> tuple[str | None, int | None]:
                 # namespaced by pid so a recycled id can't alias a dead
                 # session of another process.
                 sid = f"{socket.gethostname()}-{os.getpid()}-{id(session):x}"
+        return sid
+
+
+def current_session_key() -> tuple[str | None, int | None]:
+    """PEEK at the ``(session_id, seq)`` the NEXT ledger row for this
+    session will take — reads without consuming. Code that must name
+    the in-flight call's ledger row (e.g. ``precis_se``'s op-trace
+    frames) uses this; the ledger's own write consumes the same value
+    via :func:`_mint_session_key`, so both agree on the seq.
+    ``(None, None)`` outside a session."""
+    sid = _session_id()
+    if sid is None:
+        return None, None
+    with _SESSION_LOCK:
+        return sid, _SEQ_COUNTERS.get(sid, 0) + 1
+
+
+def _mint_session_key() -> tuple[str | None, int | None]:
+    """CONSUME the next ``(session_id, seq)`` — the tool ledger's one
+    writer; everything else peeks via :func:`current_session_key`."""
+    sid = _session_id()
+    if sid is None:
+        return None, None
+    with _SESSION_LOCK:
         n = _SEQ_COUNTERS.get(sid, 0) + 1
         _SEQ_COUNTERS[sid] = n
         return sid, n

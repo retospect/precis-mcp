@@ -316,3 +316,346 @@ def test_rotated_symbolic_instance_round_trips(store: Any, tmp_path: Path) -> No
     bad = pga.instance("p", pose=reflection(np.array([1.0, 0.0, 0.0])))
     with pytest.raises(ValueError, match="reflection|improper"):
         geom_out.Run(tmp_path / "bad").instance("m", template=bad)
+
+
+def test_array_block_spec_is_pga_canonical() -> None:
+    """The op's stored array spec is the canonical dict
+    ``pga.array_spec`` produces — one number path shared by the op and
+    the script (structure-workspaces 2a.2)."""
+    from precis_se.ops import SeTree, apply_ops
+
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {
+                "op": "array_block",
+                "name": "arr",
+                "template": "t",
+                "linear": {"count": 3, "pitch": 1.2e-9, "axis": [0, 0, 1]},
+            },
+        ],
+    )
+    assert tree.blocks["arr"].array == pga.array_spec(
+        {"kind": "linear", "count": 3, "pitch": 1.2e-9, "axis": [0, 0, 1]}
+    )
+
+
+def test_construction_ops_mint_op_frames() -> None:
+    """Each construction op records one ``op`` frame (``line`` = the
+    tool_ledger call id — ``0`` outside an MCP session); bookkeeping
+    ops mint none."""
+    from precis_se.ops import SeTree, apply_ops
+
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {"op": "instance_block", "name": "i1", "template": "t"},
+            {
+                "op": "set_pose",
+                "block": "i1",
+                "pose": [0.01, 0.0, 0.0],
+                "pose_unit": "m",
+            },
+        ],
+    )
+    assert [f["qual"] for f in tree.op_frames] == [
+        "instance_block",
+        "set_pose",
+    ]
+    assert all(
+        f["kind"] == "op" and f["parent"] == "op" and isinstance(f["line"], int)
+        for f in tree.op_frames
+    )
+
+
+def test_op_trace_flushes_to_design_and_bound_refs(store: Any) -> None:
+    """On ``save_tree`` the minted op frames land in a ``ws_trace``
+    chunk on the design ref (root ``'op'``), and a touched bound
+    block's ``meta['frames']``/``generated.trace`` point at the op
+    frame — the record ``made-by`` reads for ``op set_pose``."""
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    bref = store.insert_ref(
+        kind="structure", slug="bnd-s", title="x", meta={"generated": {}}
+    )
+    design = store.insert_ref(kind="se", slug="d-op1", title="x", meta={})
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "b"},
+            {
+                "op": "set_pose",
+                "block": "b",
+                "pose": [0.01, 0.0, 0.0],
+                "pose_unit": "m",
+            },
+        ],
+    )
+    tree.blocks["b"].bound_kind = "structure"
+    tree.blocks["b"].bound = "bnd-s"
+    persist.save_tree(store, ref_id=int(design.id), tree=tree, card_text="x")
+
+    doc = persist._read_ws_trace(store, int(design.id), "op")
+    assert doc is not None
+    ops = [
+        f
+        for f in doc["frames"]
+        if f.get("kind") == "op" and f.get("qual") == "set_pose"
+    ]
+    assert len(ops) == 1
+    bref2 = store.get_ref(kind="structure", id="bnd-s")
+    assert bref2.meta["frames"]["b"] == ops[0]["id"]
+    assert bref2.meta["generated"]["trace"] == {
+        "run_job": int(design.id),
+        "root": "op",
+    }
+    assert tree.op_frames == []  # consumed by the flush
+
+
+def test_array_block_axis_bytes_match_main() -> None:
+    """Off-axis specs store the same floats ``_unit_vec`` produced on
+    main — the rewire normalises once with identical math, so existing
+    designs' SHAs don't drift on resave (2a.2 review)."""
+    from precis.blocktree.ops import _unit_vec
+    from precis_se.ops import SeTree, apply_ops
+
+    for axis in ([0.0, 0.0, 1.0], [1.0, 1.0, 0.0], [-3.0, -3.0, -1.0]):
+        for kind, raw in (
+            ("linear", {"count": 3, "pitch": 1.2e-9, "axis": axis}),
+            ("polar", {"count": 4, "radius": 2e-9, "axis": axis}),
+        ):
+            tree = SeTree()
+            apply_ops(
+                tree,
+                [
+                    {"op": "add_block", "name": "t"},
+                    {
+                        "op": "array_block",
+                        "name": "arr",
+                        "template": "t",
+                        kind: raw,
+                    },
+                ],
+            )
+            spec = tree.blocks["arr"].array
+            assert spec is not None
+            assert spec["axis"] == _unit_vec(axis, what="x")
+            if axis == [1.0, 1.0, 0.0]:
+                assert spec["axis"] == [
+                    0.7071067811865475,
+                    0.7071067811865475,
+                    0.0,
+                ]
+            assert spec == pga.array_spec(
+                {
+                    "kind": kind,
+                    **{k: v for k, v in raw.items() if k != "axis"},
+                    "axis": axis,
+                }
+            )
+
+
+def _ws_chunk(store: Any, ref_id: int, root: str) -> None:
+    """A minimal ``ws_trace`` chunk carrying one root frame — stands in
+    for a containerless import's run trace."""
+    from psycopg.types.json import Jsonb
+
+    from precis_geom import trace_schema as _ts
+
+    doc = {
+        "schema": _ts.SCHEMA_VERSION,
+        "run": {},
+        "frames": [
+            {
+                "id": 0,
+                "key": root,
+                "parent": None,
+                "qual": "main",
+                "file": "x.py",
+                "line": 0,
+                "occ": 0,
+                "kind": "root",
+            },
+        ],
+    }
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT COALESCE(MAX(ord), -1) + 1 FROM chunks WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        c.execute(
+            "INSERT INTO chunks (ref_id, ord, text, meta, chunk_kind) "
+            "VALUES (%s, %s, %s, %s, 'ws_trace')",
+            (ref_id, int(row[0]), _ts.dumps(doc), Jsonb({"chunk_kind": "ws_trace"})),
+        )
+
+
+def test_op_save_shadows_containerless_import_trace(store: Any) -> None:
+    """The op-trace chunk (newest ord) must not hide a containerless
+    import's run trace on the same ref — ``_read_ws_trace`` scans every
+    ws_trace chunk for the matching root (2a.2 review repro)."""
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    design = store.insert_ref(kind="se", slug="d-shadow", title="x", meta={})
+    rid = int(design.id)
+    _ws_chunk(store, rid, "runroot1")
+    assert persist._read_ws_trace(store, rid, "runroot1") is not None
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {"op": "instance_block", "name": "i", "template": "t"},
+        ],
+    )
+    persist.save_tree(store, ref_id=rid, tree=tree, card_text="x")
+    assert persist._read_ws_trace(store, rid, "op") is not None
+    # the workspace run's trace on the same home must still resolve
+    assert persist._read_ws_trace(store, rid, "runroot1") is not None
+
+
+def test_two_saves_append(store: Any) -> None:
+    """Op frames accumulate into ONE ws_trace chunk across saves, with
+    unique keys even outside a session (line=0)."""
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    design = store.insert_ref(kind="se", slug="d-two", title="x", meta={})
+    rid = int(design.id)
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {"op": "instance_block", "name": "i", "template": "t"},
+        ],
+    )
+    persist.save_tree(store, ref_id=rid, tree=tree, card_text="x")
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_pose",
+                "block": "i",
+                "pose": [0.01, 0, 0],
+                "pose_unit": "m",
+            },
+            {
+                "op": "instance_block",
+                "name": "i2",
+                "template": "t",
+            },
+        ],
+    )
+    persist.save_tree(store, ref_id=rid, tree=tree, card_text="x")
+    doc = persist._read_ws_trace(store, rid, "op")
+    assert doc is not None
+    quals = [f["qual"] for f in doc["frames"]]
+    assert quals == ["ops", "instance_block", "set_pose", "instance_block"]
+    keys = [f["key"] for f in doc["frames"]]
+    assert len(set(keys)) == len(keys)
+    with store.pool.connection() as c:
+        n = c.execute(
+            "SELECT count(*) FROM chunks WHERE ref_id=%s AND chunk_kind='ws_trace'",
+            (rid,),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_set_pose_on_instance_keeps_template_provenance(store: Any) -> None:
+    """set_pose on an instance must not rewrite the template's bound
+    provenance — moving i1 doesn't build t (2a.2 review)."""
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    store.insert_ref(
+        kind="structure",
+        slug="tpl-s",
+        title="x",
+        meta={
+            "generated": {"trace": {"run_job": None, "root": "run1"}},
+            "frames": {"t": 3},
+        },
+    )
+    design = store.insert_ref(kind="se", slug="d-inst", title="x", meta={})
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {"op": "instance_block", "name": "i1", "template": "t"},
+            {
+                "op": "set_pose",
+                "block": "i1",
+                "pose": [0.01, 0, 0],
+                "pose_unit": "m",
+            },
+        ],
+    )
+    tree.blocks["t"].bound_kind = "structure"
+    tree.blocks["t"].bound = "tpl-s"
+    persist.save_tree(store, ref_id=int(design.id), tree=tree, card_text="x")
+    bref2 = store.get_ref(kind="structure", id="tpl-s")
+    assert bref2.meta["frames"] == {"t": 3}
+    assert bref2.meta["generated"]["trace"] == {"run_job": None, "root": "run1"}
+
+
+def test_two_sessions_same_seq_unique_keys(store: Any, monkeypatch: Any) -> None:
+    """Two sessions minting call seq 5 still get unique frame keys —
+    the sid is what separates them, not the occ bump (2a.2 review)."""
+    from precis import tool_ledger
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    design = store.insert_ref(kind="se", slug="d-2s", title="x", meta={})
+    rid = int(design.id)
+    tree = SeTree()
+    apply_ops(tree, [{"op": "add_block", "name": "t"}])
+    for sid in ("sessA", "sessB"):
+        monkeypatch.setattr(tool_ledger, "current_session_key", lambda s=sid: (s, 5))
+        apply_ops(
+            tree,
+            [{"op": "instance_block", "name": f"i-{sid}", "template": "t"}],
+        )
+        persist.save_tree(store, ref_id=rid, tree=tree, card_text="x")
+    doc = persist._read_ws_trace(store, rid, "op")
+    assert doc is not None
+    keys = [f["key"] for f in doc["frames"]]
+    assert len(set(keys)) == len(keys) == 3
+    assert all(f["occ"] == 0 for f in doc["frames"])
+
+
+def test_op_frame_line_is_the_ledger_seq(store: Any, monkeypatch: Any) -> None:
+    """``line`` (``call N``) names the seq the tool ledger records for
+    the call — the peek reads it without consuming, so the ledger
+    write takes the same number (2a.2 review)."""
+    from precis import serve_ledger, tool_ledger
+    from precis_se import persist
+    from precis_se.ops import SeTree, apply_ops
+
+    fake_session = object()
+    monkeypatch.setattr(serve_ledger, "current_session", lambda: fake_session)
+    design = store.insert_ref(kind="se", slug="d-seq", title="x", meta={})
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t"},
+            {"op": "instance_block", "name": "i", "template": "t"},
+        ],
+    )
+    persist.save_tree(store, ref_id=int(design.id), tree=tree, card_text="x")
+    # what the ledger's own record for this call consumes — same seq.
+    _sid, seq = tool_ledger._mint_session_key()
+    assert seq is not None
+    doc = persist._read_ws_trace(store, int(design.id), "op")
+    assert doc is not None
+    op_frames = [f for f in doc["frames"] if f["qual"] == "instance_block"]
+    assert op_frames and all(f["line"] == seq for f in op_frames)

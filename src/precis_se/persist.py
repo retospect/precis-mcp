@@ -862,9 +862,14 @@ def _read_ws_trace(store: Any, home: int, root: Any) -> dict[str, Any] | None:
             continue
         if root is None:
             return doc
-        for f in doc.get("frames") or []:
-            if f.get("parent") is None:
-                return doc if f.get("key") == root else None
+        # scan every chunk — the newest ws_trace may belong to a
+        # different root (the design's op-trace beside an import's run
+        # trace on the same home)
+        if any(
+            f.get("parent") is None and f.get("key") == root
+            for f in doc.get("frames") or []
+        ):
+            return doc
     return None
 
 
@@ -1710,12 +1715,162 @@ def save_tree(
                 ),
             )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
+        _flush_op_trace(store, c, ref_id, tree)
 
     if conn is not None:
         _do(conn)
         return
     with store.tx() as c:
         _do(c)
+
+
+def _flush_op_trace(store: Any, c: Any, ref_id: int, tree: SeTree) -> None:
+    """Fold ``tree.op_frames`` (minted by :func:`precis_se.ops.apply_ops`
+    since the last save) into the design's op-trace — a ``ws_trace``
+    chunk on the design ref whose root frame key is
+    :data:`precis_se.ops.OP_TRACE_ROOT`, appended to across saves
+    (delete+insert — chunks are append-only). The ops' *bound* targets
+    get ``meta['frames'][name] = <fid>`` plus ``generated.trace``
+    pointing at this doc, so ``made-by`` answers ``op <op> (call
+    <seq>)`` the way it does for a workspace run's frames."""
+    frames = getattr(tree, "op_frames", None) or []
+    if not frames:
+        return
+    from precis_geom import trace_schema as _ts
+    from precis_se.ops import OP_TRACE_ROOT
+
+    # The existing op-trace chunk on this ref (root frame key == 'op')
+    # — ids and frames continue from it.
+    rows = c.execute(
+        "SELECT chunk_id, text FROM chunks WHERE ref_id = %s AND "
+        "chunk_kind = 'ws_trace' ORDER BY ord",
+        (ref_id,),
+    ).fetchall()
+    prior_frames: list[dict[str, Any]] = []
+    prior_chunk: int | None = None
+    for chunk_id, text in rows:
+        try:
+            doc = _ts.loads(text)
+        except Exception:
+            continue
+        roots = [f for f in doc.get("frames") or [] if f.get("parent") is None]
+        if roots and roots[0].get("key") == OP_TRACE_ROOT:
+            prior_chunk = int(chunk_id)
+            prior_frames = list(doc.get("frames") or [])
+            break
+    if prior_frames:
+        merged = prior_frames
+        start = 1 + max(int(f.get("id") or 0) for f in prior_frames)
+    else:
+        merged = []
+        start = 1
+    # Session-scoped keys can still collide for same-(sid,seq,qual)
+    # repeats outside a session (line=0) — bump occ until the key is
+    # fresh within this doc.
+    existing_keys = {f.get("key") for f in merged}
+    new_frames: list[dict[str, Any]] = []
+    for i, f in enumerate(frames):
+        f = dict(f)
+        pkey = f.pop("_pkey", OP_TRACE_ROOT)
+        while f["key"] in existing_keys:
+            f["occ"] = int(f.get("occ") or 0) + 1
+            f["key"] = _ts.frame_key(pkey, str(f["qual"]), f["line"], f["occ"])
+        existing_keys.add(f["key"])
+        new_frames.append({**f, "id": start + i})
+    if not merged:
+        merged = [
+            {
+                "id": 0,
+                "key": OP_TRACE_ROOT,
+                "parent": None,
+                "qual": "ops",
+                "file": "op",
+                "line": 0,
+                "occ": 0,
+                "kind": "op",
+                "args": {},
+                "made": {},
+                "touched": {},
+            }
+        ]
+    merged = merged + new_frames
+    if prior_chunk is not None:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (prior_chunk,))
+    row = c.execute(
+        "SELECT COALESCE(MAX(ord), -1) + 1 FROM chunks WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    ord_next = int(row[0]) if row else 0
+    c.execute(
+        "INSERT INTO chunks (ref_id, ord, text, meta, chunk_kind) "
+        "VALUES (%s, %s, %s, %s, 'ws_trace')",
+        (
+            ref_id,
+            ord_next,
+            _ts.dumps(
+                {
+                    "schema": _ts.SCHEMA_VERSION,
+                    "run": {"op": True},
+                    "frames": merged,
+                }
+            ),
+            Jsonb({"chunk_kind": "ws_trace", "op_trace": True}),
+        ),
+    )
+    # Bound targets: ``set_pose``/``connect`` ops that touched a bound
+    # block record which op frame owns the latest write —
+    # ``meta['frames'][block] = fid`` + ``generated.trace`` → this doc
+    # (``run_job`` names the doc's home ref — the design's own).
+    trace_ref = {"run_job": ref_id, "root": OP_TRACE_ROOT}
+    targets: dict[str, int] = {}
+    for f in new_frames:
+        args = f.get("args") or {}
+        names: list[str] = []
+        if f.get("qual") == "set_pose":
+            names.append(str(args.get("block") or ""))
+        elif f.get("qual") == "connect":
+            for side in ("a", "b"):
+                raw = str(args.get(side) or "")
+                if "." in raw:
+                    names.append(raw.split(".", 1)[0])
+        for raw in names:
+            if raw:
+                targets.setdefault(raw, int(f["id"]))
+    for raw, fid in targets.items():
+        node = tree.blocks.get(raw)
+        if node is None:
+            try:
+                key = tree.resolve_key(raw)
+            except Exception:
+                key = None
+            node = tree.blocks.get(key) if key else None
+        if node is None:
+            continue
+        # An instance's made-by resolves to its template's block — but an
+        # op that moved/connected the INSTANCE didn't build the template.
+        # Never rewrite the template ref's provenance for it; the op
+        # frame stays on the design's own op-trace doc.
+        if node.template is not None:
+            continue
+        if node.bound_kind not in ("structure", "cad") or not node.bound:
+            continue
+        try:
+            bref = store.get_ref(kind=node.bound_kind, id=node.bound)
+        except Exception:
+            continue
+        if bref is None:
+            continue
+        meta = dict(bref.meta or {})
+        frames_map = dict(meta.get("frames") or {})
+        frames_map[node.name] = fid
+        gen = dict(meta.get("generated") or {})
+        gen["trace"] = dict(trace_ref)
+        store.update_ref(
+            int(bref.id),
+            meta_patch={"frames": frames_map, "generated": gen},
+            conn=c,
+        )
+    tree.op_frames.clear()
 
 
 def _is_protected_structure(store: Any, ref_id: int) -> bool:
