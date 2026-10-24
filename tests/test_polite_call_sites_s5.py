@@ -132,8 +132,8 @@ def markup_stream(monkeypatch):
         def fake_client(*a: object, **k: object):
             yield object()
 
-        monkeypatch.setattr("precis.utils.http.http_client", fake_client)
-        monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", stream)
+        monkeypatch.setattr(fetch_oa, "http_client", fake_client)
+        monkeypatch.setattr(fetch_oa, "safe_stream", stream)
         return stream
 
     return install

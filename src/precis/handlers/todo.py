@@ -212,6 +212,27 @@ assert set(_TREE_SEARCH_VIEWS) == set(TodoView), (
     f"{set(TodoView) ^ set(_TREE_SEARCH_VIEWS)}"
 )
 
+#: ``id='/<path>'`` list spellings that ``get`` still accepts but that
+#: are NOT :class:`TodoView` members — so ``search(view='open')`` /
+#: ``search(view='queue')`` hit the unknown-view refusal. When one of
+#: these arrives, the error names both the working path spelling and
+#: the canonical search view instead of only listing the vocabulary
+#: (gr513891 — a builder guessed ``search(view='queue')`` and got no
+#: pointer at ``id='/queue'`` or ``view='active'``). ``doing`` / ``done``
+#: / ``blocked`` are excluded: they ARE TodoView members, so the search
+#: view works directly and no hint is needed.
+_SEARCH_PATH_SPELLING_HINTS: dict[str, str] = {
+    "open": (
+        "search(kind='todo', view='active') — or the deprecated path "
+        "spelling get(kind='todo', id='/open')"
+    ),
+    "queue": (
+        "search(kind='todo', view='active') — or the deprecated path "
+        "spelling get(kind='todo', id='/queue')"
+    ),
+    "recent": "get(kind='todo', id='/recent')",
+}
+
 #: View names that ``get(kind='todo', id=N, view=...)`` accepts on
 #: top of the base class's ``links`` / ``log`` views.
 _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
@@ -484,6 +505,13 @@ class TodoHandler(NumericRefHandler):
                 view_enum = TodoView(view)
             except ValueError:
                 available = sorted(str(v) for v in TodoView)
+                if view in _SEARCH_PATH_SPELLING_HINTS:
+                    raise Unsupported(
+                        f"unknown view {view!r} for kind={self.kind!r} search "
+                        f"— it is a get() path spelling, not a search view",
+                        options=available,
+                        next=_SEARCH_PATH_SPELLING_HINTS[view],
+                    ) from None
                 raise Unsupported(
                     f"unknown view {view!r} for kind={self.kind!r} search",
                     options=available,

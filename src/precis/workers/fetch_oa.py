@@ -131,6 +131,7 @@ from precis.utils.http import (
 from precis.utils.rate_limit import RateLimited
 from precis.utils.rate_limit import observe_timing as observe_rate_limit_timing
 from precis.utils.rate_limit import require as require_rate_limit
+from precis.utils.safe_fetch import safe_get, safe_stream
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers import activity
 
@@ -2003,9 +2004,6 @@ def _query_openalex_arxiv_id(doi: str, *, email: str) -> str | None:
     ``pdf_url`` or ``landing_page_url``. Fixed-host API call through
     :func:`safe_get`.
     """
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_get
-
     require_rate_limit("openalex")
     params = _openalex_meta_params(email)
     with http_client(
@@ -3149,9 +3147,6 @@ def _download_markup_once(
     url: str, target: Path, extra_headers: dict[str, str] | None
 ) -> int:
     """One download attempt for :func:`_download_markup`."""
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_stream
-
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
     headers = {"User-Agent": _user_agent_header(), "Accept": _MARKUP_ACCEPT}
@@ -4362,9 +4357,6 @@ def _download_pdf_once(
     url: str, target: Path, extra_headers: dict[str, str] | None
 ) -> int:
     """One download attempt for :func:`_download_pdf`."""
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_stream
-
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
     head = b""

@@ -714,10 +714,21 @@ class BibEntry:
 
 @dataclass(frozen=True, slots=True)
 class Tag:
-    """Unified tag representation across the three namespace tables."""
+    """Unified tag representation across the tag namespaces.
+
+    ``namespace`` is the tag *kind* — ``'closed'``, ``'flag'`` or
+    ``'open'`` — not the closed-tag axis. For a closed tag the axis
+    (``STATUS``, ``PRIO``, …) lives in :attr:`prefix`. This does not
+    match the ``tags.namespace`` column: there the axis is the value
+    for closed tags while flag/open rows take the ``'FLAG'`` / ``'OPEN'``
+    sentinels (see the ``_tags_ops`` namespace-convention docstring).
+    So ``t.namespace == 'STATUS'`` never matches — filter closed axes
+    on ``t.prefix`` and use ``namespace`` only to separate the
+    closed/flag/open piles (gr513890).
+    """
 
     namespace: Namespace
-    prefix: str | None  # closed only; None for flag/open
+    prefix: str | None  # closed only; None for flag/open — carries the axis
     value: str  # closed value, flag name, or open value
 
     @classmethod

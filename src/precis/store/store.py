@@ -47,7 +47,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, NoReturn, Self
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -156,6 +156,48 @@ class Store(
 
     def __init__(self, pool: ConnectionPool, *, dsn: str | None = None) -> None:
         self.core = StoreCore(pool, dsn=dsn)
+
+    # -- guessed-spelling hints (gr513891) ----------------------------------
+    #
+    # A builder reaching for ``store.refs.delete(rid)`` dead-ended on a
+    # bare AttributeError with no pointer at ``retire_ref``; the same went
+    # for ``delete_ref``-style spellings. These stubs raise naming the
+    # real call instead of leaving the dead end — explicit stubs rather
+    # than a ``__getattr__`` hint map so mypy still flags every other
+    # typo'd attribute (``__getattr__`` returning ``Any`` would silence
+    # attr-defined on the whole surface). ``refs`` is a property raising
+    # AttributeError, so ``hasattr``/``getattr(..., default)`` still treat
+    # it as absent.
+
+    @property
+    def refs(self) -> NoReturn:
+        """There is no ``.refs`` namespace — ref ops live flat on Store."""
+        raise AttributeError(
+            "Store has no 'refs' namespace — ref ops live flat on Store "
+            "(get_ref / insert_ref / tags_for / ...); "
+            "soft delete is store.retire_ref(ref_id)"
+        )
+
+    def delete_ref(self, *_a: Any, **_k: Any) -> NoReturn:
+        """Refs are soft-deleted — the real call is :meth:`retire_ref`."""
+        raise BadInput(
+            "Store has no delete_ref — refs are soft-deleted",
+            next="store.retire_ref(ref_id)",
+        )
+
+    def remove_ref(self, *_a: Any, **_k: Any) -> NoReturn:
+        """Refs are soft-deleted — the real call is :meth:`retire_ref`."""
+        raise BadInput(
+            "Store has no remove_ref — refs are soft-deleted",
+            next="store.retire_ref(ref_id)",
+        )
+
+    def drop_ref(self, *_a: Any, **_k: Any) -> NoReturn:
+        """Refs are soft-deleted — the real call is :meth:`retire_ref`."""
+        raise BadInput(
+            "Store has no drop_ref — refs are soft-deleted",
+            next="store.retire_ref(ref_id)",
+        )
 
     @property
     def pool(self) -> ConnectionPool:

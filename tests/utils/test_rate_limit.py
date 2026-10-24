@@ -415,7 +415,6 @@ class TestOpenAlexWiring:
         mock_client = MagicMock()
         monkeypatch.setattr(fetch_oa, "require_rate_limit", mock_require)
         monkeypatch.setattr(fetch_oa, "http_client", mock_client)
-        monkeypatch.setattr("precis.utils.http.http_client", mock_client)
         with pytest.raises(rate_limit.RateLimited):
             getattr(fetch_oa, helper)("10.1/x", email="")
         mock_require.assert_called_once_with("openalex")

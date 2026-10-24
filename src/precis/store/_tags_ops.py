@@ -313,7 +313,10 @@ class TagsMixin:
         """Return every tag on a ref (``pos=None``) or chunk (``pos=ord``).
 
         Returns a flat ``list[Tag]`` with namespace round-tripped via
-        :func:`_row_to_tag`. Order is insertion order on the join
+        :func:`_row_to_tag` — remember ``Tag.namespace`` is the tag kind
+        (``closed``/``flag``/``open``), not the axis: check
+        ``t.prefix == 'STATUS'``, not ``t.namespace == 'STATUS'``
+        (gr513890). Order is insertion order on the join
         table (``created_at ASC, tag_id ASC``) so repeated calls
         return tags in a stable shape suitable for diffing.
 

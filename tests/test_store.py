@@ -150,6 +150,41 @@ def test_restore_ref(store: Store) -> None:
     assert store.restore_ref(10_000_001) is False
 
 
+# ---------------------------------------------------------------------------
+# Tag.namespace vs prefix (gr513890) + guessed-spelling hints (gr513891)
+# ---------------------------------------------------------------------------
+
+
+def test_tags_for_closed_tag_splits_kind_namespace_from_axis_prefix(
+    store: Store,
+) -> None:
+    """``Tag.namespace`` is the tag *kind* (``closed``/``flag``/``open``),
+    not the axis — a ``STATUS:done`` tag comes back from ``tags_for`` as
+    ``namespace='closed', prefix='STATUS'``. Filtering on
+    ``t.namespace == 'STATUS'`` matches nothing: check ``t.prefix``."""
+    ref = store.insert_ref(kind="memory", slug=None, title="tagged")
+    store.add_tag(ref.id, Tag.closed("STATUS", "done"), set_by="agent")
+
+    tag = next(t for t in store.tags_for(ref.id) if t.value == "done")
+    assert tag.namespace == "closed"
+    assert tag.prefix == "STATUS"
+    assert {t.namespace for t in store.tags_for(ref.id)} != {"STATUS"}
+
+
+def test_refs_namespace_miss_names_retire_ref(store: Store) -> None:
+    """``store.refs.delete(rid)`` fails on ``.refs`` — the AttributeError
+    names the real soft-delete call instead of a bare attribute miss."""
+    with pytest.raises(AttributeError, match="retire_ref"):
+        store.refs.delete(1)
+
+
+def test_delete_ref_spellings_name_retire_ref(store: Store) -> None:
+    for name in ("delete_ref", "remove_ref", "drop_ref"):
+        with pytest.raises(BadInput) as ei:
+            getattr(store, name)(1)
+        assert "retire_ref" in (ei.value.next or "")
+
+
 def test_list_refs_filters(store: Store) -> None:
     store.insert_ref(kind="memory", slug=None, title="m1")
     store.insert_ref(kind="memory", slug=None, title="m2")

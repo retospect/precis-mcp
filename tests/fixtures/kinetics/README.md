@@ -29,7 +29,13 @@ composition), `paper` (the `pa…` handle the numbers were read from),
 `source_role`: `primary` (measured in the citing paper), `quoted` (the
 paper reports another work's value), `reanalysis` (parameters re-derived
 from published spectra), `review-compiled`, `simulated` (forward-simulated
-TPD — a method template, not a measurement).
+TPD — a method template, not a measurement), `derived` (computed by our
+pipeline from the paper's published parameters — e.g. a first-order
+Polanyi–Wigner T_p from a printed (E_d, ν₀); used by the corrections-set
+rows in `tests/fixtures/kinetics_tpd.json`, e.g.
+`co-pd111-pa498800-derived-b2`). The closed vocabulary is the
+`_SOURCE_ROLES` set in `tests/test_tpd_reference_fixtures.py` — cite that,
+not this list (gr514223).
 
 `method`: `tpd` (peak stated, no analysis given), `redhead`,
 `leading-edge`, `ttpd-complete` / `inversion-complete`,

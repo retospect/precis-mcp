@@ -348,6 +348,39 @@ def test_unknown_view_rejected_with_options(handler: TodoHandler) -> None:
         handler.search(view="frobnicate")
 
 
+def test_search_view_queue_hint_names_the_working_spellings(
+    handler: TodoHandler,
+) -> None:
+    """gr513891: 'queue' exists only as the deprecated ``id='/queue'``
+    path alias — the search refusal names it plus the canonical
+    ``view='active'`` instead of only listing the vocabulary."""
+    from precis.errors import Unsupported
+
+    with pytest.raises(Unsupported, match="unknown view") as ei:
+        handler.search(view="queue")
+    assert "view='active'" in (ei.value.next or "")
+    assert "id='/queue'" in (ei.value.next or "")
+
+
+def test_search_view_open_hint_names_active(handler: TodoHandler) -> None:
+    """'open' is the same path-only spelling — refusal points at
+    ``view='active'`` (the open+doing+blocked union)."""
+    from precis.errors import Unsupported
+
+    with pytest.raises(Unsupported, match="unknown view") as ei:
+        handler.search(view="open")
+    assert "view='active'" in (ei.value.next or "")
+
+
+def test_search_view_recent_hint_names_the_path(handler: TodoHandler) -> None:
+    """'recent' is a get() path view, not a search view."""
+    from precis.errors import Unsupported
+
+    with pytest.raises(Unsupported, match="unknown view") as ei:
+        handler.search(view="recent")
+    assert "id='/recent'" in (ei.value.next or "")
+
+
 def test_get_with_search_view_redirects_to_search(handler: TodoHandler) -> None:
     # gr48523: get(kind='todo', view='projects') is a search view on the
     # wrong verb — redirect explicitly instead of the generic "requires id=".

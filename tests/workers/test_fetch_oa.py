@@ -903,7 +903,13 @@ def _no_arxiv_metadata_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _shared_limiter_grants(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the shared rate limiter to grant, so no test waits on a seeded
-    ``external_rate_limits`` row; refusal tests re-patch it to raise."""
+    ``external_rate_limits`` row; refusal tests re-patch it to raise.
+
+    gr514128: ``monkeypatch.undo()`` inside a test drops EVERY stub the
+    shared monkeypatch instance applied — including these autouse ones —
+    not just the test's own. A test that undoes must re-stub
+    ``require_rate_limit`` afterwards (the ``monkeypatch.undo()`` sites
+    below show the shape)."""
     monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda provider, **_: None)
 
 
@@ -940,7 +946,7 @@ class TestResolveArxivFromDoi:
             return _Resp()
 
         monkeypatch.undo()  # drop the autouse stub for this test
-        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _fake_get)
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_get)
         got = fetch_oa._query_openalex_arxiv_id(
             "10.1103/physrevlett.115.036402", email=""
         )
@@ -1054,12 +1060,12 @@ class TestOpenAlexMetaParams:
             captured["params"] = dict(kw.get("params") or {})
             return _Resp()
 
+        # undo() drops EVERY monkeypatch — the autouse stubs too — so the
+        # rate-limiter grant has to be re-stubbed (gr514128).
         monkeypatch.undo()  # restore the autouse stub for the arxiv helper
         monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda *a, **k: None)
         monkeypatch.setattr(fetch_oa, "http_client", lambda **kw: _Client())
-        # _query_openalex_arxiv_id imports http_client inside the function.
-        monkeypatch.setattr("precis.utils.http.http_client", lambda **kw: _Client())
-        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _fake_safe_get)
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_safe_get)
         monkeypatch.setattr(fetch_oa, "_openalex_content_key", lambda: self._FAKE)
         getattr(fetch_oa, helper)("10.1/x", email="")
         assert captured["params"] == {"api_key": self._FAKE}
@@ -1218,8 +1224,8 @@ class TestDownloadRetry:
                 raise httpx.ConnectTimeout("handshake operation timed out")
             yield _FakeResp()
 
-        monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
-        monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_stream)
+        monkeypatch.setattr(fetch_oa, "http_client", _fake_client)
+        monkeypatch.setattr(fetch_oa, "safe_stream", _fake_stream)
 
         target = tmp_path / "x.pdf"
         size = fetch_oa._download_pdf("https://arxiv.org/pdf/1504.03028.pdf", target)
@@ -1250,8 +1256,8 @@ class TestDownloadRetry:
             )
             yield  # pragma: no cover
 
-        monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
-        monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_stream)
+        monkeypatch.setattr(fetch_oa, "http_client", _fake_client)
+        monkeypatch.setattr(fetch_oa, "safe_stream", _fake_stream)
 
         with pytest.raises(httpx.HTTPStatusError):
             fetch_oa._download_pdf("https://arxiv.org/pdf/x.pdf", tmp_path / "x.pdf")
@@ -3554,8 +3560,10 @@ def _patch_download_transport(
     monkeypatch: pytest.MonkeyPatch, resp: _FakeStreamResp
 ) -> None:
     """Swap the two HTTP primitives ``_download_pdf``/``_download_markup``
-    import locally (``http_client``, ``safe_stream``) for fakes that hand
-    back ``resp`` — no real network, no SSRF-pinning machinery needed."""
+    use (``fetch_oa.http_client``, ``fetch_oa.safe_stream``) for fakes that
+    hand back ``resp`` — no real network, no SSRF-pinning machinery
+    needed. Patch the ``fetch_oa`` module attributes, not the
+    ``precis.utils`` source: both resolve module-level now (gr514128)."""
     import contextlib
 
     @contextlib.contextmanager
@@ -3566,8 +3574,8 @@ def _patch_download_transport(
     def _fake_safe_stream(client: Any, method: str, url: str, **kw: Any) -> Any:
         yield resp
 
-    monkeypatch.setattr("precis.utils.http.http_client", _fake_http_client)
-    monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_safe_stream)
+    monkeypatch.setattr(fetch_oa, "http_client", _fake_http_client)
+    monkeypatch.setattr(fetch_oa, "safe_stream", _fake_safe_stream)
 
 
 class TestDownloadByteCap:

@@ -25,6 +25,22 @@ import pytest
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "kinetics"
 
+#: Canonical ``source_role`` vocabulary across the kinetics fixtures —
+#: the single enum specs and code cite (gr514223). ``primary``, ``quoted``,
+#: ``reanalysis``, ``review-compiled`` and ``simulated`` appear in
+#: ``tpd_reference.json``; ``derived`` appears in
+#: ``tests/fixtures/kinetics_tpd.json`` on rows our pipeline re-derived
+#: from the paper's published parameters (e.g. a first-order
+#: Polanyi–Wigner T_p from a printed (E_d, ν₀)).
+_SOURCE_ROLES = {
+    "primary",
+    "quoted",
+    "reanalysis",
+    "review-compiled",
+    "simulated",
+    "derived",
+}
+
 _MINUS_VARIANTS = dict.fromkeys(map(ord, "−–—‑‒‐"), "-")
 _NUMBER_RE = re.compile(r"[+-]?\s*\d+(?:\.\d+)?")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -167,6 +183,7 @@ def test_row_shape() -> None:
     for m in table["measurements"]:
         assert re.fullmatch(r"pa\d+", m["paper"]), m["id"]
         assert m["adsorbate"] and m["surface"], m["id"]
+        assert m["source_role"] in _SOURCE_ROLES, (m["id"], m["source_role"])
         assert m["values"], m["id"]
         for name, v in m["values"].items():
             assert re.fullmatch(r"pc\d+", v["chunk"]), (m["id"], name)
@@ -224,3 +241,19 @@ def test_exemptions_are_current() -> None:
     known = {(mid, name) for mid, name, _ in _rows()}
     unknown = [key for key in _EXEMPTIONS if key not in known]
     assert not unknown, f"exemptions for removed rows: {unknown}"
+
+
+def test_source_role_vocabulary_covers_both_fixtures() -> None:
+    """Every ``source_role`` in the reference table AND the corrections set
+    (``tests/fixtures/kinetics_tpd.json``, which alone uses ``derived``)
+    is in ``_SOURCE_ROLES`` — keeps the enum cite-complete (gr514223)."""
+    table, _ = _load()
+    roles = {m["source_role"] for m in table["measurements"]}
+    engine = json.loads(
+        (FIXTURE_DIR.parent / "kinetics_tpd.json").read_text(encoding="utf-8")
+    )
+    for ads in engine["tpd"].values():
+        for row in ads["family"]:
+            roles.add(row["source_role"])
+    assert roles <= _SOURCE_ROLES, f"roles outside the enum: {roles - _SOURCE_ROLES}"
+    assert "derived" in roles, "enum drifted: 'derived' no longer exercised"
