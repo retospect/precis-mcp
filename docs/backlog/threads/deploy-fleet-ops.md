@@ -39,7 +39,11 @@ residue, then batched ops and flip steps.
    without 14 vault secrets 18–22 Aug; silent partial config is the worst
    deploy failure, and the answer scopes any residue.
 2. **backlog/deploy-concurrency.md** — a deploy lock two people can hold;
-   two deploys interleaving renders corrupts the fleet state.
+   two deploys interleaving renders corrupts the fleet state. Partially
+   landed 2026-10-21 (worktree `bug-deploy-lock`): the atomic steal +
+   ownership-checked release and the ancestry-branched fail_msg are done;
+   residual is the descendant-nonfatal decision (Reto call) and closing
+   gr203786.
 3. **backlog/deploy-assertions.md** — verification guards (bounce coverage,
    plist drift, model-serving); makes 1 and 2 detectable after the fact.
 4. **backlog/deploy-tree-lints-reachability-and-dest-collision.md** — lint

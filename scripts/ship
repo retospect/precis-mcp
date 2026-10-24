@@ -1056,24 +1056,19 @@ run_gate() {
 #                   live local holders as well, which stole the lock out from
 #                   under any ship past 30 minutes — routine for --mutate
 #                   plus a full gate — re-opening the clobber race below.
-# The release is ownership-checked (holder pid == $$), so a sibling that
-# steals our lock after a long hold doesn't get its own fresh lock rm'd by our
-# late exit; for the same reason the EXIT trap below may be armed BEFORE we
-# hold the lock (gr202363's hazard — a SIGTERM while WAITING rm -rf'ing a lock
-# we never acquired — cannot recur: a non-owner release is a no-op).
+# The steal is atomic via lock_steal (lock-holder.sh): it rename-pins the
+# directory it inspected and re-judges the pinned instance before destroying
+# it, so a racing steal+acquire that landed between our staleness read and
+# the removal cannot have its fresh lock deleted (the deploy-concurrency
+# race — the same fix scripts/deploy's lock now shares).
 LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
-_release_ship_lock() {
-    local holder_pid
-    holder_pid="$(lock_holder_pid "$LOCKDIR")"
-    # Remove ONLY on a positive ownership match (holder pid == $$). A
-    # missing/unparseable holder is ambiguous — it could be ours (best-effort
-    # write failed) or a sibling mid-steal that hasn't written its holder yet
-    # — and deleting a sibling's live lock has no recovery, while leaking
-    # ours self-heals via the pid-dead/age steals above.
-    if [[ "$holder_pid" == "$$" ]]; then
-        rm -rf "$LOCKDIR" 2>/dev/null || true
-    fi
-}
+# lock_release (lock-holder.sh) removes the dir ONLY on a positive ownership
+# match (holder pid == $$) — so a sibling that steals our lock after a long
+# hold doesn't get its fresh lock rm'd by our late exit, and the EXIT trap
+# below may be armed BEFORE we hold the lock (gr202363's hazard — a SIGTERM
+# while WAITING rm -rf'ing a lock we never acquired — cannot recur: a
+# non-owner release is a no-op).
+_release_ship_lock() { lock_release "$LOCKDIR"; }
 # EXIT safety net, armed for the whole run (the lock is no longer held during
 # gates, so this is no longer "the lock's own trap"): drop any gate slot still
 # held (gr202193 — run_gate releases on its own paths, but an unexpected exit
@@ -1097,8 +1092,9 @@ acquire_ship_lock() {
         holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
 
         if _reason="$(lock_holder_reclaim_reason "$LOCKDIR" "${PRECIS_SHIP_LOCK_STEAL_MIN:-5}")"; then
-            say "stealing the ship lock — ${_reason}: ${holder_desc}"
-            rm -rf "$LOCKDIR"
+            if lock_steal "$LOCKDIR" "${PRECIS_SHIP_LOCK_STEAL_MIN:-5}"; then
+                say "stole the ship lock — ${_reason}: ${holder_desc}"
+            fi
             continue
         fi
 

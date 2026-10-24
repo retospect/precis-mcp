@@ -61,6 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SRC = REPO_ROOT / "scripts" / "deploy"
 SHIP_SRC = REPO_ROOT / "scripts" / "ship"
 DEPLOY_STATE_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "deploy-state.sh"
+LOCK_HOLDER_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "lock-holder.sh"
 ENV_POINTERS_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "env-pointers.sh"
 
 
@@ -204,6 +205,7 @@ def fx(tmp_path: Path) -> Fixture:
     lib_dir.mkdir(parents=True)
     shutil.copy2(DEPLOY_SRC, scripts_dir / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, lib_dir / "deploy-state.sh")
+    shutil.copy2(LOCK_HOLDER_LIB_SRC, lib_dir / "lock-holder.sh")
     shutil.copy2(ENV_POINTERS_LIB_SRC, lib_dir / "env-pointers.sh")
     (scripts_dir / "deploy").chmod(0o755)
     _git(repo, "add", "-A")

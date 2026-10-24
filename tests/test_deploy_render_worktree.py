@@ -48,6 +48,7 @@ pytestmark = pytest.mark.skipif(
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SRC = REPO_ROOT / "scripts" / "deploy"
 DEPLOY_STATE_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "deploy-state.sh"
+LOCK_HOLDER_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "lock-holder.sh"
 
 
 def _test_env(**extra: str) -> dict[str, str]:
@@ -123,6 +124,12 @@ _FAKE_ANSIBLE_PLAYBOOK = """#!/usr/bin/env bash
   printf 'LOCKED=%s\n' "$(git worktree list --porcelain 2>/dev/null | grep '^locked' | head -1)"
   printf 'ARGS=%s\n' "$*"
 } >> "$RENDER_RECORD"
+# Test seam: mid-run, overwrite the deploy lock's holder file with a
+# DIFFERENT live pid — the state a deploy sees when a sibling stole and
+# re-acquired the lock underneath it. The EXIT trap must leave it alone.
+if [ -n "${FAKE_LOCK_HOLDER_PID:-}" ]; then
+  printf '/x pid=%s host=%s\n' "$FAKE_LOCK_HOLDER_PID" "${FAKE_HOSTNAME:-$(hostname -s)}" > "$FAKE_LOCKDIR/holder"
+fi
 if [ -n "${FAKE_PLAYBOOK_OUT:-}" ]; then
   cat "$FAKE_PLAYBOOK_OUT"
   exit "${FAKE_PLAYBOOK_RC:-0}"
@@ -197,6 +204,7 @@ def build_fixture(tmp_path: Path) -> Fixture:
 
     shutil.copy2(DEPLOY_SRC, repo / "scripts" / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, repo / "scripts" / "lib" / "deploy-state.sh")
+    shutil.copy2(LOCK_HOLDER_LIB_SRC, repo / "scripts" / "lib" / "lock-holder.sh")
     (repo / "scripts" / "deploy").chmod(0o755)
     # A local deploy/inventory makes the from-tree path take its "local
     # overlay" branch, so the test needs no private overlay on disk.
@@ -392,25 +400,117 @@ def test_a_render_tree_owned_by_another_users_live_pid_is_not_swept(
     assert "STAMP=GATED" in record.read_text(encoding="utf-8")
 
 
+def _this_host() -> str:
+    return subprocess.run(
+        ["hostname", "-s"], capture_output=True, text=True, encoding="utf-8"
+    ).stdout.strip()
+
+
+def _write_holder(lockdir: Path, pid: int) -> None:
+    """The holder file ``lock_holder_write`` produces, for a chosen pid."""
+    lockdir.mkdir(exist_ok=True)
+    (lockdir / "holder").write_text(
+        f"/fake/worktree pid={pid} host={_this_host()}\n", encoding="utf-8"
+    )
+
+
 def test_a_deploy_lock_held_by_another_users_live_pid_is_not_stolen(
     fx: Fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same EPERM hole in the dead-holder steal: the lock would be taken from
-    a live run, and the sweep above would then delete that run's tree."""
+    a live run, and the sweep above would then delete that run's tree. pid 1
+    is live but (on a dev host) signalable only by root — a bare `kill -0`
+    reads EPERM as dead."""
     fakebin = _make_fake_bin(tmp_path)
     record = tmp_path / "render.txt"
     fx.set_marker(fx.gated)
-    fx.lock_path().mkdir()
-    (fx.lock_path() / "pid").write_text("1\n", encoding="utf-8")
+    _write_holder(fx.lock_path(), 1)
     monkeypatch.setenv("PRECIS_DEPLOY_LOCK_WAIT", "0")
 
     result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
 
     out = result.stdout + result.stderr
     assert result.returncode != 0, out
-    assert "stealing deploy lock" not in out, out
+    assert "stole the deploy lock" not in out, out
     assert "still holds the lock" in out, out
-    assert (fx.lock_path() / "pid").read_text(encoding="utf-8").strip() == "1"
+    assert "pid=1" in (fx.lock_path() / "holder").read_text(encoding="utf-8")
+
+
+def test_a_deploy_lock_held_by_a_live_same_user_pid_is_never_stolen(
+    fx: Fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race-table fix: a live holder is never stolen, however stale the
+    read that decided it was dead. Pytest's own pid is unambiguously alive."""
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+    _write_holder(fx.lock_path(), os.getpid())
+    monkeypatch.setenv("PRECIS_DEPLOY_LOCK_WAIT", "0")
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "stole the deploy lock" not in out, out
+    assert "still holds the lock" in out, out
+    assert f"pid={os.getpid()}" in (fx.lock_path() / "holder").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_dead_holders_deploy_lock_is_stolen(fx: Fixture, tmp_path: Path) -> None:
+    """The path that must keep working: a crashed deploy's lock is stolen —
+    through lock_steal, which re-judges the exact dir it removes — and the
+    deploy then proceeds normally and releases its own lock on exit."""
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    _write_holder(fx.lock_path(), dead.pid)
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "stole the deploy lock" in out, out
+    assert not fx.lock_path().exists(), "deploy lock stranded after a green deploy"
+
+
+def test_the_exit_trap_does_not_release_a_lock_owned_by_another_pid(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Second half of the race table: the old trap's unconditional
+    `rm -rf $_LOCK_DIR` deleted whatever dir was present — including a live
+    sibling's. Here the fake playbook rewrites the holder to a foreign live
+    pid mid-run (a sibling that stole and re-acquired); the EXIT trap must
+    leave that dir alone."""
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+    foreign = subprocess.Popen(["sleep", "60"])
+    try:
+        result = _run_deploy(
+            fx,
+            fakebin,
+            record,
+            fx.gated,
+            "--pinned",
+            extra_env={
+                "FAKE_LOCK_HOLDER_PID": str(foreign.pid),
+                "FAKE_LOCKDIR": str(fx.lock_path()),
+                "FAKE_HOSTNAME": _this_host(),
+            },
+        )
+        out = result.stdout + result.stderr
+        assert result.returncode == 0, out
+        holder = (fx.lock_path() / "holder").read_text(encoding="utf-8")
+        assert f"pid={foreign.pid}" in holder, (
+            "the EXIT trap released a lock this deploy did not own:\n" + out
+        )
+    finally:
+        foreign.kill()
+        foreign.wait()
 
 
 _FAKE_PLAYBOOK_LOSES_ITS_TREE = """#!/usr/bin/env bash

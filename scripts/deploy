@@ -905,31 +905,43 @@ _advise_unrendered() {
 # is that runs must not overlap. Lock dir lives in the git COMMON dir so
 # every worktree of this repo shares one lock. mkdir is the atomic acquire
 # (macOS ships no flock); a dead holder's lock is stolen.
+#
+# Reclaim, steal and release are the SHARED rules in
+# scripts/lib/lock-holder.sh — the same helpers that drive scripts/ship's
+# lock and the gate-slot semaphore: a dead-pid holder on this host is
+# stolen at once; a live one is waited out however long it holds (the
+# PRECIS_DEPLOY_LOCK_WAIT cap below is unchanged); a holder the pid cannot
+# judge (foreign host, unparseable, or a crashed-before-write lock) is
+# reclaimed only after PRECIS_DEPLOY_LOCK_STEAL_MIN minutes. The steal is
+# atomic (lock_steal rename-pins the inspected dir and re-judges it before
+# destroying) and the release is ownership-checked (lock_release) — the two
+# halves of the race docs/backlog/deploy-concurrency.md records.
+# shellcheck source=scripts/lib/lock-holder.sh
+source "${REPO_ROOT}/scripts/lib/lock-holder.sh"
 _LOCK_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy.lock"
-# Does pid $1 exist, whoever owns it? `kill -0` alone answers "may I signal
-# it": for a live pid owned by another user it fails with EPERM, which a bare
-# `kill -0` check reads as dead — and then steals a live deploy's lock or
-# deletes its render tree. This controller runs deploys as both `reto` and
-# `deploy`. EPERM means the process exists; only ESRCH means it is gone.
-_pid_alive() {
-    local err
-    err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
-    [[ "$err" == *"not permitted"* ]]
-}
+# The render-tree sweeper below probes stale trees' suffix pids the same
+# way: lock_pid_alive is EPERM-aware — a live pid owned by ANOTHER user
+# fails a bare `kill -0` and would read as dead, which then steals a live
+# deploy's lock or deletes its render tree (this controller runs deploys as
+# both `reto` and `deploy`).
+_pid_alive() { lock_pid_alive "$1"; }
 _acquire_deploy_lock() {
-    local wait="${PRECIS_DEPLOY_LOCK_WAIT:-1800}" waited=0 holder
+    local wait="${PRECIS_DEPLOY_LOCK_WAIT:-1800}" waited=0 holder holder_pid reason
+    local steal_min="${PRECIS_DEPLOY_LOCK_STEAL_MIN:-15}"
     while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
-        holder="$(cat "${_LOCK_DIR}/pid" 2>/dev/null || true)"
-        if [[ -n "$holder" ]] && ! _pid_alive "$holder"; then
-            say "stealing deploy lock from dead pid ${holder}"
-            rm -rf "$_LOCK_DIR"
+        holder="$(cat "${_LOCK_DIR}/holder" 2>/dev/null || true)"
+        if reason="$(lock_holder_reclaim_reason "$_LOCK_DIR" "$steal_min")"; then
+            if lock_steal "$_LOCK_DIR" "$steal_min"; then
+                say "stole the deploy lock — ${reason}: ${holder:-<no holder file>}"
+            fi
             continue
         fi
-        (( waited < wait )) || die "another deploy (pid ${holder:-unknown}) still holds the lock after ${wait}s — investigate it, or rm -rf ${_LOCK_DIR}"
-        (( waited % 60 == 0 )) && say "another deploy (pid ${holder:-starting}) is in flight — waiting (${waited}s/${wait}s)"
+        holder_pid="$(lock_holder_pid "$_LOCK_DIR")"
+        (( waited < wait )) || die "another deploy (pid ${holder_pid:-unknown}) still holds the lock after ${wait}s — investigate it, or rm -rf ${_LOCK_DIR}"
+        (( waited % 60 == 0 )) && say "another deploy (pid ${holder_pid:-starting}) is in flight — waiting (${waited}s/${wait}s)"
         sleep 10; waited=$((waited + 10))
     done
-    echo $$ > "${_LOCK_DIR}/pid"
+    lock_holder_write "$_LOCK_DIR"
     trap '_deploy_cleanup' EXIT
     trap 'exit 130' INT TERM
 }
@@ -952,7 +964,9 @@ _deploy_cleanup() {
         git -C "$REPO_ROOT" worktree remove --force "$_DEPLOY_TREE" 2>/dev/null \
             || rm -rf "$_DEPLOY_TREE" 2>/dev/null || true
     fi
-    rm -rf "$_LOCK_DIR" 2>/dev/null || true
+    # Ownership-checked: a sibling that stole the lock after our pid died
+    # must not lose ITS fresh lock to our late EXIT trap.
+    lock_release "$_LOCK_DIR"
     exit "$rc"
 }
 _acquire_deploy_lock

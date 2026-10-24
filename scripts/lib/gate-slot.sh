@@ -125,9 +125,12 @@ gate_slot_acquire() {
                     return 0
                 fi
                 holder="$(cat "$d/holder" 2>/dev/null || true)"
-                if reason="$(lock_holder_reclaim_reason "$d" 45)"; then
-                    echo "stealing gate slot ${i} — ${reason}: ${holder:-<no holder file>}" >&2
-                    rm -rf "$d" 2>/dev/null || true
+                # lock_steal re-judges the exact dir it removes, so a slot
+                # re-acquired between our read and the steal is never rm'd
+                # on stale information.
+                if reason="$(lock_holder_reclaim_reason "$d" 45)" \
+                    && lock_steal "$d" 45; then
+                    echo "stole gate slot ${i} — ${reason}: ${holder:-<no holder file>}" >&2
                 else
                     continue
                 fi
@@ -171,17 +174,13 @@ gate_slot_release() {
         GATE_SLOT_TICKET=""
     fi
     if [[ -n "${GATE_SLOT_DIR:-}" ]]; then
-        local holder_pid
-        holder_pid="$(lock_holder_pid "$GATE_SLOT_DIR")"
-        # Remove ONLY on a positive ownership match (holder pid == $$). A
-        # missing/unparseable holder is ambiguous — ours with a failed
-        # best-effort write, or a sibling mid-steal that hasn't written its
-        # holder yet — and deleting a sibling's live slot has no recovery,
-        # while leaking ours self-heals via the pid-dead/45-min steals
-        # (gr202363).
-        if [[ "$holder_pid" == "$$" ]]; then
-            rm -rf "$GATE_SLOT_DIR" 2>/dev/null || true
-        fi
+        # lock_release removes ONLY on a positive ownership match (holder
+        # pid == $$): a missing/unparseable holder is ambiguous — ours with
+        # a failed best-effort write, or a sibling mid-acquire that hasn't
+        # written its holder yet — and deleting a sibling's live slot has
+        # no recovery, while leaking ours self-heals via the pid-dead/45-min
+        # steals (gr202363).
+        lock_release "$GATE_SLOT_DIR"
         GATE_SLOT_DIR=""
     fi
 }

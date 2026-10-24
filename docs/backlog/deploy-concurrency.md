@@ -105,18 +105,23 @@ and a double ship is the shared-`.git/index` clobber that
 
 ### Work
 
-1. **Make the steal atomic.** Applies to `scripts/deploy` **and**
-   `scripts/ship`. Acquire identity and directory in one step
-   rather than two: `mkdir` a uniquely-named dir and `rename`/`ln` it into
-   place, or re-read the pid immediately after a successful `mkdir` and
-   abort if it is not ours. A steal must fail when the directory it targets
-   is no longer the one it inspected. Give `scripts/deploy`'s trap the
-   ownership check `scripts/ship` already has.
-2. **Fix the assert's `fail_msg`.** It sends the operator to "re-run" while
-   explicitly denying the cause. It should compare the installed sha's
-   *ancestry* to the pinned one and say so: installed-is-a-descendant means
-   a concurrent deploy, installed-is-an-ancestor means a genuinely skipped
-   install. Only the second warrants a re-run.
+1. **DONE 2026-10-21 (worktree `bug-deploy-lock`).** `scripts/lib/lock-holder.sh`
+   now owns all three pieces shared by `scripts/deploy`, `scripts/ship`,
+   `scripts/lib/ship-lock.sh` and `scripts/lib/gate-slot.sh`: `lock_steal`
+   makes the steal atomic (rename-pins the inspected dir, re-judges the
+   pinned instance, restores rather than destroys a live lock swapped in
+   mid-check), `lock_release` is the ownership-checked trap release
+   (`scripts/deploy`'s trap used to `rm -rf` unconditionally), and
+   `lock_pid_alive` carries the EPERM-aware liveness check this controller
+   needs. `scripts/deploy`'s lock now writes the `pid=`/`host=` holder
+   format and reclaims undecidable holders on
+   `PRECIS_DEPLOY_LOCK_STEAL_MIN` (15).
+2. **DONE 2026-10-21 (same).** `redeploy-precis.yml` classifies each
+   mismatching installed sha on the controller (`git merge-base
+   --is-ancestor`, delegated to localhost with `become: false`) and the
+   `fail_msg` branches: descendant → concurrent deploy, cluster ahead —
+   do not blindly re-run; ancestor → genuinely skipped/failed install —
+   re-run. Still fatal either way (item 3).
 3. **Consider making a descendant install non-fatal.** When every venv is on
    one sha that *contains* the pinned target, the cluster is uniform and
    newer — arguably a pass with a warning, not a failure. Decide

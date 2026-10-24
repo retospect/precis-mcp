@@ -42,6 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "scripts" / "lib" / "backup-window.sh"
 DEPLOY_SRC = REPO_ROOT / "scripts" / "deploy"
 DEPLOY_STATE_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "deploy-state.sh"
+LOCK_HOLDER_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "lock-holder.sh"
 DEFAULTS_REL = Path("deploy/roles/backups/defaults/main.yml")
 TASKS_REL = Path("deploy/roles/backups/tasks/main.yml")
 
@@ -361,6 +362,7 @@ def deploy_fx(tmp_path: Path) -> DeployFixture:
     for rel, src in (
         ("scripts/deploy", DEPLOY_SRC),
         ("scripts/lib/deploy-state.sh", DEPLOY_STATE_LIB_SRC),
+        ("scripts/lib/lock-holder.sh", LOCK_HOLDER_LIB_SRC),
         ("scripts/lib/backup-window.sh", LIB),
         (str(DEFAULTS_REL), REPO_ROOT / DEFAULTS_REL),
     ):

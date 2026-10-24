@@ -25,6 +25,7 @@ Only executing the decision shows which branch is reachable.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -221,3 +222,129 @@ def _spawn_and_reap() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
+
+
+def _steal(lockdir: Path, max_age_min: int = 30) -> bool:
+    """``lock_steal`` against a real lock dir; True means it removed it."""
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{_LIB}"; lock_steal "$1" "$2"',
+            "_",
+            str(lockdir),
+            str(max_age_min),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return proc.returncode == 0
+
+
+def test_steal_of_a_dead_holder_succeeds(lockdir: Path) -> None:
+    _write_holder(lockdir, pid=_spawn_and_reap(), host=_this_host())
+    assert _steal(lockdir)
+    assert not lockdir.exists()
+
+
+def test_steal_of_a_live_holder_is_refused_and_the_lock_survives(
+    lockdir: Path,
+) -> None:
+    """The deploy-concurrency race: a steal decided on stale information
+    must fail once it pins the dir and finds a live holder in it — never
+    destroy a live lock."""
+    _write_holder(lockdir, pid=os.getpid(), host=_this_host())
+    assert not _steal(lockdir)
+    assert (lockdir / "holder").read_text(encoding="utf-8").find(
+        f"pid={os.getpid()}"
+    ) != -1
+
+
+def test_two_racing_stealers_cannot_both_remove_the_lock(lockdir: Path) -> None:
+    """B and C both read "holder dead"; B steals and re-acquires while C's
+    removal is still pending. rename-pins make exactly one winner per
+    instance — the loser finds either no path to move or a live dir it must
+    restore. Run enough rounds that a rm -rf would have collided."""
+    wins = 0
+    for _ in range(8):
+        if lockdir.exists():
+            shutil.rmtree(lockdir)
+        lockdir.mkdir()
+        _write_holder(lockdir, pid=_spawn_and_reap(), host=_this_host())
+        procs = [
+            subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{_LIB}"; lock_steal "$1" 30',
+                    "_",
+                    str(lockdir),
+                ]
+            )
+            for _ in range(4)
+        ]
+        rcs = [p.wait() for p in procs]
+        wins += sum(1 for rc in rcs if rc == 0)
+        # At most ONE stealer may win per dead dir instance.
+        assert sum(1 for rc in rcs if rc == 0) <= 1, (
+            f"two stealers both removed the same lock dir — the race is open: {rcs}"
+        )
+    assert wins > 0, "no steal ever succeeded (vacuous pass)"
+
+
+def test_steal_restores_a_live_lock_that_was_swapped_in(tmp_path: Path) -> None:
+    """The displaced-stray rescue: a lock pinned aside by a dead stealer and
+    found live is put back on the free path, not destroyed."""
+    lockdir = tmp_path / "precis-x.lock.d"
+    stray = tmp_path / "precis-x.lock.d.steal.99999"
+    stray.mkdir(parents=True)
+    (stray / "holder").write_text(
+        f"/x pid={os.getpid()} host={_this_host()}\n", encoding="utf-8"
+    )
+    # lockdir is FREE: the sweep should restore the live stray onto it…
+    # then the steal itself pins it, re-judges it live, and puts it back.
+    assert not _steal(lockdir)
+    assert (lockdir / "holder").exists(), (
+        "a live lock pinned aside by a dead stealer was not restored"
+    )
+    assert not stray.exists()
+
+
+def test_lock_release_removes_only_a_self_held_lock(tmp_path: Path) -> None:
+    """The trap rule: release removes the dir ONLY when the recorded holder
+    pid is this process's own — a foreign or missing holder stays."""
+    mine = tmp_path / "own.lock.d"
+    mine.mkdir()
+    foreign = tmp_path / "foreign.lock.d"
+    foreign.mkdir()
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        (foreign / "holder").write_text(
+            f"/x pid={holder.pid} host={_this_host()}\n", encoding="utf-8"
+        )
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "{_LIB}"; lock_holder_write "$1"; '
+                f'lock_release "$1"; lock_release "$2"; '
+                '[ ! -e "$1" ] && echo GONE_OWN; [ -e "$2" ] && echo KEPT_FOREIGN',
+                "_",
+                str(mine),
+                str(foreign),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert "GONE_OWN" in proc.stdout
+        assert "KEPT_FOREIGN" in proc.stdout, (
+            "lock_release removed a lock whose holder was another live pid"
+        )
+        assert (foreign / "holder").read_text(encoding="utf-8").find(
+            f"pid={holder.pid}"
+        ) != -1
+    finally:
+        holder.kill()
+        holder.wait()

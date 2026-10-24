@@ -1368,6 +1368,54 @@
       register: precis_convergence
       changed_when: false
 
+    # An installed sha ≠ the pin is NOT automatically a skipped install: a
+    # concurrent scripts/deploy installing a NEWER sha leaves exactly this
+    # signature (2026-08-21/22 — the sibling ship's commit sat one descendant
+    # ahead of the pin on every venv, and the assert misdiagnosed it as a
+    # failed install). The remote host has no repo to judge ancestry, so
+    # classify each mismatch ON THE CONTROLLER: descendant-of-pin means a
+    # newer deploy landed mid-run, ancestor means a genuinely skipped/failed
+    # install — only the second wants a re-run. Runs with become:false in the
+    # playbook's own checkout (the render worktree when scripts/deploy made
+    # one — it contains the pin; a plain fetch brings the descendant).
+    - name: Fetch once on the controller so the per-venv ancestry check sees new commits
+      ansible.builtin.command: git -C "{{ playbook_dir }}/.." fetch -q origin
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      failed_when: false
+
+    - name: Classify each mismatching installed sha vs the pin (ancestry, on the controller)
+      ansible.builtin.shell: |
+        set -uo pipefail
+        inst="{{ item.stdout.split()[0] }}"; pin="{{ item.stdout.split()[1] }}"
+        repo="{{ playbook_dir }}/.."
+        git -C "$repo" cat-file -e "${inst}^{commit}" 2>/dev/null \
+          || git -C "$repo" fetch -q origin 2>/dev/null || true
+        if ! git -C "$repo" cat-file -e "${inst}^{commit}" 2>/dev/null; then
+          echo unknown; exit 0
+        fi
+        if git -C "$repo" merge-base --is-ancestor "$pin" "$inst" 2>/dev/null; then
+          echo descendant
+        elif git -C "$repo" merge-base --is-ancestor "$inst" "$pin" 2>/dev/null; then
+          echo ancestor
+        else
+          echo unrelated
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      when: item.stdout is defined and item.stdout.split()[0] != item.stdout.split()[1]
+      loop: "{{ precis_convergence.results }}"
+      loop_control:
+        index_var: _vidx
+        label: "{{ inventory_hostname }}:{{ item.item.key }}"
+      register: precis_convergence_ancestry
+      changed_when: false
+      failed_when: false
+
     - name: Assert each managed venv matches its deployed ref
       ansible.builtin.assert:
         that:
@@ -1375,15 +1423,33 @@
         fail_msg: >-
           {{ inventory_hostname }}: {{ item.item.key }} is on
           {{ item.stdout.split()[0][:10] }} but the pinned deploy target is
-          {{ item.stdout.split()[1][:10] }} — DEPLOY DID NOT CONVERGE. The
-          target is frozen for this run, so this means the install was genuinely
-          skipped/failed on this venv (re-run), not a main that moved under it.
+          {{ item.stdout.split()[1][:10] }} — DEPLOY DID NOT CONVERGE.
+          {%- set _rel = (precis_convergence_ancestry.results[_vidx].stdout | default('')) | trim -%}
+          {%- if _rel == 'descendant' %}
+          The installed sha is a DESCENDANT of the pin — a newer deploy
+          (concurrent scripts/deploy) landed on this venv mid-run. This run
+          still fails, but the cluster is AHEAD of the pin, not behind it:
+          do not blindly re-run, which would roll the fleet back — check
+          which deploy should win.
+          {%- elif _rel == 'ancestor' %}
+          The installed sha is an ANCESTOR of the pin — the install was
+          genuinely skipped/failed on this venv: re-run.
+          {%- elif _rel == 'unrelated' %}
+          The installed sha shares no ancestry with the pin — treat as a
+          skipped/failed install (re-run), unless a concurrent deploy ran;
+          then check which sha should be live.
+          {%- else %}
+          The target is frozen for this run and the installed sha's ancestry
+          could not be computed — if no other deploy ran, this means the
+          install was genuinely skipped/failed on this venv (re-run).
+          {%- endif %}
         success_msg: >-
           {{ inventory_hostname }}: {{ item.item.key }} @
           {{ item.stdout.split()[0][:10] }} ✓ (pinned {{ item.stdout.split()[1][:10] }})
         quiet: true
       loop: "{{ precis_convergence.results }}"
       loop_control:
+        index_var: _vidx
         label: "{{ inventory_hostname }}:{{ item.item.key }}"
 
     # gr496849: the venv sha above proves the files; this proves the PROCESS.

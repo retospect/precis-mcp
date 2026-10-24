@@ -82,6 +82,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SRC = REPO_ROOT / "scripts" / "deploy"
 SHIP_SRC = REPO_ROOT / "scripts" / "ship"
 DEPLOY_STATE_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "deploy-state.sh"
+LOCK_HOLDER_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "lock-holder.sh"
 
 
 def _test_env(**extra: str) -> dict[str, str]:
@@ -242,6 +243,7 @@ def deploy_repo(tmp_path: Path) -> tuple[Path, Path]:
     lib_dir.mkdir(parents=True)
     shutil.copy2(DEPLOY_SRC, scripts_dir / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, lib_dir / "deploy-state.sh")
+    shutil.copy2(LOCK_HOLDER_LIB_SRC, lib_dir / "lock-holder.sh")
     (scripts_dir / "deploy").chmod(0o755)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add deploy scripts")

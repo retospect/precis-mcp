@@ -36,16 +36,11 @@ SHIP_WORKTREE_LOCKDIR=""
 # _release_worktree_ship_lock — idempotent; removes the lock dir only if this
 # process is still the recorded holder (a sibling that stole the lock after
 # some pathological delay must not have its fresh lock deleted by our late
-# exit — same ownership-checked-release rule as the squash lock and the gate
-# slot semaphore).
+# exit — the same ownership-checked lock_release rule as the squash lock and
+# the gate slot semaphore).
 _release_worktree_ship_lock() {
     [[ -n "$SHIP_WORKTREE_LOCKDIR" ]] || return 0
-    local holder_pid
-    holder_pid="$(lock_holder_pid "$SHIP_WORKTREE_LOCKDIR")"
-    if [[ "$holder_pid" == "$$" ]]; then
-        rm -rf "$SHIP_WORKTREE_LOCKDIR" 2>/dev/null || true
-    fi
-    return 0
+    lock_release "$SHIP_WORKTREE_LOCKDIR"
 }
 
 # acquire_worktree_ship_lock <worktree-dir>
@@ -66,13 +61,18 @@ acquire_worktree_ship_lock() {
     SHIP_WORKTREE_LOCKDIR="${gitdir}/precis-ship-worktree.lock.d"
 
     if ! mkdir "$SHIP_WORKTREE_LOCKDIR" 2>/dev/null; then
-        if reason="$(lock_holder_reclaim_reason "$SHIP_WORKTREE_LOCKDIR" 30)"; then
+        # lock_steal re-judges the exact dir it removes: a steal that loses
+        # the race or finds a live holder swapped in refuses, and the else
+        # branch then reports whoever holds it NOW.
+        if reason="$(lock_holder_reclaim_reason "$SHIP_WORKTREE_LOCKDIR" 30)" \
+            && lock_steal "$SHIP_WORKTREE_LOCKDIR" 30; then
             holder="$(cat "$SHIP_WORKTREE_LOCKDIR/holder" 2>/dev/null || true)"
-            printf '\n\033[33m⚠ stale per-worktree ship lock (%s: %s) — stealing it.\033[0m\n' \
+            printf '\n\033[33m⚠ stale per-worktree ship lock (%s: %s) — stole it.\033[0m\n' \
                 "$reason" "${holder:-<no holder file>}" >&2
-            rm -rf "$SHIP_WORKTREE_LOCKDIR"
             if ! mkdir "$SHIP_WORKTREE_LOCKDIR" 2>/dev/null; then
-                printf '\n\033[31m✖ could not acquire the per-worktree ship lock after stealing it — refusing.\033[0m\n' >&2
+                holder_pid="$(lock_holder_pid "$SHIP_WORKTREE_LOCKDIR")"
+                printf '\n\033[31m✖ stole the stale per-worktree ship lock but a sibling (pid %s) acquired it first — refusing.\033[0m\n' \
+                    "${holder_pid:-?}" >&2
                 SHIP_WORKTREE_LOCKDIR=""
                 return 1
             fi
