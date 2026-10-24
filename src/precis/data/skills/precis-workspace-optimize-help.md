@@ -5,6 +5,7 @@ title: precis — evaluate physics on a design you built in a workspace script
 summary: precis_geom.physics.evaluate(shape, physics, spec, seed=, cells=) — the one physics call a workspace script makes; flow (thin-gap Hele-Shaw + particle tracer) is its first physics. What it returns, what it refuses, the regime card, the spec shape (hard/soft/gauge), and the rule that the server re-checks every stated number on import.
 answers:
   - how do I run the flow kernel on a chamber I built in a workspace script?
+  - how do I run a workspace script locally / build atomic geometry with hexfold?
   - what does evaluate return, and why is there no hole count in it?
   - how do I make a flow measure a hard constraint?
   - why does evaluate refuse my cells= value?
@@ -26,6 +27,12 @@ design stores come from the same code.
 This skill covers `evaluate`. Optimisation loops (params, search,
 caching, adapters) and the solid-physics names (heat, current, elastic)
 are added by later slices.
+
+Building the geometry itself — the local dev loop (`main.py` →
+`precis_geom`/`hexfold` → `out.run` → `scratch/out/<name>/`) — is the
+runnable recipe in `packaging/geom/README.md`, not duplicated here: the
+PCB sections cover `Board`/fits/trace and "Build an atomic structure
+(hexfold)" covers `hexfold.prism.prism_tube` → `pga.geom` → `o.block`.
 
 ## evaluate — the call
 

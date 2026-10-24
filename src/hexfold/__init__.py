@@ -47,6 +47,49 @@ Vendored into precis as its own package: MIT (``LICENSE`` here), never
 imports ``precis*`` (``tests/test_hexfold_import_boundary.py``), exported
 as its own pip later.  Export seed (README, examples, CITATION) is the
 repo-root ``hexfold/`` directory.
+
+``from hexfold import build`` (and ``check``, ``stick``,
+``canonical_json``) resolves the verb callables lazily — each name also
+names its submodule, so the re-export lives behind PEP 562
+``__getattr__`` rather than an eager binding that would shadow it:
+``import hexfold.build as m`` keeps yielding the module for the callers
+that read (and monkeypatch) module attributes off it, and
+``import hexfold`` stays light (``hexfold.stick`` keeps numba out of
+the path the same way).  The wart that buys that: the two spellings
+share one attribute, so the last import form to touch it wins — a plain
+``import hexfold.build`` binds the module back and a later
+``from hexfold import build`` in the same process gets the module, not
+the callable.  Fresh-process ``from hexfold import …`` — the
+``python -c`` / workspace-script path — always gets the callable.
 """
 
+import sys
+from typing import Any
+
 __version__ = "0.3.6"
+
+#: verb name -> the submodule that defines the callable of the same
+#: name (``canonical_json`` lives in ``hexfold.canon``).
+_LAZY_EXPORTS = {
+    "build": "hexfold.build",
+    "check": "hexfold.check",
+    "stick": "hexfold.stick",
+    "canonical_json": "hexfold.canon",
+}
+
+
+def __getattr__(name: str) -> Any:
+    submodule = _LAZY_EXPORTS.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    fn = getattr(import_module(submodule), name)
+    # A first ``hexfold.<verb>`` load binds the submodule onto this
+    # attribute; drop the binding again so the next
+    # ``from hexfold import <verb>`` still reaches ``__getattr__`` (the
+    # submodule itself stays in ``sys.modules`` — ``import
+    # hexfold.<verb>`` and ``from hexfold.<verb> import X`` are
+    # unaffected).
+    sys.modules[__name__].__dict__.pop(name, None)
+    return fn

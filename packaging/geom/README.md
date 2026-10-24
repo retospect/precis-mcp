@@ -153,3 +153,49 @@ and the call's arguments:
 ```text
 [('blinky_led/main.py', 32, 'R1'), ('blinky_led/main.py', 33, 'D1')]
 ```
+
+## Build an atomic structure (hexfold)
+
+The atomic builder beside `precis_geom.pcb` is `hexfold`.
+`hexfold.prism.prism_tube(periods, rows, strip_rows, seams)` closes a
+polygonal tube of flat wall strips joined at equal-120 seam lines, each
+seam's third sheet an outward fin (`+`) or an inward rib (`-`). `seams`
+is the sign string — closure needs `#plus − #minus = 6` (the plain
+hexagonal prism is `"++++++"`), `rows` must be even, and the argument
+bounds are in `hexfold.prism.prism_tube`. It returns `(net, tube)` —
+the atom/bond `Net` plus the seam bookkeeping:
+
+```python
+from hexfold.prism import prism_tube
+
+net, tube = prism_tube(8, 4, 2, "++++++")
+print("atoms", len(net.atoms), "bonds", len(net.bonds), "ok", net.report.ok)
+```
+
+```text
+atoms 768 bonds 1068 ok True
+```
+
+The same `pga.geom` → `out.run` + `o.block` hand-off lands the geometry
+in `scratch/out/<name>/` — the `.extxyz` block file plus its
+`.bonds.json` sidecar:
+
+```python
+import precis_geom.assembly as pga
+from precis_geom import out
+
+with out.run("hexprism") as o:
+    o.block("prism", pga.geom(net), desc="hexagonal prism tube, 6 fin seams")
+print(o.root)
+print(sorted(p.name for p in o.root.iterdir()))
+print(sorted(p.name for p in (o.root / "blocks").iterdir()))
+```
+
+```text
+scratch/out/hexprism
+['blocks', 'manifest.json', 'trace.json']
+['prism.bonds.json', 'prism.extxyz']
+```
+
+`pga.geom(net)` exports `net.seed3` — the seed placement, NOT a relaxed
+geometry; relaxation is the SE side's job after import.

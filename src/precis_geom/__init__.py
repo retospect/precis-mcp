@@ -24,6 +24,11 @@ package — the pieces that are *the script's own surface*:
   spec, *, seed, cells)``, the toolkit's one physics call (flow first;
   se-flow-kernel slice 4a). Both are numpy/``precis_flow`` code.
 
+The runnable dev-loop recipe — the PCB path and the ``hexfold
+prism_tube`` → ``pga.geom`` → ``out.block`` atomic path — is
+``packaging/geom/README.md`` (§"Build an atomic structure (hexfold)"
+for the atomic side).
+
 Stdlib only in this ``__init__``: anything heavier lives in submodules
 or the wheel's other packages.
 Import alias convention (spec §Core design): ``import precis_geom as pg``.

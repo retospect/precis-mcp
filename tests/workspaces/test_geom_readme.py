@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import precis_geom.out as out
 
@@ -22,9 +23,15 @@ def test_readme_python_blocks_execute(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(out, "_SCRATCH_DIR", tmp_path / "scratch")
     blocks = _BLOCKS.findall(README.read_text(encoding="utf-8"))
-    assert len(blocks) >= 4, (
+    assert len(blocks) >= 9, (
         "packaging/geom/README.md must keep its runnable ```python blocks"
     )
-    ns: dict[str, object] = {}
+    ns: dict[str, Any] = {}
     for block in blocks:
         exec(compile(block, str(README), "exec"), ns)
+    # the hexfold section: the prism net is report-clean and o.block
+    # wrote its geometry under the redirected scratch/out/.
+    assert ns["net"].report.ok
+    assert (
+        tmp_path / "scratch" / "out" / "hexprism" / "blocks" / "prism.extxyz"
+    ).is_file()
