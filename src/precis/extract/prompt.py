@@ -90,7 +90,11 @@ Rules:
 - a bracketed spread goes verbatim to "range";
 - in a table row, a cell holding only '-' signs the number in the next
   cell — the literal carries it ('-1.93' for '| - | 1.93 |');
-- the literal must be copied EXACTLY as printed, sign and dashes included;
+- the literal must be copied EXACTLY as printed, sign and dashes
+  included — markup is notation, not content: '$-0.7 \\pm 0.1
+  \\text{ W m}^{-2}$' is literal '-0.7 ± 0.1' with unit 'W m-2',
+  '<sup>−</sup>1.9' is '-1.9', and a value split across table cells or
+  lines is still one number;
 - anchor to the sentence that prints the literal, nothing wider;
 - do not invent numbers, units or measurands — emit [] rather than guess;
 - file a number only under a measurand whose meaning matches it; when the

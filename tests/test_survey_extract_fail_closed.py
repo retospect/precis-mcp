@@ -31,6 +31,7 @@ def _call(stats: dict[str, int], escalations: list[dict[str, Any]]) -> str | Non
         chunk={"chunk_id": 1, "chunk_kind": "paragraph", "text": "x"},
         paper=1,
         paper_title=None,
+        glyph_flagged=False,
         vocab={},
         run_token="r",
         tier=Tier.BIG,

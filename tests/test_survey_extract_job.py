@@ -636,6 +636,88 @@ class TestCastorTrialPrep:
         assert stats["skipped_section"] == 0
         assert stats["calls"] == 4
 
+    def test_markup_chunks_write_and_glyph_refusal_escalates(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr511458: a LaTeX span lands (literal/unit checks fold markup)
+        and a glyph-damaged unit is refused into an escalation that
+        carries the raw literal and unit."""
+        store = world["store"]
+        make_taxon(store, "radiative-forcing", unit="W/m^2", parent=world["root"])
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                (json.dumps({"glyph_health": {"suspected": True}}), world["paper"]),
+            )
+            conn.commit()
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="ERFs of  $-0.7 \\pm 0.1 \\text{ W m}^{-2}$  were found.",
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text="Reflection must rise by 3.7 W mK^2 globally over time.",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "radiative-forcing",
+                                "literal": "-0.7 ± 0.1",
+                                "unit": "W m-2",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "radiative-forcing",
+                                "literal": "3.7",
+                                "unit": "W mK^2",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["written"] == 1
+        assert stats["write_refused"] == 1
+        esc = next(
+            e for e in done.summary_meta["escalations"] if e["kind"] == "write_refused"
+        )
+        assert esc["literal"] == "3.7"
+        assert esc["unit"] == "W mK^2"
+        assert esc["glyph_suspected"] is True
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        ]
+        (row,) = rows
+        assert row["extraction_status"] == "anchor_matched"
+        assert row["meta"]["extraction"]["prompt"] == "r3"
+
 
 class TestRungAwarePacing:
     """jo504632 pacing (castor pilot): the per-slice ``Yield`` park is for

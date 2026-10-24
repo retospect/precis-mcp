@@ -42,6 +42,7 @@ from ase.formula import Formula
 
 from precis.errors import BadInput
 from precis.taxonomy.census import _normalize_unit_candidate
+from precis.utils.text import markup_surface, markup_unit
 
 _UREG: pint.UnitRegistry | None = None
 
@@ -111,8 +112,12 @@ class ParsedLiteral:
 def parse_literal(literal: str) -> ParsedLiteral:
     """``9.6 ± 1.7`` -> point 9.6 err 1.7; ``<1`` -> upper_bound; ``550–575``
     -> interval; ``~3`` -> approximate_point; ``true``/``false`` -> boolean;
-    a bare number -> point; anything else -> categorical (text = literal)."""
-    s = _LEAD_MINUS_RE.sub("-", literal.strip()).translate(MINUS_FOLD)
+    a bare number -> point; anything else -> categorical (text = literal).
+    The literal is markup-folded first so a verbatim-copied
+    ``$-1.8 \\pm 0.1$`` still parses numeric — a markup literal left
+    unparsed would read as categorical and skip the unit dimension
+    checks (gr511458)."""
+    s = _LEAD_MINUS_RE.sub("-", markup_surface(literal)).translate(MINUS_FOLD)
     s = s.replace(" ", " ")
     if (m := _ERR_RE.match(s)) is not None:
         return ParsedLiteral("point", num=float(m.group(1)), err=abs(float(m.group(2))))
@@ -162,8 +167,12 @@ def basis_normalization(label: str) -> str:
 
 
 def pint_unit_text(raw_unit: str) -> tuple[str, str | None]:
-    """``(text pint can parse, basis label or None)`` for a printed unit."""
-    stripped, label = split_basis_label(raw_unit.strip())
+    """``(text pint can parse, basis label or None)`` for a printed unit.
+    Markup is folded first (:func:`precis.utils.text.markup_unit` —
+    ``W m^{-2}``/``m<sup>−</sup><sup>2</sup>`` -> ``W m^-2``,
+    ``<sub>`` -> ``_`` keeps basis labels) so the spelling a paper's
+    extraction left behind still reaches pint (gr511458)."""
+    stripped, label = split_basis_label(markup_unit(raw_unit.strip()))
     text = _normalize_unit_candidate(stripped)
     if text.replace(" ", "") in ("%", "percent", "mol%"):
         # mol% is a percent of an amount fraction: dimensionless like %, which

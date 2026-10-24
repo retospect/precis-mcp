@@ -20,9 +20,10 @@ Carries the two ported defect fixes:
 
 from __future__ import annotations
 
-import html
 import re
 from collections.abc import Iterable
+
+from precis.utils.text import markup_surface
 
 NUMBER_V3 = re.compile(
     r"(?<![\w.])(?:[-+−](?:\s*\|\s*)?)?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:[eE][+−-]?\d+)?(?!\d|\.\d)"
@@ -37,13 +38,19 @@ _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzµΩ"
 
 
 def literal_normalize(value: str) -> str:
-    """The matching form of a literal or span: whitespace squashed, the
-    Unicode minus/dash variants folded to ASCII ``-``, and a table cell
-    holding only a sign merged onto the next number — ``'− | 1.93'`` in a
-    PDF-split table reads ``'-1.93'`` (gr511461)."""
-    text = value.replace("−", "-").replace("–", "-")
-    text = re.sub(r"([-+])\s*\|\s*(?=\d)", r"\1", text)
-    return re.sub(r"\s+", " ", text).strip()
+    """The matching form of a literal or span: markup folded to the
+    printed reading (:func:`precis.utils.text.markup_surface` — ``\\pm``
+    -> ``±``, ``^{−2}`` -> ``-2``, ``<sup>``/``<sub>`` unwrapped, minus
+    and dash glyphs folded to ASCII ``-``, ``|`` cell separators and all
+    whitespace collapsed, a sign-only table cell merged onto the next
+    number (gr511458, gr511461))."""
+    return markup_surface(value)
+
+
+def _ws_free(value: str) -> str:
+    """``literal_normalize`` with every space removed — a quantity split
+    across table cells or lines still contains itself."""
+    return re.sub(r"\s+", "", value)
 
 
 #: The phrasings a sentence uses where a ``<``/``>`` would sit: the bound
@@ -189,14 +196,27 @@ def literal_supported(
     literal like "NH3" is verbatim-checked only.
     """
     lit = literal_normalize(literal)
-    if not lit or lit not in literal_normalize(span_text):
+    if not lit or _ws_free(lit) not in _ws_free(literal_normalize(span_text)):
         return False
-    expected = {literal_normalize(part) for _, _, part in numeric_regions(literal)}
-    available = {
-        literal_normalize(part)
-        for start, end, part in numeric_regions(source_text)
-        if span[0] <= start and end <= span[1]
+    expected = {
+        _ws_free(literal_normalize(part)) for _, _, part in numeric_regions(literal)
     }
+    crossing: set[str] = set()
+    available: set[str] = set()
+    for start, end, part in numeric_regions(source_text):
+        if span[0] <= start and end <= span[1]:
+            available.add(_ws_free(literal_normalize(part)))
+        elif start < span[0] < end or start < span[1] < end:
+            crossing.add(_ws_free(literal_normalize(part)))
+    # Markup can move a sign or an exponent into tags the raw scan splits
+    # out ("<sup>−</sup>1.9" reads "-1.9", "m}^{-2}" reads "m-2"), so the
+    # folded span's own regions count too — except a folded part that is
+    # a fragment of a raw region the span boundary cuts (the anti-crop
+    # guard: "505.9" cropped out of "1,505.9" still refuses).
+    for _, _, part in numeric_regions(literal_normalize(span_text)):
+        folded = _ws_free(literal_normalize(part))
+        if not any(folded in cut for cut in crossing):
+            available.add(folded)
     if not expected <= available:
         return False
     return not (numeric_required and not expected)
@@ -204,17 +224,10 @@ def literal_supported(
 
 def unit_surface(value: str) -> str:
     """The plain-text reading of a possibly-markup unit: HTML entities and
-    tags stripped, LaTeX ``\\mu``/``\\Omega``/``\\%``/``\\times`` folded,
-    superscripts flattened (``cm⁻²``/``cm^-2``/``cm^{−2}`` → ``cm-2``)."""
-    value = html.unescape(value).replace("μ", "µ").replace("−", "-")
-    value = re.sub(r"<[^>]+>", "", value)
-    value = value.replace("\\mu", "µ").replace("\\Omega", "Ω").replace("\\%", "%")
-    value = re.sub(
-        r"\\(?:text|mathrm|textrm|mathbf|operatorname|rm|left|right|tiny)\b", "", value
-    )
-    value = re.sub(r"\\[,;! ]", " ", value)
-    value = value.translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+"))
-    return re.sub(r"[$^_{}]", "", value)
+    tags stripped, LaTeX commands folded, superscripts flattened
+    (``cm⁻²``/``cm^-2``/``cm^{−2}``/``cm<sup>−</sup><sup>2</sup>`` →
+    ``cm-2``) — :func:`precis.utils.text.markup_surface`."""
+    return markup_surface(value)
 
 
 def unit_has_text_support(unit: object, text: str) -> bool:

@@ -124,6 +124,7 @@ from precis.taxonomy.measure_units import (
 )
 from precis.taxonomy.nodes import slugify
 from precis.utils.glyph_health import glyph_suspected
+from precis.utils.text import markup_surface
 
 log = logging.getLogger(__name__)
 
@@ -486,12 +487,14 @@ def _check_enum(name: str, value: str | None, allowed: Sequence[str]) -> None:
 
 
 def _squash(text: str) -> str:
-    """Whitespace-collapsed, minus-folded, case-folded form for the
-    literal-in-span test. A table cell holding only a sign merges onto
-    the next number ('− | 1.93' reads '-1.93'), matching
-    ``verify.literal_normalize`` (gr511461)."""
-    t = text.translate(MINUS_FOLD).replace(" ", " ").replace(" ", " ")
-    t = re.sub(r"([-+])\s*\|\s*(?=\d)", r"\1", t)
+    """Markup-folded, whitespace-collapsed, minus-folded, case-folded
+    form for the literal-in-span test — the same surface the
+    extraction-time check sees, so a LaTeX/``<sup>`` span still stamps
+    ``anchor_matched`` for the plain literal — incl. a sign-only table cell merged onto its
+    number ("− | 1.93" reads "-1.93") (gr511458, gr511461)."""
+    t = markup_surface(text).translate(MINUS_FOLD)
+    t = t.replace("\u2009", " ").replace("\xa0", " ")
+
     return " ".join(t.split()).casefold()
 
 

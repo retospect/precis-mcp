@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.errors import BadInput
 from precis.extract import anchors, verify
 from precis.extract.accept import acceptance, stratified_sample, wilson_interval
 from precis.extract.prompt import reader_prompt
@@ -19,6 +20,11 @@ from precis.extract.proposals import (
     vocab_entry,
 )
 from precis.store import Store
+from precis.taxonomy.measure_units import (
+    make_converter,
+    parse_literal,
+    pint_unit_text,
+)
 from tests.extract_helpers import (
     CHUNK1,
     fe_reply,
@@ -742,3 +748,127 @@ class TestValueFormNormalised:
         )
         (prop,) = out.proposals
         assert prop.output.value_form == built
+
+
+# ── markup folds (gr511458) ──────────────────────────────────────────
+#
+# Each markup form the checks now read through — LaTeX, HTML sup/sub,
+# glyph minus, split table cells — with synthetic strings only (ids and
+# numbers, never paper text).
+
+
+class TestMarkupFolds:
+    def test_latex_pm_and_text_brace_exponent(self) -> None:
+        text = "the run gave ERFs of  $-0.7 \\pm 0.1 \\text{ W m}^{-2}$  here."
+        span = (0, len(text))
+        assert verify.literal_supported("-0.7 ± 0.1", text, text, span)
+        assert verify.literal_supported("-0.7 ± 0.1 W m-2", text, text, span)
+        assert verify.literal_supported(
+            "$-0.7 \\pm 0.1 \\text{ W m}^{-2}$", text, text, span
+        )
+        assert not verify.literal_supported("-0.8 ± 0.1", text, text, span)
+
+    def test_html_sup_split_sign(self) -> None:
+        text = "the median is <sup>−</sup>1.9 W m<sup>−</sup><sup>2</sup> here"
+        span = (0, len(text))
+        assert verify.literal_supported("-1.9", text, text, span)
+        assert verify.literal_supported("−1.9", text, text, span)  # U+2212
+
+    def test_html_sup_interval(self) -> None:
+        text = (
+            "a spread of <sup>−</sup>0.6 to <sup>−</sup>2.5 W m<sup>−</sup><sup>2</sup>"
+        )
+        span = (0, len(text))
+        assert verify.literal_supported("-0.6 to -2.5", text, text, span)
+        assert not verify.literal_supported("-0.6 to -2.7", text, text, span)
+
+    def test_latex_times10_sci_form(self) -> None:
+        text = "loads of  $2 \\times 10^{-3}$  and  $3 \\times 10^{2}$  ran."
+        span = (0, len(text))
+        assert verify.literal_supported("2×10^-3", text, text, span)
+        assert verify.literal_supported("2e-3", text, text, span)
+        assert verify.literal_supported("3×10^2", text, text, span)
+        assert not verify.literal_supported("4e-3", text, text, span)
+
+    def test_split_table_cells(self) -> None:
+        text = "| SEP | -0.7 |\n| ± | 0.1 |\n| unit | W m-2 |"
+        span = (0, len(text))
+        assert verify.literal_supported("-0.7 ± 0.1", text, text, span)
+        assert verify.unit_has_text_support("W m-2", text)
+
+    def test_minus_glyphs_fold(self) -> None:
+        text = "a forcing of −1.9 W m−2 is seen"  # U+2212 minus
+        span = (0, len(text))
+        assert verify.literal_supported("-1.9", text, text, span)
+
+    def test_markup_does_not_admit_a_fabricated_number(self) -> None:
+        text = "ERFs of  $-0.7 \\pm 0.1 \\text{ W m}^{-2}$  were found."
+        span = (0, len(text))
+        assert not verify.literal_supported("-0.9", text, text, span)
+        assert not verify.literal_supported("0.7", text, text, span)
+
+    def test_unit_surface_markup_forms(self) -> None:
+        text = "ERFs of  $-0.7 \\pm 0.1 \\text{ W m}^{-2}$  were found."
+        assert verify.unit_has_text_support("W m-2", text)
+        assert verify.unit_has_text_support("W m^{-2}", text)
+        assert verify.unit_has_text_support(
+            "W m^-2", "median −1.9 W m<sup>−</sup><sup>2</sup>"
+        )
+        assert not verify.unit_has_text_support("W m-3", text)
+
+
+class TestMarkupUnitsToPint:
+    def test_latex_brace_exponent_units_parse(self) -> None:
+        conv = make_converter("W m^{-2}", "W/m^2")
+        assert conv.value(-1.8) == pytest.approx(-1.8)
+        conv = make_converter("cm^{-3}", "m^-3")
+        assert conv.value(600.0) == pytest.approx(6e8)
+
+    def test_sup_tag_and_unicode_sup_units_parse(self) -> None:
+        conv = make_converter("W m<sup>−</sup><sup>2</sup>", "W/m^2")
+        assert conv.value(3.7) == pytest.approx(3.7)
+        conv = make_converter("µg h⁻¹ cm⁻²", "kg s^-1 m^-2")
+        assert conv.value(1.0) == pytest.approx(1e-9 / 0.36)
+
+    def test_text_command_unit_parses(self) -> None:
+        assert pint_unit_text("\\text{W m}^{-2}") == ("W m^-2", None)
+
+    def test_sub_tag_keeps_the_basis_label(self) -> None:
+        assert pint_unit_text("mg<sub>cat</sub>⁻¹") == ("mg^-1", "cat")
+
+    def test_glyph_damaged_unit_still_refused(self) -> None:
+        with pytest.raises(BadInput, match="no dimension match"):
+            make_converter("W mK^2", "W/m^2")
+
+    def test_markup_literal_still_parses_numeric(self) -> None:
+        parsed = parse_literal("$-1.8 \\pm 0.1$")
+        assert parsed.form == "point"
+        assert parsed.num == pytest.approx(-1.8)
+        assert parsed.err == pytest.approx(0.1)
+
+
+class TestMarkupBuildRuns:
+    def test_latex_span_proposal_builds(self, world: dict) -> None:
+        text = "ERFs of  $-0.7 \\pm 0.1 \\text{ W m}^{-2}$  were found for SEP."
+        out = build_runs(
+            {
+                "results": [
+                    {
+                        "measurand": "faradaic-efficiency",
+                        "literal": "-0.7 ± 0.1",
+                        "unit": "%",
+                        "anchor": "0",
+                        "attribution": "own_work",
+                    }
+                ]
+            },
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.dropped
+        (prop,) = out.proposals
+        assert prop.output.meta["extraction"]["prompt"] == "r3"

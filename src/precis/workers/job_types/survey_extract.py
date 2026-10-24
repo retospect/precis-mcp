@@ -68,6 +68,7 @@ from precis.extract import prompt as _prompt
 from precis.extract.proposals import VocabEntry, build_runs, vocab_entry
 from precis.utils import handle_registry
 from precis.utils.env import env_int
+from precis.utils.glyph_health import glyph_suspected
 from precis.utils.llm.router import (
     LlmRequest,
     Tier,
@@ -136,6 +137,17 @@ def _paper_title(store: Store, ref_id: int) -> str | None:
             "SELECT title FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+def _paper_glyph_flag(store: Store, ref_id: int) -> bool:
+    """The paper's ingest glyph-health flag — a font whose encoding lies
+    corrupts numbers/units in the stored text (gr228652); write refusals
+    on a flagged paper are named so in the escalation (gr511458)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return glyph_suspected(row[0] if row else None)
 
 
 def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
@@ -422,6 +434,7 @@ def _process_chunk(
     chunk: dict[str, Any],
     paper: int,
     paper_title: str | None,
+    glyph_flagged: bool,
     vocab: dict[int, VocabEntry],
     run_token: str,
     tier: Tier,
@@ -597,16 +610,22 @@ def _process_chunk(
             else:
                 stats["dropped"] += 1
                 stats["write_refused"] += 1
-                _escalate(
-                    escalations,
-                    {
-                        "kind": "write_refused",
-                        "chunk": chunk["chunk_id"],
-                        "chunk_kind": chunk["chunk_kind"],
-                        "location": proposal.location,
-                        "detail": str(exc)[:200],
-                    },
-                )
+                # The raw literal and unit ride along so a refusal a
+                # reviewer can repair by hand (a glyph-damaged unit like
+                # "W mK^2" that no normalisation recovers, gr511458)
+                # keeps the number it was refused on.
+                entry = {
+                    "kind": "write_refused",
+                    "chunk": chunk["chunk_id"],
+                    "chunk_kind": chunk["chunk_kind"],
+                    "location": proposal.location,
+                    "detail": str(exc)[:200],
+                    "literal": _result_field(raw_results, proposal.location, "literal"),
+                    "unit": _result_field(raw_results, proposal.location, "unit"),
+                }
+                if glyph_flagged:
+                    entry["glyph_suspected"] = True
+                _escalate(escalations, entry)
             continue
         stats["written"] += 1
         for flag in proposal.flags:
@@ -676,6 +695,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             success=False,
         )
     title = _paper_title(ctx.store, paper)
+    glyph_flagged = _paper_glyph_flag(ctx.store, paper)
     allow = _measurand_allow(ctx.store, params.get("measurands"))
     vocab = _vocab(
         ctx.store,
@@ -708,6 +728,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             chunk=chunk,
             paper=paper,
             paper_title=title,
+            glyph_flagged=glyph_flagged,
             vocab=vocab,
             run_token=run_token,
             tier=tier,
