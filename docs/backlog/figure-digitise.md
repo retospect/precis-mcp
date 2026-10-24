@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: fig-digitise-1-3
 title: Figure digitiser - calibrated, uncertainty-bearing numbers from a plotted series (first use pa186444 Fig. 1)
 pillar: local-compute
 prio: normal
