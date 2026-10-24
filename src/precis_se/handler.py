@@ -311,6 +311,8 @@ class SeHandler(Handler):
                 "cargo_A3",
                 "against",
                 "from",
+                "kind",
+                "bundle",
                 "origin",
                 "direction",
                 "length",
@@ -2310,7 +2312,9 @@ class SeHandler(Handler):
                 se_rays.apply_fields(spec, args, partial=False)
             obs = se_rays.observe(tree, block, spec, slug=slug)
             if args.get("against") is not None:
-                dg = se_rays.pick_digest(spec, args["against"])
+                dg = se_rays.pick_digest(
+                    spec, args["against"], current_hash=se_rays.event_hash(obs)
+                )
                 scenes = {}
                 for sslug, ver in (dg.get("structures") or {}).items():
                     sref = self.store.get_ref(kind="structure", id=sslug)
@@ -2327,7 +2331,13 @@ class SeHandler(Handler):
                 return "\n".join(
                     [
                         se_rays.header(obs),
-                        f"against {args['against']} ({dg.get('at')}; {vers or '—'})",
+                        f"against {args['against']} ({dg.get('at')}"
+                        + (
+                            f" · {', '.join(f'{k} {v}' for k, v in dg['service'].items())}"
+                            if dg.get("service")
+                            else ""
+                        )
+                        + f"; {vers or '—'})",
                         *se_rays.diff_lines(old, obs),
                     ]
                 )
@@ -7776,6 +7786,8 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
             "step",
             "reach",
             "frame",
+            "kind",
+            "bundle",
         }
     ),
     "rays": frozenset(),

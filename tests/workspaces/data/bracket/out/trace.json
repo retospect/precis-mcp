@@ -1,0 +1,106 @@
+{
+ "schema": 1,
+ "run": {
+  "workspace": "mount",
+  "job": null,
+  "script_sha": null,
+  "lock_sha": null,
+  "started_utc": null,
+  "finished_utc": null,
+  "collapsed": 0,
+  "truncated": false
+ },
+ "frames": [
+  {
+   "id": 0,
+   "key": "b200000000000000",
+   "parent": null,
+   "qual": "main",
+   "file": "build.py",
+   "line": 1,
+   "occ": 0,
+   "kind": "root",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 1,
+   "key": "b200000000000001",
+   "parent": "b200000000000000",
+   "qual": "main.build",
+   "file": "build.py",
+   "line": 10,
+   "occ": 0,
+   "kind": "user",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 2,
+   "key": "b200000000000002",
+   "parent": "b200000000000001",
+   "qual": "pga.box",
+   "file": "build.py",
+   "line": 20,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 3,
+   "key": "b200000000000003",
+   "parent": "b200000000000001",
+   "qual": "pga.cut",
+   "file": "build.py",
+   "line": 22,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 4,
+   "key": "b200000000000004",
+   "parent": "b200000000000001",
+   "qual": "pga.box",
+   "file": "build.py",
+   "line": 40,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 5,
+   "key": "b200000000000005",
+   "parent": "b200000000000001",
+   "qual": "pga.cut",
+   "file": "build.py",
+   "line": 44,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 6,
+   "key": "b200000000000006",
+   "parent": "b200000000000001",
+   "qual": "pga.ray",
+   "file": "build.py",
+   "line": 50,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  }
+ ]
+}

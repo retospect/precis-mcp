@@ -367,11 +367,38 @@ get(kind='se', id='<slug>~ray:axis', extent='fisheye')
 | `relax` | the nearest atom's per-atom relax level changes (needs slice 4a's levels; absent until then) |
 | `charge` | `q` on passes and `esp` hits (needs stored partial charges, slice 4; absent until then) |
 | `region` | a block envelope or a shaped pocket entered/left |
-| `solid` | macro: `enter`/`exit` a non-structure block's envelope, in the ray's own unit |
+| `solid` | macro: the event list below, in the ray's own unit |
 
 A field with no data is absent from the header's `fields` list, never a
 per-hit gap. Atomic hits read in Å from the ray origin; macro hits in
 nm/µm/mm by ray length; all sort by `s` along the one world ray.
+
+## Observation rays: macro leg (event list, four kinds)
+
+A non-structure block is probed through its **bound cad design** when it
+binds one (holes read as holes), else its envelope. Events, in `s` order:
+`enter`/`exit <block>` per contiguous run of material (a re-entry is
+`<block>#2`; a hole the ray runs straight down is not material and has
+none), `void <block>.<feature> ⌀d · len · axis offset · build.py:44 cut#5 ·
+frame:<key>` for each carved feature crossed, `gap` between blocks, and
+`port.enter <block>.<port> M5x0.8 (role …) · axis offset …` for a port
+with pose, direction and a `thread`/`diameter` (m) annotation (`depth`
+m sets its length). `kind` adds a report under the events:
+
+| kind | report |
+|---|---|
+| `bolt_axis` | stack to the threaded port's block, thread depth = its hole (≥ 1.5 d ✓/✗), radial clearance (tightest stack hole), axis offset from the threaded hole, `screw: M5 × 16 · engagement 9.8 mm` — the shortest ISO 4762 length with stack + 1.5 d ≤ L ≤ stack + depth, or `no standard length fits — 12 short by …, 16 bottoms out by …` |
+| `tool_access` | `clear ✓` or `blocked by <block> at s ✗`; port cylinders are not counted |
+| `load_path` | thinnest material crossing; stress/utilisation need a stored field outcome (absent) |
+| `manufacturability` | each solid wall vs the block mode's `min_wall` (holes are not walls); undercut when a block is re-entered along the axis |
+
+`'bundle': {'radius': '4 mm', 'count': 8}` on `add_ray` makes one probe
+of `count` parallel rays on that circle, the union of their hits. An
+import re-observes every ray: one whose events changed since the
+previous version gets `ray.changed` (`view='validate'`), and the import
+echo shows the old and new lists.
+
+## Observation rays: bare structure designs and scripts
 
 ### On a bare structure design
 
@@ -386,6 +413,9 @@ No trace, so `frame` is absent.
 `pga.ray(name, origin, direction, length, block=…, fields=…,
 step=…, reach=…, frame=…)`, `pga.ray.along(geom.port('rim'), '5 nm',
 name=…)`, `pga.ray.axis(tube, name='axis')` (principal axis of the
-atoms); `out.ray(r)` writes the manifest `rays:` entry. The import makes
+atoms), `pga.ray.bundle(r, '4 mm', 8)` (a tool's tube),
+`pga.find_holes(plate)` (proposes fastener ports for M-size cuts:
+`thread` at the nominal ⌀, `clearance_for` within ISO 273 fine–coarse);
+`out.ray(r)` writes the manifest `rays:` entry. The import makes
 each a block child with a `made-by:` line naming the script frame; a ray
 the next run stops writing retires.

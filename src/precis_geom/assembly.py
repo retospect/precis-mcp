@@ -912,6 +912,9 @@ class Ray:
     frame_in: str | None = None
     anchor: tuple[str, ...] | None = None
     frame_id: int | None = None
+    #: ``(radius m, count)`` — a ray bundle: ``count`` parallel rays on a
+    #: circle of ``radius`` around this one, one probe (``tool_access``).
+    bundle: tuple[float, int] | None = None
 
 
 def _ray_origin_m(value: Any) -> tuple[float, float, float]:
@@ -1169,8 +1172,171 @@ class _RayApi:
         the centroid, padded 2 Å beyond each end."""
         return _ray_axis(obj, name=name, length=length, reach=reach, block=block)
 
+    def bundle(
+        self,
+        r: Ray,
+        radius: Any,
+        count: int = 8,
+        *,
+        name: str | None = None,
+        kind: str | None = "tool_access",
+    ) -> Ray:
+        """``r`` as a bundle: ``count`` parallel rays on a circle of
+        ``radius`` (metres or a unit string) — a wrench or socket needs a
+        tube, not a line; the report is the union of their hits."""
+        rad = _ray_length_m(radius)
+        if not 3 <= int(count) <= 64:
+            raise BadInput(
+                f"ray.bundle count must be 3..64, got {count!r}",
+                next="8 rays is the usual tube",
+            )
+        return replace(
+            r,
+            name=str(name) if name is not None else r.name,
+            kind=str(kind) if kind is not None else r.kind,
+            bundle=(rad, int(count)),
+        )
+
 
 ray = _RayApi()
+
+
+# ── find_holes ───────────────────────────────────────────────────────────
+
+#: ISO 273 clearance holes, mm: ``size → (fine, coarse)``. A cut from the
+#: fine to the coarse diameter is that size's clearance hole; the ranges
+#: do not overlap, so a diameter names at most one size (a 4.2 mm M5 tap
+#: drill is below M4's fine 4.3 and reads as no clearance hole).
+_ISO273_MM = {
+    "M2": (2.2, 2.6),
+    "M2.5": (2.7, 3.1),
+    "M3": (3.2, 3.6),
+    "M4": (4.3, 4.8),
+    "M5": (5.3, 5.8),
+    "M6": (6.4, 7.0),
+    "M8": (8.4, 10.0),
+    "M10": (10.5, 12.0),
+    "M12": (13.0, 14.5),
+    "M16": (17.0, 18.5),
+    "M20": (21.0, 24.0),
+}
+
+
+def _metric_sizes() -> list[tuple[str, float, float]]:
+    """``(key, nominal mm, pitch mm)`` for the ISO 4762 screw sizes."""
+    from precis import component_series as cs
+
+    series = cs.find_series("iso-4762")
+    out = []
+    for size in series.sizes if series is not None else ():
+        d = size.specs.get("outer_diameter")
+        pitch = size.specs.get("thread_pitch")
+        if d is not None and pitch is not None:
+            out.append((size.key, float(d), float(pitch)))
+    return out
+
+
+def _design_of(obj: Any) -> Any:
+    from precis.cad.scene import SceneSpec, build_design, parse_source
+
+    if isinstance(obj, Geom):
+        obj = obj.design
+    if isinstance(obj, str):
+        obj = parse_source(obj)
+    if isinstance(obj, SceneSpec):
+        obj = build_design(obj)
+    if obj is None or not hasattr(obj, "components"):
+        raise BadInput(
+            "find_holes needs a cad design (Design, SceneSpec, DSL text or a "
+            "macro Geom)",
+            next="pga.find_holes(build_design(spec))",
+        )
+    return obj
+
+
+def find_holes(obj: Any, *, prefix: str = "h") -> list[Port]:
+    """Propose fastener ports for the cylindrical cuts in a cad design —
+    the reverse of placing ports by hand (structure-workspaces 2r.2). A cut
+    at an ISO metric nominal diameter is a threaded hole (``thread:
+    'M5x0.8'``, ``depth`` = its length); one within ISO 273's fine–coarse
+    clearance range is that size's clearance hole (``clearance_for:
+    'M5'``). Each port sits at the
+    cut's base centre with ``direction`` its axis, design units; named
+    ``h1``… in x, y, z order. Proposals only — nothing is added to the
+    design; other cuts are not fasteners and are skipped."""
+    from precis.cad.fold import Diff, Inter, Leaf, Union
+
+    design = _design_of(obj)
+    cutters: list[Any] = []
+
+    def leaves(e: Any) -> None:
+        """Every leaf of a cutter subtree — a pattern is a Union of cuts."""
+        if isinstance(e, Leaf):
+            cutters.append(design.instances[e.iid])
+        elif isinstance(e, (Union, Inter)):
+            for part in e.parts:
+                leaves(part)
+        elif isinstance(e, Diff):
+            leaves(e.base)
+
+    def walk(e: Any) -> None:
+        if isinstance(e, Diff):
+            walk(e.base)
+            for c in e.cutters:
+                leaves(c)
+        elif isinstance(e, (Union, Inter)):
+            for part in e.parts:
+                walk(part)
+
+    for expr in design.components.values():
+        walk(expr)
+    sizes = _metric_sizes()
+    found: list[tuple[tuple[float, float, float], Port]] = []
+    for inst in cutters:
+        prim = inst.placed.prim
+        rb, rt, h = (getattr(prim, k, None) for k in ("rb", "rt", "h"))
+        if (
+            rb is None
+            or rt is None
+            or h is None
+            or abs(rb - rt) > 1e-9 * max(rb, 1e-12)
+        ):
+            continue
+        d_mm = 2.0 * float(rb) * 1e3
+        ann: dict[str, Any] | None = None
+        exact = [(k, pitch) for k, nom, pitch in sizes if abs(d_mm - nom) <= 1e-6 * nom]
+        clear = [
+            k
+            for k, (fine, coarse) in _ISO273_MM.items()
+            if fine - 1e-9 <= d_mm <= coarse + 1e-9
+        ]
+        if exact:
+            ann = {"thread": f"{exact[0][0]}x{exact[0][1]:g}", "depth": float(h)}
+        elif clear:
+            ann = {"clearance_for": clear[0], "diameter": 2.0 * float(rb)}
+        if ann is None:
+            continue
+        xf = inst.placed.xform
+        pos = np.asarray(xf.apply(_vec.as_vec3([0.0, 0.0, 0.0])), dtype=float)
+        axis = np.asarray(xf.apply_dir(_vec.as_vec3([0.0, 0.0, 1.0])), dtype=float)
+        axis = axis / np.linalg.norm(axis)
+        key3 = (round(pos[0], 12), round(pos[1], 12), round(pos[2], 12))
+        found.append(
+            (
+                key3,
+                Port(
+                    name="",
+                    pos=(float(pos[0]), float(pos[1]), float(pos[2])),
+                    direction=(float(axis[0]), float(axis[1]), float(axis[2])),
+                    roles=("fastener",),
+                    annotations={**ann, "feature": inst.label},
+                ),
+            )
+        )
+    found.sort(key=lambda t: t[0])
+    return [
+        replace(p_, name=f"{prefix}{i}") for i, (_k, p_) in enumerate(found, start=1)
+    ]
 
 
 __all__ = [
@@ -1179,6 +1345,7 @@ __all__ = [
     "Ray",
     "array_spec",
     "assembly",
+    "find_holes",
     "geom",
     "instance",
     "mirror",

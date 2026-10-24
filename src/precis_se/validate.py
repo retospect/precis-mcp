@@ -604,6 +604,27 @@ def validate(
             )
         )
     findings.extend(contract_findings(tree))
+    # 7. ray.changed (warn) — an observation ray whose events moved on the
+    # last rebuild/import (structure-workspaces 2r.2): the stored digest
+    # carries the change; the import echo showed both event lists.
+    for name, node in sorted(tree.blocks.items()):
+        for ray in sorted((node.rays or {}).values(), key=lambda r: r.name):
+            last = ray.digests[-1] if ray.digests else {}
+            changed = last.get("changed")
+            if not changed:
+                continue
+            findings.append(
+                ValidationIssue(
+                    rule="ray.changed",
+                    subject=f"{name}.{ray.name}",
+                    detail=(
+                        f"ray {ray.name!r} reads differently since the previous "
+                        f"version ({changed.get('summary')}) — view='ray' "
+                        f"args={{'name': {ray.name!r}}} for the events now"
+                    ),
+                    severity="warn",
+                )
+            )
     return findings
 
 

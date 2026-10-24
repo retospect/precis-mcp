@@ -1013,17 +1013,20 @@ as the worked case:
 | `manufacturability` | surface normals (wall thickness vs `min_wall`); tool-axis rays per process (3-axis: ±z) | wall thickness; undercuts (a solid re-entered after exiting along the tool axis) | links the pull-direction analysis of [se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)/`cad/mold.py` where the specs touch |
 
 Rendered, a bolt-axis ray on the bracket (`view='ray'`, `args={'name':
-'bolt-a1'}`):
+'bolt-a1'}`). A screw fits when stack + 1.5 d ≤ L ≤ stack + thread depth —
+enough thread without bottoming out; engagement is then L − stack (an
+8 mm blind hole under this 6.2 mm stack fits no ISO 4762 length: 12 is
+short, 16 bottoms out by 1.8 mm, and the report says so). A through
+hole the ray runs down is not material:
 
 ```
 ray bolt-a1 · port bracket.a1 · from a1 −3 mm along +z · 28 mm · kind bolt_axis · 7 events
    0.0 mm  air · head seat on pad a1 (bracket, build.py:41 pad#1 · frame:7c1e02aa)
-   3.0 mm  enter bracket · clearance hole a1 ⌀5.5 (radial clearance 0.25 mm) · build.py:44 hole#1
-   9.0 mm  exit bracket · stack 6.0 mm
+   3.0 mm  void bracket.hole1 ⌀5.5 · 6.0 mm (radial clearance 0.25 mm) · build.py:44 hole#1
    9.0 mm  gap 0.2 mm
-   9.2 mm  enter base · threaded hole base.h1 M5x0.8 (port, role fastener)
-  17.2 mm  exit base · engagement 8.0 mm (≥ 7.5 = 1.5 d ✓)
-  screw: M5 × 16 (stack 6.2 + engagement 8.0, next standard length) · utilisation along ray max 0.31 at 4.1 mm
+   9.2 mm  void base.h1 ⌀5.0 · 10.0 mm · threaded hole base.h1 M5x0.8 (port, role fastener)
+  bolt: stack 6.2 mm · thread depth 10.0 mm (≥ 7.5 = 1.5 d ✓)
+  screw: M5 × 16 · engagement 9.8 mm (stack 6.2 + 1.5 d ≤ L ≤ stack + depth 10.0) · utilisation along ray max 0.31 at 4.1 mm
 ```
 
 Rays are stored as block children holding their **definition** (above)
@@ -1073,16 +1076,30 @@ runs, with method and level. Until then the `charge` field is omitted.
 `pi` needs 2e's `structure_pi`; `frame` needs 2t's `maker` column;
 `relax` levels need 4a; pockets, Bondi radii and `probe.line` exist.
 
-**2r.1 built (sw-2r).** The atomic leg as above, `se_rays` (plugin
-migration `0024_se_rays.sql`), `precis-se-regions-help` §Observation rays. Left for
-2r.2 or later: the §Macro leg (event list with feature + frame handles,
-port regions, field samples, bundles, the four kinds, `ray.changed`,
-`pga.find_holes`) — including probing a **cad-bound** block through its
-bound cad design: 2r.1 probes every non-structure block by its envelope
-only, so holes in a cad-bound block are not yet seen; `against='v<n>'` (diff against a design revision's
-checkpoint) refuses with a pointer until the checkpoint replay is wired;
-`charge` fills in after slice 4, `relax` after 4a; a bare `structure`
-ray carries no `frame` field (no trace on the structure kind).
+**2r built (sw-2r).** 2r.1 (atomic leg) landed 2a89ad14b with `se_rays`
+(plugin migration `0024_se_rays.sql`); 2r.2 (macro leg) as §Macro leg:
+cad-bound blocks probed through their bound cad design
+(`SeTree.cad_designs`), the event list, port cylinders with axis offset,
+`bundle`, the four kind reports, `ray.changed` on import (digest flag +
+`view='validate'` rule, both lists in the import echo), `pga.ray.bundle`,
+`pga.find_holes`. Docs: `precis-se-regions-help` §Observation rays.
+Cost bound: one observation of a bundle is ≤ 64 single-ray
+observations (`MAX_BUNDLE`), and a macro-only design skips the atomic
+leg; an import observes each ray twice — before the write (the old
+list `ray.changed` needs, unrecoverable once cad refs are rewritten) and
+after commit (the digest it stores) — so ≤ 2 × 64 ray probes per ray per
+import. Follow-up (import sync, not observation): re-importing a
+manifest whose port moved does not move the existing port — the ray
+reads the moved hole through the cad geometry instead; syncing a port's
+pose/direction/roles/annotations on re-import (without overwriting a
+pose an agent set) is its own item.
+Left: field samples along a ray (`von-mises`/`utilisation`/`temperature`)
+wait for a stored solver outcome — absent, never estimated;
+`against='v<n>'` refuses until the checkpoint replay is wired; `against`
+on a cad-bound ray recomputes with today's cad geometry (cad refs are
+rewritten in place, so only structure versions are addressable);
+`charge` after slice 4, `relax` after 4a; a bare `structure` ray has no
+`frame` field.
 
 ## Packaging
 

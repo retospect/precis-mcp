@@ -1,0 +1,271 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "base",
+   "file": "blocks/base.cad.json",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "h1",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[-15 0 10] mm",
+     "annotations": {
+      "thread": "M5x0.8",
+      "depth": 0.008
+     },
+     "frame": 3
+    },
+    {
+     "name": "h2",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[-5 0 10] mm",
+     "annotations": {
+      "thread": "M5x0.8",
+      "depth": 0.008
+     },
+     "frame": 3
+    },
+    {
+     "name": "h3",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[5 0 10] mm",
+     "annotations": {
+      "thread": "M5x0.8",
+      "depth": 0.01
+     },
+     "frame": 3
+    },
+    {
+     "name": "h4",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[15 0 10] mm",
+     "annotations": {
+      "thread": "M5x0.8",
+      "depth": 0.006
+     },
+     "frame": 3
+    }
+   ],
+   "desc": "base plate",
+   "frame": 2
+  },
+  {
+   "name": "bracket",
+   "file": "blocks/bracket.cad.json",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "a1",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[-15 0 16.2] mm",
+     "annotations": {
+      "diameter": 0.0055
+     },
+     "frame": 5
+    },
+    {
+     "name": "a2",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[-5 0 16.2] mm",
+     "annotations": {
+      "diameter": 0.0055
+     },
+     "frame": 5
+    },
+    {
+     "name": "a3",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[5 0 16.2] mm",
+     "annotations": {
+      "diameter": 0.0055
+     },
+     "frame": 5
+    },
+    {
+     "name": "a4",
+     "roles": [
+      "fastener"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "pose": "[15 0 16.2] mm",
+     "annotations": {
+      "diameter": 0.0055
+     },
+     "frame": 5
+    }
+   ],
+   "desc": "bracket",
+   "frame": 4
+  }
+ ],
+ "rays": [
+  {
+   "name": "bolt-a1",
+   "block": "bracket",
+   "in": "port:a1",
+   "origin": [
+    0,
+    0,
+    -0.003
+   ],
+   "direction": [
+    0,
+    0,
+    1
+   ],
+   "length": 0.028,
+   "kind": "bolt_axis",
+   "anchor": [
+    "bracket.a1",
+    "base.h1"
+   ],
+   "frame": 6
+  },
+  {
+   "name": "bolt-a2",
+   "block": "bracket",
+   "in": "port:a2",
+   "origin": [
+    0,
+    0,
+    -0.003
+   ],
+   "direction": [
+    0,
+    0,
+    1
+   ],
+   "length": 0.028,
+   "kind": "bolt_axis",
+   "anchor": [
+    "bracket.a2",
+    "base.h2"
+   ],
+   "frame": 6
+  },
+  {
+   "name": "bolt-a3",
+   "block": "bracket",
+   "in": "port:a3",
+   "origin": [
+    0,
+    0,
+    -0.003
+   ],
+   "direction": [
+    0,
+    0,
+    1
+   ],
+   "length": 0.028,
+   "kind": "bolt_axis",
+   "anchor": [
+    "bracket.a3",
+    "base.h3"
+   ],
+   "frame": 6
+  },
+  {
+   "name": "bolt-a4",
+   "block": "bracket",
+   "in": "port:a4",
+   "origin": [
+    0,
+    0,
+    -0.003
+   ],
+   "direction": [
+    0,
+    0,
+    1
+   ],
+   "length": 0.028,
+   "kind": "bolt_axis",
+   "anchor": [
+    "bracket.a4",
+    "base.h4"
+   ],
+   "frame": 6
+  },
+  {
+   "name": "tool-a1",
+   "block": "bracket",
+   "in": "port:a1",
+   "origin": [
+    0,
+    0,
+    -0.003
+   ],
+   "direction": [
+    0,
+    0,
+    -1
+   ],
+   "length": 0.03,
+   "kind": "tool_access",
+   "bundle": {
+    "radius": 0.004,
+    "count": 8
+   },
+   "anchor": [
+    "bracket.a1"
+   ],
+   "frame": 6
+  }
+ ],
+ "notes": "bracket ray fixture"
+}

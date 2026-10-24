@@ -603,6 +603,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     tree.measurands = measurand_resolver(store)
     tree.structure_versions = structure_version_resolver(store)
     tree.structures = structure_scene_resolver(store)
+    tree.cad_designs = cad_design_resolver(store)
     # The run trace a bound structure's ``generated.trace`` points at
     # (``frame:<key>`` selectors, ``view='trace'``); the design's own
     # ref_id is the chunk home for containerless (``run_job=None``)
@@ -661,6 +662,12 @@ def tree_to_json(tree: SeTree) -> dict[str, Any]:
         {k: v for k, v in asdict(node).items() if k not in _BLOCK_TRANSIENT}
         for node in tree.blocks.values()
     ]
+    for b in blocks:
+        # an unset bundle is absent, not null — ray-bearing snapshots from
+        # before bundles existed keep their bytes (and their sha)
+        for ray in (b.get("rays") or {}).values():
+            if ray.get("bundle") is None:
+                ray.pop("bundle", None)
     notes = []
     for note in tree.notes:
         d = asdict(note)
@@ -767,6 +774,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         tree.measurands = measurand_resolver(store)
         tree.structure_versions = structure_version_resolver(store)
         tree.structures = structure_scene_resolver(store)
+        tree.cad_designs = cad_design_resolver(store)
         tree.materials = material_resolver(store)
         tree.traces = trace_doc_resolver(store, None)
         tree.structure_pi = structure_pi_resolver(store)
@@ -851,6 +859,33 @@ def structure_scene_resolver(store: Any) -> Callable[[str], BoundScene | None]:
         return cache[slug]
 
     return scene_of
+
+
+def cad_design_resolver(
+    store: Any,
+) -> Callable[[str], tuple[Any, dict[str, Any]] | None]:
+    """A cad design's slug → ``(built Design, ref meta)`` — the bound solid
+    a cad-bound block's observation rays probe (structure-workspaces 2r.2).
+    ``None`` when no live cad ref has the slug or it fails to build (a
+    resolver answers "cannot load", never raises). Memoized per closure."""
+    from precis.cad.scene import build_design
+
+    cache: dict[str, tuple[Any, dict[str, Any]] | None] = {}
+
+    def design_of(slug: str) -> tuple[Any, dict[str, Any]] | None:
+        if slug not in cache:
+            out = None
+            try:
+                ref = store.get_ref(kind="cad", id=slug)
+                if ref is not None:
+                    spec, _handles = store.cad_load(ref.id)
+                    out = (build_design(spec), dict(ref.meta or {}))
+            except Exception:
+                out = None
+            cache[slug] = out
+        return cache[slug]
+
+    return design_of
 
 
 def structure_pi_resolver(store: Any) -> Callable[[str], dict[str, Any] | None]:
@@ -2015,6 +2050,75 @@ def reobserve_rays(
                 )
                 done.append((str(ref.slug), spec.name))
     return done
+
+
+def observe_all_rays(store: Any, ref_id: int) -> dict[str, Any]:
+    """``{ray name: Observation}`` for every ray of a design as it stands
+    — the "before" a rebuild/import compares against (read-only)."""
+    from precis_se import rays as se_rays
+
+    tree = load_tree(store, int(ref_id))
+    ref = store.get_ref(kind="se", id=int(ref_id))
+    slug = str(ref.slug) if ref is not None else ""
+    out: dict[str, Any] = {}
+    for block, spec in se_rays.all_rays(tree):
+        try:
+            out[spec.name] = se_rays.observe(tree, block, spec, slug=slug)
+        except se_rays.RayError:
+            continue
+    return out
+
+
+def reobserve_after_rebuild(
+    store: Any,
+    ref_id: int,
+    before: dict[str, Any],
+    *,
+    service: dict[str, Any] | None = None,
+) -> list[str]:
+    """Re-observe every ray after a rebuild/import and store the digest;
+    a ray whose events differ from ``before`` (the design version the
+    rebuild replaced, observed before it) gets ``changed`` on its digest —
+    the ``ray.changed`` finding :func:`precis_se.validate.validate` raises
+    — and the returned echo lines show both lists. Rays new in this
+    version have no "before" and never read as changed."""
+    from precis_se import rays as se_rays
+
+    lines: list[str] = []
+    with store.pool.connection() as c:
+        with c.cursor() as cur:
+            if not _has_rays_table(cur):
+                return lines
+    with tree_mutation(store, int(ref_id)) as conn:
+        tree = load_tree(store, int(ref_id), conn=conn)
+        ref = store.get_ref(kind="se", id=int(ref_id), conn=conn)
+        slug = str(ref.slug) if ref is not None else ""
+        for block, spec in se_rays.all_rays(tree):
+            try:
+                obs = se_rays.observe(tree, block, spec, slug=slug)
+            except se_rays.RayError:
+                continue
+            dg = se_rays.digest(obs, service=service)
+            old = before.get(spec.name)
+            if old is not None and se_rays.event_hash(old) != dg["hash"]:
+                diff = se_rays.diff_lines(old, obs)
+                dg["changed"] = {
+                    "summary": diff[0],
+                    "prev_hash": se_rays.event_hash(old),
+                }
+                lines.append(f"ray.changed: {spec.name} on {block} — {diff[0]}")
+                lines.append("  before:")
+                lines.extend(f"  {ln}" for ln in se_rays.hit_lines(old))
+                lines.append("  after:")
+                lines.extend(f"  {ln}" for ln in se_rays.hit_lines(obs))
+            se_rays.push_digest(spec, dg)
+            conn.execute(
+                "UPDATE se_rays SET digests = %s WHERE name = %s "
+                "AND retired_at IS NULL AND block_id = (SELECT id FROM "
+                "se_blocks WHERE ref_id = %s AND name = %s AND retired_at IS NULL)",
+                (Jsonb(list(spec.digests)), spec.name, int(ref_id), block),
+            )
+    return lines
 
 
 def _bound_structures(conn: Any, ref_id: int) -> dict[str, int]:

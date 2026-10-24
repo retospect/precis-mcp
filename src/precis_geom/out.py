@@ -269,6 +269,8 @@ def _ray_entry(
         entry["in"] = r.frame_in
     if r.anchor is not None:
         entry["anchor"] = list(r.anchor)
+    if r.bundle is not None:
+        entry["bundle"] = {"radius": float(r.bundle[0]), "count": int(r.bundle[1])}
     if fr is not None:
         entry["frame"] = int(fr)
     return entry

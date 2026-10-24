@@ -76,6 +76,7 @@ from precis_se.atomic.generate import (
     generated_record,
 )
 from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.rays import DEFAULT_REACH_A, DEFAULT_STEP_A
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ _RAY_KEYS = frozenset(
         "reach",
         "in",
         "anchor",
+        "bundle",
         "frame",
     }
 )
@@ -121,6 +123,8 @@ _PORT_KEYS = frozenset(
         "expected_element",
         "expected_hybridization",
         "frame",
+        "pose",
+        "annotations",
     }
 )
 _INSTANCE_KEYS = frozenset(
@@ -151,6 +155,45 @@ def _unknown_keys(d: dict[str, Any], allowed: frozenset[str], where: str) -> Non
                 f"manifest {where}: unknown key {k!r}",
                 next=f"drop it — {where} accepts {sorted(allowed)}",
             )
+
+
+#: Port annotation keys the ray macro leg reads, with their type check —
+#: ``diameter``/``depth`` metres (> 0), ``thread`` a metric designation.
+_NUMERIC_ANNOTATIONS = ("diameter", "depth")
+
+
+def _vet_port_annotations(p: dict[str, Any], where: str) -> None:
+    """A manifest port's ``annotations``: a dict; ``diameter``/``depth``
+    positive numbers (m); ``thread`` text. Refused naming the port."""
+    ann = p.get("annotations")
+    if ann is None:
+        return
+    nxt = (
+        "annotations={'thread': 'M5x0.8', 'depth': 0.008} or "
+        "{'diameter': 0.0055} — metres, bare numbers"
+    )
+    if not isinstance(ann, dict):
+        raise BadInput(
+            f"manifest {where} ({p.get('name')!r}): 'annotations' must be an "
+            f"object, got {ann!r}",
+            next=nxt,
+        )
+    for key in _NUMERIC_ANNOTATIONS:
+        if key not in ann:
+            continue
+        val = ann[key]
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not val > 0:
+            raise BadInput(
+                f"manifest {where} ({p.get('name')!r}): annotations.{key} must be a "
+                f"positive number of metres, got {val!r}",
+                next=nxt,
+            )
+    if "thread" in ann and not isinstance(ann["thread"], str):
+        raise BadInput(
+            f"manifest {where} ({p.get('name')!r}): annotations.thread must be "
+            f"text like 'M5x0.8', got {ann['thread']!r}",
+            next=nxt,
+        )
 
 
 @dataclass(frozen=True)
@@ -213,6 +256,7 @@ def _vet_manifest(data: Any) -> dict[str, Any]:
             _unknown_keys(p, _PORT_KEYS, pw)
             if not str(p.get("name") or "").strip():
                 raise BadInput(f"manifest {pw}: needs 'name'")
+            _vet_port_annotations(p, pw)
             if scale == "macro" and p.get("atom") is not None:
                 raise BadInput(
                     f"manifest {pw}: 'atom' binds a port to an extxyz label — "
@@ -623,6 +667,9 @@ def import_workspace_run(
             options=["design", "fork"],
         )
 
+    # The rays as the design stands BEFORE this import — a ray whose
+    # events differ afterwards is ``ray.changed`` (slice 2r.2).
+    rays_before = persist.observe_all_rays(store, int(ref.id))
     result = ImportResult(design_slug=design, trace=trace, run_ref=run_job)
     result.findings.extend(findings)
     block_entries = {e.name: e for e in manifest["blocks"]}
@@ -770,8 +817,13 @@ def import_workspace_run(
                     po["expected_element"] = p["expected_element"]
                 if p.get("expected_hybridization") is not None:
                     po["expected_hybridization"] = p["expected_hybridization"]
+                ann = dict(p.get("annotations") or {})
                 if p.get("frame") is not None:
-                    po["annotations"] = {"frame": int(p["frame"])}
+                    ann["frame"] = int(p["frame"])
+                if ann:
+                    po["annotations"] = ann
+                if p.get("pose") is not None:
+                    po["pose"] = p["pose"]
                 if p.get("atom") is not None:
                     po["atom"] = p["atom"]  # consumed below, not an op key
                 port_ops.append((p, po))
@@ -924,10 +976,12 @@ def import_workspace_run(
             _apply(tree, [op], what=f"connect {c['a']}—{c['b']}")
 
         # ── rays (slice 2r): the manifest's rays replace this workspace's
-        # previous ones; a ray this run no longer writes retires ──
+        # previous ones IN PLACE — a ray the run still writes keeps its
+        # digest ring (the history ``against`` and ``ray.changed`` read);
+        # a ray this run no longer writes retires ──
         prev_rays = {str(r) for r in prev.get("rays") or []}
         manifest_rays = {f"{r['block']}.{r['name']}" for r in manifest["rays"]}
-        for ray_key in sorted(prev_rays | manifest_rays):
+        for ray_key in sorted(prev_rays - manifest_rays):
             rblock, _sep, rname = ray_key.partition(".")
             rnode = tree.blocks.get(rblock)
             if rnode is not None and rname in rnode.rays:
@@ -937,28 +991,37 @@ def import_workspace_run(
                     what=f"ray {ray_key!r}",
                 )
         for r in manifest["rays"]:
-            rop: dict[str, Any] = {
-                "op": "add_ray",
+            rnode = tree.blocks[r["block"]]
+            # every definition key, absent ones reset — a set_ray that
+            # leaves out a key would keep the previous run's value
+            fields_op: dict[str, Any] = {
                 "block": r["block"],
                 "name": r["name"],
                 "length": r["length"],
+                "origin": r.get("origin") or [0.0, 0.0, 0.0],
+                "direction": r.get("direction") or [0.0, 0.0, 1.0],
+                "kind": r.get("kind") or "probe",
+                "fields": r.get("fields"),
+                "step": r.get("step") if r.get("step") is not None else DEFAULT_STEP_A,
+                "reach": r.get("reach")
+                if r.get("reach") is not None
+                else DEFAULT_REACH_A,
+                "anchor": r.get("anchor"),
+                "bundle": r.get("bundle"),
+                "frame": r.get("in"),
             }
-            for k in (
-                "origin",
-                "direction",
-                "kind",
-                "fields",
-                "step",
-                "reach",
-                "anchor",
-            ):
-                if r.get(k) is not None:
-                    rop[k] = r[k]
-            if r.get("in") is not None:
-                rop["frame"] = r["in"]
-            if r.get("frame") is not None:
-                rop["made_by"] = {"frame": int(r["frame"])}
-            _apply(tree, [rop], what=f"ray {r['block']}.{r['name']}")
+            if r["name"] in rnode.rays:
+                _apply(
+                    tree, [{"op": "set_ray", **fields_op}], what=f"ray {r['name']!r}"
+                )
+            else:
+                _apply(
+                    tree, [{"op": "add_ray", **fields_op}], what=f"ray {r['name']!r}"
+                )
+            ray_spec = rnode.rays[r["name"]]
+            ray_spec.made_by = (
+                {"frame": int(r["frame"])} if r.get("frame") is not None else None
+            )
 
         # port.missing: connects whose endpoint port vanished on replace
         for cx in tree.connects:
@@ -1052,4 +1115,14 @@ def import_workspace_run(
         store.chunks.insert_chunks(home, chunks, conn=conn)
 
     persist.sync_realized_by(store, ref.id, tree)
+    # Every import re-observes; the comparison needs the committed
+    # geometry, so it runs after the import's transaction.
+    result.findings.extend(
+        persist.reobserve_after_rebuild(
+            store,
+            int(ref.id),
+            rays_before,
+            service={"import": run_job, "workspace": workspace},
+        )
+    )
     return result

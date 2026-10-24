@@ -46,6 +46,8 @@ from typing import Any
 
 import numpy as np
 
+from precis.structure.probe import RAY_FIELDS
+
 #: Every ``kind`` a ray may carry — §Macro leg's four plus the bare probe.
 RAY_KINDS = ("probe", "bolt_axis", "tool_access", "load_path", "manufacturability")
 #: Atomic defaults (Å) — spec §Observation rays.
@@ -53,6 +55,9 @@ DEFAULT_STEP_A = 0.5
 DEFAULT_REACH_A = 4.0
 #: Digests kept per ray (newest last).
 MAX_DIGESTS = 5
+#: Rays per bundle, at most — one observation of a bundle ray costs this
+#: many single-ray observations (the per-read and per-import bound).
+MAX_BUNDLE = 64
 #: One read's hit cap; the overflow line names ``args={'from': …}``.
 MAX_HITS = 40
 #: Below this a moved hit is unchanged (Å) — float noise across a save.
@@ -77,11 +82,15 @@ class RaySpec:
     frame: str | None = None
     anchor: list[str] | None = None
     made_by: dict[str, Any] | None = None
+    #: ``{'radius': m, 'count': n}`` — a ray bundle (``pga.ray.bundle``):
+    #: ``n`` parallel rays on a circle, one probe, the union of hits.
+    bundle: dict[str, Any] | None = None
     digests: list[dict[str, Any]] = field(default_factory=list)
 
     def definition(self) -> dict[str, Any]:
-        """The ``se_rays.definition`` JSONB — everything but digests."""
-        return {
+        """The ``se_rays.definition`` JSONB — everything but digests;
+        ``bundle`` only when set (2r.1 rows and checkpoints carry none)."""
+        d = {
             "origin": list(self.origin),
             "direction": list(self.direction),
             "length": self.length,
@@ -93,6 +102,9 @@ class RaySpec:
             "anchor": list(self.anchor) if self.anchor is not None else None,
             "made_by": dict(self.made_by) if self.made_by is not None else None,
         }
+        if self.bundle is not None:
+            d["bundle"] = dict(self.bundle)
+        return d
 
     @classmethod
     def from_row(cls, name: str, definition: dict[str, Any], digests: Any) -> RaySpec:
@@ -109,8 +121,14 @@ class RaySpec:
             frame=d.get("frame"),
             anchor=list(d["anchor"]) if d.get("anchor") is not None else None,
             made_by=dict(d["made_by"]) if d.get("made_by") is not None else None,
+            bundle=dict(d["bundle"]) if d.get("bundle") is not None else None,
             digests=[dict(x) for x in (digests or [])],
         )
+
+
+#: Header order of every field a ray can report — the atomic ones, then
+#: the macro event list.
+_FIELD_ORDER = (*RAY_FIELDS, "solid")
 
 
 class RayError(ValueError):
@@ -220,6 +238,28 @@ def apply_fields(spec: RaySpec, op: dict[str, Any], *, partial: bool) -> None:
     if "anchor" in op:
         a = op["anchor"]
         spec.anchor = [str(x) for x in a] if isinstance(a, (list, tuple)) else None
+    if "bundle" in op:
+        b = op["bundle"]
+        if b is None:
+            spec.bundle = None
+        else:
+            if not isinstance(b, dict) or "radius" not in b or "count" not in b:
+                raise RayError(
+                    "bundle is {'radius': <length>, 'count': <int ≥ 3>} — n rays "
+                    "on a circle of that radius around the axis"
+                )
+            radius = _length_m(b["radius"], "bundle radius")
+            try:
+                count = int(b["count"])
+            except (TypeError, ValueError) as exc:
+                raise RayError(
+                    f"bundle count must be an int, got {b['count']!r}"
+                ) from exc
+            if not radius > 0 or not 3 <= count <= MAX_BUNDLE:
+                raise RayError(
+                    f"bundle needs radius > 0 and 3 ≤ count ≤ {MAX_BUNDLE}, got {b!r}"
+                )
+            spec.bundle = {"radius": radius, "count": count}
 
 
 # ── the world ray ─────────────────────────────────────────────────────────
@@ -331,6 +371,8 @@ class Observation:
     blocks_crossed: list[str]
     pi_crossed: list[str]
     pockets_crossed: list[str]
+    macro_events: list[Any] = dataclasses.field(default_factory=list)
+    kind_lines: list[str] = dataclasses.field(default_factory=list)
 
 
 def _frame_texts(doc: dict[str, Any] | None) -> tuple[Any, Any]:
@@ -419,20 +461,19 @@ def observe(
     """Recompute ``spec``'s events on the design (module docstring).
     ``scenes`` overrides bound scenes by structure slug — a diff passes
     the scenes at a digest's versions; the live ones come from
-    :attr:`SeTree.structures`."""
-    from precis.cad.graph import Design as CadDesign
-    from precis.cad.probe import ray_hits as cad_ray_hits
+    :attr:`SeTree.structures`. A ``bundle`` ray observes each of its
+    parallel rays and reports the union (first ``s`` per event)."""
     from precis.cad.vec import as_vec3
     from precis.structure import cache as st_cache
     from precis.structure import probe as st_probe
     from precis.structure import rayview
-    from precis_se import eyeview
+    from precis_se import eyeview, rays_macro
     from precis_se.atomic.clearance import VDW_RADII_A
-    from precis_se.ops import effective_envelope
-    from precis_se.validate import _posed_component
 
     o_w, d_w = world_ray(tree, block, spec)
     length = float(spec.length)
+    if spec.bundle:
+        return _observe_bundle(tree, block, spec, o_w, d_w, slug=slug, scenes=scenes)
     resolver = getattr(tree, "structures", None)
     traces = getattr(tree, "traces", None)
     pi_res = getattr(tree, "structure_pi", None)
@@ -444,9 +485,14 @@ def observe(
     crossed: list[str] = []
     pi_crossed: list[str] = []
     pockets_crossed: list[str] = []
-    macro = CadDesign()
-    macro_blocks: list[str] = []
-    for name in sorted(tree.blocks):
+    # the atomic leg only where a block binds a structure — a macro-only
+    # design (and every ray of its bundles) skips it outright
+    atomic_blocks = [
+        n
+        for n, nd in sorted(tree.blocks.items())
+        if (tree.blocks.get(nd.template or "") or nd).bound_kind == "structure"
+    ]
+    for name in atomic_blocks:
         node = tree.blocks[name]
         owner = tree.blocks.get(node.template) if node.template else node
         owner = owner or node
@@ -457,10 +503,7 @@ def observe(
             if scenes is not None:
                 override = scenes.get(owner.bound)
         if live is None and override is None:
-            env = effective_envelope(tree, node)
-            if env and _posed_component(macro, name, env, node) is not None:
-                macro_blocks.append(name)
-            continue
+            continue  # a macro block — rays_macro below
         # An override swaps the geometry only; the run trace and meta stay
         # the live ref's (the trace is the design's, not the version's).
         scene: Any = override if override is not None else getattr(live, "scene", None)
@@ -550,52 +593,24 @@ def observe(
                     atom=h.subject if h.field == "pass" else None,
                 )
             )
-    for name in macro_blocks:
-        try:
-            mh = cad_ray_hits(
-                macro,
-                as_vec3(o_w),
-                as_vec3(d_w),
-                length=length,
-                component=name,
-                block_id=name,
+    unit = _macro_unit(length)
+    events: list[Any] = []
+    for g in rays_macro.block_geoms(tree):
+        events.extend(rays_macro.block_events(g, o_w, d_w, length, unit))
+    events.extend(rays_macro.gap_events(events, unit))
+    if spec.kind != "tool_access":  # a tool's reach cares about material only
+        events.extend(rays_macro.port_events(tree, o_w, d_w, length, unit))
+    for e in events:
+        fields.add("solid")
+        if e.event == "enter" and e.block not in crossed:
+            crossed.append(e.block)
+        hits.append(
+            SeHit(
+                e.s, e.block, "solid", e.event, e.subject, e.text, False, dict(e.nums)
             )
-        except (ValueError, ArithmeticError):  # pragma: no cover — defensive
-            continue
-        for seg in mh:
-            if seg.state != "solid":
-                continue
-            fields.add("solid")
-            if name not in crossed:
-                crossed.append(name)
-            feat = f" · {seg.feature}" if seg.feature and seg.feature != name else ""
-            hits.append(
-                SeHit(
-                    seg.entry,
-                    name,
-                    "solid",
-                    "enter",
-                    name,
-                    f"enter {name}{feat}",
-                    False,
-                )
-            )
-            hits.append(
-                SeHit(
-                    seg.exit,
-                    name,
-                    "solid",
-                    "exit",
-                    name,
-                    f"exit {name} · {_fmt_s(seg.length, False, length).strip()}",
-                    False,
-                    {"len": seg.length},
-                )
-            )
+        )
     hits.sort(key=lambda h: (h.s, h.block, h.field))
-    from precis.structure.probe import RAY_FIELDS
-
-    order = [*RAY_FIELDS, "solid"]
+    order = _FIELD_ORDER
     return Observation(
         name=spec.name,
         block=block,
@@ -610,6 +625,69 @@ def observe(
         blocks_crossed=crossed,
         pi_crossed=pi_crossed,
         pockets_crossed=pockets_crossed,
+        macro_events=sorted(events, key=lambda e: e.s),
+        kind_lines=rays_macro.kind_lines(
+            tree, spec, sorted(events, key=lambda e: e.s), unit
+        ),
+    )
+
+
+def _observe_bundle(
+    tree: Any,
+    block: str,
+    spec: RaySpec,
+    o_w: np.ndarray,
+    d_w: np.ndarray,
+    *,
+    slug: str,
+    scenes: dict[str, Any] | None,
+) -> Observation:
+    """A bundle is one probe: each parallel ray observed in world
+    coordinates, events merged by identity at their first ``s``."""
+    from precis_se import rays_macro
+
+    b = spec.bundle or {}
+    parts = []
+    count = min(int(b["count"]), MAX_BUNDLE)
+    for off in rays_macro.bundle_offsets(d_w, float(b["radius"]), count):
+        one = dataclasses.replace(
+            spec,
+            origin=[float(x) for x in o_w + off],
+            direction=[float(x) for x in d_w],
+            frame="world",
+            bundle=None,
+            digests=[],
+        )
+        parts.append(observe(tree, block, one, slug=slug, scenes=scenes))
+    first: dict[tuple[str, str, str, str], SeHit] = {}
+    events: dict[tuple[str, str], Any] = {}
+    for obs in parts:
+        for h in obs.hits:
+            if h.key not in first or h.s < first[h.key].s:
+                first[h.key] = h
+        for e in obs.macro_events:
+            k = (e.subject, e.event)
+            if k not in events or e.s < events[k].s:
+                events[k] = e
+    merged = sorted(first.values(), key=lambda h: (h.s, h.block, h.field))
+    evs = sorted(events.values(), key=lambda e: e.s)
+    unit = _macro_unit(float(spec.length))
+    return Observation(
+        name=spec.name,
+        block=block,
+        spec=spec,
+        origin=o_w,
+        direction=d_w,
+        hits=merged,
+        fields=sorted({f for o in parts for f in o.fields}, key=[*_FIELD_ORDER].index),
+        end=max((o.end for o in parts if o.end is not None), default=None),
+        structures=parts[0].structures if parts else {},
+        pi_keys=parts[0].pi_keys if parts else {},
+        blocks_crossed=sorted({b_ for o in parts for b_ in o.blocks_crossed}),
+        pi_crossed=sorted({p for o in parts for p in o.pi_crossed}),
+        pockets_crossed=sorted({p for o in parts for p in o.pockets_crossed}),
+        macro_events=evs,
+        kind_lines=rays_macro.kind_lines(tree, spec, evs, unit),
     )
 
 
@@ -621,7 +699,8 @@ def _canonical(obs: Observation) -> list[list[Any]]:
         [
             *h.key,
             round(h.s * 1e10, 3),
-            *(round(h.nums[k], 3) for k in sorted(h.nums)),
+            # atomic numbers are Å/e/V already; macro ones are metres — µm
+            *(round(h.nums[k] * (1.0 if h.atomic else 1e6), 3) for k in sorted(h.nums)),
         ]
         for h in obs.hits
     ]
@@ -660,14 +739,27 @@ def push_digest(spec: RaySpec, dg: dict[str, Any]) -> None:
     spec.digests = [*spec.digests, dg][-MAX_DIGESTS:]
 
 
-def pick_digest(spec: RaySpec, against: Any) -> dict[str, Any]:
-    """``'last'`` or an index into the stored digests (``-1`` = last)."""
+def pick_digest(
+    spec: RaySpec, against: Any, *, current_hash: str | None = None
+) -> dict[str, Any]:
+    """``'last'`` — the last observation that is not this one: the newest
+    digest, or the one before it when the newest already records the
+    current events (an import or relax re-observes as it writes, so its
+    own digest is "now", and the question is what it was before) — or an
+    index into the stored digests (``-1`` = newest)."""
     if not spec.digests:
         raise RayError(
             f"ray {spec.name!r} has no stored observation — observe_ray first"
         )
     if against in (None, "", "last"):
-        return spec.digests[-1]
+        newest = spec.digests[-1]
+        if (
+            current_hash is not None
+            and newest.get("hash") == current_hash
+            and len(spec.digests) > 1
+        ):
+            return spec.digests[-2]
+        return newest
     if isinstance(against, str) and against.startswith("v"):
         raise RayError(
             "against='v<n>' (a design revision) needs the revision's "
@@ -701,10 +793,15 @@ def diff_lines(old: Observation, new: Observation) -> list[str]:
         if abs(ds) > (_MOVE_EPS_A if h.atomic else 1e-6):
             parts.append(f"Δs {ds:+.3f} {mu}")
         for k, unit in (("d", "Å"), ("q", "e"), ("V", "V")):
-            if k in h.nums and k in prev.nums:
+            if h.atomic and k in h.nums and k in prev.nums:
                 dv = h.nums[k] - prev.nums[k]
                 if abs(dv) > _MOVE_EPS_A:
                     parts.append(f"Δ{k} {dv:+.3f} {unit}")
+        for k in ("len", "off", "dia"):
+            if not h.atomic and k in h.nums and k in prev.nums:
+                dv = (h.nums[k] - prev.nums[k]) * mf
+                if abs(dv) > 1e-6:
+                    parts.append(f"Δ{k} {dv:+.3f} {mu}")
         if parts:
             moved.append(
                 f"  moved   {_fmt_s(h.s, h.atomic, L)}  {h.text}  " + "  ".join(parts)
@@ -764,6 +861,12 @@ def header(obs: Observation, *, n_hits: int | None = None) -> str:
     if spec.frame:
         where += f" · {spec.frame}"
     kind = f" · kind {spec.kind}" if spec.kind != "probe" else ""
+    if spec.bundle:
+        f, u = _macro_unit(spec.length)
+        kind += (
+            f" · bundle {int(spec.bundle['count'])}×r "
+            f"{float(spec.bundle['radius']) * f:g} {u}"
+        )
     fields = ",".join(obs.fields) if obs.fields else "—"
     n = len(obs.hits) if n_hits is None else n_hits
     return (
@@ -795,6 +898,7 @@ def hit_lines(obs: Observation, *, start: float | None = None) -> list[str]:
         )
     if obs.end is not None and (start is None or obs.end >= start):
         lines.append(f"  end {_fmt_s(obs.end, True).strip()} (last atom within reach)")
+    lines.extend(obs.kind_lines)
     return lines
 
 

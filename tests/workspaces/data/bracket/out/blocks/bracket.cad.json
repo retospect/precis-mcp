@@ -1,0 +1,93 @@
+{
+ "schema": 1,
+ "nodes": [
+  {
+   "name": "pad",
+   "op": "add",
+   "config": "box:w0.04d0.04h0.006",
+   "component": "part",
+   "loc": [
+    0,
+    0,
+    0.0102
+   ],
+   "rot": [
+    0,
+    0,
+    0
+   ],
+   "frame": 4
+  },
+  {
+   "name": "hole1",
+   "op": "cut",
+   "config": "cyl:r0.00275h0.008",
+   "component": "part",
+   "loc": [
+    -0.015,
+    0,
+    0.0092
+   ],
+   "rot": [
+    0,
+    0,
+    0
+   ],
+   "frame": 5
+  },
+  {
+   "name": "hole2",
+   "op": "cut",
+   "config": "cyl:r0.00275h0.008",
+   "component": "part",
+   "loc": [
+    -0.005,
+    0,
+    0.0092
+   ],
+   "rot": [
+    0,
+    0,
+    0
+   ],
+   "frame": 5
+  },
+  {
+   "name": "hole3",
+   "op": "cut",
+   "config": "cyl:r0.00275h0.008",
+   "component": "part",
+   "loc": [
+    0.005,
+    0,
+    0.0092
+   ],
+   "rot": [
+    0,
+    0,
+    0
+   ],
+   "frame": 5
+  },
+  {
+   "name": "hole4",
+   "op": "cut",
+   "config": "cyl:r0.00275h0.008",
+   "component": "part",
+   "loc": [
+    0.015,
+    0,
+    0.0092
+   ],
+   "rot": [
+    0,
+    0,
+    0
+   ],
+   "frame": 5
+  }
+ ],
+ "components": [
+  "part"
+ ]
+}

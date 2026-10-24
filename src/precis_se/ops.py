@@ -835,6 +835,14 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     structures: StructureSceneResolver | None = field(
         default=None, repr=False, compare=False
     )
+    #: Store-bound cad-design lookup
+    #: (:func:`precis_se.persist.cad_design_resolver`): a cad design's slug
+    #: → ``(built Design, ref meta)``, or ``None``. Read by the macro leg of
+    #: observation rays (:mod:`precis_se.rays_macro`) so a cad-bound block
+    #: is probed through its real solid — holes included — not its envelope.
+    cad_designs: Callable[[str], tuple[Any, dict[str, Any]] | None] | None = field(
+        default=None, repr=False, compare=False
+    )
     #: Store-bound construction-trace loader
     #: (:func:`precis_se.persist.trace_doc_resolver`): a bound ref's
     #: ``meta['generated']['trace']`` record (``{'run_job', 'root'}``) →
