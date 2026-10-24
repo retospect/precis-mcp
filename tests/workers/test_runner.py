@@ -418,6 +418,159 @@ class TestRunLoopRefPassCrash:
 
 
 # ---------------------------------------------------------------------------
+# run_loop — a blocked pass's claim count is reporting-only (gr514421):
+# ``claimed>0`` doubles as the loop's "any work this cycle?" signal, so a
+# pass that claimed rows it cannot work (a spent daily ceiling, a paused
+# producer) must set ``report_only`` or the loop hot-spins re-claiming the
+# same unstamped rows until the block lifts.
+# ---------------------------------------------------------------------------
+
+
+class TestReportOnlyClaimed:
+    def test_report_only_claimed_pass_idle_sleeps(
+        self, store, monkeypatch, tmp_path
+    ) -> None:
+        """``claimed>0, report_only=True`` reaches the idle-sleep path —
+        the ceiling-blocked hot-loop guard."""
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(tmp_path / "no-drain-file"))
+        slept: list[float] = []
+        calls = 0
+
+        def _blocked_pass(batch_size: int) -> BatchResult:
+            nonlocal calls
+            calls += 1
+            return BatchResult(
+                handler="blocked", claimed=1, ok=0, failed=0, report_only=True
+            )
+
+        monkeypatch.setattr(
+            "precis.workers.runner.time.sleep", lambda s: slept.append(s)
+        )
+        run_loop(
+            [],
+            store,
+            once=False,
+            ref_passes=[_blocked_pass],
+            idle_seconds=0.05,
+            # should_stop polls inside the sleep loop; the call cap only
+            # bounds a regression (a hot loop would spin without sleeping).
+            should_stop=lambda: bool(slept) or calls > 1000,
+        )
+        assert slept, "report_only claimed>0 suppressed the idle sleep"
+        assert calls <= 1000
+
+    def test_plain_claimed_pass_still_suppresses_idle(
+        self, store, monkeypatch, tmp_path
+    ) -> None:
+        """Contrast pin: a plain ``claimed>0`` result is still real work —
+        the loop re-polls immediately and never reaches the sleep path."""
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(tmp_path / "no-drain-file"))
+        slept: list[float] = []
+        calls = 0
+
+        def _busy_pass(batch_size: int) -> BatchResult:
+            nonlocal calls
+            calls += 1
+            return BatchResult(handler="busy", claimed=1, ok=1, failed=0)
+
+        monkeypatch.setattr(
+            "precis.workers.runner.time.sleep", lambda s: slept.append(s)
+        )
+        run_loop(
+            [],
+            store,
+            once=False,
+            ref_passes=[_busy_pass],
+            idle_seconds=0.05,
+            should_stop=lambda: calls >= 20,
+        )
+        assert calls >= 20
+        assert not slept
+
+    def test_report_only_flag_lands_in_digest_payload(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The flag is visible on the pass's own ``worker_logs`` digest
+        row — the count still reports, just flagged non-progress."""
+
+        def _blocked_pass(batch_size: int) -> BatchResult:
+            return BatchResult(
+                handler="blocked", claimed=3, ok=0, failed=0, report_only=True
+            )
+
+        with caplog.at_level("INFO", logger="precis.workers.runner"):
+            run_loop([], store, once=True, ref_passes=[_blocked_pass])
+
+        payloads = [
+            p
+            for r in caplog.records
+            if (p := _payload(r)) is not None and p.get("handler") == "blocked"
+        ]
+        assert len(payloads) == 1
+        assert payloads[0]["claimed"] == 3
+        assert payloads[0]["report_only"] is True
+
+
+# ---------------------------------------------------------------------------
+# run_loop — BatchResult.extra is the pass-metrics extension point
+# (gr514422): merged into the digest payload, core keys win.
+# ---------------------------------------------------------------------------
+
+
+class TestBatchResultExtra:
+    def test_extra_metrics_merge_into_digest_payload(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def _rich_pass(batch_size: int) -> BatchResult:
+            return BatchResult(
+                handler="rich",
+                claimed=2,
+                ok=1,
+                failed=0,
+                extra={"chased": 7, "ceiling_hit": True},
+            )
+
+        with caplog.at_level("INFO", logger="precis.workers.runner"):
+            run_loop([], store, once=True, ref_passes=[_rich_pass])
+
+        payloads = [
+            p
+            for r in caplog.records
+            if (p := _payload(r)) is not None and p.get("handler") == "rich"
+        ]
+        assert len(payloads) == 1
+        assert payloads[0]["chased"] == 7
+        assert payloads[0]["ceiling_hit"] is True
+        assert payloads[0]["claimed"] == 2
+
+    def test_extra_cannot_shadow_core_fields(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A pass-supplied ``claimed``/``handler`` key in ``extra`` must
+        not rewrite the rollup fields — core keys win on collision."""
+
+        def _lying_pass(batch_size: int) -> BatchResult:
+            return BatchResult(
+                handler="lying",
+                claimed=4,
+                ok=4,
+                failed=0,
+                extra={"claimed": 999, "handler": "impostor"},
+            )
+
+        with caplog.at_level("INFO", logger="precis.workers.runner"):
+            run_loop([], store, once=True, ref_passes=[_lying_pass])
+
+        payloads = [
+            p
+            for r in caplog.records
+            if (p := _payload(r)) is not None and p.get("handler") == "lying"
+        ]
+        assert len(payloads) == 1
+        assert payloads[0]["claimed"] == 4
+
+
+# ---------------------------------------------------------------------------
 # run_loop — drain file pauses claims
 # ---------------------------------------------------------------------------
 

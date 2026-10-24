@@ -55,6 +55,29 @@ backstop, the liveness signal leases are judged by. :mod:`.activity` stamps
 each ref pass so silent work is not mistaken for a dead worker; snapshots
 appear in ``host_heartbeat.meta.activity`` and Status **Now**.
 
+Job digests
+-------------
+The named reporting artifact of a pass is its **digest row**: every
+handler batch and every ref-pass invocation ends in one
+:class:`BatchResult`, which :func:`run_loop` logs at INFO carrying the
+structured ``extra={'payload': …}`` channel. The DBLogHandler persists
+that into ``worker_logs.payload`` — ``precis logs --pass <name>
+--payload`` reads it directly (claimed / ok / failed / report_only /
+duration_ms), and ``activity_by_handler`` recency reads roll up the same
+row. Three rules keep the surface trustworthy:
+
+* A pass's own counters (``chased``, ``capped_per_paper``, …) ride in
+  ``BatchResult.extra``, merged into the same payload row — never a
+  second INFO row, whose duplicated ``payload.handler`` would skew the
+  ok/fail recency reads (gr514422). Core keys win on collision.
+* ``BatchResult.report_only`` marks a *blocked* claim — the pass claimed
+  rows it could not work (spent ceiling, paused producer). The count
+  still reports, but it does not count as work, so the loop idle-sleeps
+  instead of hot-spinning on unstamped rows (gr514421).
+* Crash paths log an errored row with the same ``payload.handler``
+  identity so a crash-looping pass is never structurally silent to the
+  pass-dead probe (gr328589).
+
 Profiles + service registry
 ---------------------------
 ``--profile system`` (every node) / ``agent`` (the OAuth + MCP-config

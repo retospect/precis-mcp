@@ -35,8 +35,9 @@ import random
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial, update_wrapper
+from typing import Any
 
 from precis.embedder import EmbedderUnavailable
 from precis.store import Store
@@ -125,12 +126,33 @@ def _drain_file_fresh(path: str) -> bool:
 
 @dataclass(frozen=True)
 class BatchResult:
-    """Outcome of one :func:`run_handler_once` call."""
+    """Outcome of one :func:`run_handler_once` call.
+
+    ``claimed`` doubles as :func:`run_loop`'s "any work this cycle?"
+    signal — a pass returning ``claimed>0`` keeps the loop polling
+    without an idle sleep. A pass that claimed rows but was blocked
+    from working them (a spent daily ceiling, a paused producer)
+    must set ``report_only`` so ``claimed`` stays honest for the
+    digest without suppressing the sleep — otherwise the loop
+    hot-spins re-claiming the same unstamped rows until the block
+    lifts (gr514421). ``extra`` is the extension point for
+    pass-specific metrics (gr514422; see :func:`run_loop`).
+    """
 
     handler: str
     claimed: int
     ok: int
     failed: int
+    #: Pass-specific metrics (``chased``, ``capped_per_paper``, …)
+    #: merged into the pass's own ``worker_logs`` digest-row payload
+    #: under their own keys — the alternative, a second INFO row, would
+    #: skew ``activity_by_handler`` ok/fail recency reads. Core keys
+    #: (``handler``/``claimed``/``ok``/``failed``/``duration_ms``) win
+    #: on collision so a pass can't shadow the rollup fields.
+    extra: dict[str, Any] = field(default_factory=dict)
+    #: ``claimed`` is reporting-only: the pass was blocked from working
+    #: the rows it claimed and must not count as "work this cycle".
+    report_only: bool = False
 
 
 def run_handler_once(
@@ -151,7 +173,8 @@ def run_handler_once(
 
     A worker that dies between phases leaves its claims behind; the cooldown
     reaper re-claims them. Returns a :class:`BatchResult`; ``claimed=0`` is the
-    "no work" signal :func:`run_loop` uses to schedule a sleep.
+    "no work" signal :func:`run_loop` uses to schedule a sleep (see
+    ``BatchResult.report_only`` for the blocked-pass escape hatch).
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -258,6 +281,25 @@ class BoundedPass:
         return self._fn(batch_size)
 
 
+def _result_payload(result: BatchResult, t0: float) -> dict[str, Any]:
+    """The ``extra={'payload': …}`` digest dict for one BatchResult row.
+
+    ``result.extra`` merges first so the core keys win on collision —
+    a pass's own counters must never shadow the fields
+    ``activity_by_handler`` and ``precis logs --pass X --payload`` roll
+    up on (gr514422).
+    """
+    return {
+        **result.extra,
+        "handler": result.handler,
+        "claimed": result.claimed,
+        "ok": result.ok,
+        "failed": result.failed,
+        "report_only": result.report_only,
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    }
+
+
 def _service_name(ref_pass: RefPass) -> str | None:
     """The ``service_config`` name a ref-pass gates, counts and logs under.
 
@@ -340,8 +382,8 @@ def run_loop(
     * ``once=True`` — make one full pass across all handlers and
       ref-passes and return.
     * ``once=False`` — loop forever. When every handler AND every
-      ref-pass reports ``claimed=0`` in a pass, sleep
-      ``idle_seconds`` then re-poll.
+      ref-pass reports ``claimed=0`` — or ``report_only=True`` — in a
+      pass, sleep ``idle_seconds`` then re-poll.
     * ``should_stop()`` — called between handlers and between
       ref-passes; returning ``True`` breaks out cleanly. The CLI
       wires this to a SIGINT/SIGTERM flag so ``Ctrl-C`` returns
@@ -573,17 +615,13 @@ def run_loop(
             result.claimed,
             result.ok,
             result.failed,
-            extra={
-                "payload": {
-                    "handler": result.handler,
-                    "claimed": result.claimed,
-                    "ok": result.ok,
-                    "failed": result.failed,
-                    "duration_ms": int((time.monotonic() - t0) * 1000),
-                }
-            },
+            extra={"payload": _result_payload(result, t0)},
         )
-        return result.claimed > 0
+        # ``claimed`` normally means "work remains — keep polling". A
+        # ``report_only`` result is the escape hatch for a blocked pass
+        # (gr514421): the claim count still reports for the digest but
+        # must not suppress the idle sleep.
+        return result.claimed > 0 and not result.report_only
 
     def _run_overdue_rescue() -> bool | None:
         """Run every rescue pass past its budget; ``None`` on a stop
@@ -662,17 +700,9 @@ def run_loop(
                 result.claimed,
                 result.ok,
                 result.failed,
-                extra={
-                    "payload": {
-                        "handler": result.handler,
-                        "claimed": result.claimed,
-                        "ok": result.ok,
-                        "failed": result.failed,
-                        "duration_ms": int((time.monotonic() - t0) * 1000),
-                    }
-                },
+                extra={"payload": _result_payload(result, t0)},
             )
-            if result.claimed > 0:
+            if result.claimed > 0 and not result.report_only:
                 any_work = True
 
         for ref_pass in ref_passes or ():

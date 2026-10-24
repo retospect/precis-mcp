@@ -55,11 +55,15 @@ def _seed_paper(
 def _ref_id_by_doi(store, doi: str) -> int | None:
     """Resolve a ref_id by DOI — robust against the auto-minted cite_key
     (derived from title/year, not the DOI) that ``upsert_stub_paper``
-    picks for a citer stub."""
+    picks for a citer stub. Normalises first (gr514420): stored DOIs are
+    trigger-lowercased, so a mixed-case probe must run through
+    ``normalize_doi`` too or it silently misses."""
+    from precis.identity import normalize_doi
+
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'doi' AND id_value = %s",
-            (doi,),
+            (normalize_doi(doi),),
         ).fetchone()
     return int(row[0]) if row else None
 
@@ -69,6 +73,19 @@ def _inbound_tag(store, ref_id: int) -> str | None:
         if getattr(t, "prefix", None) == "INBOUND":
             return t.value
     return None
+
+
+def test_ref_id_by_doi_normalizes_mixed_case_probe(store) -> None:
+    """gr514420: stored DOIs are canonical lowercase (``normalize_doi``
+    at the write chokepoints, the 0049 trigger at the storage layer),
+    so the helper must normalise its probe too — a mixed-case DOI
+    silently returned ``None`` before."""
+    ref_id = _seed_paper(
+        store, cite_key="mixcase20", identifiers=[("doi", "10.1/bigA")]
+    )
+    assert _ref_id_by_doi(store, "10.1/biga") == ref_id
+    assert _ref_id_by_doi(store, "10.1/BigA") == ref_id
+    assert _ref_id_by_doi(store, "10.1/nope") is None
 
 
 def _cites_links(store, *, src: int, dst: int) -> list:
