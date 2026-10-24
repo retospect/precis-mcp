@@ -2684,7 +2684,7 @@ def route(req: LlmRequest) -> LlmResult:
         model = _op_model or resolve_model(req.tier, backend=backend)
     else:
         model = req.model or resolve_model(req.tier, backend=backend)
-    # Keyword routing (docs/backlog/llm-keyword-route.md): a matched rule
+    # Keyword routing (:mod:`precis.utils.llm.keyword_route`): a matched rule
     # retargets the call to its own (tier, model, ladder), outranking the
     # op override — committed only when _keyword_plan's probe-gates pass,
     # so an unavailable/over-limiter target keeps the normal resolution.

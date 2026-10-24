@@ -330,11 +330,10 @@ task set.
    controller) after S0. This is the path that puts castor to work (Reto
    2026-10-03); without S1 the first background flood takes every castor
    slot from a live session.
-7. **backlog/llm-keyword-route.md** — content-keyword model routing
-   (Reto 2026-10-23, chat-99): an ordered (keyword|regex → model/route)
-   rule list evaluated at the `route()` seam, code defaults + a DB
-   override table (outbound-policy pattern), edit surface on `/llm`.
-   In progress on `worktree-g8-llm-keyword-route`.
+7. **llm-keyword-route — shipped** (8861517f5): ordered (keyword|regex →
+   model|tier|chain) rules at the `route()` seam (`utils/llm/keyword_route.py`
+   + `llm_keyword_routes`, migration 0237), probe-gated fallback to normal
+   routing, edit surface `/llm/rules` + `/api/llm/keyword-route` preview.
 8. **Embedder capacity — decided** (Reto 2026-10-02, td461158; item closed
    2026-10-21): this thread holds aggregate embedder capacity, owned by the
    embedder service (`src/precis/embedder_service.py`); host-level admission

@@ -1,4 +1,4 @@
-"""Keyword-triggered model routing — docs/backlog/llm-keyword-route.md.
+"""Keyword-triggered model routing — :mod:`precis.utils.llm.keyword_route`.
 
 The rule seam is :mod:`precis.utils.llm.keyword_route` (ordered
 ``(pattern → target)`` rules, first match wins, whole-word +

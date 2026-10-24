@@ -1,6 +1,6 @@
 """Keyword-triggered model routing — content rules at the dispatch seam.
 
-docs/backlog/llm-keyword-route.md (Reto 2026-10-23): an ordered list of
+Reto 2026-10-23 (chat-99): an ordered list of
 ``(keyword | regex → target)`` rules matched against the request's prompt
 text (``prompt`` + system prompt + user messages) inside
 :func:`precis.utils.llm.router.route`, so every routed call gets it with no

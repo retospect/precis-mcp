@@ -118,7 +118,7 @@ async def llm_op(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "llm/op.html.j2", ctx)
 
 
-# ── keyword rules (docs/backlog/llm-keyword-route.md) ──────────────────
+# ── keyword rules (precis.utils.llm.keyword_route) ──────────────────
 #
 # The ``/llm/rules`` section: list, add, disable and reorder the ordered
 # (pattern → target) rules ``route()`` matches prompt text against, plus
