@@ -23,6 +23,7 @@ import pytest
 import precis.handlers as handlers_pkg
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
+from precis.store import Store
 
 #: (kind, verb) for every in-repo handler verb that declares ``args``.
 PASSTHROUGH = [
@@ -168,6 +169,41 @@ def test_acquire_kwargs_in_args_reach_paper_put(
     )
     assert "[error:BadInput]" not in out, out
     assert "minted stub" in out, out
+
+    bad = _call(
+        runtime_with_store, "paper", "put", {"doi": "10.5555/acq-y", "zz_nope": 1}
+    )
+    assert "not accepted by paper.put" in bad, bad
+    assert "zz_nope" in bad
+
+
+def test_args_key_naming_handler_kwarg_is_promoted_not_rejected(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr484234: an ``args=`` key naming a real handler kwarg is a misfiled
+    top-level argument — dispatch promotes it instead of dying on the
+    ``ARGS_KEYS`` gate. ``tags`` exercises it on paper.put: a real kwarg
+    the ``ARGS_KEYS`` spec does not declare (the acquire knobs — ``doi``,
+    ``verify`` — are declared since cc1b88ffc, so they ride ``args=`` as
+    designed, covered above). A genuinely unknown key is still rejected."""
+    from precis.handlers import paper as paper_mod
+    from precis.ingest.semantic_scholar import S2ResolverError
+
+    def _down(*_a: object) -> None:
+        raise S2ResolverError("offline in test")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _down)
+
+    out = _call(
+        runtime_with_store,
+        "paper",
+        "put",
+        {"doi": "10.5555/acq-x", "verify": False, "tags": ["promotion-probe"]},
+    )
+    assert "[error:BadInput]" not in out, out
+    assert "minted stub" in out, out
+    rid = int(out.split("id=", 1)[1].split()[0])
+    assert "promotion-probe" in {str(t) for t in store.tags_for(rid)}
 
     bad = _call(
         runtime_with_store, "paper", "put", {"doi": "10.5555/acq-y", "zz_nope": 1}

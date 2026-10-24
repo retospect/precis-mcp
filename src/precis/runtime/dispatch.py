@@ -2719,6 +2719,24 @@ class DispatchMixin(RuntimeShape):
                 declared = (getattr(type(handler), "ARGS_KEYS", None) or {}).get(verb)
                 if declared is not None:
                     unknown = sorted(k for k in extras if k not in declared)
+                    # gr484234: an args= key that actually names a real
+                    # {kind}.{verb} kwarg is a misfiled top-level argument,
+                    # not a bad args= key — promote it (an explicit
+                    # top-level value wins the collision), the same lift
+                    # mcp_slim applies to full-verb params one layer up.
+                    # ``args`` itself is never promoted; what stays in
+                    # ``unknown`` is genuinely unknown and rejected below.
+                    promotable = [k for k in unknown if k in accepted and k != "args"]
+                    if promotable:
+                        promoted = _coerce_extras(
+                            type(handler),
+                            verb,
+                            {k: extras.pop(k) for k in promotable},
+                        )
+                        for k, v in promoted.items():
+                            if k not in args or args[k] is None:
+                                args[k] = v
+                        unknown = sorted(set(unknown) - set(promotable))
                     if unknown:
                         raise BadInput(
                             f"keys {unknown!r} not accepted by {kind}.{verb}; "

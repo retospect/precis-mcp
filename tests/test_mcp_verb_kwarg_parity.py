@@ -165,13 +165,11 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: message thread attachments -------------------------------
         ("message", "put", "attachments"),
         # -- put: paper acquire() conveniences -----------------------------
-        # citation= (f7301ad67): free-text citation resolved to a DOI;
-        # reachable through args={...}, rare enough to stay off the verb.
-        # (Reaching them via args= became *actually* true 2026-10-14 —
-        # cc1b88ffc widened paper.put's ARGS_KEYS to the acquire knobs.)
-        ("paper", "put", "citation"),
-        ("paper", "put", "context_ref_id"),
-        ("paper", "put", "verify"),
+        # WIRED THROUGH 2026-10-24 (gr484234): verify=, citation= and
+        # context_ref_id= are declared on tools/core.py::put and forwarded
+        # in its payload — args=-only reachability (cc1b88ffc's widened
+        # ARGS_KEYS) left them off the verb while acquire's own BadInput
+        # hint spells "pass verify=False".
         # -- edit: the args= extras tunnel, still unwired on edit ---------
         # `put(args=)` was closed 2026-08-28 (gr267461): every pcb write
         # op — place, route, plane_net, pin_side — travels through `args`,

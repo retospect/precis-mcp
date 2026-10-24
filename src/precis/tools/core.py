@@ -1271,6 +1271,17 @@ def put(
     identifier: str | None = None,
     year: int | None = None,
     reason: str | None = None,
+    # paper stub-mint extras (see precis-paper-help): verify=False skips
+    # the S2/registry not-found rejection for a known-real paper no index
+    # carries yet; citation= resolves a 'Journal Vol, Page (Year)' string
+    # via Crossref; context_ref_id= links the minted stub to where it came
+    # up. Declared at the verb level (the gr262482 pattern) — they sat in
+    # _ARGS_ONLY as reachable-through-args handler kwargs while the
+    # acquire error's own "pass verify=False" hint named them
+    # (gr483930/gr484234).
+    verify: bool | None = None,
+    citation: str | None = None,
+    context_ref_id: int | str | None = None,
     # message delivery stamp (asa_bot, precis-message-help):
     # put(kind='message', id=N, status='sent'|'failed'[, error='…']).
     status: str | None = None,
@@ -1495,6 +1506,9 @@ def put(
                 "identifier": identifier,
                 "year": year,
                 "reason": reason,
+                "verify": verify,
+                "citation": citation,
+                "context_ref_id": context_ref_id,
                 "status": status,
                 "error": error,
                 "entry": entry,
