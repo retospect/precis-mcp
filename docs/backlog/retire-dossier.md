@@ -486,7 +486,7 @@ their typed links: papers, findings, measures, todos, quests, memories.
   for its key insights and mint them as graph nodes (findings or hypotheses,
   cited where the narrative cites), linked to the quest's directions. The
   archive keeps the prose; the graph gets the content.
-- **Q5 export draft:** not ruled; Reto disagrees with the persisted
+- **Q5 export draft:** no persisted export draft; Reto disagrees with the persisted
   generated draft. His view: the graph is optimised for reasoning, fact
   representation and discovery, while exports are specific formats covering
   specific subsets in specific forms (a paper, an executive report, …), so a
@@ -497,7 +497,8 @@ their typed links: papers, findings, measures, todos, quests, memories.
   export becomes a writer step (draft-authoring / paper-writing pipeline):
   a writer picks the subset from the quest's graph and writes a normal
   draft that `serves` the quest, exported by the existing draft export.
-  `quest-artifacts-in-dossier.md` retargets there. Confirm with Reto.
+  `quest-artifacts-in-dossier.md` retargets there. **Confirmed by Reto
+  2026-10-24.**
 - **Q6 dossier drafts:** soft-retire, **after** extracting their key ideas
   into the graph (same pass as Q4). The quest may have ended; the
   information stays relevant.

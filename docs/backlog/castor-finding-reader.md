@@ -469,6 +469,26 @@ Post-deploy look:
   local;
 - no `taproot:dedup` cloud rows in the reader's window.
 
+## Decisions (Reto 2026-10-24, chat-99)
+
+Q1–Q7 as recommended, including Q6: calibrate on kinetics pa508953 first,
+climate second. Added on review, folded in by the next revision:
+
+- **A. Pending until the gate passes.** Reader-minted hubs are not
+  `STATUS:canonical`, searchable or in other mint doors' dedupe pools until
+  their batch passes the Opus spot-check; on pass they flip, on fail they
+  revert.
+- **B. One castor budget.** `finding_read` concurrency is a global cap, not
+  per worker host. The reader yields while the gardener, classify or
+  survey_extract queues have waiting work, and that includes the dedup and
+  merge-confirm calls it moves local.
+- **C. Visible stops.** A reader paused after 3 failed batches, or batches
+  waiting at the $5/day spot-check cap, raise one review-queue item for Reto.
+- **D. Visible spot-check backlog** (Reto: "if we have spot check backlog,
+  how will we know?"). Batches awaiting their spot-check show as a count
+  plus the oldest batch's age on the health panel and in the run summary,
+  with an alert when the oldest waits over 24 h.
+
 ## Open questions for Reto
 
 1. **Does the Opus spot-check count as frontier spend that needs a

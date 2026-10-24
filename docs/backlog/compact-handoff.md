@@ -488,6 +488,16 @@ Then slice 4, then the other seats.
 | recall noise: handoffs in `search(kind='memory')` | rule h bounds the live set; revisit if dogfood shows handoffs crowding recall |
 | hook latency on every compaction | `prod-precis` round trip only when a pointer exists; 15 s internal cut, 20 s timeout |
 
+## Decisions (Reto 2026-10-24, chat-99)
+
+- **Q1–Q4, Q6:** as recommended.
+- **Q5 stale cut: not 2 h.** "If it makes a handoff at 2am and I get to it
+  at 8am it ought to still work." The cut must survive an overnight gap.
+  The chat desk proposes: with slice 4's session marker, an exact session
+  match is honoured at any age; a pane-pointer-only match is honoured up to
+  24 h; older, the hook names the id and injects nothing. The builder
+  confirms this keeps the wrong-session risk acceptable.
+
 ## Open questions for Reto
 
 1. **Section: `section:handoff` (new) or `section:threads`?** Recommend
