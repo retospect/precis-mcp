@@ -47,6 +47,9 @@ def test_quest_detail_empty_states_no_500(client, runtime) -> None:
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
     assert "no dossier yet" in resp.text
+    # The neighbourhood link is the quest's, not the dossier's — it
+    # renders even when no dossier is seeded yet.
+    assert 'href="/eye/qu97"' in resp.text
     assert "no reader-facing paper yet" in resp.text
     assert "no logbook entries yet" in resp.text
     assert "no activity logged yet" in resp.text
@@ -140,10 +143,15 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
 
-    # Dossier panel.
+    # Dossier panel. The old "Open dossier (draft · fisheye)" link opened
+    # the plain draft; it now opens the quest's eye neighbourhood instead
+    # (gr510505). The 📓 nav button keeps the draft URL.
     assert "MOF linkers look like the best lead so far." in resp.text
     assert "zeolite Y" in resp.text
     assert "/smartdraft/quest-97-dossier" in resp.text
+    assert 'href="/eye/qu97"' in resp.text
+    assert "Open quest neighbourhood (fisheye)" in resp.text
+    assert "Open dossier" not in resp.text
 
     # Paper hub links.
     assert "/smartdraft/quest-97-paper" in resp.text
