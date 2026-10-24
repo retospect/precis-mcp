@@ -108,6 +108,10 @@ def tree_name(root: Path) -> str:
     return name[:48]
 
 
+#: ensure script may build/pull images; generous but finite.
+ENSURE_TIMEOUT_S = 1800
+
+
 def is_worktree(root: Path) -> bool:
     """A linked worktree has a ``.git`` *file* (``gitdir: …``)."""
     return (root / ".git").is_file()
@@ -122,6 +126,7 @@ def main_checkout(root: Path) -> Path:
         text=True,
         encoding="utf-8",
         check=True,
+        timeout=30,
     ).stdout.strip()
     common = Path(out)
     if not common.is_absolute():
@@ -278,6 +283,7 @@ def run_ensure(
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=ENSURE_TIMEOUT_S,
     )
 
 
@@ -596,6 +602,7 @@ def _seed_state(tree: Tree) -> None:
             text=True,
             encoding="utf-8",
             check=False,
+            timeout=300,
         )
         if cp.returncode != 0:
             shutil.rmtree(cache, ignore_errors=True)
@@ -655,6 +662,7 @@ def _watcher_pid(tree: Tree) -> int | None:
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=30,
     ).stdout
     return pid if "wt-mcp" in cmd and "watch" in cmd else None
 
@@ -855,7 +863,13 @@ def cmd_claude(tree: Tree, args: list[str]) -> int:
     )
     prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        rc = proc.wait()
+        # Interactive session: unbounded by design, written as a poll loop.
+        while True:
+            try:
+                rc = proc.wait(timeout=3600)
+                break
+            except subprocess.TimeoutExpired:
+                continue
     finally:
         signal.signal(signal.SIGINT, prev)
         watcher.terminate()

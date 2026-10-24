@@ -131,6 +131,7 @@ from precis_se.handler import (
     _render_topology,
     _render_tree,
 )
+from precis_se.mold import prepare_mold
 from precis_se.ops import OpError as SeOpError
 from precis_se.ops import SeTree, effective_ports
 from precis_se.ops import apply_ops as se_apply_ops
@@ -693,6 +694,9 @@ _SE_DRY_RUN_PREPARE: dict[str, Callable[[Any, SeTree, dict[str, Any], str], Any]
     "realize": prepare_realize,
     "realize_chain": prepare_realize_chain,
     "join": prepare_join,
+    # Pure over the tree like ``realize``; the per-piece cad_save is
+    # ``finish_mold``, deferred to the proposal's Apply.
+    "mold": prepare_mold,
     # The flat-pack op's read-only half: the generator run, block/port/
     # connect rewrites on the scratch tree, plus the prior-panel read for
     # the retire set. The cad mints and retires stay deferred, same as
