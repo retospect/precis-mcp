@@ -657,18 +657,24 @@ class MeasuresMixin:
     def _compat_conversion(
         c: Connection, taxon: dict[str, Any], reported_unit: str, canonical: str
     ) -> Conversion | None:
-        """The exact converter of a legacy taxon's ``measure_unit_compat`` row
-        when ``reported_unit`` is the unit the legacy registry kept and the
-        taxon stores the row's SI unit; None otherwise (pint decides). The same
-        factor the compatibility views use, so a number written through either
-        door reads back the same."""
+        """The exact converter of a taxon's ``measure_unit_compat`` row when
+        ``reported_unit`` is the unit the taxon was kept in before its SI
+        re-base and the taxon stores the row's SI unit; None otherwise (pint
+        decides). The row is keyed by ``legacy_source`` for a legacy taxon,
+        else by ``('taxon', slug)`` (0236). The same factor the migrations and
+        compatibility views use, so a number written through any door reads
+        back the same."""
         src = taxon.get("legacy_source")
-        if not isinstance(src, dict):
+        if isinstance(src, dict):
+            key = (src.get("table"), src.get("key"))
+        elif taxon.get("slug"):
+            key = ("taxon", taxon.get("slug"))
+        else:
             return None
         row = c.execute(
             "SELECT legacy_unit, si_unit, factor, si_offset FROM measure_unit_compat "
             "WHERE legacy_table = %s AND legacy_key = %s",
-            (src.get("table"), src.get("key")),
+            key,
         ).fetchone()
         if row is None or row[1] != canonical or reported_unit.strip() != row[0]:
             return None

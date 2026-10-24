@@ -36,6 +36,10 @@ from tests.workers._helpers import seed_ref
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"
 NEW = "0188_measures_si.sql"
+#: 0188's own rows: the chain tail (0236) adds ('taxon', slug) rows beside them
+_LEGACY_COMPAT_COUNT = (
+    "SELECT count(*) FROM measure_unit_compat WHERE legacy_table <> 'taxon'"
+)
 
 
 # ── builders ───────────────────────────────────────────────────────────────
@@ -218,9 +222,9 @@ class TestCompatTable:
         rows = _all(
             fresh_db,
             "SELECT legacy_table, legacy_key, legacy_unit, si_unit, factor, si_offset "
-            "FROM measure_unit_compat ORDER BY 1, 2",
+            "FROM measure_unit_compat WHERE legacy_table <> 'taxon' ORDER BY 1, 2",
         )
-        assert len(rows) == 30
+        assert len(rows) == 30  # 0188's legacy rows; 0236's ('taxon', slug) rows aside
         registry = {
             "material_properties": "SELECT canonical_unit FROM material_properties "
             "WHERE prop_id = %s",
@@ -473,7 +477,7 @@ class TestMigration:
         assert _one(fresh_db, "SELECT to_regclass('rxn_values') IS NOT NULL")
         _apply_0188(fresh_db)
         assert _one(fresh_db, "SELECT to_regclass('rxn_values') IS NULL")
-        assert _one(fresh_db, "SELECT count(*) FROM measure_unit_compat") == 30
+        assert _one(fresh_db, _LEGACY_COMPAT_COUNT) == 30
 
     # -- nothing to convert -------------------------------------------------
 
@@ -497,7 +501,7 @@ class TestMigration:
         )
         _apply_0188(fresh_db)
         assert _one(fresh_db, "SELECT count(*) FROM measures") == 0
-        assert _one(fresh_db, "SELECT count(*) FROM measure_unit_compat") == 30
+        assert _one(fresh_db, _LEGACY_COMPAT_COUNT) == 30
 
     def test_some_taxa_absent_converts_the_rest(self, fresh_db: str) -> None:
         _replay_to_0187(fresh_db)
@@ -1420,8 +1424,14 @@ class TestReadersShowTheSameNumber:
         assert capture() == before
 
     def test_measure_detail_of_the_live_row_and_of_the_superseded_legacy_row(
-        self, fresh_db: str, at_0187: dict[str, int]
+        self,
+        fresh_db: str,
+        at_0187: dict[str, int],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # The replayed chain stops at 0188, before reviews.sha_basis (0235);
+        # reviews aren't what this test reads, so stub them out.
+        monkeypatch.setattr(Store, "reviews_for", lambda *a, **k: [])
         with _store(fresh_db) as s:
             tax = _taxon_id(fresh_db, "component_specs", "length")
             (old,) = [r for r in s.search_measures(tax).rows if r["literal"] == "12.5"]

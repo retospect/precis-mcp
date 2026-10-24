@@ -732,9 +732,11 @@ _SEEDED = (
 
 @pytest.fixture
 def taxonomy(store: Store) -> Store:
-    """The taxonomy as prod has it: 0174's registry seed, then 0182."""
+    """The taxonomy as prod has it: 0174's registry seed, then 0182, then
+    0236's SI re-base of the charge and dipole measurands."""
     _run_migration("0174_taxon_seed.sql")
     _run_migration("0182_se_measurand_seed.sql")
+    _run_migration("0236_se_charge_dipole_si.sql")
     return store
 
 
@@ -885,7 +887,8 @@ def test_measurand_resolves_by_handle_and_path(handler: SeHandler) -> None:
     )
     by = {m.name: m for m in _loaded(handler, "reg-forms").measures}
     assert {by[n].measurand_ref for n in ("d1", "d2", "d3")} == {rid}
-    assert by["d1"].unit == "D"
+    # se snapshots the canonical unit, SI since 0236 (debye is the display unit)
+    assert by["d1"].unit == "C*m"
     # the seeded Length node quotes mm; se stores lengths in metres
     assert (by["len"].measurand, by["len"].unit) == ("length", "m")
 
