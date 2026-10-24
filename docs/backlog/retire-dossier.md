@@ -1,5 +1,5 @@
 ---
-status: draft
+status: parked
 pillar: quests
 prio: high
 title: Retire the dossier — the quest's typed edges carry the synthesis, every document is a render
@@ -472,6 +472,15 @@ surviving design input is in this file or in code).
 - **Retired draft ids in old links.** 35 `related-to` rows and logbook
   `[dr…]` cites point at retired dossier drafts; they render as retired
   refs, which is the existing behaviour.
+
+## On hold (Reto 2026-10-24, later the same day)
+
+"Lets not retire the dossiers and just clean up and wind up." The dossier
+stays. Don't commission the revision pass or any slice. The rulings below
+stand as the design record if this is ever reopened. Discussed and not
+pursued: making the quest page a fisheye plus a quest layer (strands,
+direction status, do-not-repropose query, frontier tree) instead of a new
+narrative renderer.
 
 ## Decisions (Reto 2026-10-24, chat-99)
 
