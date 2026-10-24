@@ -163,6 +163,13 @@ _EXEMPT_SITES = frozenset(
         # to be relative to. See the constant's own docstring for the 0.1 pm
         # residual figure.
         "precis_se/chain/relax.py::TOL_NM",
+        # `precis_se/rays.py`'s ray-digest diff noise floor: a hit counts as
+        # "moved" only above the 0.001 resolution the diff prints (`.3f`),
+        # applied to Å offsets and to the e / V readings alike. It decides
+        # which already-computed hits a diff line names, never a geometric
+        # predicate or a cull, so there is no governing length to derive it
+        # from (2a89ad14b).
+        "precis_se/rays.py::_MOVE_EPS_A",
     }
 )
 
