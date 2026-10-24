@@ -281,6 +281,34 @@ PATH_MAP: list[tuple[str, list[str]]] = [
     ("src/precis_web/static/*.css", ["tests/precis_web/test_colour_ratchet.py"]),
     ("src/precis_web/static/*.js", ["tests/precis_web/test_colour_ratchet.py"]),
     ("src/precis_web/**/*.py", ["tests/precis_web/test_colour_ratchet.py"]),
+    # pcb-workspace-code slice 4 (the offline kernel + tier-2 goldens):
+    # the geometric engine's behavioural contract lives in tests/workspaces —
+    # a vroute/optimize/realize change that alters a board's routed count is
+    # selected here, and the tier-2 test prints the delta naming the board.
+    (
+        "src/precis/pcb/**",
+        [
+            "tests/workspaces/test_geom_wheel_imports.py",
+            "tests/workspaces/test_pcb_local.py",
+            "tests/workspaces/test_pcb_tier2.py",
+        ],
+    ),
+    (
+        "src/precis_geom/**",
+        [
+            "tests/workspaces/test_pcb_board.py",
+            "tests/workspaces/test_pcb_local.py",
+            "tests/workspaces/test_pcb_tier2.py",
+        ],
+    ),
+    (
+        "examples/boards/**",
+        [
+            "tests/workspaces/test_pcb_board.py",
+            "tests/workspaces/test_pcb_tier2.py",
+        ],
+    ),
+    ("packaging/geom/**", ["tests/workspaces/test_geom_wheel_imports.py"]),
 ]
 
 # Repo prefixes that are never corpus coupling (git internals are not

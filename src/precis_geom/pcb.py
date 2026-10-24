@@ -1208,6 +1208,74 @@ def write_manifest(
     return path
 
 
+def _kernel() -> Any:
+    """``precis.pcb.local``, resolved lazily — the geometric kernel behind
+    the offline ``place``/``route``/``drc``/``gerbers`` calls (the
+    ``precis-geom[pcb-kernel]`` extra). A missing kernel raises with the
+    install instruction, not a bare module error."""
+    import importlib
+
+    try:
+        return importlib.import_module("precis.pcb.local")
+    except ImportError as exc:  # pragma: no cover - depends on install
+        raise ImportError(
+            "pcb.local needs the geometric kernel — install "
+            f"precis-geom[pcb-kernel] (missing: {exc.name or exc})"
+        ) from exc
+
+
+def __getattr__(name: str) -> Any:
+    """``pcb.local`` resolves to :mod:`precis.pcb.local` on demand —
+    ``pcb.local.place(b)`` reads like the spec's table while the builder
+    itself stays dependency-light (a wheel without ``[pcb-kernel]`` can
+    still run ``to_batch``/``check``/``write_manifest``)."""
+    if name == "local":
+        return _kernel()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def run(
+    board: Board, out_dir: str | Path = "out", argv: list[str] | None = None
+) -> Path:
+    """The ``main.py`` entry — writes the §Q3 output set under ``out_dir``
+    and returns the directory. Always: ``manifest.json`` (+``trace.json``
+    when tracing is live) and ``check.txt``. ``--place``/``--route`` in
+    ``argv`` (defaults to ``sys.argv[1:]``) add the kernel outputs
+    (``netlist.net``, ``schematic.svg``, ``ratsnest.svg``, and for route
+    ``placement.json``/``copper.json``/``drc.txt``/``gerbers.zip``/
+    ``board.svg``/``bom.csv``/``cpl.csv``) via :func:`local`. A missing
+    kernel refuses the flagged run and writes the base set for a plain
+    one."""
+    import sys
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    write_manifest(board, str(out))
+    check = board.check()
+    (out / "check.txt").write_text(check.summary() + "\n", encoding="utf-8")
+    args = list(sys.argv[1:] if argv is None else argv)
+    want_place = "--place" in args or "--route" in args
+    want_route = "--route" in args
+    try:
+        mod = _kernel()
+    except ImportError:
+        if want_place or want_route:
+            raise
+        print(
+            "precis-geom[pcb-kernel] not installed — wrote manifest.json "
+            "+ check.txt only"
+        )
+        return out
+    mod.run(
+        board,
+        str(out),
+        do_place=want_place,
+        do_route=want_route,
+        name=str(board.slug),
+    )
+    return out
+
+
 __all__ = [
     "MANIFEST_SCHEMA",
     "Board",
@@ -1231,5 +1299,6 @@ __all__ = [
     "module",
     "pad",
     "rect",
+    "run",
     "write_manifest",
 ]

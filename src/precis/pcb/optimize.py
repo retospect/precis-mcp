@@ -396,6 +396,23 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
     ),
 )
 
+#: Single-stage, placement-only schedule — the whole run stays in
+#: TRANSLATE/ROTATE/SWAP territory (mirrors ``DEFAULT_SCHEDULE``'s first
+#: stage, just extended to ``through_fraction=1.0`` instead of handing off
+#: to topology/layer moves, which is the joint run's). Canonical here so
+#: the ``pcb_place`` worker and the offline ``precis.pcb.local`` wrapper
+#: share the one definition (pcb-workspace-code slice 4).
+PLACE_ONLY_SCHEDULE: tuple[ScheduleStage, ...] = (
+    ScheduleStage(
+        1.0,
+        {MoveKind.TRANSLATE: 0.6, MoveKind.ROTATE: 0.15, MoveKind.SWAP: 0.25},
+    ),
+)
+
+#: The place-only run's default iteration count (the ``pcb_place`` job's
+#: ``_DEFAULT_ITERS`` — ``pcb_route``'s is 3000, unchanged).
+PLACE_ITERS = 2000
+
 #: **ROTATE is cost-neutral, provably** — no term in ``cost.py`` reads
 #: ``inst_rot`` (component-centroid granularity, same limitation
 #: ``place.py`` documents), so its ``total()`` delta is a true zero. Still

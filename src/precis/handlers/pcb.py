@@ -144,6 +144,7 @@ from precis.pcb import route as pcb_route
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
+from precis.pcb import session_store as pcb_session_store
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb import topo as pcb_topo
@@ -1617,7 +1618,7 @@ class PcbHandler(Handler):
         milliseconds). Idempotent per (design, op, content-hash): a
         re-submit against unchanged design state + params collapses onto
         the in-flight/prior job rather than minting a duplicate."""
-        snap = pcb_session.load_snapshot(self.store, ref.id)
+        snap = pcb_session_store.load_snapshot(self.store, ref.id)
         graph = snap.graph
         stackup = (graph.get("board") or {}).get("stackup") or []
         if len(stackup) != 4:
@@ -1788,17 +1789,45 @@ class PcbHandler(Handler):
         from precis.handlers.skill import code_stamp
 
         stale = self._stale_note(ref.id)
-        return (
-            f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
-            + (stale + "\n\n" if stale else "")
-            + (
+        if self._claiming_worker_live():
+            drain_note = (
                 f"Runs on the cluster worker's code, not necessarily this "
                 f"session's ({code_stamp()}) — the job's `ran_on:` line records "
                 "which build actually ran.\n"
-                f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
-                "to check progress once the job lands."
             )
+        else:
+            drain_note = (
+                "No live worker on this store — nothing claims the job until "
+                "something drains it in-process "
+                "(precis.workers.executors.job_inproc.run_job_inproc_pass), "
+                "which runs the draining process's own code.\n"
+            )
+        return (
+            f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
+            + (stale + "\n\n" if stale else "")
+            + drain_note
+            + f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
+            "to check progress once the job lands."
         )
+
+    def _claiming_worker_live(self) -> bool:
+        """True when some host's ``host_heartbeat`` row is fresh AND
+        advertises a minted ``meta.boot_ids`` entry — i.e. a real claiming
+        worker process is alive, so the job may run on a different build
+        than this session's (gr513874). A local/scratch/test store has no
+        heartbeats at all: nothing but an in-process
+        ``run_job_inproc_pass`` will ever drain the job there, and the
+        "cluster worker's code" caveat would be wrong."""
+        from precis.workers.nursery import HOST_DARK_SILENCE_MIN
+
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM host_heartbeat "
+                "WHERE ts > now() - make_interval(mins => %s) "
+                "AND meta->'boot_ids' <> '{}'::jsonb LIMIT 1",
+                (HOST_DARK_SILENCE_MIN,),
+            ).fetchone()
+        return row is not None
 
     def _op_review(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'review', 'item'?, 'limit'?})`` — pcb-datasheet-
@@ -4633,10 +4662,14 @@ class PcbHandler(Handler):
         """Write the manufacturable fab bundle — gerbers + Excellon, zipped
         (:mod:`precis.pcb.gerber`) — off :meth:`_fab_model`, closing
         ``docs/backlog/pcb-fab-output-unwired.md``'s "the export tail is
-        unwired" gap."""
+        unwired" gap. ``args={'allow_synthesized': true}`` exports a
+        PREVIEW bundle over synthesized pad bounds — named
+        ``{slug}-preview.zip`` and headed PREVIEW so it can never pass
+        for the order upload (gr513872)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
-        built = self._fab_zip(ref_id, slug)
+        allow_synthesized = bool(args.get("allow_synthesized"))
+        built = self._fab_zip(ref_id, slug, allow_synthesized=allow_synthesized)
         if built is None:
             return Response(
                 body="no board yet\n\nNext: put(kind='pcb', id='slug', "
@@ -4646,12 +4679,20 @@ class PcbHandler(Handler):
         pads, drills, copper = model["pads"], model["drills"], model["copper"]
 
         out_dir = self._export_dir(slug, args)
-        path = out_dir / f"{pcb_epro_write.safe_stem(slug)}-fab.zip"
+        stem = pcb_epro_write.safe_stem(slug)
+        fname = f"{stem}-preview.zip" if allow_synthesized else f"{stem}-fab.zip"
+        path = out_dir / fname
         path.write_bytes(blob)
         banner, _n_drc_errors = self._gerber_drc_banner(ref_id, slug)
 
+        preview = ""
+        if allow_synthesized:
+            n_synth = len(
+                {str(p.get("net", "?")) for p in pads if p.get("synthesized")}
+            )
+            preview = f"PREVIEW - {n_synth} synthesized pad net(s), not fabricable\n"
         head = (
-            f"{banner}\n\n"
+            f"{preview}{banner}\n\n"
             f"# exported {slug} → GERBER (fab bundle)\n{path}  "
             f"({len(blob):,} bytes zipped, {len(files)} file(s))\n"
             f"pads: {len(pads)}  drills: {len(drills)}  via holes: "
@@ -4722,24 +4763,35 @@ class PcbHandler(Handler):
         return Response(body=head)
 
     def _fab_zip(
-        self, ref_id: int, slug: str
+        self, ref_id: int, slug: str, *, allow_synthesized: bool = False
     ) -> tuple[bytes, list[str], dict[str, str], dict[str, Any]] | None:
         """The gerber+drill bundle as in-memory bytes, plus its warnings,
         file map and assembled model — the one assembly
         :meth:`_render_gerber`, :meth:`_render_fab_package` and
         :meth:`_op_order` share so the uploaded bytes and the previewed
         file can never drift. ``None`` when the design has no board row,
-        same contract as :meth:`_fab_model`."""
+        same contract as :meth:`_fab_model`.
+
+        ``allow_synthesized`` is :meth:`_render_gerber`'s preview switch
+        ONLY — every other caller (``view='fab'``, ``fab_package_zip``,
+        ``op='order'``) feeds a real JLC order upload and must stay on
+        the strict default."""
         built = self._fab_model(ref_id, slug=slug)
         if built is None:
             return None
         model, warnings = built
         try:
-            files = pcb_gerber.export_fab(model, name=slug)
+            files = pcb_gerber.export_fab(
+                model, name=slug, allow_synthesized=allow_synthesized
+            )
         except pcb_gerber.SynthesizedPadError as exc:
             raise BadInput(
-                f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
-                "the board as gerbers without exporting it.",
+                f"pcb: {exc} For a preview-only export: get(kind='pcb', "
+                f"id='{slug}', view='gerber', "
+                "args={'allow_synthesized': True}); view='fab' and "
+                "op='order' never accept it — they feed a real order. "
+                "view='svg' args={'level':'fab'} inspects the board as "
+                "gerbers without exporting it.",
                 next=f"cache the real footprint first: put(kind='pcb', "
                 f"id='{slug}', args={{'op':'footprint','part':'<lcsc>'}})",
             ) from exc

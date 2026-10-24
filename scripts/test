@@ -45,6 +45,12 @@
 # subagent test-db stops holding one of docker's ~31 network address pools
 # (see agent_db_teardown below). Set it to keep the warm db between runs.
 #
+# PRECIS_TEST_ENV="NAME=value …" : extra env vars to forward into the
+# test container, space-separated. Only a fixed allowlist crosses
+# otherwise (see ARTIFACT_ENV below) — a test-tuning var like NANO_SEEDS
+# that is exported on the host but not forwarded is dropped silently and
+# gets one stderr warning instead (gr513868).
+#
 # --impacted (-i): impact selection via pytest-testmon. Runs only the tests
 # affected by your working-tree changes — the inner-loop accelerator when the
 # full 140s suite is mostly per-worker DB-clone setup for tests you didn't
@@ -100,6 +106,9 @@ override for a single fast test.
 
 Env: PRECIS_TEST_KEEP_DB=1 keeps the test-db up after the run. Without it, a
 subagent worktree (basename agent-*) tears its compose project down at exit.
+     PRECIS_TEST_ENV="NAME=value …" forwards extra env vars into the test
+     container (only a fixed allowlist crosses otherwise; an unforwarded
+     NANO_/ESP32C3_/PRECIS_PCB_ var warns once on stderr).
 
 Two-call background protocol for capped foreground shells: `--bg <args>`
 detaches the run and prints its run-id; poll with `--await <run-id>`
@@ -472,11 +481,57 @@ gate_slot_acquire
 # container, where this worktree is mounted at /app, so a repo-relative path
 # lands on the host.
 ARTIFACT_ENV=()
+# Space-delimited list of every name forwarded below — the unforwarded-
+# name warning reads it (a plain string, not an assoc array: this script
+# must still run on the stock bash 3.2 macOS ships).
+_FORWARDED_ENV=""
 for _render_var in PRECIS_PCB_RENDER_OUT PRECIS_PCB_RENDER_SEED PRECIS_PCB_RENDER_FIXTURE PRECIS_PCB_RENDER_ITERS PRECIS_WATCH_SEED PRECIS_UPDATE_KINETICS_GOLDEN PRECIS_UPDATE_EXPORT_GOLDEN PRECIS_UPDATE_HEXFOLD_GOLDENS PRECIS_EPRO_FIXTURE PRECIS_PCB_REPLAY_FIXTURE PRECIS_PCB_BENCH_OUT PRECIS_PCB_BENCH_TAZ15; do
     if [[ -n "${!_render_var:-}" ]]; then
         ARTIFACT_ENV+=(-e "${_render_var}=${!_render_var}")
+        _FORWARDED_ENV="$_FORWARDED_ENV $_render_var"
     fi
 done
+
+# PRECIS_TEST_ENV — the opt-in for everything the fixed list above does
+# NOT cover (gr513868: NANO_SEEDS was exported on the host, silently
+# dropped at the container boundary, and a 4-minute seed-iteration run
+# measured seed 1). Space-separated NAME=value pairs:
+#   PRECIS_TEST_ENV="NANO_SEEDS=2 FOO=bar" scripts/test -n0 tests/x.py
+# Names must match ^[A-Z][A-Z0-9_]*$ and may not shadow the container's
+# own runtime surface (PATH/HOME/PYTHON*/DATABASE*/PG*); values may not
+# contain whitespace.
+for _kv in ${PRECIS_TEST_ENV:-}; do
+    _env_name="${_kv%%=*}"
+    if [[ "$_kv" != *=* || ! "$_env_name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        echo "ERR: PRECIS_TEST_ENV entry '${_kv}' is not NAME=value (name must match ^[A-Z][A-Z0-9_]*$)" >&2
+        exit 1
+    fi
+    case "$_env_name" in
+        PATH|HOME|PYTHON*|DATABASE*|PG*)
+            echo "ERR: PRECIS_TEST_ENV may not forward ${_env_name} (container/runtime internal)" >&2
+            exit 1
+            ;;
+    esac
+    ARTIFACT_ENV+=(-e "$_kv")
+    _FORWARDED_ENV="$_FORWARDED_ENV $_env_name"
+done
+
+# A test-tuning variable exported on the host but not forwarded reads as
+# "set" to the author and silently absent inside the container — name it
+# once on stderr so the run isn't wasted guessing why it was ignored.
+while IFS= read -r _host_var; do
+    case "$_host_var" in
+        NANO_*|ESP32C3_*|PRECIS_PCB_*)
+            case " $_FORWARDED_ENV " in
+                *" $_host_var "*) ;;
+                *)
+                    printf 'scripts/test: %s is set but not forwarded into the container; use PRECIS_TEST_ENV="%s=%s"\n' \
+                        "$_host_var" "$_host_var" "${!_host_var:-}" >&2
+                    ;;
+            esac
+            ;;
+    esac
+done < <(compgen -e)
 
 # --no-sync: the image already bakes the venv and installs /app editable, so
 # the bind-mounted source is live without a per-run reinstall (that reinstall

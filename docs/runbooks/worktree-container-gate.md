@@ -38,6 +38,13 @@ rebuilds: [`dev-image-rebuild`](./dev-image-rebuild.md); a wedged test DB:
   the last bake is simply absent. **Neither `--rebuild` nor `--rebuild-base`
   refreshes it.** Escape hatch: `UV_WITH="--with <dep>" scripts/test …` (the
   ship gate itself syncs from `uv.lock`, so this only affects the fast loop).
+- **Env vars do not cross the container boundary.** Only a fixed allowlist
+  (the `ARTIFACT_ENV` list in `scripts/test`) is forwarded. A test-tuning
+  variable like `NANO_SEEDS` exported on the host is silently absent inside
+  — `scripts/test` prints one stderr warning per unforwarded
+  `NANO_*`/`ESP32C3_*`/`PRECIS_PCB_*` name (gr513868). Forward anything else
+  explicitly: `PRECIS_TEST_ENV="NANO_SEEDS=2 FOO=bar" scripts/test …` (names
+  `^[A-Z][A-Z0-9_]*$`; `PATH`/`HOME`/`PYTHON*`/`DATABASE*`/`PG*` refused).
 - **Connection-pool trap.** `addopts=-n auto` spawns one xdist worker per core
   (15 on the dev container), each cloning `precis_test_<uuid>` plus a pool; with
   the local precis-infra stack also connected that blows `max_connections=100`

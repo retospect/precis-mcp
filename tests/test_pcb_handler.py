@@ -1133,6 +1133,50 @@ def test_op_place_never_computes_inline(pcb, store, monkeypatch):
         conn.commit()
 
 
+def test_enqueue_note_names_inproc_drain_when_no_worker_is_live(pcb, store):
+    """gr513874: on a local/test store no cluster worker heartbeats into
+    it, so the job can ONLY ever be drained in-process — the 'cluster
+    worker's code' caveat is wrong there and must not print. The job row
+    is deleted afterwards (gr295496's stranded-orphan rule)."""
+    pcb.put(id="no-worker", args=_CROSSED)
+    try:
+        resp = pcb.put(id="no-worker", args={"op": "place"})
+        assert "enqueued" in resp.body
+        assert "cluster worker's code" not in resp.body
+        assert "in-process" in resp.body
+    finally:
+        ref = store.get_ref(kind="pcb", id="no-worker")
+        assert ref is not None
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (ref.id,),
+            )
+            conn.commit()
+
+
+def test_enqueue_note_keeps_cluster_caveat_when_a_worker_is_live(pcb, store):
+    """The prod shape: a fresh ``host_heartbeat`` row advertising a
+    minted ``boot_ids`` entry means a real claiming worker is alive —
+    keep the 'cluster worker's code' caveat (its build may differ)."""
+    pcb.put(id="live-worker", args=_CROSSED)
+    store.record_heartbeat("testhost", meta={"boot_ids": {"worker": "ab" * 16}})
+    try:
+        resp = pcb.put(id="live-worker", args={"op": "place"})
+        assert "enqueued" in resp.body
+        assert "cluster worker's code" in resp.body
+        assert "ran_on:" in resp.body
+    finally:
+        ref = store.get_ref(kind="pcb", id="live-worker")
+        assert ref is not None
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (ref.id,),
+            )
+            conn.commit()
+
+
 def test_op_route_warm_start_flag(store, monkeypatch):
     """``warm_start`` reaches the job params and its idem key; an invalid
     value is refused at enqueue and, if it reaches the job, fails it."""

@@ -328,7 +328,7 @@ class _FakeStore:
 
 
 def test_session_state_has_exactly_the_keys_enqueue_op_used() -> None:
-    from precis.pcb.session import load_snapshot
+    from precis.pcb.session_store import load_snapshot
 
     snap = load_snapshot(cast("Store", _FakeStore(board_id=7)), 1)
     state = snap.session_state()
@@ -349,7 +349,7 @@ def test_session_state_has_exactly_the_keys_enqueue_op_used() -> None:
 
 
 def test_load_snapshot_boardless_has_empty_fixed_copper() -> None:
-    from precis.pcb.session import load_snapshot
+    from precis.pcb.session_store import load_snapshot
 
     store = _FakeStore(board_id=None)
     snap = load_snapshot(cast("Store", store), 1)

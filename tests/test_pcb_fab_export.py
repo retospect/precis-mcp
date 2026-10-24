@@ -415,6 +415,48 @@ def test_export_fab_refuses_a_cached_footprint_whose_pin_name_does_not_join(
     assert "3/3 catalog-part instance(s) cached" in view
 
 
+def test_gerber_allow_synthesized_writes_a_preview_zip(pcb, tmp_path):
+    """gr513872: ``view='gerber'`` honours ``args.allow_synthesized`` —
+    the preview channel the refusal names. The opt-in writes a
+    ``<slug>-preview.zip`` (never the order-upload ``-fab.zip`` name)
+    and heads the response PREVIEW with the synthesized-net count."""
+    slug = _seed(pcb, skip=frozenset({"CTHT1"}))
+    resp = pcb.get(
+        id=slug, view="gerber", args={"dir": str(tmp_path), "allow_synthesized": True}
+    )
+    assert resp.body.startswith("PREVIEW - 1 synthesized pad net(s), not fabricable")
+    assert "exported fabtest → GERBER" in resp.body
+    assert (tmp_path / "fabtest-preview.zip").exists()
+    assert not (tmp_path / "fabtest-fab.zip").exists()
+    with zipfile.ZipFile(tmp_path / "fabtest-preview.zip") as zf:
+        assert "fabtest-F_Cu.gbr" in zf.namelist()
+
+
+def test_gerber_synthesized_refusal_names_the_preview_channel(pcb, tmp_path):
+    """The BadInput must point at the channel that actually takes the
+    flag — ``view='gerber'`` args — and say view='fab'/op='order' never
+    do (they feed a real order)."""
+    slug = _seed(pcb, skip=frozenset({"CTHT1"}))
+    with pytest.raises(BadInput, match="allow_synthesized") as exc_info:
+        pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)})
+    text = str(exc_info.value)
+    assert "view='gerber'" in text
+    assert "view='fab'" in text and "op='order'" in text
+
+
+def test_fab_view_still_refuses_synthesized_pads(pcb, tmp_path):
+    """The preview opt-in is ``view='gerber'``-only: ``view='fab'`` (the
+    order package) keeps refusing synthesized pads even when asked."""
+    slug = _seed(pcb, skip=frozenset({"CTHT1"}))
+    for args in (
+        {"dir": str(tmp_path)},
+        {"dir": str(tmp_path), "allow_synthesized": True},
+    ):
+        with pytest.raises(BadInput, match="synthesized"):
+            pcb.get(id=slug, view="fab", args=args)
+    assert not (tmp_path / "fabtest-fab.zip").exists()
+
+
 def test_drc_pads_real_for_cached_parts_synthesized_for_the_rest(pcb):
     """The mixed-design case at the geometry layer, directly:
     :meth:`PcbHandler._drc_pads` (DRC's own pad source, shared with the

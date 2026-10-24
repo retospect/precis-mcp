@@ -73,6 +73,7 @@ from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
+from precis.pcb import session_store as pcb_session_store
 from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM, outline_bbox
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
@@ -835,7 +836,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # One read of the graph and every surface the idem key hashes
     # (`load_snapshot`, the same call `_enqueue_op` digests). No re-read
     # follows this job's own writes below: they are the last thing it does.
-    snap = pcb_session.load_snapshot(ctx.store, pcb_ref_id)
+    snap = pcb_session_store.load_snapshot(ctx.store, pcb_ref_id)
     graph = snap.graph
     if not graph.get("nets"):
         ctx.record_failure(

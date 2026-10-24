@@ -33,16 +33,17 @@ from typing import TYPE_CHECKING, Any
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
+from precis.pcb import session_store as pcb_session_store
 from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import (
     FIELD_POLISH_DEFAULT,
+    PLACE_ITERS,
+    PLACE_ONLY_SCHEDULE,
     OptimizeConfig,
-    ScheduleStage,
     digest_toon,
     optimize,
     resolve_measures,
 )
-from precis.pcb.optimize import MoveKind as _MK
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -77,7 +78,7 @@ DESCRIPTION = (
     "current graph — the enqueued half of put(args={'op':'place'})."
 )
 
-_DEFAULT_ITERS = 2000
+_DEFAULT_ITERS = PLACE_ITERS
 
 
 def _process_for_stackup(stackup: list[dict[str, Any]]) -> str:
@@ -97,13 +98,11 @@ def _process_for_stackup(stackup: list[dict[str, Any]]) -> str:
     )
 
 
-#: Single-stage, placement-only schedule — the whole run stays in
-#: TRANSLATE/ROTATE/SWAP territory (mirrors DEFAULT_SCHEDULE's first
-#: stage, just extended to through_fraction=1.0 instead of handing off to
-#: topology/layer moves, which is ``pcb_route``'s job).
-_PLACE_ONLY_SCHEDULE = (
-    ScheduleStage(1.0, {_MK.TRANSLATE: 0.6, _MK.ROTATE: 0.15, _MK.SWAP: 0.25}),
-)
+#: Single-stage, placement-only schedule — canonical in
+#: ``precis.pcb.optimize`` so this worker and the offline
+#: ``precis.pcb.local`` wrapper share the one definition (pcb-workspace-code
+#: slice 4). The private name stays for existing importers.
+_PLACE_ONLY_SCHEDULE = PLACE_ONLY_SCHEDULE
 
 
 def _on_fixed_vias_note(refdes: tuple[str, ...]) -> str:
@@ -173,7 +172,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # One read of the graph and every surface the idem key hashes
     # (`load_snapshot`, the same call `_enqueue_op` digests); the resolved
     # snapshot is job-written, not hashed, so it stays a separate read.
-    design = pcb_session.load_snapshot(ctx.store, pcb_ref_id)
+    design = pcb_session_store.load_snapshot(ctx.store, pcb_ref_id)
     graph = pcb_resolved.apply(
         design.graph, ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
     )

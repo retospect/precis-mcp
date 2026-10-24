@@ -33,12 +33,15 @@ _SHIPPED_DIRS = [
     _SRC / "precis" / "structsolve",
     _SRC / "precis" / "structure",
     _SRC / "precis_se" / "atomic" / "generators",
+    _SRC / "precis" / "pcb",
+    _SRC / "precis" / "format",
 ]
 
 _SHIPPED_FILES = [
     _SRC / "precis" / "__init__.py",
     _SRC / "precis" / "errors.py",
     _SRC / "precis" / "component_series.py",
+    _SRC / "precis" / "finding_id.py",
     _SRC / "precis" / "utils" / "__init__.py",
     _SRC / "precis" / "utils" / "units.py",
     _SRC / "precis_se" / "atomic" / "__init__.py",
@@ -46,10 +49,35 @@ _SHIPPED_FILES = [
     #: The wheel's ``precis_se/__init__.py`` is the stub under packaging/,
     #: not ``src/precis_se/__init__.py`` (that one imports ``SeHandler``).
     _ROOT / "packaging" / "geom" / "precis_se" / "__init__.py",
+    _SRC / "precis" / "utils" / "text.py",
+    _SRC / "precis" / "utils" / "coerce.py",
 ]
 
-#: Excluded inside a shipped dir (fetch paths, dead under --network none).
-_EXCLUDED = {_SRC / "precis" / "structure" / "importers"}
+#: Excluded inside a shipped dir (fetch paths, dead under --network none;
+#: and, for ``precis/pcb``, the store/network/server-side modules the
+#: ``[pcb-kernel]`` slice of the wheel never carries — see
+#: ``packaging/geom/pyproject.toml``'s exclude list, which must name the
+#: same set).
+_EXCLUDED = {_SRC / "precis" / "structure" / "importers"} | {
+    _SRC / "precis" / "pcb" / name
+    for name in (
+        "_http.py",
+        "argue.py",
+        "catalog.py",
+        "check_run.py",
+        "datasheet_facts.py",
+        "datasheets.py",
+        "easyeda.py",
+        "jlc_api.py",
+        "jlc_library.py",
+        "jlc_order.py",
+        "review.py",
+        "sanity_board.py",
+        "sanity_power.py",
+        "session_store.py",
+        "snapshot.py",
+    )
+}
 
 #: What wheel code may import (the wheel itself + its declared deps).
 #: ``precis_se.atomic`` is NOT allowed wholesale — the shipped slice is
@@ -59,8 +87,13 @@ _ALLOW = (
     "precis.cad",
     "precis.structsolve",
     "precis.structure",
+    "precis.pcb",
+    "precis.format",
     "precis.errors",
+    "precis.finding_id",
     "precis.utils.units",
+    "precis.utils.text",
+    "precis.utils.coerce",
     "precis.component_series",
     "precis_chain",
     "precis_flow",
@@ -154,7 +187,10 @@ def test_wheel_import_graph() -> None:
 def test_wheel_is_dependency_light() -> None:
     """Module-level third-party imports stay inside the declared deps —
     everything heavier (torch/OCP/tblite/httpx) must stay lazy."""
-    deps = {"numpy", "numba", "ase", "rdkit", "pint", "manifold3d", "scipy"}
+    # ``shapely`` is the pcb-kernel extra's one declared dep — declared,
+    # albeit optional, so module-level use is honest (a base install
+    # without the extra hits it only on a kernel path).
+    deps = {"numpy", "numba", "ase", "rdkit", "pint", "manifold3d", "scipy", "shapely"}
     import sys
 
     stdlib = sys.stdlib_module_names

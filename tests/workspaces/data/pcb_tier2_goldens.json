@@ -1,0 +1,16 @@
+{
+ "esp32c3": {
+  "errors": 0,
+  "failed": 2,
+  "nets": 20,
+  "routed": 9,
+  "vias": 6
+ },
+ "nano_usb_pd": {
+  "errors": 0,
+  "failed": 19,
+  "nets": 64,
+  "routed": 45,
+  "vias": 40
+ }
+}

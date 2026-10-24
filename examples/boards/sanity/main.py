@@ -86,4 +86,4 @@ def build(
 
 
 if __name__ == "__main__":
-    pcb.write_manifest(build(), "out")
+    pcb.run(build(), "out")

@@ -122,6 +122,15 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/board_script.py::board_batch": (
         "CLI scripts/pcb-batch-to-board; MCP wiring follows slice 5 (gr514048)"
     ),
+    "src/precis/pcb/local.py::run": (
+        "pcb-workspace-code slice 4: the main.py --place/--route entry, "
+        "reached through precis_geom.pcb's lazy importlib door, which the "
+        "caller scan can't see"
+    ),
+    "src/precis/pcb/local.py::gerbers_zip": (
+        "pcb-workspace-code slice 4: the out/gerbers.zip payload, reached "
+        "only through the lazy local door; no in-src caller by name"
+    ),
     "src/precis/pcb/clearance.py::outward_circle": (
         "pcb-vector-router slice 2: the circumscribed polygon for consumers "
         "that only take polygons; its first caller is slice 5's CDT input"

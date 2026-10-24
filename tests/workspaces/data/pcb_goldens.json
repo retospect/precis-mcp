@@ -164,5 +164,13 @@
   "not_checked": [],
   "parts": 4,
   "sha256": "f977693ac1ce6a480aad2e6eeef783eafa306e563b6e3ada1c58061fa0ced4e3"
+ },
+ "usbc_attiny": {
+  "connections": 36,
+  "findings": [],
+  "nets": 8,
+  "not_checked": [],
+  "parts": 11,
+  "sha256": "9e117af98b3c1c409e51250a37d32be481315adc5753932674f07989d08c6b9e"
  }
 }

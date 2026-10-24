@@ -55,6 +55,54 @@ def test_render_table_reports_rate_per_net_and_connection() -> None:
     ) in table
 
 
+def test_job_summary_text_returns_the_drained_jobs_summary(store: Store) -> None:
+    """gr513874: a finished job's result text is a ``job_summary`` chunk
+    on the job ref — the helper reads it without SQL. Drains one real
+    ``pcb_place`` job on a tiny board through ``run_job_inproc_pass``."""
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    pcb.put(
+        id="summary-drain",
+        args={
+            "components": [
+                {
+                    "refdes": "A",
+                    "label": "ic",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                },
+                {
+                    "refdes": "B",
+                    "label": "ic",
+                    "x": 2.0,
+                    "y": 2.0,
+                    "pins": [{"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "N1", "class": "signal"}],
+            "connections": [
+                {"net": "N1", "refdes": "A", "pin": "1"},
+                {"net": "N1", "refdes": "B", "pin": "1"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="summary-drain")
+    assert ref is not None
+    assert (
+        "enqueued"
+        in pcb.put(
+            id="summary-drain", args={"op": "place", "iters": 50, "seed": 1}
+        ).body
+    )
+    job_id = rb._drain_latest_job(store, ref.id)
+    text = rb.job_summary_text(store, job_id)
+    assert "placed" in text
+    assert "iters" in text
+
+
 def test_track_length_counts_lines_and_arcs() -> None:
     quarter = {
         "shape": "arc",

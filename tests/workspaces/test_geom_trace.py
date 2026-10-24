@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 from types import ModuleType
@@ -52,7 +53,14 @@ def _load_script(tmp_path: Path, text: str = _SCRIPT) -> ModuleType:
     spec = importlib.util.spec_from_file_location("main", script)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Same-size rewrites inside one second would otherwise load the stale
+    # .pyc (mtime+size cache key) — the swap=True script is the same size.
+    old = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = old
     return mod
 
 

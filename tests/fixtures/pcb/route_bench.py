@@ -191,9 +191,10 @@ def _split_findings(
 # ── job-path boards (place/route jobs through PcbHandler) ────────────────
 
 
-def _drain_latest_job(store: Store, parent_id: int) -> None:
+def _drain_latest_job(store: Store, parent_id: int) -> int:
     """Drain this design's newest job to a terminal status. A failed route
-    job is a measurement (any failed net fails the job), not an error."""
+    job is a measurement (any failed net fails the job), not an error.
+    Returns the drained job's ref_id."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
@@ -204,10 +205,22 @@ def _drain_latest_job(store: Store, parent_id: int) -> None:
     for _ in range(25):
         with store.pool.connection() as conn:
             if current_status(conn, row[0]) in TERMINAL:
-                return
+                return int(row[0])
         result = run_job_inproc_pass(store, limit=1)
         assert result["claimed"] == 1, f"expected a queued job, got {result}"
     raise AssertionError(f"job {row[0]} never reached a terminal status")
+
+
+def job_summary_text(store: Store, job_id: int) -> str:
+    """A finished job's result text — stored as a ``job_summary`` chunk on
+    the job ref, not a refs column (gr513874)."""
+    texts = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(job_id)
+        if b.chunk_kind == "job_summary"
+    ]
+    assert texts, f"no job_summary chunk on job {job_id}"
+    return "\n".join(texts)
 
 
 def _measure_job_board(

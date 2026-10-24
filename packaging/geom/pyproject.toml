@@ -25,6 +25,17 @@ dependencies = [
     "scipy>=1.14",
 ]
 
+# ``precis-geom[pcb-kernel]`` (pcb-workspace-code slice 4): shapely is the
+# one third-party the precis.pcb geometric kernel needs beyond the base
+# deps (drc/gerber/ir/planes/realize/tiling import it at module level).
+# The precis.pcb sources ship in EVERY wheel — the extra only adds the
+# dep, so a base install can still import the pure half and gets a clean
+# "install precis-geom[pcb-kernel]" only when a shapely path runs.
+[project.optional-dependencies]
+pcb-kernel = [
+    "shapely>=2.0",
+]
+
 # Partial ``precis`` package on purpose: only what the shipped modules
 # import. ``precis/structure/importers`` is excluded — its fetch paths
 # (precis.store, safe_fetch) are dead under ``--network none`` and would
@@ -33,6 +44,11 @@ dependencies = [
 # The real ``precis_se/__init__.py`` imports ``SeHandler`` (the DB stack),
 # so a stub ships in its place — packaging/geom/precis_se/__init__.py,
 # which must never be installed next to the server wheel.
+# ``precis/pcb`` ships minus its store/network/server-side modules —
+# catalog (jlcparts/store), the datasheet/JLC network clients, easyeda,
+# argue/review (llm router), check_run and the sanity workers (workers
+# layer), snapshot (psycopg replay), and session_store (the load_snapshot
+# half of the session split — everything else in session.py is pure).
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/precis_geom" = "precis_geom"
 "../../src/precis_ws" = "precis_ws"
@@ -43,12 +59,17 @@ dependencies = [
 "../../src/precis/cad" = "precis/cad"
 "../../src/precis/structsolve" = "precis/structsolve"
 "../../src/precis/structure" = "precis/structure"
+"../../src/precis/pcb" = "precis/pcb"
+"../../src/precis/format" = "precis/format"
 "../../src/precis/__init__.py" = "precis/__init__.py"
 "../../src/precis/errors.py" = "precis/errors.py"
 "../../src/precis/component_series.py" = "precis/component_series.py"
+"../../src/precis/finding_id.py" = "precis/finding_id.py"
 "../../src/precis/py.typed" = "precis/py.typed"
 "../../src/precis/utils/__init__.py" = "precis/utils/__init__.py"
 "../../src/precis/utils/units.py" = "precis/utils/units.py"
+"../../src/precis/utils/text.py" = "precis/utils/text.py"
+"../../src/precis/utils/coerce.py" = "precis/utils/coerce.py"
 "../../src/precis/data/component_series.json" = "precis/data/component_series.json"
 "../../src/precis_se/atomic/__init__.py" = "precis_se/atomic/__init__.py"
 "../../src/precis_se/atomic/surface_target.py" = "precis_se/atomic/surface_target.py"
@@ -56,4 +77,21 @@ dependencies = [
 "../../packaging/geom/precis_se/__init__.py" = "precis_se/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-exclude = ["precis/structure/importers"]
+exclude = [
+    "precis/structure/importers",
+    "precis/pcb/_http.py",
+    "precis/pcb/argue.py",
+    "precis/pcb/catalog.py",
+    "precis/pcb/check_run.py",
+    "precis/pcb/datasheet_facts.py",
+    "precis/pcb/datasheets.py",
+    "precis/pcb/easyeda.py",
+    "precis/pcb/jlc_api.py",
+    "precis/pcb/jlc_library.py",
+    "precis/pcb/jlc_order.py",
+    "precis/pcb/review.py",
+    "precis/pcb/sanity_board.py",
+    "precis/pcb/sanity_power.py",
+    "precis/pcb/session_store.py",
+    "precis/pcb/snapshot.py",
+]

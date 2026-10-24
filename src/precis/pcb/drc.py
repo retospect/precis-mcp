@@ -144,12 +144,12 @@ from precis.pcb import (
 )
 from precis.pcb import clearance as clearance_kernel
 from precis.pcb.capabilities import CapabilityRow, strict_fields_of
-from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
 from precis.pcb.padplace import pad_world_rot
+from precis.pcb.passive import parse_passive_description
 from precis.pcb.pose import rotate_cw as _rotate_cw
 from precis.pcb.profiles import ProfileRules
 from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
