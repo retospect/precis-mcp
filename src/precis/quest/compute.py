@@ -2866,6 +2866,35 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _pinned_network_basis(store: Store, quest_id: int) -> dict[str, Any] | None:
+    """The network basis a fresh catpath dispatch lands on for this quest —
+    the pinned engine version (``PRECIS_AUTOCATPATH_VERSION`` override or
+    the dist pin via :func:`_autocatpath_pinned_version`; the epoch
+    fallback is a re-key constant, never a real version, so it does NOT
+    pin) plus the template the quest's own neb-tier dispatch resolves
+    (:func:`_resolved_template` over :func:`_apply_tier_config`). ``None``
+    when no version resolves or the quest declares no reaction — callers
+    then rank like-with-like on the observed-newest basis
+    (:func:`precis.quest.frontier.current_network_basis`).
+
+    Read as ``apply_network_demotion``'s ``current`` at every ranking
+    call site (gr510764): a measure stamped on another engine version is
+    pending re-measurement, never final — whether or not any candidate
+    has landed on the pinned engine yet, which the observed-newest rule
+    could never see (an all-stale quest's newest basis IS the stale one).
+    """
+    version = os.environ.get(_AUTOCATPATH_VERSION_ENV) or _autocatpath_pinned_version()
+    if not version:
+        return None
+    reaction = _quest_reaction_config(store, quest_id)
+    if reaction is None:
+        return None
+    return {
+        "version": str(version),
+        "template": _resolved_template(_apply_tier_config(reaction, _TIER_NEB)),
+    }
+
+
 def _tpd_basis(results: Mapping[str, Any]) -> str:
     """Kinetics v2 D11: the applied ``tpd_corrected`` offsets a result was
     priced with — the TPD check's ``tpd_set_sha256`` (reference set plus
@@ -4777,15 +4806,21 @@ def promote_tiers(
       0 converged points, 0 verify runs, 2026-09-16). A trusted barrier is
       the evidence that the candidate is worth the authoritative pass.
 
-    * **restale** (third pass) — competitor-set measures
-      (:data:`precis.quest.frontier.NETWORK_DEPENDENT_KEYS`) taken on an older
-      reaction network than the quest's current one are demoted out of every
+    * **restale** (third pass) — measures taken on an older reaction
+      network than the quest's current one are demoted out of every
       ranking here and in the frontier
       (:func:`precis.quest.frontier.apply_network_demotion`); up to
       ``meta.fidelity_restale_cap`` (default :data:`_DEFAULT_TIER_RESTALE`)
       such live, non-ruled-out candidates, best-first over their MERGED
-      (stale-included) measures, are re-dispatched at their own tier. Only
-      candidates that can change a decision are in scope
+      (stale-included) measures, are re-dispatched at their own tier so the
+      stale keys re-measure on the current network. The "current" basis is
+      the PINNED engine's (:func:`_pinned_network_basis` — the dist pin /
+      env override) when a version resolves, else the observed-newest
+      across candidates (gr510764): a candidate whose keys sit on an older
+      engine is stale even when NO candidate has landed on the pinned one
+      yet, and a mixed-basis candidate (some keys older than its own latest
+      pathway) re-dispatches rather than keeping the older keys parked.
+      Only candidates that can change a decision are in scope
       (:func:`_restale_scope`): the merged frontier plus the best
       ``meta.fidelity_restale_band`` (default
       :data:`_DEFAULT_TIER_RESTALE_BAND`) of the provisional band. The rest
@@ -4839,9 +4874,12 @@ def promote_tiers(
             s for s in _live_servers(store, quest_id) if s.kind == "structure"
         ]
         cap_restale = int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0)
-        # One current basis per pass over ALL live structures, so the ranking
-        # below is like-with-like (same demotion quest_frontier applies).
-        current_basis = current_network_basis(
+        # One current basis per pass: the PINNED engine's when a version
+        # resolves (a stamp on any other version is stale, whether or not a
+        # current-network measure exists yet — gr510764), else the
+        # observed-newest over ALL live structures, so the ranking below is
+        # like-with-like (same demotion quest_frontier applies).
+        current_basis = _pinned_network_basis(store, quest_id) or current_network_basis(
             [_candidate_from_structure(store, s) for s in structures]
         )
 
@@ -4980,8 +5018,14 @@ def promote_tiers(
                     )
                     continue
                 n_dispatched += 1
+                stale_keys = c.flags.get("network_stale_keys")
+                keys_s = (
+                    f" ({', '.join(k for k in stale_keys if isinstance(k, str))})"
+                    if isinstance(stale_keys, list) and stale_keys
+                    else ""
+                )
                 notes.append(
-                    f"re-dispatched [{c.handle}] ({tier}) on the current "
+                    f"re-dispatched [{c.handle}] ({tier}){keys_s} on the current "
                     f"reaction network: {note}"
                 )
             if n_collapsed:

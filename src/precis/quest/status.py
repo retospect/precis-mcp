@@ -109,8 +109,8 @@ def _logbook_tail(store: Store, quest_id: int, *, n: int) -> list[LogbookLine]:
 def _candidate_rows(
     store: Store, quest_id: int
 ) -> tuple[list[CandidateRow], list[int]]:
+    from precis.quest.compute import _pinned_network_basis
     from precis.quest.frontier import (
-        NETWORK_DEPENDENT_KEYS,
         _candidate_from_structure,
         apply_network_demotion,
     )
@@ -118,13 +118,16 @@ def _candidate_rows(
 
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     cands = [_candidate_from_structure(store, s) for s in structures]
-    apply_network_demotion(cands)  # same demotion the frontier ranks with
+    apply_network_demotion(
+        cands, _pinned_network_basis(store, quest_id)
+    )  # same demotion the frontier ranks with
     rows: list[CandidateRow] = []
     for s, cand in zip(structures, cands, strict=True):
         stale: dict[str, float] = {}
         stale_basis = None
         if cand.flags.get("network_stale"):
-            for k in NETWORK_DEPENDENT_KEYS:
+            stale_keys = cand.flags.get("network_stale_keys")
+            for k in stale_keys if isinstance(stale_keys, list) else ():
                 v = cand.flags.get(f"{k}_untrusted_value")
                 if isinstance(v, (int, float)) and k not in cand.measures:
                     stale[k] = float(v)

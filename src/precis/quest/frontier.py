@@ -1794,24 +1794,21 @@ def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def _key_bases(c: Candidate) -> dict[str, dict[str, Any]]:
-    """The candidate's stamped basis for each :data:`NETWORK_DEPENDENT_KEYS`
-    key it carries (``flags['network_basis_by_key']``); empty for a legacy
-    candidate."""
+    """The candidate's stamped basis for every measure it carries a stamp
+    for (``flags['network_basis_by_key']`` — the harvest stamps each
+    network-dependent measure, not just :data:`NETWORK_DEPENDENT_KEYS`);
+    empty for a legacy candidate."""
     by_key = c.flags.get("network_basis_by_key")
     if not isinstance(by_key, dict):
         return {}
-    return {
-        k: b
-        for k in NETWORK_DEPENDENT_KEYS
-        if isinstance(b := by_key.get(k), dict) and b
-    }
+    return {k: b for k, b in by_key.items() if isinstance(b, dict) and b}
 
 
 def current_network_basis(cands: Sequence[Candidate]) -> dict[str, Any] | None:
-    """The newest network basis among the per-key bases of
-    :data:`NETWORK_DEPENDENT_KEYS` across ``cands`` (``None`` when none
-    carries one): the reference template (:data:`_CURRENT_DISPATCH_TEMPLATE`)
-    first, then the highest engine version, then one that has a digest."""
+    """The newest network basis among the stamped per-key bases across
+    ``cands`` (``None`` when none carries one): the reference template
+    (:data:`_CURRENT_DISPATCH_TEMPLATE`) first, then the highest engine
+    version, then one that has a digest."""
     bases = [b for c in cands for b in _key_bases(c).values()]
     if not bases:
         return None
@@ -1828,29 +1825,48 @@ def current_network_basis(cands: Sequence[Candidate]) -> dict[str, Any] | None:
 def apply_network_demotion(
     cands: Sequence[Candidate], current: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
-    """Like-with-like ranking, per measure: each :data:`NETWORK_DEPENDENT_KEYS`
-    key whose stamped basis (``network_basis_by_key[key]``) differs from the
-    current one (``current``, else derived from ``cands``) is dropped from
-    ``measures`` — the raw value moves to ``flags['<key>_untrusted_value']``
-    (kept if already there), exactly like an untrusted measure, so it shows
-    in the provisional band instead of ranking. The candidate then gets
-    ``flags['network_stale'] = True`` and ``flags['network_stale_basis']`` (the
-    older basis, for the reason text). A key with no stamped basis (legacy,
-    pre-stamp candidate) is left alone. Mutates ``cands``; returns the current
-    basis used."""
+    """Like-with-like ranking, per measure: each stamped key whose basis
+    (``network_basis_by_key[key]``) mismatches the current one (``current``,
+    else derived from ``cands``) is dropped from ``measures`` — the raw
+    value moves to ``flags['<key>_untrusted_value']`` (kept if already
+    there), exactly like an untrusted measure, so it shows in the
+    provisional band instead of ranking. The candidate then gets
+    ``flags['network_stale'] = True``, ``flags['network_stale_keys']`` (the
+    demoted keys, for the note/status views) and
+    ``flags['network_stale_basis']`` (the first stale basis, for the reason
+    text). A key with no stamped basis (legacy, pre-stamp candidate) is
+    left alone.
+
+    What counts as a mismatch is per key kind (gr510764): a competitor-set
+    measure (:data:`NETWORK_DEPENDENT_KEYS`) demotes on ANY
+    :func:`same_network_basis` failure, as before. Every other stamped key
+    demotes only on an engine-VERSION difference from ``current``: a
+    main-route span/barrier/U_L from the same engine on a wider network is
+    still an upper bound (a newer network can only add steps, which can
+    only lower it — bias, not corruption), but a value measured by a
+    DIFFERENT engine has no such bound (corrections reprice energies), so
+    it is pending re-measurement, never a final result. Mutates ``cands``;
+    returns the current basis used."""
     if current is None:
         current = current_network_basis(cands)
     if current is None:
         return None
+    cur_v = current.get("version")
     for c in cands:
+        stale_keys: list[str] = []
         for k, basis in _key_bases(c).items():
             if same_network_basis(basis, current):
+                continue
+            if basis.get("version") == cur_v and k not in NETWORK_DEPENDENT_KEYS:
                 continue
             v = c.measures.pop(k, None)
             if v is not None:
                 c.flags.setdefault(f"{k}{_UNTRUSTED_VALUE_SUFFIX}", v)
-            c.flags["network_stale"] = True
+            stale_keys.append(k)
             c.flags.setdefault("network_stale_basis", basis)
+        if stale_keys:
+            c.flags["network_stale"] = True
+            c.flags.setdefault("network_stale_keys", sorted(stale_keys))
     return current
 
 
@@ -2333,7 +2349,11 @@ def render_frontier_tree(store: Store, quest_id: int) -> str:
         return "_(No candidates yet.)_\n"
 
     candidates = {s.id: _candidate_from_structure(store, s) for s in structures}
-    apply_network_demotion(list(candidates.values()))
+    from precis.quest.compute import _pinned_network_basis
+
+    apply_network_demotion(
+        list(candidates.values()), _pinned_network_basis(store, quest_id)
+    )
     _flag_geom_duplicates(store, list(candidates.values()), structures)
     _flag_energy_twins(list(candidates.values()), structures)
     _apply_rubric_composite(
@@ -2406,7 +2426,9 @@ def quest_frontier(
     candidates = [
         _candidate_from_structure(store, s, runs=runs[int(s.id)]) for s in structures
     ]
-    apply_network_demotion(candidates)
+    from precis.quest.compute import _pinned_network_basis
+
+    apply_network_demotion(candidates, _pinned_network_basis(store, quest_id))
     _flag_geom_duplicates(store, candidates, structures)
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))

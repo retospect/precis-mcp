@@ -2774,6 +2774,40 @@ class TestNetworkLikeWithLike:
         assert mixed.flags["network_stale"] is True
         assert mixed.flags["network_stale_basis"] == self._OLD
 
+    def test_engine_version_mismatch_demotes_main_route_keys_too(
+        self, store: Any
+    ) -> None:
+        """gr510764: a U_L/barrier measured by a DIFFERENT engine version
+        than the current basis is pending re-measurement — demoted like a
+        margin, not kept as an upper bound. The same-engine rule (an older
+        network can only widen, so a main-route value stays an upper bound)
+        does not extend across engine versions."""
+        _qid, ids = self._cands(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "U_L": -0.2,
+                "barrier": 0.6,
+                "selectivity_margin": 0.5,
+                "network_basis_by_key": self._by_key(
+                    self._OLD, "U_L", "barrier", "selectivity_margin"
+                ),
+            },
+        )
+        cands = [_cand(store, ids[0])]
+        current = {"digest": None, "template": "parked", "version": "0.39.0"}
+        apply_network_demotion(cands, current)
+        c = cands[0]
+        for k in ("U_L", "barrier", "selectivity_margin"):
+            assert k not in c.measures
+            assert c.flags[f"{k}_untrusted_value"] is not None
+        assert c.flags["network_stale"] is True
+        assert c.flags["network_stale_keys"] == [
+            "U_L",
+            "barrier",
+            "selectivity_margin",
+        ]
+
     def test_quest_frontier_never_ranks_the_older_margin(self, store: Any) -> None:
         qid, ids = self._cands(store)
         store.stamp_ref_meta(
@@ -7765,6 +7799,15 @@ class TestTierPromotion:
 
         Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
 
+    @pytest.fixture(autouse=True)
+    def _pin_engine_version(self, monkeypatch: Any) -> None:
+        """Pin the dispatch engine token so the fixtures' ``_NEW`` basis
+        (0.23.0) is "current" — the demotion and the restale pass compare
+        stamps against the PINNED version
+        (:func:`compute._pinned_network_basis`, gr510764), and the real
+        dist pin sits above every fixture stamp here."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.23.0")
+
     def _quest(self, store: Any, **extra_meta: Any) -> int:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
         store.stamp_ref_meta(
@@ -8207,6 +8250,144 @@ class TestTierPromotion:
         notes = compute_mod.promote_tiers(store, qid)
         assert len(calls) == 1
         assert len(notes) == 1 and "no live lane" in notes[0]
+
+    def _mixed_basis_candidate(
+        self, store: Any, qid: int, name: str, u_l_abs: float
+    ) -> int:
+        """st497185's shape (gr510764): CHE scalars parked on an old engine,
+        the rest on the observed-newest one — both below the pin."""
+        old = {"digest": None, "template": "parked", "version": "0.32.0"}
+        mid = {"digest": None, "template": "coadsorbed", "version": "0.35.0"}
+        sid = self._screening_candidate(store, qid, name, u_l_abs)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "tier": "neb",
+                "U_L": -0.2,
+                "barrier": 0.5,
+                "selectivity_margin": 0.4,
+                "network_basis": mid,
+                "network_basis_by_key": {
+                    "U_L": old,
+                    "U_opt": old,
+                    "U_L_abs": old,
+                    "span_at_Uopt": old,
+                    "barrier": mid,
+                    "span": mid,
+                    "trap_margin": mid,
+                    "selectivity_margin": mid,
+                },
+            },
+        )
+        return sid
+
+    def _neb_pathway(self, store: Any, sid: int, *, status: str, version: str) -> None:
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-{status}-{version}-{sid}",
+            title="pw",
+            meta={
+                "candidate_ref": sid,
+                "tier": "neb",
+                "status": status,
+                "config": {"network": "ammonia"},
+                "autocatpath_version": version,
+            },
+            parent_id=sid,
+        )
+
+    def test_restale_redispatches_keys_stale_against_the_pin(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr510764: a mixed-basis candidate re-dispatches at its own tier on
+        the PINNED engine even though its latest pathway already carries the
+        observed-newest basis — the observed-current rule counted that
+        pathway as fresh and left the older keys parked forever."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        stale = self._mixed_basis_candidate(store, qid, "mixed", 0.1)
+        self._neb_pathway(store, stale, status="ready", version="0.35.0")
+        notes = compute_mod.promote_tiers(store, qid)
+        assert calls == [(stale, compute_mod._TIER_NEB)]
+        assert "U_L" in notes[0] and "U_opt" in notes[0]
+
+    def test_restale_pinned_rerun_while_in_flight_does_nothing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Idempotent: a second pass sees the pathway the first minted
+        (status ``computing``) and re-dispatches nothing; a pre-seeded
+        in-flight pathway is left alone from the start."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        stale = self._mixed_basis_candidate(store, qid, "mixed", 0.1)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert calls == [(stale, compute_mod._TIER_NEB)]
+        assert len(notes) == 1
+        # re-run while the minted pathway is still computing: nothing new
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == [(stale, compute_mod._TIER_NEB)]
+
+    def test_restale_pinned_all_current_does_nothing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Every stamped key already on the pinned engine → nothing is
+        stale, nothing dispatches."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        cur = {"digest": None, "template": "coadsorbed", "version": "0.39.0"}
+        sid = self._screening_candidate(store, qid, "cur", 0.1)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "tier": "neb",
+                "U_L": -0.2,
+                "barrier": 0.5,
+                "selectivity_margin": 0.4,
+                "network_basis": cur,
+                "network_basis_by_key": {
+                    "U_L": cur,
+                    "U_L_abs": cur,
+                    "barrier": cur,
+                    "selectivity_margin": cur,
+                    "trap_margin": cur,
+                },
+            },
+        )
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_quest_frontier_marks_pin_stale_keys_pending(self, store: Any) -> None:
+        """The pinned engine defines "current" for ranking too: a measure
+        stamped on an older engine is demoted to the provisional band
+        (pending re-measurement), never reported on the confirmed frontier —
+        even while NO candidate has landed on the pin yet."""
+        from precis.quest.frontier import quest_frontier
+
+        qid = self._restale_quest(store)  # env pin = 0.23.0 via fixture
+        stale = self._screening_candidate(store, qid, "stale", 0.1)
+        store.stamp_ref_meta(stale, {"network_basis_by_key": {"U_L_abs": self._OLD}})
+        store.structure_record_run(
+            stale,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-1.0,
+        )
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == []  # the stale measure never confirms
+        prov = {pc.candidate.ref_id for pc in fr.provisional}
+        assert stale in prov
+        assert (
+            "U_L_abs"
+            in next(
+                pc for pc in fr.provisional if pc.candidate.ref_id == stale
+            ).untrusted_keys
+        )
 
     def test_promotes_up_to_cap_ranked_best_first(
         self, store: Any, monkeypatch: Any

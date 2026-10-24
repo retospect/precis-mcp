@@ -78,6 +78,16 @@ an explicit `fmax`; an H-loaded-slab preflight pass is test-pinned (the
 straddle caveat itself was gr462730's fix). Stages 1–2 and the top-10
 re-run are unbuilt; the NEB pilot stays held.
 
+**Resume (2026-10-24, gr510764):** network-basis sync to the pinned
+engine landed in `gf-questbasis` — `frontier.apply_network_demotion`
+takes the pinned basis (`compute._pinned_network_basis`: pin/env
+version + the quest's resolved neb template) so any stamped key on an
+older engine demotes to provisional (pending re-measurement, never
+final; same-engine template mismatches still demote margins only), and
+the restale pass redispatches those candidates at their own tier, cap-
+bounded and deduped by the in-flight pathway check. st497185's mixed
+parked@0.32.0 / coadsorbed@0.35.0 stamps re-run on the next tick.
+
 **Kinetics guard (2026-10-23, gr502251):** the aggregate's microkinetics
 stage probes a steady-state solve and caps Monte Carlo samples to 60% of
 its wall budget, refusing before solve below the 100-sample floor. This
