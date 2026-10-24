@@ -1,0 +1,298 @@
+{
+  "entries": {
+    "bundle3/R2P4": {
+      "C": 408,
+      "H": 24,
+      "cells": 6,
+      "degree_hist": {
+        "1": 24,
+        "3": 360,
+        "4": 48
+      },
+      "folds": 15,
+      "hydrogenated_folds": 3,
+      "k3_seams": 6,
+      "rings": {
+        "5": 36,
+        "6": 156,
+        "8": 84
+      },
+      "roles": {
+        "Hcol": 24,
+        "fold": 96,
+        "foldH": 24,
+        "k3rim": 72,
+        "seam3": 24,
+        "wall": 192
+      },
+      "walls": 24
+    },
+    "bundle3/R4P6": {
+      "C": 1188,
+      "H": 36,
+      "cells": 6,
+      "degree_hist": {
+        "1": 36,
+        "3": 1116,
+        "4": 72
+      },
+      "folds": 15,
+      "hydrogenated_folds": 3,
+      "k3_seams": 6,
+      "rings": {
+        "5": 54,
+        "6": 522,
+        "8": 54
+      },
+      "roles": {
+        "Hcol": 36,
+        "fold": 144,
+        "foldH": 36,
+        "k3rim": 108,
+        "seam3": 36,
+        "wall": 864
+      },
+      "walls": 24
+    },
+    "bundle6/R2P4": {
+      "C": 720,
+      "H": 48,
+      "cells": 13,
+      "degree_hist": {
+        "1": 48,
+        "3": 624,
+        "4": 96
+      },
+      "folds": 24,
+      "hydrogenated_folds": 6,
+      "k3_seams": 12,
+      "rings": {
+        "5": 72,
+        "6": 264,
+        "8": 156
+      },
+      "roles": {
+        "Hcol": 48,
+        "fold": 144,
+        "foldH": 48,
+        "k3rim": 144,
+        "seam3": 48,
+        "wall": 336
+      },
+      "walls": 42
+    },
+    "bundle6/R4P6": {
+      "C": 2088,
+      "H": 72,
+      "cells": 13,
+      "degree_hist": {
+        "1": 72,
+        "3": 1944,
+        "4": 144
+      },
+      "folds": 24,
+      "hydrogenated_folds": 6,
+      "k3_seams": 12,
+      "rings": {
+        "5": 108,
+        "6": 900,
+        "8": 108
+      },
+      "roles": {
+        "Hcol": 72,
+        "fold": 216,
+        "foldH": 72,
+        "k3rim": 216,
+        "seam3": 72,
+        "wall": 1512
+      },
+      "walls": 42
+    },
+    "prism-hcol-forced/R2P4": {
+      "C": 96,
+      "H": 48,
+      "cells": 1,
+      "degree_hist": {
+        "1": 48,
+        "3": 48,
+        "4": 48
+      },
+      "folds": 6,
+      "hydrogenated_folds": 6,
+      "k3_seams": 0,
+      "rings": {
+        "6": 48,
+        "8": 12
+      },
+      "roles": {
+        "Hcol": 48,
+        "foldH": 48,
+        "wall": 48
+      },
+      "walls": 6
+    },
+    "prism-hcol-forced/R4P6": {
+      "C": 288,
+      "H": 72,
+      "cells": 1,
+      "degree_hist": {
+        "1": 72,
+        "3": 216,
+        "4": 72
+      },
+      "folds": 6,
+      "hydrogenated_folds": 6,
+      "k3_seams": 0,
+      "rings": {
+        "6": 144
+      },
+      "roles": {
+        "Hcol": 72,
+        "foldH": 72,
+        "wall": 216
+      },
+      "walls": 6
+    },
+    "prism-hcol/R2P4": {
+      "C": 192,
+      "H": 24,
+      "cells": 3,
+      "degree_hist": {
+        "1": 24,
+        "3": 168,
+        "4": 24
+      },
+      "folds": 12,
+      "hydrogenated_folds": 3,
+      "k3_seams": 0,
+      "rings": {
+        "6": 96,
+        "8": 24
+      },
+      "roles": {
+        "Hcol": 24,
+        "fold": 72,
+        "foldH": 24,
+        "wall": 96
+      },
+      "walls": 12
+    },
+    "prism-hcol/R4P6": {
+      "C": 576,
+      "H": 36,
+      "cells": 3,
+      "degree_hist": {
+        "1": 36,
+        "3": 540,
+        "4": 36
+      },
+      "folds": 12,
+      "hydrogenated_folds": 3,
+      "k3_seams": 0,
+      "rings": {
+        "6": 288
+      },
+      "roles": {
+        "Hcol": 36,
+        "fold": 108,
+        "foldH": 36,
+        "wall": 432
+      },
+      "walls": 12
+    },
+    "prism-hfold-out/R2P4": {
+      "C": 96,
+      "H": 48,
+      "cells": 1,
+      "degree_hist": {
+        "1": 48,
+        "3": 48,
+        "4": 48
+      },
+      "folds": 6,
+      "hydrogenated_folds": 6,
+      "k3_seams": 0,
+      "rings": {
+        "6": 48,
+        "8": 12
+      },
+      "roles": {
+        "Hcol": 48,
+        "foldH": 48,
+        "wall": 48
+      },
+      "walls": 6
+    },
+    "prism-hfold-out/R4P6": {
+      "C": 288,
+      "H": 72,
+      "cells": 1,
+      "degree_hist": {
+        "1": 72,
+        "3": 216,
+        "4": 72
+      },
+      "folds": 6,
+      "hydrogenated_folds": 6,
+      "k3_seams": 0,
+      "rings": {
+        "6": 144
+      },
+      "roles": {
+        "Hcol": 72,
+        "foldH": 72,
+        "wall": 216
+      },
+      "walls": 6
+    },
+    "tri-tube/R2P4": {
+      "C": 256,
+      "H": 0,
+      "cells": 3,
+      "degree_hist": {
+        "3": 240,
+        "4": 16
+      },
+      "folds": 9,
+      "hydrogenated_folds": 0,
+      "k3_seams": 4,
+      "rings": {
+        "5": 24,
+        "6": 96,
+        "8": 54
+      },
+      "roles": {
+        "fold": 72,
+        "k3rim": 48,
+        "seam3": 16,
+        "wall": 120
+      },
+      "walls": 15
+    },
+    "tri-tube/R4P6": {
+      "C": 744,
+      "H": 0,
+      "cells": 3,
+      "degree_hist": {
+        "3": 720,
+        "4": 24
+      },
+      "folds": 9,
+      "hydrogenated_folds": 0,
+      "k3_seams": 4,
+      "rings": {
+        "5": 36,
+        "6": 324,
+        "8": 36
+      },
+      "roles": {
+        "fold": 108,
+        "k3rim": 72,
+        "seam3": 24,
+        "wall": 540
+      },
+      "walls": 15
+    }
+  },
+  "source": "hexfold repo proto/multicell-prism af09a8d prototypes/multicell-prism/build.py, periodic=True"
+}

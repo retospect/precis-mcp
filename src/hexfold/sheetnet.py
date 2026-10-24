@@ -89,11 +89,12 @@ class _ArmchairSegment:
     endpoints: tuple[int, int]
 
 
-def _count(value: object, lo: int, hi: int, what: str) -> int:
+def _count(value: object, lo: int, hi: int, what: str, label: str = "seam tube") -> int:
     """Integer parameter bound, shared by every layout (was ``fin._count``
-    and ``fin120._count``)."""
+    and ``fin120._count``; ``label`` carries each builder's error prefix —
+    "seam tube", "fin")."""
     if type(value) is not int or not lo <= value <= hi:
-        raise ValueError(f"seam tube {what} must be an integer in [{lo},{hi}]")
+        raise ValueError(f"{label} {what} must be an integer in [{lo},{hi}]")
     return value
 
 
@@ -151,11 +152,12 @@ def _cell_ring(periods: int, u: int, v: int) -> tuple[int, ...]:
     return tuple(_ord(periods, *site) for site in face)
 
 
-def _zigzag_block(periods: int, rows: int, alive: set[tuple[int, int, int]]) -> Block:
+def _zigzag_block(
+    periods: int, rows: int, alive: set[tuple[int, int, int]], sigma: float
+) -> Block:
     """The zigzag sheet over ``alive`` sites — ``y_junction._sheet``'s
     emission with atoms/bonds/rings restricted to surviving sites, so the
     ``drop`` + stub-prune path (fin's graft strip) reuses the same loop."""
-    sigma = Lattice().sigma_A
     period = math.sqrt(3) * sigma
     sites = sorted(alive)
     ordinal = {site: n for n, site in enumerate(sites)}
@@ -271,6 +273,28 @@ def _zigzag_rims(
     return out
 
 
+def _top_segment(periods: int, rows: int) -> _ZigzagSegment:
+    """The top zigzag rim of a full ``strip`` sheet as a bondable
+    segment — the shared top-rim lookup (was ``railtube._top_segment``).
+    Dangling atoms ``(rows-1, i, 1)`` for ``i`` in ``0..periods-1``,
+    walked S-D-...-D-S with the degree-3 ``(rows-1, i, 0)`` sites as S;
+    in phase with the bottom rim's seam lattice when ``rows`` is even."""
+    walk_s, dangling_s = _segment_sites("top", periods, rows)
+    ordinal = {
+        (j, i, s): _ord(periods, j, i, s)
+        for j in range(rows)
+        for i in range(-1, periods + 1)
+        for s in (0, 1)
+    }
+    walk = tuple(ordinal[site] for site in walk_s)
+    return _ZigzagSegment(
+        "rim",
+        walk,
+        tuple(ordinal[site] for site in dangling_s),
+        (walk[0], walk[-1]),
+    )
+
+
 @dataclass(frozen=True)
 class Strip:
     """One sheet: a ``join.Block`` plus named rim segments, the
@@ -292,13 +316,16 @@ def strip(
     periods: int,
     edge: str = "zigzag",
     drop: Iterable[tuple[int, int, int]] = (),
+    sigma: float | None = None,
 ) -> Strip:
     """A flat graphene ribbon of ``rows`` row pairs along the axis with
     ``periods`` lattice periods, ``edge`` ``"zigzag"`` or ``"armchair"``.
     ``drop`` removes lattice sites before the degree<2 stub prune — the
-    fin graft's guard-column deletion.  Rim names: ``"rim"`` the open
-    edge, ``"top"`` the far zigzag edge, ``"top_full"`` that whole row
-    (zigzag only); armchair exposes ``"rim"`` only."""
+    fin graft's guard-column deletion.  ``sigma`` overrides the seed bond
+    length (a graft seats on its host tube's lattice).  Rim names:
+    ``"rim"`` the open edge, ``"top"`` the far zigzag edge,
+    ``"top_full"`` that whole row (zigzag only); armchair exposes
+    ``"rim"`` only."""
     if edge == "armchair":
         return _armchair_strip(periods, rows)
     if edge != "zigzag":
@@ -309,7 +336,8 @@ def strip(
     } - drops
     if drops:
         alive = _pruned(alive, periods, rows)
-    block = _zigzag_block(periods, rows, alive)
+    sigma = Lattice().sigma_A if sigma is None else sigma
+    block = _zigzag_block(periods, rows, alive, sigma)
     sites = {site: n for n, site in enumerate(sorted(alive))}
     out = Strip(block, rows, periods, edge, _zigzag_rims(sites, periods, rows), sites)
     _trace_record(made={"atoms": len(block.elements), "bonds": len(block.bonds)})
@@ -580,24 +608,30 @@ class Flat:
 
 @dataclass(frozen=True)
 class Arc:
-    """Strip wrapped on a circle: ``theta = phi + theta0 + y/radius``,
-    ``xy = radius (cos, sin) theta``."""
+    """Strip wrapped on a circle: ``theta = sign (phi + theta0 +
+    y/radius)``, ``xy = radius (cos, sin) theta``.  ``sign = -1`` wraps
+    the mirrored way — fin120's second wall half."""
 
     radius: float
     phi: float
     theta0: float
+    sign: float = 1.0
 
 
 @dataclass(frozen=True)
 class HalfPlane:
     """Strip in the half-plane through the axis along ``radial``:
-    ``depth = base + sign (sigma + y)``, ``xy = depth * radial``.
-    ``sign = -1`` points the strip at the axis (``base`` the seam
-    radius), ``+1`` outward."""
+    ``depth = base + sign*sigma + sign*y``, ``xy = depth * radial`` —
+    the flat ``(sigma + y)`` association written out.  ``sign = -1``
+    points the strip at the axis (``base`` the seam radius), ``+1``
+    outward.  ``nested=True`` keeps the fin120 seed's
+    ``base + sign*(sigma + y)`` association instead (same maths, the
+    seed's own float order)."""
 
     radial: tuple[float, float]
     base: float
     sign: float
+    nested: bool = False
 
 
 @_traced
@@ -613,12 +647,15 @@ def place(st: Strip | Block, frame: Flat | Arc | HalfPlane) -> np.ndarray:
             frame.direction
         )
     elif isinstance(frame, Arc):
-        theta = frame.phi + frame.theta0 + c[:, 1] / frame.radius
+        theta = frame.sign * (frame.phi + frame.theta0 + c[:, 1] / frame.radius)
         xy = np.stack(
             [frame.radius * np.cos(theta), frame.radius * np.sin(theta)], axis=1
         )
     elif isinstance(frame, HalfPlane):
-        depth = frame.base + frame.sign * (sigma + c[:, 1])
+        if frame.nested:
+            depth = frame.base + frame.sign * (sigma + c[:, 1])
+        else:
+            depth = frame.base + frame.sign * sigma + frame.sign * c[:, 1]
         xy = depth[:, None] * np.asarray(frame.radial)
     else:
         raise ValueError(f"unknown frame {frame!r}")

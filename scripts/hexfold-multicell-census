@@ -1,0 +1,130 @@
+#!/usr/bin/env -S uv run python
+"""Regenerate tests/hexfold/data/multicell/census.json from the prototype.
+
+Slice 0 of docs/backlog/hexfold-multicell-prism.md: the multi-cell
+reference census comes from the scratch builder in the hexfold repo's
+``proto/multicell-prism`` branch (commit af09a8d,
+``prototypes/multicell-prism/build.py`` — usually checked out at
+/tmp/hp99 on the build host).  The fixture is frozen reference data; the
+closed forms ``C = 2*R*P*walls + P*k3`` and ``H = 2*P*hydrogenated
+folds`` are asserted by tests/hexfold/test_multicell_census.py.
+
+    scripts/hexfold-multicell-census [--build-py /tmp/hp99/build.py]
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+_OUT = (
+    Path(__file__).resolve().parent.parent
+    / "tests"
+    / "hexfold"
+    / "data"
+    / "multicell"
+    / "census.json"
+)
+
+
+def _load(path: str):
+    spec = importlib.util.spec_from_file_location("mc_build", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _chordless_cycles(bonds: set[tuple[int, int]], cap: int = 8) -> dict[str, int]:
+    """Chordless simple cycles by length (a chorded cycle is no face).
+
+    Enumerated as in ``sp3_seam._six_rings``: DFS from the smallest
+    vertex, second vertex below the last, so each cycle is counted once.
+    """
+    adj: dict[int, list[int]] = {}
+    for a, b in bonds:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    nbrs = {a: sorted(b) for a, b in adj.items()}
+    counts: dict[str, int] = {}
+    for s in sorted(nbrs):
+        stack: list[tuple[int, tuple[int, ...]]] = [(s, (s,))]
+        while stack:
+            v, path = stack.pop()
+            if len(path) >= 3 and s in nbrs.get(v, ()) and path[1] < path[-1]:
+                cyc = set(path)
+                chord = any(
+                    w in cyc
+                    and w != path[(i - 1) % len(path)]
+                    and w != path[(i + 1) % len(path)]
+                    for i, u in enumerate(path)
+                    for w in nbrs[u]
+                )
+                if not chord:
+                    counts[str(len(path))] = counts.get(str(len(path)), 0) + 1
+            if len(path) < cap:
+                for w in nbrs.get(v, ()):
+                    if w > s and w not in path:
+                        stack.append((w, path + (w,)))
+    return counts
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--build-py", default="/tmp/hp99/build.py")
+    args = ap.parse_args()
+    mc = _load(args.build_py)
+    out: dict[str, dict] = {}
+    for name in mc.NAMES:
+        for r, p in ((2, 4), (4, 6)):
+            el, _pos, bonds, role, meta, cells = mc.make(name, R=r, P=p, periodic=True)
+            deg: dict[str, int] = {}
+            adj: dict[int, int] = {}
+            for a, b in bonds:
+                adj[a] = adj.get(a, 0) + 1
+                adj[b] = adj.get(b, 0) + 1
+            for d in adj.values():
+                deg[str(d)] = deg.get(str(d), 0) + 1
+            roles: dict[str, int] = {}
+            for ro in role:
+                roles[ro] = roles.get(ro, 0) + 1
+            out[f"{name}/R{r}P{p}"] = {
+                "cells": len(cells),
+                "C": el.count("C"),
+                "H": el.count("H"),
+                "walls": meta["n_walls"],
+                "k3_seams": meta["n_k3"],
+                "folds": len(meta["folds"]),
+                "hydrogenated_folds": sum(
+                    1 for f in meta["folds"] if f["pol"] != "none"
+                ),
+                "roles": dict(sorted(roles.items())),
+                "degree_hist": dict(sorted(deg.items())),
+                "rings": _chordless_cycles(set(bonds)),
+            }
+            print(name, r, p, "done", file=sys.stderr)
+    _OUT.parent.mkdir(parents=True, exist_ok=True)
+    _OUT.write_text(
+        json.dumps(
+            {
+                "source": (
+                    "hexfold repo proto/multicell-prism af09a8d "
+                    "prototypes/multicell-prism/build.py, periodic=True"
+                ),
+                "entries": out,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(_OUT)
+
+
+if __name__ == "__main__":
+    main()

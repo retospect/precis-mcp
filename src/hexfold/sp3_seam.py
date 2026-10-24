@@ -54,26 +54,9 @@ from .ids import AtomPath
 from .join import Block, _adjacency, _segment_frame, _ZigzagSegment
 from .lattice import Lattice, Site
 from .report import Finding, Report, Severity
+from .sheetnet import DIMER_A, _ArmchairSegment, _boundary_atoms, strip
 from .text import Spec
 from .y_junction import _sheet
-
-
-@dataclass(frozen=True)
-class _ArmchairSegment:
-    """Private straight open armchair rim: a DDSS-...-DDSS boundary walk.
-
-    Each armchair period contributes a degree-2 dimer pair:
-    ``dangling_a`` atoms whose missing bond tilts -x along the rim and
-    ``dangling_b`` tilting +x; the intervening S sites have degree 3.
-    Neither a cyclic Port nor a new authored port/rail grammar — the same
-    private status as :class:`join._ZigzagSegment`.
-    """
-
-    name: str
-    atoms: tuple[int, ...]
-    dangling_a: tuple[int, ...]
-    dangling_b: tuple[int, ...]
-    endpoints: tuple[int, int]
 
 
 @dataclass
@@ -121,126 +104,22 @@ def _sp3_refusal(code: str, message: str, **requested: Any) -> _Sp3Composite:
 
 
 def _armchair_sheet(periods: int, levels: int) -> tuple[Block, _ArmchairSegment]:
-    """Finite sheet with a straight armchair rim along +x, open elsewhere.
+    """Finite sheet with a straight armchair rim along +x, open
+    elsewhere — ``sheetnet.strip(edge='armchair')`` (kept name; the
+    caller vocabulary moved).
 
-    Sites ``(k, i, s)``: level ``k`` in ``[0, levels)``, dimer cell ``i``
-    in ``[-1, periods]`` (guard columns close the ends like
-    ``y_junction._sheet``), sublattice ``s``.  Cell ``i`` on level ``k``
-    sits at ``x = 3*sigma*i + 1.5*sigma*(k%2) + sigma*s``,
-    ``y = k * sigma*sqrt(3)/2`` — the bottom edge is an armchair rim of
-    period ``3*sigma`` whose per-cell dangling pair is ``(0,i,0)`` (tilts
-    -x) and ``(0,i,1)`` (tilts +x).  Degree-1 stubs at the open ends are
-    pruned iteratively until every surviving atom has at least two bonds.
+    Sites ``(k, i, s)``: level ``k`` in ``[0, levels)``, dimer cell
+    ``i`` in ``[-1, periods]`` (guard columns close the ends like the
+    zigzag strip), sublattice ``s``.  Degree-1 stubs at the open ends
+    are pruned iteratively until every surviving atom has at least two
+    bonds.  The rim walk runs along the bottom boundary: per cell
+    A_i - B_i - S_i - W_i - A_{i+1}, minus pruned guard corners.
     """
-    sigma = Lattice().sigma_A
-    cells = range(-1, periods + 1)
-    grid = {(k, i, s) for k in range(levels) for i in cells for s in (0, 1)}
-
-    def site_bonds(
-        keep: set[tuple[int, int, int]],
-    ) -> set[frozenset[tuple[int, int, int]]]:
-        edges: set[frozenset[tuple[int, int, int]]] = set()
-        for k, i, s in keep:
-            if s != 0:
-                continue
-            shift = 1 if k % 2 == 0 else 0
-            for q in ((k, i, 1), (k + 1, i - shift, 1), (k - 1, i - shift, 1)):
-                if q in keep:
-                    edges.add(frozenset(((k, i, 0), q)))
-        return edges
-
-    # Iteratively drop degree<2 stubs until the open ends are clean
-    # boundaries (the guard columns would otherwise leave a degree-1
-    # corner atom per level, and their termination caps overlap).
-    alive = set(grid)
-    while True:
-        edges = site_bonds(alive)
-        deg = {s: 0 for s in alive}
-        for e in edges:
-            a, b = sorted(e)
-            deg[a] += 1
-            deg[b] += 1
-        dead = {s for s in alive if deg[s] < 2}
-        if not dead:
-            break
-        alive -= dead
-    sites = sorted(alive)
-    ordinal = {site: n for n, site in enumerate(sites)}
-    coords = np.asarray(
-        [
-            (
-                3 * sigma * i + 1.5 * sigma * (k % 2) + sigma * s,
-                k * sigma * math.sqrt(3) / 2,
-                0.0,
-            )
-            for k, i, s in sites
-        ]
-    )
-    bonds = tuple(
-        (ordinal[a], ordinal[b], 1)
-        for a, b in sorted(tuple(e) for e in site_bonds(alive))
-    )
-    adj = _adjacency(bonds)
-    rings = tuple(_six_rings(adj))
-    # The rim walk runs along the bottom boundary: per cell
-    # A_i - B_i - S_i - W_i - A_{i+1}, minus pruned guard corners.
-    rim_sites = [
-        site
-        for i in cells
-        for site in ((0, i, 0), (0, i, 1), (1, i, 0), (1, i, 1))
-        if site in alive
-    ]
-    walk = [ordinal[site] for site in rim_sites]
-    segment = _ArmchairSegment(
-        "rim",
-        tuple(walk),
-        tuple(ordinal[0, i, 0] for i in range(periods)),
-        tuple(ordinal[0, i, 1] for i in range(periods)),
-        (walk[0], walk[-1]),
-    )
-    return Block(("C",) * len(sites), coords, bonds, rings, {}, sigma), segment
-
-
-def _six_rings(adj: dict[int, list[int]]) -> list[tuple[int, ...]]:
-    """All simple 6-cycles of a bipartite bond graph, each once.
-
-    In a honeycomb graph every simple 6-cycle is a hexagon face: a chord
-    would split it into odd cycles.  Canonical orientation: the smallest
-    vertex first, second vertex below the last.
-    """
-    out: list[tuple[int, ...]] = []
-    nbrs = {a: sorted(b) for a, b in adj.items()}
-    for s in sorted(nbrs):
-        stack: list[tuple[int, tuple[int, ...]]] = [(s, (s,))]
-        while stack:
-            v, path = stack.pop()
-            if len(path) == 6:
-                if s in nbrs.get(v, ()) and path[1] < path[5]:
-                    out.append(path)
-                continue
-            for w in nbrs.get(v, ()):
-                if w > s and w not in path:
-                    stack.append((w, path + (w,)))
-    return sorted(out)
-
-
-def _boundary_atoms(
-    bonds: tuple[tuple[int, int, int], ...],
-    rings: tuple[tuple[int, ...], ...],
-) -> tuple[int, ...]:
-    """Atoms on the open boundary of a sheet subgraph: endpoints of bonds
-    that fewer than two of the sheet's rings use."""
-    used: dict[frozenset[int], int] = {}
-    for ring in rings:
-        for a, b in zip(ring, ring[1:] + ring[:1]):
-            key = frozenset((a, b))
-            used[key] = used.get(key, 0) + 1
-    out: set[int] = set()
-    for a, b, _k in bonds:
-        if used.get(frozenset((a, b)), 0) < 2:
-            out.add(a)
-            out.add(b)
-    return tuple(sorted(out))
+    st = strip(levels, periods, edge="armchair")
+    rim = st.rims["rim"]
+    if not isinstance(rim, _ArmchairSegment):
+        raise ValueError("armchair strip rim failed segment validation")
+    return st.block, rim
 
 
 def _armchair_frame(block: Block, rim: _ArmchairSegment) -> np.ndarray | None:
@@ -515,7 +394,7 @@ def _place_k3z(
     # the seam tube both relax into (tblite, FIRE fmax 0.05, 2026-10-13):
     # seam atoms pair along the axis at 1.60-1.64 A, sheet bonds
     # 1.50-1.53 A, inter-dimer gap ~3.3 A.
-    hdx = (period - 1.60) / 2
+    hdx = (period - DIMER_A) / 2
     rho = math.sqrt(1.51**2 - hdx**2)
     coords: list[np.ndarray] = []
     transforms: list[tuple[np.ndarray, np.ndarray]] = []

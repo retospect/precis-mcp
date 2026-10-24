@@ -7,81 +7,20 @@ an unequal-dihedral solver. Units are Angstrom; no relaxation occurs here.
 
 from __future__ import annotations
 
-import math
-
-import numpy as np
-
 from .build import Atom, Net
 from .ids import AtomPath
 from .join import Block, _K3Composite, _ZigzagSegment, compose_k3
 from .lattice import Lattice, Site
 from .report import Report
+from .sheetnet import _zig, strip
 from .text import Spec
 
 
 def _sheet(periods: int, row_pairs: int) -> tuple[Block, _ZigzagSegment]:
-    sigma = Lattice().sigma_A
-    period = math.sqrt(3) * sigma
-    sites = [
-        (j, i, s)
-        for j in range(row_pairs)
-        for i in range(-1, periods + 1)
-        for s in (0, 1)
-    ]
-    ordinal = {site: n for n, site in enumerate(sites)}
-    coords = np.asarray(
-        [
-            ((i + (0.5 if s != j % 2 else 0)) * period, (1.5 * j + 0.5 * s) * sigma, 0)
-            for j, i, s in sites
-        ],
-        dtype=float,
-    )
-    bonds: list[tuple[int, int, int]] = []
-    rings: list[tuple[int, ...]] = []
-    for j in range(row_pairs):
-        for i in range(-1, periods + 1):
-            bonds.append((ordinal[j, i, 0], ordinal[j, i, 1], 1))
-            if i < periods:
-                bonds.append((ordinal[j, i, 1 - j % 2], ordinal[j, i + 1, j % 2], 1))
-            if j + 1 < row_pairs:
-                bonds.append((ordinal[j, i, 1], ordinal[j + 1, i, 0], 1))
-                if i < periods:
-                    if j % 2 == 0:
-                        face = (
-                            (j, i, 1),
-                            (j, i + 1, 0),
-                            (j, i + 1, 1),
-                            (j + 1, i + 1, 0),
-                            (j + 1, i + 1, 1),
-                            (j + 1, i, 0),
-                        )
-                    else:
-                        face = (
-                            (j, i, 1),
-                            (j, i, 0),
-                            (j, i + 1, 1),
-                            (j + 1, i + 1, 0),
-                            (j + 1, i, 1),
-                            (j + 1, i, 0),
-                        )
-                    rings.append(tuple(ordinal[site] for site in face))
-    walk = [ordinal[0, -1, 1]]
-    for i in range(periods):
-        walk.extend((ordinal[0, i, 0], ordinal[0, i, 1]))
-    segment = _ZigzagSegment(
-        "rim",
-        tuple(walk),
-        tuple(ordinal[0, i, 0] for i in range(periods)),
-        (walk[0], walk[-1]),
-    )
-    return Block(
-        ("C",) * len(sites),
-        coords,
-        tuple(bonds),
-        tuple(rings),
-        {},
-        sigma,
-    ), segment
+    """The zigzag sheet and its bottom rim — a :func:`sheetnet.strip`
+    layout call (kept name; the caller vocabulary moved)."""
+    st = strip(row_pairs, periods)
+    return st.block, _zig(st.rims["rim"])
 
 
 def straight_y(periods: int, row_pairs: int) -> tuple[Net, _K3Composite]:

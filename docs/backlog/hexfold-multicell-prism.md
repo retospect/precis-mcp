@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 pillar: 3d-design
 title: hexfold multi-cell prisms over shared sheet primitives — one sheetnet layer (strip, pore, place, junction, assemble, decorate), existing tubes re-expressed as layouts, then folds with an H side, k3-sp3-z seams and honeycomb cells as parameters
 prio: medium
@@ -7,6 +7,11 @@ model: opus
 ---
 
 # hexfold: multi-cell prisms over shared sheet primitives
+
+Slices 0 and 1 landed 2026-10-22 in worktree hexfold-ms (SHA goldens +
+census + glossary; `hexfold.sheetnet` primitives; every existing
+builder re-expressed as a layout byte-identically). The 1c SE-adapter
+work was deferred — W5 retires the prism120/rail120 generators.
 
 Reto, 2026-10-22: "spec the work, we want these anyways, what will all the
 work and skills be?" and, as the first principle for this item: "keep

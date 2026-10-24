@@ -808,14 +808,16 @@ removed as met — the transport move it waited on happened 09-29)
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
 16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms over
     shared sheet primitives (Reto 2026-10-22, "is a cell wall not just a
-    graphene sheet?"): slice 0 SHA goldens for every builder, slice 1 one
-    `sheetnet` layer (strip/pore/place/junction/assemble) with prism,
-    railtube, channel, fin120, Y and sp3 seams re-expressed as layouts
-    byte-identically, then decoration, fold tokens and `k3-sp3-z` as
-    junction parameters, honeycomb cells as a tiling layout. Ranked after
-    15 because it rewrites the T2 cross-section builder, and slice 2 lands
-    the decoration core item 10's isolation band needs; slice 5 waits on
-    the xtb dispatch route from the session host.
+    graphene sheet?"): slices 0+1 landed 2026-10-22 (hexfold-ms): 45 SHA
+    goldens + multicell census + glossary; `hexfold.sheetnet`
+    (strip/pore/place/junction/assemble) with prism, railtube, channel,
+    fin120, Y, sp3 seams and fin re-expressed as layouts — byte-identical
+    against the goldens (1c deferred: W5 retires the prism120/rail120
+    generators, so their site-list copies stay). Left: slice 2
+    `decorate` (the isolation-band site
+    core item 10 needs), fold tokens + `k3-sp3-z` as junction
+    parameters, honeycomb cells as a tiling layout; slice 5 waits on the
+    xtb dispatch route from the session host.
 17. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
     relax, fragment GFN2 and a module cache so blocks above ~1k atoms
     relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;

@@ -28,10 +28,8 @@ from .build import Atom, Net, build
 from .ids import AtomPath
 from .lattice import Site
 from .report import Report
+from .sheetnet import INWARD_TIP_CLEARANCE_A, _count, strip
 from .text import Spec
-
-#: the inward fin's tip must keep this much radius from the tube axis
-INWARD_TIP_CLEARANCE_A = 2.0
 
 
 @dataclass(frozen=True)
@@ -51,79 +49,16 @@ class _Strip:
 
 
 def _strip(grafts: int, rows: int, sigma: float) -> _Strip:
-    period = math.sqrt(3) * sigma
-    # every row-pair site of a (grafts + 2)-column sheet, minus the two
-    # guard-column atoms on the graft line and whatever that leaves
-    # hanging by one bond (the lattice parity makes the two ends differ)
-    alive = {
-        (j, i, s)
-        for j in range(rows)
-        for i in range(-1, grafts + 1)
-        for s in (0, 1)
-        if not (j == 0 and s == 0 and i in (-1, grafts))
-    }
-
-    def edges(keep: set[tuple[int, int, int]]) -> list[tuple[tuple, tuple]]:
-        out: list[tuple[tuple, tuple]] = []
-        for j in range(rows):
-            for i in range(-1, grafts + 1):
-                pairs = [((j, i, 0), (j, i, 1))]
-                if i < grafts:
-                    pairs.append(((j, i, 1 - j % 2), (j, i + 1, j % 2)))
-                if j + 1 < rows:
-                    pairs.append(((j, i, 1), (j + 1, i, 0)))
-                out.extend((p, q) for p, q in pairs if p in keep and q in keep)
-        return out
-
-    while True:
-        degree: dict[tuple[int, int, int], int] = dict.fromkeys(alive, 0)
-        for p, q in edges(alive):
-            degree[p] += 1
-            degree[q] += 1
-        stubs = {site for site, d in degree.items() if d < 2}
-        if not stubs:
-            break
-        alive -= stubs
-    sites = sorted(alive)
-    ordinal = {site: k for k, site in enumerate(sites)}
-    coords = np.asarray(
-        [
-            ((i + (0.5 if s != j % 2 else 0)) * period, (1.5 * j + 0.5 * s) * sigma, 0)
-            for j, i, s in sites
-        ],
-        dtype=float,
-    )
-    bonds = tuple((ordinal[p], ordinal[q], 1) for p, q in edges(alive))
-    rings: list[tuple[int, ...]] = []
-    for j in range(rows - 1):
-        for i in range(-1, grafts):
-            face = (
-                (
-                    (j, i, 1),
-                    (j, i + 1, 0),
-                    (j, i + 1, 1),
-                    (j + 1, i + 1, 0),
-                    (j + 1, i + 1, 1),
-                    (j + 1, i, 0),
-                )
-                if j % 2 == 0
-                else (
-                    (j, i, 1),
-                    (j, i, 0),
-                    (j, i + 1, 1),
-                    (j + 1, i + 1, 0),
-                    (j + 1, i, 1),
-                    (j + 1, i, 0),
-                )
-            )
-            if all(site in ordinal for site in face):
-                rings.append(tuple(ordinal[site] for site in face))
+    # a ``sheetnet`` zigzag strip minus the two guard-column atoms on the
+    # graft line and whatever that leaves hanging by one bond (the
+    # lattice parity makes the two ends differ)
+    st = strip(rows, grafts, drop=((0, -1, 0), (0, grafts, 0)), sigma=sigma)
     return _Strip(
-        coords,
-        bonds,
-        tuple(rings),
-        tuple(ordinal[0, i, 0] for i in range(grafts)),
-        tuple(ordinal[0, i, 1] for i in range(grafts - 1)),
+        st.block.coords,
+        st.block.bonds,
+        st.block.rings,
+        tuple(st.sites[(0, i, 0)] for i in range(grafts)),
+        tuple(st.sites[(0, i, 1)] for i in range(grafts - 1)),
     )
 
 
@@ -149,12 +84,6 @@ class FinGraft:
     fin_height_A: float
 
 
-def _count(value: object, lo: int, hi: int, what: str) -> int:
-    if type(value) is not int or not lo <= value <= hi:
-        raise ValueError(f"fin {what} must be an integer in [{lo},{hi}]")
-    return value
-
-
 def fin_height(rows: int, sigma: float) -> float:
     """Strip height above the graft line for ``rows`` honeycomb row pairs."""
     return (1.5 * (rows - 1) + 0.5) * sigma
@@ -173,9 +102,9 @@ def fin_tube(n: int, periods: int, rows: int, side: str) -> tuple[Net, FinGraft]
     "in") of the wall. Counts are checked before any graph is built; an
     inward fin that would reach the axis is refused naming the smallest
     tube that seats it."""
-    n = _count(n, 4, 40, "tube n")
-    periods = _count(periods, 2, 60, "tube periods")
-    rows = _count(rows, 2, 12, "rows")
+    n = _count(n, 4, 40, "tube n", "fin")
+    periods = _count(periods, 2, 60, "tube periods", "fin")
+    rows = _count(rows, 2, 12, "rows", "fin")
     if side not in SIDES:
         raise ValueError(f"fin side must be one of {SIDES}, got {side!r}")
     tube = build(f"hexfold 0.2\nt: tube({n},{n}, len={periods})\n")
@@ -228,16 +157,16 @@ def fin_tube(n: int, periods: int, rows: int, side: str) -> tuple[Net, FinGraft]
     if not np.allclose(tpos[line, 2], z0 + a * np.arange(grafts), atol=1e-6):
         raise ValueError("axial graft line is not one atom per period")
 
-    strip = _strip(grafts, rows, sigma)
+    st = _strip(grafts, rows, sigma)
     T = len(tube.atoms)
     sign = 1.0 if side == "out" else -1.0
-    fpos = np.empty_like(strip.coords)
-    fpos[:, 0] = radius + sign * (sigma + strip.coords[:, 1])
+    fpos = np.empty_like(st.coords)
+    fpos[:, 0] = radius + sign * (sigma + st.coords[:, 1])
     fpos[:, 1] = 0.0
-    fpos[:, 2] = z0 + strip.coords[:, 0]
+    fpos[:, 2] = z0 + st.coords[:, 0]
 
     wall = tuple(line)
-    rim_atoms = tuple(T + r for r in strip.dangling)
+    rim_atoms = tuple(T + r for r in st.dangling)
     graft_bonds = tuple((w, r, 1) for w, r in zip(wall, rim_atoms))
     graft_rings: list[tuple[int, ...]] = []
     for i in range(grafts - 1):
@@ -247,7 +176,7 @@ def fin_tube(n: int, periods: int, rows: int, side: str) -> tuple[Net, FinGraft]
         graft_rings.append(
             (
                 rim_atoms[i],
-                T + strip.between[i],
+                T + st.between[i],
                 rim_atoms[i + 1],
                 wall[i + 1],
                 next(iter(between)),
@@ -260,21 +189,21 @@ def fin_tube(n: int, periods: int, rows: int, side: str) -> tuple[Net, FinGraft]
         for atom in tube.atoms
     ) + tuple(
         Atom(AtomPath("f", Site(k, 0, 0)), T + k, "C", "sp2", "f")
-        for k in range(len(strip.coords))
+        for k in range(len(st.coords))
     )
     bonds = (
         tuple(tube.bonds)
-        + tuple((T + i, T + j, o) for i, j, o in strip.bonds)
+        + tuple((T + i, T + j, o) for i, j, o in st.bonds)
         + graft_bonds
     )
     rings = (
         tuple(tube.rings)
-        + tuple(tuple(T + v for v in ring) for ring in strip.rings)
+        + tuple(tuple(T + v for v in ring) for ring in st.rings)
         + tuple(graft_rings)
     )
     coords = np.vstack([tpos, fpos])
     tube_atoms = tuple(range(T))
-    fin_atoms = tuple(range(T, T + len(strip.coords)))
+    fin_atoms = tuple(range(T, T + len(st.coords)))
     net = Net(
         atoms=atoms,
         bonds=bonds,
