@@ -41,11 +41,27 @@ if TYPE_CHECKING:
 #: engage", not worth the row.
 _SURFACE_VERDICTS = {"yes", "partial"}
 
-#: Cap on sidecar entries.
+#: Cap on sidecar entries — the display's own bound, independent of how
+#: high the chase-side candidate cap is raised: the sidecar is
+#: per-chunk-render output on the paper read path, so it never grows
+#: past this (coordinator ruling on td489406 — 25 rows of citers on
+#: every paper read bloats the response).
 _MAX_ENTRIES = 5
 
 #: Best-first ordering key for the two surfaced verdicts.
 _QUALITY = {"yes": 0, "partial": 1}
+
+
+def _max_entries() -> int:
+    """``min(_MAX_ENTRIES, PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER)``
+    — the per-paper candidate bound also floors the sidecar (a lowered
+    knob shows fewer rows), while the display's own five-row cap keeps
+    the read path small however high the knob is raised. Lazy import —
+    ``inbound_chase`` transitively pulls the chase worker; paper.py's
+    own gate import is lazy for the same reason (see its comment)."""
+    from precis.workers.inbound_chase import max_candidates_per_paper
+
+    return min(_MAX_ENTRIES, max_candidates_per_paper())
 
 
 def render_citer_sidecar(store: Store, ref: Ref, chunk_pos: int) -> str:
@@ -122,7 +138,8 @@ def _render_sidecar(
     # so ties keep insertion (link id) order, the documented fallback.
     candidates.sort(key=lambda lk: (_QUALITY[lk.meta["supports"]], lk.id))
 
-    shown, extra = candidates[:_MAX_ENTRIES], candidates[_MAX_ENTRIES:]
+    cap = _max_entries()
+    shown, extra = candidates[:cap], candidates[cap:]
     other_ids = {getattr(lk, other_attr) for lk in shown}
     targets = store.fetch_refs_by_ids(other_ids)
 

@@ -104,7 +104,13 @@ class TestRenderCiterSidecar:
         assert render_citer_sidecar(store, ref, 0) == ""
         assert "Cites (verified):" in render_citer_sidecar(store, ref, 1)
 
-    def test_caps_at_five_and_notes_the_rest(self, store: Store) -> None:
+    def test_caps_at_the_configured_max_and_notes_the_rest(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The row cap is ``min(_MAX_ENTRIES, the chase candidate
+        knob)`` — pinned to 5 here so the overflow-count mechanics
+        stay visible at a small number."""
+        monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "5")
         x = _paper(store, slug="x2020", blocks=["chunk zero"])
         for i in range(7):
             target = _paper(store, slug=f"target{i}2020", blocks=["t"])
@@ -119,6 +125,55 @@ class TestRenderCiterSidecar:
         assert ref is not None
         section = render_citer_sidecar(store, ref, 0)
         assert "(2 more)" in section
+
+    def test_entry_cap_follows_inbound_chase_candidate_setting(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """todo 489406: the per-paper candidate knob floors the sidecar
+        — a lowered knob shows at most that many rows and counts the
+        rest, so the read path can't fan out further than the chase
+        itself would queue."""
+        monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "2")
+        x = _paper(store, slug="x2020", blocks=["chunk zero"])
+        for i in range(4):
+            target = _paper(store, slug=f"target{i}2020", blocks=["t"])
+            store.add_link(
+                src_ref_id=x,
+                dst_ref_id=target,
+                src_pos=0,
+                relation="cites",
+                meta={"supports": "yes"},
+            )
+        ref = store.get_ref(kind="paper", id=x)
+        assert ref is not None
+        section = render_citer_sidecar(store, ref, 0)
+        assert "Cites (verified):" in section
+        assert "(2 more)" in section
+
+    def test_never_renders_more_than_five_regardless_of_candidate_cap(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The display's own 5-row cap stands no matter how high the
+        chase knob is raised — the sidecar is per-chunk render output,
+        so a ``25``-citers-per-paper sweep must not bloat every paper
+        read (coordinator ruling on td489406)."""
+        monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "25")
+        x = _paper(store, slug="x2020", blocks=["chunk zero"])
+        for i in range(8):
+            target = _paper(store, slug=f"target{i}2020", blocks=["t"])
+            store.add_link(
+                src_ref_id=x,
+                dst_ref_id=target,
+                src_pos=0,
+                relation="cites",
+                meta={"supports": "yes"},
+            )
+        ref = store.get_ref(kind="paper", id=x)
+        assert ref is not None
+        section = render_citer_sidecar(store, ref, 0)
+        assert "(3 more)" in section
+        for i in range(5, 8):
+            assert f"Paper target{i}2020" not in section
 
     def test_identity_falls_back_to_bare_id_when_ref_missing(
         self, store: Store

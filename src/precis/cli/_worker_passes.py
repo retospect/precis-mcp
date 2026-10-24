@@ -187,15 +187,16 @@ def build_ref_passes(
         ref_passes.append(_chase_pass)
 
     # inbound_chase — inbound counterpart to the finding-chase pass
-    # above: exhaustive one-hop citer sweep + chunk-level verdicts
-    # for papers ``PaperHandler.get`` has flagged ``INBOUND:pending``.
-    # Default-OFF (`service prio` / --only inbound_chase — §L retired
-    # PRECIS_INBOUND_CHASE_ENABLED as the live gate) — the exhaustive-
-    # no-cap policy leans on the
-    # (unshipped) global spend circuit breaker as its cost backstop;
-    # see workers/inbound_chase.py's module docstring. Always runs
-    # with LLM verification once claiming work — gated by this flag
-    # alone, independent of --with-llm/PRECIS_CHASE_LLM.
+    # above: one-hop citer sweep + chunk-level verdicts for papers
+    # ``PaperHandler.get`` has flagged ``INBOUND:pending``. Default-OFF
+    # (`service prio` / --only inbound_chase — §L retired
+    # PRECIS_INBOUND_CHASE_ENABLED as the live gate). Cost bounds are
+    # in place: PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER (per-paper
+    # cap) + PRECIS_INBOUND_CHASE_DAILY_LIMIT (UTC-day ceiling), on top
+    # of the shipped global spend breaker (precis.budget.breaker); see
+    # workers/inbound_chase.py's module docstring. Always runs with LLM
+    # verification once claiming work — gated by this flag alone,
+    # independent of --with-llm/PRECIS_CHASE_LLM.
     if _register("inbound_chase"):
         from precis.workers.inbound_chase import run_inbound_chase_pass
         from precis.workers.runner import BatchResult as _InboundBatchResult

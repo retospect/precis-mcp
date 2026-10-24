@@ -29,24 +29,41 @@ per-ref state (``STATUS:tracing``, ``ROLE3:own``, …), so that's what
 this follows. Once ``swept``, a paper is never re-triggered — a
 deliberate no-re-sweep policy.
 
-No chase-side degree cap (chase is cheap and one-time per paper;
-context is the reader's scarce resource, so cap only at display
-time — see ``handlers/_citer_sidecar.py``). **Caveat, not resolved by
-this build**: this policy's real cost backstop is the global spend
-circuit breaker ("Budget guardrails" Piece B), which is implemented
-but **unshipped**. An outlier
-landmark paper (thousands of in-corpus citers) has no automatic cost
-guard beyond manual observation until that ships. Not solved here —
-a bespoke chase-side cap was deliberately rejected in its place.
-**This caveat now applies twice over**:
+Cost bounds — the todo-489406 flip preconditions, both shipped:
+
+* **Per-paper candidate cap**: the design doc rejected a chase-side
+  degree cap outright ("cap only at display time"); the flip
+  precondition walked that back —
+  ``PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER`` (default 25,
+  :func:`max_candidates_per_paper`) bounds how many S2 ``cited_by``
+  candidates one activated paper ever processes, and the same knob
+  floors the ``handlers/_citer_sidecar.py`` render (``min(5, knob)`` —
+  the sidecar's own 5-row cap keeps the read path small regardless).
+  Candidates over the
+  cap are counted (``capped`` in the swept event payload) and skipped
+  — never stub-minted, linked or queued.
+* **Daily ceiling across papers**: ``PRECIS_INBOUND_CHASE_DAILY_LIMIT``
+  (default 200, :func:`daily_limit`) bounds candidates chased per UTC
+  day, persisted as an ``app_state`` counter keyed by UTC date. On
+  exhaustion the pass ends cleanly and unstamped — pending papers and
+  unresolved pairs resume after the rollover; already-chased pairs
+  skip free (``_already_linked``) so a >ceiling paper can't livelock
+  on its own prefix.
+
+The remaining backstop, the global spend circuit breaker ("Budget
+guardrails" Piece B), has **shipped**: it lives in
+``precis.budget.breaker`` — ``gate_tier`` is invoked from
+``utils/llm/router.route`` before any paid tier runs (caps:
+``PRECIS_BUDGET_DAILY_USD`` / ``PRECIS_BUDGET_HOURLY_USD``), with
+``precis.budget.meter`` rolling the spend window. It is fleet-global,
+not per-paper — which is exactly why the two chase-side bounds above
+exist on top of it. Cost note for whoever sizes the ceiling:
 :func:`_resolve_citer_chunk` runs a *second* ``_locate_chunk_in_target``
 call per citer (below) to localize into the cited paper Y's own
 chunks, not just the citer's — so the per-citer LLM *locate* cost
 roughly doubles (one locate call into the citer's chunks, one more
 into Y's) on top of the existing one ``_verify_support_with_caveats``
-call. Whoever eventually turns ``PRECIS_INBOUND_CHASE_ENABLED`` on
-should size the budget-breaker dependency against that doubled figure,
-not the original single-locate estimate.
+call.
 
 Staleness — link immediately, resolve later, never re-sweep:
 
@@ -131,6 +148,123 @@ _SWEPT = "swept"
 _LINK_SOURCE = "inbound_chase"
 
 _SOURCE = "inbound_chase"  # ref_events source, mirrors chase.py's _SOURCE
+
+#: Env knob + default for the per-paper candidate cap — the todo-489406
+#: precondition for flipping ``PRECIS_INBOUND_CHASE_ENABLED``: one
+#: activated paper can never fan out unbounded. The design doc rejected
+#: a chase-side degree cap outright (it named no number — see module
+#: docstring), so 25 is the chosen default: a landmark paper's sweep
+#: tops out at ~$1.25–2.50 at the spec's ~$0.05–0.10/citer while an
+#: ordinary paper still sweeps whole. The same bound also floors the
+#: ``_citer_sidecar`` render (``min(5, knob)`` — the display's own
+#: 5-row cap keeps the read path small regardless). ``0`` caps everything (sweep
+#: stamps the paper with zero links — the kill switch short of turning
+#: the flag off).
+_MAX_CANDIDATES_ENV = "PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER"
+_DEFAULT_MAX_CANDIDATES = 25
+
+#: Env knob + default for the cross-paper daily ceiling — todo 489406's
+#: "daily spend ceiling": a fleet-wide bound on citer candidates chased
+#: per UTC day (the ``app_state`` counter is shared across hosts). 200
+#: ≈ $10–20/day at the spec's ~$0.05–0.10/citer — deliberately inside
+#: ``PRECIS_DAILY_COST_CEILING``'s own default (20.0) even at the top of
+#: the per-citer range. ``0`` stops all chasing (nothing spends, nothing
+#: stamps) — the operator kill switch below the flag.
+_DAILY_LIMIT_ENV = "PRECIS_INBOUND_CHASE_DAILY_LIMIT"
+_DEFAULT_DAILY_LIMIT = 200
+
+#: ``app_state`` key prefix for the persisted daily counter, keyed by UTC
+#: date — the ``_throttle``/``openalex_enrich`` persistence idiom, one
+#: key per day so the counter self-resets at midnight UTC without any
+#: cleanup (yesterday's key is dead weight one row deep).
+_DAILY_KEY_PREFIX = "inbound_chase:daily:"
+
+
+def _env_int(name: str, default: int) -> int:
+    """``int`` env override, non-negative; mirrors inbound_ground's own
+    ``_env_int`` (floor 0 — a negative bound is nonsense, not unlimited)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def max_candidates_per_paper() -> int:
+    """``PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER`` — citers of one
+    paper the sweep ever processes (default ``_DEFAULT_MAX_CANDIDATES``).
+    Candidates over the cap are counted (``_SweepResult.capped``) and
+    skipped — never stub-minted, linked or queued."""
+    return _env_int(_MAX_CANDIDATES_ENV, _DEFAULT_MAX_CANDIDATES)
+
+
+def daily_limit() -> int:
+    """``PRECIS_INBOUND_CHASE_DAILY_LIMIT`` — citer candidates all papers
+    together may chase per UTC day (default ``_DEFAULT_DAILY_LIMIT``).
+    When the persisted counter reaches it the pass ends cleanly,
+    unstamped, and resumes after the UTC-date rollover."""
+    return _env_int(_DAILY_LIMIT_ENV, _DEFAULT_DAILY_LIMIT)
+
+
+def _daily_key(day: datetime) -> str:
+    """``app_state`` counter key for the UTC date ``day`` falls on."""
+    return f"{_DAILY_KEY_PREFIX}{day.astimezone(UTC).date().isoformat()}"
+
+
+def _daily_used(conn: Connection, key: str) -> int:
+    """Candidates already chased under ``key`` today (0 when unwritten
+    or unparseable — a corrupt row reads as a fresh day, not a wedge)."""
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (key,)).fetchone()
+    if row is None:
+        return 0
+    try:
+        return max(0, int(row[0]))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _daily_bump(conn: Connection, key: str) -> int:
+    """Atomically add one candidate to ``key`` inside the caller's
+    transaction and return the new count. Riding the transaction means
+    a rolled-back sweep spends nothing, and the single-row upsert makes
+    the ceiling fleet-wide (two workers on different hosts share the
+    counter)."""
+    row = conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (%s, '1') "
+        "ON CONFLICT (key) DO UPDATE SET "
+        "value = (app_state.value::int + 1)::text, updated_at = now() "
+        "RETURNING value",
+        (key,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 1
+
+
+@dataclass
+class _DailyBudget:
+    """Mutable daily-ceiling view for one pass (UTC-day keyed).
+
+    ``remaining`` is refreshed from the atomic bump's RETURNING value on
+    every :meth:`take`, so a sibling host's spend lands here too — the
+    ceiling holds fleet-wide, not just per process.
+    """
+
+    ceiling: int
+    remaining: int
+    key: str
+    #: Units this pass actually spent — the digest's ``chased`` count.
+    chased: int = 0
+
+    def take(self, conn: Connection) -> bool:
+        """Spend one candidate unit; ``False`` once today's ceiling is
+        reached (caller stops cleanly, leaves work unstamped)."""
+        if self.remaining <= 0:
+            return False
+        used = _daily_bump(conn, self.key)
+        self.remaining = self.ceiling - used
+        self.chased += 1
+        return True
 
 
 def inbound_chase_enabled() -> bool:
@@ -231,6 +365,13 @@ class _SweepResult:
     citers_found: int = 0
     links_created: int = 0
     resolved_now: int = 0
+    #: Candidates over :func:`max_candidates_per_paper` — counted and
+    #: skipped, never queued (todo 489406's per-paper breaker).
+    capped: int = 0
+    #: Set when the daily ceiling stopped this sweep mid-paper — the
+    #: paper is left ``INBOUND:pending`` (unstamped) and resumes on the
+    #: next UTC day, so the early return skips ``_mark_swept``/event.
+    ceiling_hit: bool = False
 
 
 def _fetch_paper_claim_info(
@@ -267,17 +408,50 @@ def _fetch_paper_claim_info(
     return title, claim_text, dict(row[2] or {})
 
 
+def _already_linked(conn: Connection, citer_ref_id: int, y_ref_id: int) -> bool:
+    """True when this pass already recorded the paper-level ``cites``
+    edge ``citer_ref_id → y_ref_id`` (``meta->>'source'`` filter, the
+    same marker claim query 2 keys on).
+
+    The resume-after-ceiling shortcut: a paper left ``pending`` mid-
+    sweep re-iterates its full candidate list on the next pass, and
+    done candidates must skip *before* spending daily budget — or a
+    paper with more citers than the ceiling would re-spend every day
+    on its own already-chased prefix and never finish."""
+    return (
+        conn.execute(
+            """
+            SELECT 1 FROM links
+             WHERE src_ref_id = %s AND dst_ref_id = %s
+               AND relation = 'cites'
+               AND meta ->> 'source' = %s
+             LIMIT 1
+            """,
+            (citer_ref_id, y_ref_id, _LINK_SOURCE),
+        ).fetchone()
+        is not None
+    )
+
+
 def _sweep_one_paper(
-    conn: Connection, store: Store, y_ref_id: int, *, with_llm: bool
+    conn: Connection,
+    store: Store,
+    y_ref_id: int,
+    *,
+    with_llm: bool,
+    budget: _DailyBudget,
 ) -> _SweepResult:
-    """Exhaustively resolve every S2-known citer of ``y_ref_id``.
+    """Resolve up to ``max_candidates_per_paper()`` S2-known citers of
+    ``y_ref_id``.
 
     Marks ``y_ref_id`` ``INBOUND:swept`` on every path out (S2 success,
     S2 failure with no identifiers to retry, or empty citer list) so
     the permanent "never re-sweep" contract holds even on a paper the
     sweep couldn't usefully process. A transient S2 failure (a real
     identifier exists but the call itself errored) is the one path
-    left ``pending`` for retry next pass.
+    left ``pending`` for retry next pass — joined by the daily-ceiling
+    path: ``budget`` spent mid-sweep returns unstamped (``ceiling_hit``)
+    and the paper re-claims on the next UTC day.
     """
     result = _SweepResult()
     info = _fetch_paper_claim_info(conn, y_ref_id)
@@ -299,10 +473,39 @@ def _sweep_one_paper(
     citers = cited_by if isinstance(cited_by, list) else []
     result.citers_found = len(citers)
 
+    cap = max_candidates_per_paper()
+    if len(citers) > cap:
+        # Best-first under the cap: the most-cited candidates win when S2
+        # reports a citation_count (the narrow ``cited_by`` shape usually
+        # lacks one — those entries keep S2's order, stable sort). The
+        # skipped tail is counted, never queued.
+        citers = sorted(
+            citers,
+            key=lambda c: c.get("citation_count") or 0,
+            reverse=True,
+        )[:cap]
+        result.capped = result.citers_found - len(citers)
+
     for citing in citers:
+        if budget.remaining <= 0:
+            # Daily ceiling spent — stop cleanly, unstamped: the paper
+            # stays INBOUND:pending and resumes after the UTC-date
+            # rollover. Work already processed commits normally and is
+            # skipped for free on the resume pass (``_already_linked``
+            # below), so a paper with more citers than the ceiling
+            # makes progress instead of re-spending on its own prefix.
+            result.ceiling_hit = True
+            return result
         citer_ref_id = _resolve_or_ingest_citer(conn, store, citing)
         if citer_ref_id is None or citer_ref_id == y_ref_id:
             continue
+        if _already_linked(conn, citer_ref_id, y_ref_id):
+            continue
+        if not budget.take(conn):
+            # A sibling host spent the last unit between the peek above
+            # and this atomic bump — same clean stop.
+            result.ceiling_hit = True
+            return result
         # Link immediately, at whatever granularity is known — the
         # paper-level fact doesn't wait on chunk resolution.
         store.add_link(
@@ -337,6 +540,7 @@ def _sweep_one_paper(
             "citers_found": result.citers_found,
             "links_created": result.links_created,
             "resolved_now": result.resolved_now,
+            "capped": result.capped,
         },
         conn=conn,
     )
@@ -543,11 +747,41 @@ def _mark_swept(
 # ── Runner ─────────────────────────────────────────────────────────
 
 
+def _log_pass_digest(
+    budget: _DailyBudget, *, capped_per_paper: int, ceiling_hit: bool
+) -> None:
+    """One INFO digest row per working pass — the worker_logs surface
+    (``precis logs --pass inbound_chase --payload``) the todo-489406
+    flip review reads the caps from. The structured payload deliberately
+    carries no ``claimed``/``ok``/``failed`` keys — those belong to the
+    runner's own BatchResult row; duplicating them here would skew the
+    ``activity_by_handler`` ok/fail recency filters."""
+    remaining = max(0, budget.remaining)
+    log.info(
+        "inbound_chase: chased=%d capped_per_paper=%d ceiling_hit=%s "
+        "remaining_today=%d",
+        budget.chased,
+        capped_per_paper,
+        ceiling_hit,
+        remaining,
+        extra={
+            "payload": {
+                "handler": "inbound_chase",
+                "chased": budget.chased,
+                "capped_per_paper": capped_per_paper,
+                "ceiling_hit": ceiling_hit,
+                "remaining_today": remaining,
+            }
+        },
+    )
+
+
 def run_inbound_chase_pass(
     store: Store,
     *,
     limit: int = 8,
     with_llm: bool = True,
+    now: datetime | None = None,
 ) -> dict[str, int]:
     """One pass: sweep newly-activated papers + resolve any citer stubs
     that have landed chunks since an earlier sweep.
@@ -555,16 +789,33 @@ def run_inbound_chase_pass(
     ``limit`` bounds *each* claim query separately (sweeps are the
     expensive half — one S2 call plus N stub-mints/LLM-verifies each —
     so a small default keeps a single pass bounded even though the
-    sweep itself is exhaustive per paper). ``with_llm`` defaults True:
+    sweep itself is capped per paper). ``with_llm`` defaults True:
     this whole pass is dark behind ``PRECIS_INBOUND_CHASE_ENABLED``, so
     reaching here already means the LLM-cost decision was made (see
-    module docstring) — independent of ``PRECIS_CHASE_LLM``.
+    module docstring) — independent of ``PRECIS_CHASE_LLM``. ``now``
+    pins the UTC day the daily counter keys on (tests inject it to
+    drive the rollover; prod passes nothing).
 
     Returns the standard ``{claimed, ok, failed}`` shape.
     """
     claimed = 0
     ok = 0
     failed = 0
+    capped_per_paper = 0
+    ceiling_hit = False
+
+    day = now if now is not None else datetime.now(UTC)
+    budget = _DailyBudget(ceiling=daily_limit(), remaining=0, key=_daily_key(day))
+    with store.pool.connection() as conn:
+        budget.remaining = budget.ceiling - _daily_used(conn, budget.key)
+        conn.commit()
+
+    if budget.remaining <= 0:
+        # Daily ceiling already spent — end cleanly before claiming:
+        # nothing stamped, nothing locked; the pending queue resumes
+        # after the UTC-date rollover.
+        _log_pass_digest(budget, capped_per_paper=0, ceiling_hit=True)
+        return {"claimed": 0, "ok": 0, "failed": 0}
 
     with store.pool.connection() as conn:
         pending = _claim_pending_papers(conn, limit=limit)
@@ -574,10 +825,17 @@ def run_inbound_chase_pass(
     claimed += len(pending) + len(follow_ups)
 
     for y_ref_id in pending:
+        if budget.remaining <= 0:
+            ceiling_hit = True
+            break
         try:
             with store.pool.connection() as conn:
-                _sweep_one_paper(conn, store, y_ref_id, with_llm=with_llm)
+                res = _sweep_one_paper(
+                    conn, store, y_ref_id, with_llm=with_llm, budget=budget
+                )
                 conn.commit()
+            capped_per_paper += res.capped
+            ceiling_hit = ceiling_hit or res.ceiling_hit
             ok += 1
         except Exception:  # pragma: no cover — defensive, mirrors chase.py
             log.warning(
@@ -588,6 +846,12 @@ def run_inbound_chase_pass(
     for citer_ref_id, cited_ref_id in follow_ups:
         try:
             with store.pool.connection() as conn:
+                if not budget.take(conn):
+                    # Same clean-stop contract as the sweep arm: the
+                    # pair stays resolvable and re-claims tomorrow.
+                    ceiling_hit = True
+                    conn.commit()
+                    break
                 _resolve_citer_chunk(
                     conn,
                     store,
@@ -605,6 +869,11 @@ def run_inbound_chase_pass(
                 exc_info=True,
             )
             failed += 1
+
+    if claimed or ceiling_hit:
+        _log_pass_digest(
+            budget, capped_per_paper=capped_per_paper, ceiling_hit=ceiling_hit
+        )
 
     return {"claimed": claimed, "ok": ok, "failed": failed}
 

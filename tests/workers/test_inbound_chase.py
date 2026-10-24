@@ -7,6 +7,8 @@ run one pass, and assert the resulting (tag, link, event) state.
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from precis.store.types import ChunkInsert, Tag
@@ -300,6 +302,318 @@ def test_sweep_self_citation_is_skipped(store) -> None:
         result = run_inbound_chase_pass(store, limit=10, with_llm=False)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert _inbound_tag(store, y) == "swept"
+
+
+# ── per-paper candidate cap (todo 489406) ─────────────────────────────
+
+
+def test_sweep_per_paper_cap_skips_over_cap_candidates(store, monkeypatch) -> None:
+    """``PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER`` bounds how many
+    S2 citers one activated paper ever processes — candidates over the
+    cap are counted and skipped (no stub mint, no link), and the paper
+    still marks ``swept`` (the cap is the policy, not a partial pass).
+    The most-cited candidates win the bounded slots."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "2")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/ycap")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+
+    citers = [
+        {"title": "minor one", "doi": "10.1/minor1", "year": 2022, "citation_count": 1},
+        {
+            "title": "landmark A",
+            "doi": "10.1/big-a",
+            "year": 2021,
+            "citation_count": 900,
+        },
+        {"title": "minor two", "doi": "10.1/minor2", "year": 2023, "citation_count": 4},
+        {
+            "title": "landmark B",
+            "doi": "10.1/big-b",
+            "year": 2020,
+            "citation_count": 700,
+        },
+    ]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        result = run_inbound_chase_pass(store, limit=10, with_llm=False)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _inbound_tag(store, y) == "swept"
+
+    # Only the two most-cited candidates were queued.
+    assert _ref_id_by_doi(store, "10.1/big-a") is not None
+    assert _ref_id_by_doi(store, "10.1/big-b") is not None
+    assert _ref_id_by_doi(store, "10.1/minor1") is None
+    assert _ref_id_by_doi(store, "10.1/minor2") is None
+
+    # The skipped tail is counted on the swept event payload.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT payload FROM ref_events "
+            "WHERE ref_id = %s AND source = 'inbound_chase' AND event = 'swept'",
+            (y,),
+        ).fetchone()
+    assert row is not None
+    payload = dict(row[0])
+    assert payload["citers_found"] == 4
+    assert payload["capped"] == 2
+
+
+def test_sweep_per_paper_cap_zero_processes_nothing(store, monkeypatch) -> None:
+    """Cap of 0 is the knob's floor: every candidate is skipped, the
+    paper still stamps swept with all of them counted as capped."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "0")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/ycap0")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+    citers = [{"title": "citer", "doi": "10.1/citer1", "year": 2022}]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False)
+    assert _inbound_tag(store, y) == "swept"
+    assert _ref_id_by_doi(store, "10.1/citer1") is None
+
+
+# ── daily ceiling across papers (todo 489406) ─────────────────────────
+
+_DAY1 = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+_DAY2 = datetime(2026, 10, 25, 0, 30, tzinfo=UTC)
+
+
+def _daily_counter(store, day: datetime) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s",
+            (f"inbound_chase:daily:{day.date().isoformat()}",),
+        ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def test_daily_ceiling_stops_sweep_and_resumes_next_utc_day(store, monkeypatch) -> None:
+    """``PRECIS_INBOUND_CHASE_DAILY_LIMIT`` bounds candidates chased per
+    UTC day across all papers. Mid-sweep exhaustion ends the pass
+    cleanly and unstamped (the paper stays ``INBOUND:pending``); a
+    same-day re-pass is a no-op; on the next UTC day the already-chased
+    prefix is skipped for free and the sweep finishes."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_DAILY_LIMIT", "2")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/ydaily")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+    citers = [
+        {"title": f"citer {i}", "doi": f"10.1/dc{i}", "year": 2022} for i in range(4)
+    ]
+    graph = {"references": [], "cited_by": citers}
+
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value=graph,
+    ):
+        result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # Two candidates chased, the pass stopped before the rest, and the
+    # paper was NOT stamped swept — it re-claims tomorrow.
+    assert _inbound_tag(store, y) == "pending"
+    assert _daily_counter(store, _DAY1) == 2
+    assert _ref_id_by_doi(store, "10.1/dc0") is not None
+    assert _ref_id_by_doi(store, "10.1/dc1") is not None
+    assert _ref_id_by_doi(store, "10.1/dc2") is None
+
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value=graph,
+    ):
+        # Same UTC day: the ceiling is already spent — the pass ends
+        # cleanly before claiming anything.
+        assert run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1) == {
+            "claimed": 0,
+            "ok": 0,
+            "failed": 0,
+        }
+        assert _inbound_tag(store, y) == "pending"
+
+        # Next UTC day: the done prefix is skipped without spending
+        # (else a paper with more citers than the ceiling would
+        # livelock re-chasing its own prefix), the remaining two are
+        # chased, and the paper finally stamps swept.
+        result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY2)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _inbound_tag(store, y) == "swept"
+    assert _daily_counter(store, _DAY2) == 2
+    assert _ref_id_by_doi(store, "10.1/dc2") is not None
+    assert _ref_id_by_doi(store, "10.1/dc3") is not None
+
+
+def test_daily_ceiling_counts_across_papers(store, monkeypatch) -> None:
+    """The ceiling is cross-paper: two pending papers share the same
+    UTC-day counter, so the second paper's sweep inherits the first's
+    spend and stops cleanly."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_DAILY_LIMIT", "1")
+    y1 = _seed_paper(store, cite_key="y2020a", identifiers=[("doi", "10.1/ya")])
+    y2 = _seed_paper(store, cite_key="y2020b", identifiers=[("doi", "10.1/yb")])
+    for y in (y1, y2):
+        store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+
+    citers = [{"title": "citer", "doi": "10.1/shared", "year": 2022}]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    assert result == {"claimed": 2, "ok": 1, "failed": 0}
+    # The single daily unit went to the first paper; the second is
+    # skipped once the budget reads empty (unstamped).
+    assert _daily_counter(store, _DAY1) == 1
+    assert _inbound_tag(store, y1) == "swept"
+    assert _inbound_tag(store, y2) == "pending"
+
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY2)
+    assert _inbound_tag(store, y2) == "swept"
+
+
+def test_daily_ceiling_also_bounds_followup_resolution(store, monkeypatch) -> None:
+    """The follow-up chunk-resolution arm spends the same counter: a
+    spent ceiling leaves a landed stub's chunk link unresolved until
+    the next UTC day."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_DAILY_LIMIT", "1")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/yfu")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+    citers = [{"title": "citer", "doi": "10.1/fu1", "year": 2022}]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    citer_ref_id = _ref_id_by_doi(store, "10.1/fu1")
+    assert citer_ref_id is not None
+    assert _inbound_tag(store, y) == "swept"
+
+    # Chunks land; still the same UTC day — the follow-up claim exists
+    # but the ceiling is spent, so the pair waits.
+    store.chunks.insert_chunks(
+        citer_ref_id,
+        [ChunkInsert(ord=0, text="we cite the target paper's claim.", meta={})],
+    )
+    result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert all(
+        lk.src_ord is None for lk in _cites_links(store, src=citer_ref_id, dst=y)
+    )
+
+    result = run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY2)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert any(lk.src_ord == 0 for lk in _cites_links(store, src=citer_ref_id, dst=y))
+
+
+# ── job-digest surface (todo 489406: "cap visible in the job digest") ──
+
+
+def _digest_payloads(caplog) -> list[dict]:
+    """The ``extra={"payload": ...}`` dicts on this pass's own INFO
+    digest rows (logger-derived ``pass='inbound_chase'`` in
+    worker_logs)."""
+    return [
+        dict(r.payload)
+        for r in caplog.records
+        if isinstance(getattr(r, "payload", None), dict)
+        and r.payload.get("handler") == "inbound_chase"
+        and "remaining_today" in r.payload
+    ]
+
+
+def test_pass_digest_line_reports_chase_metrics(store, monkeypatch, caplog) -> None:
+    """One working pass emits one worker_logs digest row carrying the
+    cap surface — chased, capped_per_paper, ceiling_hit,
+    remaining_today — without duplicating the runner's claimed/ok/
+    failed keys (they'd skew activity_by_handler's filters)."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER", "2")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/ydigest")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+    citers = [
+        {"title": f"citer {i}", "doi": f"10.1/dg{i}", "year": 2022} for i in range(3)
+    ]
+    with (
+        caplog.at_level(logging.INFO, logger="precis.workers.inbound_chase"),
+        patch(
+            "precis.workers.inbound_chase.load_s2_citation_graph",
+            return_value={"references": [], "cited_by": citers},
+        ),
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    rows = _digest_payloads(caplog)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["chased"] == 2
+    assert row["capped_per_paper"] == 1
+    assert row["ceiling_hit"] is False
+    assert row["remaining_today"] == 200 - 2
+    assert not ({"claimed", "ok", "failed"} & row.keys())
+
+
+def test_pass_digest_reports_ceiling_hit(store, monkeypatch, caplog) -> None:
+    """A pass stopped by the spent ceiling (and one that finds it
+    already spent before claiming) says so on the digest line."""
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_DAILY_LIMIT", "1")
+    y = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/yd2")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+    citers = [
+        {"title": f"citer {i}", "doi": f"10.1/dh{i}", "year": 2022} for i in range(2)
+    ]
+    with (
+        caplog.at_level(logging.INFO, logger="precis.workers.inbound_chase"),
+        patch(
+            "precis.workers.inbound_chase.load_s2_citation_graph",
+            return_value={"references": [], "cited_by": citers},
+        ),
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+        # Same UTC day, counter spent — the early-return path digests too.
+        run_inbound_chase_pass(store, limit=10, with_llm=False, now=_DAY1)
+    rows = _digest_payloads(caplog)
+    assert len(rows) == 2
+    assert rows[0]["chased"] == 1 and rows[0]["ceiling_hit"] is True
+    assert rows[0]["remaining_today"] == 0
+    assert rows[1]["chased"] == 0 and rows[1]["ceiling_hit"] is True
+
+
+def test_module_docstring_cites_the_shipped_breaker() -> None:
+    """The module docstring used to call the global spend circuit
+    breaker "implemented but unshipped" — it has shipped
+    (``precis.budget.breaker.gate_tier``, invoked from
+    ``utils/llm/router.route``). The docstring must cite where the
+    breaker lives and must never reintroduce the stale claim."""
+    import precis.workers.inbound_chase as mod
+
+    doc = mod.__doc__ or ""
+    assert "precis.budget.breaker" in doc
+    assert "unshipped" not in doc
+
+
+def test_flag_off_nothing_runs(store, monkeypatch, caplog) -> None:
+    """``PRECIS_INBOUND_CHASE_ENABLED`` dark: ``mark_paper_active``
+    writes no tag, so the pass claims nothing — no daily-counter row,
+    no digest line."""
+    monkeypatch.delenv("PRECIS_INBOUND_CHASE_ENABLED", raising=False)
+    ref_id = _seed_paper(store, cite_key="y2020", identifiers=[("doi", "10.1/yoff")])
+    ref = store.get_ref(kind="paper", id=ref_id)
+    with caplog.at_level(logging.INFO, logger="precis.workers.inbound_chase"):
+        mark_paper_active(store, ref)
+        assert _inbound_tag(store, ref_id) is None
+        assert run_inbound_chase_pass(store, limit=10, with_llm=False) == {
+            "claimed": 0,
+            "ok": 0,
+            "failed": 0,
+        }
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM app_state WHERE key LIKE 'inbound_chase:daily:%'"
+        ).fetchone()
+    assert row is None
+    assert _digest_payloads(caplog) == []
 
 
 # ── run_inbound_chase_pass — follow-up chunk resolution ───────────────
