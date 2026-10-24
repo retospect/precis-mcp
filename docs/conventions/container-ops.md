@@ -142,7 +142,7 @@ the plain shape is the one that never surprises.
 | `rtk git …`, i.e. the rtk hook's rewrite of `git …` (34) | `RTK_DISABLED=1 git …` or `/usr/bin/git …`; see `rtk.md` Known gaps |
 | `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
 | `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
-| `git commit -m "$(cat <<'EOF' … EOF)"` — a refused shape, and an apostrophe or backtick in the message breaks the quoting anyway (gr513763) | Write the message to a file, then `git commit -F <file>`; two `-m` flags for a short subject+body |
+| `git commit -m "$(cat <<'EOF' …)"` — the heredoc/`$(…)` commit shape the harness's own commit guidance shows | Write the message to a file, `git commit -F <file>`; a plain literal `-m "…"` also passes. `guard-commit-on-main.py` denies this first with a reason naming the guard (gr514943) |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
 | `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
 | `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |

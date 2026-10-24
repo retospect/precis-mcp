@@ -48,6 +48,13 @@ _WT = "/repo/.claude/worktrees/wt1"
 _coderef_mod = _load("coderef_nudge", "coderef-nudge.py")
 
 
+def _run_main(monkeypatch, payload, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = main()
+    out = capsys.readouterr().out
+    return rc, (json.loads(out) if out.strip() else None)
+
+
 # ── Rule A: grep/rg via Bash -> coderef ─────────────────────────────────────
 
 
@@ -238,13 +245,6 @@ def test_main_fires_rule_c_on_redundant_cd(monkeypatch, capsys) -> None:
 
 
 # ── main() / stdin-JSON wiring ──────────────────────────────────────────────
-
-
-def _run_main(monkeypatch, payload, capsys):
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    rc = main()
-    out = capsys.readouterr().out
-    return rc, (json.loads(out) if out.strip() else None)
 
 
 def test_main_fires_on_bare_ident_bash_grep(monkeypatch, capsys) -> None:

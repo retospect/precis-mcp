@@ -12,7 +12,9 @@ further ``THRESHOLD`` edits.
 - A dispatch to a build agent (``coder``, ``scaffold``, ``test-author``)
   resets the counter to zero — delegation happened, start over.
 - Subagent calls are ignored: Claude Code stamps hook payloads from inside a
-  subagent with ``agent_id``; only the main loop is counted.
+  subagent with ``agent_id``; only the main loop is counted. The full
+  payload-field reference lives in docs/how-to-setup-like-this.md §4
+  "Hook payload fields".
 - State: a small JSON file under the temp dir keyed by ``session_id``.
 
 Advisory only (``additionalContext``, exit 0, never blocks); any parse or

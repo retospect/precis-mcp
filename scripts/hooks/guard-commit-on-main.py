@@ -23,6 +23,16 @@ Scope, deliberately narrow to stay false-positive-free:
 - Follows a leading ``cd <path>`` and ``git -C <path>`` so the branch is read
   at the dir the commit actually targets, not just the session cwd.
 
+Second, narrower job (gr514943): a ``git commit`` wrapped in a heredoc or
+``$(…)`` substitution — ``git commit -m "$(cat <<'EOF' …)"``, the shape the
+harness's own commit guidance shows — is killed at parse time by the
+harness's worktree-isolation guard with a bare syntax error that names no
+guard and no fix. This hook fires first (PreToolUse runs ahead of that
+check) and denies the same call with a message that names the guard and
+the ``-F`` alternative, so the refusal carries the fix instead of a parse
+error. The denial text is the only thing the repo can improve — the guard
+itself is a harness built-in (docs/conventions/container-ops.md).
+
 Escape hatch: set ``ALLOW_COMMIT_ON_MAIN=1`` in the environment for the rare
 legitimate direct-to-main commit.
 
@@ -46,6 +56,12 @@ _COMMIT_RE = re.compile(r"\bgit\b[^\n;&|]*?\bcommit\b(?!-tree)")
 _GIT_C_RE = re.compile(r"\bgit\b\s+(?:-c\s+\S+\s+)*-C\s+(['\"]?)([^'\"\s]+)\1")
 # A segment that is *only* a ``cd <path>``.
 _CD_RE = re.compile(r"""^\s*cd\s+(['\"]?)([^'\"]+)\1\s*$""")
+
+#: A command substitution ``$(`` or a heredoc opener (``<<EOF``, ``<<-'X'``)
+#: — constructs the worktree guard cannot statically parse, so it fails
+#: closed with a bare syntax error (gr456287, gr514943). A left-shift such
+#: as ``1<<2`` does not match: the delimiter needs a word char or quote.
+_UNPARSEABLE_RE = re.compile(r"\$\(|<<-?\s*['\"]?[A-Za-z_]")
 
 
 def _branch(cwd: str) -> str:
@@ -94,6 +110,19 @@ def evaluate(command: str, cwd: str) -> str | None:
     """
     if not isinstance(command, str) or "commit" not in command:
         return None
+
+    # A commit invocation tangled with a heredoc/`$(…)` is refused by the
+    # worktree guard anyway; deny it here with a reason that names the
+    # guard and the fix instead of the guard's bare parse error.
+    if _COMMIT_RE.search(command) and _UNPARSEABLE_RE.search(command):
+        return (
+            "Refusing `git commit` wrapped in a heredoc or $(…) substitution "
+            "— the worktree guard cannot statically prove this shape keeps "
+            "git in the worktree, so it would kill the call at parse time "
+            "with a bare syntax error that names no fix. Write the message "
+            "to a file and run `git commit -F <file>`; a plain literal "
+            '`git commit -m "…"` also passes.'
+        )
 
     cur = cwd
     for seg in re.split(r"&&|\|\||;|\n", command):
