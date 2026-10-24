@@ -187,6 +187,11 @@ COMMANDS: tuple[Command, ...] = (
         "Mint paper→paper cites links from matched bib entries (gr513755).",
     ),
     _c(
+        "openalex-snapshot",
+        "openalex_snapshot",
+        "Stream OpenAlex snapshot works parts; stage held-paper cite edges.",
+    ),
+    _c(
         "backfill-glyph-health",
         "glyph_backfill",
         "Flag old papers whose PDF fonts garble Greek/micro (gr228594).",

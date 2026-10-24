@@ -28,11 +28,12 @@ gr513769 (cited-by seeds) and gr513768 (in-text citation resolution).
 | `referenced_works` | yes: "OpenAlex IDs of the works this work cites (this work -> others)"; also `related_works`, `cited_by_count`, `doi`, `ids{doi,pmid,...}`. The snapshot work schema matches the API's. No `cited_by` list: inbound edges are the inverse of other works' `referenced_works` | `https://help.openalex.org/api-entities/works/work-object`; snapshot page `https://help.openalex.org/download-all-data/openalex-snapshot` |
 | Anonymous access | yes: no AWS account, `aws s3 ... --no-sign-request`; bucket and prefix listing answered over plain HTTPS without credentials | snapshot page; listing `https://openalex.s3.amazonaws.com/?list-type=2&delimiter=/` |
 
-Not verified (no data file downloaded): the exact `referenced_works` field
-shape per record (assumed array of `https://openalex.org/W...` URLs, as in
-the API) and how many held papers carry an OpenAlex id. Slice 1 starts by
-reading one small early partition (`updated_date=2016-07-22`, 7.5 kB) to
-pin the shape.
+Verified in slice 1 (`updated_date=2016-07-22/part_0000.gz`, 7.5 kB, 7
+records, Range GET honoured — `206`, `Accept-Ranges: bytes`): `id` and
+`ids.openalex` are `https://openalex.org/W...` URLs; `doi` and `ids.doi`
+are `https://doi.org/...` URLs and can be absent; `referenced_works` is an
+array of OpenAlex work URLs as in the API. Still unknown: how many held
+papers carry an OpenAlex id — the loader reports the held-map sizes.
 
 ## Motivation / why
 
@@ -143,7 +144,7 @@ direction (who cites us) that the per-paper API cannot give cheaply.
 
 | # | Slice | Acceptance criteria |
 |---|---|---|
-| 1 | Loader, filter, staging | Migration 0239 applies on dev DB and prod-shaped schema dump; unit test on a synthetic 3-record `.gz` fixture keeps only edges touching held papers, matches by OpenAlex id then DOI, and is a no-op on a second run; one real small partition (`updated_date=2016-07-22`) loads through `--no-sign-request` into dev; a full dry run over 20 files reports files/records/edges and peak RSS under 2 GB; kill mid-file then restart resumes without duplicate rows. |
+| 1 | Loader, filter, staging — **landed** (gf-oasnap1, migration 0240 not 0239) | Migration 0239 applies on dev DB and prod-shaped schema dump; unit test on a synthetic 3-record `.gz` fixture keeps only edges touching held papers, matches by OpenAlex id then DOI, and is a no-op on a second run; one real small partition (`updated_date=2016-07-22`) loads through `--no-sign-request` into dev; a full dry run over 20 files reports files/records/edges and peak RSS under 2 GB; kill mid-file then restart resumes without duplicate rows. |
 | 2 | Link minting | After slice 1 on dev, every staging row with both ref ids set has a `cites` link via the gf-citeslink writer and `cited-by` shows in the fisheye; re-run mints nothing new; rows get `minted_at`; a held paper's outbound count equals its staging rows with `src_ref_id` set. |
 | 3 | Refresh | A second snapshot date (simulated: edit the manifest fixture) processes only newer/changed folders; deletion log applied; the timer is a no-op when manifest `date` is unchanged; capability entry and role gate present in `topology.example.yml` and the secret-gate test still passes (no hostnames/IPs). |
 

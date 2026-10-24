@@ -453,6 +453,13 @@ POLICIES: dict[str, Policy] = {
     "crossref-list": Policy(base=2.0, provider="crossref-list", label="Crossref"),
     "openalex": Policy(provider="openalex", label="OpenAlex"),
     "openalex-content": Policy(provider="openalex-content", label="OpenAlex"),
+    # The public snapshot bucket is NOT the OpenAlex API — it draws on no
+    # ``openalex`` row. ``provider=None`` + url= gives the auto-seeded
+    # ``host:openalex.s3.amazonaws.com`` lane (1 req/s), which paces the
+    # ~1.9k file opens of a full pass.
+    "openalex-snapshot": Policy(
+        attempts=4, base=2.0, cap=120.0, label="OpenAlex snapshot"
+    ),
     "unpaywall": Policy(provider="unpaywall", label="Unpaywall"),
     "arxiv": Policy(attempts=4, base=3.0, provider="arxiv", label="arXiv"),
     "europepmc": Policy(provider="europepmc", label="Europe PMC"),
