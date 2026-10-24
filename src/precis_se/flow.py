@@ -4,27 +4,15 @@ docs/backlog/se-flow-kernel.md.
 A thin chamber arrives as a block's posed cad **envelope** (or, for the
 kernel-facing entry point, any ray-queryable solid — a ``Placed``
 primitive or a ``(Design, Expr)`` pair, which is how a ``cad`` kind
-solid's ``body add`` unions carry floor topography). This module turns
-it into a :class:`precis_flow.Domain`:
-
-- **thin axis** — the smallest local-AABB extent, refused when it is
-  not unique (the two lateral extents must each clear
-  :data:`THIN_MIN_RATIO` × the gap; Q3 keeps 3-D chambers out);
-- **mask** — the footprint, cell centres whose thin-axis ray meets
-  solid;
-- **depth map** — ``h*(x*, y*)``, the local chord through the solid
-  over the reference gap ``h0`` (median inside chord — a drilled floor
-  digs deeper, a flat slab reads ``h* = 1``; the ceiling is whichever
-  thin-axis end is the flatter boundary, ``z_flip`` records when it is
-  the low end);
-- **ports** — ``patch:`` selectors resolved through
-  :mod:`precis_se.datums` (``_face_frame`` gives the face's local
-  rectangle; a patch on *any* block is re-posed into the chamber's
-  local frame). A patch claims the inside cells within
-  :data:`PORT_SNAP_DX` cells of its lateral projection — a side-face
-  patch is a ~zero-width ribbon on the boundary, so the claim reaches
-  the nearest inside column (cfdtest's ports are the first ~1.5 cells
-  of inside within the port band).
+solid's ``body add`` unions carry floor topography). The DB-free half —
+thin axis, mask, depth map, port claiming (:func:`domain_from_solid`,
+:class:`PortPatch`, :class:`GapDomain`) — lives in
+:mod:`precis_geom.flow` (se-flow-kernel slice 4a) so a workspace script
+runs the same code; ``Chamber`` here is an alias of ``GapDomain`` for
+one release. This module keeps what needs the tree: ``patch:``
+selectors resolved through :mod:`precis_se.datums` (``_face_frame``
+gives the face's local rectangle; a patch on *any* block is re-posed
+into the chamber's local frame) in :func:`patch_port`.
 
 ``view='flow'`` (:func:`render_flow`) runs solve + trace and serves two
 shapes: a text summary (field, streamline/statistics, regime card) and
@@ -47,7 +35,9 @@ defaults it). A measure on a region of that pocket gets a realised
 value from :data:`FLOW_COMPUTERS` (breakthrough fraction, residence
 time in ``t0``, resistance ratio against the undrilled chamber,
 evenness ``1 - nonuniformity`` over the datum region's lateral
-footprint).
+footprint). The chamber computers call
+:func:`precis_geom.physics.evaluate` — the script's stated number and
+the server's re-check are one implementation.
 """
 
 from __future__ import annotations
@@ -56,14 +46,11 @@ import base64
 import json
 import math
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy as np
 
 from precis.cad import dsl as cad_dsl
-from precis.cad.bulk import expr_aabb
-from precis.cad.fold import Expr, material_intervals
-from precis.cad.graph import Design
 from precis.cad.primitives import Placed
 from precis.cad.vec import as_vec3
 from precis.cad.vec import pose as cad_pose
@@ -72,10 +59,8 @@ from precis.utils.units import format_quantity
 from precis_flow import (
     AtomWall,
     CylinderLumen,
-    Domain,
     Field,
     Paths,
-    Ports,
     RegimeCard,
     Seed,
     nonuniformity,
@@ -84,89 +69,26 @@ from precis_flow import (
     trace,
 )
 from precis_flow.regime import KN_CONTINUUM_MAX, KN_FREE_MIN
+from precis_geom import physics as geom_physics
+from precis_geom.flow import AXES as _AXES
+from precis_geom.flow import (
+    DEFAULT_NX,
+    EVENNESS_BINS,
+    GapDomain,
+    PortPatch,
+    domain_from_solid,
+)
+from precis_geom.physics import card_dict as _card_dict
 from precis_se.measures import SCOPE_SEP
 
-#: A chamber's thin axis is unique only when both lateral extents clear
-#: this multiple of the gap (a square tube or a cube has no thin axis;
-#: Q3 keeps 3-D chambers out of the kernel).
-THIN_MIN_RATIO = 2.0
-
-#: A port patch claims inside cells this many cells from its lateral
-#: ribbon (a side-face patch is a ~zero-width ribbon on the boundary;
-#: the claim must reach the nearest inside column — cfdtest's ports are
-#: the first ~1.5 cells of inside within the port band).
-PORT_SNAP_DX = 1.75
+#: ``Chamber`` is the pre-4a name of :class:`precis_geom.flow.GapDomain`
+#: — kept for one release (se-flow-kernel slice 4a).
+Chamber = GapDomain
 
 #: The slice-2b player payload stays under this byte budget; over it the
 #: payload subsamples particles first, then frames (it reports the
 #: strides it took).
 PAYLOAD_CAP_BYTES = 20_000_000
-
-#: Default lateral cell count along x* (the domain spans ``x*∈[0,1]``,
-#: so this also sets the reduced cell size ``dx* = 1/nx``).
-DEFAULT_NX = 200
-
-#: Evenness histogram bins over the measure's datum region (cfdtest
-#: used 12×4 over its central rectangle; here the region is the
-#: datum's own footprint).
-EVENNESS_BINS = (12, 4)
-
-_AXES = ("x", "y", "z")
-
-
-class _Solid(NamedTuple):
-    """A ray-queryable solid in one frame: its AABB plus inside-interval
-    hits ``(o, d) -> [(t_in, t_out), ...]``."""
-
-    lo: np.ndarray
-    hi: np.ndarray
-    hits: Any
-
-
-def _wrap_solid(solid: Any) -> _Solid:
-    """Normalise ``Placed`` or ``(Design, Expr)`` to :class:`_Solid` —
-    all queries land in the solid's own frame (the envelope's local
-    frame for ``Placed``; the design frame for a ``cad`` scene)."""
-    if isinstance(solid, Placed):
-        prim = solid.prim
-        lo, hi = prim.aabb_local()
-        return _Solid(
-            lo=np.asarray(lo, dtype=float),
-            hi=np.asarray(hi, dtype=float),
-            hits=prim.ray_hits_local,
-        )
-    if isinstance(solid, tuple) and len(solid) == 2:
-        design, expr = solid
-        if not isinstance(design, Design) or not isinstance(expr, Expr):
-            raise BadInput(f"a cad solid is (Design, Expr), got {type(solid)}")
-        lo, hi = expr_aabb(design, expr)
-
-        def hits(o: Any, d: Any) -> Any:
-            return material_intervals(expr, o, d, design.instances)
-
-        return _Solid(
-            lo=np.asarray(lo, dtype=float),
-            hi=np.asarray(hi, dtype=float),
-            hits=hits,
-        )
-    raise BadInput(
-        "a flow chamber's solid is a Placed envelope or a (Design, Expr) "
-        f"cad solid, got {type(solid).__name__}"
-    )
-
-
-@dataclass(frozen=True)
-class PortPatch:
-    """A port opening: a rectangle in the chamber's local frame
-    (metres), resolved from a ``patch:`` selector or built directly."""
-
-    point: np.ndarray  # (3,) rectangle centre
-    normal: np.ndarray  # (3,) unit outward normal of the carrying face
-    u: np.ndarray  # (3,) unit in-plane axis
-    v: np.ndarray  # (3,) unit in-plane axis
-    half_u: float  # half extent along u
-    half_v: float  # half extent along v
-    selector: str = ""  # the patch: text it came from (diagnostics)
 
 
 @dataclass(frozen=True)
@@ -306,237 +228,6 @@ def parse_flow_shape(text: str) -> FlowSpec | LumenSpec:
         zplane=zplane,
         fluid=fluid,
         species=species,
-    )
-
-
-@dataclass(frozen=True)
-class Chamber:
-    """A built flow chamber: the :class:`Domain` plus the geometry
-    provenance the stored result and player payload need."""
-
-    domain: Domain
-    L: float  # m — lateral extent along the x* axis
-    h0: float  # m — reference gap (median inside chord)
-    thin_axis: int  # local axis index of the gap
-    x_axis: int  # local axis mapped to x*
-    y_axis: int  # local axis mapped to y*
-    z_ceiling: float  # thin-axis coordinate of the flat ceiling (local, m)
-    z_flip: bool  # True when the ceiling sits at the low end of the thin axis
-    lo: np.ndarray  # (3,) local AABB lo
-    hi: np.ndarray  # (3,) local AABB hi
-    outline: np.ndarray  # (K, 2) footprint ring in reduced coords
-    depth_star: np.ndarray  # (ny, nx) floor topography h* - 1
-
-
-def _inside_intervals(
-    solid: _Solid, o: np.ndarray, d: np.ndarray, axis: int
-) -> list[tuple[float, float]]:
-    """The solid's inside intervals along ``d`` from ``o``, clipped to
-    the thin AABB, slivers dropped. Hits are ray parameters measured
-    from ``o``; the AABB band is ``o[axis]`` offset to the box ends."""
-    lo_z, hi_z = float(solid.lo[axis]), float(solid.hi[axis])
-    scale = max(hi_z - lo_z, 1e-30)
-    eps = max(1e-12, 1e-9 * scale)
-    t_lo = lo_z - float(o[axis]) - eps
-    t_hi = hi_z - float(o[axis]) + eps
-    out: list[tuple[float, float]] = []
-    for a, b in solid.hits(as_vec3(o), as_vec3(d)) or []:
-        a, b = max(float(a), t_lo), min(float(b), t_hi)
-        if b - a > eps:
-            out.append((a, b))
-    return out
-
-
-def _mask_outline(mask: np.ndarray) -> np.ndarray:
-    """The footprint's boundary ring in reduced coords — the union of
-    inside-cell edges facing outside, chained into a closed polygon.
-    Cell-resolution (jagged) by construction."""
-    ny, nx = mask.shape
-    dx = 1.0 / nx
-    edges: dict[tuple[float, float], list[tuple[float, float]]] = {}
-    for j in range(ny):
-        for i in range(nx):
-            if not mask[j, i]:
-                continue
-            x0, x1 = i * dx, (i + 1) * dx
-            y0, y1 = j * dx, (j + 1) * dx
-            if j == 0 or not mask[j - 1, i]:
-                edges.setdefault((x0, y0), []).append((x1, y0))
-            if j == ny - 1 or not mask[j + 1, i]:
-                edges.setdefault((x1, y1), []).append((x0, y1))
-            if i == 0 or not mask[j, i - 1]:
-                edges.setdefault((x0, y1), []).append((x0, y0))
-            if i == nx - 1 or not mask[j, i + 1]:
-                edges.setdefault((x1, y0), []).append((x1, y1))
-    if not edges:
-        return np.empty((0, 2))
-    start = min(edges)
-    ring = [start]
-    cur = start
-    while True:
-        nxts = edges.get(cur, [])
-        nxt = nxts.pop(0) if nxts else None
-        if nxt is None or nxt == start:
-            break
-        ring.append(nxt)
-        cur = nxt
-    return np.asarray(ring, dtype=float)
-
-
-def _claim_port(
-    mask: np.ndarray,
-    patch: PortPatch,
-    lateral: tuple[int, int],
-    lo: np.ndarray,
-    L: float,
-) -> np.ndarray:
-    """Rasterise a port patch to a cell mask: inside cells within
-    :data:`PORT_SNAP_DX` cells of the patch's lateral projection."""
-    ny, nx = mask.shape
-    xa, ya = lateral
-    dx_star = 1.0 / nx
-    cell_m = L / nx  # one reduced cell in metres along either lateral axis
-    n_u = max(1, math.ceil(2.0 * patch.half_u / (cell_m / 2.0)))
-    n_v = max(1, math.ceil(2.0 * patch.half_v / (cell_m / 2.0)))
-    us = np.linspace(-patch.half_u, patch.half_u, n_u + 1)
-    vs = np.linspace(-patch.half_v, patch.half_v, n_v + 1)
-    centre_x = (np.arange(nx) + 0.5) * dx_star
-    centre_y = (np.arange(ny) + 0.5) * dx_star
-    snap = PORT_SNAP_DX * dx_star
-    reach = 2
-    claimed = np.zeros((ny, nx), dtype=bool)
-    for su in us:
-        for sv in vs:
-            s = patch.point + su * patch.u + sv * patch.v
-            xs = (float(s[xa]) - float(lo[xa])) / L
-            ys = (float(s[ya]) - float(lo[ya])) / L
-            gi = math.floor(xs / dx_star)
-            gj = math.floor(ys / dx_star)
-            best: tuple[float, int, int] | None = None
-            for j in range(gj - reach, gj + reach + 1):
-                if j < 0 or j >= ny:
-                    continue
-                for i in range(gi - reach, gi + reach + 1):
-                    if i < 0 or i >= nx or not mask[j, i]:
-                        continue
-                    dist = math.hypot(xs - centre_x[i], ys - centre_y[j])
-                    if dist <= snap and (best is None or dist < best[0]):
-                        best = (dist, j, i)
-            if best is not None:
-                claimed[best[1], best[2]] = True
-    return claimed
-
-
-def domain_from_solid(
-    solid: Any,
-    inlet: PortPatch,
-    outlet: PortPatch,
-    *,
-    nx: int = DEFAULT_NX,
-    z_plane_star: float = 0.99,
-) -> Chamber:
-    """Build the reduced :class:`Domain` (plus geometry provenance) from
-    a ray-queryable solid and its two port rectangles.
-
-    ``solid`` is a ``Placed`` envelope or a ``(Design, Expr)`` cad solid;
-    all coordinates are the solid's own frame. ``inlet``/``outlet`` are
-    :class:`PortPatch` rectangles in that frame (``patch_port`` resolves
-    them from ``patch:`` selectors)."""
-    s = _wrap_solid(solid)
-    extents = np.asarray(s.hi - s.lo, dtype=float)
-    if not np.all(np.isfinite(extents)):
-        raise BadInput(
-            "the chamber's solid has an unbounded extent — a flow domain "
-            "needs a bounded envelope",
-            next="an unbounded leaf (chamfer:) cannot bound a chamber",
-        )
-    thin = int(np.argmin(extents))
-    lateral = sorted(a for a in range(3) if a != thin)
-    if extents[lateral[0]] < THIN_MIN_RATIO * extents[thin]:
-        dims = " × ".join(
-            f"{_AXES[a]} {format_quantity(float(extents[a]), 'length')}"
-            for a in range(3)
-        )
-        raise BadInput(
-            f"the chamber is not thin — its extents ({dims}) have no "
-            "uniquely smallest axis (both lateral extents must be at "
-            f"least {THIN_MIN_RATIO:g}× the gap)",
-            next="the flow kernel is 2-D Hele-Shaw: a 3-D (non-thin) "
-            "chamber needs an external Stokes solve, which this layer "
-            "does not do (se-flow-kernel.md Q3)",
-        )
-    # x* along the longer lateral axis (cfdtest convention: flow along L).
-    xa, ya = (lateral[0], lateral[1])
-    if extents[ya] > extents[xa]:
-        xa, ya = ya, xa
-    L = float(extents[xa])
-    W = float(extents[ya])
-    nx = int(nx)
-    if nx < 8:
-        raise BadInput(
-            f"flow nx={nx} is too coarse — the domain needs ≥ 8 cells along x*"
-        )
-    ny = max(1, round(nx * W / L))
-    d = np.zeros(3)
-    d[thin] = 1.0
-    pad = max(float(extents[thin]), 1e-9)
-    mask = np.zeros((ny, nx), dtype=bool)
-    top = np.full((ny, nx), np.nan)  # highest inside t per cell
-    bot = np.full((ny, nx), np.nan)  # lowest inside t per cell
-    height = np.zeros((ny, nx))
-    for j in range(ny):
-        for i in range(nx):
-            o = np.array(s.lo, dtype=float)
-            o[xa] = float(s.lo[xa]) + (i + 0.5) * (L / nx)
-            o[ya] = float(s.lo[ya]) + (j + 0.5) * (L / nx)
-            o[thin] = float(s.lo[thin]) - pad
-            spans = _inside_intervals(s, o, d, thin)
-            if not spans:
-                continue
-            a0 = min(a for a, _b in spans)
-            b0 = max(b for _a, b in spans)
-            mask[j, i] = True
-            bot[j, i] = a0 + float(o[thin])
-            top[j, i] = b0 + float(o[thin])
-            height[j, i] = b0 - a0
-    if not mask.any():
-        raise BadInput(
-            "the chamber's solid has no inside cells — the thin-axis "
-            "projection is empty",
-            next="check the envelope actually contains material",
-        )
-    h0 = float(np.median(height[mask]))
-    if h0 <= 0.0:
-        raise BadInput("the chamber's reference gap is zero — degenerate envelope")
-    # The ceiling is the flatter thin-axis boundary (floor topography is
-    # the other end's); z_flip when the flat end is the low end.
-    spread_top = float(np.nanmax(top) - np.nanmin(top))
-    spread_bot = float(np.nanmax(bot) - np.nanmin(bot))
-    z_flip = spread_bot < spread_top
-    z_ceiling = float(np.nanmedian(bot if z_flip else top))
-    h_star = np.where(mask, height / h0, 0.0)
-    domain = Domain(
-        mask=mask,
-        h_star=h_star,
-        ports=Ports(
-            inlet=_claim_port(mask, inlet, (xa, ya), s.lo, L),
-            outlet=_claim_port(mask, outlet, (xa, ya), s.lo, L),
-        ),
-        z_plane_star=z_plane_star,
-    )
-    return Chamber(
-        domain=domain,
-        L=L,
-        h0=h0,
-        thin_axis=thin,
-        x_axis=xa,
-        y_axis=ya,
-        z_ceiling=z_ceiling,
-        z_flip=z_flip,
-        lo=np.asarray(s.lo, dtype=float),
-        hi=np.asarray(s.hi, dtype=float),
-        outline=_mask_outline(mask),
-        depth_star=h_star - 1.0,
     )
 
 
@@ -699,36 +390,6 @@ def _card_from_args(
         ),
     )
     return card, card.u0
-
-
-def _finite(x: Any) -> float | None:
-    """A JSON-safe number: NaN/inf (a line the inputs cannot evaluate)
-    becomes ``null`` — strict JSON parsers (the web player) refuse NaN."""
-    if x is None:
-        return None
-    v = float(x)
-    return v if math.isfinite(v) else None
-
-
-def _card_dict(card: RegimeCard | None) -> dict[str, Any] | None:
-    if card is None:
-        return None
-    return {
-        "ok": card.ok,
-        "failures": list(card.failures),
-        "lines": [
-            {
-                "name": ln.name,
-                "value": _finite(ln.value),
-                "threshold": _finite(ln.threshold),
-                "ok": ln.ok,
-                "holds_when": ln.holds_when,
-                "otherwise": ln.otherwise,
-                "applicable": ln.applicable,
-            }
-            for ln in card.lines
-        ],
-    }
 
 
 def flow_payload(
@@ -1380,159 +1041,114 @@ def _flow_pocket(node: Any, datum: str | None) -> Any | str:
     return pocket, spec
 
 
-def _flow_run(
-    tree: Any, measure: Any
-) -> tuple[Any, Paths | None, FlowSpec | LumenSpec | None, str | None]:
-    """Domain + trace (chamber) or wall + propagate (lumen) for a flow
-    measure — the first element is the :class:`Chamber` or the
-    :class:`AtomWall`, or a reason string on failure."""
-    node = tree.blocks.get(measure.block)
-    if node is None:
-        return None, None, None, f"measure names missing block {measure.block!r}"
-    got = _flow_pocket(node, measure.datum or "")
-    if isinstance(got, str):
-        return None, None, None, got
-    _pocket, spec = got
-    if isinstance(spec, LumenSpec):
-        try:
-            wall = lumen_from_scene(_bound_scene(None, tree, node))
-            paths = propagate(wall, 400, spec.alpha, 0)
-        except BadInput as exc:
-            return None, None, spec, str(exc)
-        return wall, paths, spec, None
-    placed = _chamber_placed(None, tree, measure.block)
-    if placed is None:
-        return (
-            None,
-            None,
-            spec,
-            (
-                f"block {measure.block!r} has no parseable envelope — the "
-                "chamber needs a cad envelope"
-            ),
-        )
+def _lumen_measure(
+    tree: Any, node: Any, spec: LumenSpec, slug: str
+) -> tuple[float | None, str | None]:
+    """A flow measurand on a lumen pocket: wall + propagate (slice 3)."""
     try:
-        inlet = patch_port(tree, measure.block, spec.inlet)
-        outlet = patch_port(tree, measure.block, spec.outlet)
-        chamber = domain_from_solid(placed, inlet, outlet, z_plane_star=spec.zplane)
-        field = solve(chamber.domain)
-        seed = Seed.across_inlet(chamber.domain)
-        paths = trace(
-            field,
-            seed,
-            400,
-            d_v_star=spec.d_v_star,
-            seed_rng=0,
-            profile=spec.profile,
-        )
-    except (BadInput, ValueError) as exc:
-        return None, None, spec, str(exc)
-    return chamber, paths, spec, None
-
-
-def _flow_breakthrough(tree: Any, measure: Any) -> tuple[float | None, str | None]:
-    _ch, paths, _spec, err = _flow_run(tree, measure)
-    if paths is None:
-        return None, err
-    return float(paths.breakthrough), None
-
-
-def _flow_residence(tree: Any, measure: Any) -> tuple[float | None, str | None]:
-    _ch, paths, _spec, err = _flow_run(tree, measure)
-    if paths is None:
-        return None, err
-    res = paths.residence[np.isfinite(paths.residence)]
-    if not res.size:
-        return None, "no particles resolved — no residence statistic"
-    return float(res.mean()), None
-
-
-def _flow_resistance_ratio(tree: Any, measure: Any) -> tuple[float | None, str | None]:
-    chamber, paths, spec, err = _flow_run(tree, measure)
-    if chamber is None or paths is None:
-        return None, err
-    if isinstance(chamber, AtomWall):
+        wall = lumen_from_scene(_bound_scene(None, tree, node))
+        paths = propagate(wall, 400, spec.alpha, 0)
+    except BadInput as exc:
+        return None, str(exc)
+    if slug == "breakthrough-fraction":
+        return float(paths.breakthrough), None
+    if slug == "residence-time-t0":
+        res = paths.residence[np.isfinite(paths.residence)]
+        if not res.size:
+            return None, "no particles resolved — no residence statistic"
+        return float(res.mean()), None
+    if slug == "resistance-ratio":
         # free-molecular resistance ∝ 1/W — the corrugated lumen against
         # the smooth cylinder at R_eff = R_axis − r_vdW, same seed
         if paths.breakthrough <= 0.0:
             return None, "the lumen transmits nothing — no resistance ratio"
-        assert isinstance(spec, LumenSpec)
-        ref = propagate(CylinderLumen(chamber.r_eff), 400, spec.alpha, 0)
+        ref = propagate(CylinderLumen(wall.r_eff), 400, spec.alpha, 0)
         if ref.breakthrough <= 0.0:
             return None, "the smooth-cylinder reference transmits nothing"
         return float(ref.breakthrough / paths.breakthrough), None
-    d = chamber.domain
-    flat = Domain(
-        mask=d.mask,
-        h_star=np.where(d.mask, 1.0, 0.0),
-        ports=d.ports,
-        z_plane_star=d.z_plane_star,
+    # evenness: the lumen's region is its outlet aperture — exit points
+    # mapped to equal-area polar bins (u = r²/R_eff², v = θ/2π over the
+    # disk — a uniform exit spread reads uniform there)
+    pts = paths.crossing_points()
+    if pts.shape[0] == 0:
+        return None, "no transmitted particles — no evenness"
+    z = pts[:, 1] * 2.0 * wall.r_eff - wall.r_eff
+    y = pts[:, 0]
+    u = np.clip((y * y + z * z) / wall.r_eff**2, 0.0, 1.0)
+    v = (np.arctan2(z, y) + np.pi) / (2.0 * np.pi)
+    nu, _ = nonuniformity(
+        np.column_stack([u, v]), (0.0, 1.0), (0.0, 1.0), EVENNESS_BINS
     )
-    r_ref = solve(flat).r_star
-    if not math.isfinite(r_ref) or r_ref <= 0:
-        return None, "the undrilled chamber's resistance is not finite"
-    r = solve(d).r_star
-    return float(r / r_ref), None
+    return float(1.0 - nu), None
+
+
+def _flow_measure(
+    tree: Any, measure: Any, slug: str
+) -> tuple[float | None, str | None]:
+    """One flow measurand for a measure on a ``flow:`` pocket's region.
+    A chamber runs :func:`precis_geom.physics.evaluate` (the script's
+    implementation, ``seed=0``, ``cells=DEFAULT_NX``); evenness scores
+    over the measure's own datum patch."""
+    from precis_se import datums as se_datums
+
+    node = tree.blocks.get(measure.block)
+    if node is None:
+        return None, f"measure names missing block {measure.block!r}"
+    got = _flow_pocket(node, measure.datum or "")
+    if isinstance(got, str):
+        return None, got
+    _pocket, spec = got
+    if isinstance(spec, LumenSpec):
+        return _lumen_measure(tree, node, spec, slug)
+    placed = _chamber_placed(None, tree, measure.block)
+    if placed is None:
+        return None, (
+            f"block {measure.block!r} has no parseable envelope — the "
+            "chamber needs a cad envelope"
+        )
+    datum = measure.datum or ""
+    if slug == "evenness":
+        try:
+            sel = se_datums.parse_selector(datum)
+        except Exception:
+            return None, f"datum {datum!r} does not parse as a patch region"
+        if sel.kind != "patch":
+            return None, f"evenness scores over a patch: region, got {datum!r}"
+    try:
+        case = {
+            "inlet": patch_port(tree, measure.block, spec.inlet),
+            "outlet": patch_port(tree, measure.block, spec.outlet),
+            "dv": spec.d_v_star,
+            "profile": spec.profile,
+            "zplane": spec.zplane,
+            "evenness_region": (
+                patch_port(tree, measure.block, datum) if slug == "evenness" else None
+            ),
+        }
+        out = geom_physics.evaluate(placed, ["flow"], case, seed=0, cells=DEFAULT_NX)
+    except (BadInput, ValueError) as exc:
+        return None, str(exc)
+    if slug in out.measures:
+        return out.measures[slug], None
+    return None, out.reasons.get(slug, f"evaluate returned no {slug}")
+
+
+def _flow_breakthrough(tree: Any, measure: Any) -> tuple[float | None, str | None]:
+    return _flow_measure(tree, measure, "breakthrough-fraction")
+
+
+def _flow_residence(tree: Any, measure: Any) -> tuple[float | None, str | None]:
+    return _flow_measure(tree, measure, "residence-time-t0")
+
+
+def _flow_resistance_ratio(tree: Any, measure: Any) -> tuple[float | None, str | None]:
+    return _flow_measure(tree, measure, "resistance-ratio")
 
 
 def _flow_evenness(tree: Any, measure: Any) -> tuple[float | None, str | None]:
     """``1 - nonuniformity`` of first-crossing points over the datum
     patch's lateral footprint (1 = perfectly even, 0 = all in one bin)."""
-    from precis_se import datums as se_datums
-
-    chamber, paths, spec, err = _flow_run(tree, measure)
-    if chamber is None or paths is None:
-        return None, err
-    if isinstance(chamber, AtomWall):
-        # the lumen's region is its outlet aperture: exit points mapped
-        # to equal-area polar bins (u = r²/R_eff², v = θ/2π over the
-        # disk — a uniform exit spread reads uniform there)
-        pts = paths.crossing_points()
-        if pts.shape[0] == 0:
-            return None, "no transmitted particles — no evenness"
-        z = pts[:, 1] * 2.0 * chamber.r_eff - chamber.r_eff
-        y = pts[:, 0]
-        u = np.clip((y * y + z * z) / chamber.r_eff**2, 0.0, 1.0)
-        v = (np.arctan2(z, y) + np.pi) / (2.0 * np.pi)
-        nu, _ = nonuniformity(
-            np.column_stack([u, v]), (0.0, 1.0), (0.0, 1.0), EVENNESS_BINS
-        )
-        return float(1.0 - nu), None
-    datum = measure.datum or ""
-    try:
-        sel = se_datums.parse_selector(datum)
-    except Exception:
-        return None, f"datum {datum!r} does not parse as a patch region"
-    if sel.kind != "patch":
-        return None, f"evenness scores over a patch: region, got {datum!r}"
-    patch = patch_port(tree, measure.block, datum)
-    xa, ya = chamber.x_axis, chamber.y_axis
-    lo = chamber.lo
-    u_pts = (
-        patch.point[xa] + np.array([-patch.half_u, patch.half_u]) * patch.u[xa],
-        patch.point[ya] + np.array([-patch.half_u, patch.half_u]) * patch.u[ya],
-    )
-    v_pts = (
-        patch.point[xa] + np.array([-patch.half_v, patch.half_v]) * patch.v[xa],
-        patch.point[ya] + np.array([-patch.half_v, patch.half_v]) * patch.v[ya],
-    )
-    xs = np.concatenate([u_pts[0], v_pts[0]])
-    ys = np.concatenate([u_pts[1], v_pts[1]])
-    x_range = (
-        float((xs.min() - lo[xa]) / chamber.L),
-        float((xs.max() - lo[xa]) / chamber.L),
-    )
-    y_range = (
-        float((ys.min() - lo[ya]) / chamber.L),
-        float((ys.max() - lo[ya]) / chamber.L),
-    )
-    if x_range[1] - x_range[0] <= 0 or y_range[1] - y_range[0] <= 0:
-        return None, (
-            f"datum {datum!r} projects to a degenerate lateral region — "
-            "evenness needs a patch on a floor/lid face"
-        )
-    nu, _kept = nonuniformity(paths.crossing_points(), x_range, y_range, EVENNESS_BINS)
-    return float(1.0 - nu), None
+    return _flow_measure(tree, measure, "evenness")
 
 
 # ── species BCs and the slice-1 species computers ─────────────────────

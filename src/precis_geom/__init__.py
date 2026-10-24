@@ -19,8 +19,13 @@ package — the pieces that are *the script's own surface*:
   package never imports ``precis``.
 - ``precis_geom.assembly`` (``pga``) — the one assembly implementation
   scripts and MCP ops share (slice 2a).
+- :mod:`precis_geom.flow` — the DB-free cad solid → thin-gap ``Domain``
+  adapter, and :mod:`precis_geom.physics` — ``evaluate(shape, physics,
+  spec, *, seed, cells)``, the toolkit's one physics call (flow first;
+  se-flow-kernel slice 4a). Both are numpy/``precis_flow`` code.
 
-Stdlib only here: anything heavier lives in the wheel's other packages.
+Stdlib only in this ``__init__``: anything heavier lives in submodules
+or the wheel's other packages.
 Import alias convention (spec §Core design): ``import precis_geom as pg``.
 """
 

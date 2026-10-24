@@ -413,8 +413,10 @@ def test_flow_computers() -> None:
     ev = MeasureSpec(
         block="c", name="ev", datum=floor_patch, measurand="evenness", unit="ratio"
     )
-    v4 = FLOW_COMPUTERS["evenness"](tree, ev)
-    assert v4 is not None and 0.0 <= v4 <= 1.0
+    # a flat chamber has no floor topography, so no particle reaches the
+    # tracking plane: evenness is a reason, never a 0.0 value
+    assert FLOW_COMPUTERS["evenness"](tree, ev) is None
+    assert "no particle crossed" in (FLOW_COMPUTERS["evenness"].reason or "")
 
 
 def test_flow_computer_reports_reason() -> None:

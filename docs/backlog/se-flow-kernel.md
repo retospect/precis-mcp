@@ -164,7 +164,15 @@ commit carrying this line; `git log` has the sha.*
      (`se-multiphysics.md` slice 5) later moves the lower bound to 0.1.
    - **Determinism.** Same `seed_rng` gives bitwise-equal `Paths`.
 4a. **Workspace flow: DB-free adapter, `evaluate(['flow'])`, tracer to
-   the player.** No server op (the earlier `anneal_chamber` is dropped).
+   the player** — *library half landed 2026-10-23 (the commit carrying
+   this line): `precis_geom.flow`, `precis_geom.physics.evaluate`,
+   `FLOW_COMPUTERS` on `evaluate`, the skill's `evaluate` section.
+   Still owed: the `out.physics` manifest → `flow:` pocket + import
+   re-check (needs structure-workspaces slice 0's importer), the
+   end-to-end run-to-player test (needs slice 1's `run`), and
+   `src/precis_flow` in the precis-geom wheel's pyproject (needs slice
+   2's packaging — `evaluate` imports it, so the wheel must ship it).*
+   No server op (the earlier `anneal_chamber` is dropped).
    Depends on [structure-workspaces](structure-workspaces.md) slices
    1–2 (the `run` loop; the `precis-geom` wheel). Order (Reto,
    2026-10-22): "particle tracer first and run it all the way to
