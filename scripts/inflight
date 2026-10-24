@@ -8,6 +8,15 @@
 # random-codenamed worktree is actually *about* — is read from a per-worktree
 # `.claude/purpose` one-liner (gitignored; self-cleaning, dies with the worktree).
 #
+# Speed shape (gr514898 — >10 s before output and a 140+ row wall of text on a
+# fleet box): the old version ran ~8 git subprocesses per worktree, serially.
+# Now the per-BRANCH facts that needed those calls come from ONE
+# `git for-each-ref` pass (ahead/behind vs $BASE, tip date + subject,
+# checked-out path), and the remaining per-tree work — one `git status`
+# plus, only for branches ahead of $BASE, `git cherry`/`git merge-tree` —
+# runs in parallel probe subshells that write one result file each. The
+# parent only reads files afterwards, so its own git calls are O(1).
+#
 # Columns:
 #   WORKTREE   basename ( * = the one you're in; "main" = the primary checkout )
 #   SESSION    live#<pid>  — a Claude session holds the worktree lock and is alive
@@ -27,7 +36,12 @@
 # session, uncommitted WIP, or salvageable docs must never be auto-nuked).
 #
 # Usage:
-#   scripts/inflight            # the table
+#   scripts/inflight            # the table: this tree, then live/overlapping
+#                               #   rows, then the quiet tail capped at
+#                               #   INFLIGHT_MAX_ROWS (default 40) with a
+#                               #   "+N more" line — every live/dirty/ahead row
+#                               #   is always shown, the cap only hides the tail
+#   scripts/inflight --all      # the uncapped table, porcelain order
 #   scripts/inflight --for-hook # one counts line + pointer (gr499042); always exits 0
 #                               # (wired as a SessionStart hook in .claude/settings.json)
 #   scripts/inflight --json     # structured form for /workspace-cleanup: each
@@ -45,13 +59,22 @@
 #                               # `purpose` (the full, untruncated first purpose line — the
 #                               # fixer's claim check reads it; the table shows it at 58).
 #
+# Env: INFLIGHT_MAX_ROWS  default-table row cap (0/unset → 40)
+#      INFLIGHT_JOBS      probe fan-out width (default 12)
+#
 # See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
 set -uo pipefail
 
 FOR_HOOK=0
 JSON_MODE=0
-[ "${1:-}" = "--for-hook" ] && FOR_HOOK=1
-[ "${1:-}" = "--json" ] && JSON_MODE=1
+SHOW_ALL=0
+for arg in "$@"; do
+  case "$arg" in
+    --for-hook) FOR_HOOK=1 ;;
+    --json)     JSON_MODE=1 ;;
+    --all)      SHOW_ALL=1 ;;
+  esac
+done
 
 # Not a git repo (or git absent) → say nothing, never block a session start.
 command -v git >/dev/null 2>&1 || exit 0
@@ -69,6 +92,17 @@ HERE=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 # (git refuses to `worktree remove` it anyway, but the reaper/cleanup must not
 # even try — and its dry-run must not list it).
 PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk 'NR == 1 {print $2}')
+# The tree oid $BASE's squash_absorbed compares against — resolved once here
+# instead of a `rev-parse` per unmerged branch.
+BASE_TREE=$(git rev-parse "$BASE^{tree}" 2>/dev/null || echo "")
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)"
+
+MAX_ROWS=${INFLIGHT_MAX_ROWS:-40}
+case $MAX_ROWS in ''|*[!0-9]*) MAX_ROWS=40 ;; esac
+PARALLEL=${INFLIGHT_JOBS:-12}
+case $PARALLEL in ''|*[!0-9]*) PARALLEL=12 ;; esac
+[ "$PARALLEL" -lt 1 ] && PARALLEL=1
+
 # Live subagent-task markers, once for the whole table (gr513174: markers
 # are per-TREE — a task in tree A must not mark tree B live). Each line is
 # `agent_id<TAB>cwd<TAB>pid`; stale markers (old shape, dead pid, older than
@@ -137,119 +171,79 @@ squash_absorbed() { # squash_absorbed <head> — true (0) when every change
   # --write-tree mode); an older git errors on the flag, and any conflict
   # (exit 1) or hard error (exit 2) both fall through the same way — verdict
   # stays exactly what `git cherry` already decided, unchanged from before.
-  local head=$1 merged_tree base_tree
+  local head=$1 merged_tree
   merged_tree=$(git merge-tree --write-tree "$BASE" "$head" 2>/dev/null) || return 1
   merged_tree=${merged_tree%%$'\n'*}   # a conflicted merge appends more sections after a blank line
-  base_tree=$(git rev-parse "$BASE^{tree}" 2>/dev/null) || return 1
-  [ -n "$merged_tree" ] && [ "$merged_tree" = "$base_tree" ]
+  [ -n "$merged_tree" ] && [ -n "$BASE_TREE" ] && [ "$merged_tree" = "$BASE_TREE" ]
 }
 
-verdict_field() { # verdict_field <head> <branch>
-  local head=$1 branch=$2
-  [ "$branch" = "$BASE" ] && { printf '—'; return; }
-  if git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then printf 'merged'; return; fi
-  local behind unmerged
-  behind=$(git rev-list --count "$head".."$BASE" 2>/dev/null || echo '?')
-  unmerged=$(git cherry "$BASE" "$branch" 2>/dev/null | grep -c '^+')
-  # git cherry says unmerged commits remain — before believing it, check
-  # whether the branch is squash-absorbed by content (see squash_absorbed).
-  if [ "$unmerged" != 0 ] && squash_absorbed "$head"; then unmerged=0; fi
-  if [ "$unmerged" = 0 ]; then printf 'in-main↓%s' "$behind"; else printf '↑%s↓%s' "$unmerged" "$behind"; fi
-}
+# --- batched branch facts --------------------------------------------------
+# One for-each-ref pass replaces a merge-base + rev-list + log -1 per branch:
+# %(ahead-behind:$BASE) gives the two counts the verdict prints (ahead=0 is
+# exactly "tip is an ancestor of $BASE" = merged), %(committerdate:relative)
+# + %(subject) are the LAST column, and %(worktreepath) powers the
+# branchless-branch pass below — the same atom the old code already used.
+# The ahead-behind atom needs git >= 2.41; when it is absent we leave
+# AHEAD/BEHIND empty and verdict_compute falls back to the per-head calls.
+HAVE_AB=1
+REFDATA=$(
+  git for-each-ref refs/heads \
+    --format='%(refname:short)%09%(objectname)%09%(worktreepath)%09%(ahead-behind:'"$BASE"')%09%(committerdate:relative)%09%(subject)' \
+    2>/dev/null
+) || REFDATA=''
+if [ -z "$REFDATA" ]; then
+  HAVE_AB=0
+  REFDATA=$(
+    git for-each-ref refs/heads \
+      --format='%(refname:short)%09%(objectname)%09%(worktreepath)%09%(committerdate:relative)%09%(subject)' \
+      2>/dev/null
+  ) || REFDATA=''
+fi
 
-purpose_field() { # purpose_field <path> <head> <branch> [max] — display
-  # purpose, truncated to <max> (default 58; --json asks for the full line
-  # so a claim check sees a slug anywhere in it).
-  local path=$1 head=$2 branch=$3 max=${4:-58} pf line s files
-  pf="$path/.claude/purpose"
-  if [ -s "$pf" ]; then
-    line=$(grep -m1 -v '^[[:space:]]*$' "$pf" 2>/dev/null)
-    [ -n "$line" ] && { trunc "$line" "$max"; return; }
-  fi
-  if [ "$branch" != "$BASE" ] && ! git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then
-    s=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
-    [ -n "$s" ] && { trunc "$s" "$max"; return; }
-  fi
-  files=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null \
-            | awk '{print $NF}' | while read -r f; do basename "$f"; done | head -2 | paste -sd, -)
-  [ -n "$files" ] && { trunc "(editing ${files}…)" "$max"; return; }
-  [ "$branch" = "$BASE" ] && { printf '—'; return; }
-  printf '(no purpose set)'
-}
-
-ROWS=()          # emitted, |-delimited
-SHOW=()          # parallel to ROWS: 1 = matters for overlap (--for-hook prints only these)
-REMOVABLE=()     # names safe to reap (merged + clean + no live session)
-JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render time
-
-emit() { # emit <path> <head> <branch> <locked>
-  local path=$1 head=$2 branch=$3 locked=$4
-  [ -z "$path" ] && return
-  local name sess dirty untr dirtyf verd purp purpj last mark task_id agent_tree
-  if [ "$branch" = "$BASE" ]; then name=$BASE; else name=$(basename "$path"); fi
-  mark=' '; [ "$path" = "$HERE" ] && mark='*'
-  sess=$(session_field "$locked")
-  # Canonicalize like the marker's `cwd` (Path.resolve()) so the compare is
-  # not fooled by a symlinked parent (e.g. /var -> /private/var on macOS).
-  local canon; canon=$(cd "$path" 2>/dev/null && pwd -P || printf '%s' "$path")
-  task_id=$(task_for "$canon" "$locked")
-  [ -n "$task_id" ] && sess="live-task#${task_id}"
-  agent_tree=0
-  case "$name:$branch" in
-    agent-*:*) agent_tree=1 ;;
-    *:worktree-agent-*) agent_tree=1 ;;
-  esac
-  dirty=$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null | grep -c .)
-  untr=$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null | grep -c .)
-  if [ "$dirty" = 0 ] && [ "$untr" = 0 ]; then dirtyf='clean'
-  else
-    dirtyf=''
-    [ "$dirty" != 0 ] && dirtyf="$dirty"
-    [ "$untr" != 0 ] && dirtyf="${dirtyf}+${untr}u"
-  fi
-  verd=$(verdict_field "$head" "$branch")
-  # Full-length purpose once, truncated only for the table — --json carries
-  # the whole first line (a claim check needs the slug wherever it sits).
-  purp=$(purpose_field "$path" "$head" "$branch" 4000)
-  last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
-  ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|$(trunc "$purp" 58)|${last}")
-  # overlap-relevant: current tree, live session/task, dirty, or ahead of main
-  if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* ]] \
-     || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
-  then SHOW+=(1); else SHOW+=(0); fi
-  # An unknown agent-tree liveness state is not proof that its task has ended.
-  # A lock whose reason carries no `pid <N>` (sess = `locked`) was placed by hand
-  # or by older code; reap must not guess it dead (incident 2026-08-15,
-  # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
-  if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
-     && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
-     && [ "$sess" != 'locked' ] && [ "$agent_tree" = 0 ] \
-     && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
-    REMOVABLE+=("$name")
-  fi
-
-  if [ "$JSON_MODE" = 1 ]; then
-    local bucket diffstat
-    diffstat=''
-    if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
-    elif [ "$path" = "$HERE" ]; then bucket='self'
-    elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
-    elif [[ "$sess" == live#* ]]; then bucket='live_session'
-    elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
-    elif [ "$agent_tree" = 1 ]; then bucket='needs_judgment'
-    elif [ "$dirtyf" != 'clean' ]; then
-      bucket='needs_judgment'
-      diffstat=$(git -C "$path" diff --stat 2>/dev/null | head -10)
-    elif [ "$verd" = 'merged' ] || [[ "$verd" == in-main* ]]; then bucket='safe_remove'
-    else bucket='has_unmerged_work'
+# Parse into parallel arrays (bash 3.2 has no assoc arrays). Tab-splitting
+# goes through parameter expansion, NOT `IFS=$'\t' read` — read treats tab
+# as IFS whitespace and collapses the empty %(worktreepath) field of a
+# branchless branch, shifting every later field. The subject is last, so a
+# tab inside a commit subject stays inside BR_SUBJ.
+BR_NAME=() BR_HEAD=() BR_WTPATH=() BR_AHEAD=() BR_BEHIND=() BR_REL=() BR_SUBJ=()
+{
+  while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    _bn=${_line%%$'\t'*}; _r=${_line#*$'\t'}
+    _bh=${_r%%$'\t'*};      _r=${_r#*$'\t'}
+    _bw=${_r%%$'\t'*};      _r=${_r#*$'\t'}
+    if [ "$HAVE_AB" = 1 ]; then
+      _bab=${_r%%$'\t'*};   _r=${_r#*$'\t'}
+    else
+      _bab=' '
     fi
-    # \x1f/\x1e/newline in a purpose line would corrupt the record framing.
-    purpj=$(printf '%s' "$purp" | tr '\036\037\n' '   ')
-    JSONROWS+=("${name}"$'\x1f'"${path}"$'\x1f'"${branch}"$'\x1f'"${bucket}"$'\x1f'"${sess}"$'\x1f'"${dirtyf}"$'\x1f'"${verd}"$'\x1f'"${diffstat}"$'\x1f'"${purpj}")
-  fi
+    _brel=${_r%%$'\t'*};    _bsubj=${_r#*$'\t'}
+    BR_NAME+=("$_bn"); BR_HEAD+=("$_bh"); BR_WTPATH+=("$_bw")
+    BR_AHEAD+=("${_bab%% *}"); BR_BEHIND+=("${_bab##* }")
+    BR_REL+=("$_brel"); BR_SUBJ+=("$_bsubj")
+  done <<< "$REFDATA"
 }
 
-# Walk the porcelain records (blank-line separated).
+# br_index <branch> — index into the BR_* arrays, empty when unknown.
+br_index() {
+  local b=$1 j
+  for j in "${!BR_NAME[@]}"; do
+    [ "${BR_NAME[$j]}" = "$b" ] && { printf '%s' "$j"; return; }
+  done
+}
+
+# --- porcelain parse ---------------------------------------------------------
+# Walk the porcelain records into parallel arrays first; probing happens in
+# the fan-out below. A worktree record is `worktree <path>` / `HEAD <sha>` /
+# `branch refs/heads/<b>` (or bare `detached`) / `locked <reason>`, blank-line
+# separated.
+WT_PATH=() WT_HEAD=() WT_BRANCH=() WT_LOCKED=()
+LIVE_BRANCHES=$'\n'"$BASE"$'\n'
+_push_wt() {
+  [ -z "$path" ] && return
+  WT_PATH+=("$path"); WT_HEAD+=("$head"); WT_BRANCH+=("$branch"); WT_LOCKED+=("$locked")
+  case "$branch" in ''|'(detached)') ;; *) LIVE_BRANCHES="${LIVE_BRANCHES}${branch}"$'\n' ;; esac
+}
 path='' head='' branch='' locked=''
 while IFS= read -r wt_line; do
   key=${wt_line%% *}; rest=${wt_line#* }
@@ -260,66 +254,319 @@ while IFS= read -r wt_line; do
     branch)   branch=${rest#refs/heads/} ;;
     detached) branch='(detached)' ;;
     locked)   locked=$rest ;;
-    '')       emit "$path" "$head" "$branch" "$locked"; path='' head='' branch='' locked='' ;;
+    '')       _push_wt; path='' head='' branch='' locked='' ;;
   esac
 done < <(git worktree list --porcelain 2>/dev/null)
-emit "$path" "$head" "$branch" "$locked"   # trailing record with no blank after it
+_push_wt   # trailing record with no blank after it
 
-emit_branch() { # emit_branch <branch> <head> — a local branch git's own
-  # worktree admin reports as checked out NOWHERE (empty %(worktreepath)).
-  # Invisible to the loop above, so an unmerged one sat with no session, no
-  # purpose line, and no reap advisory (docs/backlog/
-  # inflight-sessionless-branches.md). SESSION is always "—" (no worktree,
-  # no lock possible); VS-main reuses verdict_field verbatim — it needs only
-  # <head>/<branch> refs, never a working tree, so the squash-absorbed
-  # content-equality fallback still applies. PURPOSE skips the
-  # .claude/purpose lookup (no path to read it from) straight to the newest
-  # branch-unique commit subject.
-  local branch=$1 head=$2
-  local verd purp last bucket
-  verd=$(verdict_field "$head" "$branch")
-  purp=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
+# A worktree whose git admin entry exists but whose %(worktreepath) comes
+# back empty slips both checks — belt and braces: read each
+# .claude/worktrees/<dir> HEAD through the .git pointer file (two reads, no
+# subprocess — the old symbolic-ref per dir was itself a scaling item).
+if [ -n "$MAIN_ROOT" ] && [ -d "$MAIN_ROOT/.claude/worktrees" ]; then
+  for wt in "$MAIN_ROOT"/.claude/worktrees/*; do
+    [ -d "$wt" ] && [ -f "$wt/.git" ] || continue
+    _gd=$(<"$wt/.git"); _gd=${_gd#gitdir: }
+    [ -f "$_gd/HEAD" ] || continue
+    _h=$(<"$_gd/HEAD")
+    case "$_h" in ref:\ refs/heads/*) LIVE_BRANCHES="${LIVE_BRANCHES}${_h#ref: refs/heads/}"$'\n' ;; esac
+  done
+fi
+
+# First output immediately (gr514898): the scan itself takes a beat, so the
+# human run announces what it is doing on stderr — the table/--json/--for-hook
+# stdout contract stays clean.
+if [ "$JSON_MODE" = 0 ] && [ "$FOR_HOOK" = 0 ]; then
+  printf '… scanning %d worktrees (parallel probes) — output follows\n' "${#WT_PATH[@]}" >&2
+fi
+
+# --- per-tree probes ---------------------------------------------------------
+# The helpers below stay fork-free where they can: every $(git …) and every
+# `tr`/`grep`/`head` inside a probe is one spawn, paid once per worktree —
+# at fleet size the spawn count itself was most of the >10 s (gr514898).
+
+# clean_f <string> — strip the three chars that would corrupt a \x1f-joined
+# probe record (newline, \x1e, \x1f); parameter expansion, no `tr` spawn.
+clean_f() {
+  local s=${1//$'\n'/ }
+  s=${s//$'\036'/ }; s=${s//$'\037'/ }
+  printf '%s' "$s"
+}
+
+# unmerged_count <rev> — `git cherry $BASE <rev>` without the `grep -c`
+# spawn: count the '+' (patch-id absent from $BASE) lines in bash.
+unmerged_count() {
+  local n=0 l
+  while IFS= read -r l; do
+    case "$l" in +*) n=$((n+1)) ;; esac
+  done < <(git cherry "$BASE" "$1" 2>/dev/null)
+  printf '%s' "$n"
+}
+
+# verdict_compute <head> <branch> — sets VERD plus ANCESTOR (1 when <head> is
+# reachable from $BASE, what purpose_field's "skip the unique-subject lookup"
+# check needs) and AHEAD/BEHIND. The ahead/behind values normally arrive free
+# from the batched for-each-ref pass; the per-head calls remain only for a
+# detached HEAD, a branch the batch missed, or a git without %(ahead-behind:).
+verdict_compute() {
+  local head=$1 branch=$2 lr unmerged
+  VERD='—'; ANCESTOR=1; AHEAD=''; BEHIND=''
+  [ "$branch" = "$BASE" ] && return
+  ANCESTOR=0
+  if [ "$branch" != '(detached)' ]; then
+    local j; j=$(br_index "$branch")
+    if [ -n "$j" ]; then AHEAD=${BR_AHEAD[$j]}; BEHIND=${BR_BEHIND[$j]}; fi
+  fi
+  if [ -z "$AHEAD" ]; then
+    if git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then
+      ANCESTOR=1; VERD='merged'; return
+    fi
+    BEHIND=$(git rev-list --count "$head".."$BASE" 2>/dev/null || echo '?')
+    unmerged=$(unmerged_count "$head")
+    if [ "$unmerged" != 0 ] && squash_absorbed "$head"; then unmerged=0; fi
+    if [ "$unmerged" = 0 ]; then VERD="in-main↓${BEHIND}"; else VERD="↑${unmerged}↓${BEHIND}"; fi
+    return
+  fi
+  if [ "$AHEAD" = 0 ]; then ANCESTOR=1; VERD='merged'; return; fi
+  unmerged=$(unmerged_count "$branch")
+  # git cherry says unmerged commits remain — before believing it, check
+  # whether the branch is squash-absorbed by content (see squash_absorbed).
+  if [ "$unmerged" != 0 ] && squash_absorbed "$head"; then unmerged=0; fi
+  if [ "$unmerged" = 0 ]; then VERD="in-main↓${BEHIND}"; else VERD="↑${unmerged}↓${BEHIND}"; fi
+}
+
+# purpose_field <path> <branch> <ancestor> <file1> <file2> [max] — display
+# purpose, truncated to <max> (default 58; --json asks for the full line
+# so a claim check sees a slug anywhere in it). <file1>/<file2> are the first
+# two edited basenames from the probe's single `git status` (the old code
+# paid a second status call here).
+purpose_field() {
+  local path=$1 branch=$2 ancestor=$3 fa=$4 fb=$5 max=${6:-58}
+  local pf line s files
+  pf="$path/.claude/purpose"
+  if [ -s "$pf" ]; then
+    while IFS= read -r line; do
+      if [ -n "${line//[[:space:]]/}" ]; then trunc "$line" "$max"; return; fi
+    done < "$pf"
+  fi
+  if [ "$branch" != "$BASE" ] && [ "$branch" != '(detached)' ] && [ "$ancestor" = 0 ]; then
+    s=$(git log -1 --no-merges --format='%s' "$BASE..$branch" 2>/dev/null)
+    [ -n "$s" ] && { trunc "$s" "$max"; return; }
+  fi
+  if [ -n "$fa" ]; then
+    files=$fa; [ -n "$fb" ] && files="${fa},${fb}"
+    trunc "(editing ${files}…)" "$max"; return
+  fi
+  [ "$branch" = "$BASE" ] && { printf '—'; return; }
+  printf '(no purpose set)'
+}
+
+# probe_worktree <i> — everything one worktree row needs that the batched
+# passes could not supply, run inside a `&` subshell and printed as ONE
+# \x1f-joined record on stdout (the parent redirects it to a result file):
+#   row | show | removable-name | bucket | name | path | branch | sess |
+#   dirtyf | verd | purpose(full)
+# with the optional --json diffstat appended after a newline. Per-tree git
+# calls: one `git status` (whose ?? lines also give the untracked count and
+# the "(editing …)" basenames), plus the verdict/purpose calls only when the
+# branch is actually ahead — a merged+clean tree costs exactly one.
+probe_worktree() {
+  local i=$1
+  local path=${WT_PATH[$i]} head=${WT_HEAD[$i]} branch=${WT_BRANCH[$i]} locked=${WT_LOCKED[$i]}
+  local name sess dirtyf='clean' verd purp purpj last mark task_id agent_tree j
+  local show=0 rem='' bucket='' ds='' row
+  local dirty=0 untr=0 fa='' fb='' line base
+
+  if [ "$branch" = "$BASE" ]; then name=$BASE; else name=${path##*/}; fi
+  mark=' '; [ "$path" = "$HERE" ] && mark='*'
+  sess=$(session_field "$locked")
+  # Canonicalize like the marker's `cwd` (Path.resolve()) so the compare is
+  # not fooled by a symlinked parent (e.g. /var -> /private/var on macOS).
+  # `cd -P` inside the probe subshell makes $PWD physical — no fork.
+  local canon
+  if cd -P "$path" 2>/dev/null; then canon=$PWD; else canon=$path; fi
+  task_id=$(task_for "$canon" "$locked")
+  [ -n "$task_id" ] && sess="live-task#${task_id}"
+  agent_tree=0
+  case "$name:$branch" in
+    agent-*:*) agent_tree=1 ;;
+    *:worktree-agent-*) agent_tree=1 ;;
+  esac
+
+  # One status call for both counts (the old code paid this plus an
+  # `ls-files --others` plus a second identical status inside purpose).
+  local st
+  st=$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      '?? '*) untr=$((untr+1)) ;;
+      *)      dirty=$((dirty+1))
+              if [ -z "$fa" ]; then fa=${line##* }; fa=${fa##*/}
+              elif [ -z "$fb" ]; then fb=${line##* }; fb=${fb##*/}; fi ;;
+    esac
+  done <<< "$st"
+  if [ "$dirty" = 0 ] && [ "$untr" = 0 ]; then dirtyf='clean'
+  else
+    dirtyf=''
+    [ "$dirty" != 0 ] && dirtyf="$dirty"
+    [ "$untr" != 0 ] && dirtyf="${dirtyf}+${untr}u"
+  fi
+
+  verdict_compute "$head" "$branch"; verd=$VERD
+
+  # Full-length purpose once, truncated only for the table — --json carries
+  # the whole first line (a claim check needs the slug wherever it sits).
+  purp=$(purpose_field "$path" "$branch" "$ANCESTOR" "$fa" "$fb" 4000)
+  # \x1f/\x1e/newline in a purpose line would corrupt the record framing.
+  purpj=$(clean_f "$purp")
+
+  # LAST comes free from the for-each-ref pass for a branch checkout; a
+  # detached HEAD is the only row that still pays `git log -1`.
+  j=''; [ "$branch" != '(detached)' ] && j=$(br_index "$branch")
+  if [ -n "$j" ]; then
+    last=$(trunc "$(clean_f "${BR_REL[$j]} — ${BR_SUBJ[$j]}")" 46)
+  else
+    last=$(trunc "$(clean_f "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)")" 46)
+  fi
+
+  # overlap-relevant: current tree, live session/task, dirty, or ahead of main
+  if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* ]] \
+     || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
+  then show=1; fi
+
+  # An unknown agent-tree liveness state is not proof that its task has ended.
+  # A lock whose reason carries no `pid <N>` (sess = `locked`) was placed by hand
+  # or by older code; reap must not guess it dead (incident 2026-08-15,
+  # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
+  if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
+     && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
+     && [ "$sess" != 'locked' ] && [ "$agent_tree" = 0 ] \
+     && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
+    rem=$name
+  fi
+
+  if [ "$JSON_MODE" = 1 ]; then
+    if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
+    elif [ "$path" = "$HERE" ]; then bucket='self'
+    elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
+    elif [[ "$sess" == live#* ]]; then bucket='live_session'
+    elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
+    elif [ "$agent_tree" = 1 ]; then bucket='needs_judgment'
+    elif [ "$dirtyf" != 'clean' ]; then
+      bucket='needs_judgment'
+      ds=$(git -C "$path" diff --stat 2>/dev/null | head -10)
+      ds=${ds//$'\036'/ }; ds=${ds//$'\037'/ }
+    elif [ "$verd" = 'merged' ] || [[ "$verd" == in-main* ]]; then bucket='safe_remove'
+    else bucket='has_unmerged_work'
+    fi
+  fi
+
+  row="${mark}${name}|${sess}|${dirtyf}|${verd}|$(trunc "$purpj" 58)|${last}"
+  printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+    "$row" "$show" "$rem" "$bucket" "$name" "$path" "$branch" "$sess" "$dirtyf" "$verd" "$purpj"
+  [ -n "$ds" ] && printf '\n%s' "$ds"
+  return 0
+}
+
+# probe_branch <j> — a local branch git's own worktree admin reports as
+# checked out NOWHERE (empty %(worktreepath)). Invisible to the worktree
+# list, so an unmerged one sat with no session, no purpose line, and no
+# reap advisory (docs/backlog/inflight-sessionless-branches.md). SESSION is
+# always "—" (no worktree, no lock possible); the verdict reuses
+# verdict_compute — BR_* carries its ahead/behind and the squash-absorbed
+# content-equality fallback still applies. PURPOSE goes straight to the
+# newest branch-unique commit subject (no path to read .claude/purpose
+# from). Same result-file contract as probe_worktree.
+probe_branch() {
+  local j=$1
+  local branch=${BR_NAME[$j]} head=${BR_HEAD[$j]}
+  local verd purp purpj last show=0 bucket ds='' row
+
+  verdict_compute "$head" "$branch"; verd=$VERD
+  purp=$(git log -1 --no-merges --format='%s' "$BASE..$branch" 2>/dev/null)
   [ -z "$purp" ] && purp='(no purpose set)'
-  last=$(trunc "$(git log -1 --format='%cr — %s' "$branch" 2>/dev/null)" 46)
-  ROWS+=("(no worktree) ${branch}|—|—|${verd}|$(trunc "$purp" 58)|${last}")
-  if [[ "$verd" == ↑* ]]; then SHOW+=(1); else SHOW+=(0); fi
+  purpj=$(clean_f "$purp")
+  last=$(trunc "$(clean_f "${BR_REL[$j]} — ${BR_SUBJ[$j]}")" 46)
 
+  row="(no worktree) ${branch}|—|—|${verd}|$(trunc "$purpj" 58)|${last}"
+  [[ "$verd" == ↑* ]] && show=1
   # 0 unmerged commits vs $BASE = safe to `git branch -D`; anything else is
   # real stranded work reap-worktrees must only ever report, never delete.
   if [[ "$verd" == ↑* ]]; then bucket='stranded'; else bucket='safe_remove'; fi
 
+  printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+    "$row" "$show" "" "$bucket" "$branch" "" "$branch" "—" "—" "$verd" "$purpj"
+  return 0
+}
+
+# --- fan-out -----------------------------------------------------------------
+PROBE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/inflight.XXXXXX") || exit 0
+trap 'rm -rf "$PROBE_DIR"' EXIT
+
+_spawned=0
+BJ_LIST=()
+for i in "${!WT_PATH[@]}"; do
+  ( probe_worktree "$i" ) >"$PROBE_DIR/w${i}.res" 2>/dev/null &
+  _spawned=$((_spawned+1))
+  [ $((_spawned % PARALLEL)) -eq 0 ] && wait
+done
+for j in "${!BR_NAME[@]}"; do
+  case "${BR_NAME[$j]}" in
+    ci/*) continue ;;
+    "$BASE") continue ;;
+  esac
+  [ -n "${BR_WTPATH[$j]}" ] && continue
+  case $LIVE_BRANCHES in *$'\n'"${BR_NAME[$j]}"$'\n'*) continue ;; esac
+  BJ_LIST+=("$j")
+  ( probe_branch "$j" ) >"$PROBE_DIR/b${j}.res" 2>/dev/null &
+  _spawned=$((_spawned+1))
+  [ $((_spawned % PARALLEL)) -eq 0 ] && wait
+done
+wait
+
+# --- assemble (original ordering: worktrees, then branchless branches) -------
+ROWS=()          # emitted, |-delimited
+SHOW=()          # parallel to ROWS: 1 = matters for overlap (--for-hook prints only these)
+REMOVABLE=()     # names safe to reap (merged + clean + no live session)
+JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render time
+
+read_result() { # read_result <file> — sets R_* fields from a probe record
+  local f=$1 content headline
+  R_DS=''
+  content=$(<"$f")
+  if [[ "$content" == *$'\n'* ]]; then
+    headline=${content%%$'\n'*}; R_DS=${content#*$'\n'}
+  else
+    headline=$content
+  fi
+  IFS=$'\x1f' read -r R_ROW R_SHOW R_REM R_BUCKET R_NAME R_PATH R_BRANCH \
+    R_SESS R_DIRTYF R_VERD R_PURPJ <<<"$headline"
+}
+
+collect_result() { # collect_result <file> — append one probe record to the
+  # shared arrays; a probe that died before writing still gets a row so a
+  # missing result can never silently shrink the table.
+  local f=$1 stub=$2
+  if [ ! -s "$f" ]; then
+    ROWS+=(" ${stub}|?|?|?|(probe failed)|"); SHOW+=(1)
+    [ "$JSON_MODE" = 1 ] && JSONROWS+=("${stub}"$'\x1f\x1f'"${stub}"$'\x1f'"needs_judgment"$'\x1f—\x1f—\x1f?\x1f\x1f(probe failed)')
+    return
+  fi
+  read_result "$f"
+  ROWS+=("$R_ROW"); SHOW+=("$R_SHOW")
+  [ -n "$R_REM" ] && REMOVABLE+=("$R_REM")
   if [ "$JSON_MODE" = 1 ]; then
-    local sep=$'\x1f'
-    purp=$(printf '%s' "$purp" | tr '\036\037\n' '   ')
-    JSONROWS+=("${branch}${sep}${sep}${branch}${sep}${bucket}${sep}—${sep}—${sep}${verd}${sep}${sep}${purp}")
+    JSONROWS+=("${R_NAME}"$'\x1f'"${R_PATH}"$'\x1f'"${R_BRANCH}"$'\x1f'"${R_BUCKET}"$'\x1f'"${R_SESS}"$'\x1f'"${R_DIRTYF}"$'\x1f'"${R_VERD}"$'\x1f'"${R_DS}"$'\x1f'"${R_PURPJ}")
   fi
 }
 
-# --- branchless branches -----------------------------------------------
-# A branch git's worktree admin has no path for at all is invisible to the
-# porcelain loop above by construction. Skip: $BASE itself, `ci/*` (scripts/
-# ship --remote's throwaway gate pushes — reaped separately by
-# sweep_ci_refs), and — belt and braces alongside %(worktreepath) itself —
-# any branch a directory under .claude/worktrees is actually sitting on
-# (catches a worktree whose git admin entry is present but for some reason
-# %(worktreepath) came back empty; harmless double-check otherwise).
-MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)" 2>/dev/null)"
-LIVE_BRANCHES=$'\n'"$BASE"$'\n'
-if [ -n "$MAIN_ROOT" ]; then
-  for wt in "$MAIN_ROOT"/.claude/worktrees/*; do
-    [ -d "$wt" ] || continue
-    b=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
-    LIVE_BRANCHES="${LIVE_BRANCHES}${b}"$'\n'
-  done
-fi
-
-while IFS=$'\t' read -r branch head wtpath; do
-  [ -z "$branch" ] && continue
-  case "$branch" in ci/*) continue ;; esac
-  [ -n "$wtpath" ] && continue
-  case $LIVE_BRANCHES in *$'\n'"$branch"$'\n'*) continue ;; esac
-  emit_branch "$branch" "$head"
-done < <(git for-each-ref refs/heads --format='%(refname:short)%09%(objectname)%09%(worktreepath)' 2>/dev/null)
+for i in "${!WT_PATH[@]}"; do
+  collect_result "$PROBE_DIR/w${i}.res" "${WT_PATH[$i]##*/}"
+done
+for j in "${BJ_LIST[@]+"${BJ_LIST[@]}"}"; do
+  collect_result "$PROBE_DIR/b${j}.res" "(no worktree) ${BR_NAME[$j]}"
+done
 
 # --- render ---------------------------------------------------------------
 if [ "$JSON_MODE" = 1 ]; then
@@ -395,14 +642,70 @@ if [ "$FOR_HOOK" = 1 ]; then
   echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live, $DIRTYF dirty, $AHEAD ahead of $BASE) — scripts/inflight for the overlap table"
   exit 0
 fi
-{
-  printf '%s\n' "WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST"
-  printf '%s\n' "${ROWS[@]}"
-} | column -t -s '|'
+
+# Display order (gr514898): this tree, then every overlap-relevant row (live
+# session/task, dirty, ahead of $BASE), then the quiet tail — capped at
+# MAX_ROWS so a fleet-size listing stays a table, not a scroll. Every
+# overlap row is always shown even past the cap; --all opts out entirely.
+ORDERED=()
+SELF_I=-1
+for i in "${!ROWS[@]}"; do
+  if [ "${ROWS[$i]:0:1}" = '*' ]; then SELF_I=$i; ORDERED+=("$i"); break; fi
+done
+for i in "${!ROWS[@]}"; do
+  [ "$i" = "$SELF_I" ] && continue
+  [ "${SHOW[$i]}" = 1 ] && ORDERED+=("$i")
+done
+SIGNAL=${#ORDERED[@]}
+for i in "${!ROWS[@]}"; do
+  [ "$i" = "$SELF_I" ] && continue
+  [ "${SHOW[$i]}" = 0 ] && ORDERED+=("$i")
+done
+
+TOTAL=${#ORDERED[@]}
+LIMIT=$TOTAL
+if [ "$SHOW_ALL" = 0 ] && [ "$TOTAL" -gt "$MAX_ROWS" ]; then
+  LIMIT=$SIGNAL; [ "$LIMIT" -lt "$MAX_ROWS" ] && LIMIT=$MAX_ROWS
+  [ "$LIMIT" -gt "$TOTAL" ] && LIMIT=$TOTAL
+fi
+HIDDEN=$((TOTAL - LIMIT))
+
+# Aligned in-shell, not `column -t`: column is absent on some images the
+# script lands in (the dev container, where --json consumers don't care but
+# a human run prints an empty table), and the shown rows are already in
+# memory, so widths are a free second pass. '|' inside a subject spills
+# into the last column — same split column -s '|' made.
+_W1=0; _W2=0; _W3=0; _W4=0; _W5=0
+_SHOWN=("WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST")
+for k in "${ORDERED[@]:0:$LIMIT}"; do
+  _SHOWN+=("${ROWS[$k]}")
+done
+for r in "${_SHOWN[@]}"; do
+  IFS='|' read -r _a _b _c _d _e _f <<<"$r"
+  [ "${#_a}" -gt "$_W1" ] && _W1=${#_a}
+  [ "${#_b}" -gt "$_W2" ] && _W2=${#_b}
+  [ "${#_c}" -gt "$_W3" ] && _W3=${#_c}
+  [ "${#_d}" -gt "$_W4" ] && _W4=${#_d}
+  [ "${#_e}" -gt "$_W5" ] && _W5=${#_e}
+done
+for r in "${_SHOWN[@]}"; do
+  IFS='|' read -r _a _b _c _d _e _f <<<"$r"
+  printf '%-*s %-*s %-*s %-*s %-*s %s\n' "$_W1" "$_a" "$_W2" "$_b" "$_W3" "$_c" "$_W4" "$_d" "$_W5" "$_e" "$_f"
+done
+
+if [ "$HIDDEN" -gt 0 ]; then
+  echo "… +${HIDDEN} more quiet trees — scripts/inflight --all for the full list"
+fi
 
 if [ "${#REMOVABLE[@]}" -gt 0 ]; then
+  RMAX=20
+  [ "$SHOW_ALL" = 1 ] && RMAX=${#REMOVABLE[@]}
   echo
-  echo "Removable (merged + clean + no live session): ${REMOVABLE[*]}"
+  if [ "${#REMOVABLE[@]}" -gt "$RMAX" ]; then
+    echo "Removable (merged + clean + no live session): ${REMOVABLE[*]:0:$RMAX} … +$(( ${#REMOVABLE[@]} - RMAX )) more"
+  else
+    echo "Removable (merged + clean + no live session): ${REMOVABLE[*]}"
+  fi
   echo "  → review, then: git worktree remove <name> && git branch -d worktree-<name>"
 fi
 gripe_line
