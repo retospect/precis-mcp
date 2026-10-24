@@ -94,6 +94,14 @@ _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
         # deliberately web-only (2026-09-18, design-workbench build).
         ("se", "edit", "turn"),
         ("structure", "edit", "turn"),
+        # new=/observation= are create-only gripe flags documented and
+        # served as ``args={'new': True}`` / ``args={'observation': True}``
+        # (precis-gripe-help); the dispatcher flattens args= into handler
+        # kwargs, so they work from MCP. Kept off the top-level verb schema
+        # on purpose: two rarely-used booleans are not worth advertised
+        # schema weight (docs/backlog/mcp-verb-schema-diet.md).
+        ("gripe", "put", "new"),
+        ("gripe", "put", "observation"),
     }
 )
 
