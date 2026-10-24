@@ -68,6 +68,17 @@ delivery is just a DB write, idempotent per brief-date.
 precis worker --only briefing --once
 ```
 
+**Weather section** (gr507718): after the LLM digest, a deterministic
+`## Weather` block is appended (`precis.workers.weather`) — spoken METAR +
+TAF per configured ICAO station (avwx-engine renders "winds two niner zero
+at 14 knots", so the morning cast narrates abbreviations in full), active
+international SIGMETs for the configured FIRs, and Met Éireann warnings
+selected by a keyword rule. All from `PRECIS_BRIEFING_WEATHER_STATIONS`
+(default EINN,EIDW,EICK), `PRECIS_BRIEFING_WEATHER_FIRS` (default EISN —
+Shannon FIR), `PRECIS_BRIEFING_MARINE_KEYWORDS` (default `gale,small craft`).
+A down feed degrades its block to a one-line "unavailable" note; the brief
+never fails on weather. Fetches go through `polite_safe_get` (SSRF-pinned).
+
 ## Lineage
 
 Replaces the retired `daily_briefing` / `rss_ingest` monolith stack: a

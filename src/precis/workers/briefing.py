@@ -267,6 +267,7 @@ def run_briefing(
     client: Any = None,
     sink: Callable[[str], None] | None = None,
     deliver_to: str | None = None,
+    weather_fn: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     """Generate (and persist) a morning briefing from recent news refs.
 
@@ -281,6 +282,9 @@ def run_briefing(
     per brief-date, so a job retry can't double-post.
     ``client``/``now``/``sink`` are injectable for tests; ``sink`` (if
     given) also receives the brief text for custom delivery.
+    ``weather_fn`` overrides the ``## Weather`` section builder
+    (default: :func:`precis.workers.weather.weather_section` against
+    ``PRECIS_BRIEFING_*`` config).
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(hours=lookback_hours)
@@ -307,6 +311,9 @@ def run_briefing(
     else:
         result, degraded = _compose(store, messages)
     brief = result.text.strip()
+    weather = _weather_section(weather_fn)
+    if weather:
+        brief = f"{brief}\n\n{weather}"
 
     date_tag = now.date().isoformat()
     slug = f"briefing-{date_tag}"
@@ -356,6 +363,34 @@ def run_briefing(
         "ref_id": ref.id,
         "degraded_to": result.model if degraded else None,
     }
+
+
+def _weather_section(weather_fn: Callable[[], str] | None) -> str:
+    """The deterministic ``## Weather`` block (gr507718), or ``""``.
+
+    Appended post-LLM on purpose: METAR/TAF are telegrams — a model
+    paraphrase would garble both the numbers and the pronunciation the
+    morning cast narrates (the section is rendered in spoken form by
+    avwx, e.g. "winds two niner zero at 14 knots", "Z" → "zulu").
+    Best-effort: any failure logs and returns ``""`` — the day's brief
+    must never fail on weather.
+    """
+    try:
+        if weather_fn is not None:
+            return (weather_fn() or "").strip()
+        from precis.config import load_config
+        from precis.workers import weather
+
+        cfg = load_config()
+        return weather.weather_section(
+            stations=cfg.briefing_weather_stations,
+            firs=cfg.briefing_weather_firs,
+            notam_keywords=cfg.briefing_notam_keywords,
+            marine_keywords=cfg.briefing_marine_keywords,
+        ).strip()
+    except Exception:
+        log.warning("briefing: weather section failed", exc_info=True)
+        return ""
 
 
 def _compose(store: Store, messages: list[dict[str, str]]) -> tuple[Any, bool]:

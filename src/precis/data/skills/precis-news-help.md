@@ -75,8 +75,10 @@ feed text passes the same tier-0 injection scan as every other feed.
 ## The morning briefing
 
 A recurring pass summarizes recent news and persists a dated, searchable
-brief; optionally it delivers into a Discord thread. Read a past brief by
-its handle:
+brief; optionally it delivers into a Discord thread. Each brief ends with
+a deterministic `## Weather` section — spoken METAR/TAF, active SIGMETs,
+and Met Éireann marine warnings (`PRECIS_BRIEFING_*` config; details:
+`docs/runbooks/news-ops.md`). Read a past brief by its handle:
 
 ```python
 get(id="nw<id>")

@@ -430,6 +430,38 @@ class PrecisConfig(BaseSettings):
     ``libkey.io/choose-library``. Defaults to the University of Limerick's
     id. Set via ``PRECIS_LIBKEY_LIBRARY_ID``."""
 
+    # ── Briefing weather section (gr507718) ──────────────────────────
+    briefing_weather_stations: str = "EINN,EIDW,EICK"
+    """ICAO stations whose METAR + TAF are decoded into the morning
+    briefing's ``## Weather`` section (aviation block). Comma-separated;
+    empty disables the aviation block. Defaults are Reto's three Irish
+    airports — Shannon, Dublin, Cork. Set via
+    ``PRECIS_BRIEFING_WEATHER_STATIONS``."""
+
+    briefing_weather_firs: str = "EISN"
+    """ICAO flight-information-region ids whose active international
+    SIGMETs are flagged in the weather section (the aviation "unusual"
+    flag — a SIGMET exists only when hazardous conditions warrant one).
+    Comma-separated; empty disables the SIGMET lines. Default ``EISN`` is
+    the Shannon FIR, which covers the island of Ireland. Set via
+    ``PRECIS_BRIEFING_WEATHER_FIRS``."""
+
+    briefing_notam_keywords: str = "aerodrome closed,runway closed,ils u/s"
+    """Keywords flagging a NOTAM as 'unusual' in the weather section. The
+    NOTAM feed (ICAO API Data Service, keyed via the ``PRECIS_ICAO_API_KEY``
+    vault secret) reports every active NOTAM at the configured stations;
+    only ones whose text matches a keyword (case/hyphen-insensitive) are
+    flagged line-by-line — the rest land as a count. Empty disables the
+    NOTAM block. Set via ``PRECIS_BRIEFING_NOTAM_KEYWORDS``."""
+
+    briefing_marine_keywords: str = "gale,small craft"
+    """Keywords selecting which Met Éireann warnings land in the marine
+    block of the weather section: a warning matches when any keyword
+    (case/hyphen-insensitive) appears in its type or headline. The
+    default catches marine gale and small-craft warnings while skipping
+    land wind/rain warnings. Empty disables the marine block. Set via
+    ``PRECIS_BRIEFING_MARINE_KEYWORDS``."""
+
     @classmethod
     def settings_customise_sources(
         cls,

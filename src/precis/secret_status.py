@@ -267,6 +267,18 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="openalex",
     ),
     SecretSpec(
+        name="PRECIS_ICAO_API_KEY",
+        purpose="Morning briefing weather — ICAO API Data Service NOTAM feed "
+        "for the configured airports; missing key shows 'no key configured' "
+        "and the brief carries on without the NOTAM block.",
+        get_url="https://applications.icao.int/dataservices/default.aspx",
+        get_blurb="Request a key for the ICAO API Data Service "
+        "(icaoapi@icao.int) and paste it here.",
+        cost="free key — registration required",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
         name="PRECIS_WILEY_TDM_TOKEN",
         purpose="Wiley TDM PDF fetch.",
         get_url="https://onlinelibrary.wiley.com/library-info/resources/text-and-datamining",

@@ -219,6 +219,12 @@ dependencies = [
     # (de)serialization, calendar submission. Pure Python; the calendar
     # round-trip only runs from the OTS sweep, which ships dark.
     "opentimestamps>=0.4.5",
+    # avwx-engine — METAR/TAF parse + spoken-form render for the morning
+    # briefing's weather section (workers/weather.py, gr507718). Pure
+    # Python, bundled station DB, MIT; core so the worker venv never
+    # lacks it. Cap: 1.9.10 (2026-10-18) is <7 days old at pin time —
+    # relax the cap on a routine bump.
+    "avwx-engine>=1.9.9,<1.9.10",
     # ── Light network-client deps — promoted from the former [external] /
     # [patent] / [edgar] / [import] extras (2026-08-16), extending the
     # 2026-08-12 promotion above. Policy: an extra is justified by WEIGHT

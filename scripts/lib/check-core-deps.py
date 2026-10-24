@@ -34,6 +34,7 @@ from packaging.requirements import Requirement
 # Only the distributions whose import name differs from the
 # name.lower().replace("-", "_") default guess.
 IMPORT_NAME_OVERRIDES = {
+    "avwx-engine": "avwx",
     "pyyaml": "yaml",
     "python-docx": "docx",
     "python-epo-ops-client": "epo_ops",

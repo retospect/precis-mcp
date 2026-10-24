@@ -451,6 +451,21 @@ mace = [
 ]
 
 [[package]]
+name = "avwx-engine"
+version = "1.9.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geopy" },
+    { name = "httpx" },
+    { name = "python-dateutil" },
+    { name = "xmltodict" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/a9/d466bae68dd4667146a22ca27db7941c627fb43b0617bc4948b613d6f9d5/avwx_engine-1.9.9.tar.gz", hash = "sha256:8505b25461f4e2551b14b4dc6c1c40f54d90d96b553494a448fcc34598f41c6c", size = 3691521, upload-time = "2026-08-30T14:55:45.52Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/49/9e0c2783bd9314488d8b28513b4113b4934ea1d7237942f947d39d23a655/avwx_engine-1.9.9-py3-none-any.whl", hash = "sha256:ce09ba825ade7e05733d67047a53a199136f3d189aee8a09684ec6a7a222e6ff", size = 4043521, upload-time = "2026-08-30T14:55:43.607Z" },
+]
+
+[[package]]
 name = "babel"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1631,6 +1646,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a5/d3/8650919bc3c7c6e90ee3fa7fd618bf373cbbe55dff043bd67353dbb20cd8/ftfy-6.3.1.tar.gz", hash = "sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec", size = 308927, upload-time = "2024-10-26T00:50:35.149Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/6e/81d47999aebc1b155f81eca4477a616a70f238a2549848c38983f3c22a82/ftfy-6.3.1-py3-none-any.whl", hash = "sha256:7c70eb532015cd2f9adb53f101fb6c7945988d023a085d127d1573dc49dd0083", size = 44821, upload-time = "2024-10-26T00:50:33.425Z" },
+]
+
+[[package]]
+name = "geographiclib"
+version = "2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/78/4892343230a9d29faa1364564e525307a37e54ad776ea62c12129dbba704/geographiclib-2.1.tar.gz", hash = "sha256:6a6545e6262d0ed3522e13c515713718797e37ed8c672c31ad7b249f372ef108", size = 37004, upload-time = "2025-08-21T21:34:26Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/b3/802576f2ea5dcb48501bb162e4c7b7b3ca5654a42b2c968ef98a797a4c79/geographiclib-2.1-py3-none-any.whl", hash = "sha256:e2a873b9b9e7fc38721ad73d5f4e6c9ed140d428a339970f505c07056997d40b", size = 40740, upload-time = "2025-08-21T21:34:24.955Z" },
+]
+
+[[package]]
+name = "geopy"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geographiclib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/0c/b4e42a0495293f6c94364baba4c657c68bc8d8efec784259cc943f4ba28b/geopy-2.5.0.tar.gz", hash = "sha256:7b6c849f18108dcce4faa3d614e2801107b465f7b05fd3c1db9db12e225ae950", size = 122254, upload-time = "2026-07-12T19:50:06.051Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/e5/de8b557b279e31cdfb2070ac83eb45dc7e29bd93cd544128756f658e52c7/geopy-2.5.0-py3-none-any.whl", hash = "sha256:8ad8cc226b505ca4d272ae9a2eeba08b8a2c565fc9a04eaefc33ad49c32b51aa", size = 114619, upload-time = "2026-07-12T19:50:04.839Z" },
 ]
 
 [[package]]
@@ -4011,6 +4047,7 @@ version = "8.37.0"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },
+    { name = "avwx-engine" },
     { name = "feedparser" },
     { name = "ftfy" },
     { name = "habanero" },
@@ -4159,6 +4196,7 @@ requires-dist = [
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?rev=0b49c695b51ed5feb410f06e4fec2ebeddde83cd" },
     { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?rev=0b49c695b51ed5feb410f06e4fec2ebeddde83cd" },
+    { name = "avwx-engine", specifier = ">=1.9.9,<1.9.10" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
