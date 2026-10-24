@@ -1,0 +1,625 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "fork",
+   "file": "blocks/fork.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "bearing_seat",
+     "roles": [
+      "bearing_seat"
+     ],
+     "pose": "[0 0 40] mm"
+    },
+    {
+     "name": "crown_flange",
+     "roles": [
+      "flange"
+     ],
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "pose": "[0 0 460.0] mm"
+    }
+   ],
+   "desc": "fdm/asa fork leg, bearing housing at bottom",
+   "frame": 4
+  },
+  {
+   "name": "crown",
+   "file": "blocks/crown.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "left_socket",
+     "roles": [
+      "flange"
+     ],
+     "pose": "[0 50.0 0] mm"
+    },
+    {
+     "name": "right_socket",
+     "roles": [
+      "flange"
+     ],
+     "pose": "[0 -50.0 0] mm"
+    },
+    {
+     "name": "seat_tube",
+     "roles": [
+      "socket"
+     ],
+     "pose": "[0 0 30] mm"
+    },
+    {
+     "name": "clamp",
+     "roles": [
+      "clamp"
+     ],
+     "pose": "[0 20 30] mm"
+    }
+   ],
+   "desc": "crown joining the fork legs, seat-tube socket",
+   "frame": 7
+  },
+  {
+   "name": "crank",
+   "file": "blocks/crank.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "axle_bore",
+     "roles": [
+      "crank_mount"
+     ],
+     "pose": "[0 0 0] mm"
+    },
+    {
+     "name": "clamp",
+     "roles": [
+      "clamp"
+     ],
+     "pose": "[-16 0 0] mm"
+    },
+    {
+     "name": "pedal_mount",
+     "roles": [
+      "pedal"
+     ],
+     "pose": "[170.0 0 0] mm"
+    }
+   ],
+   "desc": "fdm/asa crank, split boss pinch-clamped to axle",
+   "frame": 10
+  },
+  {
+   "name": "bolt_m4",
+   "file": "blocks/bolt_m4.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "thread",
+     "roles": [
+      "thread"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ]
+    }
+   ],
+   "desc": "ISO 4762 bolt r2.0",
+   "frame": 13
+  },
+  {
+   "name": "bolt_m5",
+   "file": "blocks/bolt_m5.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "thread",
+     "roles": [
+      "thread"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ]
+    }
+   ],
+   "desc": "ISO 4762 bolt r2.5",
+   "frame": 16
+  },
+  {
+   "name": "bolt_m6",
+   "file": "blocks/bolt_m6.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "thread",
+     "roles": [
+      "thread"
+     ],
+     "direction": [
+      0,
+      0,
+      -1
+     ]
+    }
+   ],
+   "desc": "ISO 4762 bolt r3.0",
+   "frame": 19
+  },
+  {
+   "name": "axle",
+   "file": "blocks/axle.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "hub",
+     "roles": [
+      "keyed"
+     ]
+    },
+    {
+     "name": "brg_l",
+     "roles": [
+      "bearing_seat"
+     ],
+     "pose": "[0 58.0 0] mm"
+    },
+    {
+     "name": "brg_r",
+     "roles": [
+      "bearing_seat"
+     ],
+     "pose": "[0 -58.0 0] mm"
+    },
+    {
+     "name": "end_l",
+     "roles": [
+      "crank_mount"
+     ],
+     "pose": "[0 100.0 0] mm"
+    },
+    {
+     "name": "end_r",
+     "roles": [
+      "crank_mount"
+     ],
+     "pose": "[0 -100.0 0] mm"
+    }
+   ],
+   "desc": "20 mm steel axle",
+   "frame": 22
+  },
+  {
+   "name": "bearing",
+   "file": "blocks/bearing.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "bore",
+     "roles": [
+      "bore"
+     ]
+    },
+    {
+     "name": "seat",
+     "roles": [
+      "seat"
+     ]
+    }
+   ],
+   "desc": "6204-2RS deep-groove ball bearing",
+   "frame": 25
+  },
+  {
+   "name": "wheel",
+   "file": "blocks/wheel.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "hub",
+     "roles": [
+      "keyed"
+     ]
+    }
+   ],
+   "desc": "20in wheel, rim+spokes+tire, bought",
+   "frame": 28
+  },
+  {
+   "name": "pedal",
+   "file": "blocks/pedal.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "spindle",
+     "roles": [
+      "spindle"
+     ]
+    }
+   ],
+   "desc": "bicycle pedal",
+   "frame": 31
+  },
+  {
+   "name": "seatpost",
+   "file": "blocks/seatpost.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "tube",
+     "roles": [
+      "tube"
+     ],
+     "pose": "[0 0 30.0] mm"
+    },
+    {
+     "name": "top",
+     "roles": [
+      "top"
+     ],
+     "pose": "[0 0 300.0] mm"
+    }
+   ],
+   "desc": "27.2 tube",
+   "frame": 34
+  },
+  {
+   "name": "seatpost_head",
+   "file": "blocks/seatpost_head.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "base",
+     "roles": [
+      "base"
+     ]
+    },
+    {
+     "name": "rail_clamp",
+     "roles": [
+      "clamp"
+     ],
+     "pose": "[0 0 30] mm"
+    }
+   ],
+   "desc": "saddle cradle",
+   "frame": 36
+  },
+  {
+   "name": "saddle",
+   "file": "blocks/saddle.cad",
+   "scale": "macro",
+   "ports": [
+    {
+     "name": "rails",
+     "roles": [
+      "rails"
+     ]
+    }
+   ],
+   "desc": "saddle, bought",
+   "frame": 38
+  }
+ ],
+ "instances": [
+  {
+   "name": "wheel",
+   "template": "wheel",
+   "pose": "[0 0 254.0] mm",
+   "frame": 39
+  },
+  {
+   "name": "axle",
+   "template": "axle",
+   "pose": "[0 0 254.0] mm",
+   "frame": 40
+  },
+  {
+   "name": "bearing_left",
+   "template": "bearing",
+   "pose": "[0 51.0 254.0] mm",
+   "frame": 41
+  },
+  {
+   "name": "bearing_right",
+   "template": "bearing",
+   "pose": "[0 -51.0 254.0] mm",
+   "rot": "[0 0 180] deg",
+   "frame": 42
+  },
+  {
+   "name": "fork_left",
+   "template": "fork",
+   "pose": "[0 50.0 214.0] mm",
+   "frame": 43
+  },
+  {
+   "name": "fork_right",
+   "template": "fork",
+   "pose": "[0 -50.0 214.0] mm",
+   "rot": "[0 0 180] deg",
+   "frame": 44
+  },
+  {
+   "name": "crown",
+   "template": "crown",
+   "pose": "[0 0 674.0] mm",
+   "frame": 45
+  },
+  {
+   "name": "flange_bolt_left",
+   "template": "bolt_m5",
+   "parent": "crown",
+   "pose": "[0 50.0 12] mm",
+   "rot": "[180 0 0] deg",
+   "frame": 46
+  },
+  {
+   "name": "flange_bolt_right",
+   "template": "bolt_m5",
+   "parent": "crown",
+   "pose": "[0 -50.0 12] mm",
+   "rot": "[180 0 0] deg",
+   "frame": 47
+  },
+  {
+   "name": "seatpost_clamp_bolt",
+   "template": "bolt_m6",
+   "parent": "crown",
+   "pose": "[-20 20 30] mm",
+   "rot": "[0 90 0] deg",
+   "frame": 48
+  },
+  {
+   "name": "crank_left",
+   "template": "crank",
+   "pose": "[0 100.0 254.0] mm",
+   "frame": 49
+  },
+  {
+   "name": "crank_right",
+   "template": "crank",
+   "pose": "[0 -100.0 254.0] mm",
+   "rot": "[0 0 180] deg",
+   "frame": 50
+  },
+  {
+   "name": "crank_bolt_left",
+   "template": "bolt_m4",
+   "parent": "crank_left",
+   "pose": "[-16 0 20] mm",
+   "rot": "[180 0 0] deg",
+   "frame": 51
+  },
+  {
+   "name": "crank_bolt_right",
+   "template": "bolt_m4",
+   "parent": "crank_right",
+   "pose": "[-16 0 20] mm",
+   "rot": "[180 0 0] deg",
+   "frame": 52
+  },
+  {
+   "name": "pedal_left",
+   "template": "pedal",
+   "pose": "[170.0 90.0 254.0] mm",
+   "rot": "[-90 0 0] deg",
+   "frame": 53
+  },
+  {
+   "name": "pedal_right",
+   "template": "pedal",
+   "pose": "[-170.0 -90.0 254.0] mm",
+   "rot": "[90 0 0] deg",
+   "frame": 54
+  },
+  {
+   "name": "seatpost",
+   "template": "seatpost",
+   "pose": "[0 0 704.0] mm",
+   "frame": 55
+  },
+  {
+   "name": "seatpost_head",
+   "template": "seatpost_head",
+   "pose": "[0 0 1004.0] mm",
+   "frame": 56
+  },
+  {
+   "name": "saddle",
+   "template": "saddle",
+   "pose": "[0 0 1034.0] mm",
+   "frame": 57
+  }
+ ],
+ "connects": [
+  {
+   "a": "axle.hub",
+   "b": "wheel.hub",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "key"
+   },
+   "frame": 58
+  },
+  {
+   "a": "axle.brg_l",
+   "b": "bearing_left.bore",
+   "joint": {
+    "class": "revolute",
+    "mechanism": "bearing",
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "frame": 59
+  },
+  {
+   "a": "axle.brg_r",
+   "b": "bearing_right.bore",
+   "joint": {
+    "class": "revolute",
+    "mechanism": "bearing",
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "frame": 60
+  },
+  {
+   "a": "axle.end_l",
+   "b": "crank_left.axle_bore",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 61
+  },
+  {
+   "a": "axle.end_r",
+   "b": "crank_right.axle_bore",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 62
+  },
+  {
+   "a": "bearing_left.seat",
+   "b": "fork_left.bearing_seat",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 63
+  },
+  {
+   "a": "bearing_right.seat",
+   "b": "fork_right.bearing_seat",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 64
+  },
+  {
+   "a": "flange_bolt_left.thread",
+   "b": "fork_left.crown_flange",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "screw"
+   },
+   "frame": 65
+  },
+  {
+   "a": "flange_bolt_right.thread",
+   "b": "fork_right.crown_flange",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "screw"
+   },
+   "frame": 66
+  },
+  {
+   "a": "crown.seat_tube",
+   "b": "seatpost.tube",
+   "joint": {
+    "class": "prismatic",
+    "mechanism": "press",
+    "axis": [
+     0,
+     0,
+     1
+    ]
+   },
+   "frame": 67
+  },
+  {
+   "a": "seatpost_clamp_bolt.thread",
+   "b": "crown.clamp",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "screw"
+   },
+   "frame": 68
+  },
+  {
+   "a": "crank_bolt_left.thread",
+   "b": "crank_left.clamp",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "screw"
+   },
+   "frame": 69
+  },
+  {
+   "a": "crank_bolt_right.thread",
+   "b": "crank_right.clamp",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "screw"
+   },
+   "frame": 70
+  },
+  {
+   "a": "crank_left.pedal_mount",
+   "b": "pedal_left.spindle",
+   "joint": {
+    "class": "revolute",
+    "mechanism": "bearing",
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "frame": 71
+  },
+  {
+   "a": "crank_right.pedal_mount",
+   "b": "pedal_right.spindle",
+   "joint": {
+    "class": "revolute",
+    "mechanism": "bearing",
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "frame": 72
+  },
+  {
+   "a": "seatpost.top",
+   "b": "seatpost_head.base",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 73
+  },
+  {
+   "a": "seatpost_head.rail_clamp",
+   "b": "saddle.rails",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   },
+   "frame": 74
+  }
+ ]
+}

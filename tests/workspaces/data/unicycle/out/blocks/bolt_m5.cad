@@ -1,0 +1,4 @@
+desc: bolt_m5
+component bolt_m5
+shank  add cyl:r2.5mmh16.0mm
+head   add cyl:r4.5mmh3.5mm @0mm,0mm,16.0mm

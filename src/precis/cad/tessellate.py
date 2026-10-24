@@ -159,8 +159,20 @@ def _circular(rb: float, rt: float, h: float, *, seg: int = _FN) -> Mesh:
     return _extrude(_ngon_xy(seg, rb), _ngon_xy(seg, rt), h)
 
 
-def _sphere(r: float) -> Mesh:
-    nlon, nlat = _FN, _FN_LAT
+def _circular_seg(chord: float, r: float) -> int:
+    """Segments per revolution for a chord tolerance: the inscribed
+    polygon's sagitta is ``r·(1 − cos(π/n))``, so ``n = ceil(π /
+    acos(1 − chord/r))`` (:mod:`precis.cad.fit`, Decision 2 — small parts
+    get finer meshes while ``_FN`` stays the export default)."""
+    if not chord > 0.0 or not r > 0.0:
+        return _FN
+    # acos domain is [-1, 1]: chord ≥ 2·r degenerates to n=1 → floor at 8.
+    x = max(-1.0, 1.0 - chord / r)
+    return max(8, math.ceil(math.pi / math.acos(x)))
+
+
+def _sphere(r: float, *, seg: int = _FN) -> Mesh:
+    nlon, nlat = seg, max(4, seg // 2)
     verts: list[tuple[float, float, float]] = [(0.0, 0.0, r)]  # north pole
     for i in range(1, nlat):
         phi = math.pi * i / nlat
@@ -189,8 +201,8 @@ def _sphere(r: float) -> Mesh:
     return _orient_outward(np.array(verts, dtype=np.float64), np.array(tris, np.int64))
 
 
-def _torus(R: float, r: float) -> Mesh:
-    nu, nv = _FN, _FN
+def _torus(R: float, r: float, *, seg_u: int = _FN, seg_v: int = _FN) -> Mesh:
+    nu, nv = seg_u, seg_v
     verts: list[tuple[float, float, float]] = []
     for i in range(nu):
         u = 2 * math.pi * i / nu
@@ -224,21 +236,35 @@ def _box_mesh(w: float, d: float, h: float) -> Mesh:
     return _extrude(ring, list(ring), h)
 
 
-def mesh_shape(spec: ShapeSpec) -> Mesh:
-    """Tessellate a parsed :class:`ShapeSpec` in its local frame."""
+def mesh_shape(spec: ShapeSpec, *, chord: float | None = None) -> Mesh:
+    """Tessellate a parsed :class:`ShapeSpec` in its local frame.
+
+    ``chord=None`` (default) is the export path's fixed ``_FN`` — the
+    JS parity test covers only that. With a chord (metres), circular
+    primitives take ``n = ceil(π / acos(1 − chord/r))`` segments
+    (:func:`_circular_seg`) so inscribed polygons bias every curved
+    surface inward by at most ``chord`` — the fit check's scale-relative
+    tessellation."""
     a, p = spec.alias, spec.params
     if a == "box":
         return _box_mesh(p["w"], p["d"], p["h"])
     if a == "cyl":
-        return _circular(p["r"], p["r"], p["h"])
+        seg = _FN if chord is None else _circular_seg(chord, p["r"])
+        return _circular(p["r"], p["r"], p["h"], seg=seg)
     if a == "cone":
-        return _circular(p["r"], 0.0, p["h"])
+        seg = _FN if chord is None else _circular_seg(chord, p["r"])
+        return _circular(p["r"], 0.0, p["h"], seg=seg)
     if a == "tcone":
-        return _circular(p["rb"], p["rt"], p["h"])
+        seg = _FN if chord is None else _circular_seg(chord, max(p["rb"], p["rt"]))
+        return _circular(p["rb"], p["rt"], p["h"], seg=seg)
     if a == "sphere":
-        return _sphere(p["r"])
+        return _sphere(
+            p["r"], seg=_FN if chord is None else _circular_seg(chord, p["r"])
+        )
     if a == "torus":
-        return _torus(p["R"], p["r"])
+        seg_u = _FN if chord is None else _circular_seg(chord, p["R"] + p["r"])
+        seg_v = _FN if chord is None else _circular_seg(chord, p["r"])
+        return _torus(p["R"], p["r"], seg_u=seg_u, seg_v=seg_v)
     if a == "hex":
         ring = _ngon_xy(6, p["r"])
         return _extrude(ring, list(ring), p["h"])
@@ -392,7 +418,9 @@ def clamped_halfspace_mesh(node: NodeSpec, aabb: tuple[Vec3, Vec3]) -> list[Mesh
     return out
 
 
-def node_meshes(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None = None) -> list[Mesh]:
+def node_meshes(
+    node: NodeSpec, aabb: tuple[Vec3, Vec3] | None = None, *, chord: float | None = None
+) -> list[Mesh]:
     """World-space meshes for a node — one per pattern instance (or one).
 
     A ``chamfer`` node has no finite mesh of its own; passing the design's
@@ -409,7 +437,7 @@ def node_meshes(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None = None) -> list[M
                 "clamp against — pass design_aabb(spec)"
             )
         return clamped_halfspace_mesh(node, aabb)
-    v, t = mesh_shape(spec)
+    v, t = mesh_shape(spec, chord=chord)
     if node.pattern is not None:
         return [(apply_rigid(xf, v), t) for xf in _pattern_transforms(node)]
     return [(apply_rigid(_node_xform(node.loc, node.rot), v), t)]

@@ -1,0 +1,6 @@
+desc: crank arm
+component crank
+boss   add cyl:r18mmh20mm @0mm,10mm,0mm rot:90deg,0deg,0deg
+arm    add box:w170.0mmd20mmh30mm @85.0mm,0mm,-15mm
+bore   cut cyl:r10mmh24mm @0mm,12mm,0mm rot:90deg,0deg,0deg
+pedal  cut cyl:r6mmh24mm @170.0mm,12mm,0mm rot:90deg,0deg,0deg

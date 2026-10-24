@@ -1,5 +1,6 @@
 ---
-status: draft
+status: in-progress
+claimed-by: fitcheck-s1
 title: se: built-in fit / interference / mass check and a probe primitive for scripted designs
 pillar: 3d-design
 prio: high
@@ -69,7 +70,7 @@ them):
   bodies). bearing/wheel is 1.0 mm by `relate` and 0.148 mm by mesh; hand
   check of the 60-degree spoke against the bearing's outer corner gives
   about 0.15–0.2 mm (the 14^3 seed grid over a 508 mm region misses it).
-  So `relate.clearance` cannot be the referee as-is (Questions 1).
+  So `relate.clearance` cannot be the referee as-is (Decision 11).
 - **Overlap magnitude is a different measure.** `relate`'s negative gap is
   2 x the deepest half-overlap (a fully buried M5 shank reads -5.0). Mesh
   reports intersection volume plus thickness 2V/A (same shank: 234 mm^3,
@@ -124,7 +125,7 @@ v2 rulings on the review:
    threshold, or an overlap thinner than `2 x chord`, is "within mesh
    resolution". The referee re-tessellates just those two components at
    `chord/10` and recomputes, which is deterministic and converges. It is not
-   `relate.clearance` until that is fixed (Questions 1).
+   `relate.clearance` (Decision 11).
 4. **Geometry hash and cache.** The key is sha256 of the template's
    canonical `SceneSpec` text (`precis.cad.dsl.format_spec` per node) plus
    the chord. The pair cache key is (hash a, hash b, relative transform
@@ -192,6 +193,30 @@ v2 rulings on the review:
     (ruling B) and `precis.component_series`, per the import-linter contract
     "precis_geom imports only the precis-geom wheel's carved precis subset"
     in `pyproject.toml`.
+11. **Referee is mesh refinement, not `relate.clearance`** (Reto
+    2026-10-24, answering Questions 1): mesh refinement at `chord/10` is
+    the referee; `relate.clearance` is retired from se checks (gr514448
+    tracks it). The fit engine never calls `relate.clearance`.
+12. **Field leaves (`rd`, `blend`, `field:`/`relief:`)** (Reto 2026-10-24,
+    answering Questions 2): listed as "not fit-checked" in v1 — reported
+    as an info row, never a failure.
+13. **Default-on at `finish()`** (Reto 2026-10-24, answering Questions 3):
+    `finish()` runs the check by default and `check=False` opts out. A run
+    whose check fails still writes `manifest.json`; only `strict=True`
+    raises.
+14. **Multi-connect naming** (fitcheck-s1, slice 1, spec ambiguity): when
+    >1 connect lands on a pair, the report's `rule` cell names the winning
+    rule plus every connect's `a.port↔b.port` endpoints ("the strictest
+    rule wins and both connects are named").
+15. **`Placed.refine` shape** (fitcheck-s1, slice 1, spec ambiguity): the
+    referee callback is `refine(finer_chord) -> {component: Manifold}`
+    returning **already-placed** solids, so the engine recombines and
+    re-measures without knowing templates or frames.
+16. **`fit()` extra kwargs** (fitcheck-s1, slice 1, spec ambiguity): the
+    spec signature lists `*, sizes=None, materials=None`; the engine also
+    takes keyword-only `min_clearance` (per-pair overrides — the manifest
+    `fit_rules` rows) and `pair_cache` (the Decision-4 pair memo), both
+    caller-supplied data, keeping the engine pure.
 
 ## Slices
 
@@ -204,6 +229,8 @@ v2 rulings on the review:
 | 5 | consumers on real cad (ruling A): validate / clearance / DOF / toolaccess / insertion_path; template handling; render envelopes | no | yes (rewrites shipped checks) | none |
 
 ### 1. Mesh engine and offline check
+
+**Claimed:** fitcheck-s1 (Devin, 2026-10-24).
 
 Files:
 - `src/precis/cad/fit.py` (new): `tessellate_component(spec, component,
@@ -430,7 +457,7 @@ Slices 1–5, behind `view='fit'`, `out.check()`, `out.probe()` and
 - Atomic-scale blocks (Å): fit is macro only; atomic blocks are listed as
   "not fit-checked".
 - `rd`, blend and `field:` leaves (`export.needs_field_backend`): listed as
-  "not fit-checked" until the field mesher is fast enough (Questions 2).
+  "not fit-checked" until the field mesher is fast enough (Decision 12).
 
 ## Acceptance criteria
 
@@ -518,18 +545,4 @@ part library access."
     'length_min': '16 mm', 'head': 'socket'})` as a structured filter.
   - The snapshot step in the workspace job.
 
-## Questions
 
-1. **`relate.clearance` as referee.** The measurement shows it 11 mm low on
-   axle/fork (SDF bound inside a carved body) and 0.85 mm high on
-   bearing/wheel (seed grid misses). The proposal is to keep mesh refinement
-   at `chord/10` as the referee (Decision 3) and file a gripe on `relate`.
-   Ask: should `relate.clearance` be fixed, or retired from se checks?
-2. **Field leaves** (`rd`, blend, `field:`). The mesh engine can't fold them
-   analytically; `precis.cad.fieldmesh` can, at an unmeasured cost.
-   Proposal: list them as "not fit-checked" in v1 and measure fieldmesh cost
-   before deciding.
-3. **Default-on at `finish()`.** The gripe asks for "every script build"; at
-   ~110 ms cold this is cheap. Proposal: on by default, `check=False` opts
-   out. Confirm that a run whose check fails still writes `manifest.json`
-   (it should; `strict=True` is the hard stop).

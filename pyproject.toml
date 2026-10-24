@@ -816,6 +816,8 @@ ignore_imports = [
     "precis_geom.* -> precis.utils.units",
     "precis_geom -> precis.component_series",
     "precis_geom.* -> precis.component_series",
+    "precis_geom -> precis.fit_classes",
+    "precis_geom.* -> precis.fit_classes",
 ]
 # The wheel's allow-list is the single boundary (Reto 2026-10-24, chat-9a):
 # `precis_geom` may import exactly the `precis` modules the precis-geom

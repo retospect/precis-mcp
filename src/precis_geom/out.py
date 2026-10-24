@@ -315,6 +315,12 @@ class Run:
         #: ``kind='pcb'`` document, not the se blocks/instances one.
         self._board: tuple[Any, list[dict[str, Any]]] | None = None
         self.diff: dict[str, Any] | None = None
+        #: ``check=`` from :func:`run` — ``False`` opts the fit check out
+        #: (Decision 13), a dict carries ``check()`` kwargs; ``True`` is the
+        #: default run-at-``finish()``.
+        self._check_opt: bool | dict[str, Any] = True
+        self._check_done = False
+        self._fit_rules: dict[str, Any] = {}
 
     # -- manifest calls ---------------------------------------------------
 
@@ -538,6 +544,8 @@ class Run:
             doc["connects"] = list(self._connects)
         if self._rays:
             doc["rays"] = list(self._rays)
+        if self._fit_rules:
+            doc["fit_rules"] = dict(self._fit_rules)
         return doc
 
     def finish(
@@ -589,7 +597,56 @@ class Run:
             (self.root / "trace.json").write_text(
                 _ts.dumps(trace_doc) + "\n", encoding="utf-8"
             )
+        if self._check_opt is not False:
+            opts = self._check_opt if isinstance(self._check_opt, dict) else {}
+            rep = self.check(**opts)
+            n = len(rep.findings)
+            print(
+                f"{self.root}: fit: {'ok' if not n else f'{n} finding(s) -> fit.json'}"
+            )
         return self.root
+
+    def check(
+        self,
+        *,
+        strict: bool = False,
+        min_clearance: dict[tuple[str, str], Any] | None = None,
+        materials: dict[str, float] | None = None,
+    ) -> Any:
+        """The mesh fit check over this run (``precis.cad.fit`` —
+        se-fit-check-and-probe slice 1). Called by :meth:`finish` unless
+        ``out.run(..., check=False)`` opted out; callable directly for a
+        mid-run look (blocks are written eagerly). Writes ``fit.json`` and
+        rotates the previous one to ``fit.prev.json``. ``min_clearance``
+        entries land as manifest ``fit_rules`` so a later
+        ``fit.check(run_dir)`` re-uses them. ``strict=True`` raises
+        :class:`precis_geom.fit.FitCheckError` on any error finding —
+        ``manifest.json`` is already written either way (Decision 13)."""
+        from precis_geom import fit as _fit
+
+        if min_clearance:
+            stored = self._fit_rules.setdefault("min_clearance", [])
+            seen = {tuple(sorted(r["pair"])) for r in stored}
+            for pair, value in min_clearance.items():
+                if tuple(sorted(pair)) not in seen:
+                    stored.append({"pair": sorted(pair), "value": str(value)})
+        tr = _trace.current()
+        trace_doc = tr.dump({}) if tr is not None else None
+        report = _fit.check_run(
+            self.root,
+            self.manifest(),
+            trace_doc,
+            min_clearance=min_clearance,
+            materials=materials,
+        )
+        _fit._write_report(self.root, report)
+        self._check_done = True
+        if strict and report.has_errors:
+            raise _fit.FitCheckError(
+                f"fit check failed: {len(report.findings)} finding(s) — "
+                f"see {self.root}/fit.json"
+            )
+        return report
 
     def fail(
         self,
@@ -884,6 +941,7 @@ def run(
     work_root: str | os.PathLike[str] | None = None,
     notes: str | None = None,
     run_meta: dict[str, Any] | None = None,
+    check: bool | dict[str, Any] = True,
 ) -> Iterator[Run]:
     """One run's ``out/``, manifest + trace written on exit.
 
@@ -902,6 +960,7 @@ def run(
     root = _resolve_target(target)
     wr = Path(work_root) if work_root is not None else root.parent.parent
     o = Run(root)
+    o._check_opt = check
     live = (
         contextlib.nullcontext()
         if _trace.current() is not None

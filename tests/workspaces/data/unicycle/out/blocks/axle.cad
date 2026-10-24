@@ -1,0 +1,3 @@
+desc: axle
+component axle
+rod add cyl:r10mmh220.0mm @0mm,110.0mm,0mm rot:90deg,0deg,0deg

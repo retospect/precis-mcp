@@ -1,0 +1,5 @@
+desc: fork leg
+component fork
+leg    add box:w30mmd45mmh460.0mm
+house  add cyl:r30mmh45mm @0mm,22.5mm,40mm rot:90deg,0deg,0deg
+bore   cut cyl:r23.5mmh50mm @0mm,25mm,40mm rot:90deg,0deg,0deg

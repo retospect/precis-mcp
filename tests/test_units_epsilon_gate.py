@@ -182,6 +182,15 @@ _EXEMPT_SITES = frozenset(
         # scope to be relative to. Deriving it would change merge results at
         # every ray length != 1 m.
         "precis_se/rays_macro.py::_RUN_EPS_M",
+        # `precis/cad/fit.py`'s tolerance floor: Decision 5 of
+        # se-fit-check-and-probe.md fixes ``tol = max(0.05 mm, 3×chord,
+        # process)`` — the scale-relative term (3×chord, derived from the
+        # component's own tessellation chord) sits beside it; the floor is
+        # the deliberately absolute term that keeps ``tol`` non-zero when
+        # the governing chord collapses (analytic-AABB bound, degenerate
+        # component). It is the spec's author-stated absolute, not a
+        # missed derivation — same carve-out as ``CONTACT_TOL_MM``.
+        "precis/cad/fit.py::TOL_FLOOR_M",
     }
 )
 

@@ -1,0 +1,4 @@
+desc: crown
+component crown
+body   add box:w45mmd130mmh60mm
+sock   cut cyl:r13.75mmh64mm @0mm,0mm,-2mm

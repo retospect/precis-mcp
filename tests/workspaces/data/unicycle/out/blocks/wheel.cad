@@ -1,0 +1,7 @@
+desc: wheel
+component wheel
+tire   add cyl:r254.0mmh45.0mm @0mm,22.5mm,0mm rot:90deg,0deg,0deg
+inner  cut cyl:r240.0mmh47.0mm @0mm,23.5mm,0mm rot:90deg,0deg,0deg
+hub    add cyl:r25mmh45.0mm @0mm,22.5mm,0mm rot:90deg,0deg,0deg
+spokes add box:w240.0mmd3mmh3mm @132.0mm,0mm,0mm polar:n12r0mm
+bore   cut cyl:r10mmh47.0mm @0mm,23.5mm,0mm rot:90deg,0deg,0deg

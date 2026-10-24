@@ -1,0 +1,4 @@
+desc: bolt_m4
+component bolt_m4
+shank  add cyl:r2.0mmh20.0mm
+head   add cyl:r3.6mmh2.8mm @0mm,0mm,20.0mm

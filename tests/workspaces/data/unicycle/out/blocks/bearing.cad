@@ -1,0 +1,4 @@
+desc: 6204-2RS
+component bearing
+ring add cyl:r23.5mmh14mm @0mm,7mm,0mm rot:90deg,0deg,0deg
+hole cut cyl:r10mmh16mm @0mm,8mm,0mm rot:90deg,0deg,0deg

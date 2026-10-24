@@ -67,6 +67,7 @@ signature churn.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import math
 import re
@@ -259,6 +260,36 @@ def parse_quantity(
     if dimension == "angle":
         text = _ANGLE_CIRC_RE.sub("deg", text)
 
+    authored, si, units = _parse_text(text, dimension, require_unit, arg_name)
+
+    # ``record_used=False`` marks a re-parse of stored data (a registry
+    # row's unit, not a unit the caller just typed) so it cannot steer
+    # respond-in-kind — everything else lands in the used-units sink. The
+    # record is replayed on cache hits so the sink sees the same
+    # (first-wins, conflict→None) sequence as an uncached run.
+    if require_unit and record_used and units is not None:
+        _record_used(dimension, units)
+    if warnings is not None and require_unit:
+        advice = awkward_mantissa_advice(authored, si, dimension, arg_name=arg_name)
+        if advice:
+            warnings.append(advice)
+    return si
+
+
+@functools.lru_cache(maxsize=4096)
+def _parse_text(
+    text: str,
+    dimension: Dimension,
+    require_unit: bool,
+    arg_name: str | None,
+) -> tuple[float, float, PlainUnit | None]:
+    """The pint parse behind :func:`parse_quantity`, memoised — DSL scene
+    parsing repeats the same tokens (`0mm`, `90deg`) per node, and pint's
+    ``parse_expression`` is the hot path there. Returns ``(authored
+    magnitude, SI magnitude, units-or-None)``; ``units`` is ``None`` on
+    the bare-numeral early returns, which never reach the used-units
+    sink. Exceptions are never cached — a bad token re-parses and
+    re-raises every call, exactly as before."""
     ureg = _registry()
     try:
         parsed = ureg.parse_expression(text)
@@ -279,7 +310,7 @@ def parse_quantity(
         value = float(parsed)
         if require_unit:
             raise UnitRequiredError(value, dimension, arg_name=arg_name)
-        return value
+        return value, value, None
 
     if parsed.dimensionless and dimension != "angle":
         # A stray dimensionless Quantity really is a bare number for the
@@ -294,7 +325,7 @@ def parse_quantity(
         value = float(parsed.magnitude)
         if require_unit:
             raise UnitRequiredError(value, dimension, arg_name=arg_name)
-        return value
+        return value, value, None
 
     try:
         si = parsed.to(_SI_UNIT[dimension])
@@ -303,19 +334,7 @@ def parse_quantity(
             f"{text!r} is not a {dimension} quantity: {e}",
             next=f"use a {dimension} unit, e.g. {_HINT_UNITS[dimension][0]!r}",
         ) from e
-
-    # ``record_used=False`` marks a re-parse of stored data (a registry
-    # row's unit, not a unit the caller just typed) so it cannot steer
-    # respond-in-kind — everything else lands in the used-units sink.
-    if require_unit and record_used:
-        _record_used(dimension, parsed.units)
-    if warnings is not None and require_unit:
-        advice = awkward_mantissa_advice(
-            float(parsed.magnitude), float(si.magnitude), dimension, arg_name=arg_name
-        )
-        if advice:
-            warnings.append(advice)
-    return float(si.magnitude)
+    return float(parsed.magnitude), float(si.magnitude), parsed.units
 
 
 #: Authored mantissas with magnitude outside [_AWKWARD_LO, _AWKWARD_HI)
