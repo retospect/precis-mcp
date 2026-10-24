@@ -24,10 +24,12 @@ from a ``Net``.
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Callable
 
 import numpy as np
 
+from . import _VerbModule
 from .build import Net
 from .lattice import ideal_angle_deg
 
@@ -294,3 +296,8 @@ def stick_info(
 def stick(net: Net, tether: Tether | None = None, k_tether: float = 0.0) -> np.ndarray:
     pos, _ = stick_info(net, tether=tether, k_tether=k_tether)
     return pos
+
+
+# The verb submodule is the callable: ``hexfold.stick(net)`` runs
+# ``stick(net)`` (hexfold._VerbModule, gr514180).
+sys.modules[__name__].__class__ = _VerbModule

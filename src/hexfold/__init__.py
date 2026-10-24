@@ -49,47 +49,47 @@ as its own pip later.  Export seed (README, examples, CITATION) is the
 repo-root ``hexfold/`` directory.
 
 ``from hexfold import build`` (and ``check``, ``stick``,
-``canonical_json``) resolves the verb callables lazily — each name also
-names its submodule, so the re-export lives behind PEP 562
-``__getattr__`` rather than an eager binding that would shadow it:
-``import hexfold.build as m`` keeps yielding the module for the callers
-that read (and monkeypatch) module attributes off it, and
-``import hexfold`` stays light (``hexfold.stick`` keeps numba out of
-the path the same way).  The wart that buys that: the two spellings
-share one attribute, so the last import form to touch it wins — a plain
-``import hexfold.build`` binds the module back and a later
-``from hexfold import build`` in the same process gets the module, not
-the callable.  Fresh-process ``from hexfold import …`` — the
-``python -c`` / workspace-script path — always gets the callable.
+``canonical_json``) yields the verb callable. The first three are the
+submodules themselves made callable (:class:`_VerbModule`): one object
+serves ``import hexfold.build as m`` — module attributes stay readable
+and monkeypatchable — ``from hexfold import build`` and
+``hexfold.build(spec)``, so no import order can rebind the name to a
+plain module (gr514180). ``canonical_json`` lives in
+``hexfold.canon`` and is re-exported by PEP 562 ``__getattr__`` — its
+module's name differs, so the two spellings can never collide.
+``import hexfold`` stays light: the verb submodules load on first use,
+and ``hexfold.stick`` keeps numba out of the path the same way.
 """
 
-import sys
+import types
 from typing import Any
 
 __version__ = "0.3.6"
 
-#: verb name -> the submodule that defines the callable of the same
-#: name (``canonical_json`` lives in ``hexfold.canon``).
-_LAZY_EXPORTS = {
-    "build": "hexfold.build",
-    "check": "hexfold.check",
-    "stick": "hexfold.stick",
-    "canonical_json": "hexfold.canon",
-}
+
+class _VerbModule(types.ModuleType):
+    """A verb submodule that is itself the verb callable:
+    ``hexfold.build`` is the module (``Net``, ``Port``, the
+    monkeypatchable internals) and ``hexfold.build(spec)`` runs
+    :func:`build`. One object for every spelling, so ``import
+    hexfold.build`` and ``from hexfold import build`` can never
+    disagree on what ``hexfold.build`` is (gr514180). Each verb module
+    installs this class on itself at the bottom of its file."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return getattr(self, self.__name__.rpartition(".")[2])(*args, **kwargs)
 
 
 def __getattr__(name: str) -> Any:
-    submodule = _LAZY_EXPORTS.get(name)
-    if submodule is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
+    """Lazy top-level verbs: ``from hexfold import build|check|stick``
+    imports the (callable) submodule; ``canonical_json`` re-exports
+    :func:`hexfold.canon.canonical_json`."""
+    if name in ("build", "check", "stick"):
+        from importlib import import_module
 
-    fn = getattr(import_module(submodule), name)
-    # A first ``hexfold.<verb>`` load binds the submodule onto this
-    # attribute; drop the binding again so the next
-    # ``from hexfold import <verb>`` still reaches ``__getattr__`` (the
-    # submodule itself stays in ``sys.modules`` — ``import
-    # hexfold.<verb>`` and ``from hexfold.<verb> import X`` are
-    # unaffected).
-    sys.modules[__name__].__dict__.pop(name, None)
-    return fn
+        return import_module(f"{__name__}.{name}")
+    if name == "canonical_json":
+        from .canon import canonical_json
+
+        return canonical_json
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

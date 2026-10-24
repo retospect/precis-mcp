@@ -260,13 +260,10 @@
       "atoms": 427,
       "call": "build_fin120(fin-k3-120-z tube=[10,6] side=out rows=3)",
       "sha256": {
-        "bonds": "8c6313557c1fd39a312f7b2464d22c89cacd7523aaf46f34d5f072390403b130",
-        "bonds.alt": "5bc10088bec23b318c0992412809f98336deae61a8bc97de8d01bb1c78340b94",
-        "coords": "7fd7d3320b50ae881b5b02b5a5b989070c5cef1c31214b004d76bba552526f5e",
-        "coords.alt": "d14e8a9883f859025ddc9fd4cc929bc0f9e9927b4fdceb43f389be1b04228232",
+        "bonds": "5bc10088bec23b318c0992412809f98336deae61a8bc97de8d01bb1c78340b94",
+        "coords": "d14e8a9883f859025ddc9fd4cc929bc0f9e9927b4fdceb43f389be1b04228232",
         "elements": "9a948ecd696c5b803af2af04fa6b04d4c0a431247e1bd6ba713501717109de49",
-        "terminated": "406c4edf8dd75e75512445ad01dc90ac8644d0d4808d838d726cf55e1f45baf8",
-        "terminated.alt": "7be552a67b2cdd456ddd6f5670ca2a178caad709e9e9acda9888a07a42ebec32"
+        "terminated": "7be552a67b2cdd456ddd6f5670ca2a178caad709e9e9acda9888a07a42ebec32"
       }
     },
     "se/fin120/b": {
@@ -283,46 +280,37 @@
       "atoms": 1422,
       "call": "build_prism120(prism-k3-120-z rows=6 periods=8 strip_rows=4 '++++++')",
       "sha256": {
-        "bonds": "519242999c91e7eb563e7419535bc83b410725b580af3e409953a236b118d621",
-        "coords": "b765013a7d1dd96167370a18ab90b3742b925a15fb3c5276ca5a35c81dc36c51",
+        "bonds": "e2ba3c3bd4b2792d4f9d861767960062b8310c4295984c7c56ae3a90010c13bf",
+        "coords": "d94186fe7c7588d2c068ba7e084171f4a9a9e8f1675b359e613b0a0dd0af6967",
         "elements": "b9a8e499836d01e8bcb1e634d9fc1090dd2046b1ba48e1aefd552b5cfb906dc4",
         "junctions": "232e6761e176c9c5db2e463d3729c9b5d9f2acd5b3f397bf6ee9015db47f8cf3",
         "seam_atoms": "40f944a812ed0613ee12dc5d46427b80b0a16def96cd38c79bc8891f306bbf0f",
-        "sites": "9bfac1f39b4e2f78ced6f4aad3682b181334bbecbcb3832b30da974d59e73697",
-        "terminated": "e94101c2c95f9cae295c0b73d06cb0cf63dfc7efbe568ad33f86c0932b2c6c00"
+        "sites": "61e38cbf45e2c0eeeedc7953ee592ee5c7cf6c31c0cbb6689bb01bbfbf5964d5",
+        "terminated": "295781b7ed7f715bfe9789373b5741b04ba2a6f36d7dd863c1b5505f22f9154a"
       }
     },
     "se/prism/b": {
       "atoms": 1452,
       "call": "build_prism120(prism-k3-120-z rows=6 periods=4 strip_rows=2 '+++-+++-+++-' pores)",
       "sha256": {
-        "bonds": "8ce1084096ba77edab962b8b04894f6fff6f9e67c3a747f9c683249e30258869",
-        "bonds.alt": "88e82ebaa73dbce404985088f1303edcaaf373807a327eacb6fd9fbdac03ba59",
-        "coords": "f535b23bd5d2ff59464e56a3369bf3153667f70040eb970ac5b533ad11ab052b",
-        "coords.alt": "10ab43d7c301faf59da239bd8d36b50f46b9a347296171142253db13b4d5bacb",
+        "bonds": "b9b507be6721c34b662a86bf75ea9de5abd269b32813206b25829a2a5a13bdb7",
+        "coords": "dd15fa0ab558e21c64825c8db9cc7c1aa4ad3636758f2dd662a592c6f571125c",
         "elements": "37e0fbc9686b1280549ce05b32bffa30e85f2752f3c84f20853bd2831fe0f5bf",
         "junctions": "c31d9268ce065edfdffd8d5828f9614dd9263b16e16fedc50f6dca0eb614572e",
         "seam_atoms": "9055ea61d3d1921eae57e26f36417c4c806c22a5fd538564382da61735da260f",
-        "sites": "c8aa30e5c1c06e31dc3e32c5144798208e70da32026a2778725d67e50d74ff11",
-        "sites.alt": "91d8670124db8352857afc11b9cfe9e285ff2506cb07ed4b1874d7a1f58a57cb",
-        "terminated": "23a187f6449adaede303d67baa787399ceca42cf8b0193e92875bdd618359836",
-        "terminated.alt": "fbc94ed83f8822926d21a77aa31b9b661e6d0f8c9be28617f7c59769e86672d2"
+        "sites": "d6e33c74251cf132489a5c7507215fb2265ee258e0d2c33bda17544b96f8148c",
+        "terminated": "6ed377d9c2753ab35e5b72a87d18149b917c28532260a5924bacabd764fdd059"
       }
     },
     "se/rail/a": {
       "atoms": 741,
       "call": "build_rail120(rail-k3-120-z tube=[10,6] rails=3 rows=3)",
       "sha256": {
-        "bonds": "a3cbbef3bbc7ebbcb91ecc7376b77cd9b51048728f0cc0f2486c4c789a7e1c63",
-        "bonds.alt": "84070c0e9264ebebbbab12b838c5d5e23ad9b919dcc64505477e7708810bebc1",
-        "coords": "d9becce84769f0e5982b0ceee7ba132481118e7089e61b386a20bb0f85bfbec0",
-        "coords.alt": "4c5834e1a85acee9743fae33cc61ac243df336e30f3ee30726cafca65c9c1f63",
+        "bonds": "3c22454f1f184038cdb142b0e12b593e5105976697e48d3b6237d072a9fe13ba",
+        "coords": "10e0cf245250b7acf5f6cac280e4568a132e56d28701495569a884cd54d143a1",
         "elements": "d93492c49123f774a2559eab696d267a4801bdc6b62883ba94d8af1ec5bc174e",
-        "elements.alt": "fbc333397c9a83fcb65b49ab04118fe759dd4e096b913f4e4eac80bdc55b2ae3",
-        "sites": "a1d86b02b8bff1b2508165cb33e5560478a2d683b2608128099b7ee1ea332b47",
-        "sites.alt": "0f6d6854b0ad88a96a072b9f96b4a37a7976d9c1fe2ea92bd6c2726eb0e59587",
-        "terminated": "ac72a90610c0e2e7800f574de93f7a2517b40a4b4e9faa9d3a73f2ceeb171800",
-        "terminated.alt": "7d9c7a711bf49c789f2f982efaf3f47cc0dd5d300b4dc842def31a64b6bd6802"
+        "sites": "3f6333d4ccf976f8f431199c2fc88ee670bfa9b67f8a9538ac3290cf38006552",
+        "terminated": "a270348033dc55e2eb0511954877236f414ac0ec65ad3ce267283265f0837dc2"
       }
     },
     "se/rail/b": {
@@ -400,26 +388,20 @@
       "atoms": 245,
       "call": "build_y_junction(k3-sp2-120-z sheet=[6,4])",
       "sha256": {
-        "bonds": "c6fbffa9a1308dab67074da266295ba6aabb1b6a2e53ff58c266b50656ac1402",
-        "bonds.alt": "b7e71b10af1c702599ace788866537d7ee8a1dea5b760661a182024d748629c6",
-        "coords": "19202a59de6d7d9c152309a9290af405762f0775ddcef6a82578bbae3f34a7a0",
-        "coords.alt": "e8e668bc9a81b6afdbc470755b4ba6c0ccd2b9deccb1d392acfd54714f7d13fa",
+        "bonds": "b5e6597c472b17a4179e69d9c62e38d2fb7468e2193e359500d84c7ccae5c3ab",
+        "coords": "80c49b27280d1a1ab8ef971179eb6aca83677ac7fef8641c43fdbbf04646f68a",
         "elements": "a1570562abab6451205254f4d6e2d6dec10c2ab1870040bb793688e89bccfda8",
-        "terminated": "bb795506cdb5ee1a6a999e1b7e97fd2ceca44e1ab7d5bb4737671709c624b344",
-        "terminated.alt": "c265b63852a258632e4b960a8a798c3ace9dbbbc6b7e27d6d89ba488e62bb357"
+        "terminated": "e323c0560e1833777ad3eb4fc78adb7603ad23a435fc5c1cbd81317d3797fc20"
       }
     },
     "se/y/b": {
       "atoms": 147,
       "call": "build_y_junction(k3-sp2-120-z sheet=[4,3])",
       "sha256": {
-        "bonds": "229ca44190f10a60131cfe032610dc765003500b00340ce11936551d822c24d3",
-        "bonds.alt": "d1c7cd0dafe1ac08b2281e621e8527ca4eb494260657d29daf0c70b2469ff63f",
-        "coords": "b41e3fbb1e5f1bfb4c33f0ffb1361c7ccf1704c1f226af27dd1d33ace15d6d3c",
-        "coords.alt": "441993d64b1d0af8347b774c9924838dade717b9e759e9daa24d5a83940bf7b0",
+        "bonds": "2b7db1bd305fc1108383fd4c7c53c187f2419c7c38f901fd09b23fccaa533873",
+        "coords": "7ada306cfcd2cc49a35c36c1ad780fb89022ebd9b0eaa42fda1e4fc615255e52",
         "elements": "b3e69148ad2e0fae61888f497eca257aec5f3561c9e0335e21762c46af737c43",
-        "terminated": "e057c5744c2c0ad4d585acd82ec204a78b679682db300899f0a58fdf88e1dcb5",
-        "terminated.alt": "5f678f2cf31af2f25dac3c061bc0799c1ba00fc516fcc3143b7b275e86094680"
+        "terminated": "b44ed42ab6ac00dcbbc984770cc7e9f510ba5b593c8ca31b3f9007ef1ab0a037"
       }
     },
     "sp3/compose": {

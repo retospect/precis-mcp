@@ -15,7 +15,7 @@ import pytest
 from hexfold.build import build
 from hexfold.stick import angle_springs, stick_relax_pinned
 
-_EXAMPLES = Path(__file__).resolve().parent.parent / "hexfold" / "examples"
+_EXAMPLES = Path(__file__).resolve().parent.parent.parent / "hexfold" / "examples"
 
 _ITERS = 3000
 _DT = 0.05

@@ -22,11 +22,13 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Sequence
 from typing import NamedTuple
 
 import numpy as np
 
+from . import _VerbModule
 from .build import Net, build
 from .canon import content_hash
 from .defects import counting_residual
@@ -858,3 +860,8 @@ def _port_symmetry(spec: Spec) -> list[Finding]:
                         )
                     )
     return out
+
+
+# The verb submodule is the callable: ``hexfold.check(spec)`` runs
+# ``check(spec)`` (hexfold._VerbModule, gr514180).
+sys.modules[__name__].__class__ = _VerbModule

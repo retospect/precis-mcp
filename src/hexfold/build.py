@@ -16,13 +16,14 @@ import json
 import math
 import platform
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import numpy as np
 
-from . import __version__, domains, menus
+from . import __version__, _VerbModule, domains, menus
 from .defects import (
     GLYPHS,
     Defect,
@@ -5377,3 +5378,8 @@ def _apply_connects(
         sheets=sheets,
         junctions=tuple(junction_recs),
     ), spec
+
+
+# The verb submodule is the callable: ``hexfold.build(spec)`` runs
+# ``build(spec)`` (hexfold._VerbModule, gr514180).
+sys.modules[__name__].__class__ = _VerbModule

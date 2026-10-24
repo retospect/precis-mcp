@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_HEXFOLD_SRC = Path(__file__).resolve().parent.parent / "src" / "hexfold"
+_HEXFOLD_SRC = Path(__file__).resolve().parent.parent.parent / "src" / "hexfold"
 
 #: Prefixes hexfold must never import — the monorepo-only surface.
 _FORBIDDEN_PREFIXES = ("precis", "asa_bot", "asa_slack")

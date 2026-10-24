@@ -429,6 +429,20 @@ def _terminate_open_edges(
 #: vdW margins).
 _RING_CLOSE_REACH_SIGMA = 2.0
 
+#: Margin on every cap-termination distance decision (gr512667): the
+#: stick relax leaves cap/clash/host distances within ~1e-15 A of a bar,
+#: so the same spec resolved differently under each platform's libm —
+#: the ``.alt`` sha goldens. Comparing against ``bar + _CAP_EPS_A``
+#: makes the borderline call identical on every platform — a distance
+#: on the fence always counts as *under*: a cap is dropped, a pair is
+#: collected, a borderline-reachable pair is closed, a borderline
+#: survivor refuses. The order keys that consume those distances are
+#: quantised to the same grid, so ties resolve by ordinal. 1e-5 A sits
+#: far above the ~1e-6 A platform spread of the relaxed coords (the
+#: goldens canonicalise them to a 1e-6 grid) and is chemically
+#: invisible next to the 1.0-2.8 A bars.
+_CAP_EPS_A = 1e-5
+
 #: Each resolution pass adds at least one ring-closure bond or removes at
 #: least one rim atom, so the loop converges or exhausts this bound and
 #: the build refuses.
@@ -490,7 +504,7 @@ def _converging_stubs(
         dist = np.linalg.norm(lat_xyz - coords[a], axis=1)
         for k in np.argsort(dist):
             b = lattice[int(k)]
-            if float(dist[k]) > reach:
+            if float(dist[k]) > reach + _CAP_EPS_A:
                 break
             if b in converging and not _within_hops(adj, a, b, _SMALL_RING_HOPS):
                 out.add(a)
@@ -520,7 +534,9 @@ def _deepest_cap_host(
         ]
         return min(d, default=math.inf)
 
-    return min(cap_hosts, key=lambda h: (depth(h), h))
+    # depth quantised to the _CAP_EPS_A grid (gr512667): borderline ties
+    # resolve by ordinal, identically on every platform
+    return min(cap_hosts, key=lambda h: (round(depth(h) / _CAP_EPS_A), h))
 
 
 def _cap_clash_pairs(
@@ -543,13 +559,15 @@ def _cap_clash_pairs(
         best, old = pairs.get(key, (math.inf, set()))
         pairs[key] = (min(best, d), old | cap_hosts)
 
+    c_bar = profile.clash_bar("C", "C") + _CAP_EPS_A
+    h_bar = profile.clash_bar("H", "H") + _CAP_EPS_A
     for k, (host, p) in enumerate(zip(hosts, h_xyz)):
         d_c = np.linalg.norm(coords - p, axis=1)
         d_c[host] = np.inf
-        for other in np.flatnonzero(d_c < profile.clash_bar("C", "C")):
+        for other in np.flatnonzero(d_c < c_bar):
             note(host, int(other), float(d_c[other]), {host})
         d_h = np.linalg.norm(h_xyz[k + 1 :] - p, axis=1)
-        for m in np.flatnonzero(d_h < profile.clash_bar("H", "H")):
+        for m in np.flatnonzero(d_h < h_bar):
             other_host = hosts[k + 1 + int(m)]
             if other_host != host:
                 note(host, other_host, float(d_h[m]), {host, other_host})
@@ -772,7 +790,7 @@ def _resolve_edge_caps(
                 d_c[host] = np.inf
                 d_h = np.linalg.norm(h_xyz - p, axis=1)
                 d_h[k] = np.inf
-                if min(float(d_c.min()), float(d_h.min())) < drop_bar:
+                if min(float(d_c.min()), float(d_h.min())) < drop_bar + _CAP_EPS_A:
                     dropped.append(host)
                 else:
                     keep.append(k)
@@ -823,7 +841,11 @@ def _resolve_edge_caps(
         for (a, b), (_d, cap_hosts) in sorted(
             pairs.items(),
             key=lambda kv: (
-                float(np.linalg.norm(xyz[kv[0][0]] - xyz[kv[0][1]])),
+                # quantised (gr512667): pairs within _CAP_EPS_A order by
+                # ordinal, identically on every platform
+                round(
+                    float(np.linalg.norm(xyz[kv[0][0]] - xyz[kv[0][1]])) / _CAP_EPS_A
+                ),
                 kv[0],
             ),
         ):
@@ -835,7 +857,7 @@ def _resolve_edge_caps(
                 and work.atoms[b].element in lat_el
                 and degree[a] < 4
                 and degree[b] < 4
-                and float(np.linalg.norm(xyz[a] - xyz[b])) <= reach
+                and float(np.linalg.norm(xyz[a] - xyz[b])) <= reach + _CAP_EPS_A
             ):
                 if not _within_hops(adj, a, b, _SMALL_RING_HOPS):
                     new_bonds.append((a, b))
@@ -1183,16 +1205,19 @@ def _block_from_net(
             (host, base + k, 1.0, "pairwise") for k, host in enumerate(h_hosts)
         )
         # hard gate, kept as the last word after resolution: a cap inside
-        # the clash bar means the minted block carries colliding atoms
+        # the clash bar means the minted block carries colliding atoms —
+        # same _CAP_EPS_A margin as the resolver (gr512667)
         profile = Profile.DEFAULT
+        c_bar = profile.clash_bar("C", "C") + _CAP_EPS_A
+        h_bar = profile.clash_bar("H", "H") + _CAP_EPS_A
         h_xyz = coords[base:]
         for k, (host, p) in enumerate(zip(h_hosts, h_xyz)):
             d_c = np.linalg.norm(carbon - p, axis=1)
             d_c[host] = np.inf
-            for other in np.flatnonzero(d_c < profile.clash_bar("C", "C")):
+            for other in np.flatnonzero(d_c < c_bar):
                 h_clashes.append((float(d_c[other]), base + k, int(other)))
             d_h = np.linalg.norm(h_xyz[k + 1 :] - p, axis=1)
-            for m in np.flatnonzero(d_h < profile.clash_bar("H", "H")):
+            for m in np.flatnonzero(d_h < h_bar):
                 h_clashes.append((float(d_h[m]), base + k, base + k + 1 + int(m)))
         h_clashes.sort()
         if h_clashes:

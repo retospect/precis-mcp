@@ -15,7 +15,7 @@ import pytest
 from hexfold.build import Atom, Net
 from hexfold.ids import AtomPath
 from hexfold.lattice import Lattice, Site
-from hexfold.report import Report
+from hexfold.report import Profile, Report
 from hexfold.text import Spec
 from precis.dispatch import Hub
 from precis.store import Store
@@ -23,8 +23,10 @@ from precis_se import persist
 from precis_se.atomic.generators import GeneratorError
 from precis_se.atomic.generators.hexfold_scene import build_hexfold_scene
 from precis_se.atomic.generators.hexfold_spec import (
+    _CAP_EPS_A,
     TERMINATED_TAG,
     _block_from_net,
+    _cap_clash_pairs,
     build_hexfold,
     terminate_mode,
 )
@@ -390,6 +392,59 @@ def test_cap_clash_beyond_reach_trims_the_dangling_rim_atom() -> None:
     findings = block.topology["report"]["findings"]
     trimmed = [f for f in findings if f["code"] == "terminate.trimmed"]
     assert len(trimmed) == 1 and trimmed[0]["severity"] == "INFO"
+
+
+def test_borderline_clash_decides_the_same_either_side_of_the_bar() -> None:
+    # gr512667: cap-vs-carbon distances within libm noise of the clash
+    # bar resolved differently per platform (the .alt goldens). The bar
+    # carries a _CAP_EPS_A margin, so a distance on the fence counts as
+    # a clash whichever side a platform's norm lands on.
+    bar = Profile.DEFAULT.clash_bar("C", "C")
+    coords = np.asarray([[0.0, 0.0, 0.0], [2.0 * bar, 0.0, 0.0]])
+    seen = [
+        set(_cap_clash_pairs(coords, [0], [np.asarray([bar + d, 0.0, 0.0])]))
+        for d in (-_CAP_EPS_A / 10, 0.0, _CAP_EPS_A / 10)
+    ]
+    assert seen[0] == seen[1] == seen[2] == {(0, 1)}
+    # and a distance clearly past the margin still is not a clash
+    far = np.asarray([[0.0, 0.0, 0.0], [2.0 * bar + 10 * _CAP_EPS_A, 0.0, 0.0]])
+    assert _cap_clash_pairs(far, [0], [np.asarray([bar, 0.0, 0.0])]) == {}
+
+
+def test_drop_bar_borderline_distance_drops_on_both_sides() -> None:
+    # gr512667: the same margin on ``drop_h_under_A`` — a cap at 1.00 A
+    # from another atom drops whether a platform measures it a hair
+    # under or over the bar.
+    xyz = [
+        (0.0, 0.0, 0.0),  # 0: deg-1 stub; its in-plane cap lands at (1.09,0,0)
+        (-0.71, 1.23, 0.0),  # 1
+        (0.0, 2.46, 0.0),  # 2
+        (2.09, 0.0, 0.0),  # 3: deg-3 target — 1.00 A from that cap
+        (3.5, 1.2, 0.0),
+        (3.5, -1.2, 0.0),
+        (4.4, 0.0, 0.0),
+    ]
+    bonds = [(0, 1), (1, 2), (3, 4), (3, 5), (3, 6)]
+    terms = []
+    for delta in (-_CAP_EPS_A / 10, 0.0, _CAP_EPS_A / 10):
+        shifted = [
+            (x + (delta if i == 3 else 0.0), y, z) for i, (x, y, z) in enumerate(xyz)
+        ]
+        block = _block_from_net(
+            _toy_net(shifted, bonds, hydrogens=frozenset({4, 5, 6})),
+            np.asarray(shifted, dtype=float),
+            spec="",
+            report=Report(()),
+            fidelity="stick",
+            drop_h_under_A=1.0,
+        )
+        terms.append(block.topology["terminated"])
+    for term in terms:
+        # the borderline cap dropped, so no clash pair ever formed to
+        # ring-close or trim
+        assert term["dropped"] == 1
+        assert term["closed"] == [] and term["trimmed"] == []
+    assert terms[0] == terms[1] == terms[2]
 
 
 def test_cap_clash_on_a_pinned_atom_refuses_the_build() -> None:

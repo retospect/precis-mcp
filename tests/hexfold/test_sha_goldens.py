@@ -25,22 +25,14 @@ regenerate with ``PRECIS_UPDATE_HEXFOLD_GOLDENS=1`` set in the test
 process -- the env var is in ``scripts/test``'s forwarded list -- and
 list the change in the commit body.
 
-Two platform notes on the digests:
-
-- ``seed3`` / ``coords`` / floats inside the topology records sit on a
-  1e-6 grid: libm ``sin``/``cos`` differ by 1-2 ulp between the aarch64
-  dev container and x86 CI, and raw float64 bytes red the gate on noise.
-- Four SE entries (``se/prism/b``, ``se/rail/a``, ``se/y/a``,
-  ``se/y/b``) are *platform-variant*: ``hexfold_spec``'s cap
-  termination decides ``min(cap distance) < drop_bar`` on distances
-  that sit within ~1e-15 of the bar, so different libm resolve the
-  drop differently (verified: a 1e-15 perturbation of
-  ``np.linalg.norm`` flips ``se/y/a``'s bond set).  Each variant is a
-  real structure, not noise — the container value stays the primary
-  digest and the other observed platform's digest is stored beside it
-  as ``<field>.alt``; either is accepted.  The nondeterminism itself
-  (no epsilon margin on the comparisons) is an upstream gripe, not
-  goldens bookkeeping.
+One platform note on the digests: ``seed3`` / ``coords`` / floats
+inside the topology records sit on a 1e-6 grid — libm
+``sin``/``cos`` differ by 1-2 ulp between the aarch64 dev container
+and x86 CI, and raw float64 bytes red the gate on noise. The
+termination decisions behind them are margined at
+``hexfold_spec._CAP_EPS_A`` (gr512667), so a borderline distance
+counts as under the bar on every platform and no ``<field>.alt``
+digests are needed.
 """
 
 from __future__ import annotations
@@ -499,17 +491,11 @@ def _check(entries: dict[str, dict[str, Any]]) -> None:
         if want["atoms"] != entry["atoms"]:
             bad.append(f"{key}: atom count {want['atoms']} -> {entry['atoms']}")
         for field, sha in sorted(entry["sha256"].items()):
-            accepted = {
-                v
-                for f, v in want["sha256"].items()
-                if f == field or f.startswith(field + ".alt")
-            }
-            if sha not in accepted:
+            if sha != want["sha256"].get(field):
                 bad.append(f"{key}: {field} moved to {sha} ({entry['call']})")
-        want_fields = {f for f in want["sha256"] if ".alt" not in f}
-        if want_fields != set(entry["sha256"]):
+        if set(want["sha256"]) != set(entry["sha256"]):
             bad.append(
-                f"{key}: golden fields {sorted(want_fields)} vs "
+                f"{key}: golden fields {sorted(want['sha256'])} vs "
                 f"{sorted(entry['sha256'])}"
             )
     assert not bad, "\n".join(bad + ["", f"if intended, regenerate with {_REGENERATE}"])
