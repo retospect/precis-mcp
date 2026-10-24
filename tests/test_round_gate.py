@@ -341,6 +341,22 @@ def test_gate_routes_to_the_newest_red_commit_above_the_candidate(rig: Rig) -> N
     assert "gh run view 4242 --log-failed" in out.stdout
 
 
+def test_gate_flags_a_red_failed_first_despite_skipped_shards(rig: Rig) -> None:
+    """release-train §3: when failed-first re-ran red, the shards it gated
+    are `skipped` — the sha must still read as the newest red above."""
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / rig.shas["c3"]).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"failed-first\tcompleted\tfailure\t{url}\n"
+        f"test-linux (1)\tcompleted\tskipped\t{url}\n"
+        f"test-linux (2)\tcompleted\tskipped\t{url}\n",
+        encoding="utf-8",
+    )
+    out = rig.round("gate", **_fresh(rig, "c2"))
+    assert f"red above the candidate: {rig.shas['c3'][:8]}" in out.stdout
+    assert "failing: failed-first" in out.stdout
+
+
 def test_gate_survives_a_failing_gh(rig: Rig) -> None:
     out = rig.round("gate", **_fresh(rig, "c2"))  # stub gh exits 1: no canned rows
     assert out.returncode == 0

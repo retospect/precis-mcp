@@ -157,10 +157,10 @@ never cancelled.
   `cancel-in-progress: true`. Only the newest head deploys; fixes never
   arrive during a deploy (the journal refuses `ship --release`).
 
-**Acceptance.** Workflow test (`tests/test_ci_shards.py` or a new
-`tests/test_check_yml.py`) pins `failed-first` ordering and the
-`needs`/`if`; a `plan` unit test extracts ids from fixture junit; a real
-release red→fix shows `failed-first` then 10 shards in one run.
+**Acceptance.** `tests/test_last_gated_main_sha.py` pins `failed-first`
+ordering and the `needs`/`if`; `tests/test_ci_failed_first.py` extracts ids
+from fixture junit; a real release red→fix shows `failed-first` then 10
+shards in one run.
 
 ## 4. Deploy the green head pinned
 

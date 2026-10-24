@@ -91,11 +91,12 @@ permissions:
 # 2026-10-23) later cut a main push to ~2 jobs, which made that queueing
 # arithmetic moot — the group stays because the sampling is still right.
 #
-# `release/**` pushes are never cancelled either, but each gets a group of its
-# own (the sha is appended to the key for release refs only): a release fix
-# lands every few minutes during the freeze and each push's full run is that
-# fix's gate, so a newer push must not replace the one pending behind it.
-# Main's shared group above is unchanged.
+# `release/**` shares ONE group per branch with cancel-in-progress (release
+# train §3): only the newest head can deploy — `round deploy` pins the green
+# head and its journal refuses a `ship --release` landing mid-deploy — so a
+# superseded push's run is dead weight and the fix push cancels it. A red
+# verdict the newest push already replaced would only be re-derived by the
+# next `plan` failed-first lookup anyway.
 #
 # Job budget: the account is GitHub Pro, standard-runner concurrency cap 40.
 # Concurrent ci/* gates are additionally capped client-side: scripts/ship
@@ -116,6 +117,8 @@ permissions:
 # not 12 always: 14 jobs per gate (two fit, not three) and every shard
 # repeats its setup, so job-minutes per landing rise ~35% and queue throughput
 # falls while the fleet saturates the cap (e94cfe674, reverted 94df07003).
+# A release run is that shape plus one `failed-first` job when a prior red
+# qualified.
 # Balance each count by time (tests/shard_weights.json, one table per count,
 # see conftest.shard_index); adding counts, shards or legs past this budget
 # costs concurrent gates — re-do the arithmetic here and in
@@ -135,8 +138,8 @@ permissions:
 # pre-empting anything (well inside ship's 150 min CI timeout, and a CAS race
 # lost while queued re-runs CI per gr343941).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' }}
 
 jobs:
   # Decides the run's shape from the event and the diff:
@@ -168,6 +171,7 @@ jobs:
       lint_only: ${{ steps.shape.outputs.lint_only }}
       shards: ${{ steps.shards.outputs.n }}
       shard_list: ${{ steps.shards.outputs.list }}
+      failed_ids: ${{ steps.failed.outputs.failed_ids }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -251,6 +255,20 @@ jobs:
         env:
           FORCE_SHARDS: ${{ inputs.shards }}
         run: python3 scripts/ci-shard-plan >> "$GITHUB_OUTPUT"
+      # Failures first (docs/backlog/release-train.md §3): on release/**
+      # pushes, the newest completed red check.yml run on this branch whose
+      # shards all uploaded their junit artifact donates its failed+errored
+      # node ids to `failed-first` below — a fix that does not fix then
+      # costs one job (~4-6 min), not a matrix. Empty on any hole (no prior
+      # red, a shard that timed out before uploading, over the cap, gh/API
+      # unreadable) = straight to the full matrix.
+      - id: failed
+        if: startsWith(github.ref, 'refs/heads/release/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: python3 scripts/ci-failed-first >> "$GITHUB_OUTPUT"
 
   lint:
     runs-on: ubuntu-latest
@@ -274,6 +292,74 @@ jobs:
       # coverage still happens in the ship gate's dev image.
       - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu mypy src tests
 
+  # Failures first (release-train §3): on release/** pushes where `plan`
+  # recovered the prior red run's node ids, re-run exactly those — same legs
+  # as test-linux minus the shard fan-out — before the matrix commits 10
+  # runners. Its red IS the run's red: `test-linux` needs it and stays
+  # skipped, and scripts/release ci_red() / scripts/round _red_above() read
+  # this job's check-run. No junit upload: it is not a shard, and its
+  # timings would poison tests/shard_weights.json.
+  failed-first:
+    needs: plan
+    if: needs.plan.outputs.failed_ids != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: precis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.13'
+      - name: Install PostgreSQL 17 client to match the pg17 server
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      # Node ids can carry spaces (parametrize ids); the JSON list is split
+      # by jq, never by the shell. A stale id — renamed or deleted since the
+      # red run — must not red this job: a --collect-only miss or pytest's
+      # exit 4/5 means "no verdict here", so the matrix decides. Real
+      # failures keep exit 1.
+      - run: |
+          mapfile -t ids < <(jq -r '.[]' <<<"$FAILED_IDS")
+          printf 'failed-first: %s\n' "${ids[@]}"
+          P=(uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest)
+          if ! "${P[@]}" --collect-only -q "${ids[@]}" >/dev/null 2>&1; then
+            echo "failed-first: ids no longer collect — deferring to the matrix"
+            exit 0
+          fi
+          rc=0
+          "${P[@]}" "${ids[@]}" || rc=$?
+          if [[ $rc -eq 4 || $rc -eq 5 ]]; then
+            echo "failed-first: nothing to run (pytest exit $rc) — deferring to the matrix"
+            rc=0
+          fi
+          exit "$rc"
+        env:
+          PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+          FAILED_IDS: ${{ needs.plan.outputs.failed_ids }}
+
   # Linux legs run the FULL suite against a real PostgreSQL + pgvector,
   # so the db-tagged tests (~41% of the suite) actually gate the release
   # instead of auto-skipping. GHA service containers are Linux-only,
@@ -289,9 +375,20 @@ jobs:
   # job's outputs (matrix list + the `--shard K/N` denominator below).
   #
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
+  #
+  # `failed-first` is a gate, not just an ordering: it must succeed (or be
+  # skipped because there was nothing to re-run) before the matrix runs.
+  # A status-check function in the `if` disables the implicit needs-success
+  # skip — `!cancelled()`, not `always()`: always() would still start 10
+  # shards after cancel-in-progress superseded the run.
   test-linux:
-    needs: plan
-    if: needs.plan.outputs.docs_only != 'true' && needs.plan.outputs.lint_only != 'true'
+    needs: [plan, failed-first]
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.docs_only != 'true'
+      && needs.plan.outputs.lint_only != 'true'
+      && (needs.failed-first.result == 'success'
+          || needs.failed-first.result == 'skipped')
     runs-on: ubuntu-latest
     # ~10 min steady-state per shard; the cap is for hangs (a wedged test
     # would otherwise hold the runner for GitHub's 6 h default while nobody

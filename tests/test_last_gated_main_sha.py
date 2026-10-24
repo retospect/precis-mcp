@@ -1062,7 +1062,10 @@ def test_check_yml_runs_on_release_pushes_too() -> None:
     assert {"main", "ci/**", "release/**"} <= set(branches)
 
 
-def test_check_yml_concurrency_main_shared_release_per_sha_never_cancelled() -> None:
+def test_check_yml_concurrency_release_cancels_per_branch() -> None:
+    """Release train §3: one group per release branch, cancel-in-progress —
+    only the newest head can deploy, so a fix push cancels the superseded
+    run. Main and the nightly stay never-cancelled."""
     conc = _check_yml()["concurrency"]
     sha = "f" * 40
 
@@ -1078,13 +1081,47 @@ def test_check_yml_concurrency_main_shared_release_per_sha_never_cancelled() -> 
     assert sha not in main_group
     assert main_cancel is False
     rel_group, rel_cancel = show("refs/heads/release/r3")
-    assert rel_group == f"check-refs/heads/release/r3-gate-{sha}"
-    assert rel_cancel is False
-    # The rest keep cancelling a superseded run.
+    assert rel_group == "check-refs/heads/release/r3-gate"  # per branch, not per sha
+    assert rel_cancel is True
+    # ci/** keeps cancelling a superseded run; the nightly never cancels.
     ci_group, ci_cancel = show("refs/heads/ci/x")
     assert sha not in ci_group
     assert ci_cancel is True
     assert show("refs/heads/main", "schedule")[1] is False
+
+
+def test_check_yml_failed_first_gates_the_release_matrix() -> None:
+    """Release train §3 wiring: `plan` emits failed_ids on release pushes
+    only; `failed-first` re-runs those node ids, unsharded, before the
+    matrix; `test-linux` needs it and tolerates only success|skipped."""
+    wf = _check_yml()
+    plan = wf["jobs"]["plan"]
+    assert plan["outputs"]["failed_ids"] == "${{ steps.failed.outputs.failed_ids }}"
+    step = next(s for s in plan["steps"] if s.get("id") == "failed")
+    assert step["if"] == "startsWith(github.ref, 'refs/heads/release/')"
+    assert "ci-failed-first" in step["run"]
+
+    ff = wf["jobs"]["failed-first"]
+    assert ff["needs"] == "plan"
+    assert ff["if"] == "needs.plan.outputs.failed_ids != ''"
+    assert ff["services"]["postgres"]["image"] == "pgvector/pgvector:pg17"
+    runs = "\n".join(s.get("run", "") for s in ff["steps"])
+    assert "pytest" in runs and "--shard" not in runs
+    # A stale id defers to the matrix instead of redding the job: the
+    # --collect-only pass plus pytest's exit 4/5 exit 0 here.
+    assert "--collect-only" in runs and "$rc -eq 4" in runs
+
+    tl = wf["jobs"]["test-linux"]
+    assert "failed-first" in tl["needs"]
+    cond = tl["if"]
+    # !cancelled(), not always(): a superseded release run must not still
+    # fan out 10 shards after cancel-in-progress kills it.
+    assert "always()" not in cond
+    assert "!cancelled()" in cond
+    assert "needs.failed-first.result == 'success'" in cond
+    assert "needs.failed-first.result == 'skipped'" in cond
+    # plan's own failure must still skip the matrix.
+    assert "needs.plan.result == 'success'" in cond
 
 
 def test_check_yml_release_push_never_takes_a_delta_range() -> None:

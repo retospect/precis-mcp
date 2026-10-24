@@ -1,0 +1,196 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Failures-first input for the release gate (release train spec §3).
+
+check.yml's `plan` job runs this on release/** pushes only. It finds the
+newest completed check.yml run on the same branch with conclusion `failure`
+whose test-linux shards all uploaded their ``junit-<N>-<K>`` artifact, pulls
+those junit files, and prints
+
+    failed_ids=["<nodeid>", ...]
+
+for $GITHUB_OUTPUT. The `failed-first` job re-runs exactly those node ids
+before the shard matrix: a fix that does not fix then costs one ~5-minute
+job instead of ten shards. Why CI and not local: release failures are the
+ones the local lanes missed, often runner-specific (2-vCPU, pg17 client).
+
+Anything off-normal prints ``failed_ids=`` (empty), which sends the run
+straight to the full matrix: no prior red, a shard that timed out before
+its upload, more than CAP failed ids, or any gh/API failure.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree
+
+CAP = 200
+RUN_CANDIDATES = 5  # newest failed runs to try for a complete junit set
+ART = re.compile(r"^junit-(\d+)-(\d+)$")
+
+
+def _gh(*args: str, timeout: int = 60) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["gh", "api", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cp.stdout if cp.returncode == 0 else None
+
+
+def _gh_zip(path: str, timeout: int = 120) -> bytes | None:
+    try:
+        cp = subprocess.run(
+            ["gh", "api", path], capture_output=True, check=False, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cp.stdout if cp.returncode == 0 else None
+
+
+def complete_shard_count(names: list[str]) -> int | None:
+    """N when the artifact names carry a complete junit-N-1..N set, else None."""
+    by_n: dict[int, set[int]] = {}
+    for name in names:
+        m = ART.match(name)
+        if m:
+            by_n.setdefault(int(m.group(1)), set()).add(int(m.group(2)))
+    complete = [n for n, ks in by_n.items() if ks == set(range(1, n + 1))]
+    return max(complete) if complete else None
+
+
+def _nodeid(root: Path, classname: str, name: str) -> str | None:
+    """junit `classname`/`name` -> pytest node id, or None when stale.
+
+    pytest writes the dotted module path plus any test class into
+    `classname`; the longest prefix that is a real file decides where the
+    module ends. No prefix resolving means the fix deleted or renamed the
+    file: the id is stale and is dropped rather than guessed — a missing
+    file would exit-4 the failed-first job, and since it uploads no junit
+    of its own the next push would re-derive the same stale ids forever.
+    Class-level renames inside a still-present file resolve here and are
+    caught by the job's ``pytest --collect-only`` pass instead.
+    """
+    parts = classname.split(".") if classname else []
+    for i in range(len(parts), 0, -1):
+        path = Path(*parts[:i]).with_suffix(".py")
+        if (root / path).is_file():
+            return "::".join([str(path), *parts[i:], name])
+    return None
+
+
+def node_ids(xml_text: str, root: Path) -> list[str]:
+    """Failed and errored testcases in one junit.xml, as pytest node ids."""
+    try:
+        doc = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError:
+        return []
+    return [
+        nid
+        for tc in doc.iter("testcase")
+        if tc.find("failure") is not None or tc.find("error") is not None
+        if (nid := _nodeid(root, tc.get("classname", ""), tc.get("name", "")))
+        is not None
+    ]
+
+
+def emit(ids: list[str]) -> str:
+    """The failed_ids output value; empty over the cap sends the run to the
+    full matrix instead of running an arbitrary truncation first."""
+    if not ids or len(ids) > CAP:
+        return ""
+    return json.dumps(ids)
+
+
+def _failed_runs(repo: str, branch: str) -> list[int]:
+    out = _gh(
+        f"repos/{repo}/actions/workflows/check.yml/runs"
+        f"?branch={urllib.parse.quote(branch, safe='')}"
+        f"&status=failure&per_page={RUN_CANDIDATES}",
+        "--jq",
+        ".workflow_runs[].id",
+    )
+    if not out:
+        return []
+    return [int(ln) for ln in out.split() if ln.isdigit()]
+
+
+def _artifacts(repo: str, run_id: int) -> dict[str, int]:
+    out = _gh(
+        f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100",
+        "--jq",
+        ".artifacts[] | [.id, .name] | @tsv",
+    )
+    arts: dict[str, int] = {}
+    for ln in (out or "").splitlines():
+        aid, _, name = ln.partition("\t")
+        if aid.isdigit():
+            arts[name] = int(aid)
+    return arts
+
+
+def _xml_from_artifact(repo: str, art_id: int) -> str | None:
+    blob = _gh_zip(f"repos/{repo}/actions/artifacts/{art_id}/zip")
+    if not blob:
+        return None
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            member = next((n for n in zf.namelist() if n.endswith("junit.xml")), None)
+            return zf.read(member).decode("utf-8") if member else None
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError):
+        return None
+
+
+def failed_ids(repo: str, branch: str, root: Path) -> list[str]:
+    for run_id in _failed_runs(repo, branch):
+        arts = _artifacts(repo, run_id)
+        n = complete_shard_count(list(arts))
+        if n is None:
+            continue  # a shard timed out or its artifact expired: not usable
+        ids: list[str] = []
+        seen: set[str] = set()
+        ok = True
+        for k in range(1, n + 1):
+            xml = _xml_from_artifact(repo, arts[f"junit-{n}-{k}"])
+            if xml is None:
+                ok = False
+                break
+            for nid in node_ids(xml, root):
+                if nid not in seen:
+                    seen.add(nid)
+                    ids.append(nid)
+        if ok:
+            print(
+                f"failed-first: run {run_id} donated {len(ids)} failed node ids",
+                file=sys.stderr,
+            )
+            return ids
+    return []
+
+
+def main() -> int:
+    repo = os.environ.get("REPO", "")
+    branch = os.environ.get("BRANCH", "")
+    ids = failed_ids(repo, branch, Path.cwd()) if repo and branch else []
+    out = emit(ids)
+    if ids and not out:
+        print(f"failed-first: {len(ids)} ids over the cap {CAP}", file=sys.stderr)
+    print(f"failed_ids={out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

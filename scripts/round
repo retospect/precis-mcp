@@ -640,7 +640,13 @@ def _red_above(root: Path, cand: str) -> dict[str, Any] | None:
         if cp.returncode != 0:
             return None
         rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
-        rows = [r for r in rows if r[0] == "lint" or r[0].startswith("test-linux")]
+        # failed-first counts too: a red one leaves its shards `skipped`,
+        # which must not read as "not red" (release train §3).
+        rows = [
+            r
+            for r in rows
+            if r[0] in ("lint", "failed-first") or r[0].startswith("test-linux")
+        ]
         if not rows or any(r[1] != "completed" for r in rows):
             continue
         failed = [r for r in rows if r[2] in ("failure", "timed_out")]

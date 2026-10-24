@@ -242,7 +242,9 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
     # and a latest that is still running is not red yet.
     latest: dict[str, list[str]] = {}
     for r in rows:
-        if r[0] != "lint" and not r[0].startswith("test-linux"):
+        # failed-first counts as the release's red even though every shard
+        # it gated then reads `skipped` (release train §3).
+        if r[0] not in ("lint", "failed-first") and not r[0].startswith("test-linux"):
             continue
         old = latest.get(r[0])
         if old is None or _run_id(r) >= _run_id(old):

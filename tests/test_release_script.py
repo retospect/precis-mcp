@@ -140,6 +140,25 @@ def test_red_check_run_exits_two_with_job_and_url(rig: Rig) -> None:
     assert rig.deploy_log() == []
 
 
+def test_red_failed_first_exits_two(rig: Rig) -> None:
+    """release-train §3: a red failed-first is the release's red — the
+    shards it gated read `skipped`, which must not mask it."""
+    s = rig.shas["c3"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / s).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"failed-first\tcompleted\tfailure\t{url}\n"
+        f"test-linux (1)\tcompleted\tskipped\t{url}\n"
+        f"test-linux (2)\tcompleted\tskipped\t{url}\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--poll", "0.01", "--ci-timeout", "1")
+    assert out.returncode == 2
+    assert "failed-first" in out.stderr
+    assert rig.origin_ref("release/r1") == s  # left in place
+    assert rig.deploy_log() == []
+
+
 def test_ci_timeout_exits_two_and_names_branch(rig: Rig) -> None:
     out = _release(rig, *FAST)
     assert out.returncode == 2
