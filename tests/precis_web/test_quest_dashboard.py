@@ -150,7 +150,8 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     assert "zeolite Y" in resp.text
     assert "/smartdraft/quest-97-dossier" in resp.text
     assert 'href="/eye/qu97"' in resp.text
-    assert "Open quest neighbourhood (fisheye)" in resp.text
+    # Exactly one eye link: the page-wide partial (_eye_link.html.j2).
+    assert resp.text.count('href="/eye/qu97"') == 1
     assert "Open dossier" not in resp.text
 
     # Paper hub links.
