@@ -256,8 +256,11 @@ class SceneError(ValueError):
 
 class PolarPattern(TypedDict):
     """A ``polar:nNrR`` radial-array node config — ``n`` copies spread
-    evenly around a circle of radius ``r`` centred on the node's ``@x,y``
-    (``z`` from the node's own ``loc``)."""
+    evenly around a circle of radius ``r`` centred on the parent frame's
+    z axis, in the ``z = loc[2]`` plane. The node's ``@x,y`` loc is
+    ignored (``_pattern_transforms`` copies the circle about the frame's
+    z axis); ``@z`` sets the plane and ``rot`` still applies to each
+    copy."""
 
     kind: Literal["polar"]
     n: float

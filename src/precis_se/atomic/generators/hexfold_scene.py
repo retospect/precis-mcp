@@ -20,6 +20,21 @@ refused by name, so a typo never silently drops a feature option. The
 planner's refusals (a seam-phase hole cell, overlapping features, a top the
 build cannot seat) arrive as :class:`GeneratorError`.
 
+The smallest call is one sheet and one feature carrying the five
+required keys::
+
+    GENERATORS["hexfold_scene"]({
+        "sheet": [30, 24],
+        "features": [
+            {"name": "t", "at": [13, 15], "n": 6, "radius": 3.0,
+             "tube_len": 5},
+        ],
+    })
+
+(``top`` defaults to ``"open"``; ``n`` is the tube's ``(n, 0)`` count,
+``radius``/``tube_len`` its fillet foot radius and length, ``at`` the
+hole cell on the ``sheet`` grid.)
+
 **Y feature contract.** A feature with ``"type": "k3-sp2-120-z"`` routes the
 whole call to :func:`~precis_se.atomic.generators.y_junction.build_y_junction`;
 it must be the only feature, with exactly ``name``, ``type`` and

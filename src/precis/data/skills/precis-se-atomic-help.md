@@ -107,7 +107,11 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
   mints nothing; `dry_run` is a deprecated alias for `fidelity="check"`).
   `hexfold_scene` tiles an authored smooth surface (sheet + fillet/tube/top
   features) with carbon, relaxed under a tether to that surface
-  (`params.sheet`, `params.features` — `precis-hexfold-help`); misses and
+  (`params.sheet`, `params.features` — `precis-hexfold-help`). A feature's
+  required keys are `name`, `at` ([i, j] hole cell), `n` (the `(n, 0)`
+  tube), `radius`, `tube_len` (`top` defaults to `open`), so the
+  minimal call is
+  `{"sheet": [30, 24], "features": [{"name": "t", "at": [13, 15], "n": 6, "radius": 3.0, "tube_len": 5}]}`; misses and
   caveats come back as `scene.bar` / `scene.top.joint` WARNs, also in the
   returned provenance. Unknown keys are refused.
   Its exclusive typed entries (one feature with a `type`, no mixed feet

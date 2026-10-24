@@ -1,6 +1,7 @@
 # precis-geom — the workspace script's core wheel (structure-workspaces
 # spec §Packaging). Built from this repo at the release sha:
-#   `scripts/ws-promote geom` (or `uv build --wheel packaging/geom`).
+#   `scripts/ws-promote geom` (or `uv build --wheel packaging/geom`) —
+#   the wheel lands in `packaging/geom/dist/` (gitignored).
 
 [build-system]
 requires = ["hatchling"]

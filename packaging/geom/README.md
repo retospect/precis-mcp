@@ -12,7 +12,8 @@ the output shown is the output it produced.
 In a repo checkout there is nothing to install — the dev env already
 imports `precis_geom` (`uv run python -c "import precis_geom.pcb"`).
 The wheel the sandbox runs is built with `scripts/ws-promote geom`, or
-directly:
+directly — either way the wheel lands in `packaging/geom/dist/`
+(gitignored):
 
 ```text
 $ uv build --wheel packaging/geom
@@ -167,8 +168,8 @@ every `pcb.Board.part` frame records the user call site's `file`/`line`
 and the call's arguments:
 
 ```python
-[(f["file"], f["line"], f["args"]["refdes"])
- for f in doc["frames"] if f["qual"] == "pcb.Board.part"]
+print([(f["file"], f["line"], f["args"]["refdes"])
+       for f in doc["frames"] if f["qual"] == "pcb.Board.part"])
 ```
 
 ```text

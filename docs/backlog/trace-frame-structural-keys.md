@@ -64,6 +64,15 @@ from outside `/work`) and `src` (stripped call-site source line, capped at
   never collide; `occ` is per parent.
 - A key can still repeat only through a `_sync`-minted `user` frame
   recreated under the same parent with the same qual (re-entered generator).
+  In a single run this is in fact unreachable: `occ` is drawn from the
+  parent's `_occ_next`, which lives on the parent's `_Frame` in the tree
+  even after the stack pops, so the re-mint takes `occ+1`, not a repeat —
+  and a duplicate higher up would need the same impossible re-mint at its
+  own parent. The tie-break stays as defence for a writer that merges
+  runs or mints frames some other way; the test forces the collision by
+  cloning a `_Frame` into the tree
+  (`test_geom_trace.py::test_forced_duplicate_key_mints_a_tiebreak`) —
+  there is no natural repro to name.
   Tie-break: the later frame mints `sha8(key, "#", args_digest, n)`, n = its
   rank among equal keys in emit order. `dump` counts these in a new
   `run.key_collisions` (0 expected); `loads()` rejects duplicate keys not
@@ -107,7 +116,18 @@ Recommendation: A (one mechanism; the key is now stable enough to carry it).
   matching by `key` when both runs are schema 2, and keeps the
   (qual-path, occurrence) match for 1-vs-2 pairs, so the first post-upgrade
   diff still works.
-- Regenerate `tests/workspaces/data/*/out/trace.json` (six goldens).
+- `tests/workspaces/data/*/out/trace.json` (six goldens). Only
+  `bracket` regenerates end to end —
+  `uv run python tests/workspaces/data/bracket/make_fixture.py`
+  (`--h2-dx MM` for the ray.changed variant). The other five are
+  hand-authored with readable sequential keys that tests cite literally
+  (`test_trace_view.py::STRIP1` …) — keep them, or re-mint onto the
+  current recipe with the committed re-minter
+  `uv run python tests/workspaces/data/rekey_trace.py <trace.json>…`
+  (walks `parent`, rewrites `key`/`parent` per `frame_key`, re-counts
+  `run.key_collisions`; idempotent on a live dump — pinned by
+  `test_geom_trace.py::test_rekey_trace_is_idempotent_on_a_real_dump`).
+  Re-minted keys then need the citing constants updated too.
   `pcb_goldens.json` holds no trace keys; untouched.
 - `test_identical_keys_across_runs`, `test_same_site_occ_counter`
   (becomes per-qual occ) and `test_trace_keys_stable_across_two_builds`

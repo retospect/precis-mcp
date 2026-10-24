@@ -100,6 +100,27 @@ def test_build_polar_pattern_places_six() -> None:
     assert not d2.classify_point(vec3(x, y, 0.004), component="part").inside  # carved
 
 
+def test_polar_pattern_ignores_node_xy() -> None:
+    """gr514412 — the circle centres on the parent frame's z axis at
+    ``z = loc[2]``; the node's ``@x,y`` does not move it (the
+    ``PolarPattern`` docstring's convention, pinned against drift)."""
+    design = build_design(
+        parse_source("b add box:w2mmd2mmh2mm @50mm,40mm,3mm polar:n4r10mm")
+    )
+    xy = sorted(
+        (
+            round(inst.placed.xform.t[0] * 1e3, 6),
+            round(inst.placed.xform.t[1] * 1e3, 6),
+        )
+        for inst in design.instances.values()
+    )
+    assert xy == [(-10.0, 0.0), (0.0, -10.0), (0.0, 10.0), (10.0, 0.0)]
+    assert all(
+        inst.placed.xform.t[2] == pytest.approx(0.003)
+        for inst in design.instances.values()
+    )
+
+
 _ASSEMBLY = """
 desc: a two part assembly
 use: bench testing

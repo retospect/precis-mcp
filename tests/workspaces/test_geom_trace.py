@@ -255,6 +255,87 @@ def test_schema1_trace_doc_still_loads(tmp_path: Path) -> None:
         trace_schema.loads(trace_schema.dumps(doc))
 
 
+def _load_rekey() -> ModuleType:
+    """``tests/workspaces/data/rekey_trace.py`` — the golden re-minter
+    the spec names for the five hand-authored fixtures (gr514354)."""
+    path = Path(__file__).parent / "data" / "rekey_trace.py"
+    spec = importlib.util.spec_from_file_location("rekey_trace", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_rekey_trace_is_idempotent_on_a_real_dump(tmp_path: Path) -> None:
+    """The re-minter reproduces the writer's keys on a live dump, and
+    re-mints a hand-authored doc into a ``loads()``-clean schema-2 one
+    (a fixed point on a second pass)."""
+    rekey = _load_rekey()
+    doc = _run_script(tmp_path, _stability_script())
+    assert rekey.rekey_doc(doc) == doc
+
+    root_key = trace_schema.sha8("precis-trace-root")
+    hand = {
+        "schema": 2,
+        "run": {"key_collisions": 0},
+        "frames": [
+            {
+                "id": 0,
+                "key": "f" * 16,
+                "parent": None,
+                "qual": "",
+                "file": "",
+                "line": 0,
+                "line_in_def": 0,
+                "src": None,
+                "occ": 0,
+                "kind": "root",
+                "args": {},
+                "made": {},
+                "touched": {},
+            },
+            {
+                "id": 1,
+                "key": "a" * 16,
+                "parent": "f" * 16,
+                "qual": "main.build",
+                "file": "main.py",
+                "line": 4,
+                "line_in_def": 0,
+                "src": None,
+                "occ": 0,
+                "kind": "user",
+                "args": {},
+                "made": {},
+                "touched": {},
+            },
+            {
+                "id": 2,
+                "key": "b" * 16,
+                "parent": "a" * 16,
+                "qual": "out.note",
+                "file": "main.py",
+                "line": 6,
+                "line_in_def": 2,
+                "src": 'out.note("x")',
+                "occ": 0,
+                "kind": "core",
+                "args": {},
+                "made": {},
+                "touched": {},
+            },
+        ],
+    }
+    fixed = rekey.rekey_doc(hand)
+    trace_schema.loads(trace_schema.dumps(fixed))
+    fr = fixed["frames"]
+    assert fr[0]["key"] == root_key
+    assert fr[1]["key"] == trace_schema.frame_key(root_key, "main.build", 0)
+    assert fr[2]["key"] == trace_schema.frame_key(fr[1]["key"], "out.note", 0)
+    assert fr[1]["parent"] == fr[0]["key"] and fr[2]["parent"] == fr[1]["key"]
+    assert rekey.rekey_doc(fixed) == fixed
+
+
 def test_forced_duplicate_key_mints_a_tiebreak(tmp_path: Path) -> None:
     """Collisions: a repeated frame key (the ``_sync`` re-mint edge —
     forced here by appending a clone to the tree) emits

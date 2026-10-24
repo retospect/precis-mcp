@@ -135,6 +135,14 @@ def test_seams_count_bound() -> None:
         prism_tube(8, 6, 4, "+" * 25)
 
 
+def test_seams_errors_name_the_closure_rule() -> None:
+    """gr514183 — a rejected seam string carries the closure rule, not
+    just the parse/count complaint."""
+    for bad in ("x+++++", "+" * 25):
+        with pytest.raises(ValueError, match="#plus − #minus = 6"):
+            prism_tube(8, 6, 4, bad)
+
+
 def test_u2212_minus_parses() -> None:
     net, tube = prism_tube(8, 6, 4, "+++−+++−+++−")
     assert tube.signs == (

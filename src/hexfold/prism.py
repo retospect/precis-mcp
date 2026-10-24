@@ -114,11 +114,14 @@ def _signs(seams: object) -> tuple[str, ...]:
         )
     text = seams.replace("−", "-")
     if any(c not in "+-" for c in text):
-        raise ValueError(f"prism.seams: seams takes only '+', '-', '−'; got {seams!r}")
+        raise ValueError(
+            f"prism.seams: seams takes only '+', '-', '−'; got {seams!r} — "
+            "a closed cross-section needs #plus − #minus = 6"
+        )
     if not SEAM_COUNT[0] <= len(text) <= SEAM_COUNT[1]:
         raise ValueError(
             f"prism.seams: a prism takes {SEAM_COUNT[0]}..{SEAM_COUNT[1]} "
-            f"seams; got {len(text)}"
+            f"seams; got {len(text)} — closure needs #plus − #minus = 6"
         )
     return tuple("+" if c == "+" else "-" for c in text)
 
@@ -257,7 +260,16 @@ def prism_tube(
     ``strip_rows`` row pairs per seam (outward on ``+``, inward on ``-``),
     the walls meeting at the signed equal-120 seam lines of the
     cross-section polygon.  ``pores`` are ``(wall, u, v)`` cells of each
-    wall's ``strip``; each removes one hexagon before composition."""
+    wall's ``strip``; each removes one hexagon before composition.
+
+    ``seams`` is the sign string — one ``+`` (fin) or ``-``/``−`` (rib)
+    per seam, 3..24 of them.  Closure needs ``#plus − #minus = 6``
+    (necessary, not sufficient: the side vectors must also sum to zero
+    and the polygon must be simple — refusals are named
+    ``prism.closure`` with the measured reason).  ``rows`` must be even;
+    the bounds are ``periods`` 2..60, ``rows`` 4..40, ``strip_rows``
+    2..12.  The plain hexagonal prism is
+    ``prism_tube(8, 4, 2, "++++++")``."""
     periods = _count(periods, 2, 60, "periods", "prism tube")
     rows = _count(rows, 4, 40, "wall rows", "prism tube")
     strip_rows = _count(strip_rows, 2, 12, "strip rows", "prism tube")
