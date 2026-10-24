@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# scripts/geom-wheel-smoke — artifact-level check that the built
+# precis-geom wheel (the structure-workspace core, packaging/geom/) is
+# installable and its hexfold_scene generators actually run, standalone,
+# with no repo src/ on sys.path — the sibling of scripts/wheel-smoke
+# (gr451360) for the sandbox wheel (gr514057).
+#
+# The AST allow-list (tests/workspaces/test_geom_wheel_imports.py) reads
+# sources only: it cannot catch a force-include entry that maps nothing,
+# a data file (hexfold_top_plans.json) left out of the wheel, or the
+# precis_se/__init__.py stub losing to the real server init — each would
+# pass every test and fail only inside the --network none sandbox. This
+# script closes that: build the wheel, install it into a scratch venv,
+# and from a cwd outside the repo import precis_se.atomic.generators and
+# build one small hexfold_scene — the call a workspace script makes.
+#
+# Not run in the CI shards — a real uv build plus a real uv pip install
+# of numpy/numba/ase/rdkit/pint/manifold3d/scipy from PyPI is too heavy
+# for the per-push gate. It runs from
+# tests/workspaces/test_geom_wheel_smoke.py (@pytest.mark.slow, so
+# scripts/test --fast / --impacted / the ship gate's default all skip
+# it), or by hand.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Optional $1: the geom packaging dir to build from (a render worktree at
+# the target sha, like scripts/wheel-smoke's SRC_ROOT). Bare invocations
+# build this checkout's packaging/geom.
+GEOM_SRC="${1:-$REPO_ROOT/packaging/geom}"
+[[ -f "${GEOM_SRC}/pyproject.toml" ]] \
+    || { echo "geom-wheel-smoke: ${GEOM_SRC} has no pyproject.toml" >&2; exit 2; }
+
+TMPDIR_SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/geom-wheel-smoke.XXXXXX")"
+cleanup() { rm -rf "$TMPDIR_SMOKE"; }
+trap cleanup EXIT
+
+echo "geom-wheel-smoke: building wheel from ${GEOM_SRC}"
+uv build --wheel --out-dir "$TMPDIR_SMOKE" "$GEOM_SRC"
+WHEEL="$(find "$TMPDIR_SMOKE" -maxdepth 1 -name '*.whl' | head -1)"
+[[ -n "$WHEEL" ]] || { echo "geom-wheel-smoke: no wheel produced" >&2; exit 1; }
+echo "geom-wheel-smoke: built $(basename "$WHEEL")"
+
+echo "geom-wheel-smoke: creating scratch venv"
+if ! uv venv "${TMPDIR_SMOKE}/venv" --python 3.13 >/dev/null 2>&1; then
+    # 3.13 unavailable/unfetchable here — fall back to whatever
+    # interpreter uv already has rather than failing on a version pin
+    # unrelated to what this script tests (same as scripts/wheel-smoke).
+    uv venv "${TMPDIR_SMOKE}/venv"
+fi
+VENV_PY="${TMPDIR_SMOKE}/venv/bin/python"
+
+echo "geom-wheel-smoke: installing $(basename "$WHEEL")"
+uv pip install --python "$VENV_PY" "$WHEEL"
+
+# cwd is the scratch dir, not the repo, so this repo's src/ is NOT on
+# sys.path — an import that only worked because a worktree run happens to
+# have src/ on sys.path fails here instead of silently passing. The stub
+# check is the load-bearing half: the shipped precis_se/__init__.py must
+# be packaging/geom's stub (no SeHandler), never the server init.
+(
+    cd "$TMPDIR_SMOKE"
+    "$VENV_PY" -c "
+import precis_se
+assert not hasattr(precis_se, 'SeHandler'), (
+    'wheel shipped the server precis_se/__init__.py, not the stub')
+from precis_se.atomic.generators import GENERATORS
+block = GENERATORS['hexfold_scene']({
+    'sheet': [30, 24],
+    'features': [{'name': 't', 'at': [13, 15], 'n': 6, 'radius': 3.0,
+                  'tube_len': 5, 'top': 'ball'}],
+})
+assert len(block.elements) > 0, 'hexfold_scene produced no atoms'
+print(f'geom-wheel-smoke ok ({len(block.elements)} atoms)')
+"
+)

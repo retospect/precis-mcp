@@ -4,8 +4,12 @@
 package — only what the shipped modules use. Anything beyond the
 allow-list below (``precis.store``, ``precis.utils.http``,
 ``precis.handlers`` …) would drag the DB stack into a ``--network none``
-container. Walks the shipped sources with ``ast`` — no wheel build, no
-imports — like ``test_hexfold_import_boundary`` but relative-import-aware.
+container. ``precis_se`` is partial the same way: the scene generators
+plus ``atomic/surface_target``, with a stub ``precis_se/__init__.py``
+(``packaging/geom/precis_se/``) standing in for the real one, which
+imports ``SeHandler`` and the DB stack. Walks the shipped sources with
+``ast`` — no wheel build, no imports — like
+``test_hexfold_import_boundary`` but relative-import-aware.
 """
 
 from __future__ import annotations
@@ -24,9 +28,11 @@ _SHIPPED_DIRS = [
     _SRC / "hexfold",
     _SRC / "precis_chain",
     _SRC / "precis_flow",
+    _SRC / "precis_surface",
     _SRC / "precis" / "cad",
     _SRC / "precis" / "structsolve",
     _SRC / "precis" / "structure",
+    _SRC / "precis_se" / "atomic" / "generators",
 ]
 
 _SHIPPED_FILES = [
@@ -35,12 +41,20 @@ _SHIPPED_FILES = [
     _SRC / "precis" / "component_series.py",
     _SRC / "precis" / "utils" / "__init__.py",
     _SRC / "precis" / "utils" / "units.py",
+    _SRC / "precis_se" / "atomic" / "__init__.py",
+    _SRC / "precis_se" / "atomic" / "surface_target.py",
+    #: The wheel's ``precis_se/__init__.py`` is the stub under packaging/,
+    #: not ``src/precis_se/__init__.py`` (that one imports ``SeHandler``).
+    _ROOT / "packaging" / "geom" / "precis_se" / "__init__.py",
 ]
 
 #: Excluded inside a shipped dir (fetch paths, dead under --network none).
 _EXCLUDED = {_SRC / "precis" / "structure" / "importers"}
 
 #: What wheel code may import (the wheel itself + its declared deps).
+#: ``precis_se.atomic`` is NOT allowed wholesale — the shipped slice is
+#: generators + surface_target; bind/apply/generate (the store-aware
+#: modules) must never be reachable from wheel code.
 _ALLOW = (
     "precis.cad",
     "precis.structsolve",
@@ -53,6 +67,9 @@ _ALLOW = (
     "precis_geom",
     "precis_ws",
     "hexfold",
+    "precis_surface",
+    "precis_se.atomic.generators",
+    "precis_se.atomic.surface_target",
 )
 
 #: Wheel packages that are precis.* — a `precis.` import not under _ALLOW
@@ -117,6 +134,8 @@ def test_wheel_import_graph() -> None:
                     "hexfold",
                     "precis_chain",
                     "precis_flow",
+                    "precis_surface",
+                    "precis_se",
                 ):
                     continue
                 if _is_allowed(m):
@@ -146,6 +165,8 @@ def test_wheel_is_dependency_light() -> None:
         "hexfold",
         "precis_chain",
         "precis_flow",
+        "precis_surface",
+        "precis_se",
     }
     bad: list[str] = []
     for path in _iter_files():

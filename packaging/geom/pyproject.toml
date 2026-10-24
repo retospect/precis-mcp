@@ -29,12 +29,17 @@ dependencies = [
 # import. ``precis/structure/importers`` is excluded — its fetch paths
 # (precis.store, safe_fetch) are dead under ``--network none`` and would
 # break the import-graph allow-list (tests/test_geom_wheel_imports.py).
+# ``precis_se`` is partial the same way: the pure scene generators only.
+# The real ``precis_se/__init__.py`` imports ``SeHandler`` (the DB stack),
+# so a stub ships in its place — packaging/geom/precis_se/__init__.py,
+# which must never be installed next to the server wheel.
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/precis_geom" = "precis_geom"
 "../../src/precis_ws" = "precis_ws"
 "../../src/hexfold" = "hexfold"
 "../../src/precis_chain" = "precis_chain"
 "../../src/precis_flow" = "precis_flow"
+"../../src/precis_surface" = "precis_surface"
 "../../src/precis/cad" = "precis/cad"
 "../../src/precis/structsolve" = "precis/structsolve"
 "../../src/precis/structure" = "precis/structure"
@@ -45,6 +50,10 @@ dependencies = [
 "../../src/precis/utils/__init__.py" = "precis/utils/__init__.py"
 "../../src/precis/utils/units.py" = "precis/utils/units.py"
 "../../src/precis/data/component_series.json" = "precis/data/component_series.json"
+"../../src/precis_se/atomic/__init__.py" = "precis_se/atomic/__init__.py"
+"../../src/precis_se/atomic/surface_target.py" = "precis_se/atomic/surface_target.py"
+"../../src/precis_se/atomic/generators" = "precis_se/atomic/generators"
+"../../packaging/geom/precis_se/__init__.py" = "precis_se/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 exclude = ["precis/structure/importers"]

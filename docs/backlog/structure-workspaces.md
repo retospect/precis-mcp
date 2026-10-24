@@ -1120,7 +1120,13 @@ rewritten in place, so only structure versions are addressable);
   checkpoint/resume — se-flow-kernel slice 4b; se's kit, pcb shares
   the loop, trace, snapshot and ask/tell layer only), and, once built,
   `precis_fields` +
-  `precis_geom.fields` ([se-native-fields](se-native-fields.md)). They
+  `precis_geom.fields` ([se-native-fields](se-native-fields.md)), and
+  `precis_se.atomic.generators` — the pure parametric generators
+  (`hexfold_scene` etc., gr514057; a stub `precis_se/__init__.py` ships
+  in place of the server init, which imports the DB stack), the
+  near-term scene surface until
+  [hexfold-scene-grammar-from-primitives](hexfold-scene-grammar-from-primitives.md)
+  replaces it. They
   ship to the container as one wheel,
   `precis-geom`, built from this repo at the release sha
   (`packaging/geom/pyproject.toml`, packages listed, no `precis.store`

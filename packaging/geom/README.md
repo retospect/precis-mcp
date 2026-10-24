@@ -20,6 +20,18 @@ Building wheel...
 Successfully built packaging/geom/dist/precis_geom-0.1.0-py3-none-any.whl
 ```
 
+## Atomic scene generators
+
+The wheel also ships `precis_se.atomic.generators` (pure params → block
+factories), so a workspace script can call the `hexfold_scene` scene
+planner — `GENERATORS["hexfold_scene"]({"sheet": [30, 24], "features":
+[...]})` — which the bare `hexfold` package's prism/rail/strip builders
+do not reach (gr514057). The wheel's `precis_se/__init__.py` is a stub
+(`packaging/geom/precis_se/`) that imports nothing — the real init pulls
+in the DB stack — and must never be installed next to the server wheel.
+This is the near-term surface; `docs/backlog/hexfold-scene-grammar-from-primitives.md`
+is the long-term replacement.
+
 ## Load and build
 
 A board `main.py` is a plain script — `importlib` loads it, `build()`
