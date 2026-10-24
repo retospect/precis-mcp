@@ -47,7 +47,11 @@ from precis.cad.vec import LINEAR_REL_EPS, Vec3, as_vec3
 
 @dataclass(frozen=True)
 class Instance:
-    """A placed primitive with a display label and a stable id."""
+    """A placed primitive with a display label and a stable id.
+
+    The world transform is ``placed.xform`` — there is no ``.xform``
+    on the instance itself (gr514739).
+    """
 
     iid: str
     placed: Placed

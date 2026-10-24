@@ -57,6 +57,15 @@ def test_only_bad_input_is_value_error() -> None:
         assert not issubclass(cls, ValueError)
 
 
+def test_str_names_options_and_next() -> None:
+    # gr514481 + gr514782: str(exc) must carry the refusal vocabulary so a
+    # test asserts on the message, not on exc.options / exc.next fields.
+    e = BadInput("bad mode", options=["full", "body"], next="use view='full'")
+    assert str(e) == "bad mode; options: full, body; next: use view='full'"
+    e = BadInput("nope", next=["first step", "second step"])
+    assert str(e) == "nope; next: first step; next: second step"
+
+
 def test_chain_via_from() -> None:
     src = ValueError("root")
     try:

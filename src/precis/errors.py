@@ -62,6 +62,21 @@ class PrecisError(Exception):
         self.options = list(options) if options is not None else None
         super().__init__(cause)
 
+    def __str__(self) -> str:
+        """``cause`` plus the structured hints, inline.
+
+        ``str(exc)`` in a test must name the refusal's vocabulary without
+        reaching for ``exc.options``/``exc.next`` (gr514481, gr514782);
+        ``runtime.error``'s ``render_error`` keeps the multi-line
+        ``[error:Kind]`` envelope for the wire.
+        """
+        parts = [self.cause]
+        if self.options:
+            parts.append("options: " + ", ".join(map(str, self.options)))
+        nexts = [self.next] if isinstance(self.next, str) else (self.next or [])
+        parts.extend(f"next: {hint}" for hint in nexts)
+        return "; ".join(parts)
+
 
 class NotFound(PrecisError):
     """Identifier or path does not exist."""

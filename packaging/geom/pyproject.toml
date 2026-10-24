@@ -40,7 +40,7 @@ pcb-kernel = [
 # Partial ``precis`` package on purpose: only what the shipped modules
 # import. ``precis/structure/importers`` is excluded — its fetch paths
 # (precis.store, safe_fetch) are dead under ``--network none`` and would
-# break the import-graph allow-list (tests/test_geom_wheel_imports.py).
+# break the import-graph allow-list (tests/workspaces/test_geom_wheel_imports.py).
 # ``precis_se`` is partial the same way: the pure scene generators only.
 # The real ``precis_se/__init__.py`` imports ``SeHandler`` (the DB stack),
 # so a stub ships in its place — packaging/geom/precis_se/__init__.py,

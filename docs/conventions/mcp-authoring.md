@@ -43,6 +43,17 @@ Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
    (a paid API, a rate-limited fetch) is never run on the caller's
    behalf: the refusal names the exact call and the cost.
 
+## Declaring `args=` keys: `ARGS` → `ARGS_KEYS`
+
+A handler whose verb takes `args: dict` declares `ARGS` (`verb ->
+ArgsSpec`, `src/precis/protocol.py`); `__init_subclass__` derives
+`ARGS_KEYS` (`verb -> frozenset` of key names) from it — the two names
+are one declaration, so they cannot drift. Dispatch gates the caller's
+dict on `ARGS_KEYS` (rule 6) and error messages list it; tests read
+`Handler.ARGS_KEYS[verb]` (e.g. `tests/test_pcb_handler.py`). Declare
+`ARGS`, never write `ARGS_KEYS` directly — a class without `ARGS`
+inherits its parent's.
+
 ## Enforced by
 
 | rule | gate |

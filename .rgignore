@@ -1,0 +1,13 @@
+# Vendored and minified web assets: single 60k-char lines flood
+# `rg <pattern> src` (gr514479). Authored JS/CSS in the same
+# directory stays greppable.
+src/precis_web/static/3dmol/
+src/precis_web/static/katex/
+src/precis_web/static/mermaid/
+src/precis_web/static/pdfjs/
+src/precis_web/static/three/
+src/precis_web/static/three-cad-viewer/
+src/precis_web/static/three-r184/
+src/precis_web/static/*.min.js
+src/precis_web/static/*.min.css
+src/precis_web/static/*.bundle.mjs
