@@ -1157,17 +1157,24 @@ def _reap_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-def _subagent_event(tree: Path, event: str, agent_id: str) -> None:
+def _subagent_event(
+    tree: Path, event: str, agent_id: str, cwd: Path | None = None
+) -> None:
     """Fire the real SubagentStart/SubagentStop hook with its project dir set
-    to <tree> — the recorded `cwd` is what scopes the marker to that tree.
-    Run as a plain subprocess, so no `claude` ancestor exists and the marker
-    carries no pid (the no-pid path is exercised too)."""
+    to <tree> — the PARENT session's tree, which is all the hook's command
+    line can ever name. <cwd> is the payload's `cwd` field, what the harness
+    reports as the agent's own tree for a worktree-isolated subagent
+    (gr513859). Run as a plain subprocess, so no `claude` ancestor exists
+    and the marker carries no pid (the no-pid path is exercised too)."""
     script = tree / "scripts" / "hooks" / "subagent-task-state.py"
+    payload: dict[str, str] = {"agent_id": agent_id}
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
     result = subprocess.run(
         [str(script), event, str(tree)],
         cwd=str(tree),
         env={**_test_env(), "CLAUDE_PROJECT_DIR": str(tree)},
-        input=json.dumps({"agent_id": agent_id}),
+        input=json.dumps(payload),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1187,11 +1194,15 @@ def _write_marker(primary: Path, payload: dict) -> Path:
     return marker
 
 
-def _check_task(primary: Path, path: Path) -> tuple[int, str]:
-    """Run the staged helper's `check` verb against <path>: (rc, stdout)."""
+def _check_task(primary: Path, path: Path, repo: Path | None = None) -> tuple[int, str]:
+    """Run the staged helper's `check` verb against <path> (with <repo> as
+    the fallback repo context when given): (rc, stdout)."""
     script = primary / "scripts" / "hooks" / "subagent-task-state.py"
+    cmd = ["python3", str(script), "check", str(path)]
+    if repo is not None:
+        cmd.append(str(repo))
     result = subprocess.run(
-        ["python3", str(script), "check", str(path)],
+        cmd,
         cwd=str(primary),
         env=_test_env(),
         capture_output=True,
@@ -1385,6 +1396,95 @@ def test_marker_records_session_pid_tree_and_start(
         session.terminate()
         session.wait(timeout=10)
         _subagent_event(b, "stop", "task-fields")
+
+
+def test_marker_scopes_to_agent_tree_from_payload_cwd(
+    repo_trio: dict[str, Path],
+) -> None:
+    """gr513859: the SubagentStart hook fires in the PARENT's tree, but the
+    marker must scope to the agent's own worktree — here via the payload's
+    `cwd` — so `check` is busy for that tree and clear everywhere else."""
+    primary, b, a = repo_trio["primary"], repo_trio["b"], repo_trio["a"]
+    _subagent_event(primary, "start", "task-own-tree", cwd=a)
+    try:
+        marker = json.loads(
+            (_task_state_dir(primary) / "task-own-tree.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marker["cwd"] == str(a.resolve()), marker
+        assert _check_task(primary, a) == (0, "task-own-tree")
+        assert _check_task(primary, primary) == (1, "")
+        assert _check_task(primary, b) == (1, "")
+    finally:
+        _subagent_event(primary, "stop", "task-own-tree")
+
+
+def test_marker_scopes_to_worktree_locked_for_the_agent_id(
+    repo_trio: dict[str, Path],
+) -> None:
+    """gr513859: with no `cwd` in the payload, the tree the harness locked
+    for the agent id ("claude agent <id> (pid <N>)") is the marker's cwd —
+    this is how a worktree-isolated task is found on a harness whose
+    SubagentStart payload only carries the parent's cwd."""
+    primary, b, a = repo_trio["primary"], repo_trio["b"], repo_trio["a"]
+    _git(
+        primary,
+        "worktree",
+        "lock",
+        str(a),
+        "--reason",
+        "claude agent task-locked (pid 424242)",
+    )
+    try:
+        _subagent_event(primary, "start", "task-locked")
+        marker = json.loads(
+            (_task_state_dir(primary) / "task-locked.json").read_text(encoding="utf-8")
+        )
+        assert marker["cwd"] == str(a.resolve()), marker
+        assert _check_task(primary, a) == (0, "task-locked")
+        assert _check_task(primary, primary) == (1, "")
+        assert _check_task(primary, b) == (1, "")
+    finally:
+        _subagent_event(primary, "stop", "task-locked")
+        _git(primary, "worktree", "unlock", str(a))
+
+
+def test_check_answers_for_a_removed_worktree(
+    repo_trio: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr513859: the reaper asks `check` about trees that are already GONE —
+    `git -C` refuses a missing directory, so the helper walks up to a
+    surviving ancestor (still the same repo), and falls back to the repo
+    context the caller passes for a path with no repo anywhere. A marker
+    naming a deleted tree keeps protecting its leftover containers."""
+    primary = repo_trio["primary"]
+    gone = primary / ".claude" / "worktrees" / "gone-tree"
+    _subagent_event(primary, "start", "task-gone", cwd=gone)
+    try:
+        assert _check_task(primary, gone) == (0, "task-gone")
+        assert _check_task(primary, gone, repo=primary) == (0, "task-gone")
+    finally:
+        _subagent_event(primary, "stop", "task-gone")
+
+    # A path with no repo in its ancestry can't be probed at all: the
+    # caller's repo context decides — fail closed without it, judged
+    # against the repo's own markers with it.
+    foreign = tmp_path / "elsewhere" / "gone-tree"
+    _write_marker(
+        primary,
+        {
+            "agent_id": "task-foreign",
+            "cwd": str(foreign),
+            "started_at": _utc_now_z(),
+        },
+    )
+    assert _check_task(primary, foreign) == (2, "")
+    assert _check_task(primary, foreign, repo=primary) == (0, "task-foreign")
+    assert _check_task(primary, tmp_path / "elsewhere" / "other", repo=primary) == (
+        1,
+        "",
+    )
 
 
 def test_take_agent_refuses_a_live_subagent_task(
@@ -2125,9 +2225,12 @@ def test_reap_test_dbs_holds_an_agent_trees_db_younger_than_two_hours(
 def test_reap_test_dbs_holds_an_agent_task_db_while_task_is_live(
     reap_db_repo: dict[str, Path], tmp_path: Path
 ) -> None:
+    """A marker scoped to the agent's own tree (what a worktree-isolated
+    task records — gr513859) protects that tree's project: criterion 1 of
+    the carve-out holds its db even past the 2 h agent threshold."""
     primary = reap_db_repo["primary"]
     agent = _agent_tree(primary)
-    _subagent_event(primary, "start", "task-db-live")
+    _subagent_event(primary, "start", "task-db-live", cwd=agent)
     try:
         containers = [
             f"precis-test-agent-a1b2c3|dbcid1|precis-test-db|{agent}/docker/dev/compose.yaml"
@@ -2143,9 +2246,12 @@ def test_reap_test_dbs_holds_an_agent_task_db_while_task_is_live(
 def test_reap_test_dbs_holds_orphaned_agent_db_while_task_is_live(
     reap_db_repo: dict[str, Path], tmp_path: Path
 ) -> None:
+    """The isolation-worktree fallback: the marker scopes to a tree that is
+    already GONE (the task fell back to the parent) — `check` still finds
+    it through the surviving ancestors, and the orphaned project stays."""
     primary = reap_db_repo["primary"]
     gone = primary / ".claude" / "worktrees" / "agent-gone"
-    _subagent_event(primary, "start", "task-orphan-db")
+    _subagent_event(primary, "start", "task-orphan-db", cwd=gone)
     try:
         containers = [
             f"precis-test-agent-gone|dbcid1|precis-test-db|{gone}/docker/dev/compose.yaml"
@@ -2156,6 +2262,31 @@ def test_reap_test_dbs_holds_orphaned_agent_db_while_task_is_live(
         assert "down|precis-test-agent-gone" not in log, log
     finally:
         _subagent_event(primary, "stop", "task-orphan-db")
+
+
+def test_reap_test_dbs_reaps_other_projects_while_a_task_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr513859, the reported freeze: a task scoped to agent tree A — its
+    marker written by the parent in main — protects ONLY A's project. The
+    gone tree's project still reaps in the same run (the old whole-run
+    `check $ROOT` kept it whenever any task was live anywhere)."""
+    primary = reap_db_repo["primary"]
+    agent = _agent_tree(primary)
+    _subagent_event(primary, "start", "task-scoped", cwd=agent)
+    gone = primary / ".claude" / "worktrees" / "gone-b"
+    try:
+        containers = [
+            f"precis-test-agent-a1b2c3|dbcid1|precis-test-db|{agent}/docker/dev/compose.yaml",
+            f"precis-test-gone-b|dbcid2|precis-test-db|{gone}/docker/dev/compose.yaml",
+        ]
+        created = [f"dbcid1|{_iso_created(3 / 24)}", f"dbcid2|{_iso_created(3 / 24)}"]
+        result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+        assert result.returncode == 0, result.stderr
+        assert "down|precis-test-gone-b" in log, (result.stdout, log)
+        assert "down|precis-test-agent-a1b2c3" not in log, log
+    finally:
+        _subagent_event(primary, "stop", "task-scoped")
 
 
 def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(

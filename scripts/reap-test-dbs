@@ -36,9 +36,10 @@
 # deliberately out of scope; stopping those needs a liveness judgment
 # (scripts/inflight), not a file test.
 #
-# A live SubagentStart marker suppresses both sweeps: an isolation worktree can
-# disappear while its task falls back to the parent tree, so a missing mount
-# path alone is not proof the task has ended.
+# A live SubagentStart marker suppresses the sweeps FOR THE TREE IT SCOPES TO
+# (gr513859): an isolation worktree can disappear while its task falls back to
+# the parent tree, so a missing mount path alone is not proof the task has
+# ended — but a task in some other tree must not freeze the whole run either.
 #
 # Network-only sweep (gr311857): the container-label reconciliation above
 # needs a container to read the worktree path off. A project that never has
@@ -125,10 +126,15 @@ docker ps -a --format '{{.Names}}' >/dev/null 2>&1 || exit 0
 ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || true)"
 TASK_HELPER="$ROOT/scripts/hooks/subagent-task-state.py"
 active_task_id=""
+# subagent_task_clear <worktree-path> — true (0) when no live task marker is
+# scoped to THAT tree (gr513859: the old whole-run `check "$ROOT"` kept every
+# project whenever the tree the reaper ran from had any task at all). $ROOT
+# goes along as the repo context, so the check still finds the shared state
+# dir when <worktree-path> itself is already gone.
 subagent_task_clear() {
     [ -f "$TASK_HELPER" ] || return 0
     local task_id task_rc
-    task_id="$(python3 "$TASK_HELPER" check "$ROOT" 2>/dev/null)"
+    task_id="$(python3 "$TASK_HELPER" check "$1" "$ROOT" 2>/dev/null)"
     task_rc=$?
     if [ "$task_rc" -eq 1 ]; then
         active_task_id=""
@@ -137,10 +143,6 @@ subagent_task_clear() {
     active_task_id="${task_id:-unknown}"
     return 1
 }
-if ! subagent_task_clear; then
-    [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — skipping"
-    exit 0
-fi
 
 REAPED=()
 SEEN=""
@@ -172,7 +174,7 @@ while IFS='|' read -r proj cfg; do
 
     [ -d "$root" ] && continue   # tree still there — not our business
 
-    if ! subagent_task_clear; then
+    if ! subagent_task_clear "$root"; then
         [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — keeping $proj"
         continue
     fi
@@ -219,6 +221,19 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
         [ -n "$p" ] && LIVE_PROJECTS="$LIVE_PROJECTS $p"
     done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
 
+    # Live task markers also protect bare networks: the tree a marker
+    # scopes to can be gone already (the task fell back to the parent), so
+    # it is not in LIVE_PROJECTS — compose each marker's cwd forward into
+    # the project name it minted instead (gr513859).
+    TASK_PROJECTS=""
+    if [ -f "$TASK_HELPER" ]; then
+        while IFS=$'\t' read -r _mtid _mcwd _mpid; do
+            [ -z "${_mcwd:-}" ] && continue
+            _mproj="$(compose_project_for "$_mcwd" 2>/dev/null || true)"
+            [ -n "$_mproj" ] && TASK_PROJECTS="$TASK_PROJECTS $_mproj"
+        done < <(python3 "$TASK_HELPER" list "$ROOT" 2>/dev/null || true)
+    fi
+
     while IFS='|' read -r net proj; do
         [ -z "$net" ] && continue
         case "$proj" in
@@ -227,11 +242,15 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
         esac
         case " $SEEN " in *" $proj "*) continue ;; esac   # has a container — handled above
         case " $LIVE_PROJECTS " in *" $proj "*) continue ;; esac   # a live worktree still owns this name
-
-        if ! subagent_task_clear; then
-            [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — keeping $net"
+        case " $TASK_PROJECTS " in *" $proj "*)
+            # A live task marker scopes to a (possibly gone) tree that
+            # minted this name — same protection the label sweep's
+            # per-path `check` gives, composed forwards since a project
+            # name cannot be inverted back to a path.
+            [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task — keeping $net"
             continue
-        fi
+            ;;
+        esac
         if [ "$DRY_RUN" = 1 ]; then
             REAPED+=("$net")
             continue
@@ -329,7 +348,7 @@ PY
             case " $SEEN " in *" $proj "*) ;; *) continue ;; esac
 
             # (1) no live session or subagent task owns this checkout.
-            if ! subagent_task_clear; then
+            if ! subagent_task_clear "$wt_path"; then
                 continue
             elif [ ! -f "$TASK_HELPER" ] && [[ "$(basename "$wt_path")" == agent-* ]]; then
                 # An untracked harness agent has no reliable session lock.

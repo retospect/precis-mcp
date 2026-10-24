@@ -2,10 +2,18 @@
 """Track active Claude subagent ids in the shared git directory.
 
 Marker shape (gr513174): {"agent_id", "pid", "cwd", "started_at"} — the
-durable session pid, the session's worktree, and a UTC start time. Markers
+durable session pid, the task's worktree, and a UTC start time. Markers
 that predate this shape, name a dead pid, or outlive _MAX_MARKER_AGE are
 stale: readers ignore and unlink them, so a task whose SubagentStop never
 fired (killed agent, crashed session) cannot freeze the reaper again.
+
+`cwd` is the tree the TASK runs in, not the hook's project dir (gr513859):
+a worktree-isolated subagent is spawned from the parent session, so the
+SubagentStart command line and $CLAUDE_PROJECT_DIR both name the parent's
+tree. The record resolves the agent's own tree from the worktree the
+harness locked for its agent id ("claude agent <id> (pid <N>)"), then the
+payload's `cwd`, then the project dir (right for a non-isolated task,
+which shares the parent's tree).
 """
 
 from __future__ import annotations
@@ -21,6 +29,9 @@ from pathlib import Path
 _TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _STATE_DIR = "precis-agent-tasks"
 _LOCK_PID = re.compile(r"pid\s+([0-9]+)")
+# `git worktree lock` reason for a harness agent tree: "claude agent <id>
+# (pid <N>)" — <id> is the task's agent_id and names its own worktree.
+_LOCK_AGENT = re.compile(r"\bagent\s+([A-Za-z0-9_-]{1,128})\b")
 # Upper bound on a marker whose pid stays live (or unreadable) but whose
 # SubagentStop never fired: six hours of protection, then the tree reaps.
 _MAX_MARKER_AGE = timedelta(hours=6)
@@ -82,19 +93,75 @@ def _session_pid() -> int | None:
     return None
 
 
-def _payload_task_id() -> str:
+def _payload() -> dict:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):
-        return ""
-    task_id = payload.get("agent_id", "") if isinstance(payload, dict) else ""
-    return task_id if isinstance(task_id, str) and _TASK_ID.fullmatch(task_id) else ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _worktree_blocks(git_dir: Path) -> list[list[str]] | None:
+    """`worktree list --porcelain` blocks run against <git_dir> — repo-global,
+    so any worktree of the repo (or an existing ancestor of a removed one)
+    answers for all of them. None when git can't run there."""
+    proc = subprocess.run(
+        ["git", "-C", str(git_dir), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=10,
+    )
+    if proc.returncode:
+        return None
+    return [
+        block.splitlines()
+        for block in proc.stdout.split("\n\n")
+        if block.splitlines() and block.splitlines()[0].startswith("worktree ")
+    ]
+
+
+def _locked_task_tree(task_id: str, root: Path) -> Path | None:
+    """The worktree the harness minted for <task_id> itself: locked
+    "claude agent <id> (pid <N>)", or named `agent-<id>` under
+    .claude/worktrees. How the marker finds the agent's own tree when the
+    hook's argv can only name the parent's."""
+    blocks = _worktree_blocks(root)
+    if blocks is None:
+        return None
+    want = f"agent-{task_id}"
+    for lines in blocks:
+        wt = lines[0][len("worktree ") :]
+        locked = next((ln for ln in lines[1:] if ln.startswith("locked")), "")
+        m = _LOCK_AGENT.search(locked)
+        if (m is not None and m.group(1) == task_id) or os.path.basename(wt) == want:
+            return Path(wt).resolve()
+    return None
+
+
+def _task_cwd(task_id: str, root: Path, payload: dict) -> str:
+    """The tree the task runs in (gr513859): its own locked/minted worktree,
+    else the payload's `cwd`, else the hook's project dir — right for a
+    non-isolated task, which shares the parent's tree."""
+    locked = _locked_task_tree(task_id, root)
+    if locked is not None:
+        return str(locked)
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return str(Path(cwd).resolve())
+    return str(root.resolve())
 
 
 def _record(action: str, root: Path) -> int:
-    task_id = _payload_task_id()
+    payload = _payload()
+    task_id = payload.get("agent_id", "")
     common = _common_dir(root)
-    if not task_id or common is None:
+    if (
+        not isinstance(task_id, str)
+        or not _TASK_ID.fullmatch(task_id)
+        or common is None
+    ):
         return 0
     state = common / _STATE_DIR
     marker = state / f"{task_id}.json"
@@ -104,7 +171,7 @@ def _record(action: str, root: Path) -> int:
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     data: dict[str, object] = {
         "agent_id": task_id,
-        "cwd": str(root.resolve()),
+        "cwd": _task_cwd(task_id, root, payload),
         "started_at": datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
@@ -181,25 +248,36 @@ def _live_markers(state: Path) -> list[dict] | None:
     return live
 
 
-def _tree_lock_pid(path: Path) -> int | None:
+def _repo_probe(path: Path) -> tuple[Path, Path] | None:
+    """(a cwd git accepts, the repo's common dir) for <path> or its nearest
+    ancestor inside a work tree. The ancestor walk-up is what lets `check`
+    still answer for a worktree the reaper already deleted: `git -C`
+    refuses a missing directory outright, but the shared state dir — and a
+    marker naming the gone path — is still reachable through a surviving
+    parent."""
+    probe = path
+    while True:
+        if probe.is_dir():
+            common = _common_dir(probe)
+            if common is not None:
+                return probe, common
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
+
+
+def _tree_lock_pid(git_dir: Path, path: Path) -> int | None:
     """The pid <path>'s `git worktree lock` reason names — how the harness
     records which session owns an agent child tree ("claude agent <id> (pid
-    <N>)"). Same `pid <N>` parse as scripts/inflight's session_field."""
-    proc = subprocess.run(
-        ["git", "-C", str(path), "worktree", "list", "--porcelain"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=10,
-    )
-    if proc.returncode:
+    <N>)"). Same `pid <N>` parse as scripts/inflight's session_field. A
+    locked-but-removed tree keeps its list entry until `worktree remove`/
+    `prune`, so this still answers for a gone path."""
+    blocks = _worktree_blocks(git_dir)
+    if blocks is None:
         return None
     real = os.path.realpath(path)
-    for block in proc.stdout.split("\n\n"):
-        lines = block.splitlines()
-        if not lines or not lines[0].startswith("worktree "):
-            continue
+    for lines in blocks:
         if os.path.realpath(lines[0][len("worktree ") :]) != real:
             continue
         for ln in lines[1:]:
@@ -220,16 +298,23 @@ def _matches(marker: dict, real: str, lock_pid: int | None) -> bool:
     return lock_pid is not None and isinstance(pid, int) and pid == lock_pid
 
 
-def _check(path: Path) -> int:
-    common = _common_dir(path)
-    if common is None:
+def _check(path: Path, repo: Path | None = None) -> int:
+    """Is a live task scoped to <path>? <repo> is a fallback context for a
+    <path> that no longer sits inside any repo — a marker for a deleted
+    worktree still lives in ITS repo's state dir, and the reaper passes its
+    own root so a removed tree of this repo is judged on it."""
+    ctx = _repo_probe(path) or (_repo_probe(repo) if repo is not None else None)
+    if ctx is None:
         return 2
+    git_dir, common = ctx
     live = _live_markers(common / _STATE_DIR)
     if live is None:
         return 2
     real = os.path.realpath(path)
     lock_pid = (
-        _tree_lock_pid(path) if any(isinstance(m["pid"], int) for m in live) else None
+        _tree_lock_pid(git_dir, path)
+        if any(isinstance(m["pid"], int) for m in live)
+        else None
     )
     for marker in live:
         if _matches(marker, real, lock_pid):
@@ -259,8 +344,8 @@ def _list(path: Path) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] in {"start", "stop"}:
         return _record(argv[1], Path(argv[2]))
-    if len(argv) == 3 and argv[1] == "check":
-        return _check(Path(argv[2]))
+    if len(argv) in {3, 4} and argv[1] == "check":
+        return _check(Path(argv[2]), Path(argv[3]) if len(argv) == 4 else None)
     if argv[1:] == ["list"]:
         return _list(Path.cwd())
     if len(argv) == 3 and argv[1] == "list":
