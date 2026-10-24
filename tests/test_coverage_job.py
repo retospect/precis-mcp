@@ -230,9 +230,9 @@ JO482106_CONFIG: dict[str, Any] = {
     "substrate": "NO",
 }
 #: ``coverage_anchor_key(with_defaults(JO482106_CONFIG))`` on
-#: autocatpath 0.32.0 — the key carries the engine version, so this pin is
+#: autocatpath 0.39.0 — the key carries the engine version, so this pin is
 #: re-derived (not loosened) on any engine bump.
-JO482106_KEY = "c7472c8a3d9081ee087d5f37febc12076a356fb39812fa5d677840c99c29df7c"
+JO482106_KEY = "dd5daae18f7145a823b65b064b1dbd5cbd91bfbbf4226bb30aaa3f0f8013eb13"
 
 
 def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:
