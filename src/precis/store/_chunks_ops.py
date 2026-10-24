@@ -28,6 +28,7 @@ import random
 import time
 from contextlib import nullcontext
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -178,9 +179,11 @@ _ANN_GLOBAL_KINDS: frozenset[str] = frozenset({"paper"})
 #: Kinds big enough for their own partial HNSW index (>= 5,000 embedded
 #: chunks on prod, 2026-10-17; docs/backlog/kind-scoped-vector-search.md).
 #: ``precis backfill-embedding-kinds`` builds one per kind CONCURRENTLY under
-#: :func:`ann_partial_index_name`; until that index is valid (and the 0226
-#: CHECK validated) the kind stays on the global index. Adding a kind here
-#: and re-running the command is the whole change.
+#: :func:`ann_partial_index_name`; until that index is valid and the kind's
+#: fill is done (the 0242 ``chunk_embeddings_kind_ready`` marker, or the
+#: 0226 CHECK once validated for every kind at once) the kind stays on the
+#: global index. Adding a kind here and re-running the command is the
+#: whole change.
 _ANN_PARTIAL_KINDS: tuple[str, ...] = (
     "job",
     "anki",
@@ -205,26 +208,67 @@ def ann_partial_index_name(kind: str) -> str:
 
 
 #: Seconds a cached :func:`_ann_kind_state` answer stays fresh. Bounds how
-#: long a process keeps the pre-backfill route after the gate validates.
+#: long a process keeps the pre-backfill route after a gate validates.
 _ANN_STATE_TTL_S = 60.0
-#: ``(host, port, dbname)`` -> ``(fetched_at, filled, indexed_kinds)``.
-_ann_state_cache: dict[tuple[str, int, str], tuple[float, bool, frozenset[str]]] = {}
+#: ``(host, port, dbname)`` -> ``(fetched_at, state)``.
+_ann_state_cache: dict[tuple[str, int, str], tuple[float, _AnnState]] = {}
 
+#: Per-index readiness keyed by the kind literal in each partial index's
+#: predicate (``kind = '<k>'``), restricted to the canonical index names so a
+#: stale ``*_ccnew``/``*_ccold`` leftover of a failed CONCURRENTLY build
+#: cannot flip a kind's flag. ``indisready`` joins ``indisvalid``: a build
+#: still scanning sets valid-but-not-ready.
 _ANN_STATE_SQL = """
 SELECT
   coalesce((SELECT convalidated FROM pg_constraint
              WHERE conrelid = 'chunk_embeddings'::regclass
                AND conname = 'chunk_embeddings_ref_kind_filled'), false),
-  coalesce(array_agg(substring(pg_get_expr(i.indpred, i.indrelid)
-                               FROM '\\(kind = ''([^'']+)''::text\\)')), '{}')
-  FROM pg_index i
-  JOIN pg_class ic ON ic.oid = i.indexrelid
-  JOIN pg_am am ON am.oid = ic.relam
- WHERE i.indrelid = 'chunk_embeddings'::regclass
-   AND am.amname = 'hnsw'
-   AND i.indisvalid
-   AND pg_get_expr(i.indpred, i.indrelid) ~ '\\(kind = '''
+  (SELECT coalesce(jsonb_object_agg(k, ready), '{}'::jsonb) FROM (
+        SELECT substring(pg_get_expr(i.indpred, i.indrelid)
+                         FROM '\\(kind = ''([^'']+)''::text\\)') AS k,
+               i.indisvalid AND i.indisready AS ready
+          FROM pg_index i
+          JOIN pg_class ic ON ic.oid = i.indexrelid
+          JOIN pg_am am ON am.oid = ic.relam
+         WHERE i.indrelid = 'chunk_embeddings'::regclass
+           AND am.amname = 'hnsw'
+           AND ic.relname ~ '^chunk_embeddings_vec_hnsw_.+_idx$'
+           AND pg_get_expr(i.indpred, i.indrelid) ~ '\\(kind = '''
+       ) s),
+  -- NULL regclass (pre-0242 DB) or a role without SELECT (grants are
+  -- provisioned out of tree) both mean "no markers": coalesce → false.
+  coalesce(has_table_privilege(
+             to_regclass('chunk_embeddings_kind_ready'), 'SELECT'), false)
 """
+
+#: Marker table the backfill upserts per fill-complete kind (migration 0242).
+_ANN_KIND_READY_TABLE = "chunk_embeddings_kind_ready"
+
+
+@dataclass(frozen=True)
+class _AnnState:
+    """One probe of the kind-scoped ANN gates (migrations 0226 + 0242).
+
+    * ``filled``: the ``chunk_embeddings_ref_kind_filled`` CHECK is
+      validated — every row carries its ref's kind, so every kind is
+      fill-complete (the fast path).
+    * ``present`` / ``indexed``: kinds whose canonical partial HNSW index
+      exists / exists and is valid+ready (from the index predicates).
+    * ``marked``: kinds the backfill marked fill-complete in
+      ``chunk_embeddings_kind_ready`` — the per-kind gate that lets a kind
+      route before the CHECK validates.
+    """
+
+    filled: bool
+    present: frozenset[str]
+    indexed: frozenset[str]
+    marked: frozenset[str]
+
+    def kind_ready(self, kind: str) -> bool:
+        """``kind`` may use its partial index: the index serves AND no
+        unfilled row resolves to ``kind`` (marked by the backfill, or the
+        validated CHECK covering every kind)."""
+        return kind in self.indexed and (self.filled or kind in self.marked)
 
 
 def _reset_ann_state_cache() -> None:
@@ -232,28 +276,37 @@ def _reset_ann_state_cache() -> None:
     _ann_state_cache.clear()
 
 
-def _ann_kind_state(conn: Connection) -> tuple[bool, frozenset[str]]:
-    """``(filled, indexed_kinds)`` for kind-scoped ANN routing (migration 0226).
+def _ann_kind_state(conn: Connection) -> _AnnState:
+    """The kind-scoped ANN gates for routing (migrations 0226 + 0242).
 
-    ``filled``: the ``chunk_embeddings_ref_kind_filled`` CHECK is validated,
-    i.e. every embedding row carries its ref's kind. ``indexed_kinds``: kinds
-    with a valid partial HNSW index on ``chunk_embeddings`` (read from the
-    index predicates; ``indisvalid`` only, so a failed CONCURRENTLY build
-    does not count). Cached per database
-    for :data:`_ANN_STATE_TTL_S`.
+    Cached per database for :data:`_ANN_STATE_TTL_S`. When the marker
+    table is absent (pre-0242 database) or the search role holds no SELECT
+    on it (grants are provisioned out of tree) ``marked`` is empty and the
+    validated CHECK is the only fill gate — the pre-0242 behaviour, never
+    an error.
     """
     info = conn.info
     key = (str(info.host), int(info.port or 0), str(info.dbname))
     now = time.monotonic()
     hit = _ann_state_cache.get(key)
     if hit is not None and now - hit[0] < _ANN_STATE_TTL_S:
-        return hit[1], hit[2]
+        return hit[1]
     row = conn.execute(_ANN_STATE_SQL).fetchone()
     filled = bool(row[0]) if row else False
-    names = (row[1] if row else None) or []
-    indexed = frozenset(k for k in names if k)
-    _ann_state_cache[key] = (now, filled, indexed)
-    return filled, indexed
+    index_of = dict((row[1] if row else None) or {})
+    marked: frozenset[str] = frozenset()
+    if row and row[2]:
+        marked = frozenset(
+            str(r[0]) for r in conn.execute(f"SELECT kind FROM {_ANN_KIND_READY_TABLE}")
+        )
+    state = _AnnState(
+        filled=filled,
+        present=frozenset(str(k) for k in index_of if k),
+        indexed=frozenset(str(k) for k, ok in index_of.items() if k and ok),
+        marked=marked,
+    )
+    _ann_state_cache[key] = (now, state)
+    return state
 
 
 def ann_route_plan(
@@ -272,7 +325,10 @@ def ann_route_plan(
     if route == "partial":
         assert route_kind is not None
         index = ann_partial_index_name(route_kind)
-        reason = "per-kind partial HNSW index (valid)"
+        state = _ann_kind_state(conn)
+        reason = "per-kind partial HNSW index (valid" + (
+            ", all kinds filled)" if state.filled else ", kind fill-complete)"
+        )
     elif route == "exact":
         index = None
         reason = "small kind — kind filter + exact distance scan, no HNSW index"
@@ -286,11 +342,19 @@ def ann_route_plan(
                 "nearly all candidates, no partial index"
             )
         else:
-            reason = (
-                "kind's partial index is missing or invalid (or the "
-                "ref/kind backfill is unvalidated) — global index + "
-                "post-filter fallback"
-            )
+            state = _ann_kind_state(conn)
+            if route_kind not in state.present:
+                reason = "kind's partial index is missing — global index + post-filter"
+            elif route_kind not in state.indexed:
+                reason = (
+                    "kind's partial index is invalid or not ready — "
+                    "global index + post-filter"
+                )
+            else:
+                reason = (
+                    "kind's ref/kind backfill is incomplete — global "
+                    "index + post-filter"
+                )
     return {"route": route, "kind": route_kind, "index": index, "reason": reason}
 
 
@@ -304,9 +368,11 @@ def _ann_route(
     * ``"global"`` — the global HNSW index plus post-filter (the pre-0226
       path): no single kind, a kind in :data:`_ANN_GLOBAL_KINDS`, or a kind
       in :data:`_ANN_PARTIAL_KINDS` whose index is missing or invalid or
-      whose backfill has not validated yet.
+      whose own fill is not marked complete yet.
     * ``"partial"`` — the kind's own partial HNSW index (``ce.kind = <k>``):
-      the index exists, is valid, and the NOT NULL CHECK is validated.
+      the index exists, is valid+ready, and the kind's fill is done — the
+      0242 marker (per kind, as soon as the backfill finishes it) or the
+      validated NOT NULL CHECK (every kind at once).
     * ``"exact"`` — any other kind is small (< 5,000 embedded chunks when
       0226 was cut): filter to its chunks, then exact distance. Query-only,
       so it needs neither the backfill nor an index.
@@ -319,8 +385,7 @@ def _ann_route(
         return "global", k
     if k not in _ANN_PARTIAL_KINDS:
         return "exact", k
-    filled, indexed = _ann_kind_state(conn)
-    return ("partial", k) if filled and k in indexed else ("global", k)
+    return ("partial", k) if _ann_kind_state(conn).kind_ready(k) else ("global", k)
 
 
 def _ann_core_sql(

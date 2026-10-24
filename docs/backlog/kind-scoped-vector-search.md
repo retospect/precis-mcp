@@ -52,10 +52,14 @@ plus distance), so the exact path only stays under ~0.3 s up to ~5k rows.
 - **Router** (`store/_chunks_ops.py::_ann_route`), single-kind only, in
   `search_chunks_semantic` and the fused query's semantic CTE. A kind in
   `_ANN_PARTIAL_KINDS` takes its partial index only when that index exists,
-  is `indisvalid` (read from `pg_index` predicates) and the
-  `chunk_embeddings_ref_kind_filled` CHECK is validated; otherwise it stays
-  on the global index (today's path). Any other kind takes the exact scan
-  (query-only, live from deploy). Paper, multi-kind and no-kind stay global.
+  is `indisvalid` + `indisready` (read from `pg_index` predicates) and the
+  kind's fill is complete: a `chunk_embeddings_kind_ready` marker row
+  (migration 0242, upserted per kind by the backfill once its own scan
+  finds no unfilled row resolving to it — gr513663 option (a)) or, for
+  every kind at once, the validated `chunk_embeddings_ref_kind_filled`
+  CHECK; otherwise it stays on the global index (today's path). Any other
+  kind takes the exact scan (query-only, live from deploy). Paper,
+  multi-kind and no-kind stay global.
 - **Indexes are not in the migration.** The 14 partial HNSW indexes and
   the `(ref_id, kind)` btree would each take a SHARE lock and scan ~3.9M
   rows inside the migration transaction. `precis backfill-embedding-kinds`
@@ -132,14 +136,13 @@ autovacuum reset (the cleanup also runs on failure).
 6. **Build the per-kind indexes:** `precis backfill-embedding-kinds --apply
    --skip-fill --database-url <direct postgres DSN>`: btree plus 14 partial
    HNSW, `CREATE INDEX CONCURRENTLY`, ~534k vectors, ~4 GB. The session
-   sets `maintenance_work_mem` (`--maintenance-work-mem`, default 18 GB)
-   and `max_parallel_maintenance_workers`
+   sets `maintenance_work_mem` (`--maintenance-work-mem`, default 2 GB —
+   lowered from 18 GB: the 32 GB host co-hosts the embedder, so 8 GB
+   shared_buffers + 18 GB left too little headroom and risked jetsam,
+   gr513663) and `max_parallel_maintenance_workers`
    (`--max-parallel-maintenance-workers`, default 4) before any DDL.
-   RAM arithmetic for the default: the DB host has 32 GB — 8 GB
-   shared_buffers + 18 GB maintenance_work_mem leaves ~6 GB for the OS,
-   pgbouncer and connections (work_mem is 64 MB each); if a host has
-   less headroom, lower the flag. Each kind switches to its index
-   within 60 s of its index turning valid.
+   Each kind switches to its index within 60 s of its index turning
+   valid AND its fill being marked complete.
 7. **REINDEX the global HNSW (required):** `... --skip-fill --no-indexes
    --reindex-global --database-url <direct>` drops an INVALID
    `*_ccnew`/`*_ccold` leftover of a failed earlier reindex
@@ -151,20 +154,21 @@ autovacuum reset (the cleanup also runs on failure).
    autovacuum reset) covers this step too.
 8. **Regenerate `docs/reference/schema.md`** from prod (`scripts/gen-schema`).
 
-**Open option (Reto's, not picked): skip the paper pass** — ~85 % of the
-fill time (3.41M of 3.94M rows), only needed for the CHECK to validate
-and for paper's own copy (which nothing routes on: paper stays on the
-global index anyway). The catch: the router's gate is the table-wide
-validated CHECK, which never validates while any row is unfilled — so
-this option needs a per-kind gate instead, e.g. route kind k to its
-partial index when the index is valid AND a cached `NOT EXISTS` probe
-finds no unfilled row joining to kind k through chunks→refs. Trade-off:
-every partial kind's fast path switches on after the ~1.3 h non-paper
-fill instead of after a 20–45 h weekend; the cost is a router change,
-the CHECK staying NOT VALID (so the global-gate invariant is lost)
-until a paper pass eventually runs, and live searches relying on the
-probe rather than a catalog flag. Decide after the rehearsal numbers
-land; the fill tooling supports either path.
+**Paper pass deferred (gr513663 option (a), picked 2026-10-24):** the
+paper fill — ~85 % of the fill time (3.41M of 3.94M rows) — is only
+needed for the CHECK to validate and for paper's own copy (which nothing
+routes on: paper stays on the global index anyway). The router's gate is
+now per kind: `chunk_embeddings_kind_ready` marker rows (migration 0242)
+written by the backfill after each pass, one per `_ANN_PARTIAL_KINDS`
+kind whose `chunks→refs`-joined unfilled count is zero — a `NOT EXISTS`
+probe per query would have to attribute NULL-kind rows through the two
+joins, so the scan result is materialised instead (cheapest correct:
+the scan runs once per pass in the CLI, the router reads a handful of
+marker rows). The ops order becomes: non-paper pass
+(`--until-pass non-paper`) → markers → index build per marked kind →
+14 fast paths live after ~1.3 h. The CHECK stays NOT VALID until a
+paper pass eventually runs (`--resume-pass paper`); the per-kind marker
+is the durable gate meanwhile.
 
 Trigger + FK cost on the write path (dev, 10k-row INSERT ... SELECT): with
 the HNSW indexes dropped, 0.22–0.24 s without 0226 vs 0.31–0.45 s with it

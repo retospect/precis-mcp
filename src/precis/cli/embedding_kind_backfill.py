@@ -21,14 +21,21 @@ NULL and builds no index. This command does the rest, in order:
    window means the next one is dense too). A window that fills nothing
    does not sleep. Each UPDATE only sets ``ref_id = NULL`` on unfilled
    rows: the trigger does the fill, so the copy keeps one definition.
+   ``--until-pass`` bounds the run (e.g. ``non-paper`` to defer the 20–45 h
+   paper pass). After each pass the run counts remaining unfilled rows per
+   kind (chunks→refs join) and upserts a ``chunk_embeddings_kind_ready``
+   marker per fill-complete ``_ANN_PARTIAL_KINDS`` kind (migration 0242) —
+   the router's per-kind gate.
 3. **validate** — VALIDATE the three constraints (SHARE UPDATE EXCLUSIVE;
-   inserts keep flowing).
-4. **indexes** — ``CREATE INDEX CONCURRENTLY`` one partial HNSW per kind in
-   ``_ANN_PARTIAL_KINDS`` (the btree is re-ensured first, a no-op after step
-   1), each built once from filled data; an INVALID leftover is dropped
-   CONCURRENTLY and rebuilt; every index is checked ``indisvalid`` after.
-   The router uses a kind's index only when it is valid and the CHECK is
-   validated (``store/_chunks_ops.py::_ann_route``).
+   inserts keep flowing). Only runs when NO row is unfilled; the per-kind
+   markers from step 2 do not wait for it.
+4. **indexes** — ``CREATE INDEX CONCURRENTLY`` one partial HNSW per
+   fill-complete kind in ``_ANN_PARTIAL_KINDS`` (the btree is re-ensured
+   first, a no-op after step 1), each built once from filled data; an
+   INVALID leftover is dropped CONCURRENTLY and rebuilt; every index is
+   checked ``indisvalid`` after. The router uses a kind's index once it is
+   valid+ready and the kind's fill is marked — or, for every kind at once,
+   once the CHECK is validated (``store/_chunks_ops.py::_ann_route``).
 5. ``--reindex-global`` — ``REINDEX INDEX CONCURRENTLY`` the global HNSW.
    Required once after the fill: every filled row was a non-HOT update and
    left a dead tuple in it. An INVALID ``*_ccnew``/``*_ccold`` leftover from
@@ -41,13 +48,19 @@ can take a long time, so the apply session connects with
 (``--database-url``), not a pooler that rejects startup options. The session
 also gets ``maintenance_work_mem`` and ``max_parallel_maintenance_workers``
 (``--maintenance-work-mem``, ``--max-parallel-maintenance-workers``) before
-any DDL. A fill-only run (``--no-btree --no-indexes``, no
+any DDL. The 2 GB ``--maintenance-work-mem`` default is sized for the
+32 GB prod host, which co-hosts the embedder: ~8 GB shared_buffers plus a
+2 GB maintenance allocation leaves headroom the old 18 GB default did not
+(jetsam risk, gr513663). A fill-only run (``--no-btree --no-indexes``, no
 ``--reindex-global``) still works through the pooler; ``run`` probes the
 options connection first and refuses a pooler before touching anything.
 
 Dry-run by default; ``--apply`` writes. Resume a fill with ``--resume-pass
 <pass> --after <chunk_id>``: ``--after`` applies only to that pass, earlier
-passes are skipped, later ones start from 0.
+passes are skipped, later ones start from 0. ``--until-pass <pass>`` stops
+the fill after that pass (default: the last pass), so
+``--until-pass non-paper`` fills, marks and indexes the partial kinds
+without starting the paper pass.
 """
 
 from __future__ import annotations
@@ -98,6 +111,8 @@ class BackfillResult:
     last_pass: str = ""
     unfilled_after: int | None = None
     indexes: dict[str, bool] = field(default_factory=dict)
+    unfilled_by_kind: dict[str, int] = field(default_factory=dict)
+    marked: frozenset[str] = frozenset()
 
 
 def _unfilled(conn: Connection, *, timeout_s: int = 1800) -> int:
@@ -142,6 +157,64 @@ def _index_valid(conn: Connection, name: str) -> bool | None:
     return None if row is None else bool(row[0])
 
 
+#: Marker table the router reads as the per-kind fill gate (migration 0242).
+_KIND_READY_TABLE = "chunk_embeddings_kind_ready"
+
+
+def _check_validated(conn: Connection) -> bool:
+    """``True`` when the global 0226 CHECK is validated — every kind is
+    fill-complete regardless of markers."""
+    row = conn.execute(
+        "SELECT convalidated FROM pg_constraint "
+        "WHERE conrelid = 'chunk_embeddings'::regclass "
+        "  AND conname = 'chunk_embeddings_ref_kind_filled'"
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _mark_filled_kinds(
+    conn: Connection, *, timeout_s: int = 1800
+) -> tuple[dict[str, int], frozenset[str]]:
+    """Attribute remaining unfilled rows to kinds; mark fill-complete ones.
+
+    A ``chunk_embeddings`` row is "unfilled for kind K" when
+    ``ref_id IS NULL OR kind IS NULL`` and its chunk's ref resolves to K —
+    exactly the rows a global-route ``r.kind = K`` search would still find:
+    a row whose chunk resolves to no ref matches no kind filter and is
+    invisible to every route. Each ``_ANN_PARTIAL_KINDS`` kind with no
+    unfilled row gets a ``_KIND_READY_TABLE`` row (upsert — markers are
+    never deleted; a ref re-kinded while it still has unfilled rows can
+    leave one stale, follow-up). Returns ``(unfilled_by_kind, marked)``.
+    On a pre-0242 database (no marker table) both come back empty.
+    """
+    present = conn.execute(
+        "SELECT to_regclass('chunk_embeddings_kind_ready')"
+    ).fetchone()
+    if present is None or present[0] is None:
+        return {}, frozenset()
+    with conn.transaction():
+        conn.execute(
+            "SELECT set_config('statement_timeout', %s, true)", (f"{int(timeout_s)}s",)
+        )
+        rows = conn.execute(
+            "SELECT r.kind, count(*) FROM chunk_embeddings ce "
+            "JOIN chunks c ON c.chunk_id = ce.chunk_id "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE ce.ref_id IS NULL OR ce.kind IS NULL "
+            "GROUP BY r.kind"
+        ).fetchall()
+    by_kind = {str(k): int(n) for k, n in rows}
+    marked = frozenset(k for k in _ANN_PARTIAL_KINDS if k not in by_kind)
+    if marked:
+        conn.execute(
+            f"INSERT INTO {_KIND_READY_TABLE} (kind) "
+            "SELECT k FROM unnest(%s::text[]) u(k) "
+            "ON CONFLICT (kind) DO UPDATE SET marked_at = now()",
+            (sorted(marked),),
+        )
+    return by_kind, marked
+
+
 def ensure_ref_kind_btree(conn: Connection) -> bool:
     """Ensure ``chunk_embeddings_ref_id_kind_idx``; return ``indisvalid``.
 
@@ -160,10 +233,15 @@ def ensure_ref_kind_btree(conn: Connection) -> bool:
     return bool(_index_valid(conn, _BTREE))
 
 
-def _kind_index_ddl() -> list[tuple[str, str]]:
-    """``(name, CREATE INDEX CONCURRENTLY ...)`` for the per-kind partials."""
+def _kind_index_ddl(
+    kinds: tuple[str, ...] | list[str] | None = None,
+) -> list[tuple[str, str]]:
+    """``(name, CREATE INDEX CONCURRENTLY ...)`` for the per-kind partials.
+
+    ``kinds`` restricts the set (default: all of ``_ANN_PARTIAL_KINDS``).
+    """
     out: list[tuple[str, str]] = []
-    for kind in _ANN_PARTIAL_KINDS:
+    for kind in _ANN_PARTIAL_KINDS if kinds is None else kinds:
         name = ann_partial_index_name(kind)
         lit = kind.replace("'", "''")
         out.append(
@@ -178,13 +256,18 @@ def _kind_index_ddl() -> list[tuple[str, str]]:
 
 
 def build_kind_indexes(
-    conn: Connection, *, maintenance_work_mem: str | None = None
+    conn: Connection,
+    *,
+    maintenance_work_mem: str | None = None,
+    kinds: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, bool]:
-    """Build every 0226 index CONCURRENTLY; return ``{name: indisvalid}``.
+    """Build the 0226 indexes CONCURRENTLY; return ``{name: indisvalid}``.
 
     ``conn`` must be autocommit (CONCURRENTLY refuses a transaction block).
     An index left INVALID by an earlier failed build is dropped CONCURRENTLY
-    and rebuilt once; ``IF NOT EXISTS`` alone would skip it.
+    and rebuilt once; ``IF NOT EXISTS`` alone would skip it. ``kinds``
+    restricts which partial indexes are built (default: all of
+    ``_ANN_PARTIAL_KINDS``); the btree is always re-ensured.
     """
     if not conn.autocommit:
         raise ValueError("build_kind_indexes needs an autocommit connection")
@@ -195,7 +278,7 @@ def build_kind_indexes(
             (maintenance_work_mem,),
         )
     result = {_BTREE: ensure_ref_kind_btree(conn)}
-    for name, ddl in _kind_index_ddl():
+    for name, ddl in _kind_index_ddl(kinds):
         if _index_valid(conn, name) is False:
             conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
         conn.execute(ddl)
@@ -303,6 +386,7 @@ def backfill_embedding_kinds(
     batch_timeout_s: int = 300,
     validate: bool = True,
     resume_pass: str = _PASSES[0][0],
+    until_pass: str = _PASSES[-1][0],
 ) -> BackfillResult:
     """Fill unfilled rows in ``chunk_id`` windows (non-paper, then paper), then
     validate. Index building is :func:`build_kind_indexes`.
@@ -315,12 +399,21 @@ def backfill_embedding_kinds(
     and re-raised when it can no longer be halved. ``window`` is a
     ``chunk_id`` span, not a row count. ``after`` applies to the pass named
     ``resume_pass`` only; earlier passes are skipped (already done), later
-    ones start at 0. The ``sleep_s`` pause is skipped after a window that
-    updated no rows.
+    ones start at 0; ``until_pass`` bounds the run (default: the last pass),
+    so ``until_pass='non-paper'`` defers the long paper pass while still
+    marking the partial kinds. The ``sleep_s`` pause is skipped after a
+    window that updated no rows. After each pass, :func:`_mark_filled_kinds`
+    re-counts unfilled rows per kind and marks the fill-complete
+    ``_ANN_PARTIAL_KINDS`` kinds in ``chunk_embeddings_kind_ready``.
     """
     names = [n for n, _ in _PASSES]
     if resume_pass not in names:
         raise ValueError(f"resume_pass must be one of {names}, got {resume_pass!r}")
+    if until_pass not in names or names.index(until_pass) < names.index(resume_pass):
+        raise ValueError(
+            f"until_pass must be one of {names} at or after "
+            f"{resume_pass!r}, got {until_pass!r}"
+        )
     before = _unfilled(conn)
     if not apply:
         return BackfillResult(before, 0, after, False, resume_pass)
@@ -331,7 +424,10 @@ def backfill_embedding_kinds(
     updated = 0
     lo = after
     last_pass = resume_pass
-    for label, pred in _PASSES[names.index(resume_pass) :]:
+    unfilled_by_kind: dict[str, int] = {}
+    marked: frozenset[str] = frozenset()
+    stop = names.index(until_pass) + 1
+    for label, pred in _PASSES[names.index(resume_pass) : stop]:
         lo = after if label == resume_pass else 0
         last_pass = label
         span = window
@@ -360,6 +456,7 @@ def backfill_embedding_kinds(
             lo += span
             if sleep_s and n:
                 time.sleep(sleep_s)
+        unfilled_by_kind, marked = _mark_filled_kinds(conn)
     validated = False
     left = _unfilled(conn)
     if validate and left == 0:
@@ -368,7 +465,16 @@ def backfill_embedding_kinds(
                 conn.execute("SET LOCAL statement_timeout = 0")
                 conn.execute(f"ALTER TABLE chunk_embeddings VALIDATE CONSTRAINT {name}")
         validated = True
-    return BackfillResult(before, updated, lo, validated, last_pass, left)
+    return BackfillResult(
+        before,
+        updated,
+        lo,
+        validated,
+        last_pass,
+        left,
+        unfilled_by_kind=unfilled_by_kind,
+        marked=marked,
+    )
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -400,11 +506,21 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Pass --after applies to; earlier passes are skipped.",
     )
     p.add_argument(
+        "--until-pass",
+        choices=[n for n, _ in _PASSES],
+        default=_PASSES[-1][0],
+        help="Stop the fill after this pass (default: the last). "
+        "--until-pass non-paper fills + marks the partial kinds without "
+        "starting the 20-45 h paper pass.",
+    )
+    p.add_argument(
         "--maintenance-work-mem",
-        default="18GB",
+        default="2GB",
         help="maintenance_work_mem for the index/reindex session (Postgres "
-        "size string; the rollout targets ~18 GB on a 32 GB host beside 8 GB "
-        "shared_buffers).",
+        "size string). Default 2GB is sized for the 32 GB prod host, which "
+        "co-hosts the embedder — ~8 GB shared_buffers plus concurrent "
+        "builds need the headroom (the former 18GB default risked OOM/"
+        "jetsam, gr513663). Raise only on a dedicated host.",
     )
     p.add_argument(
         "--max-parallel-maintenance-workers",
@@ -505,6 +621,7 @@ def run(args: argparse.Namespace) -> None:
                     sleep_s=args.sleep,
                     batch_timeout_s=args.batch_timeout,
                     resume_pass=args.resume_pass,
+                    until_pass=args.until_pass,
                 )
             print(
                 f"backfill-embedding-kinds [{mode}]: unfilled before "
@@ -515,13 +632,32 @@ def run(args: argparse.Namespace) -> None:
             )
             if not args.apply:
                 return
+            if args.skip_fill:
+                res.unfilled_by_kind, res.marked = _mark_filled_kinds(conn)
             left = (
                 res.unfilled_after
                 if res.unfilled_after is not None
                 else _unfilled(conn)
             )
-            if left and not args.skip_fill:
-                print(f"{left} rows still unfilled; first 25:", file=sys.stderr)
+            # The index phase needs every indexed kind fill-complete — a
+            # per-kind gate (0242 markers), not the table-wide CHECK, so a
+            # straggler paper pass does not hold back 14 usable indexes.
+            ready = (
+                set(_ANN_PARTIAL_KINDS) if _check_validated(conn) else set(res.marked)
+            )
+            unready = [k for k in _ANN_PARTIAL_KINDS if k not in ready]
+            if unready and not args.skip_fill:
+                by_kind = res.unfilled_by_kind
+                print(
+                    f"{len(unready)} of {len(_ANN_PARTIAL_KINDS)} partial "
+                    "kinds still have unfilled rows "
+                    + ", ".join(
+                        f"{k} ({by_kind[k]} unfilled)" if k in by_kind else k
+                        for k in unready
+                    )
+                    + "; first 25 unfilled rows:",
+                    file=sys.stderr,
+                )
                 for (
                     cid,
                     status,
@@ -539,10 +675,20 @@ def run(args: argparse.Namespace) -> None:
                     )
                 print("fill incomplete: index phase skipped.", file=sys.stderr)
                 sys.exit(1)
+            if unready:
+                print(
+                    "  not fill-complete, no index built: " + ", ".join(unready),
+                    file=sys.stderr,
+                )
             if left:
-                print(f"  {left} rows still unfilled (--skip-fill).", file=sys.stderr)
+                print(
+                    f"  {left} rows still unfilled "
+                    f"({'--skip-fill' if args.skip_fill else 'not on any indexed kind'}); "
+                    "the 0226 CHECK stays NOT VALID.",
+                    file=sys.stderr,
+                )
             if not args.no_indexes:
-                built = build_kind_indexes(conn)
+                built = build_kind_indexes(conn, kinds=sorted(ready))
                 for name, ok in built.items():
                     print(f"  {name}: {'valid' if ok else 'INVALID'}", file=sys.stderr)
                 if not all(built.values()):

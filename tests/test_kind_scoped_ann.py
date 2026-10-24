@@ -24,6 +24,7 @@ from psycopg import Connection
 from precis.cli.embedding_kind_backfill import (
     _GLOBAL_HNSW,
     _index_valid,
+    _mark_filled_kinds,
     autovacuum_paused,
     backfill_embedding_kinds,
     build_kind_indexes,
@@ -36,6 +37,7 @@ from precis.store._chunks_ops import (
     _ann_route,
     _reset_ann_state_cache,
     ann_partial_index_name,
+    ann_route_plan,
 )
 
 _EMBEDDER = "bge-m3"
@@ -246,6 +248,83 @@ def test_backfill_skips_the_sleep_after_an_empty_window(
     assert sleeps == [0.01] * 3
 
 
+def test_backfill_until_non_paper_marks_kinds_and_leaves_paper(
+    store: Store,
+) -> None:
+    """``until_pass='non-paper'`` fills the router's kinds and writes their
+    ``chunk_embeddings_kind_ready`` markers; the deferred paper rows stay
+    unfilled, so the CHECK is not validated. Rolled back."""
+    mem = store.insert_ref(kind="memory", slug=None, title="m", meta={})
+    pap = store.insert_ref(kind="paper", slug="ks-p", title="p", meta={})
+    mem_cids = [_chunk(store, mem.id, f"memory body {i}", i) for i in range(2)]
+    pap_cids = [_chunk(store, pap.id, f"paper body {i}", i) for i in range(2)]
+    with store.pool.connection() as conn:
+        _legacy_nulls(conn, mem_cids + pap_cids)
+        res = backfill_embedding_kinds(
+            conn, apply=True, window=100, sleep_s=0, until_pass="non-paper"
+        )
+        assert res.updated == 2  # the memory rows; paper untouched
+        assert res.unfilled_by_kind == {"paper": 2}
+        assert res.marked == frozenset(_ANN_PARTIAL_KINDS)
+        assert res.last_pass == "non-paper" and not res.validated
+        marked = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT kind FROM chunk_embeddings_kind_ready"
+            ).fetchall()
+        }
+        assert set(_ANN_PARTIAL_KINDS) <= marked
+        conn.rollback()
+
+
+def test_backfill_leaves_a_straggler_kind_unmarked(store: Store) -> None:
+    """A kind with rows the fill has not reached is NOT marked — here the
+    memory rows are skipped entirely by a paper-only run. Rolled back."""
+    mem = store.insert_ref(kind="memory", slug=None, title="m", meta={})
+    pap = store.insert_ref(kind="paper", slug="ks-p", title="p", meta={})
+    mem_cids = [_chunk(store, mem.id, f"memory body {i}", i) for i in range(2)]
+    pap_cids = [_chunk(store, pap.id, f"paper body {i}", i) for i in range(2)]
+    with store.pool.connection() as conn:
+        _legacy_nulls(conn, mem_cids + pap_cids)
+        res = backfill_embedding_kinds(
+            conn, apply=True, window=100, sleep_s=0, resume_pass="paper"
+        )
+        assert res.unfilled_by_kind == {"memory": 2}
+        assert "memory" not in res.marked
+        assert "job" in res.marked  # unfilled rows resolve to no other kind
+        marked = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT kind FROM chunk_embeddings_kind_ready"
+            ).fetchall()
+        }
+        assert "memory" not in marked and "job" in marked
+        conn.rollback()
+
+
+def test_backfill_rejects_an_until_pass_before_the_resume_pass(
+    store: Store,
+) -> None:
+    with store.pool.connection() as conn:
+        with pytest.raises(ValueError, match="until_pass"):
+            backfill_embedding_kinds(
+                conn,
+                apply=True,
+                resume_pass="paper",
+                until_pass="non-paper",
+            )
+        conn.rollback()
+
+
+def test_mark_filled_kinds_on_an_empty_unfilled_set(store: Store) -> None:
+    """Everything filled (small-DB shape): every partial kind marks."""
+    with store.pool.connection() as conn:
+        by_kind, marked = _mark_filled_kinds(conn)
+        assert by_kind == {}
+        assert marked == frozenset(_ANN_PARTIAL_KINDS)
+        conn.rollback()
+
+
 def test_reindex_global_drops_an_invalid_ccnew_leftover(store: Store) -> None:
     """A failed REINDEX CONCURRENTLY leaves an INVALID *_ccnew index; the next
     run drops it before reindexing."""
@@ -311,10 +390,11 @@ def test_build_kind_indexes_builds_every_kind_valid(
 
 def test_route_per_kind(store: Store, kind_indexes: dict[str, bool]) -> None:
     with store.pool.connection() as conn:
-        filled, indexed = _ann_kind_state(conn)
-        assert filled
-        assert set(_ANN_PARTIAL_KINDS) <= indexed
-        assert "paper" not in indexed and "finding" not in indexed
+        state = _ann_kind_state(conn)
+        assert state.filled
+        assert set(_ANN_PARTIAL_KINDS) <= state.indexed
+        assert "paper" not in state.indexed and "finding" not in state.indexed
+        # The validated CHECK routes every indexed kind partial, markers or not.
         assert _ann_route(conn, "memory", None) == ("partial", "memory")
         assert _ann_route(conn, None, ["memory"]) == ("partial", "memory")
         assert _ann_route(conn, "finding", None) == ("exact", "finding")
@@ -341,23 +421,105 @@ def test_route_refuses_an_invalid_partial_index(
         )
         assert _ann_route(conn, "memory", None) == ("global", "memory")
         assert _ann_route(conn, "job", None) == ("partial", "job")
+        assert "invalid or not ready" in ann_route_plan(conn, "memory", None)["reason"]
         conn.rollback()
+
+
+def test_route_refuses_a_not_ready_partial_index(
+    store: Store, kind_indexes: dict[str, bool]
+) -> None:
+    """A build still scanning is valid but not indisready → global.
+    Rolled back."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pg_index SET indisready = false WHERE indexrelid = %s::regclass",
+            (ann_partial_index_name("memory"),),
+        )
+        _reset_ann_state_cache()
+        assert _ann_route(conn, "memory", None) == ("global", "memory")
+        assert _ann_route(conn, "job", None) == ("partial", "job")
+        conn.rollback()
+
+
+def _unvalidate_check(conn: Connection) -> None:
+    """Prod's current shape: the 0226 CHECK present but NOT VALID. The caller
+    rolls back the transaction."""
+    conn.execute(
+        "ALTER TABLE chunk_embeddings DROP CONSTRAINT chunk_embeddings_ref_kind_filled"
+    )
+    conn.execute(
+        "ALTER TABLE chunk_embeddings ADD CONSTRAINT chunk_embeddings_ref_kind_filled "
+        "CHECK (ref_id IS NOT NULL AND kind IS NOT NULL) NOT VALID"
+    )
 
 
 def test_route_refuses_an_unvalidated_check(
     store: Store, kind_indexes: dict[str, bool]
 ) -> None:
-    """Indexes valid but the backfill not finished → global. Rolled back."""
+    """Indexes valid but the kind's fill not marked and the CHECK NOT VALID
+    → global. Rolled back."""
     with store.pool.connection() as conn:
-        conn.execute(
-            "ALTER TABLE chunk_embeddings DROP CONSTRAINT chunk_embeddings_ref_kind_filled"
-        )
-        conn.execute(
-            "ALTER TABLE chunk_embeddings ADD CONSTRAINT chunk_embeddings_ref_kind_filled "
-            "CHECK (ref_id IS NOT NULL AND kind IS NOT NULL) NOT VALID"
-        )
+        _unvalidate_check(conn)
+        _reset_ann_state_cache()
         assert _ann_route(conn, "memory", None) == ("global", "memory")
+        plan = ann_route_plan(conn, "memory", None)
+        assert plan["route"] == "global"
+        assert "backfill is incomplete" in plan["reason"]
         conn.rollback()
+
+
+def test_route_uses_a_marked_kind_before_the_check_validates(
+    store: Store, kind_indexes: dict[str, bool]
+) -> None:
+    """gr513663 option (a): a kind routes to its partial index once its own
+    fill is marked in ``chunk_embeddings_kind_ready`` — the table-wide CHECK
+    need not validate first. Rolled back."""
+    with store.pool.connection() as conn:
+        _unvalidate_check(conn)
+        conn.execute("INSERT INTO chunk_embeddings_kind_ready (kind) VALUES ('memory')")
+        _reset_ann_state_cache()
+        assert _ann_route(conn, "memory", None) == ("partial", "memory")
+        assert _ann_route(conn, "job", None) == ("global", "job")
+        plan = ann_route_plan(conn, "memory", None)
+        assert plan["route"] == "partial"
+        assert plan["index"] == "chunk_embeddings_vec_hnsw_memory_idx"
+        assert "kind fill-complete" in plan["reason"]
+        conn.rollback()
+
+
+def test_route_falls_back_when_the_search_role_cannot_read_markers(
+    store: Store, kind_indexes: dict[str, bool]
+) -> None:
+    """The marker table's grants are provisioned out of tree: a search role
+    without SELECT on it must keep the global route, not raise
+    InsufficientPrivilege. Rolled back (the role is transactional DDL)."""
+    with store.pool.connection() as conn:
+        _unvalidate_check(conn)
+        conn.execute("CREATE ROLE ann_no_marker_read")
+        conn.execute("SET ROLE ann_no_marker_read")
+        _reset_ann_state_cache()
+        assert _ann_route(conn, "memory", None) == ("global", "memory")
+        conn.execute("RESET ROLE")
+        conn.rollback()
+
+
+def test_route_missing_index_reason(store: Store) -> None:
+    """No partial index yet (prod today): the plan names the gap, not just
+    the fallback."""
+    with store.pool.connection() as conn:
+        plan = ann_route_plan(conn, "memory", None)
+        assert plan["route"] == "global"
+        assert plan["index"] == "chunk_embeddings_vec_hnsw_idx"
+        assert "partial index is missing" in plan["reason"]
+
+
+def test_plan_reason_all_kinds_filled(
+    store: Store, kind_indexes: dict[str, bool]
+) -> None:
+    with store.pool.connection() as conn:
+        plan = ann_route_plan(conn, "memory", None)
+        assert plan["route"] == "partial"
+        assert "all kinds filled" in plan["reason"]
 
 
 def test_build_kind_indexes_rebuilds_an_invalid_index(
