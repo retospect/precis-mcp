@@ -41,7 +41,9 @@ from precis.store.revision_context import (
 )
 
 #: Keys the ``trust`` payload accepts.
-_PAYLOAD_KEYS = frozenset({"origin", "confidence", "reason", "expected_sha", "link"})
+_PAYLOAD_KEYS = frozenset(
+    {"origin", "confidence", "reason", "expected_sha", "link", "admit"}
+)
 
 #: Verbs that accept the payload.
 TRUST_VERBS = frozenset({"put", "edit"})
@@ -211,6 +213,12 @@ def trust_footer(store: Any, kind: str, ident: Any) -> TrustFooter | None:
     if state is None:
         return None
     stamp = state.label if state.version else f"{state.label} (unstamped)"
+    try:
+        label = store.definition_label("ref", ref_id)
+    except Exception:
+        label = None
+    if label:
+        stamp += f" · {label}"
     line = f"trust: {stamp}"
     if state.sha:
         line += (
@@ -252,6 +260,21 @@ def edit_trust(
         raise BadInput(
             "origin corrections are operator acts (precis trust correct-origin), "
             "not an MCP edit"
+        )
+    if payload.get("admit"):
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise BadInput("the admit act needs a reason")
+        if ident is None:
+            raise BadInput("admit needs id= of the ref to admit")
+        ref_id = _target_ref_id(store, kind, ident)
+        actor_type = (outer.trust_actor_type if outer is not None else None) or "agent"
+        out = store.admit_ref(ref_id, reason=reason, actor=actor, actor_type=actor_type)
+        act = out["act"]
+        return Response(
+            body=f"trust: ref {ref_id} admitted — act admit op "
+            f"{act.get('op_id')}"
+            + (" (replay: already recorded)" if out.get("replayed") else "")
         )
     confidence = payload.get("confidence")
     if confidence is None:

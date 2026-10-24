@@ -403,7 +403,7 @@ Questions 1-5 go back to Reto when 2b starts.”
 
 - **2a — BUILT (tree `trust-2a`).** No schema change. What it ships and
   the classing it chose for question 4 are under “Slice 2a as built” below.
-- **2b — RULED 2026-10-21 (below), buildable.** Defined-grounding storage, the authenticated
+- **2b — BUILT (tree `trust-2b`, migration 0235).** Defined-grounding storage, the authenticated
   Reto-only review, link-time refusal of definition-only evidential edges,
   the “definition (who, UTC date)” rendering and the term/concept admit
   act. It is a migration, so it lands through /go, never /qgo. These

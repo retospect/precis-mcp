@@ -44,17 +44,30 @@ from psycopg import sql as _sql
 from precis.errors import BadInput, NotFound
 from precis.store.revision_context import TrustAct, revision_context
 
-TargetKind = Literal["chunk", "ref", "link", "measure"]
+TargetKind = Literal["chunk", "ref", "link", "measure", "grounding"]
 ReviewVerdict = Literal["proposed", "approved", "rejected"]
+ShaBasis = Literal["content", "trust-subject"]
 
 _TARGET_KINDS: tuple[str, ...] = get_args(TargetKind)
 _VERDICTS: tuple[str, ...] = get_args(ReviewVerdict)
+_SHA_BASES: tuple[str, ...] = get_args(ShaBasis)
+
+#: Per-row currency dispatch (0235): ``content`` binds 0185's
+#: ``precis_target_sha``; ``trust-subject`` binds
+#: ``precis_trust_subject_sha`` (no timeline chunks; grounding rows bind
+#: their own combined sha).
+_REVIEW_CURRENT_SQL = (
+    "coalesce(content_sha = CASE sha_basis WHEN 'trust-subject' "
+    "   THEN precis_trust_subject_sha(target_kind, target_id) "
+    "   ELSE precis_target_sha(target_kind, target_id) END, false)"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class Review:
     """One ``reviews`` row, with ``current`` resolved against the target's
-    sha now (False when the target is gone). ``model`` None = a human."""
+    sha now (False when the target is gone), under the row's own
+    ``sha_basis`` (0235). ``model`` None = a human."""
 
     review_id: int
     target_kind: str
@@ -67,6 +80,7 @@ class Review:
     note: str | None
     at: datetime
     current: bool
+    sha_basis: str = "content"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,8 +106,9 @@ class Revision:
 @dataclass(frozen=True, slots=True)
 class TrustState:
     """A ref's or link's trust stamp now (0214). ``version`` 0 = unstamped
-    legacy or compatibility write; ``sha`` is the content sha an explicit
-    act must name as ``expected_sha``."""
+    legacy or compatibility write; ``sha`` is the trust-SUBJECT sha an
+    explicit act names as ``expected_sha`` (0235: timeline chunks do not
+    stale it)."""
 
     target_kind: str
     target_id: int
@@ -198,27 +213,41 @@ class ReviewsMixin:
         model: str | None = None,
         version: str = "0",
         note: str | None = None,
+        sha_basis: ShaBasis = "content",
         conn: Connection | None = None,
     ) -> Review:
         """Append a review of the target at its sha now. ``verdict`` is
         ``proposed`` for a machine write awaiting review, else ``approved``
-        or ``rejected``. Raises NotFound when the target does not exist."""
+        or ``rejected``. ``sha_basis`` picks which sha the certificate
+        binds (0235): ``'content'`` = 0185's content sha (default, every
+        pre-0235 row); ``'trust-subject'`` = the subject sha — timeline
+        chunks (comments, logs, review notes) do not stale it. Raises
+        NotFound when the target does not exist."""
         _check_kind(target_kind)
         if verdict not in _VERDICTS:
             raise BadInput(
                 f"unknown review verdict {verdict!r}", options=list(_VERDICTS)
             )
+        if sha_basis not in _SHA_BASES:
+            raise BadInput(
+                f"unknown review sha_basis {sha_basis!r}", options=list(_SHA_BASES)
+            )
         if not actor.strip():
             raise BadInput("a review needs an actor")
+        sha_fn = (
+            "precis_trust_subject_sha"
+            if sha_basis == "trust-subject"
+            else "precis_target_sha"
+        )
         with self._review_conn(conn) as c:
             row = c.execute(
                 "INSERT INTO reviews (target_kind, target_id, actor, model, "
-                "version, content_sha, verdict, note) "
-                "SELECT %s, %s, %s, %s, %s, s.sha, %s, %s "
-                "  FROM (SELECT precis_target_sha(%s, %s) AS sha) s "
+                "version, content_sha, verdict, note, sha_basis) "
+                f"SELECT %s, %s, %s, %s, %s, s.sha, %s, %s, %s "
+                f"  FROM (SELECT {sha_fn}(%s, %s) AS sha) s "
                 " WHERE s.sha IS NOT NULL "
                 "RETURNING review_id, target_kind, target_id, actor, model, "
-                "          version, content_sha, verdict, note, at",
+                "          version, content_sha, verdict, note, at, sha_basis",
                 (
                     target_kind,
                     target_id,
@@ -227,14 +256,15 @@ class ReviewsMixin:
                     version,
                     verdict,
                     note,
+                    sha_basis,
                     target_kind,
                     target_id,
                 ),
             ).fetchone()
         if row is None:
             raise NotFound(f"no {target_kind} {target_id} to review")
-        rid, kind, tid, who, mdl, ver, sha, verd, nt, at = row
-        return Review(rid, kind, tid, who, mdl, ver, sha, verd, nt, at, current=True)
+        rid, kind, tid, who, mdl, ver, sha, verd, nt, at, basis = row
+        return Review(rid, kind, tid, who, mdl, ver, sha, verd, nt, at, True, basis)
 
     def reviews_for(
         self, target_kind: str, target_id: int, *, conn: Connection | None = None
@@ -246,7 +276,7 @@ class ReviewsMixin:
             rows = c.execute(
                 "SELECT review_id, target_kind, target_id, actor, model, version, "
                 "       content_sha, verdict, note, at, "
-                "       coalesce(content_sha = precis_target_sha(target_kind, target_id), false) "
+                f"       {_REVIEW_CURRENT_SQL}, sha_basis "
                 "  FROM reviews WHERE target_kind = %s AND target_id = %s "
                 " ORDER BY at DESC, review_id DESC",
                 (target_kind, target_id),
@@ -463,7 +493,7 @@ class ReviewsMixin:
         table, pk = _trust_table(target_kind)
         query = _sql.SQL(
             "SELECT trust_origin, trust_confidence, trust_write_version, "
-            "       precis_target_sha({kind}, {pk}) FROM {table} WHERE {pk} = %s"
+            "       precis_trust_subject_sha({kind}, {pk}) FROM {table} WHERE {pk} = %s"
         ).format(
             kind=_sql.Literal(target_kind),
             pk=_sql.Identifier(pk),

@@ -74,13 +74,21 @@ def hubs_grounded_by_paper(
             },
         ).fetchall()
 
+    _gs = eligibility.stored_groundings(
+        store, [("ref", paper_ref_id)] + [("ref", int(r[0])) for r in rows]
+    )
     seen: set[int] = set()
     out: list[dict[str, Any]] = []
     for hub_ref_id, pub_id, title, relation, src_chunk_id, meta in rows:
         # Shared eligibility predicate: a definition-only edge must not steer
         # a writer to cite this hub. ``contradicts`` rows stay (eligible).
         groundings = eligibility.edge_groundings(relation, src_chunk_id, meta)
-        if not eligibility.evidence_use(relation, groundings).eligible:
+        if not eligibility.evidence_use(
+            relation,
+            groundings,
+            src_groundings=_gs.get(("ref", paper_ref_id)),
+            dst_groundings=_gs.get(("ref", int(hub_ref_id))),
+        ).eligible:
             continue
         if hub_ref_id in seen:
             continue

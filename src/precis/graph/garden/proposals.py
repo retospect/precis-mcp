@@ -246,6 +246,7 @@ def resolve_proposal(
     *,
     actor: str,
     verdict: str,
+    model: str | None = None,
     extra: dict[str, Any] | None = None,
     conn: Any = None,
 ) -> Any:
@@ -290,6 +291,7 @@ def resolve_proposal(
             int(prop[1]),
             actor=actor,
             verdict=verdict,
+            model=model,
             version=GARDEN_VERSION,
             note=json.dumps(body, ensure_ascii=False, sort_keys=True),
             conn=c,

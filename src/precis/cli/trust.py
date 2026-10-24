@@ -69,6 +69,34 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         sp.add_argument("--by", default=None, help="Actor (default: $USER).")
         sp.add_argument("--dsn", default=None, help="Database URL override.")
 
+    ad = tp.add_parser(
+        "admit",
+        help="The Q6 term admit: definition + sourced use + current "
+        "approved review + considered, checked in one transaction.",
+    )
+    ad.add_argument("target_id", type=int, help="The ref id to admit.")
+    ad.add_argument("--reason", required=True)
+    ad.add_argument("--by", default=None, help="Actor (default: $USER).")
+    ad.add_argument("--dsn", default=None, help="Database URL override.")
+
+    rv = tp.add_parser(
+        "review",
+        help="Record a review verdict on a ref/link (lax Q2: the actor is "
+        "recorded as stated).",
+    )
+    rv.add_argument("target_kind", choices=["ref", "link", "grounding"])
+    rv.add_argument("target_id", type=int)
+    rv.add_argument(
+        "--verdict", required=True, choices=["proposed", "approved", "rejected"]
+    )
+    rv.add_argument("--by", required=True, help="Actor recorded on the review.")
+    rv.add_argument("--model", default=None, help="Model id (omit for human).")
+    rv.add_argument(
+        "--basis", default="trust-subject", choices=["content", "trust-subject"]
+    )
+    rv.add_argument("--note", default=None)
+    rv.add_argument("--dsn", default=None, help="Database URL override.")
+
     st = tp.add_parser("strict", help="Activate strict mode (one-way).")
     st.add_argument("--lock-timeout", default="5s")
     st.add_argument("--dsn", default=None, help="Database URL override.")
@@ -103,6 +131,13 @@ def _show(args: argparse.Namespace, store: Store) -> None:
         raise NotFound(f"no {args.target_kind} {args.target_id}")
     print(f"{state.target_kind} {state.target_id}: {state.label} v{state.version}")
     print(f"sha {state.sha}")
+    for g in store.groundings_for(
+        args.target_kind, args.target_id, include_retired=True
+    ):
+        label = "definition" if g.grounding == "defined" else g.grounding
+        when = g.at.strftime("%Y-%m-%d") if g.at else "?"
+        suffix = f" (retired {g.retired_reason})" if g.retired_at else ""
+        print(f"  {label} grounding by {g.recorded_by} ({when}){suffix}")
     for act in store.trust_acts_for(args.target_kind, args.target_id):
         before = act.get("before") or {}
         after = act.get("after") or {}
@@ -137,6 +172,33 @@ def _act(args: argparse.Namespace, store: Store) -> None:
     )
 
 
+def _admit(args: argparse.Namespace, store: Store) -> None:
+    out = store.admit_ref(
+        args.target_id,
+        reason=args.reason,
+        actor=args.by or os.environ.get("USER") or "operator",
+        actor_type="operator",
+    )
+    replay = " (replay)" if out.get("replayed") else ""
+    print(f"admitted ref {args.target_id}{replay}")
+
+
+def _review(args: argparse.Namespace, store: Store) -> None:
+    r = store.record_target_review(
+        args.target_kind,
+        args.target_id,
+        actor=args.by,
+        verdict=args.verdict,
+        model=args.model,
+        note=args.note,
+        sha_basis=args.basis,
+    )
+    print(
+        f"review {r.review_id}: {r.verdict} {r.target_kind} "
+        f"{r.target_id} by {r.actor} (basis {r.sha_basis}, sha {r.content_sha})"
+    )
+
+
 def _strict(args: argparse.Namespace, store: Store) -> None:
     at = store.activate_trust_strict(lock_timeout=args.lock_timeout)
     print(f"strict mode active since {at}")
@@ -151,6 +213,8 @@ def run(args: argparse.Namespace) -> None:
         "demote": _act,
         "correct-origin": _act,
         "legacy-import": _act,
+        "admit": _admit,
+        "review": _review,
         "strict": _strict,
     }
     try:

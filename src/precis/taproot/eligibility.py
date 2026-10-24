@@ -92,12 +92,18 @@ class Grounding(StrEnum):
 
 
 def edge_groundings(
-    relation: str, src_chunk_id: int | None, meta: Mapping[str, Any] | None
+    relation: str,
+    src_chunk_id: int | None,
+    meta: Mapping[str, Any] | None,
+    *,
+    stored: Iterable[Grounding | str] = (),
 ) -> frozenset[Grounding]:
-    """Groundings derivable from an edge's existing storage. Read-only
-    derivation: never yields DEFINED — slice 2b's storage adds that."""
+    """Groundings derivable from an edge's existing storage, unioned with
+    the row's stored ``groundings`` rows (slice 2b — pass
+    :meth:`precis.store.GroundingsMixin.grounding_set` output as
+    ``stored``; only they can yield DEFINED)."""
     meta = meta or {}
-    out: set[Grounding] = set()
+    out: set[Grounding] = {Grounding(g) for g in stored}
     if meta.get("verified_by") and meta.get("verified_claim_sha"):
         out.add(Grounding.VERIFIED)
     if src_chunk_id is not None or meta.get("source_handle"):
@@ -105,6 +111,45 @@ def edge_groundings(
     if canonical_relation(relation) == "motivated-by":
         out.add(Grounding.MOTIVATED)
     return frozenset(out) or frozenset({Grounding.NONE})
+
+
+def node_groundings(stored: Iterable[Grounding | str]) -> frozenset[Grounding]:
+    """A node's grounding set for :func:`evidence_use`'s endpoint
+    arguments — today only stored rows ground a ref (slice 2b); an empty
+    set reads as ``{NONE}``."""
+    out = frozenset(Grounding(g) for g in stored)
+    return out or frozenset({Grounding.NONE})
+
+
+def stored_groundings(
+    store: Any, targets: Iterable[tuple[str, int]], *, conn: Any = None
+) -> dict[tuple[str, int], set[Grounding]]:
+    """Batch load live stored groundings (migration 0235):
+    ``{(target_kind, target_id): {Grounding…}}``, one query — the endpoint
+    arguments the 2a consumers feed :func:`evidence_use`. Accepts the
+    pool-owning store or a bare ``conn=``."""
+    targets = list(targets)
+    if not targets:
+        return {}
+
+    def _run(c: Any) -> list[Any]:
+        return c.execute(
+            "SELECT target_kind, target_id, grounding FROM groundings "
+            " WHERE retired_at IS NULL "
+            "   AND (target_kind, target_id) IN "
+            "       (SELECT k, i FROM unnest(%s::text[], %s::bigint[]) AS u(k, i))",
+            ([k for k, _ in targets], [i for _, i in targets]),
+        ).fetchall()
+
+    if conn is not None:
+        rows = _run(conn)
+    else:
+        with store.pool.connection() as c:
+            rows = _run(c)
+    out: dict[tuple[str, int], set[Grounding]] = {}
+    for k, i, g in rows:
+        out.setdefault((str(k), int(i)), set()).add(Grounding(str(g)))
+    return out
 
 
 @dataclass(frozen=True)

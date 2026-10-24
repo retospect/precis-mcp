@@ -55,7 +55,11 @@ from precis.store._links_ops import (
     MACHINE_EDGE_STRUCTURAL,
     relink_apply_door,
 )
-from precis.store.revision_context import trust_door
+from precis.store.revision_context import (
+    TrustAct,
+    revision_context,
+    trust_door,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -364,6 +368,218 @@ def apply_merge(
         sum(1 for lk in record.links if lk["disposition"] == "repointed"),
     )
     return record
+
+
+#: Relations an approved structural proposal may write (the 2a classing).
+_STRUCTURAL_RELS = (
+    "specialises",
+    "generalises",
+    "part-of",
+    "contains",
+    "represents",
+    "represented-by",
+    "realized-by",
+    "realizes",
+    "made-of",
+    "used-in",
+    "qualifies",
+    "qualified-by",
+    "instance-of",
+    "has-instance",
+)
+
+
+@trust_door("generated", actor_type="agent")
+def apply_structural(
+    store: Store,
+    proposal_review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Apply an accepted *structural* garden proposal (slice 2b, ruling
+    Q7): Reto's OR an Opus review approval writes the proposed edge.
+    Origin stays ``generated`` — the approval, not the writer, carries
+    the review identity; the door runs model-free so the machine-edge
+    gate does not refuse it (the proposal's ``review_id`` is the
+    admission, checked here — never a caller-set flag).
+
+    One transaction: validate the pending proposal, write the terminal
+    ``approved`` review of it, write the edge, record the consider act.
+    Only the owner's approval additionally mints the edge's ``defined``
+    grounding (rule 3); an Opus-applied edge carries a machine review
+    and stays not-``defined``.
+
+    The proposal payload carries ``relation`` plus endpoints: ``src`` /
+    ``dst`` ids, or the relink convention (``parent`` → child=target_id
+    specialises parent; ``child`` → src=child, dst=target_id).
+    """
+    from precis.graph.garden.proposals import (
+        GARDEN_ACTOR,
+        _key_pending,
+        _parse_note,
+        resolve_proposal,
+    )
+    from precis.store._grounding_ops import _owner_actors
+
+    is_owner = model is None and actor in _owner_actors()
+    if not is_owner and not (model or "").strip():
+        raise BadInput(
+            "structural-apply-not-reviewed: applying a structural proposal "
+            "takes the owner's approval (actor=<owner>, no model) or a "
+            "model review (model=<id>) — a bare actor string is neither",
+            next="call apply_structural(..., actor=<owner>) or pass the "
+            "reviewing model id",
+        )
+    with store.atomic() as conn:
+        prop = conn.execute(
+            "SELECT review_id, target_kind, target_id, note, content_sha "
+            "  FROM reviews WHERE review_id = %s AND actor = %s "
+            "   AND verdict = 'proposed'",
+            (proposal_review_id, GARDEN_ACTOR),
+        ).fetchone()
+        if prop is None:
+            raise NotFound(
+                f"no pending garden proposal review_id={proposal_review_id} "
+                "(already decided, or not a garden row)"
+            )
+        _pid, target_kind, target_id, note, content_sha = prop
+        if target_kind != "ref":
+            raise BadInput(
+                f"structural proposals apply to refs; proposal "
+                f"{proposal_review_id} targets {target_kind} {target_id}"
+            )
+        g = _parse_note(str(note)) or {}
+        key = str(g.get("key") or "")
+        if not _key_pending(store, str(target_kind), int(target_id), key):
+            raise BadInput(
+                f"structural-proposal-decided: proposal {proposal_review_id} "
+                "is no longer the pending row for its key",
+                next="check `precis garden proposals` for the current row",
+            )
+        payload = g.get("payload") or {}
+        relation = str(payload.get("relation") or "")
+        if relation not in _STRUCTURAL_RELS:
+            raise BadInput(
+                f"structural-payload: proposal {proposal_review_id} names "
+                f"relation {relation!r} — only structural relations apply "
+                f"through this door",
+                options=list(_STRUCTURAL_RELS),
+            )
+        if payload.get("parent") is not None:
+            src_id, dst_id = int(target_id), int(payload["parent"])
+        elif payload.get("child") is not None:
+            src_id, dst_id = int(payload["child"]), int(target_id)
+        elif payload.get("src") is not None and payload.get("dst") is not None:
+            src_id, dst_id = int(payload["src"]), int(payload["dst"])
+        else:
+            raise BadInput(
+                f"structural-payload: proposal {proposal_review_id} has no "
+                "src/dst (or parent/child) endpoints to write",
+                next="the detector must put relation+endpoints in "
+                "payload; carry it out by hand otherwise",
+            )
+        # staleness: the proposal pinned the target's content sha at
+        # proposal time; a drifted target is a different question.
+        sha_row = conn.execute(
+            "SELECT precis_target_sha('ref', %s)", (int(target_id),)
+        ).fetchone()
+        now_sha = None if sha_row is None else sha_row[0]
+        if content_sha != now_sha:
+            raise BadInput(
+                f"structural-proposal-stale: proposal {proposal_review_id} "
+                "pinned a sha the target has drifted past",
+                next="let the gardener re-propose on the current content, "
+                "or carry the edge out by hand",
+            )
+        # terminal approval, recorded BEFORE the edge write so the ledger
+        # sha matches what was actually reviewed.
+        resolved = resolve_proposal(
+            store,
+            proposal_review_id,
+            actor=actor,
+            verdict="approved",
+            model=model,
+            extra={"applied": "structural"},
+            conn=conn,
+        )
+        if resolved is None:
+            raise NotFound(
+                f"proposal {proposal_review_id} is not pending (raced a decision)"
+            )
+        # cycle guard for the taxon DAG spellings.
+        if relation in ("specialises", "generalises"):
+            child, parent = (
+                (src_id, dst_id) if relation == "specialises" else (dst_id, src_id)
+            )
+            if store.taxon_would_cycle(child, parent):
+                raise BadInput(
+                    f"structural-cycle: {relation} {src_id}->{dst_id} would "
+                    "close a taxon cycle",
+                    next="reject the proposal or reparent elsewhere",
+                )
+        meta = {
+            "proposal": proposal_review_id,
+            "review_id": int(resolved.review_id),
+            "detector": g.get("detector"),
+            "why": g.get("title") or g.get("rationale"),
+        }
+        if model:
+            meta["model"] = model
+        # origin stays generated with NO model identity — the approval is
+        # the admission (checked above); a model-bearing outer context
+        # must not route this write into the machine-edge gate.
+        with revision_context(
+            "garden: apply structural proposal",
+            actor=actor,
+            model="",
+            trust_origin="generated",
+            trust_actor_type="agent",
+        ):
+            link = store.add_link(
+                src_ref_id=src_id,
+                dst_ref_id=dst_id,
+                relation=relation,
+                set_by="agent",
+                meta={k: v for k, v in meta.items() if v is not None},
+                conn=conn,
+            )
+        # the recorded act: the approval considered this edge.
+        sha = store.trust_state("link", int(link.id), conn=conn)
+        assert sha is not None and sha.sha is not None
+        store.record_trust_act(
+            TrustAct(
+                action="consider",
+                target_kind="link",
+                target_id=int(link.id),
+                expected_sha=sha.sha,
+                reason=f"structural proposal {proposal_review_id} approved",
+            ),
+            actor=actor,
+            actor_type="human" if is_owner else "agent",
+            model=model,
+        )
+        defined = None
+        if is_owner:
+            defined = store.record_grounding(
+                "link",
+                int(link.id),
+                grounding="defined",
+                review_id=int(resolved.review_id),
+                actor=actor,
+                actor_type="human",
+                reason=f"owner-approved structural edge "
+                f"(proposal {proposal_review_id})",
+                conn=conn,
+            )
+    return {
+        "link_id": int(link.id),
+        "src_ref_id": src_id,
+        "dst_ref_id": dst_id,
+        "relation": relation,
+        "review_id": int(resolved.review_id),
+        "defined_grounding_id": None if defined is None else int(defined.grounding_id),
+    }
 
 
 @trust_door("generated")
@@ -778,6 +994,7 @@ __all__ = [
     "RelinkRecord",
     "apply_merge",
     "apply_relink",
+    "apply_structural",
     "undo_merge",
     "undo_relink",
 ]

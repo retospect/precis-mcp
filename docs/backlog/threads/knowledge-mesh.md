@@ -132,8 +132,10 @@ graph-health-metrics, five parked gripes, and the seam with
    was split
    by Reto on 2026-10-16. 2a (relation classing, the shared evidence
    predicate and its three consumers, no schema) is built on tree
-   `trust-2a`. 2b (defined-grounding storage and the admit act, a /go
-   migration) waits until its five questions go to Reto.
+   `trust-2a`. 2b (defined-grounding storage, the trust-subject sha,
+   `reviews.sha_basis`, the admit gate and the structural apply path) is
+   built on tree `trust-2b` as migration 0235 — the rulings above it, the
+   migration lands through the release owner.
 
 0b. **[Corpus quantitative extraction](../corpus-quantitative-extraction.md)**
    — assigned here by Reto 2026-10-12 (chat): sourced numbers from papers,

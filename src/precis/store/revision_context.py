@@ -73,7 +73,13 @@ STORED_CONFIDENCES: tuple[str, ...] = ("hunch", "considered", "unknown")
 TrustActorType = Literal["human", "agent", "worker", "operator"]
 TRUST_ACTOR_TYPES: tuple[str, ...] = get_args(TrustActorType)
 
-TrustAction = Literal["consider", "demote", "correct-origin", "legacy-import", "carry"]
+#: ``admit`` (0235, the Q6 term admit) joins the caller-sent acts.
+#: ``ground``/``unground`` are never sent through ``precis.trust_act`` —
+#: the groundings table's own triggers append them when a row lands or
+#: retires, so SQL and Python writes are recorded identically.
+TrustAction = Literal[
+    "consider", "demote", "correct-origin", "legacy-import", "carry", "admit"
+]
 TRUST_ACTIONS: tuple[str, ...] = get_args(TrustAction)
 
 #: A knowledge-graph review stamp: ``kg-review:<model>:<YYYY-MM-DD>:ok|fixed``

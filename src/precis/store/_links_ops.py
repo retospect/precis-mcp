@@ -801,6 +801,9 @@ class LinksMixin:
     # edge is added or removed so the argument-graph STALE: flag stays a
     # pure function of current graph reachability.
     argument_ripple_retraction: Any
+    # Provided by GroundingsMixin — endpoint groundings for the
+    # slice-2b definition-only link-time refusal.
+    grounding_set: Any
 
     def valid_relations(self, *, refresh: bool = False) -> frozenset[str]:
         """All relation slugs registered in the ``relations`` table.
@@ -1115,6 +1118,41 @@ class LinksMixin:
                 )
                 if routed is not None:
                     return routed
+
+            # Definition-only link-time refusal (graph-node-trust-state
+            # slice 2b): an evidential edge grounded only in a definition
+            # — its own groundings or a definition-only endpoint — is
+            # refused before the INSERT, for every writer. The rule is the
+            # edge's grounding, not who wrote it, so it sits beside (not
+            # inside) the machine-edge gate, one door for all link
+            # writers.
+            from precis.taproot import eligibility
+
+            if (
+                eligibility.relation_class(relation)
+                is eligibility.RelationClass.EVIDENTIAL
+            ):
+                edge_gs = eligibility.edge_groundings(relation, src_chunk_id, meta)
+                use = eligibility.evidence_use(
+                    relation,
+                    edge_gs,
+                    src_groundings=eligibility.node_groundings(
+                        self.grounding_set("ref", src_ref_id, conn=c)
+                    ),
+                    dst_groundings=eligibility.node_groundings(
+                        self.grounding_set("ref", dst_ref_id, conn=c)
+                    ),
+                )
+                if not use.eligible:
+                    raise BadInput(
+                        eligibility.definition_only_message(
+                            f"'{relation}' edge {src_ref_id} -> {dst_ref_id}"
+                        ),
+                        next="a definition supports structural navigation "
+                        "only — attach a sourced or verified grounding "
+                        "(pins on the endpoints' passage/finding) before "
+                        "writing evidence on it",
+                    )
 
             # ``meta_clause`` is a fixed literal (never interpolates caller
             # data), toggled only by the ``merge_meta`` opt-in above.

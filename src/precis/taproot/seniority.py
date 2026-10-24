@@ -877,11 +877,18 @@ def derive_evidence(
     grounding: list[GroundingRef] = []
     ineligible: list[IneligibleEdge] = []
     seen_grounding: set[tuple[int, str]] = set()
-    for src_ref_id, src_chunk_id, relation, meta, kind in _fetch_evidence_rows(
-        store, hub_ref_id
-    ):
+    ev_rows = _fetch_evidence_rows(store, hub_ref_id)
+    # slice 2b: stored node groundings reach the endpoint arguments — a
+    # definition-only endpoint disqualifies the edge by type.
+    _node_gs = eligibility.stored_groundings(
+        store, [("ref", int(r[0])) for r in ev_rows] + [("ref", int(hub_ref_id))]
+    )
+    for src_ref_id, src_chunk_id, relation, meta, kind in ev_rows:
         use = eligibility.evidence_use(
-            relation, eligibility.edge_groundings(relation, src_chunk_id, meta)
+            relation,
+            eligibility.edge_groundings(relation, src_chunk_id, meta),
+            src_groundings=_node_gs.get(("ref", int(src_ref_id))),
+            dst_groundings=_node_gs.get(("ref", int(hub_ref_id))),
         )
         if not use.eligible:
             ineligible.append(
@@ -1041,6 +1048,11 @@ def derive_evidence_bulk(
     ineligible_by_hub: dict[int, list[IneligibleEdge]] = {}
     all_paper_ids: set[int] = set()
     all_pathway_ids: set[int] = set()
+    _all_gs = eligibility.stored_groundings(
+        store,
+        [("ref", int(r[0])) for rows in rows_by_hub.values() for r in rows]
+        + [("ref", int(h)) for h in ids],
+    )
     for hub_id in ids:
         support_edges: dict[int, dict[str, Any]] = {}
         contradict_edges: dict[int, dict[str, Any]] = {}
@@ -1052,7 +1064,10 @@ def derive_evidence_bulk(
             hub_id, []
         ):
             use = eligibility.evidence_use(
-                relation, eligibility.edge_groundings(relation, src_chunk_id, meta)
+                relation,
+                eligibility.edge_groundings(relation, src_chunk_id, meta),
+                src_groundings=_all_gs.get(("ref", int(src_ref_id))),
+                dst_groundings=_all_gs.get(("ref", int(hub_id))),
             )
             if not use.eligible:
                 ineligible.append(
