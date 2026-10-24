@@ -1,5 +1,5 @@
 {
- "schema": 1,
+ "schema": 2,
  "run": {
   "workspace": "hcol-test",
   "job": null,
@@ -8,7 +8,8 @@
   "started_utc": null,
   "finished_utc": null,
   "collapsed": 0,
-  "truncated": false
+  "truncated": false,
+  "key_collisions": 0
  },
  "frames": [
   {
@@ -22,7 +23,9 @@
    "kind": "root",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 0,
+   "src": null
   },
   {
    "id": 1,
@@ -38,7 +41,9 @@
     "atoms": 4,
     "bonds": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 11,
+   "src": "p = prism(R)"
   },
   {
    "id": 2,
@@ -53,7 +58,9 @@
    "made": {
     "bonds": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 19,
+   "src": "junction(p)"
   },
   {
    "id": 3,
@@ -68,7 +75,9 @@
    "made": {
     "bonds": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 19,
+   "src": "junction(p)"
   },
   {
    "id": 4,
@@ -83,7 +92,9 @@
    "made": {
     "instances": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 29,
+   "src": "plate = build_plate()"
   },
   {
    "id": 5,
@@ -98,7 +109,9 @@
    "made": {
     "instances": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 39,
+   "src": "out.instance('pin', template='plate', parent='p')"
   },
   {
    "id": 6,
@@ -111,7 +124,9 @@
    "kind": "core",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 49,
+   "src": "out.connect('p.tail', 'pin.top')"
   }
  ]
 }

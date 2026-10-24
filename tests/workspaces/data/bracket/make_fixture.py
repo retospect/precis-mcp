@@ -24,7 +24,16 @@ def _key(i: int) -> str:
     return f"b2{i:014x}"
 
 
-def _frame(i: int, parent: int | None, qual: str, kind: str, line: int) -> dict:
+def _frame(
+    i: int,
+    parent: int | None,
+    qual: str,
+    kind: str,
+    line: int,
+    occ: int = 0,
+    line_in_def: int = 0,
+    src: str | None = None,
+) -> dict:
     return {
         "id": i,
         "key": _key(i),
@@ -32,7 +41,9 @@ def _frame(i: int, parent: int | None, qual: str, kind: str, line: int) -> dict:
         "qual": qual,
         "file": "build.py",
         "line": line,
-        "occ": 0,
+        "line_in_def": line_in_def,
+        "src": src,
+        "occ": occ,
         "kind": kind,
         "args": {},
         "made": {},
@@ -156,14 +167,42 @@ def write(out: Path, h2_dx: float = 0.0) -> None:
     frames = [
         _frame(0, None, "main", "root", 1),
         _frame(1, 0, "main.build", "user", 10),
-        _frame(2, 1, "pga.box", "core", 20),
-        _frame(3, 1, "pga.cut", "core", 22),
-        _frame(4, 1, "pga.box", "core", 40),
-        _frame(5, 1, "pga.cut", "core", 44),
-        _frame(6, 1, "pga.ray", "core", 50),
+        _frame(
+            2,
+            1,
+            "pga.box",
+            "core",
+            20,
+            line_in_def=10,
+            src="base = pga.box(w=40, d=40, h=10)",
+        ),
+        _frame(3, 1, "pga.cut", "core", 22, line_in_def=12, src="pga.cut(base, cyl)"),
+        _frame(
+            4,
+            1,
+            "pga.box",
+            "core",
+            40,
+            occ=1,
+            line_in_def=30,
+            src="bracket = pga.box(w=40, d=40, h=6)",
+        ),
+        _frame(
+            5,
+            1,
+            "pga.cut",
+            "core",
+            44,
+            occ=1,
+            line_in_def=34,
+            src="pga.cut(bracket, cyl)",
+        ),
+        _frame(
+            6, 1, "pga.ray", "core", 50, line_in_def=40, src="pga.ray('bolt-a1', ...)"
+        ),
     ]
     trace = {
-        "schema": 1,
+        "schema": 2,
         "run": {
             "workspace": "mount",
             "job": None,
@@ -173,6 +212,7 @@ def write(out: Path, h2_dx: float = 0.0) -> None:
             "finished_utc": None,
             "collapsed": 0,
             "truncated": False,
+            "key_collisions": 0,
         },
         "frames": frames,
     }

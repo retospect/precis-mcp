@@ -10,9 +10,10 @@ sandbox). Each ``@traced`` call:
    collapse into the public frame that called them), and
    ``sys.setprofile`` is deliberately not used (it instruments every call,
    2–5× on agent loops, and sees internals it would have to filter out);
-2. derives ``occ`` — the 0-based occurrence counter of ``(qual, line)``
-   under the current parent — and the stable ``key``
-   (``precis_geom.trace_schema.frame_key``);
+2. derives ``occ`` — the 0-based occurrence counter of ``qual``
+   under the current parent, across all call sites — and the stable
+   ``key`` (``precis_geom.trace_schema.frame_key``, which hashes
+   structure only: an inserted line above the call keeps the key);
 3. records ``args`` as a bounded digest (scalars verbatim, ``%.6g``
    floats, ``<Class sha8>`` for objects);
 4. on exit pops itself (a call that raised first marks its frame
@@ -24,10 +25,12 @@ entities it placed/changed on *its own* frame; ``leaf_id()`` is the stamp
 entities carry (``Instance.maker`` …). ``with trace("name"):`` mints a
 named user frame without a function boundary.
 
-``Tracer.dump()`` emits the schema-1 document (``trace_schema.dumps``),
-applying the sibling collapse (past ``COLLAPSE_SIBLINGS`` same-site
+``Tracer.dump()`` emits the schema-2 document (``trace_schema.dumps``),
+applying the sibling collapse (past ``COLLAPSE_SIBLINGS`` same-``qual``
 childless siblings fold into one frame with an ``occ`` range) and the
-``MAX_FRAMES`` cap (``run.truncated``).
+``MAX_FRAMES`` cap (``run.truncated``). ``line_in_def``/``src`` carry the
+call site's position relative to its enclosing def and its source text —
+re-anchor fields, never part of the key.
 """
 
 from __future__ import annotations
@@ -76,6 +79,8 @@ class _Frame:
     qual: str
     file: str
     line: int
+    line_in_def: int
+    src: str | None
     occ: int
     kind: str
     args: dict[str, Any]
@@ -83,7 +88,8 @@ class _Frame:
     touched: dict[str, Any]
     py: types.FrameType | None
     children: list[_Frame] = field(default_factory=list)
-    _occ_next: dict[tuple[str, int], int] = field(default_factory=dict)
+    #: ``occ`` counts per ``qual`` across all call sites (schema 2).
+    _occ_next: dict[str, int] = field(default_factory=dict)
     #: Exception type name when the call raised — set on the innermost
     #: traced frame the exception left; ``dump`` omits it when ``None``.
     error: str | None = None
@@ -104,6 +110,8 @@ class Tracer:
             qual="",
             file="",
             line=0,
+            line_in_def=0,
+            src=None,
             occ=0,
             kind="root",
             args={},
@@ -120,6 +128,10 @@ class Tracer:
         #: would be recycled and silently un-mark a retry loop's next
         #: failure.
         self._raised: set[BaseException] = set()
+        #: filename → ``((st_mtime_ns, st_size), lines)`` for ``src`` —
+        #: a rewrite between calls re-reads (``linecache``'s coarser
+        #: staleness check misses a same-size edit).
+        self._src_cache: dict[str, tuple[tuple[int, int], list[str]]] = {}
 
     # -- frame minting -----------------------------------------------------
 
@@ -146,6 +158,33 @@ class Tracer:
     def _is_user_frame(self, f: types.FrameType) -> bool:
         return f.f_code.co_name != "<module>" and self._in_work(f)
 
+    def _site(self, f: types.FrameType) -> tuple[int, str | None]:
+        """``(line_in_def, src)`` for a call-site frame inside
+        ``work_root``: the line's offset from its enclosing code object's
+        ``co_firstlineno`` and the stripped source line (120-char cap).
+        ``(0, None)`` for sites outside ``work_root`` — driver, harness
+        and library internals carry no re-anchor fields."""
+        if not self._in_work(f):
+            return 0, None
+        src = self._line_at(f.f_code.co_filename, f.f_lineno).strip()
+        return f.f_lineno - f.f_code.co_firstlineno, (src[:120] or None)
+
+    def _line_at(self, filename: str, lineno: int) -> str:
+        """The text of ``filename:lineno`` — contents cached per
+        ``(st_mtime_ns, st_size)``; an unreadable file yields ``""``."""
+        try:
+            st = os.stat(filename)
+            stamp = (st.st_mtime_ns, st.st_size)
+            hit = self._src_cache.get(filename)
+            if hit is None or hit[0] != stamp:
+                with open(filename, encoding="utf-8") as fh:
+                    hit = (stamp, fh.read().splitlines())
+                self._src_cache[filename] = hit
+            lines = hit[1]
+            return lines[lineno - 1] if 0 < lineno <= len(lines) else ""
+        except OSError:
+            return ""
+
     def _push(
         self,
         *,
@@ -153,20 +192,23 @@ class Tracer:
         kind: str,
         file: str,
         line: int,
+        line_in_def: int,
+        src: str | None,
         args: dict[str, Any],
         py: types.FrameType | None,
     ) -> _Frame:
         parent = self.stack[-1]
-        occ_key = (qual, line)
-        occ = parent._occ_next.get(occ_key, 0)
-        parent._occ_next[occ_key] = occ + 1
+        occ = parent._occ_next.get(qual, 0)
+        parent._occ_next[qual] = occ + 1
         fr = _Frame(
             id=self._next_id,
-            key=ts.frame_key(parent.key, qual, line, occ),
+            key=ts.frame_key(parent.key, qual, occ),
             parent_key=parent.key,
             qual=qual,
             file=file,
             line=line,
+            line_in_def=line_in_def,
+            src=src,
             occ=occ,
             kind=kind,
             args=args,
@@ -215,17 +257,22 @@ class Tracer:
                 caller = f.f_back
                 if caller is not None and self._in_work(caller):
                     file, line = self._file_of(caller), caller.f_lineno
+                    line_in_def, src = self._site(caller)
                 else:
                     # Outermost user frame: the caller is the driver /
                     # harness outside /work — anchor on the callee's own
                     # def line so the stack's root lands inside the
-                    # script (gr513668).
+                    # script (gr513668); the call site is outside the
+                    # work root so the re-anchor fields stay empty.
                     file, line = self._file_of(f), f.f_code.co_firstlineno
+                    line_in_def, src = 0, None
                 self._push(
                     qual=_user_qual(f),
                     kind="user",
                     file=file,
                     line=line,
+                    line_in_def=line_in_def,
+                    src=src,
                     args=_frame_args(f),
                     py=f,
                 )
@@ -239,11 +286,14 @@ class Tracer:
         wrapper_frame: types.FrameType,
     ) -> _Frame:
         self._sync(callsite)
+        line_in_def, src = self._site(callsite)
         return self._push(
             qual=qual,
             kind=kind,
             file=self._file_of(callsite),
             line=callsite.f_lineno,
+            line_in_def=line_in_def,
+            src=src,
             args=args,
             py=wrapper_frame,
         )
@@ -251,9 +301,30 @@ class Tracer:
     # -- serialization ------------------------------------------------------
 
     def dump(self, run: dict[str, Any] | None = None) -> dict[str, Any]:
-        """The schema-1 trace document (post-collapse, capped)."""
+        """The schema-2 trace document (post-collapse, capped).
+
+        A ``_sync`` re-mint can in principle repeat a ``(parent, qual,
+        occ)`` key (a re-entered generator under the same parent): the
+        later frame emits ``sha8(key, "#", args digest, n)`` — n its rank
+        among equal keys in emit order — and ``run.key_collisions``
+        counts them (0 expected; ``loads`` rejects uncounted repeats, so
+        a collision is never a silent merge)."""
         frames: list[dict[str, Any]] = []
         collapsed = 0
+        key_collisions = 0
+        emitted: dict[str, int] = {}
+
+        def _emit_dict(d: dict[str, Any]) -> None:
+            nonlocal key_collisions
+            key = d["key"]
+            n = emitted.get(key, 0)
+            if n:
+                digest = json.dumps(d.get("args") or {}, sort_keys=True)
+                d = {**d, "key": ts.sha8(f"{key}\x00#\x00{digest}\x00{n}")}
+                key_collisions += 1
+            emitted[key] = n + 1
+            emitted.setdefault(d["key"], 1)
+            frames.append(d)
 
         def emit(fr: _Frame) -> None:
             nonlocal collapsed
@@ -264,6 +335,8 @@ class Tracer:
                 "qual": fr.qual,
                 "file": fr.file,
                 "line": fr.line,
+                "line_in_def": fr.line_in_def,
+                "src": fr.src,
                 "occ": fr.occ,
                 "kind": fr.kind,
                 "args": fr.args,
@@ -272,15 +345,14 @@ class Tracer:
             }
             if fr.error is not None:
                 d["error"] = fr.error
-            frames.append(d)
-            groups: dict[tuple[str, str, int], list[_Frame]] = {}
-            order: list[tuple[str, str, int]] = []
+            _emit_dict(d)
+            groups: dict[str, list[_Frame]] = {}
+            order: list[str] = []
             for ch in fr.children:
-                gk = (ch.qual, ch.file, ch.line)
-                if gk not in groups:
-                    groups[gk] = []
-                    order.append(gk)
-                groups[gk].append(ch)
+                if ch.qual not in groups:
+                    groups[ch.qual] = []
+                    order.append(ch.qual)
+                groups[ch.qual].append(ch)
             for gk in order:
                 grp = groups[gk]
                 if len(grp) > ts.COLLAPSE_SIBLINGS and all(not c.children for c in grp):
@@ -288,17 +360,19 @@ class Tracer:
                         emit(c)
                     rest = grp[ts.COLLAPSE_SIBLINGS :]
                     collapsed += len(rest)
-                    frames.append(
+                    _emit_dict(
                         {
                             "id": rest[0].id,
                             "id_end": rest[-1].id,
                             "key": ts.frame_key(
-                                fr.key, grp[0].qual, grp[0].line, ts.COLLAPSE_SIBLINGS
+                                fr.key, grp[0].qual, ts.COLLAPSE_SIBLINGS
                             ),
                             "parent": fr.key,
                             "qual": grp[0].qual,
                             "file": grp[0].file,
                             "line": grp[0].line,
+                            "line_in_def": grp[0].line_in_def,
+                            "src": grp[0].src,
                             "occ": ts.COLLAPSE_SIBLINGS,
                             "occ_end": rest[-1].occ,
                             "collapsed": len(rest),
@@ -330,6 +404,7 @@ class Tracer:
         meta.update(self.run_meta)
         if run:
             meta.update(run)
+        meta["key_collisions"] = key_collisions
         return {"schema": ts.SCHEMA_VERSION, "run": meta, "frames": frames}
 
 
@@ -576,11 +651,14 @@ def trace(name: str) -> Iterator[None]:
         return
     f = sys._getframe(1)
     tr._sync(f)
+    line_in_def, src = tr._site(f)
     fr = tr._push(
         qual=name,
         kind="user",
         file=tr._file_of(f),
         line=f.f_lineno,
+        line_in_def=line_in_def,
+        src=src,
         args={},
         py=f,
     )

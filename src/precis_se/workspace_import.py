@@ -453,12 +453,15 @@ class TraceView:
     """A parsed ``trace.json`` — the shared ``precis_geom.trace_schema``
     wire dicts — plus the importer's own cap accounting (the writer's
     ``run.truncated`` flag OR the reader-side ``MAX_FRAMES`` head-keep,
-    whichever trips first)."""
+    whichever trips first). ``schema`` is the doc's own version — the
+    stored ``ws_trace`` chunk re-emits it unchanged (a schema-1 doc keeps
+    its line-bearing keys and lacks the schema-2 fields)."""
 
     run: dict[str, Any]
     frames: list[dict[str, Any]]
     truncated: bool = False
     dropped: int = 0
+    schema: int = trace_schema.SCHEMA_VERSION
 
     @property
     def root_key(self) -> str | None:
@@ -498,6 +501,7 @@ def _load_trace(text: str) -> TraceView:
         frames=frames,
         truncated=truncated,
         dropped=dropped,
+        schema=int(doc.get("schema") or trace_schema.SCHEMA_VERSION),
     )
 
 
@@ -1100,7 +1104,7 @@ def import_workspace_run(
                     ord=ord_next + 1,
                     text=trace_schema.dumps(
                         {
-                            "schema": trace_schema.SCHEMA_VERSION,
+                            "schema": trace.schema,
                             "run": trace.run,
                             "frames": trace.frames,
                         }

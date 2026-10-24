@@ -1075,18 +1075,18 @@ def _mint_op_frames(tree: SeTree, ops: list[dict[str, Any]]) -> None:
     pkey = f"{OP_TRACE_ROOT}:{sid or 'nosess'}"
     for op in wanted:
         qual = str(op["op"])
-        occ = sum(
-            1 for f in tree.op_frames if f.get("qual") == qual and f.get("line") == line
-        )
+        occ = sum(1 for f in tree.op_frames if f.get("qual") == qual)
         tree.op_frames.append(
             {
                 "id": len(tree.op_frames) + 1,
-                "key": _ts.frame_key(pkey, qual, line, occ),
+                "key": _ts.frame_key(pkey, qual, occ),
                 "_pkey": pkey,
                 "parent": OP_TRACE_ROOT,
                 "qual": qual,
                 "file": "op",
                 "line": line,
+                "line_in_def": 0,
+                "src": None,
                 "occ": occ,
                 "kind": "op",
                 "args": {k: v for k, v in op.items() if k != "op"},

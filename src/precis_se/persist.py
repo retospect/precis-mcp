@@ -1884,7 +1884,7 @@ def _flush_op_trace(store: Any, c: Any, ref_id: int, tree: SeTree) -> None:
         pkey = f.pop("_pkey", OP_TRACE_ROOT)
         while f["key"] in existing_keys:
             f["occ"] = int(f.get("occ") or 0) + 1
-            f["key"] = _ts.frame_key(pkey, str(f["qual"]), f["line"], f["occ"])
+            f["key"] = _ts.frame_key(pkey, str(f["qual"]), f["occ"])
         existing_keys.add(f["key"])
         new_frames.append({**f, "id": start + i})
     if not merged:
@@ -1896,6 +1896,8 @@ def _flush_op_trace(store: Any, c: Any, ref_id: int, tree: SeTree) -> None:
                 "qual": "ops",
                 "file": "op",
                 "line": 0,
+                "line_in_def": 0,
+                "src": None,
                 "occ": 0,
                 "kind": "op",
                 "args": {},

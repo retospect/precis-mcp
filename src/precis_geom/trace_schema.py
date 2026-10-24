@@ -1,4 +1,5 @@
-"""The construction-trace wire format — ``out/trace.json`` schema 1.
+"""The construction-trace wire format — ``out/trace.json`` schema 2
+(reads schema 1 and 2).
 
 A workspace run's **construction trace** is a tree of **frames**: one frame
 per call that placed or changed geometry (structure-workspaces spec,
@@ -10,18 +11,21 @@ live exactly once — stdlib only, since the same file ships inside the
 
 Top level::
 
-    {"schema": 1,
+    {"schema": 2,
      "run": {"workspace": <slug|null>, "job": <int|null>,
              "script_sha": <str|null>, "lock_sha": <str|null>,
              "started_utc": <iso|null>, "finished_utc": <iso|null>,
-             "collapsed": <int>, "truncated": <bool>},
+             "collapsed": <int>, "truncated": <bool>,
+             "key_collisions": <int>},
      "frames": [<frame>, ...]}
 
 Frame fields (all present unless noted)::
 
     id       small int interned per run; entity ``maker`` stamps cite it.
-    key      sha8(parent.key, qual, line, occ) — the stable citation.
-             Depends on nothing run-local, so an unchanged script yields
+    key      sha8(parent.key, qual, occ) — the stable citation
+             (schema 2; schema 1 hashed the call-site ``line`` too).
+             Depends on nothing run-local or positional, so an unchanged
+             script — and a script edited above the call — yields
              identical keys on every run.
     parent   parent frame's key; ``None`` on the root frame.
     qual     the call's dotted name, shortest stable form: user code is
@@ -35,9 +39,15 @@ Frame fields (all present unless noted)::
              outermost user frame (its caller is the driver outside
              ``/work``) the function's own ``def`` line instead, so the
              root of the rendered stack always cites the script.
-    occ      occurrence counter of this ``(qual, line)`` under the same
-             parent, 0-based: the third ``junction`` at one call site is
-             ``#2``.
+    line_in_def  schema 2 — ``line`` minus the enclosing def's
+             ``co_firstlineno``; 0 on the root and on calls whose site
+             sits outside ``/work`` (library internals, the driver).
+    src      schema 2 — the stripped call-site source line, capped at 120
+             chars; ``null`` when the call site is outside ``/work`` or
+             the source is unreadable. Re-anchoring, not identity.
+    occ      occurrence counter of this ``qual`` under the same parent,
+             0-based across all call sites: the third ``junction`` a
+             parent makes is ``#2`` wherever it was called from.
     kind     ``root`` | ``user`` | ``core`` | ``module`` | ``service`` |
              ``op``.
     args     bounded digest: scalars and short strings verbatim, floats
@@ -48,10 +58,18 @@ Frame fields (all present unless noted)::
              the call raised; only the innermost traced frame the
              exception left carries it. Absent on success.
 
-Collapsed sibling form: past ``COLLAPSE_SIBLINGS`` (64) same-site
-*childless* siblings, occurrences 64..N fold into one frame carrying
-``occ`` = 64, ``occ_end`` = N, ``collapsed`` = count, ``id``/``id_end``
-spanning the folded run, and ``made``/``touched`` = their sums.
+Collapsed sibling form: past ``COLLAPSE_SIBLINGS`` (64) same-``qual``
+*childless* siblings under one parent, occurrences 64..N fold into one
+frame carrying ``occ`` = 64, ``occ_end`` = N, ``collapsed`` = count,
+``id``/``id_end`` spanning the folded run, and ``made``/``touched`` =
+their sums. The folded frame's key is ``frame_key(parent, qual, 64)``,
+unchanged as the group grows.
+
+Schema 1 vs 2: schema-1 docs keep their line-bearing keys and lack
+``line_in_def``/``src``/``run.key_collisions``. Duplicate ``key`` values
+are legal only when the writer counted them in ``run.key_collisions``
+(the ``_sync`` re-mint edge); ``loads`` rejects a doc whose duplicates
+outnumber the count.
 """
 
 from __future__ import annotations
@@ -60,7 +78,11 @@ import hashlib
 import json
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+#: Schema versions ``loads`` accepts. Schema 1 predates the structural
+#: key (``line`` was hashed in) and the ``line_in_def``/``src`` fields.
+SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
 
 #: Frame ``kind`` values. ``root`` is the synthetic run node every
 #: top-level frame parents to; the rest come from the spec's table.
@@ -84,9 +106,10 @@ def sha8(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def frame_key(parent_key: str, qual: str, line: int, occ: int) -> str:
-    """``sha8(parent.key, qual, line, occ)`` — the spec's stable key."""
-    return sha8(f"{parent_key}\x00{qual}\x00{line}\x00{occ}")
+def frame_key(parent_key: str, qual: str, occ: int) -> str:
+    """``sha8(parent.key, qual, occ)`` — the spec's stable key (schema 2:
+    structure only, no position — an edit above the call keeps the key)."""
+    return sha8(f"{parent_key}\x00{qual}\x00{occ}")
 
 
 def dumps(trace: dict[str, Any]) -> str:
@@ -101,19 +124,24 @@ def loads(text: str) -> dict[str, Any]:
     doc = json.loads(text)
     if not isinstance(doc, dict):
         raise ValueError("trace.json: top level must be an object")
-    if doc.get("schema") != SCHEMA_VERSION:
+    schema = doc.get("schema")
+    if schema not in SCHEMA_VERSIONS:
         raise ValueError(
-            f"trace.json: schema {doc.get('schema')!r} != {SCHEMA_VERSION}"
+            f"trace.json: schema {schema!r} not in {sorted(SCHEMA_VERSIONS)}"
         )
     frames = doc.get("frames")
     if not isinstance(frames, list):
         raise ValueError("trace.json: 'frames' must be a list")
+    required = ("id", "key", "qual", "file", "line", "occ", "kind") + (
+        ("line_in_def", "src") if schema == SCHEMA_VERSION else ()
+    )
     seen: set[int] = set()
     keys: set[str] = set()
+    dups = 0
     for i, fr in enumerate(frames):
         if not isinstance(fr, dict):
             raise ValueError(f"trace.json: frames[{i}] is not an object")
-        for req in ("id", "key", "qual", "file", "line", "occ", "kind"):
+        for req in required:
             if req not in fr:
                 raise ValueError(f"trace.json: frames[{i}] lacks '{req}'")
         if fr["kind"] not in FRAME_KINDS:
@@ -124,7 +152,15 @@ def loads(text: str) -> dict[str, Any]:
         if fr["id"] in seen and not fr.get("collapsed"):
             raise ValueError(f"trace.json: frames[{i}].id {fr['id']} reused")
         seen.add(fr["id"])
+        if fr["key"] in keys:
+            dups += 1
         keys.add(fr["key"])
+    declared = int((doc.get("run") or {}).get("key_collisions") or 0)
+    if dups > declared:
+        raise ValueError(
+            f"trace.json: {dups} duplicate frame key(s) but "
+            f"run.key_collisions is {declared} — never merge silently"
+        )
     for i, fr in enumerate(frames):
         parent = fr.get("parent")
         if parent is not None and parent not in keys:
@@ -138,6 +174,7 @@ __all__ = [
     "FRAME_KINDS",
     "MAX_FRAMES",
     "SCHEMA_VERSION",
+    "SCHEMA_VERSIONS",
     "dumps",
     "frame_key",
     "loads",

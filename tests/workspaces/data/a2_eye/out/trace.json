@@ -1,5 +1,5 @@
 {
- "schema": 1,
+ "schema": 2,
  "run": {
   "workspace": "hcol",
   "job": null,
@@ -8,7 +8,8 @@
   "started_utc": null,
   "finished_utc": null,
   "collapsed": 0,
-  "truncated": false
+  "truncated": false,
+  "key_collisions": 0
  },
  "frames": [
   {
@@ -22,7 +23,9 @@
    "kind": "root",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 0,
+   "src": null
   },
   {
    "id": 1,
@@ -38,7 +41,9 @@
     "R": 4
    },
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 0,
+   "src": null
   },
   {
    "id": 2,
@@ -51,7 +56,9 @@
    "kind": "user",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 10,
+   "src": "bundle()"
   },
   {
    "id": 3,
@@ -64,7 +71,9 @@
    "kind": "user",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 10,
+   "src": "layout()"
   },
   {
    "id": 4,
@@ -81,7 +90,9 @@
    "made": {
     "atoms": 15
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 1,
+   "src": "s1 = strip(rows=R)"
   },
   {
    "id": 5,
@@ -90,7 +101,7 @@
    "qual": "sheetnet.strip",
    "file": "main.py",
    "line": 32,
-   "occ": 0,
+   "occ": 1,
    "kind": "core",
    "args": {
     "rows": 6
@@ -98,7 +109,9 @@
    "made": {
     "atoms": 14
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 2,
+   "src": "s2 = strip(rows=R)"
   },
   {
    "id": 6,
@@ -111,7 +124,9 @@
    "kind": "core",
    "args": {},
    "made": {},
-   "touched": {}
+   "touched": {},
+   "line_in_def": 10,
+   "src": "assemble(s1, s2)"
   },
   {
    "id": 7,
@@ -128,7 +143,9 @@
    "made": {
     "atoms": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 1,
+   "src": "junction(k=3)"
   },
   {
    "id": 8,
@@ -145,7 +162,9 @@
    "made": {
     "atoms": 1
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 1,
+   "src": "junction(k=3)"
   },
   {
    "id": 9,
@@ -162,7 +181,9 @@
    "made": {
     "atoms": 4
    },
-   "touched": {}
+   "touched": {},
+   "line_in_def": 30,
+   "src": "u = unit.fetch('u123')"
   },
   {
    "id": 40,
@@ -187,7 +208,9 @@
       29
      ]
     ]
-   }
+   },
+   "line_in_def": 0,
+   "src": null
   },
   {
    "id": 41,
@@ -196,7 +219,7 @@
    "qual": "relax",
    "file": "hexfold_relax",
    "line": 0,
-   "occ": 0,
+   "occ": 1,
    "kind": "service",
    "args": {
     "method": "gfnff",
@@ -212,7 +235,9 @@
       3
      ]
     ]
-   }
+   },
+   "line_in_def": 0,
+   "src": null
   }
  ]
 }

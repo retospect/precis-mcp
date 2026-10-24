@@ -491,8 +491,9 @@ class Run:
 
         When the dir already holds a ``trace.json`` the new dump is
         diffed against it before it is overwritten — frames matched by
-        (qual path from the root, ``occ``), NOT ``key`` (keys are
-        line-based until the structural-keys spec lands). The result is
+        (qual path from the root, ``occ``), NOT ``key`` (key-based
+        matching across the schema-1→2 boundary is the structural-keys
+        spec's follow-up, gr513671). The result is
         ``self.diff`` (``added``/``removed`` path lists, ``changed``
         frames with was/now ``made`` and ``args``), echoed as a ``vs
         previous: +A -R ~C`` line and stored as manifest ``notes`` when

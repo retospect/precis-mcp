@@ -3,7 +3,7 @@
 §Construction traces).
 
 The stored form is one ``ws_trace`` chunk per workspace run
-(:mod:`precis_geom.trace_schema` schema 1), hung on the run job's ref —
+(:mod:`precis_geom.trace_schema`, schemas 1 and 2), hung on the run job's ref —
 or on the design's own ref when a containerless import ran without a job
 (:func:`precis_se.workspace_import.import_workspace_run`). Each bound
 structure/cad ref's ``meta['generated']['trace'] = {'run_job', 'root'}``

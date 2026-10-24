@@ -171,11 +171,13 @@ def test_trace_truncated(store: Store, tmp_path: Path) -> None:
         frames.append(
             {
                 "id": i + 1,
-                "key": frame_key(root["key"], "spin", 9, i),
+                "key": frame_key(root["key"], "spin", i),
                 "parent": root["key"],
                 "qual": "spin",
                 "file": "main.py",
                 "line": 9,
+                "line_in_def": 2,
+                "src": "spin()",
                 "occ": i,
                 "kind": "user",
                 "args": {},

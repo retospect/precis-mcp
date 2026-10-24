@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import time
@@ -91,23 +92,217 @@ def test_identical_keys_across_runs() -> None:
             docs.append(tr.dump())
     keys = lambda doc: [f["key"] for f in doc["frames"]]
     assert keys(docs[0]) == keys(docs[1])
+    assert docs[0]["schema"] == 2
+    assert all("line_in_def" in f and "src" in f for f in docs[0]["frames"])
     trace_schema.loads(trace_schema.dumps(docs[0]))  # round-trips clean
 
 
-def test_same_site_occ_counter() -> None:
+def _emit_two_sites() -> None:
+    out.note("a")
+    out.note("b")
+
+
+def test_occ_counter_is_per_qual_across_sites() -> None:
+    """Schema 2: ``occ`` counts a callee's occurrences under one parent
+    across ALL call sites — a second ``note`` call on a different line
+    continues the count (schema 1 counted per ``(qual, line)``)."""
     out._reset()
     with trace.run(work_root=_WORK_ROOT) as tr:
-        _emit(3)
+        _emit(2)
+        _emit_two_sites()
         doc = tr.dump()
     notes = [f for f in doc["frames"] if f["qual"].endswith("note")]
-    assert [f["occ"] for f in notes] == [0, 1, 2]
     assert all(f["kind"] == "core" for f in notes)
-    # The loop body lives in _emit — minted as a user frame.
     users = [f for f in doc["frames"] if f["kind"] == "user"]
-    assert any(u["qual"] == "test_geom_trace._emit" for u in users)
-    # …and the notes parent under it.
-    u = next(u for u in users if u["qual"] == "test_geom_trace._emit")
-    assert all(f["parent"] == u["key"] for f in notes)
+    emit = next(u for u in users if u["qual"].endswith("._emit"))
+    two = next(u for u in users if u["qual"].endswith("._emit_two_sites"))
+    loop_notes = [f for f in notes if f["parent"] == emit["key"]]
+    site_notes = [f for f in notes if f["parent"] == two["key"]]
+    assert [f["occ"] for f in loop_notes] == [0, 1]
+    # Two distinct call sites, one shared per-qual counter.
+    assert [f["occ"] for f in site_notes] == [0, 1]
+    assert len({f["line"] for f in site_notes}) == 2
+
+
+# -- structural keys (gr513662, trace-frame-structural-keys spec §1-5) -------
+
+
+def _stability_script(
+    *,
+    head: str = "",
+    inner: str = "",
+    var: str = "val",
+    lit: str = '"b"',
+    fname: str = "build",
+    swap: bool = False,
+) -> str:
+    """``main.py`` — ``build`` owns two ``out.note`` call sites; each knob
+    is one spec-requirement edit."""
+    first, second = (f'f"n{{{var}}}"', lit) if not swap else (lit, f'f"n{{{var}}}"')
+    return (
+        f"{head}"
+        "from precis_ws import out\n"
+        "\n"
+        "\n"
+        f"def {fname}(n):\n"
+        f"    {var} = n + 1\n"
+        f"{inner}"
+        f"    out.note({first})\n"
+        f"    out.note({second})\n"
+        f"    return {var}\n"
+    )
+
+
+def _run_script(tmp_path: Path, text: str, call: str = "build") -> dict:
+    mod = _load_script(tmp_path, text)
+    with trace.run(work_root=tmp_path) as tr:
+        getattr(mod, call)(3)
+        return tr.dump()
+
+
+def _notes(doc: dict) -> list[dict]:
+    return [f for f in doc["frames"] if f["qual"].endswith("note")]
+
+
+def test_keys_survive_lines_inserted_above_the_script(tmp_path: Path) -> None:
+    """Req 1: a comment/import above the def moves ``line`` but no key —
+    and ``line_in_def`` doesn't even move (the def shifted with it)."""
+    base = _run_script(tmp_path, _stability_script())
+    edited = _run_script(
+        tmp_path, _stability_script(head="# a comment\nimport json\n\n")
+    )
+    assert [f["key"] for f in edited["frames"]] == [f["key"] for f in base["frames"]]
+    for old, new in zip(_notes(base), _notes(edited)):
+        assert new["line"] == old["line"] + 3
+        assert new["line_in_def"] == old["line_in_def"]
+        assert new["src"] == old["src"]
+    # …and a line inserted inside the def above the calls moves
+    # ``line_in_def`` for the calls below it — still no key change.
+    inner = _run_script(tmp_path, _stability_script(inner="    # mark\n"))
+    assert [f["key"] for f in inner["frames"]] == [f["key"] for f in base["frames"]]
+    for old, new in zip(_notes(base), _notes(inner)):
+        assert new["line_in_def"] == old["line_in_def"] + 1
+
+
+def test_keys_survive_local_rename_and_literal_edits(tmp_path: Path) -> None:
+    """Reqs 2–3: renaming a local or changing a literal moves ``src``/
+    ``args`` but no key."""
+    base = _run_script(tmp_path, _stability_script())
+    renamed = _run_script(tmp_path, _stability_script(var="picked"))
+    assert [f["key"] for f in renamed["frames"]] == [f["key"] for f in base["frames"]]
+    assert _notes(base)[0]["src"] != _notes(renamed)[0]["src"]
+    relit = _run_script(tmp_path, _stability_script(lit='"q"'))
+    assert [f["key"] for f in relit["frames"]] == [f["key"] for f in base["frames"]]
+    assert _notes(relit)[1]["args"] != _notes(base)[1]["args"]
+
+
+def test_reordering_same_callee_calls_swaps_keys(tmp_path: Path) -> None:
+    """Req 4 (accepted): two same-callee calls in one caller trade ``occ``
+    — their keys swap; ``src`` still locates each."""
+    base = _run_script(tmp_path, _stability_script())
+    swapped = _run_script(tmp_path, _stability_script(swap=True))
+    assert {f["key"] for f in swapped["frames"]} == {f["key"] for f in base["frames"]}
+    a, b = _notes(base)
+    sa, sb = _notes(swapped)
+    assert (sa["key"], sa["args"], sa["src"]) == (a["key"], b["args"], b["src"])
+    assert (sb["key"], sb["args"], sb["src"]) == (b["key"], a["args"], a["src"])
+
+
+def test_renaming_caller_or_callee_changes_keys(tmp_path: Path) -> None:
+    """Req 5: the qual IS the identity — a renamed caller re-keys its
+    frame and everything under it."""
+    base = _run_script(tmp_path, _stability_script())
+    renamed = _run_script(
+        tmp_path, _stability_script(fname="assemble"), call="assemble"
+    )
+    assert {f["key"] for f in renamed["frames"]}.isdisjoint(
+        f["key"] for f in base["frames"] if f["kind"] != "root"
+    )
+
+
+def test_line_in_def_and_src_on_a_real_script(tmp_path: Path) -> None:
+    """The non-key location fields: user frame anchored on its def line
+    carries 0/null (caller outside work); call sites inside it carry the
+    def-relative offset and the stripped source line."""
+    doc = _run_script(tmp_path, _stability_script())
+    build = next(f for f in doc["frames"] if f["qual"] == "main.build")
+    assert (build["line"], build["line_in_def"], build["src"]) == (4, 0, None)
+    n1, n2 = _notes(doc)
+    assert (n1["line"], n1["line_in_def"]) == (6, 2)
+    assert n1["src"] == 'out.note(f"n{val}")'
+    assert (n2["line"], n2["line_in_def"]) == (7, 3)
+    assert n2["src"] == 'out.note("b")'
+
+
+def test_schema1_trace_doc_still_loads(tmp_path: Path) -> None:
+    """Migration: a schema-1 document keeps its line-bearing keys and
+    lacks ``line_in_def``/``src`` — ``loads`` accepts it."""
+    doc = _run_script(tmp_path, _stability_script())
+    doc["schema"] = 1
+    for f in doc["frames"]:
+        del f["line_in_def"], f["src"]
+    assert trace_schema.loads(trace_schema.dumps(doc))["schema"] == 1
+    doc["schema"] = 3
+    with pytest.raises(ValueError, match="schema"):
+        trace_schema.loads(trace_schema.dumps(doc))
+
+
+def test_forced_duplicate_key_mints_a_tiebreak(tmp_path: Path) -> None:
+    """Collisions: a repeated frame key (the ``_sync`` re-mint edge —
+    forced here by appending a clone to the tree) emits
+    ``sha8(key, '#', args digest, n)`` for the later frame and counts in
+    ``run.key_collisions``; ``loads`` accepts the counted doc and rejects
+    the same duplicate uncounted."""
+    doc = _run_script(tmp_path, _stability_script())
+    n1 = _notes(doc)[0]
+    dup = dict(n1, id=99)
+    doc["frames"].append(dup)
+    doc["run"]["key_collisions"] = 0
+    with pytest.raises(ValueError, match="key_collisions"):
+        trace_schema.loads(trace_schema.dumps(doc))
+
+    # …and through the writer itself: clone a live _Frame into the tree.
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        out.note("solo")
+        parent = tr.stack[-1]  # this test function's user frame
+        clone = dataclasses.replace(parent.children[-1], id=tr._next_id)
+        tr._next_id += 1
+        parent.children.append(clone)
+        doc = tr.dump()
+    assert doc["run"]["key_collisions"] == 1
+    keys = [f["key"] for f in doc["frames"] if f["qual"].endswith("note")]
+    assert len(set(keys)) == len(keys) == 2
+    assert keys[1] != clone.key
+    trace_schema.loads(trace_schema.dumps(doc))
+
+
+def test_loop_growth_keeps_prefix_and_shrink_drops_tail() -> None:
+    """Collisions §loop: ``range(8) -> range(10)`` keeps the first 8 keys
+    (new frames are tail ``occ`` values); shrinking drops only tails."""
+    runs = []
+    for n in (8, 10, 6):
+        out._reset()
+        with trace.run(work_root=_WORK_ROOT) as tr:
+            _emit(n)
+            runs.append(
+                [f["key"] for f in tr.dump()["frames"] if f["qual"].endswith("note")]
+            )
+    assert runs[1][:8] == runs[0]
+    assert runs[2] == runs[1][:6]
+
+
+def test_collapse_group_key_stable_past_64() -> None:
+    """A group growing past ``COLLAPSE_SIBLINGS`` keeps the folded frame's
+    key — ``frame_key(parent, qual, 64)`` — while ``occ_end`` moves."""
+    folded = []
+    for n in (70, 80):
+        out._reset()
+        with trace.run(work_root=_WORK_ROOT) as tr:
+            _emit(n)
+            folded.append(next(f for f in tr.dump()["frames"] if f.get("collapsed")))
+    assert folded[0]["key"] == folded[1]["key"]
+    assert (folded[0]["occ"], folded[0]["occ_end"]) == (64, 69)
+    assert (folded[1]["occ"], folded[1]["occ_end"]) == (64, 79)
 
 
 def test_root_user_frame_anchors_in_script(tmp_path: Path) -> None:

@@ -138,6 +138,9 @@ def test_trace_keys_stable_across_two_builds() -> None:
         assert {"pcb.Board.part", "pcb.Board.wire", "pcb.Board.footprint"} <= quals
     assert keys[0] == keys[1]
     assert len(keys[0]) > 20
+    # schema 2: the re-anchor fields ride along on every frame.
+    assert all("line_in_def" in f and "src" in f for f in doc["frames"])
+    assert any(f["src"] for f in doc["frames"] if f["qual"].startswith("pcb."))
 
 
 def test_manifest_and_write(tmp_path: Path) -> None:

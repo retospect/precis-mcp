@@ -562,6 +562,8 @@ def _ws_chunk(store: Any, ref_id: int, root: str) -> None:
                 "qual": "main",
                 "file": "x.py",
                 "line": 0,
+                "line_in_def": 0,
+                "src": None,
                 "occ": 0,
                 "kind": "root",
             },
