@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
-from precis.handlers._paper_format import _clean_inline_text, _format_authors
+from precis.handlers._paper_format import _format_authors
 from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block_text
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.response import Response
@@ -56,6 +56,7 @@ from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.title_views import title_md
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -145,7 +146,7 @@ def _title_match_line(ref: Any) -> tuple[str, str]:
     )
     authors = _format_authors(ref.authors) or "(authors unknown)"
     year = ref.year if ref.year is not None else "n.d."
-    title = _clean_inline_text(ref.title) if ref.title else "(untitled)"
+    title = title_md(ref.title) if ref.title else "(untitled)"
     held = "held" if getattr(ref, "pdf_sha256", None) is not None else "want"
     flag = _retraction_flag(ref)
     suffix = f"  {flag}" if flag else ""
@@ -456,7 +457,7 @@ class BylineSearch:
             )
             authors = _format_authors(ref.authors) or "(authors unknown)"
             year = ref.year if ref.year is not None else "n.d."
-            title_disp = _clean_inline_text(ref.title) if ref.title else "(untitled)"
+            title_disp = title_md(ref.title) if ref.title else "(untitled)"
             rows.append(
                 {
                     "handle": handle,
@@ -1584,9 +1585,7 @@ class PaperSearchResultRenderer:
                 )
                 authors = _format_authors(ref.authors) or "(authors unknown)"
                 year = ref.year if ref.year is not None else "n.d."
-                title_disp = (
-                    _clean_inline_text(ref.title) if ref.title else "(untitled)"
-                )
+                title_disp = title_md(ref.title) if ref.title else "(untitled)"
                 kw_display = f"{authors} ({year}). {title_disp}"
             else:
                 # the computed chunk handle (``pc<chunk_id>``) is the
@@ -1838,9 +1837,7 @@ class PaperSearchResultRenderer:
                     # by title in the description column so the hint is
                     # checkable at a glance without a follow-up call.
                     top_title = (
-                        _clean_inline_text(hits[0][1].title)
-                        if hits[0][1].title
-                        else "(untitled)"
+                        title_md(hits[0][1].title) if hits[0][1].title else "(untitled)"
                     )
                     if len(top_title) > 60:
                         top_title = top_title[:57] + "..."

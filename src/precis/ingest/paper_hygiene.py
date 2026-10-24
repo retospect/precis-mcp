@@ -84,7 +84,6 @@ from precis.ingest.pdf_sidecar import (
     export_name_query,
     is_garbage_title,
     is_pii,
-    render_leaked_markup,
 )
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
@@ -1727,6 +1726,18 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: unstamped so the next pass retries them).
 _TITLE_REPAIR_VERSION = 1
 
+#: ``meta.entry_type`` values that are articles (Crossref vocabulary —
+#: journal/conference papers and preprints). The junk-title rules are
+#: article-title rules: a dissertation's "Front Matter", a proceedings
+#: volume's "Table of Contents" or a component's export name are real
+#: titles for those document types, not junk. Papers whose entry_type is
+#: set to a NON-article value are skipped by the junk-title detector
+#: passes entirely (gr515227 scope add); an unset entry_type still
+#: files — un-enriched papers are presumed articles.
+_ARTICLE_ENTRY_TYPES: frozenset[str] = frozenset(
+    {"article", "journal-article", "proceedings-article", "posted-content"}
+)
+
 #: Miss reasons that mean "retry next pass", not "unfixable".
 _TRANSIENT_MISS_REASONS = frozenset(
     {"crossref-timeout", "s2-timeout", "openalex-timeout", "error"}
@@ -1745,20 +1756,6 @@ class TitleRepairOutcome:
     def line(self) -> str:
         got = f" -> {self.new_title[:60]}" if self.new_title else ""
         return f"[{self.action}] #{self.ref_id} {self.detail}{got}"
-
-
-def _usable_title(text: str) -> bool:
-    """True when *text* reads like a real title — the bar for auto-writing a
-    repaired title without a registry round-trip."""
-    t = text.strip()
-    if not (12 <= len(t) <= 400):
-        return False
-    if is_pii(t) or is_garbage_title(t):
-        return False
-    if re.search(r"</?[a-zA-Z]", t):  # tag remnant — the clean didn't take
-        return False
-    letters = sum(c.isalpha() for c in t)
-    return letters >= max(8, int(0.4 * len(t)))
 
 
 def _open_title_fix_todo_ids(store: Store, ref_id: int, *, conn: Any) -> list[int]:
@@ -1799,39 +1796,6 @@ def _close_title_fix_todos(
         )
         closed += 1
     return closed
-
-
-def _apply_repaired_title(store: Store, ref: Any, new_title: str, *, how: str) -> None:
-    """Write a repaired title + rebuild cards + close the paper's open
-    title-fix todos, in one transaction."""
-    from precis.ingest.cards import rewrite_cards
-
-    meta = ref.meta or {}
-    meta_patch = {"title_raw": ref.title} if "title_raw" not in meta else {}
-    with store.tx() as conn:
-        store.update_paper_fields(
-            ref.id,
-            title=new_title,
-            meta_patch=meta_patch or None,
-            source=TITLE_FIX_SOURCE,
-            conn=conn,
-        )
-        rewrite_cards(
-            conn,
-            ref.id,
-            title=new_title,
-            author_names=author_names(ref.authors or []),
-            abstract=str(meta.get("abstract") or ""),
-            keywords=list(meta.get("keywords") or []),
-        )
-        _close_title_fix_todos(store, ref.id, conn=conn, how=how, new_title=new_title)
-        store.append_event(
-            ref.id,
-            source=TITLE_FIX_SOURCE,
-            event="title_repaired",
-            payload={"how": how, "title": new_title[:200]},
-            conn=conn,
-        )
 
 
 def _stamp_title_repair_failed(
@@ -1880,9 +1844,9 @@ def _resolve_openalex(
 
     Fill-blanks-only for authors and year (``apply_resolution`` writes
     whatever the Resolution carries — an existing byline/year must not be
-    clobbered by a lower-trust source). Title is markup-rendered and
-    junk-checked like any registry hit, then passes the same zero-overlap
-    guard as the Crossref leg.
+    clobbered by a lower-trust source). The title is stored raw and
+    junk-checked on its plain view like any registry hit, then passes the
+    same zero-overlap guard as the Crossref leg.
     """
     from precis.ingest.metadata_resolve import (
         _TIMED_OUT,
@@ -1899,9 +1863,7 @@ def _resolve_openalex(
     if not isinstance(work, dict):
         return Resolution(rid, "miss", "doi", "openalex-miss")
 
-    title = render_leaked_markup(
-        str(work.get("title") or work.get("display_name") or "")
-    )
+    title = str(work.get("title") or work.get("display_name") or "").strip()
     if not title or is_garbage_title(title) or is_pii(title):
         return Resolution(rid, "discard", "doi", "openalex-title-junk")
     year = work.get("publication_year")
@@ -1936,14 +1898,9 @@ def repair_junk_title_papers(
 
     Companion to :func:`raise_junk_title_papers` (gr500372): that pass used
     to file a ``waiting-for:`` todo for every junk title, but most of the
-    backlog was recoverable — markup-leaked titles only need rendering, and
-    export-name titles still have a DOI or a first page to resolve against.
-    The cascade per paper, cheapest first:
+    backlog was recoverable — export-name titles still have a DOI or a
+    first page to resolve against. The cascade per paper, cheapest first:
 
-    * **markup** — :func:`~precis.ingest.pdf_sidecar.render_leaked_markup`
-      turns ``<mml:math>``/``<sub>``/``<i>`` leakage back into text; if the
-      result is a usable title it's written directly (same title, fixed
-      encoding — no registry confirmation needed).
     * **crossref** — stored DOI → Crossref (``_resolve_by_doi`` — edition +
       zero-overlap guards included).
     * **openalex** — same DOI at OpenAlex, on a Crossref miss.
@@ -1981,6 +1938,7 @@ def repair_junk_title_papers(
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title,
+                   coalesce(r.meta->>'entry_type', '') AS entry_type,
                    (SELECT min(d.id_value) FROM ref_identifiers d
                      WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi') AS doi,
                    COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
@@ -2000,7 +1958,13 @@ def repair_junk_title_papers(
             (grace_days, _TITLE_REPAIR_VERSION),
         ).fetchall()
 
-    candidates = [(int(r[0]), (r[1] or "").strip(), r[2], r[3] or "") for r in rows]
+    candidates = [
+        (int(r[0]), (r[1] or "").strip(), r[3], r[4] or "")
+        for r in rows
+        # Non-article entry_types keep their (often section-shaped)
+        # titles — the junk rules are article-title rules (gr515227).
+        if not r[2] or r[2] in _ARTICLE_ENTRY_TYPES
+    ]
     ref_map = store.fetch_refs_by_ids([c[0] for c in candidates])
 
     outcomes: list[TitleRepairOutcome] = []
@@ -2106,13 +2070,6 @@ def _repair_one(
                     conn=conn,
                 )
         return _applied(how, res.title)
-
-    # Leg 1 — markup render: the stored title is real text wearing tags.
-    cleaned = render_leaked_markup(stored_title)
-    if cleaned != stored_title and _usable_title(cleaned):
-        if not dry_run:
-            _apply_repaired_title(store, ref, cleaned, how="markup")
-        return _applied("markup", cleaned)
 
     reasons: list[str] = []
 
@@ -2220,7 +2177,10 @@ def raise_junk_title_papers(
 
     Skipped: retired papers; human-verified papers (a human already judged
     the title — repair never stamps them, so they could never leave this
-    queue either); placeholder-titled papers that carry a DOI
+    queue either); papers whose ``meta.entry_type`` is set to a NON-article
+    type (dissertation, proceedings volume, component, other, … — those
+    document types legitimately carry the section-shaped titles the junk
+    rules flag; gr515227); placeholder-titled papers that carry a DOI
     (the enrich route owns them); papers younger than ``grace_days``;
     papers the repair cascade has not yet concluded on.
 
@@ -2239,6 +2199,7 @@ def raise_junk_title_papers(
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title, r.owner_login,
+                   coalesce(r.meta->>'entry_type', '') AS entry_type,
                    COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
                               WHERE ck.ref_id = r.ref_id
                                 AND ck.id_kind = 'cite_key'), ''),
@@ -2270,7 +2231,11 @@ def raise_junk_title_papers(
         ).fetchall()
 
     todo: list[tuple[int, str, str | None, str]] = []
-    for ref_id, title, owner, cite_key, has_doi in rows:
+    for ref_id, title, owner, entry_type, cite_key, has_doi in rows:
+        # Non-article entry_types keep their (often section-shaped)
+        # titles — the junk rules are article-title rules (gr515227).
+        if entry_type and entry_type not in _ARTICLE_ENTRY_TYPES:
+            continue
         t = (title or "").strip()
         if is_placeholder_title(t):
             if has_doi:

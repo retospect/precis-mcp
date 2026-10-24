@@ -31,6 +31,7 @@ from typing import Any
 
 from precis.store import Ref
 from precis.utils.authors import author_names as _shared_author_names
+from precis.utils.title_views import title_md, title_plain
 
 # Strip a small whitelist of inline HTML / JATS tags that publishers
 # leak into title/journal metadata: ``<sub>``, ``<sup>``, ``<i>``,
@@ -178,7 +179,10 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     """
     meta = ref.meta or {}
     slug = ref.slug or "???"
-    title = _clean_inline_text(ref.title)
+    # gr515227: stored titles are raw — BibTeX takes the md view (math
+    # islands are already valid LaTeX), RIS/EndNote the plain view.
+    title_bibtex = bibtex_title(ref.title)
+    title = title_plain(ref.title)
     # Citation formats (BibTeX / RIS / EndNote) use the sortable
     # "Family, Given" convention — inverted order is *derived* here,
     # never the stored display string (see utils/authors.py).
@@ -199,8 +203,9 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         # LaTeX-escape every scalar field that might carry a special
         # char. ``and``/``year``/``doi`` rarely do but we run them
         # through anyway for symmetry; a stray ``&`` in the title was
-        # the actual MCP-critic finding.
-        bx_title = _latex_escape(title)
+        # the actual MCP-critic finding. ``bibtex_title`` already
+        # escaped the non-math spans and converted md emphasis.
+        bx_title = title_bibtex
         bx_authors = " and ".join(_latex_escape(a) for a in authors)
         bx_journal = _latex_escape(journal)
         bx_doi = _latex_escape(doi_clean)
@@ -292,6 +297,58 @@ def _latex_escape(text: str) -> str:
     return out
 
 
+#: Spans of a ``title_md`` view that are already valid LaTeX: ``$…$`` /
+#: ``$$…$$`` math islands and the ``\$`` literal-dollar escape — the
+#: text-mode escape must not reach inside them (``\_`` would corrupt a
+#: math subscript; ``\&`` inside ``$…$`` is equally wrong).
+#: NOTE the capture group: ``re.split`` drops non-captured matches, so
+#: without it the math spans would vanish from the output entirely.
+_LATEX_SAFE_SPAN_RE = re.compile(r"(\\.|\$\$.*?\$\$|\$[^$]*\$)", re.DOTALL)
+
+
+def _latex_escape_math(text: str) -> str:
+    """:func:`_latex_escape` applied only to the non-math spans of a
+    :func:`~precis.utils.title_views.title_md` string."""
+    if not text:
+        return ""
+    return "".join(
+        seg if _LATEX_SAFE_SPAN_RE.fullmatch(seg) else _latex_escape(seg)
+        for seg in _LATEX_SAFE_SPAN_RE.split(text)
+        if seg
+    )
+
+
+#: md emphasis spans inside a ``title_md`` string — same shapes
+#: ``precis_web.linkify``'s ``_MD_BOLD``/``_MD_ITALIC`` honour — converted
+#: to ``\textbf``/``\emph`` for BibTeX. Applied only to non-math segments
+#: (a ``*`` inside ``$…$`` is an operator, not emphasis).
+_BIBTEX_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_BIBTEX_ITALIC_RE = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+
+
+def bibtex_title(raw: str) -> str:
+    """The LaTeX-correct BibTeX title from the raw stored title: the md
+    view with ``**x**`` → ``\\textbf{x}`` / ``*x*`` → ``\\emph{x}`` and
+    ``_``/``&``/``%``/``#`` escaped — but only in the non-math spans
+    (``$…$``/``$$…$$`` and ``\\$`` pass verbatim: already valid LaTeX).
+    Shared by ``_render_citation`` and the web References copy-as-BibTeX
+    payload so both emit the same field."""
+    md = title_md(raw)
+    if not md:
+        return ""
+    out: list[str] = []
+    for seg in _LATEX_SAFE_SPAN_RE.split(md):
+        if not seg:
+            continue
+        if _LATEX_SAFE_SPAN_RE.fullmatch(seg):
+            out.append(seg)
+            continue
+        seg = _BIBTEX_BOLD_RE.sub(r"\\textbf{\1}", seg)
+        seg = _BIBTEX_ITALIC_RE.sub(r"\\emph{\1}", seg)
+        out.append(_latex_escape(seg))
+    return "".join(out)
+
+
 def _strip_jats(text: str) -> str:
     """Strip ``<jats:*>`` and ``</jats:*>`` namespace tags from text.
 
@@ -325,6 +382,8 @@ __all__ = [
     "_clean_inline_text",
     "_format_authors",
     "_latex_escape",
+    "_latex_escape_math",
     "_render_citation",
     "_strip_jats",
+    "bibtex_title",
 ]

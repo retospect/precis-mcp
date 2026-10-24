@@ -34,6 +34,8 @@ import re
 from typing import Any
 
 from precis.utils.authors import author_names
+from precis.utils.title_views import title_md, title_md_clip
+from precis_web.paper_ident import PAPER_IDENT_KINDS
 from precis_web.paper_links import (
     arxiv_pdf_url,
     doi_url,
@@ -142,9 +144,17 @@ class ItemPresenter:
         self.kind = kind
 
     def name(self, ref: Any) -> str:
-        return display_title(getattr(ref, "title", None)) or (
-            f"{self.kind} #{getattr(ref, 'id', '?')}"
-        )
+        # gr515227: paper-family titles can carry publisher markup —
+        # the row shows the md view (rendered through ``render_markdown``
+        # in the template, gated on ``title_is_md``). Other kinds' titles
+        # are plain prose; markdown-interpreting them would eat real
+        # ``$``/``*`` characters. The length cap runs on the md string via
+        # ``title_md_clip`` so a cut can't land inside a $…$/**…** span.
+        raw = getattr(ref, "title", None)
+        if self.kind in PAPER_IDENT_KINDS:
+            clipped = title_md_clip(title_md(raw), DISPLAY_TITLE_LIMIT)
+            return clipped or (f"{self.kind} #{getattr(ref, 'id', '?')}")
+        return display_title(raw) or (f"{self.kind} #{getattr(ref, 'id', '?')}")
 
     def open_url(self, ref: Any) -> str:
         return ref_url(self.kind, ref.id, getattr(ref, "slug", None))
@@ -167,8 +177,11 @@ class ItemPresenter:
         surface reads (``ref`` here is the search hit's full batched
         ``refs`` row already; no extra query)."""
         meta = getattr(ref, "meta", None) or {}
+        title = _WS_RE.sub(" ", getattr(ref, "title", None) or "").strip()
+        if self.kind in PAPER_IDENT_KINDS:
+            title = title_md(title)
         return {
-            "title": _WS_RE.sub(" ", getattr(ref, "title", None) or "").strip(),
+            "title": title,
             "journal": (meta.get("journal") or "").strip() or None,
             "authors": author_names(getattr(ref, "authors", None)),
             "year": getattr(ref, "year", None),
@@ -781,6 +794,11 @@ def item_row(
         "id": getattr(ref, "id", None),
         "kind": getattr(ref, "kind", ""),
         "title": p.name(ref),
+        # True when ``title``/``title_meta.title`` carry the md view
+        # (paper-family kinds, gr515227) — the template renders them
+        # through ``render_markdown``; other kinds render as text so
+        # their ``$``/``*``/``<sub>`` characters stay literal.
+        "title_is_md": p.kind in PAPER_IDENT_KINDS,
         "open_url": p.open_url(ref),
         "preview": p.preview(block, summary),
         "thumbnail": p.thumbnail(ref),

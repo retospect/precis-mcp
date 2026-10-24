@@ -53,6 +53,7 @@ from precis.utils import handle_registry
 from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
 from precis.utils.table_data import parse_markdown_table
+from precis.utils.title_views import title_plain
 from precis_web.linkify import _highlight_abbrevs, render_markdown
 from precis_web.paper_ident import paper_head, paper_head_from_facts
 
@@ -293,7 +294,9 @@ def _edge_row(
     return {
         "handle": handle,
         "paper_ref_id": edge.paper_ref_id,
-        "title": edge.title,
+        # gr515227: plain view — the row's rendered title is ``head``
+        # (md via paper_head); this field is the text-form fallback.
+        "title": title_plain(edge.title),
         "year": edge.year,
         "head": head,
         "source_handle": edge.source_handle,

@@ -1478,9 +1478,22 @@ def test_bibtex_unescapes_html_entities() -> None:
     # &amp; must collapse to & then LaTeX-escape to \&.
     assert r"\&" in bibtex
     assert "&amp;" not in bibtex
-    # JATS / HTML inline tags strip from the title.
+    # JATS / HTML inline tags don't leak — <sub> renders as LaTeX math.
     assert "<sub>" not in bibtex
-    assert "CO2" in bibtex
+    assert r"CO$_{2}$" in bibtex
+
+
+def test_bibtex_title_keeps_math_and_converts_emphasis() -> None:
+    """gr515227: the BibTeX title is the LaTeX-correct md view — math
+    spans survive verbatim (a non-capturing split once dropped them),
+    md emphasis becomes \\emph, and ``\\$`` stays a literal dollar."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"Pd<sup>II</sup> on CO<sub>2</sub> & <i>in situ</i> study")
+    assert r"$^{\mathrm{II}}$" in out and r"$_{2}$" in out
+    assert r"\&" in out and r"\emph{in situ}" in out
+    # Two literal dollars stay escaped — LaTeX \$ is correct in BibTeX.
+    assert bibtex_title("The $100 and $200 laptops") == (r"The \$100 and \$200 laptops")
 
 
 def _citation_ref(entry_type: str | None) -> Any:

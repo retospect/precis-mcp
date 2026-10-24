@@ -34,10 +34,17 @@
   {# compact header strip — title + canonical handle + sidebar toggle #}
   <div class="flex items-center gap-3 py-2" data-tour="reader-header">
     <a href="{{ doc.list_url }}" class="text-sm text-fg-subtle hover:underline">&larr; {{ doc.list_label }}</a>
-    {# tex-scope: a paper/pres title can carry $…$/$$…$$ TeX (KaTeX render,
-       base.html.j2). The title="" tooltip stays plain text — attributes
-       can't render HTML. #}
-    <h1 class="tex-scope truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
+    {# tex-scope + title_md only for paper-family titles (doc.title_is_md):
+       they can carry publisher markup / $…$ TeX (KaTeX render,
+       base.html.j2). Other kinds' titles are plain prose — markdown-
+       interpreting them would eat real ``<``/``$`` characters ("Why a<b
+       matters" is not a <b> tag), so they render literal. The title=""
+       tooltip stays plain text — attributes can't render HTML. #}
+    {% if doc.title_is_md %}
+    <h1 class="tex-scope truncate text-base font-semibold" title="{{ doc.title | title_plain }}">{{ doc.title | title_md | render_markdown }}</h1>
+    {% else %}
+    <h1 class="truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
+    {% endif %}
     <span class="shrink-0 font-mono text-xs text-fg-faint">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
     {% if doc.faved is defined and doc.faved is not none %}
       {# Per-user heart (gr486409); doc.faved is None when auth is off. #}

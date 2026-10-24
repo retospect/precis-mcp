@@ -1277,6 +1277,22 @@ class TestRaiseJunkTitlePapers:
             self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=True) == []
 
+    def test_non_article_entry_type_is_never_flagged(self, store: Store) -> None:
+        """gr515227: the junk rules are article-title rules — a dissertation
+        / proceedings volume / component whose title looks like junk
+        ("__", a section name, an export filename) keeps its title; no
+        todo is filed. An unset entry_type still files (un-enriched
+        papers are presumed articles)."""
+        dis = self._old(store, slug="diss25", title="__")
+        store.update_ref(dis, meta_patch={"entry_type": "dissertation"})
+        art = self._old(store, slug="art25", title="__")
+        no_type = self._old(store, slug="notype25", title="__")
+        for rid in (dis, art, no_type):
+            self._stamp(store, rid)
+        store.update_ref(art, meta_patch={"entry_type": "journal-article"})
+        assert raise_junk_title_papers(store, dry_run=True) == [art, no_type]
+        assert self._todos(store, dis) == []
+
 
 # ── partial bodies: references / SI only (gr464259) ──────────────
 
@@ -1590,7 +1606,10 @@ class TestRepairJunkTitlePapers:
 
         return {"crossref_fn": refuse, "openalex_fn": refuse, "s2_fn": refuse}
 
-    def test_markup_title_repaired_in_place(self, store: Store) -> None:
+    def test_markup_title_is_not_junk(self, store: Store) -> None:
+        """gr515227: markup stays in the stored title — its plain view is
+        a real title, so neither the repair cascade nor the raise leg
+        touches the paper."""
         from precis.ingest.paper_hygiene import repair_junk_title_papers
 
         rid = self._old(
@@ -1601,18 +1620,12 @@ class TestRepairJunkTitlePapers:
             "<mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:math>"
             "-bonded materials",
         )
-        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
-        assert [(o.ref_id, o.action) for o in out] == [(rid, "markup")]
+        assert repair_junk_title_papers(store, dry_run=False, **self._no_net()) == []
         ref = store.fetch_refs_by_ids([rid])[rid]
-        assert (
-            ref.title
-            == "Stone-Wales defects in graphene and other planar sp2-bonded materials"
-        )
-        assert ref.meta.get("title_raw", "").startswith("Stone-Wales defects")
-        # Repaired → no longer junk → the raise leg would file nothing.
+        assert "<mml:math>" in ref.title  # stored raw, untouched
         assert raise_junk_title_papers(store, dry_run=True) == []
 
-    def test_markup_repair_closes_open_todo(self, store: Store) -> None:
+    def test_repair_closes_open_todo(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import (
             TITLE_FIX_SOURCE,
             repair_junk_title_papers,
@@ -1621,8 +1634,8 @@ class TestRepairJunkTitlePapers:
         rid = self._old(
             store,
             slug="ravel05",
-            title="<i>ATHENA</i>,<i>ARTEMIS</i>,<i>HEPHAESTUS</i>: "
-            "spectroscopy using<i>IFEFFIT</i>",
+            title="Microsoft Word - whatever.doc",
+            doi="10.1234/real.1",
         )
         # Filed directly: since gr508499 the raise leg only files on
         # cascade-stamped papers, and a stamped paper is excluded from
@@ -1636,8 +1649,16 @@ class TestRepairJunkTitlePapers:
                 conn=conn,
             )
         (todo,) = self._todos(store, rid)
-        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
-        assert [o.action for o in out] == ["markup"]
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_fake_crossref(
+                {"title": "The Real Registry Title", "doi": "10.1234/real.1"}
+            ),
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=self._no_net()["s2_fn"],
+        )
+        assert [o.action for o in out] == ["crossref"]
         assert self._todo_status(store, todo[0]) == "done"
 
     def test_real_titles_untouched(self, store: Store) -> None:
@@ -1743,12 +1764,22 @@ class TestRepairJunkTitlePapers:
         rid = self._old(
             store,
             slug="drymk",
-            title="Planar<mml:math><mml:mrow><mml:mi>x</mml:mi></mml:mrow>"
-            "</mml:math>-bonded carbon materials",
+            title="Microsoft Word - whatever.doc",
+            doi="10.1234/real.1",
         )
-        out = repair_junk_title_papers(store, dry_run=True, **self._no_net())
-        assert [o.action for o in out] == ["markup"]
-        assert "<mml:math>" in store.fetch_refs_by_ids([rid])[rid].title
+        out = repair_junk_title_papers(
+            store,
+            dry_run=True,
+            crossref_fn=_fake_crossref(
+                {"title": "The Real Registry Title", "doi": "10.1234/real.1"}
+            ),
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=self._no_net()["s2_fn"],
+        )
+        assert [o.action for o in out] == ["crossref"]
+        assert (
+            store.fetch_refs_by_ids([rid])[rid].title == "Microsoft Word - whatever.doc"
+        )
 
     def test_one_todo_per_paper_not_per_cite_key(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import _TITLE_REPAIR_VERSION

@@ -443,14 +443,18 @@
       <div class="min-w-0 flex-1 relative">
         {% set tm = row.title_meta %}
         <span class="relative inline-block" @mouseenter="titleHover=true" @mouseleave="titleHover=false">
-          <a href="{{ row.open_url }}" data-row-open class="text-info-strong hover:underline text-sm">{{ row.title }}</a>
+          {# title_is_md (gr515227): pipeline-kind titles carry the md
+             view → render_markdown (+ tex-scope for KaTeX); other kinds
+             stay literal text so their $/*/<sub> chars don't become
+             markup. #}
+          <a href="{{ row.open_url }}" data-row-open class="tex-scope text-info-strong hover:underline text-sm">{% if row.title_is_md %}{{ row.title | render_markdown }}{% else %}{{ row.title }}{% endif %}</a>
           {{ vm.verified_mark(tm.reviewed_at, tm.reviewed_by) if tm }}
           {# Title/metadata popover — full (uncapped) title + journal/authors/year,
              only worth a floating box when it says more than the capped row title. #}
           {% if tm and (tm.title != row.title or tm.journal or tm.authors or tm.year) %}
           <div x-show="titleHover" x-cloak
                class="absolute left-0 top-full mt-1 z-20 w-80 max-w-[90vw] rounded-md border border-line bg-surface p-3 text-xs text-fg-muted shadow-lg">
-            <p class="font-medium text-fg">{{ tm.title }}</p>
+            <p class="tex-scope font-medium text-fg">{% if row.title_is_md %}{{ tm.title | render_markdown }}{% else %}{{ tm.title }}{% endif %}</p>
             {% if tm.journal %}<p class="italic mt-0.5">{{ tm.journal }}</p>{% endif %}
             {% if tm.authors %}<p class="mt-0.5">{{ tm.authors | join(', ') }}</p>{% endif %}
             {% if tm.year %}<p class="mt-0.5">{{ tm.year }}</p>{% endif %}

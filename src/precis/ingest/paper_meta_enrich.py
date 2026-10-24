@@ -88,7 +88,6 @@ is the acceptable cost.
 
 from __future__ import annotations
 
-import html
 import logging
 import re
 from collections.abc import Callable
@@ -112,6 +111,7 @@ from precis.ingest.provenance import (
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, normalize_authors
 from precis.utils.rate_limit import RateLimited
+from precis.utils.title_views import title_plain
 
 log = logging.getLogger(__name__)
 
@@ -148,12 +148,12 @@ class EnrichOutcome:
 #: Shortest all-caps title the recase repair considers (gr353794); below
 #: this a title is more likely an acronym or formula than a shouted heading.
 _ALLCAPS_MIN_LEN = 25
-_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _clean_title(title: str) -> str:
-    """Unescape HTML entities (``&amp;``, ``&lt;i&gt;``) and strip inline tags."""
-    return " ".join(_TAG_RE.sub("", html.unescape(title)).split())
+    """The plain title view (gr515227): markup stripped, entities decoded,
+    math unwrapped — comparison-only, never stored."""
+    return title_plain(title)
 
 
 def _title_key(title: str) -> str:
@@ -177,7 +177,9 @@ def registry_recase(local: str | None, registry: str | None) -> str | None:
         True
     """
     local = (local or "").strip()
-    registry = _clean_title(registry or "")
+    # gr515227: the returned value is stored — keep the registry string
+    # raw (markup and all); only the *comparison* normalises.
+    registry = (registry or "").strip()
     if not local or not registry or len(local) <= _ALLCAPS_MIN_LEN:
         return None
     if local != local.upper() or registry == registry.upper():

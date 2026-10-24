@@ -301,6 +301,15 @@ class TestGarbageTitle:
         ):
             assert is_garbage_title(t) is True, f"missed filename/path: {t!r}"
 
+    def test_slash_acronym_enumerations_are_real_titles(self):
+        # gr515227: the path-separator rule must not fire on slash-joined
+        # acronyms — td502772 was filed for "VR/AR/MR/XR".
+        for t in (
+            "The use of CNNs in VR/AR/MR/XR: a systematic literature review",
+            "Is A/B/C testing enough for recommender systems?",
+        ):
+            assert is_garbage_title(t) is False, f"false positive: {t!r}"
+
     def test_numeric_id_titles(self):
         assert is_garbage_title("1499085535545073489-02682235") is True
         assert is_garbage_title("1498405364646477509-07983874") is True

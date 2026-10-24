@@ -64,6 +64,12 @@ from precis.store._tag_filter import (
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
+from precis.utils.title_views import title_plain_sql
+
+#: gr515227: title FTS / trigram legs read the plain view (markup and
+#: LaTeX noise stripped) — titles are stored raw, so the normalisation
+#: happens at query time.
+_TITLE_PLAIN_SQL = title_plain_sql("r.title")
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -797,12 +803,14 @@ class RefsMixin:
 
                 cands = c.execute(
                     "SELECT r.ref_id, r.title, r.year, r.authors, "
-                    "       similarity(r.title, %s) FROM refs r "
+                    "       similarity(" + _TITLE_PLAIN_SQL + ", %s) FROM refs r "
                     "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                     "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
-                    "  AND similarity(r.title, %s) >= 0.85 "
+                    "  AND similarity(" + _TITLE_PLAIN_SQL + ", %s) >= 0.85 "
                     f"  AND {has_body_sql('r')} "
-                    "ORDER BY similarity(r.title, %s) DESC, r.ref_id ASC LIMIT 5",
+                    "ORDER BY similarity("
+                    + _TITLE_PLAIN_SQL
+                    + ", %s) DESC, r.ref_id ASC LIMIT 5",
                     (title, title, title),
                 ).fetchall()
                 # A bare title match is a weak signal (gr264748): fold only
@@ -3337,7 +3345,9 @@ class RefsMixin:
             params.append(list(exclude_ref_ids))
         sql = (
             "SELECT t.ref_id, t.sim FROM ("
-            "  SELECT r.ref_id AS ref_id, similarity(r.title, %s) AS sim"
+            "  SELECT r.ref_id AS ref_id, similarity("
+            + _TITLE_PLAIN_SQL
+            + ", %s) AS sim"
             "    FROM refs r"
             "   WHERE " + " AND ".join(clauses) + ""
             ") t WHERE t.sim >= %s ORDER BY t.sim DESC, t.ref_id ASC LIMIT %s"
@@ -3361,7 +3371,8 @@ class RefsMixin:
         the words: ``pg_trgm similarity(r.title, q) >= 0.3`` (whole raw
         title, immune to FTS stop-word stripping) OR
         ``to_tsvector('english', r.title) @@ websearch_to_tsquery``
-        (partial title). Papers with a body (:func:`has_body_sql` — text
+        (partial title; both legs read the plain view — ``_TITLE_PLAIN_SQL``,
+        gr515227). Papers with a body (:func:`has_body_sql` — text
         an agent can read, not merely a held PDF; gr453860) sort first,
         then by similarity. Returns ``ref_id`` in rank order."""
         clauses = [
@@ -3373,8 +3384,8 @@ class RefsMixin:
             "NOT (r.meta ? 'superseded_by')",
             "r.kind = %s",
             "r.title IS NOT NULL",
-            "(similarity(r.title, %s) >= 0.3 "
-            "OR to_tsvector('english', r.title) @@ qq.qq)",
+            "(similarity(" + _TITLE_PLAIN_SQL + ", %s) >= 0.3 "
+            "OR to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq)",
         ]
         # %s appear in SQL-text order: tsquery (FROM), kind (WHERE),
         # sim-in-WHERE, [exclude], sim-in-ORDER-BY, limit.
@@ -3388,7 +3399,7 @@ class RefsMixin:
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
             f"ORDER BY {has_body_sql('r')} DESC, "
-            "         similarity(r.title, %s) DESC, r.ref_id ASC "
+            "         similarity(" + _TITLE_PLAIN_SQL + ", %s) DESC, r.ref_id ASC "
             "LIMIT %s"
         )
         with self.pool.connection() as conn:
@@ -3480,7 +3491,7 @@ class RefsMixin:
         identical; Phase 3 switches to ``chunks.tsv``)."""
         clauses = [
             "r.retired_at IS NULL",
-            "to_tsvector('english', r.title) @@ qq.qq",
+            "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [q]
         if kind is not None:
@@ -3548,7 +3559,7 @@ class RefsMixin:
         """
         clauses = [
             "r.retired_at IS NULL",
-            "to_tsvector('english', r.title) @@ qq.qq",
+            "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [q]
         if kind is not None:
@@ -3579,7 +3590,9 @@ class RefsMixin:
         params.append(limit)
         sql = (
             f"SELECT {_REFS_COLS_ALIASED}, "
-            "       ts_rank_cd(to_tsvector('english', r.title), qq.qq) AS rank "
+            "       ts_rank_cd(to_tsvector('english', "
+            + _TITLE_PLAIN_SQL
+            + "), qq.qq) AS rank "
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY rank DESC LIMIT %s"
@@ -3833,7 +3846,9 @@ def filtered_ref_clauses(
             )
         else:
             clauses.append(
-                "to_tsvector('english', r.title) @@ websearch_to_tsquery('english', %s)"
+                "to_tsvector('english', "
+                + _TITLE_PLAIN_SQL
+                + ") @@ websearch_to_tsquery('english', %s)"
             )
         params.append(q)
     tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")

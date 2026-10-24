@@ -9,7 +9,17 @@ from __future__ import annotations
 
 import re
 
-from precis_web.linkify import linkify_refs, render_cloze
+from precis_web.linkify import linkify_refs, render_cloze, render_markdown
+
+
+def test_escaped_dollars_render_as_isolated_spans() -> None:
+    """gr515227: ``\\$`` (title_md's literal-dollar marker) renders as its
+    own ``<span>$</span>`` element — KaTeX auto-render pairs ``$…$``
+    delimiters only within a single text node, so two escaped dollars in
+    one title can never collapse into fake math in the browser."""
+    out = str(render_markdown("The \\$100 and \\$200 laptops"))
+    assert out.count("<span>$</span>") == 2
+    assert "$100" not in out and "$200" not in out
 
 
 def test_no_refs_passes_through_unchanged() -> None:

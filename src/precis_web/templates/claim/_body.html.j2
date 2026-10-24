@@ -345,7 +345,7 @@
         {% if u.is_chunk %}{{ ('[' ~ u.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-fg-muted">{{ u.handle }}</span>{% endif %}
       {% endif %}
       <span class="text-[11px] rounded bg-surface-muted text-fg-subtle px-1.5 py-0.5">{{ u.kind }}</span>
-      {% if u.title %}<span class="tex-scope text-fg-secondary">{{ u.title }}</span>{% endif %}
+      {% if u.title %}<span class="tex-scope text-fg-secondary">{% if u.kind in PAPER_IDENT_KINDS %}{{ u.title | title_md | render_markdown }}{% else %}{{ u.title }}{% endif %}</span>{% endif %}
       {% if u.year %}<span class="text-fg-faint">({{ u.year }})</span>{% endif %}
     </li>
     {% endfor %}

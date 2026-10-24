@@ -92,6 +92,21 @@ def _make_jinja_env() -> jinja2.Environment:
     # Bold/code/sub/sup markdown subset WITHOUT ref-linking — for popover
     # quotes (no nested ref anchors). Math ($…$) is left for client KaTeX.
     env.filters["render_markdown"] = render_markdown
+    # Title views (gr515227): stored titles are raw — ``title_md`` gives
+    # the markdown form to feed ``render_markdown`` on display surfaces,
+    # ``title_plain`` the stripped form for plain-text slots (page
+    # <title>, title="" tooltips).
+    from precis.utils.title_views import title_md, title_plain
+
+    env.filters["title_md"] = title_md
+    env.filters["title_plain"] = title_plain
+    # The paper-family kind set (``paper_ident.PAPER_IDENT_KINDS``) — a
+    # template checks ``kind in PAPER_IDENT_KINDS`` before running a stored
+    # title through ``title_md | render_markdown``; other kinds' titles
+    # render literal (their ``<``/``$``/``*`` are text, not markup).
+    from precis_web.paper_ident import PAPER_IDENT_KINDS
+
+    env.globals["PAPER_IDENT_KINDS"] = PAPER_IDENT_KINDS
     # Relative ('5h ago') + absolute (hover tooltip) timestamp rendering,
     # single-sourced in ``precis_web.timefmt`` so every list view formats
     # time the same way. Both tolerate a datetime *or* an ISO string.

@@ -800,21 +800,19 @@ class TestAllCapsTitleRecase:
         assert paper_meta_enrich.registry_recase(local, registry) == expected
 
     def test_markup_registry_title_matches_after_normalisation(self) -> None:
+        """gr515227: the comparison normalises, the return stays raw —
+        the registry string is stored verbatim."""
         reg = "<i>DFT</i> Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
-        assert paper_meta_enrich.registry_recase(_CAPS, reg) == (
-            "DFT Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
-        )
+        assert paper_meta_enrich.registry_recase(_CAPS, reg) == reg
 
-    def test_escaped_registry_title_is_unescaped(self) -> None:
+    def test_escaped_registry_title_returned_raw(self) -> None:
+        """gr515227: entity-escaped markup still *matches* (plain view
+        decodes it) but the stored title keeps the registry's bytes."""
         local = "STRESS, THE HPA AXIS & AYURVEDA: A REVIEW OF ADAPTOGENS"
         reg = "Stress, the HPA Axis &amp; Ayurveda: A Review of Adaptogens"
-        assert paper_meta_enrich.registry_recase(local, reg) == (
-            "Stress, the HPA Axis & Ayurveda: A Review of Adaptogens"
-        )
+        assert paper_meta_enrich.registry_recase(local, reg) == reg
         esc = "&lt;i&gt;DFT&lt;/i&gt; Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
-        assert paper_meta_enrich.registry_recase(_CAPS, esc) == (
-            "DFT Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
-        )
+        assert paper_meta_enrich.registry_recase(_CAPS, esc) == esc
 
     def _run(self, store: Store, *, verified: bool, registry: str) -> Any:
         rid = _paper(store, slug="caps1", title=_CAPS, doi="10.1234/x")

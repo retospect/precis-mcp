@@ -28,7 +28,11 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._paper_format import _clean_inline_text, _latex_escape
+from precis.handlers._paper_format import (
+    _clean_inline_text,
+    _latex_escape,
+    _latex_escape_math,
+)
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     render_slug_ref_list,
@@ -49,6 +53,7 @@ from precis.utils.link_tag_ops import (
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.title_views import title_md, title_plain
 
 
 class PresentationHandler(Handler):
@@ -174,7 +179,7 @@ class PresentationHandler(Handler):
                 or f"{slug}~{block.ord}"
             )
             lines.append(f"\n## {handle}  (score={score:.4f})")
-            lines.append(f"_{ref.title}_")
+            lines.append(f"_{title_md(ref.title)}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
 
@@ -482,7 +487,7 @@ class PresentationHandler(Handler):
         n_blocks = self.store.chunks.count_chunks(ref.id)
         meta = ref.meta or {}
         handle = handle_registry.format_handle("pres", ref.id)
-        lines = [f"# {handle}", f"_{ref.title}_"]
+        lines = [f"# {handle}", f"_{title_md(ref.title)}_"]
         authors = meta.get("authors") or []
         if authors:
             lines.append("by " + ", ".join(str(a) for a in authors))
@@ -518,7 +523,7 @@ class PresentationHandler(Handler):
         if not blocks:
             return Response(body=f"{slug}: no blocks")
         handle = handle_registry.format_handle("pres", ref.id)
-        lines = [f"# {handle} - full", f"_{ref.title}_", ""]
+        lines = [f"# {handle} - full", f"_{title_md(ref.title)}_", ""]
         for b in blocks:
             label = "slide" if b.chunk_kind == "pres_slide" else "block"
             lines.append(f"## {label} ~{b.ord}")
@@ -596,7 +601,10 @@ def _format_pres_citation(ref: Any, *, style: str) -> str:
     """
     meta = ref.meta or {}
     slug = ref.slug or "???"
-    title = _clean_inline_text(ref.title or "")
+    # gr515227: stored titles are raw — BibTeX takes the md view, RIS
+    # the plain view (same split as _render_citation).
+    title_bibtex = title_md(ref.title or "")
+    title = title_plain(ref.title or "")
     authors = [_clean_inline_text(str(a)) for a in (meta.get("authors") or [])]
     authors = [a for a in authors if a]
     venue = _clean_inline_text(str(meta.get("venue") or ""))
@@ -625,7 +633,7 @@ def _format_pres_citation(ref: Any, *, style: str) -> str:
 
     lines = [f"@{entry_type}{{{slug},"]
     if title:
-        lines.append(f"  title = {{{_latex_escape(title)}}},")
+        lines.append(f"  title = {{{_latex_escape_math(title_bibtex)}}},")
     if authors:
         lines.append(
             f"  author = {{{' and '.join(_latex_escape(a) for a in authors)}}},"

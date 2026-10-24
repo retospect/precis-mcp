@@ -174,16 +174,18 @@
             {% elif e.relation == 'establishes' %}bg-success-subtle text-success
             {% else %}bg-surface-muted text-fg-subtle{% endif %}"
             title="{% if e.relation == 'contradicts' %}This source disputes the claim — publication is blocked until the dispute is adjudicated.{% elif e.relation == 'establishes' %}This source's passage directly asserts the claim — its primary grounding.{% elif e.relation == 'corroborates' %}This source's passage independently supports the claim.{% elif e.relation == 'derived-from' %}The claim was derived from this source, grounded through its pinned passage.{% else %}{{ e.relation }}{% endif %}">{{ e.relation }}</span>
+          {# Paper-family titles may carry publisher markup → the md view
+             (title= tooltip stays plain); other kinds stay literal. #}
           {% if e.kind == 'finding' %}
           <a class="truncate hover:underline" data-pane="np-review"
              href="/nanopub/fi{{ e.ref_id }}" data-src="/claim/fi{{ e.ref_id }}"
              title="{{ e.title }}">{{ e.title }}</a>
           {% elif e.kind == 'paper' %}
-          <a class="truncate hover:underline" data-pane="np-paper"
-             href="/papers/{{ e.ref_id }}" title="{{ e.title }}">{{ e.title }}</a>
+          <a class="truncate hover:underline tex-scope" data-pane="np-paper"
+             href="/papers/{{ e.ref_id }}" title="{{ e.title | title_plain }}">{{ e.title | title_md | render_markdown }}</a>
           {% else %}
-          <a class="truncate hover:underline" href="/refs/{{ e.kind }}/{{ e.ref_id }}"
-             title="{{ e.title }}">{{ e.title }}</a>
+          <a class="truncate hover:underline{% if e.kind in PAPER_IDENT_KINDS %} tex-scope{% endif %}" href="/refs/{{ e.kind }}/{{ e.ref_id }}"
+             title="{{ e.title | title_plain if e.kind in PAPER_IDENT_KINDS else e.title }}">{% if e.kind in PAPER_IDENT_KINDS %}{{ e.title | title_md | render_markdown }}{% else %}{{ e.title }}{% endif %}</a>
           {% endif %}
           <span class="text-fg-faint shrink-0">{{ e.kind }}</span>
         </li>

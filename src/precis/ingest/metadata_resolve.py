@@ -87,7 +87,6 @@ from precis.ingest.crossref import lookup_crossref
 from precis.ingest.pdf_sidecar import (
     is_garbage_title,
     is_pii,
-    render_leaked_markup,
 )
 from precis.ingest.semantic_scholar import S2RateLimited, lookup_s2
 from precis.ingest.verify_metadata import content_tokens, title_overlap
@@ -95,6 +94,7 @@ from precis.liveness import drain_sleep
 from precis.store import Store, Tag
 from precis.utils.authors import to_name_dicts
 from precis.utils.rate_limit import RateLimited
+from precis.utils.title_views import title_plain
 
 log = logging.getLogger(__name__)
 
@@ -441,7 +441,9 @@ def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
 
 def _similarity(store: Store, a: str, b: str) -> float:
     with store.pool.connection() as conn:
-        row = conn.execute("SELECT similarity(%s, %s)", (a, b)).fetchone()
+        row = conn.execute(
+            "SELECT similarity(%s, %s)", (title_plain(a), title_plain(b))
+        ).fetchone()
     return float(row[0]) if row and row[0] is not None else 0.0
 
 
@@ -604,10 +606,9 @@ def _resolve_by_doi(
     Extracted from :func:`_resolve_one` so the junk-title repair pass
     (:func:`precis.ingest.paper_hygiene.repair_junk_title_papers`, gr500372)
     can drive the same DOI track — guards included — for refs outside the
-    needs-triage cohort. A resolved title is run through
-    :func:`~precis.ingest.pdf_sidecar.render_leaked_markup` before judging:
-    Crossref ships MathML/sub/sup markup verbatim, and the raw tag soup is
-    what got these refs flagged junk in the first place.
+    needs-triage cohort. A resolved title is stored raw (gr515227):
+    Crossref ships MathML/sub/sup markup verbatim, and the raw string is
+    the source of truth — the plain view is what the junk check reads.
     """
     rid = ref.id
     if _BOOK_DOI_RE.search(stored_doi):
@@ -619,7 +620,6 @@ def _resolve_by_doi(
         return Resolution(rid, "miss", "doi", "crossref-miss")
     res = _from_meta(rid, meta, track="doi")
     res.doi = res.doi or stored_doi
-    res.title = render_leaked_markup(res.title)
     if not res.title or is_garbage_title(res.title):
         res.verdict, res.reason = "discard", "resolved-title-junk"
         return res
@@ -666,7 +666,6 @@ def _resolve_by_title(
         if cand is None or not (cand.get("doi") or cand.get("arxiv_id")):
             continue
         res = _from_meta(rid, cand, track="title")
-        res.title = render_leaked_markup(res.title)
         if not res.title or is_garbage_title(res.title):
             continue
         sim = _similarity(store, qtitle, res.title)
@@ -812,7 +811,7 @@ def apply_resolution(
         rewrite_cards(
             conn,
             res.ref_id,
-            title=res.title,
+            title=title_plain(res.title),
             author_names=author_names,
             abstract=res.abstract,
             keywords=[],

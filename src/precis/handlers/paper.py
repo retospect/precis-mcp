@@ -89,6 +89,7 @@ from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.title_merge import title_merge_refusal
+from precis.utils.title_views import title_md, title_plain
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
 
@@ -1011,7 +1012,7 @@ class PaperHandler(Handler):
             existing = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
             if existing is not None:
                 held = getattr(existing, "pdf_sha256", None) is not None
-                title = (existing.title or "").split("\n", 1)[0].strip()
+                title = title_md((existing.title or "").split("\n", 1)[0].strip())
                 where = "held" if held else "stub (awaiting fetch)"
                 line = f"\n→ {where}: {_pa(existing)}"
                 if title and title.lower() != "paper":
@@ -1361,7 +1362,7 @@ class PaperHandler(Handler):
         """The compact per-ref block for ``get(id=[...])``: handle +
         title line, then byline/venue and the block count."""
         meta = ref.meta or {}
-        title = _clean_inline_text(ref.title or "").split("\n", 1)[0].strip()
+        title = title_md((ref.title or "").split("\n", 1)[0].strip())
         head = f"{_pa(ref)}  {title}".rstrip()
         sub: list[str] = []
         authors = _format_authors(ref.authors)
@@ -3425,7 +3426,7 @@ class PaperHandler(Handler):
         if banner:
             lines.append(banner)
             lines.append("")
-        lines.extend([f"# {_pa(ref)}", f"_{_clean_inline_text(ref.title)}_"])
+        lines.extend([f"# {_pa(ref)}", f"_{title_md(ref.title)}_"])
         if authors:
             lines.append(authors)
         venue: list[str] = []
@@ -3547,7 +3548,7 @@ class PaperHandler(Handler):
             # Next:.)
             cleaned = _clean_inline_text(_strip_jats(str(abstract)))
             slug = ref.slug or "???"
-            title = _clean_inline_text(ref.title)
+            title = title_md(ref.title)
             body = f"# {slug} - abstract\n_{title}_\n\n{cleaned}"
             abstract_next = [
                 (
@@ -3905,7 +3906,7 @@ class PaperHandler(Handler):
             verified = ""
             if row.get("verified_at"):
                 verified = f"✓ verified {row['verified_at'].date().isoformat()}"
-            links = author_links(row, doi=doi, title=ref.title)
+            links = author_links(row, doi=doi, title=title_plain(ref.title))
             node = ""
             if row.get("person_ref_id") is not None:
                 node = handle_registry.format_handle("orcid", row["person_ref_id"])
@@ -3936,7 +3937,7 @@ class PaperHandler(Handler):
             ],
         )
         body = f"{head}\n\n{table}"
-        scholar = paper_scholar_link(doi, ref.title)
+        scholar = paper_scholar_link(doi, title_plain(ref.title))
         if scholar:
             body += f"\n\nPaper-level Scholar lookup: {scholar}"
         body += render_next_section(
@@ -4393,7 +4394,7 @@ class PaperHandler(Handler):
             # ``Cu/ZnO<sub>x</sub>`` lands in the list verbatim and
             # any LLM reading it copies the markup back into prose.
             # (MCP critic MINOR — list view leaks raw HTML/JATS.)
-            preview = _excerpt(_clean_inline_text(r.title), limit=80)
+            preview = _excerpt(title_md(r.title), limit=80)
             yr = f"  ({year})" if year else ""
             lines.append(f"  {_pa(r):<30}{yr}  {preview}")
         body = "\n".join(lines)
@@ -4486,7 +4487,7 @@ class PaperHandler(Handler):
         ]
         for r in refs:
             year = (r.meta or {}).get("year") or ""
-            preview = _excerpt(_clean_inline_text(r.title), limit=80)
+            preview = _excerpt(title_md(r.title), limit=80)
             if date_key:
                 day = (r.meta or {}).get(date_key)
                 when = f"  {date_key} {day}" if day else f"  (no {date_key})"

@@ -34,7 +34,7 @@
     {%- if kind == 'finding' -%}
     <a class="text-success-strong hover:underline" href="/claim/fi{{ ref_id }}">{{ title or ('fi' ~ ref_id) }}</a>
     {%- elif kind == 'paper' -%}
-    <a class="text-success-strong hover:underline" href="/papers/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
+    <a class="text-success-strong hover:underline tex-scope" href="/papers/{{ ref_id }}">{% if title %}{{ title | title_md | render_markdown }}{% else %}{{ 'ref ' ~ ref_id }}{% endif %}</a>
     {%- else -%}
     <a class="text-success-strong hover:underline" href="/refs/{{ kind }}/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
     {%- endif -%}
@@ -449,8 +449,8 @@
       background pass), or your own sign-off on the row below, with a note saying why it is ok.</p>
     {% for w in np.withheld %}
     <div class="rounded border border-warning bg-surface/70 p-2 space-y-1.5">
-      <p class="text-xs" title="{{ w.paper_title }}">
-        {{ w.relation }} ← {{ w.paper_title }} {{ vm.verified_mark(w.reviewed_at, w.reviewed_by) }}
+      <p class="text-xs tex-scope" title="{{ w.paper_title | title_plain }}">
+        {{ w.relation }} ← {{ w.paper_title | title_md | render_markdown }} {{ vm.verified_mark(w.reviewed_at, w.reviewed_by) }}
         {% if w.chunk_handle %}<span class="font-mono text-fg-faint">{{ w.chunk_handle }}</span>{% endif %}
       </p>
       <p class="text-[11px] text-warning-strong">Why withheld:

@@ -10,6 +10,7 @@ from rapidfuzz import fuzz
 from precis.ingest.literature import surname_from_name
 from precis.ingest.pdf_sidecar import doi_in_related_context
 from precis.utils.title_merge import _STOPWORDS, content_tokens
+from precis.utils.title_views import title_plain
 
 # Unicode dashes / hyphens that should all be treated as ASCII hyphen-minus
 _DASH_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]")
@@ -89,14 +90,14 @@ _DOI_PREFIX_TOKENS = (
 def _normalize(text: str) -> str:
     """Normalize text for fuzzy comparison.
 
-    - Strip HTML tags (e.g. ``<sub>`` from S2/CrossRef titles)
+    - Strip markup (``<sub>`` tags, ``$…$`` math) via ``title_plain``
     - NFKC unicode normalization (folds ligatures, sub/superscripts)
     - Fold Greek letters to Latin equivalents (κ→k, β→b, etc.)
     - Fold all dash/hyphen variants to ASCII hyphen-minus
     - Rejoin chemical formulas split across whitespace (``CO 2`` → ``CO2``)
     - Collapse whitespace, lowercase
     """
-    text = _HTML_TAG_RE.sub("", text)
+    text = title_plain(text)
     text = unicodedata.normalize("NFKC", text)
     text = text.translate(_GREEK_FOLD)
     text = _DASH_RE.sub("-", text)

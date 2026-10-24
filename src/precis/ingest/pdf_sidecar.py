@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from precis.utils.title_views import title_plain
+
 log = logging.getLogger(__name__)
 
 DOI_REGEX = re.compile(r"10\.\d{4,}/[^\s<\"}\)]+")
@@ -312,7 +314,10 @@ _GARBAGE_TITLE_RES = [
     # path). Examples: "C:/Users/Dimitris/.../MY TALKS/...",
     # "/home/journal/dvi/APA869-final.dvi", "NAR.30_4.book(gkf189.fm)".
     re.compile(r"^[A-Za-z]:[\\/]"),  # Windows drive path
-    re.compile(r"[\\/][^\s\\/]+[\\/][^\s\\/]+[\\/]"),  # ≥2 path separators, no spaces
+    # ≥3 slash-terminated segments of ≥3 chars each — a filesystem path.
+    # Acronym enumerations ("VR/AR/MR/XR", "A/B/C testing") use 1-2-char
+    # segments and are real titles, not leaks (gr515227: td502772).
+    re.compile(r"(?:[^\s\\/]{3,}[\\/]){3,}"),
     re.compile(r"\.book\(", re.IGNORECASE),  # InDesign/Quark .book(...) source ref
     # Pure numeric / tracking-ID strings (manuscript IDs, S2 corpus ids).
     # Examples: "1499085535545073489-02682235". A real title always has
@@ -321,8 +326,6 @@ _GARBAGE_TITLE_RES = [
     # APS/AIP revtex template boilerplate that leaked into dc:title.
     # Example: "USING STANDARD PRB S"
     re.compile(r"^\s*USING\s+STANDARD\b", re.IGNORECASE),
-    # Raw LaTeX source leakage.
-    re.compile(r"\\(?:documentclass|usepackage|begin\{|end\{)"),
     # Authoring-tool default / placeholder titles. These are baked into the
     # PDF /Title by the *generator*, not the author, so they describe the
     # toolchain, never the paper:
@@ -364,8 +367,14 @@ _GARBAGE_TITLE_RES = [
 ]
 
 
+#: Raw LaTeX source leakage — matched on the raw string, not the plain
+#: view: ``title_plain`` blanks ``\cmd`` words, so the pattern can never
+#: fire there.
+_LATEX_LEAK_RE = re.compile(r"\\(?:documentclass|usepackage|begin\{|end\{)")
+
+
 def is_garbage_title(text: str) -> bool:
-    """Return True if *text* is a known-bad PDF embedded title pattern.
+    r"""Return True if *text* is a known-bad PDF embedded title pattern.
 
     Distinct from :func:`is_pii`, which detects Elsevier PII identifiers.
     Real paper titles never match these patterns; embedded ``dc:title``
@@ -373,10 +382,21 @@ def is_garbage_title(text: str) -> bool:
 
     Used to gate S2 title-based fallback lookups so they don't poison
     results with random plausible-but-wrong papers.
+
+    Judged on the plain view (gr515227): a real title carrying
+    ``<sub>``/``<sup>`` markup must not trip the path-separator rule on
+    the closing tags' ``/`` characters. The LaTeX-source-leak rule
+    (``\documentclass`` & friends) runs on the raw string because the
+    plain view blanks ``\cmd`` words.
     """
     if not text or not text.strip():
         return True
-    return any(p.search(text) for p in _GARBAGE_TITLE_RES)
+    if _LATEX_LEAK_RE.search(text):
+        return True
+    plain = title_plain(text)
+    if not plain:
+        return True
+    return any(p.search(plain) for p in _GARBAGE_TITLE_RES)
 
 
 # ---------------------------------------------------------------------------

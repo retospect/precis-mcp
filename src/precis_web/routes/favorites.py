@@ -43,6 +43,7 @@ from precis.store._favorites_ops import FavoriteRow
 from precis.users import WebUser
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
+from precis_web.paper_ident import PAPER_IDENT_KINDS
 from precis_web.ref_urls import ref_url
 from precis_web.routes.flags import _safe_local_redirect
 
@@ -95,6 +96,9 @@ def _row(r: FavoriteRow) -> dict[str, Any]:
         # otherwise render the literal "None" — degrade to the handle,
         # then the ``kind:id`` address.
         "title": r.title or r.handle or f"{r.kind}:{r.ref_id}",
+        # gr515227: paper-family titles carry markup → the row renders
+        # the md view; other kinds' titles stay literal text.
+        "title_is_md": r.kind in PAPER_IDENT_KINDS,
         "handle": r.handle or "",
         "slug": r.slug or "",
         "updated_at": r.ref_updated_at,

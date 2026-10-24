@@ -74,7 +74,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
-from precis_web.paper_ident import paper_abstract
+from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
 from precis_web.ref_urls import ref_url
 from precis_web.routes.favorites import faved
@@ -631,6 +631,10 @@ def _render_detail(
             # dead one.
             "faved": faved(request, ref_id),
             "title": paper["title"],
+            # gr515227: only paper-family stored titles carry publisher
+            # markup → the reader h1 runs them through title_md; pres /
+            # datasheet titles are plain prose and render literal.
+            "title_is_md": ref.kind in PAPER_IDENT_KINDS,
             "handle": format_handle(ref.kind, ref_id),
             "slug": cite_key,
             # Straight into Drive scoped to papers (skips the retired

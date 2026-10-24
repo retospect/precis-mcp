@@ -148,6 +148,7 @@ from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
 from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.table_data import Scalar
 from precis.utils.text import slugify
+from precis.utils.title_views import title_plain
 from precis_web import draft_eyes
 from precis_web.auth import current_user
 from precis_web.deps import (
@@ -1153,7 +1154,9 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
     return {
         "ref_id": paper.ref_id,
         "slug": paper.slug,
-        "title": paper.title,
+        # gr515227: rendered via Alpine x-text / :title — plain view, so
+        # a markup-carrying paper title shows words, not raw <sub>/<sup>.
+        "title": title_plain(paper.title),
         "status": paper.status,
         "label": paper.label,
         "blocks": paper.blocks,

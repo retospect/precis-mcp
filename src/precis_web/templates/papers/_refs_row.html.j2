@@ -25,14 +25,14 @@
     {% if row.marker %}<span class="w-8 shrink-0 text-right text-fg-faint">[{{ row.marker }}]</span>
     {% elif row.n %}<span class="w-5 shrink-0 text-right text-fg-faint">{{ row.n }}.</span>{% endif %}
     {% if row.held %}
-    <a href="{{ row.url }}" class="font-medium text-info-strong hover:underline">{{ row.title }}</a>
+    <a href="{{ row.url }}" class="tex-scope font-medium text-info-strong hover:underline">{{ row.title | title_md | render_markdown }}</a>
     {{ vm.verified_mark(row.reviewed_at, row.reviewed_by) }}
     {% if row.year %}<span class="text-fg-faint">({{ row.year }})</span>{% endif %}
     <span class="rounded bg-success-subtle px-1 text-[10px] text-success-strong" title="held in this corpus">held</span>
     {% elif row.raw_text %}
     <span class="font-medium text-fg">{{ row.raw_text }}</span>
     {% else %}
-    <span class="font-medium text-fg">{{ row.title }}</span>
+    <span class="tex-scope font-medium text-fg">{{ row.title | title_md | render_markdown }}</span>
     {% if row.year %}<span class="text-fg-faint">({{ row.year }})</span>{% endif %}
     {% endif %}
   </div>

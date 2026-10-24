@@ -246,7 +246,13 @@
       <ul class="mt-0.5 space-y-0.5">
         {% for r in g.rows %}
         <li class="truncate">
+          {# Paper-family titles may carry publisher markup → the md view;
+             other kinds keep their literal title (escaped). #}
+          {% if g.kind in PAPER_IDENT_KINDS %}
+          <a class="tex-scope text-info-strong hover:underline" href="{{ r.url }}" title="{{ r.title | title_plain }}">{{ r.title | title_md | render_markdown }}</a>
+          {% else %}
           <a class="text-info-strong hover:underline" href="{{ r.url }}" title="{{ r.title }}">{{ r.title }}</a>
+          {% endif %}
           <span class="font-mono text-[10px] text-fg-faint">{{ r.handle }}</span>{% if r.edges > 1 %}<span class="text-[10px] text-fg-faint"> ×{{ r.edges }}</span>{% endif %}
         </li>
         {% endfor %}

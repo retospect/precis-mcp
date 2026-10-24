@@ -34,6 +34,7 @@ from precis.errors import NotFound
 from precis.utils.handle_registry import format_handle
 from precis_web.corpus import resolve_pdf_for_ref
 from precis_web.deps import await_dispatch, get_store, get_web_config, templates
+from precis_web.paper_ident import PAPER_IDENT_KINDS
 
 router = APIRouter(prefix="/pres", tags=["pres"])
 
@@ -97,6 +98,9 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
     doc = {
         "id": ref.id,
         "title": ref.title,
+        # gr515227: a pres title is plain prose, never publisher markup —
+        # the reader h1 renders it literal (no title_md pass).
+        "title_is_md": ref.kind in PAPER_IDENT_KINDS,
         "handle": format_handle("pres", ref.id),
         "slug": ref.slug or slug,
         "list_url": "/drive",

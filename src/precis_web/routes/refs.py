@@ -43,12 +43,14 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.handlers._paper_format import bibtex_title
 from precis.handlers.structure import format_calc_identity
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
+from precis.utils.title_views import title_md, title_plain
 from precis.workers.job_types.deferred_llm_call import (
     SURFACE_FOLLOWUP,
     deferral_params,
@@ -2448,22 +2450,46 @@ def _expand_handle(
             "handle": raw_handle,
             "url": url,
             "title": "(not found)",
+            "title_plain": "(not found)",
+            "title_md": "(not found)",
+            "title_bibtex": "",
             "preview": "",
             "status": "missing",
             "kind": kind,
         }
     if getattr(ref, "retired_at", None) is not None:
+        # gr515227: the deleted row's title shows in plain-text slots
+        # (the struck-through label, the copy payloads) — plain view.
+        del_title = (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:120]
         return {
             "handle": raw_handle,
             "url": url,
-            "title": (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][
-                :120
-            ],
+            "title": title_plain(del_title) if kind in PAPER_IDENT_KINDS else del_title,
+            "title_plain": title_plain(del_title)
+            if kind in PAPER_IDENT_KINDS
+            else del_title,
+            "title_md": title_md(del_title) if kind in PAPER_IDENT_KINDS else del_title,
+            "title_bibtex": bibtex_title(del_title)
+            if kind in PAPER_IDENT_KINDS
+            else del_title,
             "preview": "(deleted)",
             "status": "deleted",
             "kind": kind,
         }
-    title = (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:160]
+    # gr515227: stored titles are raw. A paper-family title gets all three
+    # views in the row JSON — ``title``/``title_plain`` are the plain view
+    # (missing/deleted rows, the data-ref-line copy string, "Copy as plain
+    # text"), ``title_md`` the markdown view ("Copy as markdown"), and
+    # ``title_bibtex`` the LaTeX-correct form (md math stays, *x*→\emph{x},
+    # text-mode specials escaped) for the BibTeX export.
+    raw_title = (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:160]
+    if kind in PAPER_IDENT_KINDS:
+        title = title_plain(raw_title)
+        title_md_v = title_md(raw_title)
+        title_bx = bibtex_title(raw_title)
+    else:
+        title = title_md_v = raw_title
+        title_bx = ""
     preview = ""
     # For chunk-addressed handles, fetch the actual chunk text.
     if chunk and chunk.startswith("~") and chunk[1:].isdigit():
@@ -2536,6 +2562,9 @@ def _expand_handle(
         "handle": raw_handle,
         "url": url,
         "title": title,
+        "title_plain": title,
+        "title_md": title_md_v,
+        "title_bibtex": title_bx,
         "preview": preview,
         "status": status,
         "kind": kind,

@@ -43,11 +43,11 @@ _ALLOWED = {
 _ALLOWED_UNRESOLVED: dict[tuple[str, int], str] = {
     ("precis/diagram/handler.py", 296): "lang.kind — a diagram language's own ref kind",
     ("precis/handlers/_finding_acquire.py", 249): "kind param — finding mint",
-    ("precis/handlers/_numeric_ref.py", 2692): (
+    ("precis/handlers/_numeric_ref.py", 2805): (
         "self.kind on the generic numeric base — JobHandler stamps "
         "origin in its own put(), not here"
     ),
-    ("precis/store/_cache_ops.py", 445): "kind param — cached-copy writes",
+    ("precis/store/_cache_ops.py", 450): "kind param — cached-copy writes",
     ("precis/store/_draft_ops.py", 2076): "kind param — draft ops",
     ("precis/store/_value_entity_ops.py", 33): "kind param — value-entity kinds",
 }

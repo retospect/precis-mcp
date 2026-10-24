@@ -16,6 +16,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from precis.utils.title_views import title_plain
+
 #: Weight of a formula/material token relative to an ordinary word (1.0).
 FORMULA_WEIGHT = 4.0
 #: A title formula absent from the body caps the review-ranking score here.
@@ -169,7 +171,7 @@ def is_placeholder_title(title: str) -> bool:
     These are a retitling problem, not a title/body swap, so the sweep lists
     them separately and keeps them out of the mismatch ranking.
     """
-    t = unicodedata.normalize("NFKC", title or "").strip()
+    t = unicodedata.normalize("NFKC", title_plain(title or "")).strip()
     return len(t.split()) <= 2 or _PLACEHOLDER_RE.search(t) is not None
 
 
@@ -183,7 +185,7 @@ def _stem(w: str) -> str:
 
 def title_terms(title: str) -> dict[str, float]:
     """Distinctive title terms -> weight (formulas and acronyms weigh more)."""
-    title = unicodedata.normalize("NFKC", title)
+    title = unicodedata.normalize("NFKC", title_plain(title))
     out: dict[str, float] = {}
     for tok in _WORD_RE.findall(title):
         if _FORMULA_RE.match(tok):

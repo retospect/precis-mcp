@@ -710,7 +710,11 @@ _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 #: alone). Applied AFTER bold, so a consumed ``**…**`` never reaches it.
 _MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
 #: ``$$…$$`` (display) before ``$…$`` (inline) — stashed verbatim for KaTeX.
-_MD_MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.DOTALL)
+#: ``(?<!\\)`` guards: an escaped ``\$`` (``title_md``'s literal-dollar
+#: marker, gr515227) is a currency sign, not a math delimiter — without
+#: the lookbehind ``The \$100 and \$200 laptops`` would stash ``$100 and
+#: \$`` as a formula.
+_MD_MATH = re.compile(r"(?<!\\)\$\$.+?(?<!\\)\$\$|(?<!\\)\$[^$]+?(?<!\\)\$", re.DOTALL)
 #: Empty-base chemistry math (``C$_{60}$`` / ``UO$_2^{2+}$``): the author put
 #: the base outside the ``$…$``, which KaTeX renders as a floating subscript
 #: with an empty base. Pull the preceding token in (``C$_{60}$`` → ``$C_{60}$``)
@@ -747,6 +751,14 @@ def _md_inline(escaped: str) -> str:
     # Carve out verbatim spans first — math ($…$, kept for KaTeX) then code.
     s = _MD_MATH.sub(lambda m: _hide("math", m.group(0)), escaped)
     s = _MD_CODE.sub(lambda m: _hide("code", m.group(1)), s)
+
+    # An escaped dollar (\$) displays as a plain $ — wrapped in its own
+    # element so client-side KaTeX can't pair two of them into fake math:
+    # auto-render matches delimiters within a single text node, and each
+    # <span> is a separate node ("The $100 and $200 laptops" stays prose).
+    # Math/code interiors are stashed sentinels here, so the replace can't
+    # touch them.
+    s = s.replace("\\$", "<span>$</span>")
 
     # Bold before italic so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"<strong>\1</strong>", s)

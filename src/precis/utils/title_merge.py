@@ -12,6 +12,8 @@ import re
 import unicodedata
 from typing import Any
 
+from precis.utils.title_views import title_plain
+
 # Common English stopwords — excluded from word-overlap scoring so it
 # focuses on distinctive content words.
 _STOPWORDS = frozenset(
@@ -76,7 +78,9 @@ def content_tokens(text: str) -> frozenset[str]:
     substring).
     """
     return frozenset(
-        w for w in re.findall(r"[a-z0-9]{4,}", text.lower()) if w not in _STOPWORDS
+        w
+        for w in re.findall(r"[a-z0-9]{4,}", title_plain(text).lower())
+        if w not in _STOPWORDS
     )
 
 

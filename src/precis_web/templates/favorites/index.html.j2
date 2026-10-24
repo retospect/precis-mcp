@@ -25,10 +25,12 @@
          generic detail route's tombstone view (undelete affordance),
          not the native reader or /graph, which would 404 on a miss. #}
       <a href="{{ r.reader_url }}" class="min-w-0 flex-1 truncate text-sm text-fg-faint line-through hover:underline"
-         title="deleted — opens the tombstone page">{{ r.title }}</a>
+         title="deleted — opens the tombstone page">{{ r.title | title_plain if r.title_is_md else r.title }}</a>
       <span class="shrink-0 rounded bg-warning-subtle px-1.5 py-0.5 text-[10px] font-medium text-warning-strong border border-warning">deleted</span>
     {% else %}
-      <a href="{{ r.reader_url }}" class="min-w-0 flex-1 truncate text-sm text-info-strong hover:underline">{{ r.title }}</a>
+      {# Paper-family titles may carry publisher markup → md view rendered
+         through render_markdown; other kinds' titles stay literal. #}
+      <a href="{{ r.reader_url }}" class="min-w-0 flex-1 truncate text-sm text-info-strong hover:underline{% if r.title_is_md %} tex-scope{% endif %}">{% if r.title_is_md %}{{ r.title | title_md | render_markdown }}{% else %}{{ r.title }}{% endif %}</a>
       <a href="{{ r.graph_url }}" class="shrink-0 text-xs text-fg-faint hover:text-fg-muted hover:underline">graph</a>
     {% endif %}
     <span class="shrink-0 text-xs text-fg-faint" title="{{ r.updated_at }}">{{ r.updated_at | ago }}</span>

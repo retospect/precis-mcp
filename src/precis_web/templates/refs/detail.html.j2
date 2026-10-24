@@ -33,7 +33,7 @@
   <h2 class="mt-3 font-semibold">Papers in this corpus</h2>
   <ul>
     {% for paper in orcid_meta.papers %}
-    <li><a href="{{ paper.url }}" class="text-info-strong hover:underline">{{ paper.title }}</a></li>
+    <li><a href="{{ paper.url }}" class="tex-scope text-info-strong hover:underline">{{ paper.title | title_md | render_markdown }}</a></li>
     {% else %}<li class="text-sm text-fg-subtle">No linked papers in this corpus.</li>{% endfor %}
   </ul>
 </section>
@@ -288,13 +288,13 @@
       let txt = '';
       if (mode === 'plain') {
         txt = refs.map(r => {
-          const t = r.title || '';
+          const t = r.title_plain || r.title || '';
           const p = r.preview ? '. ' + r.preview : '';
           return r.handle + ' — ' + t + ' (' + r.kind + ')' + p;
         }).join('\n');
       } else if (mode === 'markdown') {
         txt = refs.map(r => {
-          const t = r.title || '';
+          const t = r.title_md || r.title || '';
           const p = r.preview ? '\n  > ' + r.preview : '';
           return '- [' + r.handle + '](' + r.url + ') — ' + t + ' (' + r.kind + ')' + p;
         }).join('\n');
@@ -305,7 +305,9 @@
             const parts = ['@article{' + c.cite_key + ','];
             if (c.authors && c.authors.length)
               parts.push('  author = {' + c.authors.join(' and ') + '},');
-            parts.push('  title = {' + (r.title || '').replace(/[{}]/g, '') + '},');
+            // title_bibtex is the LaTeX-correct view (math $…$ keeps its
+            // braces, *x*→\emph{x}) — braces are balanced, never stripped.
+            parts.push('  title = {' + (r.title_bibtex || r.title_plain || '') + '},');
             if (c.year) parts.push('  year = {' + c.year + '},');
             if (c.doi) parts.push('  doi = {' + c.doi + '},');
             if (c.url) parts.push('  url = {' + c.url + '},');

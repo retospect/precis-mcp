@@ -37,6 +37,7 @@ from typing import Any
 
 from precis.utils.authors import author_names
 from precis.utils.text import clip_total
+from precis.utils.title_views import title_md
 from precis_web.timefmt import utc_date
 
 #: The kinds whose ``/preview`` hover leads with a paper identity header
@@ -130,7 +131,10 @@ def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
     names = author_names(getattr(ref, "authors", None))
     first = names[0] if names else ""
     last = names[-1] if names else ""
-    title = (getattr(ref, "title", "") or "").split("\n", 1)[0].strip()
+    # gr515227: stored titles are raw; the header carries the md view
+    # (sup/sub→math, i/b→emphasis) which the macro passes through
+    # ``render_markdown``.
+    title = title_md((getattr(ref, "title", "") or "").split("\n", 1)[0].strip())
     verified_at = getattr(ref, "human_verified_at", None)
     return PaperHead(
         ref_id=int(getattr(ref, "id", 0) or 0),
@@ -164,7 +168,7 @@ def paper_head_from_facts(
     return PaperHead(
         ref_id=ref_id,
         handle=handle,
-        title=(title or "").split("\n", 1)[0].strip() or "(untitled)",
+        title=title_md((title or "").split("\n", 1)[0].strip()) or "(untitled)",
         year=year,
         journal="",
         first_author="",

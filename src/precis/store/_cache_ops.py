@@ -60,6 +60,11 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store.types import CacheEntry, ChunkInsert, Ref
+from precis.utils.title_views import title_plain_sql
+
+#: gr515227: title legs read the plain view (markup / LaTeX noise
+#: stripped at query time) — titles are stored raw.
+_TITLE_PLAIN_SQL = title_plain_sql("refs.title")
 
 #: jsonb key shape allowed in :meth:`CacheMixin.search_cache_entry_titles`'
 #: ``meta_fields`` — handler constants only; anything else is refused
@@ -596,8 +601,8 @@ class CacheMixin:
                    cs.content_sha256,
                    greatest(
                        coalesce(ts_rank_cd(
-                           to_tsvector('english', refs.title), qq.qq), 0.0),
-                       coalesce(similarity(refs.title, %s), 0.0),
+                           to_tsvector('english', {_TITLE_PLAIN_SQL}), qq.qq), 0.0),
+                       coalesce(similarity({_TITLE_PLAIN_SQL}, %s), 0.0),
                        {meta_rank_sql}
                    ) AS rank
             FROM cache_state cs
@@ -606,8 +611,8 @@ class CacheMixin:
             WHERE refs.retired_at IS NULL
               AND refs.kind = %s
               AND (
-                  to_tsvector('english', refs.title) @@ qq.qq
-                  OR similarity(refs.title, %s) >= %s
+                  to_tsvector('english', {_TITLE_PLAIN_SQL}) @@ qq.qq
+                  OR similarity({_TITLE_PLAIN_SQL}, %s) >= %s
                   {meta_match_sql}
               )
             ORDER BY rank DESC, cs.fetched_at DESC
