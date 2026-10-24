@@ -61,6 +61,64 @@ def test_classify_worktree():
     assert fc.classify_worktree(False, False, False, False) == "unmerged"
 
 
+def test_protected_and_deletable_names():
+    for b in (
+        "main",
+        "master",
+        "HEAD",
+        "gated",
+        "prod",
+        "release/r1",
+        "deployed/x",
+        "ci/x",
+    ):
+        assert fc.is_protected_branch(b)
+        assert not fc.is_remote_deletable(b)
+    assert fc.is_remote_deletable("worktree-foo")
+    assert not fc.is_remote_deletable("random-thing")
+
+
+def test_apply_remote_never_deletes_script_refs(tmp_path):
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True
+    )
+    r = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(r)], check=True, capture_output=True
+    )
+    _g(r, "checkout", "-qb", "main")
+    _commit(r, "a.txt", "1\n", "init")
+    names = ("release/r1", "gated", "prod", "ci/x", "worktree-foo", "oddball")
+    for b in names:
+        _g(r, "branch", b)
+    _g(r, "push", "-q", "origin", "main", *names)
+    stats = {
+        k: 0
+        for k in (
+            "prunable",
+            "wt_remove",
+            "wt_locked",
+            "wt_live",
+            "wt_dirty",
+            "wt_unmerged",
+            "br_merged",
+            "br_unmerged",
+            "rem_merged",
+            "rem_unmerged",
+        )
+    }
+    fc.sweep_repo("t", str(r), True, True, stats, [])
+    heads = subprocess.run(
+        ["git", "-C", str(origin), "branch", "--format=%(refname:short)"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.split()
+    assert set(heads) == {"main", "release/r1", "gated", "prod", "ci/x", "oddball"}
+
+
 def test_never_touch_windows():
     for w in ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER", "random"):
         assert fc.is_protected_window(w)

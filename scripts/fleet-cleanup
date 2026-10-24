@@ -36,7 +36,22 @@ REPOS = [
 ]
 NEVER_TOUCH = ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER")
 WINDOW_PREFIXES = ("devin-", "codex-", "local-")
-PROTECTED_BRANCHES = ("main", "master", "HEAD")
+# Hard denylist (gr515476): script-moved refs (scripts/ship, release, round
+# push main, prod, gated, release/r<N>, ci/<branch>, deployed/*) are always
+# "merged" because main reaches them, so they must never be deleted.
+PROTECTED_BRANCHES = ("main", "master", "HEAD", "gated", "prod")
+PROTECTED_PREFIXES = ("release/", "deployed/", "ci/")
+# Remote-delete allowlist: only clearly task-shaped branch names.
+REMOTE_DELETABLE_PREFIXES = ("worktree-", "land-", "devin-", "codex-", "feat/",
+                             "fix/", "docs/", "chore/", "test/", "refactor/")
+
+
+def is_protected_branch(name):
+    return name in PROTECTED_BRANCHES or name.startswith(PROTECTED_PREFIXES)
+
+
+def is_remote_deletable(name):
+    return not is_protected_branch(name) and name.startswith(REMOTE_DELETABLE_PREFIXES)
 
 
 def git(repo, *args):
@@ -152,7 +167,7 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
     checked_out = {(w.get("branch") or "").replace("refs/heads/", "") for w in wts}
     print("-- local branches")
     for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/heads")[1].splitlines():
-        if br in PROTECTED_BRANCHES:
+        if is_protected_branch(br):
             continue
         if is_merged(path, br, base):
             stats["br_merged"] += 1
@@ -167,14 +182,18 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
     print("-- remote branches (report only unless --apply-remote)")
     for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")[1].splitlines():
         short = br[len("origin/"):]
-        if br == "origin" or short in PROTECTED_BRANCHES:
+        if br == "origin" or is_protected_branch(short):
             continue
         merged = is_merged(path, br, base)
         stats["rem_merged" if merged else "rem_unmerged"] += 1
         print(f"  {'merged' if merged else 'unmerged':9} {br}  {commit_info(path, br)}")
         if merged and apply_remote:
-            rc, out = git(path, "push", "origin", "--delete", short)
-            print(f"      -> {'deleted' if rc == 0 else 'FAILED: ' + out}")
+            if not is_remote_deletable(short):
+                print("      -> skip (not task-shaped)")
+                continue
+            r = subprocess.run(["git", "-C", path, "push", "origin", "--delete", short],
+                               capture_output=True, text=True, encoding="utf-8")
+            print(f"      -> {'deleted' if r.returncode == 0 else 'FAILED: ' + (r.stderr.strip() or r.stdout.strip())}")
 
 
 def sweep_tmux(trees, stats):
