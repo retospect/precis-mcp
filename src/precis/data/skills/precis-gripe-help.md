@@ -61,6 +61,30 @@ misled you, what is actually true, and where you checked. The skill then shows
 an open-concern banner at the top until the gripe closes, and the fixer
 is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes.
 
+**Recurring themes merge automatically** — filing stays exactly as
+above; the tool does the matching. The text is checked against a
+registry of recurring-friction themes. Exactly one match with a live
+`theme:<slug>`-tagged gripe (the *keeper*) folds your filing into it as
+a `+1 (<first line>): <text>` comment; the ack says so and names
+`args={'new': True}` as the bypass if you meant a standalone gripe.
+One match with no live keeper tags the new gripe `theme:<slug>`,
+making it the keeper. Several matches file normally — the ack lists
+them (add the one you meant as `theme:<slug>` yourself if you want it
+on a keeper). Comments (`put(id=N, …)`) never match.
+
+```python
+put(kind="gripe", text="scripts/test <file> -q waits ~25s on container bring-up")
+# → merged into gr514478 (theme test-speed); to file separately anyway
+#   pass args={'new': True}
+```
+
+**Observations** — friction worth recording with nothing to fix (a
+one-off, already resolved): `args={'observation': True}` files it
+already closed — `STATUS:done` + an `observation` tag, with its own
+`resolved: observation, auto-closed at filing` comment. Browse them
+with `search(kind='gripe', tags=['observation'], status='*')`; reopen
+with `tag(kind='gripe', id=N, add=['STATUS:open'], remove=['STATUS:done'])`.
+
 ## Has anyone griped about this before?
 ## Find an existing complaint about X
 ## Search the bug tracker

@@ -8,7 +8,15 @@ retire via ``delete``.
 Surface (see ``precis-gripe-help``):
 
 - ``put(kind='gripe', text=...)`` creates a new gripe with a
-  ``gripe_body`` chunk and ``STATUS:open`` tag.
+  ``gripe_body`` chunk and ``STATUS:open`` tag. The create path also
+  runs the recurring-theme registry (:mod:`._gripe_themes`): a filing
+  matching exactly one theme folds into that theme's live
+  ``theme:<slug>`` keeper as a ``+1`` comment — or becomes the keeper
+  itself when none exists — so filers never have to dedup first.
+  ``args={'new': True}`` bypasses matching; several matches file
+  normally (the ack lists them). ``args={'observation': True}`` files
+  the gripe already closed (``STATUS:done`` + ``observation`` tag) via
+  the ordinary resolved-comment + tag path.
 - ``put(kind='gripe', id=N, text=...)`` appends a ``gripe_comment``
   chunk to the existing gripe (id-present routes to append; same
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
@@ -48,10 +56,11 @@ import difflib
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
+from precis.handlers._gripe_themes import THEME_TAG_PREFIX, match_themes
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
@@ -115,6 +124,18 @@ _STALE_AFTER = timedelta(days=3)
 #: base class calls with a fixed arg set). Request-scoped, not an instance
 #: attribute: one handler instance serves concurrent calls.
 _PUT_PRIO: RequestState[int | None] = RequestState("precis_gripe_put_prio", None)
+
+
+class _CreatedGripe(NamedTuple):
+    """A raw gripe insert, pre-ack. Create variants that take over the
+    reply (theme-keeper tag line, observation close) need the ``ref_id``
+    :meth:`_render_create_ack` alone would not hand back."""
+
+    ref_id: int
+    readings: list[str]
+    has_thread: bool
+    short_title: str | None
+    title_src_len: int | None
 
 
 def age_summary(
@@ -300,6 +321,11 @@ class GripeHandler(NumericRefHandler):
         unlink: str | None = None,
         rel: str | None = None,
         prio: int | None = None,
+        # ``args={'new': True}`` bypasses theme merging; ``args=
+        # {'observation': True}`` files the gripe already closed. Both are
+        # create-only keys — the dispatcher flattens args= into kwargs.
+        new: bool | None = None,
+        observation: bool | None = None,
         **_kw: Any,
     ) -> Response:
         # A gripe's title is the first line of its body, so ``title=`` is
@@ -334,6 +360,12 @@ class GripeHandler(NumericRefHandler):
         # NumericRefHandler.put rejects id-presence unconditionally
         # so we intercept before delegating.
         if id is not None:
+            if new or observation:
+                raise BadInput(
+                    "args={'new': …}/{'observation': …} only apply when filing "
+                    f"a new {self._sense()}, not commenting on id={id}",
+                    next=f"put(kind={self.kind!r}, id={id}, text='your comment')",
+                )
             if prio is not None:
                 # Reject rather than silently drop — priority mutation on
                 # an existing gripe goes through tag().
@@ -383,6 +415,49 @@ class GripeHandler(NumericRefHandler):
                 what=f"{self._sense()} comment",
             )
             return interpreted(resp, readings)
+        # Observation (gr514477 batch): file already closed. The auto-close
+        # goes through the same resolved-comment + tag path as a manual
+        # close, so the close gate applies unchanged.
+        if observation:
+            self._reject_mutating_put(
+                id=None, mode=None, untags=untags, unlink=unlink, rel=rel, link=link
+            )
+            with _PUT_PRIO.bind(validate_prio(prio)):
+                resp = self._create_observation(
+                    text=text, tags=tags, link=link, rel=rel
+                )
+            return interpreted(resp, readings)
+        # Recurring-theme merge (gripe-ux batch, Reto 2026-10-24): a filing
+        # hitting exactly one registered theme joins that theme's live
+        # ``theme:<slug>`` keeper as a '+1' comment instead of minting a
+        # duplicate ref; with no live keeper the new gripe takes the tag
+        # and becomes it. Filers never search first — matching lives here.
+        matched: list[str] = [] if new else match_themes(text or "")
+        note = ""
+        if len(matched) == 1:
+            slug = matched[0]
+            keeper = self._theme_keeper(slug)
+            if keeper is not None:
+                resp = self._merge_into_keeper(
+                    keeper,
+                    slug,
+                    text=text,
+                    prio=prio,
+                    link=link,
+                    unlink=unlink,
+                    rel=rel,
+                    tags=tags,
+                    untags=untags,
+                )
+                return interpreted(resp, readings)
+            tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
+            note = (
+                f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
+                "so this gripe is now the theme keeper; later matching "
+                "filings merge into it as '+1' comments"
+            )
+        elif len(matched) > 1:
+            note = f"matched themes: {', '.join(matched)} — filed separately (no merge)"
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
         # request-scoped slot (``_PUT_PRIO``, as todo does — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
@@ -401,7 +476,129 @@ class GripeHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
             )
+        if note:
+            resp = replace(resp, body=f"{resp.body}\n{note}")
         return interpreted(resp, readings)
+
+    def _theme_keeper(self, slug: str) -> int | None:
+        """The oldest live gripe tagged ``theme:<slug>``, or ``None``.
+
+        "Live" = not carrying a terminal STATUS — a triaged/in-review
+        keeper still collects ``+1``s; once it closes, the next matching
+        filing becomes the new keeper.
+        """
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=[f"{THEME_TAG_PREFIX}{slug}"],
+            exclude_tags=sorted(_TERMINAL_STATUS_TAGS),
+            order_by="created_asc",
+            limit=1,
+        )
+        return refs[0].id if refs else None
+
+    @staticmethod
+    def _merge_comment(text: str | None) -> str:
+        """``+1 (<first line>): <filed text>`` — the merge comment shape."""
+        from precis.handlers._gripe_title import first_line
+
+        body = (text or "").strip()
+        src = first_line(body)
+        if len(src) > 100:
+            src = src[:99].rstrip() + "…"
+        return f"+1 ({src}): {body}"
+
+    def _merge_into_keeper(
+        self,
+        keeper: int,
+        slug: str,
+        *,
+        text: str | None,
+        prio: int | None,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> Response:
+        """Fold a theme-matched filing into its keeper as a ``+1`` comment.
+
+        Same semantics as ``put(id=N, …)``: caller ``link=``/``tags=``/
+        ``untags=`` ride onto the keeper in one transaction with every
+        guard intact. ``prio=`` has no comment carrier — refuse it naming
+        the direct ``tag()`` door.
+        """
+        if prio is not None:
+            raise BadInput(
+                f"this filing merges into {self._sense()} id={keeper}; prio= "
+                "is not accepted on a +1 comment",
+                next=f"tag(kind={self.kind!r}, id={keeper}, prio={prio})",
+            )
+        resp = self._append_then_link(
+            lambda: self._append_comment(id=keeper, text=self._merge_comment(text)),
+            id=keeper,
+            link=link,
+            unlink=unlink,
+            rel=rel,
+            tags=tags,
+            untags=untags,
+            what=f"{self._sense()} comment",
+        )
+        from precis.utils.handle_registry import format_handle
+
+        return replace(
+            resp,
+            body=(
+                f"{resp.body}\nmerged into {format_handle(self.kind, keeper)} "
+                f"(theme {slug}); to file separately anyway pass "
+                "args={'new': True}"
+            ),
+        )
+
+    def _create_observation(
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        link: str | None,
+        rel: str | None,
+    ) -> Response:
+        """File a gripe already closed: ``observation`` tag + ``STATUS:done``.
+
+        The close is *not* a gate bypass: after the insert a real
+        ``resolved:`` comment is appended and ``STATUS:done`` goes through
+        this kind's own ``tag()`` — ``_require_resolved_comment`` sees its
+        comment exactly as it would on a manual close.
+        """
+        created = self._insert_gripe(
+            text=text, tags=[*(tags or []), "observation"], link=link, rel=rel
+        )
+        resp = self._append_then_link(
+            lambda: self._append_comment(
+                id=created.ref_id,
+                text="resolved: observation, auto-closed at filing",
+            ),
+            id=created.ref_id,
+            link=None,
+            unlink=None,
+            rel=None,
+            tags=["STATUS:done"],
+            untags=None,
+            what=f"{self._sense()} comment",
+        )
+        return interpreted(
+            Response(
+                body=(
+                    f"created {self.kind} id={created.ref_id} (STATUS:done, "
+                    "observation) — auto-closed at filing.\n"
+                    f"{resp.body}\n"
+                    f"list: search(kind={self.kind!r}, tags=['observation'], "
+                    "status='*'); reopen: "
+                    f"tag(kind={self.kind!r}, id={created.ref_id}, "
+                    "add=['STATUS:open'], remove=['STATUS:done'])"
+                )
+            ),
+            created.readings,
+        )
 
     def _edges_only_reading(
         self,
@@ -691,6 +888,32 @@ class GripeHandler(NumericRefHandler):
         auto_refresh_days: int | None = None,
         **_kw: Any,
     ) -> Response:
+        created = self._insert_gripe(text=text, tags=tags, link=link, rel=rel)
+        return interpreted(
+            self._render_create_ack(
+                created.ref_id,
+                has_thread=created.has_thread,
+                short_title=created.short_title,
+                title_src_len=created.title_src_len,
+            ),
+            created.readings,
+        )
+
+    def _insert_gripe(
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        link: str | None,
+        rel: str | None = None,
+    ) -> _CreatedGripe:
+        """Validate + insert a gripe (ref, body chunk, tags, link).
+
+        The ack wording stays with the caller so create variants (theme
+        keeper, observation close) answer in their own words — every
+        guard (empty text, terminal-STATUS refusal, thread-tag check,
+        prio sync) stays in this one place.
+        """
         # The base insert (ref + gripe_body chunk + the STATUS:open
         # default tag) routes through ``file_gripe_readonly()``
         # (migration 0079) rather than hand-rolled insert_ref/
@@ -773,14 +996,12 @@ class GripeHandler(NumericRefHandler):
                     relation=relation,
                     conn=conn,
                 )
-        return interpreted(
-            self._render_create_ack(
-                ref_id,
-                has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
-                short_title=short,
-                title_src_len=len(first_line(text)) if short is not None else None,
-            ),
-            readings,
+        return _CreatedGripe(
+            ref_id=ref_id,
+            readings=readings,
+            has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
+            short_title=short,
+            title_src_len=len(first_line(text)) if short is not None else None,
         )
 
     @staticmethod

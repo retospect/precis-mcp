@@ -53,7 +53,9 @@ unselected write dies with `No such tool available` and the record is lost
      `docs/backlog/threads/<slug>.md` file. Use the caller's thread if given;
      otherwise pick the file whose `## Do next` or Status line covers the
      finding. If none fits, file without it and say so in your return. An
-     unknown slug is refused with the valid list.
+     unknown slug is refused with the valid list. A friction line that
+     starts with `note |` (pure observation, nothing to fix) is filed
+     with `args={'observation': True}` — it lands already closed.
    - **docs/backlog/**: `Write` a new item file `docs/backlog/<slug>.md`
      (kebab-case slug from the title), in the item format from
      `docs/README.md` §Backlog lifecycle — a `# title` plus a few lines:
