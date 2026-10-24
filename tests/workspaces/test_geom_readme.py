@@ -23,14 +23,23 @@ def test_readme_python_blocks_execute(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(out, "_SCRATCH_DIR", tmp_path / "scratch")
     blocks = _BLOCKS.findall(README.read_text(encoding="utf-8"))
-    assert len(blocks) >= 9, (
-        "packaging/geom/README.md must keep its runnable ```python blocks"
-    )
+    assert blocks, "packaging/geom/README.md lost its runnable ```python blocks"
     ns: dict[str, Any] = {}
-    for block in blocks:
-        exec(compile(block, str(README), "exec"), ns)
+    # Per-block, not a count floor: a bare ``>= N`` drifts with every
+    # README addition and has to be recounted by hand (gr514182). A
+    # failure names the block, and the end-state asserts below pin the
+    # blocks the recipe can't lose.
+    for i, block in enumerate(blocks):
+        head = block.strip().splitlines()[0]
+        try:
+            exec(compile(block, f"{README}#block-{i}", "exec"), ns)
+        except Exception as exc:
+            raise AssertionError(
+                f"README ```python block {i} failed ({head!r})"
+            ) from exc
     # the hexfold section: the prism net is report-clean and o.block
     # wrote its geometry under the redirected scratch/out/.
+    assert "net" in ns, "README lost the prism_tube block"
     assert ns["net"].report.ok
     assert (
         tmp_path / "scratch" / "out" / "hexprism" / "blocks" / "prism.extxyz"

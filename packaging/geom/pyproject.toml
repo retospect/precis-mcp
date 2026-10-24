@@ -74,7 +74,7 @@ pcb-kernel = [
 "../../src/precis_se/atomic/__init__.py" = "precis_se/atomic/__init__.py"
 "../../src/precis_se/atomic/surface_target.py" = "precis_se/atomic/surface_target.py"
 "../../src/precis_se/atomic/generators" = "precis_se/atomic/generators"
-"../../packaging/geom/precis_se/__init__.py" = "precis_se/__init__.py"
+"precis_se/__init__.py" = "precis_se/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 exclude = [
