@@ -145,6 +145,14 @@ solve; the runtime caps of D4 are not set now.
 5. **Round-robin by job_type (D4 share half)** — only if slices 2–4 leave
    a measured background-vs-background starvation (e.g. conflict_sweep p50
    65 min behind other prio-8 work).
+   **Shipped 2026-10-24 (gr506754):** measured — the ``llm_summarize``
+   band sat 0-running for hours behind ``classify`` on the shared capped
+   ``derived_drain`` lane. The share key is ``job_type`` refined by the
+   ``params.pass`` discriminator (both bands share one job_type, so a
+   job_type-granular share can't separate them); the claim's ORDER BY and
+   greedy pick prefer the fewest-running share inside the winning class,
+   and the materialize stuck WARN/promotion fires only when the lane has
+   free capacity.
 6. **Visibility (D6).**
 
 ## Acceptance criteria

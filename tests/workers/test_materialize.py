@@ -109,7 +109,13 @@ def _queued_derived(store: Store, pass_name: str) -> int:
 
 
 def _seed_derived(
-    store: Store, pass_name: str, n: int, *, status: str = "queued", prio: int = 8
+    store: Store,
+    pass_name: str,
+    n: int,
+    *,
+    status: str = "queued",
+    prio: int = 8,
+    lease_host: str | None = None,
 ) -> None:
     """Insert ``n`` derived_drain jobs for ``pass_name`` at ``status`` directly
     (no idem_key, so they don't interfere with a same-tick mint)."""
@@ -123,6 +129,7 @@ def _seed_derived(
                     "job_type": "derived_drain",
                     "executor": "job_inproc",
                     "params": {"pass": pass_name, "limit": 500},
+                    **({"lease_host": lease_host} if lease_host else {}),
                 },
                 prio=prio,
                 conn=conn,
@@ -589,6 +596,74 @@ def test_band_full_and_running_is_silent(
         m.run_materialize_pass(store)
 
     assert not any("nothing is draining" in r.message for r in caplog.records)
+
+
+def test_band_full_behind_saturated_lane_is_silent(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    _small_band_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr506754: band full with 0 running FOR THIS PASS while the sibling
+    band occupies the whole per-host ``derived_drain`` cap — the lane is
+    saturated, not dead: no stuck WARNING and no starved-prio promotion
+    (a previously-promoted band reverts to ``_MINT_PRIO``)."""
+    backlog = {"n": 999_999}
+    # This band's queued rows carry a stale promotion from an earlier
+    # genuinely-stuck tick — the saturated lane must revert it.
+    _seed_derived(store, "llm_summarize", 5, status="queued", prio=m._STARVED_PRIO)
+    # The sibling band holds the whole capped lane on the pinned node
+    # (derived_drain max_running=2, lease_host = the band's target node).
+    _seed_derived(
+        store,
+        "classify",
+        2,
+        status="running",
+        lease_host=m._DEFAULT_SMALL_TARGET_NODE,
+    )
+    monkeypatch.setattr(
+        m,
+        "_BACKLOG_SOURCES",
+        (_fake_band_source(backlog, pass_name="llm_summarize"),),
+    )
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    assert not any("nothing is draining" in r.message for r in caplog.records)
+    assert _derived_prios(store, "llm_summarize", status="queued") == [m._MINT_PRIO] * 5
+
+
+def test_band_warns_when_lane_has_free_capacity(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    _small_band_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Still stuck: the sibling occupies LESS than the type cap — a claim
+    of this band would not be cap-blocked yet 0 of it runs."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "llm_summarize", 5, status="queued")
+    _seed_derived(
+        store,
+        "classify",
+        1,
+        status="running",
+        lease_host=m._DEFAULT_SMALL_TARGET_NODE,
+    )
+    monkeypatch.setattr(
+        m,
+        "_BACKLOG_SOURCES",
+        (_fake_band_source(backlog, pass_name="llm_summarize"),),
+    )
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    assert any("nothing is draining" in r.message for r in caplog.records)
+    assert (
+        _derived_prios(store, "llm_summarize", status="queued") == [m._STARVED_PRIO] * 5
+    )
 
 
 # ── Finding 5 — dynamic prio nudge for a stuck band ──────────────────────

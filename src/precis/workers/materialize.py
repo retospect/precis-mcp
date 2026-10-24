@@ -348,19 +348,27 @@ def _live_jobs(
     *,
     params_pass: str | None = None,
     statuses: tuple[str, ...] = ("queued", "running"),
+    lease_host: str | None = None,
 ) -> int:
     """Count of ``job_type`` jobs currently in ``statuses`` (default
     ``queued``/``running``, any host) — "a bounded batch and no more until it
     drains". ``params_pass`` narrows to one ``meta.params.pass`` so two SMALL
     sources sharing the ``derived_drain`` job_type count their OWN live jobs,
     not each other's; ``statuses`` narrows further (e.g. ``("running",)`` for
-    the "is anything actually draining?" stuck check)."""
+    the "is anything actually draining?" stuck check); ``lease_host``
+    narrows to rows claimed by one host — the claim lane the per-host
+    ``max_running`` caps scope to (``executors/_common.py``)."""
     pass_clause = ""
-    # Statement-order params: job_type, [optional pass], status-array.
+    host_clause = ""
+    # Statement-order params: job_type, [optional pass], [optional host],
+    # status-array.
     args: list[Any] = [job_type]
     if params_pass is not None:
         pass_clause = "AND r.meta->'params'->>'pass' = %s"
         args.append(params_pass)
+    if lease_host is not None:
+        host_clause = "AND r.meta->>'lease_host' = %s"
+        args.append(lease_host)
     args.append(list(statuses))
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -369,6 +377,7 @@ def _live_jobs(
              WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
                {pass_clause}
+               {host_clause}
                AND EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                       WHERE rt.ref_id = r.ref_id
@@ -379,6 +388,25 @@ def _live_jobs(
             tuple(args),
         ).fetchone()
     return int(row[0]) if row else 0
+
+
+def _type_max_running(store: Store, job_type: str) -> int | None:
+    """This job_type's per-host running cap (``claim.max_running.<type>``
+    in ``app_state`` over the code-shipped defaults — the SAME map
+    :func:`~precis.workers.executors._common.claim_executor_jobs`
+    enforces), ``None`` when uncapped."""
+    from precis.workers.executors._common import job_type_running_caps
+
+    with store.pool.connection() as conn:
+        return job_type_running_caps(conn).get(job_type)
+
+
+def _band_target_node() -> str:
+    """The host the SMALL bands pin their jobs to — the same env read
+    :func:`_small_drain_params` mints into ``params.target_node``; the
+    stuck check compares this band's running count against the per-host
+    cap on THAT node."""
+    return os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
 
 
 def _in_failed_cooldown(
@@ -558,16 +586,38 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
         # a target_node that no host's claim-gate matches) while backlog remains
         # — the band-policy analogue of the high-water WARN (there's no
         # count-vs-4×HIGH here; "full but 0 running" is the precise signal).
+        #
+        # …with one refinement (gr506754): the two SMALL bands share ONE
+        # job_type and one per-host ``max_running`` cap, so a band whose
+        # sibling legitimately occupies the whole capped lane reads "0
+        # running" for hours while nothing is actually wrong — the claim
+        # lane is saturated, not dead. The WARN (and the starved-band prio
+        # promotion) therefore fires only when this pass has 0 running AND
+        # the type's lane still has free capacity — i.e. a claim of this
+        # band would not be cap-blocked yet none happens (the real stuck
+        # signature). A sibling-saturated lane is waiting-by-design and
+        # gets neither the alarm nor the promotion.
         running = _live_jobs(
             store, src.job_type, params_pass=src.params_pass, statuses=("running",)
         )
-        if running == 0:
+        lane_running = _live_jobs(
+            store,
+            src.job_type,
+            statuses=("running",),
+            lease_host=_band_target_node(),
+        )
+        cap = _type_max_running(store, src.job_type)
+        lane_saturated = cap is not None and lane_running >= cap
+        if running == 0 and not lane_saturated:
             log.warning(
-                "materialize: %s band full (%d live) but 0 running and "
-                "backlog=%d — nothing is draining; check target_node pin / the "
+                "materialize: %s band full (%d live) but 0 running with "
+                "free lane capacity (%d/%s running) and backlog=%d — "
+                "nothing is draining; check target_node pin / the "
                 "melchior worker (band=[%d,%d])",
                 src.name,
                 live,
+                lane_running,
+                cap if cap is not None else "uncapped",
                 count,
                 low,
                 high,

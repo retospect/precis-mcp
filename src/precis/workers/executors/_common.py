@@ -126,6 +126,41 @@ _MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 2}
 _MAX_RUNNING_KEY_PREFIX = "claim.max_running."
 
 
+def job_type_running_caps(conn: Connection) -> dict[str, int]:
+    """``job_type -> max running rows per host``: the code-shipped
+    :data:`_MAX_RUNNING_DEFAULTS` overlaid with any ``app_state``
+    ``claim.max_running.<job_type>`` operator overrides (D4 cap half).
+    Shared by :func:`claim_executor_jobs`'s cap exclusion and the
+    materializer's "is this band's lane actually saturated" stuck check."""
+    caps = dict(_MAX_RUNNING_DEFAULTS)
+    for key, value in conn.execute(
+        "SELECT key, value FROM app_state WHERE key LIKE %s",
+        (f"{_MAX_RUNNING_KEY_PREFIX}%",),
+    ).fetchall():
+        try:
+            caps[str(key)[len(_MAX_RUNNING_KEY_PREFIX) :]] = int(str(value))
+        except ValueError:
+            log.warning("claim: %s=%r is not an int; ignored", key, value)
+    return caps
+
+
+def _share_key_of(job_type: str, params_pass: Any) -> str:
+    """The fair-share discriminator (D4 share half): a ``job_type``
+    whose rows carry a ``params.pass`` sub-queue (the materialize SMALL
+    bands — two sources sharing one ``derived_drain`` job_type,
+    discriminated by ``meta.params.pass``) shares capacity per
+    ``<job_type>:<pass>``, not per job_type — so one band can't hold a
+    capped lane while its sibling starves (gr506754). Types without the
+    discriminator share by job_type alone (the spec's original key)."""
+    return f"{job_type}:{params_pass}" if params_pass is not None else job_type
+
+
+def _share_key(meta: dict[str, Any]) -> str:
+    params = meta.get("params")
+    params_pass = params.get("pass") if isinstance(params, dict) else None
+    return _share_key_of(str(meta.get("job_type") or ""), params_pass)
+
+
 def claim_age_step_s() -> float:
     """The claim-ageing step in seconds (``0`` = no ageing)."""
     raw = os.environ.get(CLAIM_AGE_STEP_ENV)
@@ -592,7 +627,9 @@ def _claim_order_sql(
     prio-2 members. ``class_rank=False`` (the
     ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch) restores the pre-slice-2
     order verbatim: aged prio with the 1.5 floor in both columns, so the
-    ORDER BY is the old ``aged, queued_since, ref_id``.
+    ORDER BY is the old ``aged, queued_since, ref_id`` — and drops the
+    share term (:func:`claim_executor_jobs` adds it only under the
+    class order).
     """
     if not class_rank:
         if age_step_s <= 0:
@@ -740,9 +777,10 @@ def claim_executor_jobs(
     ssh_node's original inline guard, now shared).
 
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
-    class rank 2026-10-23, job-scheduling-fairness D2/D3).** ``ORDER BY
-    claim_rank ASC, aged_prio ASC, queued_since ASC, ref_id ASC`` where
-    ``claim_rank`` is the row's origin class (human 0 < agent 1 <
+    class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
+    2026-10-24, D4 share half).** ``ORDER BY claim_rank ASC,
+    share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
+    where ``claim_rank`` is the row's origin class (human 0 < agent 1 <
     recurring 2 < background 3; a missing origin reads as the old cron
     band at prio <= 2, else background) stepped down one class per
     :func:`claim_class_age_s` of wait until it ties the top class
@@ -1237,36 +1275,34 @@ def claim_executor_jobs(
     cap_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
     running_by_type: dict[str, int] = {}
+    running_by_share: dict[str, int] = {}
     claim_host = node or reserve_host_id
     if claim_host is not None:
-        caps = dict(_MAX_RUNNING_DEFAULTS)
-        for key, value in conn.execute(
-            "SELECT key, value FROM app_state WHERE key LIKE %s",
-            (f"{_MAX_RUNNING_KEY_PREFIX}%",),
-        ).fetchall():
-            try:
-                caps[str(key)[len(_MAX_RUNNING_KEY_PREFIX) :]] = int(str(value))
-            except ValueError:
-                log.warning("claim: %s=%r is not an int; ignored", key, value)
+        caps = job_type_running_caps(conn)
         for jt in sorted(caps):
             conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
                 (f"claim-cap:{jt}",),
             )
-        running_by_type = {
-            str(jt): int(cnt)
-            for jt, cnt in conn.execute(
-                "SELECT r2.meta->>'job_type', count(*) FROM refs r2 "
-                "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
-                "AND r2.meta->>'executor' = %s "
-                "AND r2.meta->>'lease_host' = %s "
-                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
-                "USING (tag_id) WHERE rt.ref_id = r2.ref_id "
-                "AND t.namespace = %s AND t.value = %s) "
-                "GROUP BY 1",
-                (executor, claim_host, STATUS_NAMESPACE, RUNNING),
-            ).fetchall()
-        }
+        # One grouped read feeds both the per-type cap counts and the
+        # D4-share-half fair-share counts (the ``params.pass`` band
+        # discriminator — :func:`_share_key_of`).
+        running_by_type = {}
+        for jt, ps, cnt in conn.execute(
+            "SELECT r2.meta->>'job_type', r2.meta->'params'->>'pass', "
+            "count(*) FROM refs r2 "
+            "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
+            "AND r2.meta->>'executor' = %s "
+            "AND r2.meta->>'lease_host' = %s "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+            "USING (tag_id) WHERE rt.ref_id = r2.ref_id "
+            "AND t.namespace = %s AND t.value = %s) "
+            "GROUP BY 1, 2",
+            (executor, claim_host, STATUS_NAMESPACE, RUNNING),
+        ).fetchall():
+            jt_s = str(jt)
+            running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
+            running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
         at_cap = sorted(
             jt for jt, cap in caps.items() if running_by_type.get(jt, 0) >= cap
         )
@@ -1278,17 +1314,57 @@ def claim_executor_jobs(
     # ``q.qs`` (the queued-tag's stamp) and ``b.age_s``/``b.base_class``
     # are computed once per row by LATERALs — the claim-order expressions
     # read the aliases instead of repeating correlated subqueries.
+    class_rank_on = claim_class_rank_enabled()
     claim_rank_sql, aged_prio_sql, order_params = _claim_order_sql(
         claim_age_step_s(),
         claim_class_age_s(),
-        class_rank=claim_class_rank_enabled(),
+        class_rank=class_rank_on,
     )
+    # D4 share half (job-scheduling-fairness slice 5, activated by the
+    # gr506754 measurement): among candidates of the winning class, prefer
+    # the share — ``job_type`` refined by the ``params.pass`` band
+    # discriminator (:func:`_share_key_of`) — with the FEWEST running rows
+    # on this lane, *then* the aged-prio/queued_since/ref_id key. The
+    # materialize SMALL bands share one ``derived_drain`` job_type, so a
+    # job_type-granular share can't separate them: the sibling band that
+    # holds the capped lane starves the other for hours. The join feeds the
+    # ORDER BY so the overfetch window actually contains the under-running
+    # share's rows; the Python re-rank reads the same counts through
+    # ``running_by_share``. Runs only under the class order — the
+    # ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch keeps the pre-slice-2
+    # ORDER BY verbatim.
+    share_join_sql = ""
+    share_col_sql = "0"
+    share_order_sql = ""
+    share_params: tuple[Any, ...] = ()
+    if class_rank_on and claim_host is not None:
+        share_col_sql = "COALESCE(s.n, 0)"
+        share_order_sql = "share_running ASC, "
+        share_join_sql = """
+          LEFT JOIN (
+                SELECT r2.meta->>'job_type' AS sjt,
+                       COALESCE(r2.meta->'params'->>'pass', '') AS sps,
+                       count(*) AS n
+                  FROM refs r2
+                 WHERE r2.kind = 'job' AND r2.retired_at IS NULL
+                   AND r2.meta->>'executor' = %s
+                   AND r2.meta->>'lease_host' = %s
+                   AND EXISTS (
+                         SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                          WHERE rt2.ref_id = r2.ref_id
+                            AND t2.namespace = %s AND t2.value = %s
+                       )
+                 GROUP BY 1, 2
+              ) s ON s.sjt = r.meta->>'job_type'
+                 AND s.sps = COALESCE(r.meta->'params'->>'pass', '')"""
+        share_params = (executor, claim_host, STATUS_NAMESPACE, RUNNING)
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
-               {aged_prio_sql} AS aged_prio
+               {aged_prio_sql} AS aged_prio,
+               {share_col_sql} AS share_running
           FROM refs r
           CROSS JOIN LATERAL (
                 SELECT max(rt.created_at) AS qs
@@ -1312,7 +1388,7 @@ def claim_executor_jobs(
                             AND t3.namespace = %s AND t3.value = %s
                        )
                    AND COALESCE(r3.prio, %s)::float8 <> 1
-              ) t
+              ) t{share_join_sql}
          WHERE r.kind = 'job'
            AND r.retired_at IS NULL
            AND r.meta->>'executor' = %s
@@ -1335,7 +1411,8 @@ def claim_executor_jobs(
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
                ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}
-         ORDER BY claim_rank ASC, aged_prio ASC, q.qs ASC, r.ref_id ASC
+         ORDER BY claim_rank ASC, {share_order_sql}aged_prio ASC,
+                  q.qs ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
@@ -1349,6 +1426,7 @@ def claim_executor_jobs(
             STATUS_NAMESPACE,
             QUEUED,
             _DEFAULT_JOB_PRIO,
+            *share_params,
             executor,
             node,
             STATUS_NAMESPACE,
@@ -1383,7 +1461,6 @@ def claim_executor_jobs(
     # than 3 h on a live lane).
     age_step = claim_age_step_s()
     class_age = claim_class_age_s()
-    class_rank_on = claim_class_rank_enabled()
     now_utc = datetime.now(UTC)
 
     def _row_base(r: Any) -> int:
@@ -1406,7 +1483,7 @@ def claim_executor_jobs(
             qs = qs.replace(tzinfo=UTC)
         return max(0.0, (now_utc - qs).total_seconds())
 
-    def _order_key(r: Any) -> tuple[float, float, float, Any, int]:
+    def _order_key(r: Any) -> tuple[float, float, float, float, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -1423,28 +1500,42 @@ def claim_executor_jobs(
             rank, floor = 0.0, 1.5
         aged = max(prio - age / age_step, min(prio, floor)) if age_step > 0 else prio
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
+        # D4 share half: reads ``running_by_share`` as it stands NOW (the
+        # pick loop bumps it per claim), so a multi-claim batch
+        # round-robins the shares instead of draining one share's prefix.
+        share = (
+            float(running_by_share.get(_share_key(dict(r[2] or {})), 0))
+            if class_rank_on
+            else 0.0
+        )
         # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, rank, aged, r[5] or r[4], int(r[0]))
-
-    ranked = sorted(rows, key=_order_key)
+        return (-scarcity, rank, share, aged, r[5] or r[4], int(r[0]))
 
     fresh_claimed = 0
-    for r in ranked:
-        if fresh_claimed >= limit:
-            break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
+    remaining = sorted(rows, key=_order_key)
+    while remaining and fresh_claimed < limit:
+        # Pick the best row under the CURRENT share counts — popping
+        # argmin each time keeps a ``limit``-sized batch interleaving
+        # shares rather than claiming a statically-sorted prefix.
+        r = remaining.pop(
+            min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
+        )
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
         job_type = str(meta.get("job_type") or "")
         cap = caps.get(job_type)
         if cap is not None and running_by_type.get(job_type, 0) >= cap:
             continue  # hit the cap mid-claim — the SQL exclusion only sees the count at query time
         claim = _finish_claim(ref_id, title, meta, QUEUED, r[4])
-        if claim is not None:
-            claimed.append(claim)
-            fresh_claimed += 1
-            running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
+        if claim is None:
+            continue
+        claimed.append(claim)
+        fresh_claimed += 1
+        running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
+        share_key = _share_key(meta)
+        running_by_share[share_key] = running_by_share.get(share_key, 0) + 1
     return claimed
 
 

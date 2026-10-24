@@ -35,8 +35,13 @@ def _job(
     job_type: str = "x",
     status: str = "queued",
     executor: str = "job_inproc",
+    params: dict[str, Any] | None = None,
 ) -> int:
-    meta: dict[str, Any] = {"job_type": job_type, "executor": executor, "params": {}}
+    meta: dict[str, Any] = {
+        "job_type": job_type,
+        "executor": executor,
+        "params": dict(params or {}),
+    }
     if origin is not None:
         meta["origin"] = origin
     if status == "running":
@@ -317,3 +322,118 @@ def test_in_call_cap_counts_claims(store: Store) -> None:
         _job(store, origin="background", prio=8, job_type="twice")
     claimed = _claim(store, limit=5)
     assert len(claimed) == 2
+
+
+# ── D4 share half: round-robin by (job_type, params.pass) share ────────
+
+
+def test_share_prefers_band_with_fewest_running(store: Store) -> None:
+    """gr506754: a full summarize band sat 0-running for hours behind the
+    classify band's rows — both bands share job_type ``derived_drain``, so
+    FIFO-by-age let one band hold the capped lane. The share term
+    (fewest running per ``job_type``+``params.pass`` on this host) lets
+    the starved band claim the next free slot."""
+    _job(
+        store,
+        origin="background",
+        prio=8,
+        job_type="derived_drain",
+        status="running",
+        params={"pass": "classify"},
+    )
+    older_cls = _job(
+        store,
+        origin="background",
+        prio=8,
+        queued_s_ago=7200,
+        job_type="derived_drain",
+        params={"pass": "classify"},
+    )
+    summ = _job(
+        store,
+        origin="background",
+        prio=8,
+        job_type="derived_drain",
+        params={"pass": "llm_summarize"},
+    )
+    # summarize's share has 0 running vs classify's 1 — it claims the free
+    # slot ahead of the much-older classify row.
+    assert _claim(store, limit=1) == [summ]
+    assert isinstance(older_cls, int)
+
+
+def test_share_round_robins_within_one_claim(store: Store) -> None:
+    """One multi-claim call interleaves the shares rather than draining
+    the oldest band's prefix: pick order goes oldest → other share →
+    oldest — not oldest, second-oldest, third-oldest."""
+    cls1 = _job(
+        store,
+        origin="background",
+        prio=8,
+        queued_s_ago=7200,
+        job_type="derived_drain",
+        params={"pass": "classify"},
+    )
+    _job(
+        store,
+        origin="background",
+        prio=8,
+        queued_s_ago=7100,
+        job_type="derived_drain",
+        params={"pass": "classify"},
+    )
+    summ = _job(
+        store,
+        origin="background",
+        prio=8,
+        job_type="derived_drain",
+        params={"pass": "llm_summarize"},
+    )
+    # Pick 1: shares tie at 0 running → aged order → the older classify row.
+    # Pick 2: classify's share now has 1 running → summarize wins despite age.
+    assert _claim(store, limit=2) == [cls1, summ]
+
+
+def test_share_ignores_types_without_pass(store: Store) -> None:
+    """The same fewest-running share rule at plain job_type granularity:
+    a type with running rows yields the next claim to a type with none —
+    the ``params.pass`` discriminator only refines the key when present."""
+    _job(store, origin="background", prio=8, job_type="embed_batch", status="running")
+    old_other = _job(
+        store, origin="background", prio=8, queued_s_ago=7200, job_type="other"
+    )
+    _job(store, origin="background", prio=8, job_type="embed_batch")
+    # other's share has 0 running, embed_batch has 1 → the share term
+    # outranks aged order.
+    assert _claim(store, limit=1) == [old_other]
+
+
+def test_share_term_off_under_kill_switch(store: Store, monkeypatch: Any) -> None:
+    """``PRECIS_CLAIM_CLASS_RANK=0`` drops the share term with the class
+    order — the aged order claims the oldest row regardless of which
+    band holds the running slots."""
+    _job(
+        store,
+        origin="background",
+        prio=8,
+        job_type="derived_drain",
+        status="running",
+        params={"pass": "classify"},
+    )
+    older_cls = _job(
+        store,
+        origin="background",
+        prio=8,
+        queued_s_ago=7200,
+        job_type="derived_drain",
+        params={"pass": "classify"},
+    )
+    _job(
+        store,
+        origin="background",
+        prio=8,
+        job_type="derived_drain",
+        params={"pass": "llm_summarize"},
+    )
+    monkeypatch.setenv(CLAIM_CLASS_RANK_ENV, "0")
+    assert _claim(store, limit=1) == [older_cls]
