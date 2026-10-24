@@ -188,7 +188,7 @@ def _move_rule(store: Any, rule_id: int, direction: str) -> None:
         if not 0 <= j < len(ids):
             return
         ids[i], ids[j] = ids[j], ids[i]
-        conn.executemany(
+        conn.cursor().executemany(
             "UPDATE llm_keyword_routes SET position = %s, updated_at = now() "
             "WHERE id = %s",
             [(pos, rid) for pos, rid in enumerate(ids, 1)],

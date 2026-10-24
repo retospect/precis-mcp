@@ -55,12 +55,12 @@
           <form method="post" action="/llm/rules/move" class="inline">
             <input type="hidden" name="rule_id" value="{{ r.rule_id }}">
             <input type="hidden" name="direction" value="up">
-            <button class="text-[11px] text-fg-subtle hover:underline" {% if loop.first %}disabled{% endif %}>↑</button>
+            <button title="Move up (match earlier)" class="text-[11px] text-fg-subtle hover:underline" {% if loop.first %}disabled{% endif %}>↑</button>
           </form>
           <form method="post" action="/llm/rules/move" class="inline">
             <input type="hidden" name="rule_id" value="{{ r.rule_id }}">
             <input type="hidden" name="direction" value="down">
-            <button class="text-[11px] text-fg-subtle hover:underline" {% if loop.last %}disabled{% endif %}>↓</button>
+            <button title="Move down (match later)" class="text-[11px] text-fg-subtle hover:underline" {% if loop.last %}disabled{% endif %}>↓</button>
           </form>
           {% else %}
           <span class="text-[10px] text-fg-faint">code default</span>
@@ -78,7 +78,7 @@
   <summary class="text-sm font-medium cursor-pointer">Add a rule</summary>
   <form method="post" action="/llm/rules/add" class="mt-3 grid gap-2 sm:grid-cols-2 text-xs">
     <label class="flex flex-col gap-1">pattern
-      <input name="pattern" required maxlength="200"
+      <input name="pattern" required maxlength="200" placeholder="keyword or regex, e.g. proof"
              class="rounded border border-line bg-surface px-2 py-1 font-mono">
     </label>
     <label class="flex flex-col gap-1">target
@@ -93,13 +93,13 @@
       </div>
     </label>
     <label class="flex flex-col gap-1">scope: sources (comma list, blank = all)
-      <input name="sources" class="rounded border border-line bg-surface px-2 py-1 font-mono">
+      <input name="sources" placeholder="all sources (comma-separated)" class="rounded border border-line bg-surface px-2 py-1 font-mono">
     </label>
     <label class="flex flex-col gap-1">scope: tiers (comma list, blank = all)
-      <input name="tiers" class="rounded border border-line bg-surface px-2 py-1 font-mono">
+      <input name="tiers" placeholder="all tiers (comma-separated)" class="rounded border border-line bg-surface px-2 py-1 font-mono">
     </label>
     <label class="flex flex-col gap-1 sm:col-span-2">note
-      <input name="note" class="rounded border border-line bg-surface px-2 py-1">
+      <input name="note" placeholder="why this rule exists" class="rounded border border-line bg-surface px-2 py-1">
     </label>
     <label class="flex items-center gap-2">
       <input type="checkbox" name="is_regex"> pattern is a regex (whole-word literal otherwise)
@@ -112,11 +112,11 @@
   <summary class="text-sm font-medium cursor-pointer">Preview — which rule fires?</summary>
   <div class="mt-3 grid gap-2 sm:grid-cols-3 text-xs">
     <label class="flex flex-col gap-1 sm:col-span-2">sample text
-      <textarea id="kw-text" rows="3" class="rounded border border-line bg-surface px-2 py-1 font-mono"></textarea>
+      <textarea id="kw-text" rows="3" placeholder="sample prompt text to test against the rules" class="rounded border border-line bg-surface px-2 py-1 font-mono"></textarea>
     </label>
     <div class="grid gap-2">
       <label class="flex flex-col gap-1">source
-        <input id="kw-source" class="rounded border border-line bg-surface px-2 py-1 font-mono">
+        <input id="kw-source" placeholder="request source (optional)" class="rounded border border-line bg-surface px-2 py-1 font-mono">
       </label>
       <label class="flex flex-col gap-1">tier
         <select id="kw-tier" class="rounded border border-line bg-surface px-2 py-1 font-mono">

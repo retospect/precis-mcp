@@ -184,6 +184,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # echoing the open act; the stamp itself is real columns on refs/links.
         "revisions.trust_acts",
         "llm_call_log.features",
+        # 0237: a keyword rule's retarget in the ``llm.op.*`` override grammar
+        # — one of {"tier": s} | {"model": s} | {"chain": [rung…]} — read whole
+        # by keyword_route and handed to the router, never queried by key.
+        "llm_keyword_routes.target",
         "material_properties.allowed_values",
         # 0187: the legacy conditions bag survives for the compatibility
         # views; `meta` holds the escalation flags, the unit-conversion
@@ -308,6 +312,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "struct_runs.forces",
         "struct_runs.method",
         "struct_runs.params",
+        # 0238: one perceived pi system per (ref, pi_key) — ring ordinal
+        # lists, per-system atoms and a per-atom map; nested and variable,
+        # read whole by the structure fisheye, never queried by key.
+        "structure_pi.data",
         "summarizers.config",
         "tool_calls.arg_sample",
         "tool_calls.input_keys",
