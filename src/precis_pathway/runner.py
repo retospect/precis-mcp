@@ -382,7 +382,14 @@ def model_specs(
 ) -> list[tuple[str, str | None]]:
     """The ``(backend, model)`` pairs this config runs — ``cfg.mlip.specs()``,
     exposed so a caller (``quest.compute.dispatch_autocatpath``) can size its
-    fan-out without duplicating ``MLIPConfig.specs()``'s own logic."""
+    fan-out without duplicating ``MLIPConfig.specs()``'s own logic.
+
+    The checkpoint seam: which weights FILE a pair loads is decided in
+    :func:`run_seed_partial` — ``autocatpath.calculators.resolve_backend``
+    maps ``auto`` onto the installed ML backend, ``make_calculator`` loads
+    its checkpoint — and hashed for the validation manifest by
+    ``precis_pathway.manifest`` (``resolve_weights_path`` /
+    ``weights_sha256``)."""
     return _prep(config, force_backend).mlip.specs()
 
 
@@ -460,7 +467,12 @@ def run_seed_partial(
     ``pipeline.run()`` does inline for the spec at ``model_index`` (backend
     resolve + bulk-lattice relax to that potential) so a fanned-out seed job
     reproduces exactly what the monolith would have done for that unit —
-    then calls ``run_one_seed``.
+    then calls ``run_one_seed``. The backend resolve is the weights seam:
+    ``resolve_backend`` maps ``auto`` onto the installed ML backend and
+    ``make_calculator`` loads that backend's checkpoint; the sha256 of the
+    file that resolved is stamped for the validation manifest (D10) by
+    ``precis_pathway.manifest`` (``resolve_weights_path`` /
+    ``weights_sha256``).
 
     Returns a JSON-serialisable dict (no ASE ``Atoms`` leak): ``partial``
     (the raw ``run_one_seed`` result, ``model`` tag folded in — same shape
@@ -1954,8 +1966,6 @@ def run_kinetics_sweep_subprocess(
             return
     if "kinetics_sweep" in payload:
         results_json["kinetics_sweep"] = payload["kinetics_sweep"]
-        if isinstance(payload.get("kinetics_v2"), dict):
-            results_json["kinetics_v2"] = payload["kinetics_v2"]
     else:
         results_json["kinetics_sweep_error"] = payload.get(
             "kinetics_sweep_error", "kinetics sweep child returned no result"
@@ -2007,8 +2017,6 @@ def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) ->
             **({"tpd": tpd} if isinstance(tpd, dict) and tpd.get("offsets") else {}),
         )
         results_json["kinetics_sweep"] = payload
-        if isinstance(payload.get("kinetics_v2"), dict):
-            results_json["kinetics_v2"] = payload["kinetics_v2"]
     except Exception as exc:
         log.warning("autocatpath kinetics sweep failed", exc_info=True)
         results_json["kinetics_sweep_error"] = (
@@ -2030,11 +2038,7 @@ def _kinetics_sweep_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) 
     try:
         _run_kinetics_sweep(req["config"], results_json)
         payload = (
-            {
-                k: results_json[k]
-                for k in ("kinetics_sweep", "kinetics_v2")
-                if k in results_json
-            }
+            {"kinetics_sweep": results_json["kinetics_sweep"]}
             if "kinetics_sweep" in results_json
             else {
                 "kinetics_sweep_error": results_json.get(

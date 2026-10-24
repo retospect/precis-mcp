@@ -756,3 +756,34 @@ def test_kinetics_view_reads_the_v2_record():
     body2 = kinetics_text(meta2)
     assert "Q/K (overall NH3 formation) = 1.00e-31" in body2
     assert f"basis {('ab' * 32)[:12]}" in body2  # _environment_line truncates
+
+
+def test_sweep_path_names_no_kinetics_v2_dead_branch():
+    """gr514391: ``kinetics.sweep`` returns the sweep payload only — it
+    never sets ``kinetics_v2``, so a read of that key in the sweep path is
+    a dead branch with no producer (the D8 record reaches ``results_json``
+    from ``run_kinetics``'s solve and the TPD leg, not the sweep).  Pins
+    the removal: the three sweep functions must not name the key at all —
+    read as source (not import) because ``precis_pathway.runner`` pulls
+    the engine at module level, which this file deliberately avoids."""
+    import ast
+
+    src = (
+        Path(__file__).parent.parent / "src" / "precis_pathway" / "runner.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    sweep_fns = {
+        "run_kinetics_sweep_subprocess",
+        "_run_kinetics_sweep",
+        "_kinetics_sweep_child",
+    }
+    found = 0
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in sweep_fns:
+            found += 1
+            seg = ast.get_source_segment(src, node) or ""
+            assert "kinetics_v2" not in seg, (
+                f"{node.name} names kinetics_v2 — the engine sweep never "
+                "produces that key; the branch is dead (gr514391)"
+            )
+    assert found == len(sweep_fns), "a sweep function was renamed or removed"

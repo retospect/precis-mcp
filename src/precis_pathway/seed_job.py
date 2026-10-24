@@ -37,6 +37,11 @@ a terminal result, does exactly ``_dispatch``'s post-run tail (same
 ``set_meta`` shape, same ``job_summary`` chunk) so a caller reading
 ``meta.partial`` can't tell which protocol produced it; ``_kill`` is the
 wall-clock backstop ``ssh_node`` calls past ``meta.deadline``.
+
+The weights seam is NOT here: which checkpoint a unit loads is resolved
+inside ``runner.run_seed_partial`` (``resolve_backend`` +
+``make_calculator``); ``precis_pathway.manifest`` hashes that file for the
+validation manifest (``weights_sha256``).
 """
 
 from __future__ import annotations

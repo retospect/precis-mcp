@@ -65,15 +65,73 @@ def _solve_tof(record: dict[str, Any], p_bar: float) -> float | None:
     return None
 
 
+def _kinetics_view(meta: dict[str, Any]) -> dict[str, Any]:
+    """The D8 flip's read of a stored meta (gr514392). The same lift
+    ``precis_pathway._dispatch_common._kinetics_scalars`` applies to the
+    solve payload — the ``kinetics_v2`` record first, the v1 ``kinetics``
+    block only where the record lacks the field — fed whatever records the
+    meta carries (top-level keys, or a pathway ref's nested ``results``).
+    ``log_tof`` and its band arrive only on a TRUSTED solve, exactly the
+    harvest's gate; the record's own ``environment`` block supplies
+    ``T_K`` and the ``{species: bar}`` pressure map a v1 ``kinetics``
+    dict used to state. ``site_area_A2`` is a v1-only field (the record
+    does not carry it): it is lifted off whichever block has it, and a
+    post-retire meta without it is an honest refusal, not a guess.
+    Reached lazily — ``precis_pathway`` is a sibling plugin; without it,
+    or on a record the flip cannot read, the view is empty and the v1
+    read below is unchanged."""
+    try:
+        from precis_pathway._dispatch_common import _kinetics_scalars
+    except ImportError:
+        return {}
+    stored = meta.get("results")
+    results = dict(stored) if isinstance(stored, dict) else {}
+    for key in ("kinetics", "kinetics_v2", "kinetics_sweep", "kinetics_error"):
+        if key in meta:
+            results[key] = meta[key]
+    if not any(results.get(k) for k in ("kinetics", "kinetics_v2", "kinetics_error")):
+        return {}
+    try:
+        scalars = _kinetics_scalars(results)
+    except Exception:
+        return {}
+    out: dict[str, Any] = {
+        k: scalars[k]
+        for k in ("tof", "log_tof", "log_tof_p5", "log_tof_p95")
+        if k in scalars
+    }
+    env = None
+    for rec in (results.get("kinetics_v2"), results.get("kinetics")):
+        if not isinstance(rec, dict):
+            continue
+        if env is None and isinstance(rec.get("environment"), dict):
+            env = rec["environment"]
+        if out.get("site_area_A2") is None:
+            area = _num(rec.get("site_area_A2"))
+            if area is not None:
+                out["site_area_A2"] = area
+    if isinstance(env, dict):
+        t = _num(env.get("T"))
+        if t is not None:
+            out["T_K"] = t
+        gases = env.get("gases")
+        inputs = gases.get("inputs") if isinstance(gases, dict) else None
+        if isinstance(inputs, dict) and inputs:
+            out["p_bar"] = dict(inputs)
+    return out
+
+
 def _record_from_meta(ref: Any) -> dict[str, Any]:
     """The solve record a serving candidate's meta carries: the quest
     scalars (``tof``, ``log_tof*``) plus the solve's stated conditions
     (``site_area_A2`` Å², ``T_K``, ``p_bar`` — a scalar or a
-    ``{species: bar}`` map — and ``phase``)."""
+    ``{species: bar}`` map — and ``phase``). The D8 record is read first
+    (:func:`_kinetics_view`), the v1 ``kinetics`` dict only fills the gaps
+    it leaves — the merge order the D8 reader flip set."""
     meta = dict(ref.meta or {})
     kin = meta.get("kinetics")
     kin = dict(kin) if isinstance(kin, dict) else {}
-    merged = {**kin, **meta}
+    merged = {**kin, **_kinetics_view(meta), **meta}
 
     def pick(*keys: str) -> float | None:
         for k in keys:

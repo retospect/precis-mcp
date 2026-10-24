@@ -410,6 +410,81 @@ def test_wall_rate_refusals(store, taxonomy) -> None:
         wall_rate.op_wall_rate(store, tree, {**op, "source": f"quest:{qid3}"})
 
 
+def _v2_solve_meta(bep_flux_share: float = 0.0) -> dict:
+    """The post-flip stored-meta shape (gr514392): no top-level ``kinetics``
+    v1 dict — the D8 record rides ``meta.kinetics_v2`` and the v1 block
+    shrinks to what only it carries (``site_area_A2``, nested under
+    ``meta.results`` the way a pathway ref stores it)."""
+    rec: dict = {
+        "tof_chain": 1.5,
+        "tof_mf": 2.0,
+        "tof_kmc": None,
+        "bep_flux_share": bep_flux_share,
+        "warnings": [],
+        "environment": {
+            "T": 500.0,
+            "p_total": 0.5,
+            "gases": {"inputs": {"co": 0.5}, "outputs": {}, "inerts": {}},
+        },
+        "uncertainty": {
+            "log_tof_p5": math.log10(1.0),
+            "log_tof_p95": math.log10(4.0),
+        },
+    }
+    return {
+        "kinetics_v2": rec,
+        "results": {
+            "kinetics": {"site_area_A2": 4.0},
+            "kinetics_v2": rec,
+        },
+    }
+
+
+def test_wall_rate_reads_the_v2_record(store, taxonomy) -> None:
+    """gr514392: the D8 flip's stored-meta shape — the record at
+    ``meta.kinetics_v2`` with no v1 ``kinetics`` dict — still binds:
+    the ranked TOF is ``tof_mf`` (outranking ``tof_chain``), ``log_tof``
+    derives through the harvest's own trust gate, and T_K/p_bar come
+    off the record's ``environment`` block."""
+    qid = _quest_with_solve(store, _v2_solve_meta())
+    tree = _se_tree(store)
+    wall_rate.op_wall_rate(
+        store,
+        tree,
+        {
+            "op": "wall_rate",
+            "block": "cat",
+            "datum": "patch:cat.bottom@0,0+1e-3x1e-3",
+            "source": f"quest:{qid}",
+            "species": "co",
+        },
+    )
+    m = next(m for m in tree.measures if m.name == "co/wall-rate-constant")
+    assert m.value == pytest.approx(_expected_ks(2.0), rel=1e-12)
+    assert m.min_value == pytest.approx(_expected_ks(1.0), rel=1e-12)
+    assert m.max_value == pytest.approx(_expected_ks(4.0), rel=1e-12)
+
+
+def test_wall_rate_v2_record_keeps_the_trust_gate(store, taxonomy) -> None:
+    """gr514392: a BEP-heavy record is untrusted through the stored-meta
+    read exactly as the harvest gated it — no derived ``log_tof``, so
+    the op refuses instead of binding a predicted-barrier TOF."""
+    qid = _quest_with_solve(store, _v2_solve_meta(bep_flux_share=0.9))
+    tree = _se_tree(store)
+    with pytest.raises(BadInput, match="untrusted|log_tof"):
+        wall_rate.op_wall_rate(
+            store,
+            tree,
+            {
+                "op": "wall_rate",
+                "block": "cat",
+                "datum": "patch:cat.bottom@0,0+1e-3x1e-3",
+                "source": f"quest:{qid}",
+                "species": "co",
+            },
+        )
+
+
 def test_wall_rate_apparent_order_half(store, taxonomy, monkeypatch) -> None:
     """TOF ∝ p^0.5 → α = 0.5 within 1e-6, and the card's apparent_order
     line fails with the X ≲ 0.2 wording."""

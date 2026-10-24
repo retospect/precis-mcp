@@ -828,12 +828,10 @@ class TpdComparison:                # one per adsorbate, D11
 slice 2 none; slice 3 `_kinetics_scalars` lifts `bep_flux_share` and the
 band from v2; slice 4 `_kinetics_scalars` lifts `tof`, `log_tof`,
 `orders`, `q_over_k`, `drc_top` from v2 and `kinetics_text` + `view=
-'kinetics'` render v2; slice 10 retires the v1 writer (readers fall back
-to v2 only; the harvest keys move with slice 4).
-
-> Naming clash (noted 2026-10-24): the "slice 10" above is the v1-writer
-> retirement (kin-v1retire-catpath.md), not §Slices' slice 10, which is the
-> validation manifest — same number, different numbering.
+'kinetics'` render v2; the v1-writer retirement (`kin-v1retire-catpath.md`,
+its own numbering — not §Slices' slice 10, which is the manifest) retires
+the v1 writer (readers fall back to v2 only; the harvest keys move with
+slice 4).
 
 precis `_kinetics_scalars` lifts `tof` (= `tof_kmc.median` when present,
 else `tof_mf`), `log_tof` band, `kinetics_method`, `bep_flux_share`,
@@ -907,7 +905,8 @@ tolerances are nullable until slices 5 and 9 exist.
 @dataclass(frozen=True, slots=True)
 class ValidationManifest:
     code: Code            # precis_sha (PRECIS_GIT_SHA or the mounted checkout's HEAD), autocatpath_version, autocatpath_sha (the tag commit of the pin)
-    lock: Lock            # uv_lock_sha256; mlip: {backend, model, weights_sha256, task, dtype}
+    lock: Lock            # uv_lock_sha256; mlip: one {backend, model, weights_sha256, task, dtype} per
+                          #   model_index of mlip.specs() — position-keyed, the tag resolves `auto`
     platform: Platform    # arch (arm64|x86_64), os (linux|darwin), accelerator (cpu | cuda:<class>), torch, numpy, numba, blas
     seeds: Seeds          # search_seeds, kinetics_seed, kmc_replica_seeds (derived: seed ⊕ replica index), lhs_seed
     inputs: Inputs        # slab_extxyz_sha256, network {digest, template}, environment (D1, verbatim) + sha256, provider {id, params},
@@ -935,7 +934,15 @@ comparable under every existing rule; the converse is not required.
 **Storage.** On the result ref: `meta.validation_manifest` (the record)
 and `meta.manifest_id`; on every job that produced part of it: `meta.
 manifest_id` (the job's existing `meta` dict, no new column). The D8
-record carries `manifest_id`. A `view='manifest'` renders it.
+record carries `manifest_id`. A `view='manifest'` renders it. Every
+writer, named: `autocatpath_explore` and `autocatpath_aggregate` stamp
+through `_dispatch_common.finish` (the aggregate folds the seed lane's
+`weights_sha256` stamps in keyed by `model_index`, above);
+`autocatpath_kinetics` restamps `meta.validation_manifest` wholesale and
+must feed the stored `lock.mlip[*].weights_sha256` pins back in —
+rebuilding without them mints a different `manifest_id` and clobbers the
+seed pins; `autocatpath_revalidate` writes `meta.revalidation[<id>]`,
+never the manifest.
 
 **Re-validate.** `put(kind='pathway', id=<handle>, mode='revalidate',
 args={'manifest': '<id>'})` (or the job directly) mints
@@ -1337,9 +1344,15 @@ where the paper gives them and records `theta0` otherwise.
     is deploy's `/opt/precis/constraints.txt` export (`lock_source`), so a
     manifest stamped on a dev checkout refuses on a host and vice versa.
     `weights_sha256` is resolved on the stamping host (the aggregate's CPU
-    worker usually has no checkpoint, so it is `None` and stated); the
-    seed jobs stamping their own weights hash is open. Nothing auto-mints
-    `autocatpath_revalidate`.
+    worker usually has no checkpoint, so it is `None` and stated); seed
+    jobs stamp their own weights hash where the checkpoint actually
+    exists, and the aggregate folds those stamps in keyed by
+    **`model_index`** — never by the `backend:model` tag, which the seed
+    side resolves (`auto` → `mace`) while `model_specs` and the manifest
+    see the unresolved `auto`, so a tag key would silently miss. A stamp
+    disagreement (two seeds, or a seed vs a locatable host hash) refuses
+    to stamp rather than pick one (`manifest.WeightsMismatch`). Nothing
+    auto-mints `autocatpath_revalidate`.
     Manual post-deploy check (macOS arm64, not automated): (1) pick a
     pathway whose `view='manifest'` shows a manifest and a `reproduced`
     same-platform re-validation from a Linux worker; (2) on the Mac, in a
