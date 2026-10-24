@@ -162,13 +162,15 @@ def test_pi_key_bond_order_change() -> None:
 @pytest.mark.parametrize(
     "extent,budget",
     [
-        ("kwd", 25),
-        ("summary", 60),
-        # 175: Reto approved 2026-10-24 -- CI renders ~155 (longer DB ids in a fresh CI db)
+        # Headroom for CI, which renders 4-5 tokens over local (longer DB ids
+        # in a fresh CI db); raised per Reto 2026-10-24 ("raise token budget
+        # as needed for this"): summary measured 64 and verbatim ~155 in CI.
+        ("kwd", 35),
+        ("summary", 70),
         ("verbatim", 175),
-        ("fisheye", 400),
-        ("fisheye+1hop", 600),
-        ("fisheye+2hop", 650),
+        ("fisheye", 420),
+        ("fisheye+1hop", 630),
+        ("fisheye+2hop", 680),
     ],
 )
 def test_token_budgets(se: SeHandler, extent: str, budget: int) -> None:
