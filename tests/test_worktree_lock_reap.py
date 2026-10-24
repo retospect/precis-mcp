@@ -1157,18 +1157,81 @@ def _reap_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-def _subagent_event(primary: Path, event: str, agent_id: str) -> None:
-    script = primary / "scripts" / "hooks" / "subagent-task-state.py"
+def _subagent_event(tree: Path, event: str, agent_id: str) -> None:
+    """Fire the real SubagentStart/SubagentStop hook with its project dir set
+    to <tree> — the recorded `cwd` is what scopes the marker to that tree.
+    Run as a plain subprocess, so no `claude` ancestor exists and the marker
+    carries no pid (the no-pid path is exercised too)."""
+    script = tree / "scripts" / "hooks" / "subagent-task-state.py"
     result = subprocess.run(
-        [str(script), event, str(primary)],
-        cwd=str(primary),
-        env={**_test_env(), "CLAUDE_PROJECT_DIR": str(primary)},
+        [str(script), event, str(tree)],
+        cwd=str(tree),
+        env={**_test_env(), "CLAUDE_PROJECT_DIR": str(tree)},
         input=json.dumps({"agent_id": agent_id}),
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
+
+
+def _task_state_dir(primary: Path) -> Path:
+    return primary / ".git" / "precis-agent-tasks"
+
+
+def _write_marker(primary: Path, payload: dict) -> Path:
+    state = _task_state_dir(primary)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    marker = state / f"{payload['agent_id']}.json"
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    return marker
+
+
+def _check_task(primary: Path, path: Path) -> tuple[int, str]:
+    """Run the staged helper's `check` verb against <path>: (rc, stdout)."""
+    script = primary / "scripts" / "hooks" / "subagent-task-state.py"
+    result = subprocess.run(
+        ["python3", str(script), "check", str(path)],
+        cwd=str(primary),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, result.stdout.strip()
+
+
+def _utc_now_z() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _spawn_task_session(
+    primary: Path, agent_id: str, tree: Path, claude_bin: Path, tmp_path: Path
+) -> subprocess.Popen:
+    """A live fake `claude` session (real binary, comm == "claude") that runs
+    the real `start` hook for <agent_id> with <tree> as the project dir, then
+    stays alive — so the marker records its pid and `pid <that pid>` locks
+    can stand in for the harness's own agent-tree lock."""
+    hook = primary / "scripts" / "hooks" / "subagent-task-state.py"
+    inner = tmp_path / f"task-session-{agent_id}.sh"
+    inner.write_text(
+        f"printf '%s' '{json.dumps({'agent_id': agent_id})}' "
+        f'| "{hook}" start "{tree}"\nsleep 300\n',
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen([str(claude_bin), str(inner)], env=_test_env())
+    marker = _task_state_dir(primary) / f"{agent_id}.json"
+
+    def _marker_has_pid() -> bool:
+        try:
+            return json.loads(marker.read_text(encoding="utf-8")).get("pid") == proc.pid
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    assert _wait_for(_marker_has_pid), (
+        f"marker for {agent_id} never recorded the fake session pid {proc.pid}"
+    )
+    return proc
 
 
 def test_subagent_lifecycle_hooks_track_task_ids() -> None:
@@ -1187,17 +1250,52 @@ def test_subagent_lifecycle_hooks_track_task_ids() -> None:
         )
 
 
-def test_live_subagent_task_blocks_worktree_reaping(
+def test_subagent_task_marks_only_its_own_tree(
     guard_repo: dict[str, Path],
 ) -> None:
+    """gr513174 cause 1: a marker written by a session in the primary must
+    mark ONLY the primary — the whole-repo read it used to get is what froze
+    the reaper on every tree. B (merged + clean, unrelated) stays
+    safe_remove and reaps while the task is live."""
     primary, b = guard_repo["primary"], guard_repo["b"]
     reap = primary / "scripts" / "reap-worktrees"
     inflight = primary / "scripts" / "inflight"
     _subagent_event(primary, "start", "task-live-123")
     try:
+        out = _run([str(inflight), "--json"], primary).stdout
+        row = _bucket_for(out, primary)
+        assert row["session"] == "live-task#task-live-123", row
+        row_b = _bucket_for(out, b)
+        assert row_b["bucket"] == "safe_remove", row_b
+        assert row_b["session"] == "—", row_b
+
+        result = subprocess.run(
+            ["bash", str(reap)],
+            cwd=str(primary),
+            env=_reap_env(PRECIS_REAP_GRACE_SECONDS="0"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        assert not b.exists()
+    finally:
+        _subagent_event(primary, "stop", "task-live-123")
+
+
+def test_subagent_task_in_tree_blocks_that_tree(
+    guard_repo: dict[str, Path],
+) -> None:
+    """The scoped check must still protect the tree the task actually runs
+    in: a marker whose cwd is B keeps B live_subagent and off the reaper."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+    inflight = primary / "scripts" / "inflight"
+    _subagent_event(b, "start", "task-b-1")
+    try:
         row = _bucket_for(_run([str(inflight), "--json"], primary).stdout, b)
         assert row["bucket"] == "live_subagent", row
-        assert row["session"] == "live-task#task-live-123", row
+        assert row["session"] == "live-task#task-b-1", row
 
         result = subprocess.run(
             ["bash", str(reap)],
@@ -1210,12 +1308,92 @@ def test_live_subagent_task_blocks_worktree_reaping(
         assert result.returncode == 0, result.stderr
         assert b.exists()
     finally:
-        _subagent_event(primary, "stop", "task-live-123")
+        _subagent_event(b, "stop", "task-b-1")
+
+
+def test_stale_markers_are_ignored_and_unlinked(
+    guard_repo: dict[str, Path],
+) -> None:
+    """Markers that cannot describe a live task — a dead recorded pid, an
+    age past the helper's bound, the old {"agent_id"}-only shape, and a
+    corrupt file — are ignored on read AND removed, so they cannot freeze
+    the reaper again (gr513174)."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    dead = subprocess.Popen(["sleep", "60"])
+    dead.terminate()
+    dead.wait(timeout=10)
+    aged = (
+        (datetime.now(UTC) - timedelta(hours=7))
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+    markers = [
+        _write_marker(
+            primary,
+            {
+                "agent_id": "task-dead",
+                "cwd": str(b.resolve()),
+                "pid": dead.pid,
+                "started_at": _utc_now_z(),
+            },
+        ),
+        _write_marker(
+            primary,
+            {
+                "agent_id": "task-aged",
+                "cwd": str(b.resolve()),
+                "pid": os.getpid(),
+                "started_at": aged,
+            },
+        ),
+        _write_marker(primary, {"agent_id": "task-legacy"}),
+    ]
+    corrupt = _task_state_dir(primary) / "task-corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    markers.append(corrupt)
+
+    rc, out = _check_task(primary, b)
+    assert (rc, out) == (1, "")
+    for marker in markers:
+        assert not marker.exists(), marker
+
+    row = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+    )
+    assert row["bucket"] == "safe_remove", row
+
+
+def test_marker_records_session_pid_tree_and_start(
+    repo_trio: dict[str, Path], tmp_path: Path
+) -> None:
+    """The `start` hook run under a real `claude`-named session records the
+    durable session pid (not the transient wrapper's), the project dir it was
+    invoked with, and a Z-suffixed UTC timestamp — the fields scoping needs."""
+    primary, b, a = repo_trio["primary"], repo_trio["b"], repo_trio["a"]
+    claude_bin = _make_fake_claude_binary(tmp_path)
+    session = _spawn_task_session(primary, "task-fields", b, claude_bin, tmp_path)
+    try:
+        marker = _task_state_dir(primary) / "task-fields.json"
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["pid"] == session.pid, data
+        assert data["cwd"] == str(b.resolve()), data
+        datetime.fromisoformat(data["started_at"].replace("Z", "+00:00"))
+
+        assert _check_task(primary, b) == (0, "task-fields")
+        assert _check_task(primary, a) == (1, "")
+    finally:
+        session.terminate()
+        session.wait(timeout=10)
+        _subagent_event(b, "stop", "task-fields")
 
 
 def test_take_agent_refuses_a_live_subagent_task(
-    repo_trio: dict[str, Path],
+    repo_trio: dict[str, Path], tmp_path: Path
 ) -> None:
+    """A worktree-isolated agent tree never has the marker's cwd (the
+    SubagentStart hook fires in the PARENT session's tree); it is covered by
+    the lock its parent session's pid holds on it — the `pid <N>` shape the
+    harness itself writes."""
     primary, caller = repo_trio["primary"], repo_trio["a"]
     agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
     _git(
@@ -1228,8 +1406,19 @@ def test_take_agent_refuses_a_live_subagent_task(
         str(agent),
         "main",
     )
-    _subagent_event(primary, "start", "task-live-take")
+    claude_bin = _make_fake_claude_binary(tmp_path)
+    session = _spawn_task_session(
+        primary, "task-live-take", primary, claude_bin, tmp_path
+    )
     try:
+        _git(
+            primary,
+            "worktree",
+            "lock",
+            str(agent),
+            "--reason",
+            f"claude agent a1b2c3 (pid {session.pid})",
+        )
         result = subprocess.run(
             ["bash", str(TAKE_AGENT_SRC), "--discard", "agent-a1b2c3"],
             cwd=str(caller),
@@ -1242,7 +1431,10 @@ def test_take_agent_refuses_a_live_subagent_task(
         assert "active subagent task task-live-take" in result.stderr
         assert agent.exists()
     finally:
+        session.terminate()
+        session.wait(timeout=10)
         _subagent_event(primary, "stop", "task-live-take")
+        _git(primary, "worktree", "unlock", str(agent))
 
 
 def test_untracked_agent_tree_needs_judgment(

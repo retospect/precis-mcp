@@ -23,7 +23,6 @@
   "scripts/hooks/guard-commit-on-main.py::_repo_root::subprocess.run": 1,
   "scripts/hooks/guard-sealed-migration.py::_sealed::subprocess.run": 2,
   "scripts/hooks/guard-worktree-path.py::_git::subprocess.run": 1,
-  "scripts/hooks/subagent-task-state.py::_common_dir::subprocess.run": 1,
   "scripts/lib/check-entry-points.py::_reinstall::subprocess.run": 1,
   "scripts/lib/devin_trust.py::add::fcntl.flock": 1,
   "scripts/lib/fleet_authority.py::_git::subprocess.run": 1,

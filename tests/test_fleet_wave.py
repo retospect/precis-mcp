@@ -181,12 +181,17 @@ def _worktree(env: dict[str, str], name: str) -> Path:
     return wt
 
 
-def _subagent_event(env: dict[str, str], event: str, agent_id: str) -> None:
+def _subagent_event(
+    env: dict[str, str], event: str, agent_id: str, root: Path | None = None
+) -> None:
+    """Fire the real SubagentStart/SubagentStop hook; <root> is the tree the
+    marker scopes to (the hook's project dir), defaulting to the repo root."""
     helper = REPO / "scripts" / "hooks" / "subagent-task-state.py"
+    tree = root or Path(env["CWD"])
     proc = subprocess.run(
-        [str(helper), event, env["CWD"]],
-        cwd=env["CWD"],
-        env={**env, "CLAUDE_PROJECT_DIR": env["CWD"]},
+        [str(helper), event, str(tree)],
+        cwd=str(tree),
+        env={**env, "CLAUDE_PROJECT_DIR": str(tree)},
         input=json.dumps({"agent_id": agent_id}),
         capture_output=True,
         text=True,
@@ -428,7 +433,7 @@ def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
 def test_close_refuses_while_a_subagent_task_is_live(env: dict[str, str]) -> None:
     wt = _worktree(env, "subagent-parent")
     _windows(env, {"claude-subagent-parent": IDLE})
-    _subagent_event(env, "start", "task-live-close")
+    _subagent_event(env, "start", "task-live-close", root=wt)
     try:
         proc = _run(env, "close", "subagent-parent")
         assert proc.returncode == 1
@@ -436,7 +441,18 @@ def test_close_refuses_while_a_subagent_task_is_live(env: dict[str, str]) -> Non
         assert wt.exists()
         assert not [c for c in _tmux_calls(env) if c[0] == "kill-window"]
     finally:
-        _subagent_event(env, "stop", "task-live-close")
+        _subagent_event(env, "stop", "task-live-close", root=wt)
+
+    # gr513174: a task scoped to ANOTHER tree must not hold this one — the
+    # close goes through and the tree is removed.
+    _subagent_event(env, "start", "task-elsewhere")
+    try:
+        proc = _run(env, "close", "subagent-parent")
+        assert "active subagent task" not in proc.stdout
+        assert "removed: subagent-parent" in proc.stdout
+        assert not wt.exists()
+    finally:
+        _subagent_event(env, "stop", "task-elsewhere")
 
 
 def test_close_refuses_unlanded_commit_and_carries_on(env: dict[str, str]) -> None:

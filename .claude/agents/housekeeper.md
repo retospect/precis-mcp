@@ -34,8 +34,8 @@ then remove.
 ## What you MUST NOT do — hand back untouched
 - **`live_session`** — a Claude session still holds the lock. Never remove,
   never even suggest it.
-- **`live_subagent`** — an active subagent task is using this repository. Never
-  remove worktrees; wait for the task to stop.
+- **`live_subagent`** — an active subagent task is using this worktree. Never
+  remove it; wait for the task to stop.
 - **`needs_judgment`** — a dirty tree, untracked agent tree, or an
   unidentifiable lock. You cannot tell disposable scratch apart from real
   unshipped work from a diffstat alone. Pass these back verbatim (name, path,

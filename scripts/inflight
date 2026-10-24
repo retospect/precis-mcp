@@ -11,7 +11,7 @@
 # Columns:
 #   WORKTREE   basename ( * = the one you're in; "main" = the primary checkout )
 #   SESSION    live#<pid>  — a Claude session holds the worktree lock and is alive
-#              live-task#<id> — a Claude subagent task is active in this repository
+#              live-task#<id> — a Claude subagent task is active in this worktree
 #              dead-lock#<pid> — locked by a pid that is gone (safe to reap)
 #              —           — no lock
 #   DIRTY      count of tracked-modified files (+N = untracked), or "clean"
@@ -35,7 +35,7 @@
 #                               #   base            the primary branch, not a candidate
 #                               #   self            the worktree you're calling from
 #                               #   live_session    a claude session still holds the lock
-#                               #   live_subagent   a subagent task is active in the repository
+#                               #   live_subagent   a subagent task is active in this worktree
 #                               #   needs_judgment  dirty tree (capped diffstat), or a lock with no
 #                               #                   parseable `pid <N>`, or an untracked agent tree
 #                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
@@ -69,10 +69,35 @@ HERE=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 # (git refuses to `worktree remove` it anyway, but the reaper/cleanup must not
 # even try — and its dry-run must not list it).
 PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk 'NR == 1 {print $2}')
-ACTIVE_TASK_ID=""
+# Live subagent-task markers, once for the whole table (gr513174: markers
+# are per-TREE — a task in tree A must not mark tree B live). Each line is
+# `agent_id<TAB>cwd<TAB>pid`; stale markers (old shape, dead pid, older than
+# the helper's bound) are pruned by the helper itself on the way out.
+TASK_IDS=() TASK_CWDS=() TASK_PIDS=()
 if [ -f "$SCRIPT_DIR/hooks/subagent-task-state.py" ]; then
-  ACTIVE_TASK_ID=$(python3 "$SCRIPT_DIR/hooks/subagent-task-state.py" check "$HERE" 2>/dev/null || true)
+  while IFS=$'\t' read -r _tid _tcwd _tpid; do
+    [ -z "$_tid" ] && continue
+    TASK_IDS+=("$_tid"); TASK_CWDS+=("$_tcwd"); TASK_PIDS+=("$_tpid")
+  done < <(python3 "$SCRIPT_DIR/hooks/subagent-task-state.py" list "$HERE" 2>/dev/null || true)
 fi
+
+# task_for <path> <lock-reason> — the marker matching check's scope: a task
+# belongs to the worktree its session runs in, and to a tree that session's
+# pid holds the `git worktree lock` on (a worktree-isolated agent child is
+# locked "claude agent <id> (pid <parent-pid>)"). Prints the first match.
+task_for() {
+  local p=$1 locked=$2 lpid='' i
+  [[ "$locked" =~ pid[[:space:]]+([0-9]+) ]] && lpid="${BASH_REMATCH[1]}"
+  for i in "${!TASK_IDS[@]}"; do
+    [ -z "${TASK_IDS[$i]:-}" ] && continue
+    if [ "${TASK_CWDS[$i]:-}" = "$p" ]; then
+      printf '%s' "${TASK_IDS[$i]}"; return
+    fi
+    if [ -n "$lpid" ] && [ "${TASK_PIDS[$i]:-}" = "$lpid" ]; then
+      printf '%s' "${TASK_IDS[$i]}"; return
+    fi
+  done
+}
 
 trunc() { # trunc <string> <max>
   local s=$1 n=$2
@@ -164,7 +189,10 @@ emit() { # emit <path> <head> <branch> <locked>
   if [ "$branch" = "$BASE" ]; then name=$BASE; else name=$(basename "$path"); fi
   mark=' '; [ "$path" = "$HERE" ] && mark='*'
   sess=$(session_field "$locked")
-  task_id=$ACTIVE_TASK_ID
+  # Canonicalize like the marker's `cwd` (Path.resolve()) so the compare is
+  # not fooled by a symlinked parent (e.g. /var -> /private/var on macOS).
+  local canon; canon=$(cd "$path" 2>/dev/null && pwd -P || printf '%s' "$path")
+  task_id=$(task_for "$canon" "$locked")
   [ -n "$task_id" ] && sess="live-task#${task_id}"
   agent_tree=0
   case "$name:$branch" in
