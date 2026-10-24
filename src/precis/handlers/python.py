@@ -276,7 +276,25 @@ class PythonHandler(Handler):
     stores_opaque_text: ClassVar[bool] = True
     #: ``args=`` keys one verb reads (dispatch gates callers on the
     #: derived ``ARGS_KEYS``; test_dispatch_args_keys pins the pair).
-    ARGS: ClassVar[dict[str, ArgsSpec]] = {"get": ArgsSpec({"run"})}
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec(
+            {
+                "run",
+                "expected_root",
+                "entry",
+                "depth",
+                "max_results",
+                "base",
+                "head",
+                "cross_repo",
+                "argv",
+                "env",
+                "timeout",
+                "max_events",
+                "expand_stdlib",
+            }
+        )
+    }
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="python",
@@ -390,6 +408,22 @@ class PythonHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # Declaring ``args`` makes dispatch forward ``args=`` whole instead
+        # of flattening it into the named kwargs, so fold the named keys
+        # back in here (``run`` is read straight from args).
+        extra = dict(args or {})
+        expected_root = extra.get("expected_root", expected_root)
+        entry = extra.get("entry", entry)
+        depth = extra.get("depth", depth)
+        max_results = extra.get("max_results", max_results)
+        base = extra.get("base", base)
+        head = extra.get("head", head)
+        cross_repo = extra.get("cross_repo", cross_repo)
+        argv = extra.get("argv", argv)
+        env = extra.get("env", env)
+        timeout = extra.get("timeout", timeout)
+        max_events = extra.get("max_events", max_events)
+        expand_stdlib = extra.get("expand_stdlib", expand_stdlib)
         if expected_root is not None:
             if id in (None, "", "/"):
                 raise BadInput(

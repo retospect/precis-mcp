@@ -2725,6 +2725,10 @@ class DispatchMixin(RuntimeShape):
                             f"its args= keys are listed below",
                             options=_typed_kwargs(type(handler), verb, declared),
                         )
+                # Keys that shadow a named parameter of the handler (python.get
+                # folds them back in) get the same JSON-string coercion as the
+                # flattened path.
+                extras = _coerce_extras(type(handler), verb, extras)
                 # Reads go through ``ArgsView``: a key the handler never
                 # declared raises instead of reading back as None.
                 args["args"] = (
