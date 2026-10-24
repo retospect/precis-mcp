@@ -7,8 +7,10 @@ byline-only-when-empty rule and the write calls are asserted without a DB.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import httpx
 import pytest
 
 from precis.ingest import openalex_meta
@@ -234,3 +236,114 @@ class TestEnrichRef:
         )
         enrich_ref(store, 42, doi="10.3390/x")
         assert "abstract" not in store.updates[0]["meta_patch"]
+
+
+# Assembled so the source holds no credential-shaped literal.
+_FAKE_OA_KEY = "fake" + "-oa-content-key-00000001"
+
+
+def _capture_request(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub the transport; return a sink holding the request's url/params."""
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"id": "https://openalex.org/W4386410574"}
+
+    class _Client:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+        def get(self, url: str, params: Any = None) -> _Resp:
+            captured["url"] = url
+            captured["params"] = dict(params or {})
+            return _Resp()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(openalex_meta, "http_client", lambda **kw: _Client())
+    monkeypatch.setattr(openalex_meta, "call_with_backoff", lambda fn, **kw: fn())
+    return captured
+
+
+class TestApiKeyParam:
+    """gr513771: a configured ``PRECIS_OPENALEX_CONTENT_KEY`` rides along as
+    ``api_key`` so metadata calls draw the paid credit, not the free pool."""
+
+    def test_sends_api_key_when_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_OPENALEX_CONTENT_KEY", _FAKE_OA_KEY)
+        captured = _capture_request(monkeypatch)
+        work = openalex_meta.fetch_openalex_work("10.3390/x", email="me@lab.test")
+        assert work is not None
+        assert captured["params"]["api_key"] == _FAKE_OA_KEY
+        assert captured["params"]["mailto"] == "me@lab.test"
+
+    def test_stays_keyless_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_OPENALEX_CONTENT_KEY", raising=False)
+        # Pin off the vault/file fallthrough too — a dev host's real key
+        # must never leak into a test request.
+        monkeypatch.setattr(openalex_meta, "get_secret", lambda *a, **k: None)
+        captured = _capture_request(monkeypatch)
+        openalex_meta.fetch_openalex_work("10.3390/x")
+        assert captured["params"] == {}
+
+
+class TestApiKeyStaysOutOfLogs:
+    """gr513771: a keyed request's ``api_key`` must never reach a log line
+    (journald, worker_logs) — the record-creation scrub
+    (:mod:`precis.utils.log_scrub`) leaves only the redaction marker."""
+
+    def test_httpx_request_record_masks_api_key(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The exact record ``httpx._client`` emits per request — an
+        ``httpx.URL`` arg — renders ``api_key=REDACTED``."""
+        from precis.utils import log_scrub
+
+        log_scrub.install_log_scrub()
+        request = httpx.Request(
+            "GET",
+            "https://api.openalex.org/works/doi:10.3390/x",
+            params={"mailto": "me@lab.test", "api_key": _FAKE_OA_KEY},
+        )
+        with caplog.at_level(logging.INFO, logger="httpx"):
+            logging.getLogger("httpx").info(
+                'HTTP Request: %s %s "%s %d %s"',
+                "GET",
+                request.url,
+                "HTTP/1.1",
+                200,
+                "OK",
+            )
+        assert _FAKE_OA_KEY not in caplog.text
+        assert "api_key=REDACTED" in caplog.text
+
+    def test_debug_line_with_keyed_url_masks_api_key(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A record whose *text* carries ``?api_key=…`` (httpcore-style
+        debug renders, exception messages folding the URL in) scrubs to
+        ``<redacted:…>``."""
+        from precis.utils import log_scrub
+
+        log_scrub.install_log_scrub()
+        url = f"https://api.openalex.org/works/doi:10.3390/x?api_key={_FAKE_OA_KEY}"
+        with caplog.at_level(logging.DEBUG, logger="httpcore.http11"):
+            logging.getLogger("httpcore.http11").debug(
+                "send_request_headers.started request=%s", url
+            )
+        assert _FAKE_OA_KEY not in caplog.text
+        assert "<redacted:url api_key param>" in caplog.text

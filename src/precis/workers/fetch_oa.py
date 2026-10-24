@@ -1496,6 +1496,19 @@ def _openalex_content_key() -> str:
     return (_secrets.get_secret("PRECIS_OPENALEX_CONTENT_KEY") or "").strip()
 
 
+def _openalex_meta_params(email: str) -> dict[str, str]:
+    """Query params for an ``api.openalex.org/works`` metadata call: polite
+    ``mailto`` plus the paid ``api_key`` when the content key is configured,
+    so the free metadata legs also draw the paid credit (gr513771). The key
+    stays out of logs via the record-creation scrub
+    (:mod:`precis.utils.log_scrub`) — ``api_key`` is a credential param."""
+    params = {"mailto": email} if email else {}
+    api_key = _openalex_content_key()
+    if api_key:
+        params["api_key"] = api_key
+    return params
+
+
 def _openalex_min_credits() -> int:
     """Raise the low-balance alert below this many daily content credits.
 
@@ -1994,7 +2007,7 @@ def _query_openalex_arxiv_id(doi: str, *, email: str) -> str | None:
     from precis.utils.safe_fetch import safe_get
 
     require_rate_limit("openalex")
-    params = {"mailto": email} if email else {}
+    params = _openalex_meta_params(email)
     with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
@@ -4074,7 +4087,7 @@ def _query_openalex_pdf_urls(doi: str, *, email: str) -> list[str]:
     """
     require_rate_limit("openalex")
     url = f"https://api.openalex.org/works/doi:{doi}"
-    params = {"mailto": email} if email else {}
+    params = _openalex_meta_params(email)
     with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
@@ -4201,7 +4214,8 @@ def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
 def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]:
     """Return the ``content_urls`` OpenAlex reports as *cached* for a DOI.
 
-    Keyless metadata call (the work object is free). Keeps only the content
+    Metadata call (the work object is free; the configured key rides along
+    as ``api_key`` — see :func:`_openalex_meta_params`). Keeps only the content
     types ``has_content`` marks true — so a ``{'pdf': '…', 'grobid_xml': '…'}``
     result means both are actually fetchable, and an empty dict means OpenAlex
     has no cached full text (don't spend). ``mailto`` is polite, optional.
@@ -4212,7 +4226,7 @@ def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]
     """
     require_rate_limit("openalex")
     url = f"https://api.openalex.org/works/doi:{doi}"
-    params = {"mailto": email} if email else {}
+    params = _openalex_meta_params(email)
     with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:

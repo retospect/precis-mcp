@@ -9,7 +9,7 @@ file and move on, not re-litigate.
   httpcore connect layer (closes the rebinding TOCTOU),
   IPv4-mapped-IPv6 handling, correct TLS hostname/pool keying,
   fail-closed backend assert. Well-engineered; leave it.
-- **Raw httpx on fixed keyless API hosts** (`openalex_meta.py`,
+- **Raw httpx on fixed API hosts** (`openalex_meta.py`,
   `orcid.py`, S2, Wolfram; `_edgar_client.py` redirects justified
   in-code) — the safe_fetch convention is applied with judgment, not
   cargo-culted. These hosts are constants, not agent-supplied URLs.

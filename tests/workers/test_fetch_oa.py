@@ -1001,6 +1001,70 @@ class TestResolveArxivFromDoi:
         assert urls == ["https://arxiv.org/pdf/1504.03028.pdf"]
 
 
+class TestOpenAlexMetaParams:
+    """gr513771: the free ``api.openalex.org/works`` legs send the paid key
+    as ``api_key`` when configured, so they draw the paid credit."""
+
+    _FAKE = "fake" + "-oa-content-key-00000002"  # assembled, never a real key
+
+    def test_params_helper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(fetch_oa, "_openalex_content_key", lambda: self._FAKE)
+        assert fetch_oa._openalex_meta_params("a@b.c") == {
+            "mailto": "a@b.c",
+            "api_key": self._FAKE,
+        }
+        monkeypatch.setattr(fetch_oa, "_openalex_content_key", lambda: "")
+        assert fetch_oa._openalex_meta_params("a@b.c") == {"mailto": "a@b.c"}
+        assert fetch_oa._openalex_meta_params("") == {}
+
+    @pytest.mark.parametrize(
+        "helper",
+        [
+            "_query_openalex_pdf_urls",
+            "_query_openalex_content_urls",
+            "_query_openalex_arxiv_id",
+        ],
+    )
+    def test_helpers_send_api_key(
+        self, helper: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {}
+
+        class _Client:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+            def get(self, url: str, params: Any = None) -> _Resp:
+                captured["params"] = dict(params or {})
+                return _Resp()
+
+        def _fake_safe_get(client: Any, url: str, /, **kw: Any) -> _Resp:
+            captured["params"] = dict(kw.get("params") or {})
+            return _Resp()
+
+        monkeypatch.undo()  # restore the autouse stub for the arxiv helper
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda *a, **k: None)
+        monkeypatch.setattr(fetch_oa, "http_client", lambda **kw: _Client())
+        # _query_openalex_arxiv_id imports http_client inside the function.
+        monkeypatch.setattr("precis.utils.http.http_client", lambda **kw: _Client())
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _fake_safe_get)
+        monkeypatch.setattr(fetch_oa, "_openalex_content_key", lambda: self._FAKE)
+        getattr(fetch_oa, helper)("10.1/x", email="")
+        assert captured["params"] == {"api_key": self._FAKE}
+
+
 class TestTryArxiv:
     def test_none_without_arxiv_id(self, tmp_path: Path) -> None:
         assert _try_arxiv(_stub(arxiv=None), inbox_dir=tmp_path) is None

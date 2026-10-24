@@ -1,6 +1,7 @@
 """OpenAlex free-metadata enrichment (OPEN-ITEMS OA #G).
 
-The OpenAlex *work* object is free + keyless and far richer than the
+The OpenAlex *work* object is free (a configured paid ``api_key`` simply
+rides along, drawing the credit) and far richer than the
 CrossRef/S2 metadata we hold — 49 fields incl. citations, topics, funders,
 ORCID+ROR affiliations. This slurps it into the ref, independent of (and much
 cheaper than) the paid OpenAlex Content PDF pull (``workers/fetch_oa`` /
@@ -23,8 +24,10 @@ Topics are captured in ``meta.openalex`` rather than written as ``topic:``
 materializing controlled topic tags waits for that axis to settle.
 
 Idempotent: ``meta_patch`` merges ``meta || {openalex: …}`` so a re-run
-overwrites the block wholesale. Keyless, fixed host (no SSRF surface); the
-polite ``mailto`` routes us to OpenAlex's fast pool.
+overwrites the block wholesale. Fixed host (no SSRF surface); the polite
+``mailto`` routes us to OpenAlex's fast pool, and a configured
+``PRECIS_OPENALEX_CONTENT_KEY`` rides along as ``api_key`` so the paid
+credit is used (gr513771).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.secrets import get_secret
 from precis.utils.authors import to_author_dicts
 from precis.utils.http import call_with_backoff, http_client, request_with_deadline
 
@@ -52,18 +56,46 @@ def _ua(email: str) -> str:
     return _UA.format(contact=f"; mailto:{email}" if email else "")
 
 
+def _openalex_api_key() -> str:
+    """The paid OpenAlex key, ``""`` when unconfigured.
+
+    Same vault name + ``get_secret`` resolution as the Content download leg
+    (:func:`precis.workers.fetch_oa._openalex_content_key` reads
+    ``PRECIS_OPENALEX_CONTENT_KEY``) — one premium key serves both endpoints,
+    and metadata calls then draw the paid credit instead of the anonymous
+    pool (gr513771). The param value never reaches logs:
+    :func:`precis.utils.log_scrub.install_log_scrub` masks credential-named
+    query params in every record, and ``call_with_backoff``'s refusal lines
+    go through :func:`precis.utils.http.redact_url`.
+    """
+    return (get_secret("PRECIS_OPENALEX_CONTENT_KEY") or "").strip()
+
+
+def _params(email: str) -> dict[str, str]:
+    """Query params for a ``works`` call: polite ``mailto`` plus the paid
+    ``api_key`` when the key is configured."""
+    params = {"mailto": email} if email else {}
+    api_key = _openalex_api_key()
+    if api_key:
+        params["api_key"] = api_key
+    return params
+
+
 def fetch_openalex_work(
     doi: str, *, email: str = "", timeout: float = _TIMEOUT_S
 ) -> dict[str, Any] | None:
     """Fetch the free OpenAlex work object for a DOI, or ``None`` if unknown.
 
-    Keyless. A 404 (DOI not in OpenAlex) returns ``None``; other HTTP errors
-    raise for the caller to record. ``mailto`` is polite + faster. Raises
+    A 404 (DOI not in OpenAlex) returns ``None``; other HTTP errors
+    raise for the caller to record. ``mailto`` is polite + faster. When
+    ``PRECIS_OPENALEX_CONTENT_KEY`` resolves, the request also carries it as
+    ``api_key`` so the call draws the paid credit (the work object itself is
+    free). Raises
     :class:`precis.utils.rate_limit.RateLimited` without calling out when the
     shared ``openalex`` limiter refuses (daily quota spent or rate-starved).
     """
     url = f"{_OPENALEX_WORKS}/doi:{doi}"
-    params = {"mailto": email} if email else {}
+    params = _params(email)
 
     def once() -> Any:
         with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:
