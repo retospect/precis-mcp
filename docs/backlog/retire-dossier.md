@@ -1,5 +1,5 @@
 ---
-status: parked
+status: draft
 pillar: quests
 prio: high
 title: Retire the dossier — the quest's typed edges carry the synthesis, every document is a render
@@ -473,14 +473,18 @@ surviving design input is in this file or in code).
   `[dr…]` cites point at retired dossier drafts; they render as retired
   refs, which is the existing behaviour.
 
-## On hold (Reto 2026-10-24, later the same day)
+## Reopened (Reto 2026-10-24, coordinator brief)
 
-"Lets not retire the dossiers and just clean up and wind up." The dossier
-stays. Don't commission the revision pass or any slice. The rulings below
-stand as the design record if this is ever reopened. Discussed and not
-pursued: making the quest page a fisheye plus a quest layer (strands,
-direction status, do-not-repropose query, frontier tree) instead of a new
-narrative renderer.
+"Retire the Dossiers. These move into the knowledge graph. Generally we
+want to enhance the graph so its easy to fisheye." This lifts the earlier
+hold ("Lets not retire the dossiers and just clean up and wind up",
+same day, ~11:53Z); confirmed in chat at ~14:00Z.
+
+Shaping direction: the quest page becomes a fisheye of the quest's graph
+plus a quest layer (strands, direction status, do-not-repropose query,
+frontier tree), preferred over a new LLM narrative renderer. The
+"Narrative view" section is to be re-scoped toward fisheye rendering
+(`extent='fisheye+1hop'`) in the revision pass.
 
 ## Decisions (Reto 2026-10-24, chat-99)
 
