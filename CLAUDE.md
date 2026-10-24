@@ -20,12 +20,18 @@ Never edit or commit in the primary `main` checkout; integrate branches in
 a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
 
 - **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
-  squash-merge to `main`. Run ship in background, output to a log.
+  squash-merge to `main`. Harness only under the release train — any path
+  under `scripts/ship`, `scripts/test`, `scripts/lib/` or `.github/`; a
+  non-harness diff is refused, name `--quick`. Run ship in background,
+  output to a log.
 - **`/go`** — `scripts/ship --quick` to `main`, then `scripts/release`: cut
   `release/r<N>` from main at a fixed sha, gate it on check.yml, deploy that
   head pinned. Later main pushes don't touch it; one release at a time, a
   second `/go` rides along or waits.
-- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. Burst-land many
+- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. The release-train
+  default lane for every non-harness diff — `uv.lock`, `pyproject.toml`,
+  migrations and schema included; a harness diff is refused, name `--remote`.
+  Burst-land many
   trees, then one `/go`. `--checked` is the same machinery plus a cheap
   selected pytest (`scripts/impacted-tests`: contract invariants + corpus/
   import map + index evidence, testmon when a map exists) — the recommended

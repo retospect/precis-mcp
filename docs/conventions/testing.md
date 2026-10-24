@@ -111,7 +111,11 @@ wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
 numbers. The ship gate
 (`ci/**` and `release/**` pushes, PRs) is lint + mypy + 10 shards of
 Linux+db on
-3.13 — 12 jobs. A **push to
+3.13 — 12 jobs. Under the
+release train `ci/**` is the harness gate: `scripts/ship --remote` pushes
+there only for diffs under `scripts/ship`, `scripts/test`, `scripts/lib/`
+or `.github/` — every other diff lands `--quick` and meets the full matrix
+at the release cut. A **push to
 `main` runs the slim lane instead** (gr495187, Reto 2026-10-23 — "only
 release branch gets ci"): `plan` + `lint` only, no shard matrix. A main
 sha's shard verdict comes from the release cut made on it, the nightly, or

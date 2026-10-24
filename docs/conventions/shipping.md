@@ -73,7 +73,7 @@ a hand-rolled `merge --squash` from two sessions co-mingles staged files.
 While ship runs the tree is not yours: it resets the branch to shipped main
 at the end, destroying edits made meanwhile.
 
-## /land — gate on GitHub
+## /land — gate on GitHub (harness only)
 
 `scripts/ship --remote`: refuse uncommitted edits outside `.claude/`
 (named; never committed or reset for you, gr489288) → sync main → push `ci/<branch>` → wait
@@ -81,6 +81,12 @@ for the check.yml gate (shape and duration: `docs/conventions/testing.md`
 §CI shapes; run ship in background, output to a log) → atomic CAS
 squash-merge to `main`. A full-gate ship lands an exactly-tested tree, or
 says it did not and pins nothing.
+
+Under the release train (Reto 2026-10-23) `--remote` is the HARNESS lane:
+required when the diff has any path under `scripts/ship`, `scripts/test`,
+`scripts/lib/` or `.github/`, refused otherwise ("`--remote` is for harness
+diffs … Re-run scripts/ship --quick"). `uv.lock`, `pyproject.toml`,
+migrations and schema are not harness — they qland like everything else.
 
 The repo-wide ship lock is narrow: held only for the seconds of fetch →
 squash → CAS push → local-main ff, never across sync, lint, a gate or the CI
@@ -150,7 +156,7 @@ relands later) or cut at the last green sha, whichever is faster. Never
 weaken a test or ratchet to make the cut. Work that misses the cut rides
 the next release.
 
-## /qland — pytest-ungated burst-land
+## /qland — pytest-ungated burst-land (the default lane)
 
 `scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that
@@ -161,6 +167,11 @@ pointers, secret scan) — no full pytest, no gate slot, ~3 min;
 `PRECIS_QLAND_LINT=0` to skip) → squash-merge. For when many trees are in
 flight — qland them one by one, then one `/go` releases the integrated
 `main` (ship lands nothing when the tree already equals main).
+
+Under the release train `--quick` is the default lane for every non-harness
+diff; a harness diff (any path under `scripts/ship`, `scripts/test`,
+`scripts/lib/` or `.github/`) is refused before any gate and takes `/land`.
+The same refusal covers `--checked`.
 
 ## --checked — the qland burst lane with a selected pytest
 
@@ -177,7 +188,8 @@ call/import evidence plus measured coverage when a fresh per-test DB is
 around; testmon joins in when the worktree has a `.testmondata` map. The
 pytest leg takes a real fleet gate slot; the lint leg still doesn't. A
 harness/schema diff has no honest subset — the selector answers FULL and
-`--checked` refuses (use `--quick`, `--full`, `--impacted` or `--remote`).
+`--checked` refuses (harness takes `--remote`; schema takes `--quick`,
+`--full` or `--impacted`).
 It lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge
 trailer `Gate: lint + selected pytest` when it races main.
 

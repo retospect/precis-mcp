@@ -265,7 +265,7 @@ with only the session's fix and confirm steps by hand.
 
 | # | Slice | Depends | Acceptance |
 |---|---|---|---|
-| 1 | Harness classifier in `scripts/ship`; `--quick` for all non-harness; docs | — | §1 tests; shipping.md/CLAUDE.md agree |
+| 1 | Harness classifier in `scripts/ship`; `--quick` for all non-harness; docs | — | §1 tests; shipping.md/CLAUDE.md agree. Needs in Reto-only files: `.claude/commands/land.md` step 4 → `--remote` is the harness lane (non-harness → `--quick`); `.claude/commands/qland.md` → `--quick` is the default lane, harness refused; `.claude/fleet/authority.md` Tier W "--quick is for docs or lint only" is stale under the train — flag to Reto |
 | 2 | done c7ba4cd9b — fixed 10 shards; dropped the `12` table (Reto-only files still saying "6 shards" → 10: `.claude/commands/land.md:69`, `.claude/commands/go.md:78`) | — | §2 first acceptance |
 | 3 | Heavy-cluster diet + reweigh — rt-s3: seed/stage/candidate splits + duplicate-solve dedup landed; reweighed from the last green gate junit; the 22-min wall is checked on the next three release runs. needs ruling: nano per-seed sweep + both nano baselines (route realize alone ~250-380 s CI), cad BOM roll-up (~292 s, monolithic `use` expansion), xtb pillar neck (~276 s, single relax) — none fit 240 s without moving to nightly or shrinking a sweep | 2 | no test > 240 s; release wall ≤ 22 min ×3 |
 | 4 | `failed-first` job, reader updates, per-branch release concurrency | — | §3 acceptance |

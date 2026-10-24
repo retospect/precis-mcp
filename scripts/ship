@@ -86,6 +86,11 @@
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
 #                                        # many worktrees; the suite is deferred to
 #                                        # the next full gate (/go or bare ship).
+#                                        # The release-train default for every
+#                                        # non-harness diff; a harness diff
+#                                        # (scripts/ship, scripts/test,
+#                                        # scripts/lib/, .github/) is refused —
+#                                        # it takes --remote.
 #         scripts/ship --checked "…"    # /qland+: everything --quick does (lint)
 #                                        # PLUS a selected pytest — the tests
 #                                        # this diff touches per
@@ -128,7 +133,12 @@
 #                                        # forward-merge land (no pin) so a
 #                                        # burst can't loop forever. Add
 #                                        # --impacted for an opt-in local impacted
-#                                        # gate BEFORE burning a CI cycle. (also
+#                                        # gate BEFORE burning a CI cycle.
+#                                        # HARNESS ONLY under the release train:
+#                                        # a diff with no path under
+#                                        # scripts/ship, scripts/test,
+#                                        # scripts/lib/ or .github/ is refused —
+#                                        # it lands --quick. (also
 #                                        # via PRECIS_SHIP_REMOTE=1) Env:
 #                                        # PRECIS_REMOTE_CI_TIMEOUT_MIN (150),
 #                                        # PRECIS_REMOTE_CI_RETRIES (set: that
@@ -182,7 +192,10 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # deliberate escape. Everything else (sync/merge, the narrow ship lock around
 # the squash CAS push + local-main ff, branch reset) runs unchanged, so the
 # merge machinery stays race-safe. Use for burst-landing many in-flight worktrees, then run
-# ONE full-gate integration (/go) over the merged main.
+# ONE full-gate integration (/go) over the merged main. Under the release
+# train --quick is the DEFAULT lane for every non-harness diff; a harness
+# diff (scripts/ship, scripts/test, scripts/lib/, .github/) is refused and
+# takes --remote, whose ci/<branch> run is its pre-merge gate.
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
@@ -1979,6 +1992,28 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
 
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
+
+    # Harness classifier (release-train, docs/backlog/release-train.md §1) —
+    # before any gate: harness is scripts/ship, scripts/test, scripts/lib/ and
+    # .github/. A harness diff keeps a PRE-MERGE gate, so the ungated lanes
+    # refuse it and name --remote (its ci/<branch> check.yml run is that
+    # gate); everything else — uv.lock, pyproject.toml, migrations and schema
+    # included — lands --quick under the train, so a non-harness diff on
+    # --remote refused a CI cycle it does not need. --release is exempt: its
+    # release/** push runs the full matrix itself.
+    HARNESS_DIFF=0
+    while IFS= read -r f; do
+        case "$f" in
+            scripts/ship | scripts/test | scripts/lib/* | .github/*) HARNESS_DIFF=1; break ;;
+        esac
+    done <<< "$CHANGED"
+    if [[ "$HARNESS_DIFF" == 1 && "$QUICK" == 1 && "$RELEASE" != 1 ]]; then
+        die "the diff touches the landing harness (scripts/ship, scripts/test, scripts/lib/, .github/) — --quick/--checked land on main with no suite verdict behind them. Harness keeps its pre-merge gate: land with scripts/ship --remote."
+    fi
+    if [[ "$HARNESS_DIFF" == 0 && "$REMOTE" == 1 ]]; then
+        die "--remote is for harness diffs (scripts/ship, scripts/test, scripts/lib/, .github/) and this diff touches none of them — the release train lands everything else on --quick. Re-run scripts/ship --quick."
+    fi
+
     # Stale-mint refusal (gr489414) — cheap, pre-gate. A migration number this
     # branch minted that origin/main already has (or that leaves a gap/below-
     # max insert) dies here in every tier, before lint/CI burn time on it.
@@ -2147,7 +2182,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             SEL_OUT="$(printf '%s\n' "$CHANGED" | scripts/impacted-tests --stdin)" \
                 || die "scripts/impacted-tests failed — cannot compute the checked selection. Fix it (or land lint-only with --quick deliberately) and re-run scripts/ship --checked."
             if [[ "$SEL_OUT" == FULL ]]; then
-                die "the diff touches the harness/schema — the selector answers FULL, which the checked lane cannot run. Land with --quick (lint only; main CI covers it) or a full gate (--full / --impacted / --remote)."
+                die "the diff touches the harness/schema — the selector answers FULL, which the checked lane cannot run. Land with --quick (lint only; the release gate covers it) or a local full gate (--full / --impacted)."
             fi
             SEL_TESTMON="${SEL_OUT%%$'\n'*}"
             SEL_LIST="$(tail -n +2 <<<"$SEL_OUT" | tr '\n' ' ')"
