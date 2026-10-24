@@ -30,6 +30,16 @@ migrated onto the summary, and the members soft-retired. Soft-delete only
 (``Store.retire_ref``), recoverable at the SQL layer — same posture as
 ``memory_thread_sweep``.
 
+The sweep is **dark by default** — the cadence fires everywhere, but the
+pass does nothing unless a ``service_config`` row lights
+``dream_consolidate`` (``prio > 0``) on some host
+(:func:`dream_consolidate_enabled`, the ``gripe_triage`` gate shape).
+Once lit it still only *reports* until a second switch lands: the
+``dream_consolidate.dry_run`` setting (``precis settings``, default on)
+keeps the pass in dry-run so the first lit fires show the retire plan in
+``worker_logs`` before any write is armed — two deliberate operator
+steps before 9k+ memories can retire.
+
 ``dry_run=True`` plans only; each candidate retire runs in its own
 transaction so one poisoned row can't strand the rest, and the pass is
 idempotent: retired members leave the candidate query.
@@ -40,11 +50,24 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
+from precis import settings as psettings
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.runner import BatchResult
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 log = logging.getLogger(__name__)
+
+#: The ``service_config`` service name an operator lights
+#: (``prio > 0``) to arm the sweep.
+SERVICE_NAME = "dream_consolidate"
+#: The ``precis.settings`` key keeping a lit pass report-only until an
+#: operator explicitly disarms it. Default on: lighting the service can
+#: never write on its own.
+DRY_RUN_KEY = "dream_consolidate.dry_run"
 
 #: Days without recall or touch before an ordinary dream retires.
 DREAM_RETIRE_DAYS = 60
@@ -127,6 +150,36 @@ def _cosine_dist(a: list[float], b: list[float]) -> float:
     if na == 0 or nb == 0:
         return 1.0
     return 1.0 - dot / (na**0.5 * nb**0.5)
+
+
+def dream_consolidate_enabled(store: Store, *, conn: Any = None) -> bool:
+    """True iff a ``service_config`` row lights ``dream_consolidate``
+    anywhere. Never raises: a missing table or a connection blip reads as
+    dark — an unreadable gate must stop a retiring pass, not arm it."""
+
+    def _q(c: Any) -> bool:
+        row = c.execute(
+            "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 LIMIT 1",
+            (SERVICE_NAME,),
+        ).fetchone()
+        return row is not None
+
+    try:
+        if conn is not None:
+            return _q(conn)
+        with store.pool.connection() as c:
+            return _q(c)
+    except Exception:
+        log.warning("dream_consolidate: service_config lookup failed", exc_info=True)
+        return False
+
+
+def _resolve_dry_run(store: Store, dry_run: bool | None) -> bool:
+    """``dry_run=`` wins when given; else the ``dream_consolidate.dry_run``
+    setting (default on — an unset or unparsable value stays report-only)."""
+    if dry_run is not None:
+        return dry_run
+    return psettings.get_bool(DRY_RUN_KEY, store=store) is not False
 
 
 def plan_dream_consolidate(store, *, now: datetime | None = None) -> list[DreamCluster]:
@@ -230,12 +283,23 @@ def _consolidate_cluster(store, cluster: DreamCluster) -> int:
 
 
 def run_dream_consolidate_pass(
-    store, *, dry_run: bool = False, now: datetime | None = None
+    store, *, dry_run: bool | None = None, now: datetime | None = None
 ) -> BatchResult:
     """One consolidation tick.
 
+    Dark unless :func:`dream_consolidate_enabled` — the ``service_config``
+    row is the on/off flag, off by default. When lit, ``dry_run=``
+    overrides the ``dream_consolidate.dry_run`` setting, which defaults on:
+    a lit-but-not-disarmed pass plans and reports, writing nothing.
+
     ``claimed`` = clusters due this fire; ``ok`` = members actually retired
     (0 in dry-run); ``failed`` = clusters whose consolidation raised."""
+    if not dream_consolidate_enabled(store):
+        log.info(
+            "dream_consolidate: dark — no live service_config row with prio > 0; no-op"
+        )
+        return BatchResult(handler="dream_consolidate", claimed=0, ok=0, failed=0)
+    dry_run = _resolve_dry_run(store, dry_run)
     clusters = plan_dream_consolidate(store, now=now)
     retired = failed = 0
     for cl in clusters:
@@ -271,9 +335,12 @@ __all__ = [
     "CLUSTER_MAX_DISTANCE",
     "DREAM_RETIRE_DAYS",
     "DREAM_THREAD_RETIRE_DAYS",
+    "DRY_RUN_KEY",
+    "SERVICE_NAME",
     "THREAD_TAGS",
     "DreamCandidate",
     "DreamCluster",
+    "dream_consolidate_enabled",
     "plan_dream_consolidate",
     "run_dream_consolidate_pass",
 ]

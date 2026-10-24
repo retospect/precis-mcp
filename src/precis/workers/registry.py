@@ -1262,6 +1262,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
+        # 2026-10 dream hygiene (precis.workers.dream_consolidate): the
+        # daily `dream_consolidate` scheduler cadence fires the pass; this
+        # row names the service so `precis service` can light it. NO
+        # `default_profiles` and no rotation wiring (ref_pass=False): dark
+        # until a service_config row (prio > 0) lights it — and even lit it
+        # only reports until `dream_consolidate.dry_run` is set off.
+        name="dream_consolidate",
+        label="Dream consolidation sweep",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="Retire stale dreams under supersedes summaries — dark "
+        "until service_config lights it, then dry-run until "
+        "dream_consolidate.dry_run is disarmed.",
+        doc_skill="precis-memory-help",
+    ),
+    ServiceSpec(
         name="watch_poll",
         label="Citation-forward watcher",
         category="acquisition",

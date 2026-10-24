@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from importlib import util as _ilu
 from pathlib import Path
@@ -9,9 +10,23 @@ from pathlib import Path
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.dream_consolidate import (
+    SERVICE_NAME,
     plan_dream_consolidate,
     run_dream_consolidate_pass,
 )
+
+
+def _light(store: Store, prio: int = 5) -> None:
+    """Write the ``service_config`` row that gates the sweep (the
+    ``gripe_triage`` dark-gate shape)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('*', %s, %s) "
+            "ON CONFLICT (host, service) DO UPDATE SET prio = EXCLUDED.prio",
+            (SERVICE_NAME, prio),
+        )
+        conn.commit()
 
 
 def _dream(store: Store, title: str, *, thread: bool = False, days: int = 90) -> int:
@@ -70,10 +85,34 @@ def test_thread_dreams_get_the_90_day_horizon(store: Store) -> None:
     assert legacy not in ids
 
 
+def test_pass_dark_without_the_flag(store: Store) -> None:
+    """No service_config row → the sweep does nothing (off by default)."""
+    stale = _dream(store, "old hunch", days=80)
+    result = run_dream_consolidate_pass(store)
+    assert (result.claimed, result.ok, result.failed) == (0, 0, 0)
+    assert store.get_ref(kind="memory", id=stale) is not None
+    with store.pool.connection() as conn:
+        summaries = conn.execute(
+            "SELECT ref_id FROM refs WHERE meta ? 'dream_consolidated'"
+        ).fetchall()
+    assert summaries == []
+
+
+def test_lit_but_dry_run_reports_without_writing(store: Store) -> None:
+    """Lit + dry_run still on (the default): plans, reports, writes nothing."""
+    _light(store)
+    stale = _dream(store, "old hunch", days=80)
+    result = run_dream_consolidate_pass(store)
+    assert result.claimed >= 1
+    assert result.ok == 0 and result.failed == 0
+    assert store.get_ref(kind="memory", id=stale) is not None
+
+
 def test_pass_writes_one_summary_per_cluster_and_retires(store: Store) -> None:
+    _light(store)
     a = _dream(store, "alpha dream", days=80)
     b = _dream(store, "beta dream", days=80)
-    result = run_dream_consolidate_pass(store)
+    result = run_dream_consolidate_pass(store, dry_run=False)
     assert result.failed == 0
     assert result.ok == 2
     with store.pool.connection() as conn:
@@ -117,7 +156,9 @@ def _digest(store: Store, body: str, *, tags: list[str] | None = None) -> int:
     return int(ref.id)
 
 
-def test_cleanup_dry_run_reports_then_apply_writes(store: Store) -> None:
+def test_cleanup_dry_run_reports_then_apply_writes(
+    store: Store, tmp_path: Path
+) -> None:
     mod = _load_cleanup()
     marker = store.insert_ref(kind="memory", slug=None, title="m", meta={})
     store.add_tag(marker.id, Tag.open("review-fail:structural"), set_by="system")
@@ -132,11 +173,18 @@ def test_cleanup_dry_run_reports_then_apply_writes(store: Store) -> None:
     assert any("retire-fail-markers: 1" in line for line in dry)
     assert any("untag-digests: 1" in line for line in dry)
     assert any("trim-transcript-tails: 1" in line for line in dry)
-    # Nothing written yet.
+    # Nothing written yet, and no manifest without --manifest on a dry run.
     assert store.get_ref(kind="memory", id=int(marker.id)) is not None
     assert any(str(t) == "internal-thought" for t in store.tags_for(digest))
+    assert not (tmp_path / "m.json").exists()
 
-    mod.run(store, apply=True)
+    manifest = tmp_path / "m.json"
+    out = mod.run(store, apply=True, manifest_path=manifest)
+    assert any(str(manifest) in line for line in out)
+    sel = json.loads(manifest.read_text(encoding="utf-8"))["actions"]
+    assert sel["retire-fail-markers"]["ref_ids"] == [int(marker.id)]
+    assert sel["untag-digests"]["ref_ids"] == [digest]
+    assert [t["ref_id"] for t in sel["trim-transcript-tails"]] == [tailed]
     assert store.get_ref(kind="memory", id=int(marker.id)) is None
     tags = {str(t) for t in store.tags_for(digest)}
     assert "internal-thought" not in tags and "user:asa" not in tags
@@ -149,7 +197,7 @@ def test_cleanup_dry_run_reports_then_apply_writes(store: Store) -> None:
     assert "Let me check" not in body
 
 
-def test_cleanup_correction_edges(store: Store) -> None:
+def test_cleanup_correction_edges(store: Store, tmp_path: Path) -> None:
     mod = _load_cleanup()
     wrong = store.insert_ref(kind="memory", slug=None, title="wrong hunch", meta={})
     corr_body = (
@@ -165,9 +213,38 @@ def test_cleanup_correction_edges(store: Store) -> None:
         corr.id, Tag.parse_strict("DREAM:speculative", kind="memory"), set_by="agent"
     )
 
-    mod.run(store, apply=True)
+    mod.run(store, apply=True, manifest_path=tmp_path / "m.json")
     links = store.links_for(int(corr.id), direction="out", relation="contradicts")
     assert any(getattr(l, "dst_ref_id", None) == int(wrong.id) for l in links)
+
+
+def test_correction_edges_skip_non_adjacent_handles(
+    store: Store, tmp_path: Path
+) -> None:
+    """Only the me<id> adjacent to the correction phrase is linked —
+    other handles in the body (the right-answer cite) stay unlinked."""
+    mod = _load_cleanup()
+    wrong = store.insert_ref(kind="memory", slug=None, title="wrong hunch", meta={})
+    right = store.insert_ref(kind="memory", slug=None, title="right hunch", meta={})
+    corr_body = (
+        f"Checked me{int(wrong.id)} again: it did not check out — the cited "
+        "paper reports the opposite sign.\n\n"
+        f"The mechanism that survives is me{int(right.id)}'s; see also "
+        "the notes from last week."
+    )
+    corr = store.insert_ref(kind="memory", slug=None, title="correction", meta={})
+    store.chunks.insert_chunks(
+        corr.id,
+        [ChunkInsert(ord=0, text=corr_body, meta={"chunk_kind": "memory_body"})],
+    )
+    store.add_tag(
+        corr.id, Tag.parse_strict("DREAM:speculative", kind="memory"), set_by="agent"
+    )
+
+    mod.run(store, apply=True, manifest_path=tmp_path / "m.json")
+    links = store.links_for(int(corr.id), direction="out", relation="contradicts")
+    dsts = {getattr(l, "dst_ref_id", None) for l in links}
+    assert dsts == {int(wrong.id)}
 
 
 def test_trim_tail_bounds() -> None:

@@ -215,6 +215,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "PRECIS_AUTO_MIGRATE still wins over 'warn'.",
         ),
         SettingSpec(
+            key="dream_consolidate.dry_run",
+            type="bool",
+            env_var="PRECIS_DREAM_CONSOLIDATE_DRY_RUN",
+            default=True,
+            doc="Report-only mode for the daily dream_consolidate sweep "
+            "(precis.workers.dream_consolidate): the pass plans and logs "
+            "what it would retire, writing nothing. Default on — the "
+            "service_config gate lights the pass into dry-run, and an "
+            "explicit 'off' arms the retirements.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

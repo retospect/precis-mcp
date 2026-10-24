@@ -5,8 +5,9 @@
 # contradicts edges on correction dreams. Dry-run by default.
 #
 # Usage:
-#   scripts/dream-cleanup            # dry run: selection counts only
-#   scripts/dream-cleanup --apply    # write the changes
+#   scripts/dream-cleanup                        # dry run: counts only
+#   scripts/dream-cleanup --manifest m.json      # dry run + selection dump
+#   scripts/dream-cleanup --apply                # manifest, then write
 #
 # Database: PRECIS_DATABASE_URL (dev DB by default). For prod:
 #   scripts/_prod-run scripts/dream-cleanup --apply

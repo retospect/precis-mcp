@@ -24,15 +24,26 @@ before applying):
 5. ``link-corrections`` — add ``contradicts`` edges from correction
    dreams (DREAM-tagged memories whose body names an ``me<id>`` handle
    next to a correction phrase) to the memory they correct — the edge
-   the old "follow-up correction memory" flow never recorded.
+   the old "follow-up correction memory" flow never recorded. Only the
+   ``me<id>`` *adjacent* to the correction phrase is linked (see
+   ``_correction_targets``) — earlier the action linked every handle in
+   the body, which also roped in the right-answer cites.
+
+Before any write, the full selection (every action's ref ids, trim
+old/new texts and link edges) is dumped to a JSON manifest
+(``--manifest PATH``, default ``dream-cleanup-<UTC>.json`` in cwd) so a
+mistaken --apply is undoable; pass ``--manifest`` on a dry run to review
+the exact ids without writing.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +103,14 @@ _CORRECTION_PAT = (
     r"no longer (true|valid)|superseded by)"
 )
 
+_CORRECTION_RE = re.compile(_CORRECTION_PAT, re.IGNORECASE)
+_HANDLE_RE = re.compile(r"\bme(\d+)\b")
+#: The only correction phrases whose target may FOLLOW them ("could not
+#: verify me123"). Every other phrase names its target before it ("me123
+#: did not check out") — an after-handle cites the replacement/right
+#: answer ("superseded by me456"), never a contradicts target.
+_AFTER_OK_RE = re.compile(r"could not verify|cannot verify", re.IGNORECASE)
+
 _DRAFT_IDS = (9209, 23441)
 
 #: A body line that starts the transcript tail — narration or tool chatter
@@ -117,11 +136,30 @@ def _trim_tail(text: str) -> str | None:
     return None
 
 
-def _mem_handles(text: str, skip: set[int]) -> list[int]:
-    return [int(m) for m in re.findall(r"\bme(\d+)\b", text) if int(m) not in skip]
+def _correction_targets(text: str, skip: set[int]) -> list[int]:
+    """``me<id>`` handles a correction dream actually *corrects* — the
+    nearest handle adjacent to each correction phrase, not every handle
+    in the body (coordinator review 2026-10: the whole-body rule linked
+    the right-answer cites too). For each phrase match the target is the
+    last handle before it on the same line; the ``*verify`` phrases may
+    also take the first handle after when the line names none before."""
+    out: list[int] = []
+    for m in _CORRECTION_RE.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        before = _HANDLE_RE.findall(text[line_start : m.start()])
+        target: int | None = int(before[-1]) if before else None
+        if target is None and _AFTER_OK_RE.search(m.group(0)):
+            after = _HANDLE_RE.search(text[m.end() : line_end])
+            target = int(after.group(1)) if after else None
+        if target is not None and target not in skip and target not in out:
+            out.append(target)
+    return out
 
 
-def run(store: Any, *, apply: bool) -> list[str]:
+def run(store: Any, *, apply: bool, manifest_path: Path | None = None) -> list[str]:
     out: list[str] = []
 
     with store.pool.connection() as conn:
@@ -148,13 +186,51 @@ def run(store: Any, *, apply: bool) -> list[str]:
             ).fetchall()
         ]
 
-    trims: list[tuple[int, int, str]] = []
+    trims: list[tuple[int, int, str, str]] = []
     for rid, cid, t in bodies:
         t2 = _trim_tail(t)
         if t2 is not None:
-            trims.append((rid, cid, t2))
-    links = [(rid, _mem_handles(t, {rid})) for rid, t in corrections]
+            trims.append((rid, cid, t, t2))
+    links = [(rid, _correction_targets(t, {rid})) for rid, t in corrections]
     links = [(rid, tgts) for rid, tgts in links if tgts]
+
+    # The undo record: every action's selected ids (+ payloads a restore
+    # needs) dumped BEFORE any write — a wrong --apply is recoverable.
+    if manifest_path is not None or apply:
+        path = manifest_path or Path(
+            f"dream-cleanup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+        )
+        manifest = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "actions": {
+                "retire-fail-markers": {"ref_ids": markers},
+                "untag-digests": {
+                    "ref_ids": digests,
+                    "tags": ["internal-thought", "user:asa"],
+                },
+                "trim-transcript-tails": [
+                    {
+                        "ref_id": rid,
+                        "chunk_id": cid,
+                        "old_text": old,
+                        "new_text": new,
+                    }
+                    for rid, cid, old, new in trims
+                ],
+                "move-to-draft": {"ref_ids": draft_ids},
+                "link-corrections": {
+                    "edges": [
+                        {"src": rid, "dst": tgt, "relation": "contradicts"}
+                        for rid, tgts in links
+                        for tgt in tgts
+                    ]
+                },
+            },
+        }
+        path.write_text(
+            json.dumps(manifest, indent=2, default=str) + "\n", encoding="utf-8"
+        )
+        out.append(f"manifest: {path}")
 
     out.append(f"retire-fail-markers: {len(markers)} live review-fail:* markers")
     out.append(f"untag-digests: {len(digests)} digests carrying inner-life tags")
@@ -182,7 +258,7 @@ def run(store: Any, *, apply: bool) -> list[str]:
                 store.remove_tag(rid, Tag.open(value), conn=conn)
     out.append(f"untagged {len(digests)} digests")
 
-    for rid, cid, new_text in trims:
+    for rid, cid, _old_text, new_text in trims:
         with store.tx() as conn:
             conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (cid,))
             from precis.store.types import ChunkInsert
@@ -222,12 +298,23 @@ def run(store: Any, *, apply: bool) -> list[str]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--apply", action="store_true", help="write the changes")
+    p.add_argument(
+        "--manifest",
+        default=None,
+        help="JSON manifest of the full selection (the undo record). "
+        "Defaults to dream-cleanup-<UTC>.json in cwd when --apply; "
+        "pass a path on a dry run to review the exact ids.",
+    )
     args = p.parse_args()
     if not os.environ.get("PRECIS_DATABASE_URL"):
         sys.exit("PRECIS_DATABASE_URL is not set")
     store, _cfg = open_store()
     try:
-        for line in run(store, apply=args.apply):
+        for line in run(
+            store,
+            apply=args.apply,
+            manifest_path=Path(args.manifest) if args.manifest else None,
+        ):
             print(line)
     finally:
         store.close()

@@ -544,6 +544,9 @@ def _run_dream_consolidate(store: Store, batch_size: int) -> None:
     """One dream-consolidation sweep (2026-10 dream hygiene): retire
     dreams unrecalled+untouched ≥60d (``thread:`` dreams ≥90d), writing
     one supersedes summary per interest cluster. Host-agnostic, daily.
+    Dark-gated inside the pass: no ``dream_consolidate`` service_config
+    row (prio > 0) → all-zeros no-op; lit but ``dream_consolidate.dry_run``
+    still on (the default) → plans and reports only.
     ``batch_size`` is unused — the pass caps itself via
     ``MAX_CANDIDATES_PER_FIRE``. spends=False: SQL + stored embeddings,
     no LLM."""
@@ -947,7 +950,10 @@ CADENCES: tuple[Cadence, ...] = (
     # untouched dreams (60d; 90d for thread: memories) behind one supersedes
     # summary per interest cluster. Host-agnostic, daily, off the exact day
     # boundary (+73m) like the other sweeps. No `eligible` check: pure local
-    # SQL + stored embeddings. spends=False: no LLM anywhere.
+    # SQL + stored embeddings — the gate is inside the pass (dark until a
+    # `dream_consolidate` service_config row lights it, then report-only
+    # until `dream_consolidate.dry_run` is set off). spends=False: no LLM
+    # anywhere.
     Cadence(
         name="dream_consolidate",
         interval_s=24 * 3600 + 73 * 60,
