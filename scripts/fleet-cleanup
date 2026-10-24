@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Fleet cleanup sweep: stale worktrees, merged branches, finished tmux windows.
+
+    scripts/fleet-cleanup                # DRY-RUN report (default)
+    scripts/fleet-cleanup --apply        # prune + remove merged/clean/unlocked
+                                         # worktrees + delete merged local branches
+    scripts/fleet-cleanup --apply-remote # additionally delete merged remote branches
+
+Composes existing pieces rather than replacing them: liveness comes from
+`git worktree` locks plus `scripts/inflight --json` (precis-mcp only);
+tmux windows are reported, never killed. Gripes are not handled here
+(GRIPE_FIX owns closing). catpath: only its registered extra worktrees and
+branches are ever touched, never the main checkout.
+
+"Merged" is squash-aware: ancestor of origin/main, or `git cherry` shows no
+unapplied commits, or every file the branch changed already has the
+branch's content on origin/main.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+def _main_checkout(tree):
+    """Primary checkout of the repo owning `tree` (it may be a worktree)."""
+    r = subprocess.run(["git", "-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       capture_output=True, text=True, encoding="utf-8")
+    return os.path.dirname(r.stdout.strip()) if r.returncode == 0 else tree
+
+
+REPOS = [
+    ("precis-mcp", _main_checkout(os.path.dirname(HERE))),
+    ("catpath", "/Users/reto/work/project/code/catpath"),
+]
+NEVER_TOUCH = ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER")
+WINDOW_PREFIXES = ("devin-", "codex-", "local-")
+PROTECTED_BRANCHES = ("main", "master", "HEAD")
+
+
+def git(repo, *args):
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
+                       text=True, encoding="utf-8")
+    return r.returncode, r.stdout.strip()
+
+
+def is_merged(repo, ref, base="origin/main"):
+    """Squash-aware merged test of `ref` into `base`."""
+    if git(repo, "merge-base", "--is-ancestor", ref, base)[0] == 0:
+        return True
+    rc, mb = git(repo, "merge-base", base, ref)
+    if rc != 0:
+        return False
+    rc, files = git(repo, "diff", "--name-only", mb, ref)
+    if rc != 0:
+        return False
+    if not files:
+        return True
+    rc, cherry = git(repo, "cherry", base, ref)
+    if rc == 0 and not any(ln.startswith("+") for ln in cherry.splitlines()):
+        return True
+    # squash merge: branch's changed files already identical on base
+    return git(repo, "diff", "--quiet", base, ref, "--", *files.splitlines())[0] == 0
+
+
+def classify_worktree(is_merged_, dirty, locked, live):
+    """-> 'remove' | 'locked' | 'live' | 'dirty' | 'unmerged'."""
+    if not is_merged_:
+        return "unmerged"
+    if locked:
+        return "locked"
+    if live:
+        return "live"
+    if dirty:
+        return "dirty"
+    return "remove"
+
+
+def is_protected_window(name):
+    return name in NEVER_TOUCH or not name.startswith(WINDOW_PREFIXES)
+
+
+def parse_worktrees(text):
+    out, cur = [], {}
+    for ln in text.splitlines() + [""]:
+        if not ln:
+            if cur:
+                out.append(cur)
+            cur = {}
+            continue
+        k, _, v = ln.partition(" ")
+        cur[k] = v or True
+    return out
+
+
+def inflight_live(repo_path):
+    """worktree path -> live session string (precis-mcp only)."""
+    try:
+        r = subprocess.run([os.path.join(repo_path, "scripts/inflight"), "--json"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=120)
+        return {w["path"]: w["session"] for w in json.loads(r.stdout)["worktrees"]
+                if w.get("session") not in (None, "—", "")}
+    except Exception:
+        return {}
+
+
+def commit_info(repo, ref):
+    return git(repo, "log", "-1", "--format=%cs  %an", ref)[1]
+
+
+def sweep_repo(name, path, apply, apply_remote, stats, trees):
+    print(f"\n=== {name} ({path}) ===")
+    if not os.path.isdir(path):
+        print("  (missing, skipped)")
+        return
+    git(path, "fetch", "--prune", "origin", "--quiet")
+    base = "origin/main"
+    print(f"-- worktree prune ({'applying' if apply else 'dry-run'})")
+    flag = "-v" if apply else "-nv"
+    print("  " + (git(path, "worktree", "prune", flag)[1] or "nothing prunable").replace("\n", "\n  "))
+    live = inflight_live(path) if name == "precis-mcp" else {}
+    wts = parse_worktrees(git(path, "worktree", "list", "--porcelain")[1])
+    main_path = os.path.realpath(path)
+    removed_branches = set()
+    print("-- worktrees")
+    for wt in wts:
+        p = wt.get("worktree")
+        if not p or os.path.realpath(p) == main_path or wt.get("bare"):
+            continue
+        br = (wt.get("branch") or "").replace("refs/heads/", "")
+        if wt.get("prunable") or not os.path.isdir(p):
+            stats["prunable"] += 1
+            print(f"  prunable  {p}")
+            continue
+        if not br:
+            print(f"  detached  {p}")
+            continue
+        merged = is_merged(path, br, base)
+        dirty = bool(git(p, "status", "--porcelain")[1])
+        kind = classify_worktree(merged, dirty, "locked" in wt, p in live)
+        trees.append({"name": os.path.basename(p), "kind": kind})
+        stats["wt_" + kind] += 1
+        print(f"  {kind:9} {os.path.basename(p)}  [{br}]"
+              + (f"  session={live[p]}" if p in live else "")
+              + (f"  lock={wt['locked']}" if isinstance(wt.get("locked"), str) else ""))
+        if kind == "remove" and apply:
+            rc, out = git(path, "worktree", "remove", p)
+            print(f"      -> {'removed' if rc == 0 else 'FAILED: ' + out}")
+            if rc == 0:
+                removed_branches.add(br)
+    checked_out = {(w.get("branch") or "").replace("refs/heads/", "") for w in wts}
+    print("-- local branches")
+    for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/heads")[1].splitlines():
+        if br in PROTECTED_BRANCHES:
+            continue
+        if is_merged(path, br, base):
+            stats["br_merged"] += 1
+            held = br in checked_out and br not in removed_branches
+            print(f"  merged    {br}" + ("  (checked out; kept)" if held else ""))
+            if apply and not held:
+                rc, out = git(path, "branch", "-D", br)
+                print(f"      -> {'deleted' if rc == 0 else 'FAILED: ' + out}")
+        else:
+            stats["br_unmerged"] += 1
+            print(f"  unmerged  {br}  {commit_info(path, br)}")
+    print("-- remote branches (report only unless --apply-remote)")
+    for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")[1].splitlines():
+        short = br[len("origin/"):]
+        if br == "origin" or short in PROTECTED_BRANCHES:
+            continue
+        merged = is_merged(path, br, base)
+        stats["rem_merged" if merged else "rem_unmerged"] += 1
+        print(f"  {'merged' if merged else 'unmerged':9} {br}  {commit_info(path, br)}")
+        if merged and apply_remote:
+            rc, out = git(path, "push", "origin", "--delete", short)
+            print(f"      -> {'deleted' if rc == 0 else 'FAILED: ' + out}")
+
+
+def sweep_tmux(trees, stats):
+    print("\n=== tmux session 0 windows (report only, never touched) ===")
+    r = subprocess.run(["tmux", "list-windows", "-t", "0", "-F", "#{window_name}"],
+                       capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        print("  (no tmux session 0)")
+        return
+    for win in r.stdout.split():
+        if is_protected_window(win):
+            continue
+        tail = win.split("-", 1)[1]
+        match = next((t for t in trees if tail in t["name"]), None)
+        if match and match["kind"] == "remove":
+            stats["win_finished"] += 1
+            print(f"  finished  {win}  -> tree {match['name']} merged+clean+unlocked")
+        else:
+            stats["win_other"] += 1
+            why = f"tree {match['name']} {match['kind']}" if match else "no matching tree"
+            print(f"  keep      {win}  ({why})")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--apply", action="store_true",
+                    help="remove merged+clean+unlocked worktrees, delete merged local branches, prune")
+    ap.add_argument("--apply-remote", action="store_true",
+                    help="also delete merged REMOTE branches (explicit opt-in)")
+    a = ap.parse_args(argv)
+    stats = {k: 0 for k in ("prunable", "wt_remove", "wt_locked", "wt_live", "wt_dirty",
+                            "wt_unmerged", "br_merged", "br_unmerged", "rem_merged",
+                            "rem_unmerged", "win_finished", "win_other")}
+    print("fleet-cleanup " + ("APPLY" if a.apply else "DRY-RUN") + (" +REMOTE" if a.apply_remote else ""))
+    trees = []
+    for name, path in REPOS:
+        sweep_repo(name, path, a.apply, a.apply_remote, stats, trees)
+    sweep_tmux(trees, stats)
+    print("\n=== gripes ===\n  out of scope: GRIPE_FIX owns closing (see skill gripe-fleet).")
+    print("\n=== counts ===")
+    for k, v in stats.items():
+        print(f"  {k}: {v}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
