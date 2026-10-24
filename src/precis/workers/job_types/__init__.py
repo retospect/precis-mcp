@@ -79,6 +79,17 @@ class JobTypeSpec:
     #: extra validation beyond the static schema / executor /
     #: REQUIRES checks".
     validate_submit: Callable[..., str | None] | None = None
+    #: Optional submit-time semantic check, ``validate(store, params)``
+    #: (gr511724). ``JobHandler.put`` calls it right after the static
+    #: ``params_schema`` check; the hook raises ``BadInput`` — with its
+    #: own ``next=``/``options=`` — when the params type-check but
+    #: cannot run (an unknown taxon, a retired subject ref), so the
+    #: submit is refused instead of landing as a queued job that fails
+    #: the same check at dispatch. Distinct from ``validate_submit``:
+    #: it takes no link target and *raises* rather than returning a
+    #: message, so the refusal carries the check's own recovery hint.
+    #: ``None``: no semantic gate beyond the schema.
+    validate: Callable[..., None] | None = None
     #: Optional per-job dispatcher. When set, the executor
     #: (``claude_inproc._run_one`` / ``coordinator._run_one``) calls
     #: ``dispatch(ctx, spec)`` instead of going through the built-in

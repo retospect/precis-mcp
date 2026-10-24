@@ -448,6 +448,10 @@ Rejection reasons surfaced at `put` time, not later:
 - Executor host doesn't provide everything in the type's
   `REQUIRES` set.
 - Bad `params` (jsonschema validation failure).
+- Params that type-check but can't run — a `job_type` may declare a
+  put-time `validate(store, params)` check (e.g. `survey_extract`
+  requires `measurands` to be live taxa); it refuses the put instead
+  of queueing a job that fails at dispatch.
 
 The error message names the missing piece. Catch it, fix it, re-
 submit.

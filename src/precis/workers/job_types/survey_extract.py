@@ -947,12 +947,28 @@ def _survey_done(
     return Done(summary="\n".join(lines), success=failure is None, summary_meta=meta)
 
 
+def validate(store: Store, params: dict[str, Any]) -> None:
+    """``JobTypeSpec.validate`` (gr511724) — the put-time half of the
+    dispatch's store-backed refusals: ``paper`` must resolve to a live
+    ref and every ``measurands`` entry must be a live taxon. The
+    dispatch runs the same checks (``_paper_id`` / ``_measurand_allow``
+    — the latter is where the BadInput already lives); running them at
+    put refuses the submit instead of leaving a failed job."""
+    if _paper_id(store, params.get("paper")) is None:
+        raise BadInput(
+            "survey_extract: params.paper does not resolve to a live ref",
+            next="pass a live paper ref_id, pa<id> handle or slug",
+        )
+    _measurand_allow(store, params.get("measurands"))
+
+
 SPEC = JobTypeSpec(
     name="survey_extract",
     params_schema=PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=DESCRIPTION,
+    validate=validate,
     dispatch=_survey_dispatch,
 )
 
@@ -1271,5 +1287,8 @@ ACCEPT_SPEC = JobTypeSpec(
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=ACCEPT_DESCRIPTION,
+    # Same put-time paper check as survey_extract (measurands is not a
+    # measure_accept param — ``params.get`` yields None and skips it).
+    validate=validate,
     dispatch=_accept_dispatch,
 )

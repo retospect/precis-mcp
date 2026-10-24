@@ -214,6 +214,33 @@ class TestSurveyExtractDispatch:
         assert got[1].startswith("survey-extract:")
 
 
+class TestValidate:
+    """``JobTypeSpec.validate`` (gr511724): the same store-backed
+    refusals the dispatch performs, surfaced at put so a bad submit is
+    refused instead of landing as a failed job."""
+
+    def test_unknown_measurand_refuses(self, world: dict) -> None:
+        with pytest.raises(BadInput, match="unknown measurand"):
+            job.validate(
+                world["store"],
+                {"paper": world["paper"], "measurands": ["not-a-taxon"]},
+            )
+
+    def test_unresolvable_paper_refuses(self, world: dict) -> None:
+        with pytest.raises(BadInput, match="does not resolve"):
+            job.validate(world["store"], {"paper": 99999999})
+
+    def test_good_params_pass(self, world: dict) -> None:
+        job.validate(
+            world["store"],
+            {"paper": world["paper"], "measurands": ["faradaic-efficiency"]},
+        )
+
+    def test_spec_wires_the_hook(self) -> None:
+        assert job.SPEC.validate is job.validate
+        assert job.ACCEPT_SPEC.validate is job.validate
+
+
 class TestMeasureAcceptDispatch:
     def _batch(self, world: dict, run: str = "test-run") -> list[int]:
         """Three distinct live output rows on the test-run token."""

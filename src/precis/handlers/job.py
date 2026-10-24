@@ -1753,6 +1753,14 @@ class JobHandler(NumericRefHandler):
         params = params or {}
         _validate_params(params, spec.params_schema, job_type=spec.name)
 
+        # Per-type semantic check (gr511724): the store-backed refusal
+        # the dispatcher would otherwise hit at claim time — an unknown
+        # taxon, a dead subject ref — raised here so the submit is
+        # refused and nothing is enqueued. The hook raises its own
+        # BadInput, keeping the check's next=/options= intact.
+        if spec.validate is not None:
+            spec.validate(self.store, params)
+
         # Idempotency: if the caller didn't supply a key, derive
         # one from the link target so re-submits for the same parent
         # collapse onto the in-flight job.
