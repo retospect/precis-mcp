@@ -50,6 +50,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from psycopg import Connection
+from psycopg.errors import QueryCanceled
 
 from precis import worktree_server
 from precis.dispatch import Hub, InitError
@@ -1093,6 +1094,15 @@ class NumericRefHandler(Handler):
             # misread as "no entries at all" when a STATUS filter was in play.
             if status_note:
                 body += f"\n{status_note}"
+            pointer = self._title_match_pointer(
+                q,
+                tags=normalized_tags,
+                exclude_tags=excluded or None,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+            )
+            if pointer:
+                body += f"\n{pointer}"
             # Empty searches should still teach the agent what to try
             # next — broaden the query, drop the tag filter (if any),
             # or fall back to the recent-list view.  Without this, a
@@ -1799,6 +1809,95 @@ class NumericRefHandler(Handler):
         writes stay strict via ``Tag.parse_strict``."""
         return prefix in self.store.tag_namespaces()
 
+    #: ``_title_match_pointer`` probe cap: the title tsvector is computed
+    #: inline with no index (~1.6 s over prod's refs table), so the hint
+    #: gets a small slice of the search budget and drops silently past it.
+    _TITLE_POINTER_TIMEOUT_MS: ClassVar[int] = 250
+
+    def _title_match_pointer(
+        self,
+        q: str,
+        *,
+        tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        limit: int = 5,
+    ) -> str | None:
+        """The "it exists under another kind" line for an empty search.
+
+        gr513663: a ``search(kind='memory', q='marine cloud brightening')``
+        that comes up empty should point at the quest/todo whose *title*
+        matches, not read as "nothing anywhere". Costs one
+        ``search_refs_lexical`` probe capped at
+        ``_TITLE_POINTER_TIMEOUT_MS`` (the title tsvector is inline and
+        unindexed, so it is deliberately cheap-or-nothing) and only fires
+        on the empty path, so hit pages pay nothing. The probe is
+        restricted to the kinds the cross-kind search surfaces
+        (``supports_search_hits``) and carries the same
+        speculative/wiki/refuted fences ``search_chunks`` applies, so
+        agentlog/email/conv/message-class rows never appear. The caller's
+        tag and ref-id filters apply too, so the pointer can't name a ref
+        the search itself was forbidden to show. A timeout or probe
+        failure is a hint going missing, never a broken search.
+        """
+        eligible: list[str] | None = None
+        hub_kinds = getattr(self.hub, "kinds", None) if self.hub else None
+        if hub_kinds:
+            eligible = sorted(
+                k
+                for k in hub_kinds
+                if (h := self.hub.handler_for(k)) is not None
+                and h.spec.supports_search
+                and h.spec.supports_search_hits
+            )
+            if not eligible:
+                return None
+        try:
+            rows = self.store.search_refs_lexical(
+                q=q,
+                kinds=eligible,
+                tags=tags,
+                exclude_tags=exclude_tags,
+                limit=limit * 2,
+                timeout_ms=self._TITLE_POINTER_TIMEOUT_MS,
+                fence=True,
+            )
+        except QueryCanceled:
+            log.info("title-match pointer probe timed out for %r; omitted", q)
+            return None
+        except Exception:
+            log.exception("title-match pointer probe failed for %r", q)
+            return None
+        refs = [r for r, _rank in rows]
+        if exclude_ref_ids:
+            drop = set(exclude_ref_ids)
+            refs = [r for r in refs if r.id not in drop]
+        if include_ref_ids is not None:
+            keep = set(include_ref_ids)
+            refs = [r for r in refs if r.id in keep]
+        if any(r.kind == "profile" for r in refs):
+            # owner-private rows (gr490266), same guard as the tags-only
+            # cross-kind sweep.
+            from precis import profiles
+
+            login = profiles.acting_login(self.store)
+            refs = [r for r in refs if profiles.visible_to(r, login)]
+        refs = refs[:limit]
+        if not refs:
+            return None
+        parts = []
+        for r in refs:
+            handle = (
+                handle_registry.try_format(r.kind, r.id, chunk=False)
+                or f"{r.kind}:{r.id}"
+            )
+            title = " ".join((r.title or "").split())
+            if len(title) > 60:
+                title = title[:59].rstrip() + "…"
+            parts.append(f"{handle} {title}".rstrip())
+        return "title-matched refs across kinds: " + "; ".join(parts)
+
     # ── search_hits: structured form for cross-kind merge ──────────
 
     def search_hits(  # type: ignore[override]
@@ -2024,6 +2123,20 @@ class NumericRefHandler(Handler):
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
             if status_note:
                 body += f"\n{status_note}"
+            # Under an explicit ``scope=`` the caller *excluded* the
+            # title surface — pointing at a title match would name the
+            # exact thing that was scoped out (test_memory's
+            # title-vs-body contract).
+            if chunk_scope is None:
+                pointer = self._title_match_pointer(
+                    q,
+                    tags=tags,
+                    exclude_tags=exclude_tags,
+                    exclude_ref_ids=exclude_ref_ids,
+                    include_ref_ids=include_ref_ids,
+                )
+                if pointer:
+                    body += f"\n{pointer}"
             nav: list[tuple[str, str]] = [
                 (f"search(kind={self.kind!r}, q='broader term')", "loosen the query")
             ]

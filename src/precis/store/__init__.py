@@ -80,7 +80,11 @@ from precis.store.migrate import (
     MigrationLockContention,
     Migrator,
 )
-from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
+from precis.store.store import (
+    SEMANTIC_DISTANCE_FLOOR,
+    SEMANTIC_ONLY_DISTANCE_FLOOR,
+    Store,
+)
 from precis.store.types import (
     ActorSlug,
     BibEntry,
@@ -100,6 +104,7 @@ from precis.store.types import (
 
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
+    "SEMANTIC_ONLY_DISTANCE_FLOOR",
     "ActorSlug",
     "BibEntry",
     "CacheEntry",

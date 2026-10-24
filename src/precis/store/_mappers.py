@@ -136,6 +136,22 @@ _REF_LEVEL_POS = -1
 # call.
 SEMANTIC_DISTANCE_FLOOR = 0.65
 
+# Candidate stricter floor for hits ONLY the semantic leg found
+# (gr513663). Inside ``search_chunks_fused`` a hit with no lexical
+# corroboration must beat this distance to surface at all — arbitrary
+# English pairs cluster at 0.3–0.7, so the 0.65 corpus floor alone still
+# lets the *nearest thing in a small kind* rank as a confident match
+# (memory returning seawater-economics entries for a marine-cloud-
+# brightening query at RRF ~0.016).
+#
+# OFF by default everywhere (``semantic_only_max_distance=None``): the
+# value is uncalibrated — no prod distance distribution for sem-only hits
+# has been measured, and long natural-language queries could drop real
+# hits in the 0.45–0.65 band. Calibration on prod distances is pending a
+# follow-up gripe; wire the constant per call only after it lands. A hit
+# that also matched lexically is never floor-cut.
+SEMANTIC_ONLY_DISTANCE_FLOOR = 0.45
+
 
 # Search-time noise filters. Two predicates wrap every block-search
 # WHERE clause; both are necessary to keep low-information blocks
@@ -525,6 +541,7 @@ def _row_to_bib_entry(row: tuple) -> BibEntry:
 
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
+    "SEMANTIC_ONLY_DISTANCE_FLOOR",
     "_AGENT_WRITABLE_PREFIXES",
     "_MARKUP_ONLY_BLOCK",
     "_MIN_BLOCK_CHARS",

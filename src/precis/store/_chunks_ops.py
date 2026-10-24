@@ -1497,6 +1497,7 @@ class ChunkStore:
         offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
+        semantic_only_max_distance: float | None = None,
         exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
@@ -1519,6 +1520,15 @@ class ChunkStore:
         ``offset`` (default 0) skips the first N fused rows for
         pagination. The inner CTEs widen by ``offset`` to keep enough
         candidates for the outer LIMIT/OFFSET slice to be populated.
+
+        ``semantic_only_max_distance`` (gr513663) is a second, stricter
+        floor applied to hits the lexical leg never corroborated:
+        ``max_distance`` bounds the whole semantic candidate pool, while
+        this bounds the rows that reached the page on embedding closeness
+        alone. Without it the nearest thing in a small kind ranks as a
+        confident match even when it shares no term with the query.
+        ``None`` (default) keeps the pre-gr513663 behaviour. A hit that
+        also matched lexically is never floor-cut.
 
         ``card_kinds`` opts the listed synthetic cards back into both
         legs (see :func:`_ord_card_clause`).
@@ -1660,6 +1670,25 @@ class ChunkStore:
                 "                           0\n"
                 "                       )\n                       "
             )
+
+        # gr513663: the semantic-only floor drops fused rows no lexical
+        # leg corroborated once their distance clears the stricter bar.
+        # ``lex_any`` counts as corroboration too — it is still a term
+        # match, just OR-ed instead of AND-ed (gr510534). A lex-only row
+        # has no ``sem`` entry at all; ``NULL < %s`` drops nothing since
+        # its EXISTS disjunct is already true.
+        sem_only_where = ""
+        if semantic_only_max_distance is not None:
+            lex_any_exists = (
+                "OR EXISTS (SELECT 1 FROM lex_any a2 WHERE a2.cid = fused.cid) "
+                if or_leg
+                else ""
+            )
+            sem_only_where = (
+                "WHERE (EXISTS (SELECT 1 FROM lex l2 WHERE l2.cid = fused.cid) "
+                f"{lex_any_exists}"
+                "OR (SELECT s2.d FROM sem s2 WHERE s2.cid = fused.cid) < %s)"
+            )
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -1675,7 +1704,7 @@ class ChunkStore:
                 LIMIT %s
             ),
             {lex_any_cte}sem AS (
-                SELECT x.cid, row_number() OVER (ORDER BY x.d ASC) AS rnk
+                SELECT x.cid, x.d, row_number() OVER (ORDER BY x.d ASC) AS rnk
                 FROM ({sem_core}) x
                 {sem_outer_where}
             ),
@@ -1699,6 +1728,7 @@ class ChunkStore:
             FROM fused
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
+            {sem_only_where}
             ORDER BY fused.score DESC
             LIMIT %s OFFSET %s
         """
@@ -1717,7 +1747,7 @@ class ChunkStore:
         #        + query_vec (unless the exact route) + inner_limit
         #        + [optional: max_distance]
         #   fused: k + [k] + k
-        #   outer: limit + offset
+        #   outer: [optional: semantic_only_max_distance] + limit + offset
         full_params: list[Any] = []
         full_params.append(q)
         full_params.extend(params)
@@ -1736,6 +1766,8 @@ class ChunkStore:
         if max_distance is not None:
             full_params.append(float(max_distance))
         full_params.extend([k] * (3 if or_leg else 2))
+        if semantic_only_max_distance is not None:
+            full_params.append(float(semantic_only_max_distance))
         full_params.append(limit)
         full_params.append(offset)
 
@@ -2091,6 +2123,7 @@ class ChunkStore:
         offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
+        semantic_only_max_distance: float | None = None,
         exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
@@ -2118,6 +2151,10 @@ class ChunkStore:
         * ``mode='hybrid'``/``None`` (default) — RRF fusion
           (``search_chunks_fused``), itself falling back to lexical
           without ``query_vec``.
+
+        ``semantic_only_max_distance`` only reaches the fused mode — the
+        purely lexical modes have no semantic leg to floor, and
+        ``mode='semantic'`` already answers to ``max_distance`` alone.
 
         Result tuples are ``(ChunkRow, Ref, score)`` in every mode — score is
         an RRF score, cosine distance, or lexical rank, "more relevant
@@ -2212,6 +2249,7 @@ class ChunkStore:
             offset=offset,
             k=k,
             max_distance=max_distance,
+            semantic_only_max_distance=semantic_only_max_distance,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             include_speculative=include_speculative,

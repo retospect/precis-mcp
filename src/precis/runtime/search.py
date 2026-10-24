@@ -54,11 +54,18 @@ from precis.utils.search_merge import (
 
 log = logging.getLogger(__name__)
 
-#: Cross-kind fan-out bounds (gr495190). Workers stay well under the DB pool
-#: (default 10) so a wildcard search can't starve other requests. Held at 2
-#: until the server-side cancel (ANN_STATEMENT_TIMEOUT_MS) is seen working on
-#: prod; raise it then.
-CROSS_KIND_MAX_WORKERS = 2
+#: Cross-kind fan-out bounds (gr495190, gr513663). Workers stay under the DB
+#: pool (default 10) so a wildcard search can't starve other requests. 2
+#: workers could not drain ~34 kinds inside the deadline — any per-kind
+#: latency over ~1.7 s left most of the queue to TimeoutError (gr513663,
+#: the 2026-10-24 fan-out collapse). Raised to 4 now that the server-side
+#: cancel (ANN_STATEMENT_TIMEOUT_MS) has a shipped regression test.
+CROSS_KIND_MAX_WORKERS = 4
+#: A kind dequeued with less budget than this (or <10% of the whole
+#: deadline, whichever is smaller) cannot finish even the fastest leg —
+#: report the timeout instead of spending a pooled connection and a query
+#: Postgres will cancel anyway.
+CROSS_KIND_MIN_START_MS = 1_500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
@@ -979,12 +986,34 @@ class SearchMixin(RuntimeShape):
                 "(see server log)"
             ) from next(iter(errored.values()))
 
+        # gr513663: when at least half the fanned kinds timed out or
+        # errored, a confident "# N matches" (or worse, "no matches")
+        # reads as an answer when most of the corpus was never searched —
+        # the 2026-10-24 fan-out collapse hid existing material from three
+        # sessions this way. The result must lead with the incompleteness,
+        # not the ranking.
+        attempted = len(fanned)
+        majority_failed = attempted > 0 and len(errored) * 2 >= attempted
+
         # When the embedder was unavailable for this turn, change the
         # empty-result wording from "no matches" to a partial-result
         # headline — semantic side genuinely couldn't run, so claiming
         # zero matches is overconfident. Broad-pass finding #13.
         scope_suffix = f" in folder {folder_label}" if folder_label else ""
-        if semantic_degraded:
+        if majority_failed:
+            empty_body = (
+                f"# ⚠ search incomplete — {len(errored)} of {attempted} kinds "
+                f"timed out or errored; nothing matched {q!r}{scope_suffix} in "
+                f"the {attempted - len(errored)} kinds that answered. "
+                "Retry, or narrow by kind "
+                f"(search(kind='quest,todo,memory', q={q!r}), …)."
+                + (
+                    " Semantic leg also degraded to lexical-only this turn."
+                    if semantic_degraded
+                    else ""
+                )
+            )
+        elif semantic_degraded:
             empty_body = (
                 f"no lexical matches across {', '.join(kinds)} for "
                 f"{q!r}{scope_suffix}; semantic search degraded to "
@@ -1124,6 +1153,24 @@ class SearchMixin(RuntimeShape):
                 f"search(kind='part', q='{lcsc_q}') or "
                 f"get(kind='part', id='{lcsc_q}') resolves it, live on a "
                 "catalog miss)_"
+            )
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
+
+        # Majority failure leads, not trails: the ranked list stays (the
+        # hits are real), but it may not open with a confident headline
+        # when most kinds never answered (gr513663).
+        if majority_failed and response.result_count:
+            lines = response.body.splitlines()
+            lines.insert(
+                0,
+                f"# ⚠ search incomplete — {len(errored)} of {attempted} kinds "
+                "timed out or errored; the list below covers only the kinds "
+                "that answered. Retry, or narrow by kind "
+                f"(search(kind='quest,todo,memory', q={q!r}), …).",
             )
             response = Response(
                 body="\n".join(lines),
@@ -1287,8 +1334,11 @@ class SearchMixin(RuntimeShape):
             # A worker must not share a pinned (atomic-scope) connection.
             _PINNED.set(None)
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
-            if remaining_ms <= 0:
-                return TimeoutError("fan-out deadline passed before start")
+            min_start = min(CROSS_KIND_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100))
+            if remaining_ms < min_start:
+                return TimeoutError(
+                    f"fan-out deadline left {remaining_ms}ms — too late to start"
+                )
             # Postgres cancels the ANN scan at the deadline; the client-side
             # wait alone would leave it running.
             ANN_STATEMENT_TIMEOUT_MS.set(remaining_ms)

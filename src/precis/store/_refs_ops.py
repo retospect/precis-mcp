@@ -55,7 +55,12 @@ from precis.store._stub_predicate import (
     no_oa_bucket_sql,
     stub_predicate_sql,
 )
-from precis.store._tag_filter import build_tag_filter
+from precis.store._tag_filter import (
+    build_tag_filter,
+    refuted_fence,
+    speculative_fence,
+    wiki_fence,
+)
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
@@ -3452,9 +3457,13 @@ class RefsMixin:
         *,
         q: str,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
         exclude_tags: list[str] | None = None,
+        timeout_ms: int | None = None,
+        fence: bool = False,
+        include_speculative: bool = False,
     ) -> list[tuple[Ref, float]]:
         """Lexical search over ``refs.title``. Returns ``(ref, rank)``
         desc. Semantic+RRF fusion happens at the block level; this stays
@@ -3469,6 +3478,18 @@ class RefsMixin:
         signal for chunk-less kinds like ``todo``, so the fused path
         keeps rather than replaces it.
 
+        ``kinds`` restricts to a kind set (``r.kind = ANY``) — the
+        cross-kind-surface restriction the empty-search pointer uses.
+        ``timeout_ms`` sets a SET LOCAL ``statement_timeout`` for the
+        probe — the title tsvector is computed inline with no index, so
+        an unfenced call over the whole refs table costs ~1.6 s on prod;
+        callers that only want a hint cap it here. ``fence`` applies the
+        same speculative/wiki/refuted fences ``search_chunks`` applies
+        by default (same lift rules via ``tags``/``include_speculative``
+        opt-ins) so agentlog/email/conv/message-class content never
+        leaks through the pointer. All three default off — legacy
+        callers keep their unfiltered leg.
+
         v2: ``refs.title_tsv`` dropped; computes inline via
         ``to_tsvector('english', r.title)`` (Phase 3 switches to
         ``chunks.tsv``).
@@ -3481,6 +3502,20 @@ class RefsMixin:
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
+        if kinds is not None:
+            params.append(list(kinds))
+            clauses.append("r.kind = ANY(%s)")
+        if fence:
+            # Lazy import: RefsMixin can't see ``self.chunks`` (a Store
+            # property), and a module-level import would cycle.
+            from precis.store._chunks_ops import ChunkStore
+
+            if ChunkStore._fence_speculative(tags, include_speculative):
+                clauses.append(speculative_fence("r"))
+            if ChunkStore._fence_wiki(tags, kind):
+                clauses.append(wiki_fence("r"))
+            if ChunkStore._fence_refuted(tags):
+                clauses.append(refuted_fence("r"))
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
@@ -3498,6 +3533,13 @@ class RefsMixin:
             "ORDER BY rank DESC LIMIT %s"
         )
         with self.pool.connection() as conn:
+            if timeout_ms is not None:
+                # SET LOCAL (is_local=true): lasts for this implicit
+                # transaction only, so the pool can't leak it.
+                conn.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(max(int(timeout_ms), 1)),),
+                )
             rows = conn.execute(sql, params).fetchall()
         # rows are tuples in column order; rank is the trailing column
         # added after the ref projection. Use the named constant so this
