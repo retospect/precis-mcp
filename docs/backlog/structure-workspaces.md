@@ -1073,6 +1073,17 @@ runs, with method and level. Until then the `charge` field is omitted.
 `pi` needs 2e's `structure_pi`; `frame` needs 2t's `maker` column;
 `relax` levels need 4a; pockets, Bondi radii and `probe.line` exist.
 
+**2r.1 built (sw-2r).** The atomic leg as above, `se_rays` (plugin
+migration `0024_se_rays.sql`), `precis-se-regions-help` §Observation rays. Left for
+2r.2 or later: the §Macro leg (event list with feature + frame handles,
+port regions, field samples, bundles, the four kinds, `ray.changed`,
+`pga.find_holes`) — including probing a **cad-bound** block through its
+bound cad design: 2r.1 probes every non-structure block by its envelope
+only, so holes in a cad-bound block are not yet seen; `against='v<n>'` (diff against a design revision's
+checkpoint) refuses with a pointer until the checkpoint replay is wired;
+`charge` fills in after slice 4, `relax` after 4a; a bare `structure`
+ray carries no `frame` field (no trace on the structure kind).
+
 ## Packaging
 
 - **Core packages** (maintained, golden-tested, in this repo): `hexfold`

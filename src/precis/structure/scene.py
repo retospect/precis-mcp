@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -85,6 +86,11 @@ class Measure:
     * ``kind`` in ``{distance, angle, coordination, bond_length}`` — a **measure**
       over ``operands`` (atom labels) with an optional graded ``goal`` +
       ``direction`` (min|max|target) + ``strength`` (hard|soft|gauge).
+    * ``kind='ray'`` — an **observation ray** (structure-workspaces 2r):
+      ``name`` + a ``spec`` definition (``origin``/``direction``/``length``
+      Å, ``fields``, ``step``, ``reach``), no operands — events are
+      recomputed on every read (:mod:`precis.structure.rayview`), never
+      stored. The ``st<id>~ray:<name>`` handle.
     * ``kind='min_distance'`` — an **identity-free** measure: a single labeled
       anchor in ``operands`` to the nearest atom of ``element`` (the target
       side names no atom, so it needs no cross-state identity guarantee).
@@ -104,6 +110,7 @@ class Measure:
     strength: str = "gauge"  # hard | soft | gauge
     for_: str | None = None  # purpose / reason ("for")
     element: str | None = None  # min_distance target element (e.g. 'Pd')
+    spec: dict[str, Any] | None = None  # kind='ray' definition (Å)
 
 
 @dataclass

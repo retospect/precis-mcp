@@ -56,6 +56,8 @@ rendered header prints):
   appears; a pocket's region measures are ordinary measures and replay
   as such (:mod:`precis_se.pockets` — membership is derived from
   ``datum``).
+* **Ray observations.** ``add_ray`` carries a ray's definition; its
+  digests and ``made_by`` stay behind (:mod:`precis_se.rays`).
 """
 
 from __future__ import annotations
@@ -87,6 +89,8 @@ NOT_CARRIED: tuple[str, ...] = (
     "on replay; the target database needs the same measurand nodes",
     "remove_pocket — final state only; a removed pocket's region measures "
     "stay as ordinary measures (remove_pocket never drops them)",
+    "ray digests and made_by — a copy re-observes against its own geometry; "
+    "add_ray carries the definition only",
 )
 
 
@@ -455,6 +459,26 @@ def _pocket_ops(tree: SeTree) -> list[dict[str, Any]]:
     return ops
 
 
+def _ray_ops(tree: SeTree) -> list[dict[str, Any]]:
+    """One ``add_ray`` per observation ray — the definition only: a ray's
+    digests are observations of THIS database's geometry, and its
+    ``made_by`` names a frame of a run the copy never had."""
+    ops: list[dict[str, Any]] = []
+    for name in _block_order(tree):
+        for ray in tree.blocks[name].rays.values():
+            d = ray.definition()
+            d.pop("made_by", None)
+            ops.append(
+                _op(
+                    "add_ray",
+                    block=name,
+                    name=ray.name,
+                    **{k: v for k, v in d.items() if v is not None},
+                )
+            )
+    return ops
+
+
 def external_refs(tree: SeTree) -> list[str]:
     """Refs in OTHER kinds this design resolves at load time, as
     ``'kind:slug'`` — component/part/cad/structure bindings, and the
@@ -499,6 +523,7 @@ def design_ops(tree: SeTree) -> list[dict[str, Any]]:
         *_facet_ops(tree),
         *_ledger_ops(tree),
         *_pocket_ops(tree),
+        *_ray_ops(tree),
     ]
 
 

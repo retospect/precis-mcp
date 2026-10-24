@@ -226,6 +226,54 @@ def _write_macro(root: Path, name: str, geom: Any) -> str:
     return rel
 
 
+def _ray_entry(
+    r_or_name: Any,
+    args: tuple[Any, ...],
+    kw: dict[str, Any],
+    *,
+    block: str | None,
+    frame: int | None,
+) -> dict[str, Any]:
+    """A ``pga.Ray`` (or ``pga.ray`` arguments) → the importer's
+    ``rays`` manifest row; ``None``-valued keys are omitted."""
+    from precis_geom import assembly as _pga
+
+    r = (
+        r_or_name
+        if isinstance(r_or_name, _pga.Ray)
+        else _pga.ray(r_or_name, *args, **kw)
+    )
+    blk = r.block if r.block is not None else block
+    if blk is None:
+        raise ValueError(
+            f"out.ray: ray {r.name!r} has no block — pass block= (or set it on the ray)"
+        )
+    fr = r.frame_id if r.frame_id is not None else frame
+    if fr is None:
+        fr = _trace.leaf_id()
+    entry: dict[str, Any] = {
+        "name": _vet_name(r.name, what="ray"),
+        "block": str(blk),
+        "origin": [float(v) for v in r.origin],
+        "direction": [float(v) for v in r.direction],
+        "length": float(r.length),
+        "kind": r.kind,
+    }
+    if r.fields is not None:
+        entry["fields"] = list(r.fields)
+    if r.step is not None:
+        entry["step"] = float(r.step)
+    if r.reach is not None:
+        entry["reach"] = float(r.reach)
+    if r.frame_in is not None:
+        entry["in"] = r.frame_in
+    if r.anchor is not None:
+        entry["anchor"] = list(r.anchor)
+    if fr is not None:
+        entry["frame"] = int(fr)
+    return entry
+
+
 class Run:
     """One run's ``out/`` under construction. ``blocks`` files are
     written eagerly (a crashed script leaves inspectable geometry);
@@ -237,6 +285,8 @@ class Run:
         self._blocks: list[dict[str, Any]] = []
         self._instances: list[dict[str, Any]] = []
         self._connects: list[dict[str, Any]] = []
+        self._rays: list[dict[str, Any]] = []
+        self._ray_names: set[str] = set()
         self._names: set[str] = set()
         self._finished = False
 
@@ -379,6 +429,32 @@ class Run:
         self._connects.append(entry)
         return entry
 
+    @_trace.traced(kind="core", name="out.ray")
+    def ray(
+        self,
+        r_or_name: Any,
+        *args: Any,
+        block: str | None = None,
+        frame: int | None = None,
+        **kw: Any,
+    ) -> dict[str, Any]:
+        """One manifest ``rays`` entry — an observation ray on a block
+        declared in this run. Takes a :class:`precis_geom.assembly.Ray`
+        or builds one via ``pga.ray(name, *args, **kw)``; ``frame`` is
+        the manifest trace-frame id (the Ray's reference frame lives on
+        the Ray itself)."""
+        entry = _ray_entry(r_or_name, args, kw, block=block, frame=frame)
+        if entry["block"] not in self._names:
+            raise ValueError(
+                f"out.ray: block {entry['block']!r} is not declared in this "
+                f"run (declared: {sorted(self._names) or '(none)'})"
+            )
+        if entry["name"] in self._ray_names:
+            raise ValueError(f"out.ray: duplicate ray name {entry['name']!r}")
+        self._ray_names.add(entry["name"])
+        self._rays.append(entry)
+        return entry
+
     # -- serialisation ------------------------------------------------------
 
     def manifest(self) -> dict[str, Any]:
@@ -387,6 +463,8 @@ class Run:
             doc["instances"] = list(self._instances)
         if self._connects:
             doc["connects"] = list(self._connects)
+        if self._rays:
+            doc["rays"] = list(self._rays)
         return doc
 
     def finish(

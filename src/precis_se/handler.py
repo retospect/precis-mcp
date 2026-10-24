@@ -310,6 +310,13 @@ class SeHandler(Handler):
                 "lining",
                 "cargo_A3",
                 "against",
+                "from",
+                "origin",
+                "direction",
+                "length",
+                "fields",
+                "step",
+                "reach",
                 "margin",
                 "limit",
                 "atoms",
@@ -357,6 +364,7 @@ class SeHandler(Handler):
             "remove_block/add_port/remove_port/set_port_pose/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "add_pocket/set_pocket/remove_pocket/"
+            "add_ray/set_ray/remove_ray/observe_ray/"
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
@@ -623,6 +631,8 @@ class SeHandler(Handler):
             "contracts",
             "datums",
             "pockets",
+            "ray",
+            "rays",
             "validate",
             "clearance",
             "sites",
@@ -1979,6 +1989,12 @@ class SeHandler(Handler):
             return Response(body=_render_datums(tree))
         if v == "pockets":
             return Response(body=_render_pockets(tree))
+        if v == "ray":
+            return Response(body=self._render_ray(tree, ref, args or {}))
+        if v == "rays":
+            from precis_se import rays as se_rays
+
+            return Response(body=se_rays.render_rays(tree, str(ref.slug)))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id, args))
         if v == "trace":
@@ -2100,7 +2116,10 @@ class SeHandler(Handler):
             "view='measures' "
             "(+ stack-up) | view='datums' (datum ranking + which "
             "measures hang off each) | view='pockets' (each pocket's "
-            "regions and their measure specs) | view='validate' | "
+            "regions and their measure specs) | view='ray' "
+            "(args={'name':…, 'from'?, 'against'?: 'last'|<i>} — an "
+            "observation ray's events, recomputed) | view='rays' | "
+            "view='validate' | "
             "view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest; on two structure-bound blocks the atomic "
@@ -2205,6 +2224,12 @@ class SeHandler(Handler):
         tree = persist.load_tree(self.store, ref.id)
         tree.own_slug = str(ref.slug)
         tree.foreign = self._foreign_resolver()
+        if focus.startswith("ray:"):
+            return Response(
+                body=eyeview.ray_eye(
+                    self.store, tree, str(ref.slug), focus[len("ray:") :].strip(), ext
+                )
+            )
         return Response(
             body=eyeview.render(
                 self.store, tree, str(ref.slug), focus, ext, q=q, ring=ring
@@ -2239,6 +2264,91 @@ class SeHandler(Handler):
     def _validate_digest(findings: list[Any]) -> tuple[str, str]:
         """Method seam over :func:`validate_digest` (``view='drc'``)."""
         return validate_digest(findings)
+
+    def _render_ray(self, tree: SeTree, ref: Any, args: dict[str, Any]) -> str:
+        """``view='ray'`` (structure-workspaces 2r): a stored ray by
+        ``name`` — or a transient one from ``block``/``origin``/
+        ``direction``/``length`` — recomputed; ``from`` resumes past the
+        hit cap; ``against`` (``'last'``/digest index) diffs against the
+        events recomputed at that digest's structure versions."""
+        from precis.utils.units import parse_quantity
+        from precis_se import rays as se_rays
+
+        slug = str(ref.slug)
+        name = args.get("name")
+        try:
+            if name:
+                hit = se_rays.find_ray(tree, str(name).strip())
+                if hit is None:
+                    roster = ", ".join(s.name for _b, s in se_rays.all_rays(tree))
+                    raise NotFound(
+                        f"no ray {name!r} on {slug} (rays: {roster or 'none'})",
+                        next=f"get(kind='se', id={slug!r}, view='rays')",
+                    )
+                block, spec = hit
+            else:
+                block = str(args.get("block") or "").strip()
+                if not block or "length" not in args:
+                    raise BadInput(
+                        "view='ray' needs args={'name': <ray>} or a transient "
+                        "ray {'block', 'origin', 'direction', 'length'}",
+                        next=f"get(kind='se', id={slug!r}, view='rays')",
+                    )
+                try:
+                    bnode = resolve_block(tree, block)
+                except AmbiguousLabel as exc:
+                    raise BadInput(
+                        str(exc), next="name the block by uid ('#<uid>') instead"
+                    ) from exc
+                if bnode is None:
+                    raise NotFound(
+                        _block_not_found(tree, block),
+                        next=f"get(kind='se', id={slug!r}) lists the blocks",
+                    )
+                block = bnode.name
+                spec = se_rays.RaySpec(name="(transient)")
+                se_rays.apply_fields(spec, args, partial=False)
+            obs = se_rays.observe(tree, block, spec, slug=slug)
+            if args.get("against") is not None:
+                dg = se_rays.pick_digest(spec, args["against"])
+                scenes = {}
+                for sslug, ver in (dg.get("structures") or {}).items():
+                    sref = self.store.get_ref(kind="structure", id=sslug)
+                    if sref is None or ver is None:
+                        continue
+                    scenes[sslug], _h = self.store.structure_load(
+                        sref.id, version=int(ver)
+                    )
+                old = se_rays.observe(tree, block, spec, slug=slug, scenes=scenes)
+                vers = " · ".join(
+                    f"{s} v{v}→v{obs.structures.get(s)}"
+                    for s, v in sorted((dg.get("structures") or {}).items())
+                )
+                return "\n".join(
+                    [
+                        se_rays.header(obs),
+                        f"against {args['against']} ({dg.get('at')}; {vers or '—'})",
+                        *se_rays.diff_lines(old, obs),
+                    ]
+                )
+        except se_rays.RayError as exc:
+            raise BadInput(
+                str(exc), next=f"get(kind='se', id={slug!r}, view='rays')"
+            ) from exc
+        start = None
+        if args.get("from") is not None:
+            raw = args["from"]
+            start = (
+                float(raw)
+                if isinstance(raw, (int, float))
+                else float(parse_quantity(str(raw), "length", arg_name="from"))
+            )
+        lines = [se_rays.header(obs)]
+        made = se_rays.made_by_text(self.store, tree, block, spec)
+        if made:
+            lines.append(made)
+        lines.extend(se_rays.hit_lines(obs, start=start))
+        return "\n".join(lines)
 
     def _render_trace(
         self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None
@@ -4734,13 +4844,17 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
     return lines
 
 
-def _made_by_line(store: Any, tree: SeTree, node: SeBlock) -> str | None:
+def _made_by_line(
+    store: Any, tree: SeTree, node: SeBlock, *, frame_id: int | None = None
+) -> str | None:
     """``made-by: ws-hcol::main.bundle (main.py:30) → junction(k=3)#1``
     — the python id first so ``get(kind='python', id=…)`` is one paste
     (structure-workspaces slice 2p, spec §Structure fisheye). The
     block's manifest-entry frame resolves through its bound ref's
     ``generated.trace``; an ``op`` frame reads ``made-by: op <op>
-    (call <ledger id>)``. ``None`` when the block carries no trace."""
+    (call <ledger id>)``. ``None`` when the block carries no trace.
+    ``frame_id`` names another frame of the same run — a block child's
+    maker (an ``out.ray``, slice 2r) — resolved the same way."""
     owner = tree.blocks.get(node.template) if node.template else node
     owner = owner or node
     if owner.bound_kind not in ("structure", "cad") or not owner.bound or store is None:
@@ -4753,7 +4867,7 @@ def _made_by_line(store: Any, tree: SeTree, node: SeBlock) -> str | None:
         return None
     meta = bref.meta or {}
     gen = meta.get("generated") or {}
-    fid = gen.get("frame")
+    fid = frame_id if frame_id is not None else gen.get("frame")
     if fid is None:
         fid = (meta.get("frames") or {}).get(owner.name)
     if fid is None:
@@ -7649,6 +7763,22 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "contracts": frozenset(),
     "datums": frozenset(),
     "pockets": frozenset(),
+    "ray": frozenset(
+        {
+            "name",
+            "from",
+            "against",
+            "block",
+            "origin",
+            "direction",
+            "length",
+            "fields",
+            "step",
+            "reach",
+            "frame",
+        }
+    ),
+    "rays": frozenset(),
     "validate": frozenset({"previous", "load_cases"}),
     "clearance": frozenset(
         {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}

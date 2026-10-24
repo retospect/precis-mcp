@@ -24,7 +24,16 @@ run's failure, refused naming the key)::
                      "pose_unit"?, "rot_unit"?, "frame"?}],
      "connects"?: [{"a": "blk.port", "b": "blk.port", "kind"?, "joint"?,
                     "objectives"?, "frame"?}],
+     "rays"?: [{"name", "block", "length", "origin"?, "direction"?,
+                "kind"?, "fields"?, "step"?, "reach"?, "in"?, "anchor"?,
+                "frame"?}],
      "notes"?}
+
+* ``rays`` (``out.ray``, structure-workspaces 2r): observation rays as
+  block children (:mod:`precis_se.rays`) — ``frame`` is the maker's trace
+  frame (the ray's ``made-by:``), ``in`` its reference frame. They
+  replace this workspace's previous rays; one the run stops writing
+  retires.
 
 * atomic ``file``: ``blocks/<name>.extxyz``
   (:func:`precis.structure.importers.extxyz.extxyz_to_scene`); bonds ride
@@ -79,7 +88,27 @@ MAX_WS_OUT_BYTES = 32_000_000
 MAX_WS_BLOCKS = 256
 MAX_WS_BLOCK_ATOMS = 100_000
 
-_TOP_KEYS = frozenset({"schema", "blocks", "instances", "connects", "notes"})
+_TOP_KEYS = frozenset({"schema", "blocks", "instances", "connects", "rays", "notes"})
+#: An ``out.ray`` entry (structure-workspaces 2r): ``frame`` is the
+#: maker's trace frame id, as on every manifest entry; ``in`` is the
+#: ray's own reference frame (omitted = the block, ``'world'``,
+#: ``'port:<name>'``) — the ray definition's ``frame``.
+_RAY_KEYS = frozenset(
+    {
+        "name",
+        "block",
+        "origin",
+        "direction",
+        "length",
+        "kind",
+        "fields",
+        "step",
+        "reach",
+        "in",
+        "anchor",
+        "frame",
+    }
+)
 _BLOCK_KEYS = frozenset(
     {"name", "file", "scale", "ports", "relax", "desc", "frame", "bonds"}
 )
@@ -218,10 +247,32 @@ def _vet_manifest(data: Any) -> dict[str, Any]:
             if not isinstance(raw, dict):
                 raise BadInput(f"manifest {where}: must be an object")
             _unknown_keys(raw, allowed, where)
+    rays_raw = data.get("rays") or []
+    if not isinstance(rays_raw, list):
+        raise BadInput("manifest.json: 'rays' must be a list")
+    ray_names: set[str] = set()
+    for i, raw in enumerate(rays_raw):
+        where = f"rays[{i}]"
+        if not isinstance(raw, dict):
+            raise BadInput(f"manifest {where}: must be an object")
+        _unknown_keys(raw, _RAY_KEYS, where)
+        rname = str(raw.get("name") or "").strip()
+        rblock = str(raw.get("block") or "").strip()
+        if not rname or not rblock or raw.get("length") is None:
+            raise BadInput(f"manifest {where}: needs 'name', 'block' and 'length'")
+        if rblock not in names:
+            raise BadInput(
+                f"manifest {where}: block {rblock!r} is not a manifest block",
+                next="a ray rides a block this run writes — out.ray(…, block=<name>)",
+            )
+        if rname in ray_names:
+            raise BadInput(f"manifest {where}: duplicate ray name {rname!r}")
+        ray_names.add(rname)
     return {
         "blocks": blocks,
         "instances": [dict(x) for x in data.get("instances") or []],
         "connects": [dict(x) for x in data.get("connects") or []],
+        "rays": [dict(x) for x in rays_raw],
         "notes": data.get("notes"),
     }
 
@@ -872,6 +923,43 @@ def import_workspace_run(
                     op[k] = c[k]
             _apply(tree, [op], what=f"connect {c['a']}—{c['b']}")
 
+        # ── rays (slice 2r): the manifest's rays replace this workspace's
+        # previous ones; a ray this run no longer writes retires ──
+        prev_rays = {str(r) for r in prev.get("rays") or []}
+        manifest_rays = {f"{r['block']}.{r['name']}" for r in manifest["rays"]}
+        for ray_key in sorted(prev_rays | manifest_rays):
+            rblock, _sep, rname = ray_key.partition(".")
+            rnode = tree.blocks.get(rblock)
+            if rnode is not None and rname in rnode.rays:
+                _apply(
+                    tree,
+                    [{"op": "remove_ray", "block": rblock, "name": rname}],
+                    what=f"ray {ray_key!r}",
+                )
+        for r in manifest["rays"]:
+            rop: dict[str, Any] = {
+                "op": "add_ray",
+                "block": r["block"],
+                "name": r["name"],
+                "length": r["length"],
+            }
+            for k in (
+                "origin",
+                "direction",
+                "kind",
+                "fields",
+                "step",
+                "reach",
+                "anchor",
+            ):
+                if r.get(k) is not None:
+                    rop[k] = r[k]
+            if r.get("in") is not None:
+                rop["frame"] = r["in"]
+            if r.get("frame") is not None:
+                rop["made_by"] = {"frame": int(r["frame"])}
+            _apply(tree, [rop], what=f"ray {r['block']}.{r['name']}")
+
         # port.missing: connects whose endpoint port vanished on replace
         for cx in tree.connects:
             for blk, port in ((cx.a_block, cx.a_port), (cx.b_block, cx.b_port)):
@@ -917,6 +1005,7 @@ def import_workspace_run(
                                     {"a": c["a"], "b": c["b"]}
                                     for c in manifest["connects"]
                                 ],
+                                "rays": sorted(manifest_rays),
                                 "run_job": run_job,
                                 "script_sha": script_sha,
                             }

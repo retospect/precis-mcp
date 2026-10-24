@@ -375,7 +375,8 @@ counts at 4–6), then the `Up:` construction ladder to the run and the
 `pi:` line. A `frame:` focus shows `Down:` children and the set's
 boundary shell, never an atom list. `+recall` refuses — atoms have no
 embedding. A bare `<slug>` (or a digit `~<ord>`) keeps the note/chunk
-eye.
+eye. Observation rays (`add_ray`, `view='ray'`, `~ray:<name>`):
+`precis-se-regions-help` §Observation rays.
 
 ## Design history and provenance
 

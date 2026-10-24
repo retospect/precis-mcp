@@ -121,6 +121,63 @@ def probe_ray(
     return RayResult(o, d, segs)
 
 
+@dataclass(frozen=True)
+class Hit:
+    """One multiscale §5.4 ``cast_ray`` hit at macro scale — a
+    :class:`RaySegment` clipped to the ray's ``[0, length]`` and named
+    (structure-workspaces 2r). ``entry``/``exit`` are ray parameters (the
+    design's own length unit along a unit direction); ``feature`` is the
+    providing (solid) or removing (void) node; ``block_id``/``material``/
+    ``frame`` are the caller's labels — the cad kernel knows none of them,
+    and a field it cannot answer stays ``None`` (§5.4: missing fields are
+    omitted, never errors)."""
+
+    block_id: str | None
+    material: str | None
+    entry: float
+    exit: float
+    length: float
+    state: str
+    feature: str | None
+    frame: str | None = None
+
+
+def ray_hits(
+    design: Design,
+    o: Vec3,
+    d: Vec3,
+    *,
+    length: float | None = None,
+    component: str | None = None,
+    block_id: str | None = None,
+    material: str | None = None,
+    frame: str | None = None,
+) -> list[Hit]:
+    """:func:`probe_ray`'s segments as §5.4 hits — the one macro kernel,
+    extended rather than forked: same spans, clipped to ``t ≥ 0`` and to
+    ``length`` when given (a ray is a half-line with a cap; the bare
+    ``probe_ray`` stays the infinite line its callers rely on)."""
+    out: list[Hit] = []
+    for s in probe_ray(design, o, d, component=component).segments:
+        t_in = max(float(s.t_in), 0.0)
+        t_out = float(s.t_out) if length is None else min(float(s.t_out), length)
+        if t_out <= t_in:
+            continue
+        out.append(
+            Hit(
+                block_id=block_id,
+                material=material,
+                entry=t_in,
+                exit=t_out,
+                length=round(t_out - t_in, 12),
+                state=s.state,
+                feature=s.feature,
+                frame=frame,
+            )
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Arc / radial
 # ---------------------------------------------------------------------------

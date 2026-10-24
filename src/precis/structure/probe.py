@@ -237,6 +237,343 @@ def line(
     return hits
 
 
+def local_normal(scene: Scene, label: str) -> np.ndarray | None:
+    """An atom's local axis for the ray's ``∠`` (structure-workspaces 2r):
+    the POAV normal for a 3-coordinate centre — the normal of the plane
+    through its three unit bond-vector tips, the vector
+    :func:`precis.structure.geometry_stats.poav_theta` measures against —
+    the bond axis for a linear 2-coordinate one (> 170°), else ``None``."""
+    if label not in scene.atoms:
+        return None
+    vecs: list[np.ndarray] = []
+    fi = scene.atoms[label].frac
+    for b in scene.bonds:
+        if label not in (b.i, b.j) or b.i not in scene.atoms or b.j not in scene.atoms:
+            continue
+        other = b.j if b.i == label else b.i
+        sign = 1.0 if b.i == label else -1.0
+        fj = scene.atoms[other].frac + sign * np.asarray(b.image, dtype=float)
+        v = np.asarray(scene.cell.frac_to_cart(fj - fi), dtype=float)
+        n = float(np.linalg.norm(v))
+        if n > 1e-9:
+            vecs.append(v / n)
+    if len(vecs) == 3:
+        nv = np.cross(vecs[1] - vecs[0], vecs[2] - vecs[0])
+        norm = float(np.linalg.norm(nv))
+        return nv / norm if norm > 1e-9 else None
+    if len(vecs) == 2 and float(vecs[0] @ vecs[1]) < np.cos(np.radians(170.0)):
+        return vecs[0]
+    return None
+
+
+def normal_angle(scene: Scene, label: str, direction: np.ndarray) -> float | None:
+    """Acute angle (degrees, 0–90) between a ray direction and the atom's
+    :func:`local_normal`; ``None`` when the atom has none."""
+    n = local_normal(scene, label)
+    if n is None:
+        return None
+    d = np.asarray(direction, dtype=float)
+    d = d / np.linalg.norm(d)
+    return float(np.degrees(np.arccos(min(1.0, abs(float(n @ d))))))
+
+
+# -- observation rays (structure-workspaces 2r, §Observation rays) -----------
+
+#: Every atomic field :func:`ray_hits` answers, in header order.
+RAY_FIELDS = ("pass", "charge", "pi", "frame", "relax", "region")
+#: An aromatic ring's π cylinder: half-height off the ring plane (Å) and
+#: the radius pad over the ring's circumradius (Å) — the §4 isosurface at
+#: template fidelity.
+PI_HALF_HEIGHT_A = 1.7
+PI_RADIUS_PAD_A = 0.5
+#: A non-aromatic conjugated system's region: the union of per-atom
+#: spheres, Å (the carbon vdW radius when the caller passes no table).
+PI_SYSTEM_RADIUS_A = 1.7
+#: Coulomb constant in V·Å/e — ESP of a point charge q (e) at r (Å).
+_COULOMB_V_A = 14.399645
+#: An ``esp`` hit fires when the sampled ESP moves this far (V) from the
+#: last emitted value, as well as on a sign change or an extremum.
+ESP_STEP_V = 0.05
+#: Transition refinement: bisection steps between two samples.
+_BISECT = 14
+
+
+@dataclass
+class RayHit:
+    """One event along an atomic observation ray. ``s`` is Å from the
+    ray origin; ``field`` one of :data:`RAY_FIELDS`; ``event`` ``pass`` |
+    ``esp`` | ``enter`` | ``leave`` | ``change``; ``subject`` the
+    coalescing key (atom label, ``ring:<i>`` / ``system:<i>``, frame key,
+    region name); ``data`` the field's numbers (``d`` and ``angle`` for a
+    pass, ``q`` with charges, ``V`` for esp, ring/system facts for pi)."""
+
+    s: float
+    field: str
+    event: str
+    subject: str
+    data: dict[str, Any]
+
+
+@dataclass
+class RayTrace:
+    """:func:`ray_hits`'s result: the hits in ``s`` order, ``end`` (the
+    last ``s`` with any atom within ``reach``, ``None`` when none is) and
+    ``fields`` — the requested fields that had data (a field with none is
+    absent, never a per-hit gap — multiscale §5.4)."""
+
+    hits: list[RayHit]
+    end: float | None
+    fields: list[str]
+
+
+def _transitions(
+    inside: Any, s_grid: np.ndarray, o: np.ndarray, dn: np.ndarray
+) -> list[tuple[float, str]]:
+    """``(s, 'enter'|'leave')`` where the boolean field ``inside(points)``
+    flips along the samples, each refined by bisection. A ray starting
+    inside enters at ``s=0``."""
+    pts = o[None, :] + s_grid[:, None] * dn[None, :]
+    state = np.asarray(inside(pts), dtype=bool)
+    out: list[tuple[float, str]] = []
+    if state.size and state[0]:
+        out.append((0.0, "enter"))
+    for k in np.nonzero(state[1:] != state[:-1])[0]:
+        lo, hi = float(s_grid[k]), float(s_grid[k + 1])
+        want = bool(state[k + 1])
+        for _ in range(_BISECT):
+            mid = 0.5 * (lo + hi)
+            if bool(np.asarray(inside((o + mid * dn)[None, :]))[0]) == want:
+                hi = mid
+            else:
+                lo = mid
+        out.append((hi, "enter" if want else "leave"))
+    return out
+
+
+def _ring_inside(carts: np.ndarray) -> Any:
+    c = carts.mean(axis=0)
+    _u, _s, vt = np.linalg.svd(carts - c)
+    n = vt[2]
+    radius = float(np.max(np.linalg.norm(carts - c, axis=1))) + PI_RADIUS_PAD_A
+
+    def inside(pts: np.ndarray) -> np.ndarray:
+        rel = pts - c
+        h = rel @ n
+        radial = np.linalg.norm(rel - h[:, None] * n[None, :], axis=1)
+        return (np.abs(h) <= PI_HALF_HEIGHT_A) & (radial <= radius)
+
+    return inside
+
+
+def _spheres_inside(carts: np.ndarray, radii: np.ndarray) -> Any:
+    def inside(pts: np.ndarray) -> np.ndarray:
+        d = np.linalg.norm(pts[:, None, :] - carts[None, :, :], axis=2)
+        return np.any(d <= radii[None, :], axis=1)
+
+    return inside
+
+
+def ray_hits(
+    scene: Scene,
+    origin: np.ndarray,
+    direction: np.ndarray,
+    *,
+    length: float,
+    fields: list[str] | tuple[str, ...] | None = None,
+    step: float = 0.5,
+    reach: float = 4.0,
+    pi_data: dict[str, Any] | None = None,
+    charges: dict[str, float] | None = None,
+    frame_of: Any = None,
+    relax_of: Any = None,
+    regions: list[tuple[str, Any]] | None = None,
+    vdw_radii: dict[str, float] | None = None,
+) -> RayTrace:
+    """The atomic observation ray (structure-workspaces 2r) — the §5.4
+    ``cast_ray`` at template fidelity over one scene, Å throughout.
+
+    ``pass`` is :func:`line` within ``reach`` clipped to ``[0, length]``:
+    the perpendicular foot's ``s``, distance ``d`` and the acute angle to
+    the atom's :func:`local_normal`. Every other field samples the ray at
+    ``step`` and refines each transition by bisection:
+
+    - ``charge`` (``charges`` = stored partial charges by label; ``None``
+      → the field is absent): ``q`` on each pass, and ``esp`` hits where
+      the point-charge ESP changes sign, passes an extremum or moves
+      :data:`ESP_STEP_V` from the last emitted value.
+    - ``pi`` (``pi_data`` = the ``structure_pi`` payload): enter/leave an
+      aromatic ring's cylinder, or a ring-less conjugated system's sphere
+      union (``vdw_radii`` by element, default :data:`PI_SYSTEM_RADIUS_A`).
+    - ``frame`` / ``relax`` (``frame_of(label)`` / ``relax_of(label)`` →
+      a hashable description or ``None``): a hit where the nearest atom
+      within ``reach`` changes its value; ``None`` atoms carry nothing.
+    - ``region`` (``regions`` = ``[(name, inside(points) -> bool[])]``):
+      enter/leave each.
+
+    Hits coalesce to one per ``(field, subject, event)`` — the first.
+    """
+    want = list(fields) if fields else list(RAY_FIELDS)
+    o = np.asarray(origin, dtype=float)
+    d = np.asarray(direction, dtype=float)
+    dn = d / np.linalg.norm(d)
+    length = float(length)
+    near = [h for h in line(scene, o, dn, reach) if 0.0 <= h.along <= length]
+    hits: list[RayHit] = []
+    have: list[str] = []
+    end = max((h.along for h in near), default=None)
+
+    if "pass" in want:
+        have.append("pass")
+        for h in near:
+            data: dict[str, Any] = {
+                "d": h.offset,
+                "angle": normal_angle(scene, h.label, dn),
+                "element": h.element,
+            }
+            if charges is not None and h.label in charges:
+                data["q"] = float(charges[h.label])
+            hits.append(RayHit(h.along, "pass", "pass", h.label, data))
+
+    n_samples = max(2, int(np.ceil(length / max(step, 1e-6))) + 1)
+    s_grid = np.linspace(0.0, length, n_samples)
+    labels = list(scene.atoms)
+    carts = (
+        np.asarray([_cart(scene, la) for la in labels], dtype=float)
+        if labels
+        else np.zeros((0, 3))
+    )
+
+    if "charge" in want and charges is not None:
+        have.append("charge")
+        q_labels = [la for la in labels if la in charges]
+        if q_labels:
+            qs = np.asarray([charges[la] for la in q_labels], dtype=float)
+            qc = np.asarray([_cart(scene, la) for la in q_labels], dtype=float)
+            pts = o[None, :] + s_grid[:, None] * dn[None, :]
+            r = np.maximum(
+                np.linalg.norm(pts[:, None, :] - qc[None, :, :], axis=2), 0.3
+            )
+            v = _COULOMB_V_A * (qs[None, :] / r).sum(axis=1)
+            last: float | None = None
+            for k, s in enumerate(s_grid):
+                tag = None
+                if 0 < k < len(v) - 1 and (v[k] - v[k - 1]) * (v[k + 1] - v[k]) < 0:
+                    tag = "min" if v[k] < v[k - 1] else "max"
+                elif k > 0 and v[k] * v[k - 1] < 0:
+                    tag = "sign"
+                elif last is not None and abs(v[k] - last) >= ESP_STEP_V:
+                    tag = "step"
+                if tag is None and last is not None:
+                    continue
+                nearest = q_labels[int(np.argmin(r[k]))]
+                hits.append(
+                    RayHit(
+                        float(s),
+                        "charge",
+                        "esp",
+                        f"esp@{k}",
+                        {
+                            "V": float(v[k]),
+                            "tag": tag or "start",
+                            "near": nearest,
+                            "q": float(charges[nearest]),
+                        },
+                    )
+                )
+                last = float(v[k])
+
+    if "pi" in want and pi_data and not pi_data.get("skipped") and labels:
+        have.append("pi")
+        rings = pi_data.get("rings") or []
+        for sys_ in pi_data.get("systems") or []:
+            arom = [k for k in sys_.get("aromatic_rings") or [] if k < len(rings)]
+            regions_pi: list[tuple[str, Any, dict[str, Any]]] = []
+            if arom:
+                for k in arom:
+                    ords = [i for i in rings[k]["atoms"] if i < len(labels)]
+                    if len(ords) < 3:
+                        continue
+                    regions_pi.append(
+                        (
+                            f"ring:{k}",
+                            _ring_inside(carts[ords]),
+                            {
+                                "ring": k,
+                                "size": len(ords),
+                                "aromatic": True,
+                                "system": sys_["id"],
+                            },
+                        )
+                    )
+            else:
+                ords = [i for i in sys_.get("atoms") or [] if i < len(labels)]
+                if ords:
+                    radii = np.asarray(
+                        [
+                            (vdw_radii or {}).get(
+                                scene.atoms[labels[i]].element, PI_SYSTEM_RADIUS_A
+                            )
+                            for i in ords
+                        ],
+                        dtype=float,
+                    )
+                    regions_pi.append(
+                        (
+                            f"system:{sys_['id']}",
+                            _spheres_inside(carts[ords], radii),
+                            {
+                                "system": sys_["id"],
+                                "size": len(ords),
+                                "aromatic": False,
+                            },
+                        )
+                    )
+            for subject, inside, facts in regions_pi:
+                for s_t, ev in _transitions(inside, s_grid, o, dn):
+                    hits.append(RayHit(s_t, "pi", ev, subject, dict(facts)))
+
+    for fname, of in (("frame", frame_of), ("relax", relax_of)):
+        if fname not in want or of is None or not near:
+            continue
+        near_l = [h.label for h in near]
+        vals = {la: of(la) for la in near_l}
+        if all(v is None for v in vals.values()):
+            continue
+        have.append(fname)
+        nc = np.asarray([_cart(scene, la) for la in near_l], dtype=float)
+        pts = o[None, :] + s_grid[:, None] * dn[None, :]
+        dist = np.linalg.norm(pts[:, None, :] - nc[None, :, :], axis=2)
+        prev: Any = None
+        for k, s in enumerate(s_grid):
+            j = int(np.argmin(dist[k]))
+            if dist[k, j] > reach:
+                continue
+            la = near_l[j]
+            val = vals[la]
+            if val is None or val == prev:
+                continue
+            prev = val
+            hits.append(
+                RayHit(float(s), fname, "change", str(val), {"value": val, "atom": la})
+            )
+
+    if "region" in want and regions:
+        have.append("region")
+        for name, inside in regions:
+            for s_t, ev in _transitions(inside, s_grid, o, dn):
+                hits.append(RayHit(s_t, "region", ev, name, {}))
+
+    seen: set[tuple[str, str, str]] = set()
+    out: list[RayHit] = []
+    for hit in sorted(hits, key=lambda x: (x.s, RAY_FIELDS.index(x.field))):
+        key = (hit.field, hit.subject, hit.event)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(hit)
+    return RayTrace(out, end, [f for f in RAY_FIELDS if f in have])
+
+
 @dataclass
 class PlaneHit:
     """An atom within a planar slab, with its in-plane 2D coordinates."""

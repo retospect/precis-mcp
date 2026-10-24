@@ -34,6 +34,11 @@ creator frame, and the object's atoms carry that frame's id as their
   runs). ``junction`` (two rim atom sets by minted bonds) is a later
   spec row, not this slice.
 
+- ``ray`` (:class:`Ray`; ``ray.along``/``ray.axis``) declares an
+  observation ray. Rays are observation only — they never touch
+  geometry; a ``ray`` frame is minted so the manifest row joins the
+  trace.
+
 Units: an atomic :class:`Geom` is Å-native (the ``precis.structure``
 enclave); a macro one rides the cad design's own unit. Vector
 arguments accept a bare 3-vector (native) or a unit string the shared
@@ -51,7 +56,7 @@ import numpy as np
 from precis.cad import vec as _vec
 from precis.cad.vec import Transform
 from precis.errors import BadInput
-from precis.utils.units import parse_vector_quantity
+from precis.utils.units import parse_quantity, parse_vector_quantity
 from precis_geom import trace as _trace
 
 _A_PER_M = 1e10
@@ -884,15 +889,301 @@ def place(child: Any, *, at: Any, align: Any) -> Geom:
     return replace(cg, pose=T)
 
 
+# ── observation rays ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Ray:
+    """An observation ray — a line the eye samples (structure-workspaces
+    §Observation rays). SI metres; ``frame_in`` is the reference frame
+    (``None`` = the block, ``"world"``, ``"port:<name>"``); ``frame_id``
+    is the trace frame of the call that made it. Observation only: a
+    ray never changes geometry."""
+
+    name: str
+    block: str | None
+    origin: tuple[float, float, float]
+    direction: tuple[float, float, float]
+    length: float
+    kind: str = "probe"
+    fields: tuple[str, ...] | None = None
+    step: float | None = None
+    reach: float | None = None
+    frame_in: str | None = None
+    anchor: tuple[str, ...] | None = None
+    frame_id: int | None = None
+
+
+def _ray_origin_m(value: Any) -> tuple[float, float, float]:
+    """Bare 3 numbers = metres; strings / quantity lists via the shared
+    SI grammar."""
+    if isinstance(value, str) or (
+        isinstance(value, (list, tuple)) and any(isinstance(c, str) for c in value)
+    ):
+        si = parse_vector_quantity(value, "length", arg_name="ray origin")
+        return (float(si[0]), float(si[1]), float(si[2]))
+    v = _dir_vec(value, "ray origin (metres or a unit string)")
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _ray_length_m(value: Any) -> float:
+    if isinstance(value, str):
+        n = float(parse_quantity(value, "length", arg_name="ray length"))
+    else:
+        try:
+            n = float(value)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"ray length must be a number (metres) or a unit string, got {value!r}",
+                next="give a positive length, e.g. '12 nm' or 1.2e-8 (metres)",
+            ) from exc
+    if not math.isfinite(n) or n <= 0.0:
+        raise BadInput(
+            f"ray length must be > 0, got {value!r}",
+            next="give a positive length, e.g. '12 nm' or 1.2e-8 (metres)",
+        )
+    return n
+
+
+def _make_ray(
+    name: str,
+    origin: Any,
+    direction: Any,
+    length: Any,
+    *,
+    block: str | None,
+    fields: Any,
+    step: float | None,
+    reach: float | None,
+    frame_in: str | None,
+    kind: str,
+    anchor: tuple[str, ...] | None = None,
+) -> Ray:
+    d = _dir_vec(direction, "ray direction")
+    n = math.sqrt(sum(float(x) * float(x) for x in d))
+    if n == 0.0 or not math.isfinite(n):
+        raise BadInput(
+            "ray direction must be a nonzero vector",
+            next="give a direction like [0, 0, 1]",
+        )
+    return Ray(
+        name=str(name),
+        block=block,
+        origin=_ray_origin_m(origin),
+        direction=(float(d[0]) / n, float(d[1]) / n, float(d[2]) / n),
+        length=_ray_length_m(length),
+        kind=str(kind),
+        fields=tuple(str(f) for f in fields) if fields is not None else None,
+        step=float(step) if step is not None else None,
+        reach=float(reach) if reach is not None else None,
+        frame_in=frame_in,
+        anchor=anchor,
+        frame_id=_leaf(),
+    )
+
+
+@_trace.traced(name="ray")
+def _ray(
+    name: str,
+    origin: Any,
+    direction: Any,
+    length: Any,
+    *,
+    block: str | None = None,
+    fields: Any = None,
+    step: float | None = None,
+    reach: float | None = None,
+    frame: str | None = None,
+    kind: str = "probe",
+) -> Ray:
+    return _make_ray(
+        name,
+        origin,
+        direction,
+        length,
+        block=block,
+        fields=fields,
+        step=step,
+        reach=reach,
+        frame_in=frame,
+        kind=kind,
+    )
+
+
+@_trace.traced(name="ray.along")
+def _ray_along(
+    port: Any,
+    length: Any,
+    *,
+    name: str,
+    block: str | None = None,
+    fields: Any = None,
+    step: float | None = None,
+    reach: float | None = None,
+    kind: str = "bolt_axis",
+) -> Ray:
+    if isinstance(port, tuple):
+        owner, p = port
+        if block is None:
+            block = owner.name
+        pname = p.name
+    elif isinstance(port, Port):
+        pname = port.name
+    else:
+        pname = str(port)
+    anchor = (f"{block}.{pname}",) if block else None
+    return _make_ray(
+        name,
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0),
+        length,
+        block=block,
+        fields=fields,
+        step=step,
+        reach=reach,
+        frame_in=f"port:{pname}",
+        kind=kind,
+        anchor=anchor,
+    )
+
+
+@_trace.traced(name="ray.axis")
+def _ray_axis(
+    obj: Any,
+    *,
+    name: str,
+    length: Any = None,
+    reach: float | None = None,
+    block: str | None = None,
+) -> Ray:
+    g = geom(obj)
+    if not g.atomic:
+        raise BadInput(
+            "ray.axis needs atoms — axis() runs a PCA of atom positions; "
+            "a macro/symbolic object has none",
+            next="pass an atomic Geom, or give ray(...) an explicit direction",
+        )
+    _labels, _els, carts = _scene_carts(g.flatten())
+    if len(carts) < 2:
+        raise BadInput(
+            "ray.axis needs at least 2 atoms to define an axis",
+            next="pass a block with 2+ atoms, or give ray(...) an explicit direction",
+        )
+    c = carts.mean(axis=0)
+    # principal axis = top eigenvector of the covariance
+    w, vecs = np.linalg.eigh(np.cov((carts - c).T, bias=True))
+    ax = vecs[:, int(np.argmax(w))]
+    if ax[int(np.argmax(np.abs(ax)))] < 0:
+        ax = -ax
+    proj = (carts - c) @ ax
+    extent = float(proj.max() - proj.min())
+    if length is None:
+        length_a = extent + 4.0
+    elif isinstance(length, str):
+        length_a = _ray_length_m(length) * _A_PER_M
+    else:
+        length_a = float(length) * _A_PER_M
+    start = c - (extent / 2.0 + 2.0) * ax
+    return _make_ray(
+        name,
+        tuple(float(x) * 1e-10 for x in start),
+        ax,
+        length_a * 1e-10,
+        block=block or g.name,
+        fields=None,
+        step=None,
+        reach=reach,
+        frame_in=None,
+        kind="probe",
+    )
+
+
+class _RayApi:
+    """``pga.ray(...)`` plus ``pga.ray.along`` / ``pga.ray.axis``."""
+
+    def __call__(
+        self,
+        name: str,
+        origin: Any,
+        direction: Any,
+        length: Any,
+        *,
+        block: str | None = None,
+        fields: Any = None,
+        step: float | None = None,
+        reach: float | None = None,
+        frame: str | None = None,
+        kind: str = "probe",
+    ) -> Ray:
+        """A ray from ``origin`` along ``direction`` for ``length``
+        (bare numbers = metres; strings via the shared unit grammar).
+        ``frame`` is the *reference* frame (``None``/``"world"``/
+        ``"port:<name>"``)."""
+        return _ray(
+            name,
+            origin,
+            direction,
+            length,
+            block=block,
+            fields=fields,
+            step=step,
+            reach=reach,
+            frame=frame,
+            kind=kind,
+        )
+
+    def along(
+        self,
+        port: Any,
+        length: Any,
+        *,
+        name: str,
+        block: str | None = None,
+        fields: Any = None,
+        step: float | None = None,
+        reach: float | None = None,
+        kind: str = "bolt_axis",
+    ) -> Ray:
+        """A ray down a port's +z axis, in the port's frame."""
+        return _ray_along(
+            port,
+            length,
+            name=name,
+            block=block,
+            fields=fields,
+            step=step,
+            reach=reach,
+            kind=kind,
+        )
+
+    def axis(
+        self,
+        obj: Any,
+        *,
+        name: str,
+        length: Any = None,
+        reach: float | None = None,
+        block: str | None = None,
+    ) -> Ray:
+        """A ray along an atomic object's principal axis (PCA), through
+        the centroid, padded 2 Å beyond each end."""
+        return _ray_axis(obj, name=name, length=length, reach=reach, block=block)
+
+
+ray = _RayApi()
+
+
 __all__ = [
     "Geom",
     "Port",
+    "Ray",
     "array_spec",
     "assembly",
     "geom",
     "instance",
     "mirror",
     "place",
+    "ray",
     "rotate",
     "tile",
     "transform",

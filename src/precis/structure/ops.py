@@ -490,6 +490,52 @@ def _op_eye(scene: Scene, op: dict[str, Any]) -> None:
     scene.measures.append(m)
 
 
+def _op_ray(scene: Scene, op: dict[str, Any]) -> None:
+    """Drop / replace a named observation ray (structure-workspaces 2r) — a
+    definition, never an event list: ``origin`` (Å, default the cell
+    origin), ``direction``, ``length`` (Å) required; ``fields``, ``step``
+    (Å), ``reach`` (Å) optional. Observation only — geometry is untouched."""
+    from .probe import RAY_FIELDS
+
+    name = op.get("name")
+    if not name or any(c in str(name) for c in ".~:"):
+        raise OpError("ray needs a 'name' without '.', '~' or ':' (e.g. 'axis')")
+    try:
+        origin = [float(x) for x in (op.get("origin") or [0.0, 0.0, 0.0])]
+        direction = np.asarray([float(x) for x in op.get("direction") or []])
+        length = float(op["length"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OpError(
+            "ray needs 'direction' (3-vector) and 'length' (Å, > 0); 'origin' Å"
+        ) from exc
+    if len(origin) != 3 or direction.shape != (3,) or not np.linalg.norm(direction):
+        raise OpError("ray 'origin' and 'direction' are 3-vectors; direction nonzero")
+    if not length > 0:
+        raise OpError(f"ray 'length' must be > 0 Å, got {op.get('length')!r}")
+    fields = op.get("fields")
+    if fields is not None:
+        fields = [str(f) for f in fields]
+        bad = sorted(set(fields) - set(RAY_FIELDS))
+        if bad:
+            raise OpError(f"unknown ray field(s) {bad} — fields are {list(RAY_FIELDS)}")
+    spec: dict[str, Any] = {
+        "origin": origin,
+        "direction": [float(x) for x in direction / np.linalg.norm(direction)],
+        "length": length,
+        "fields": fields,
+    }
+    for key in ("step", "reach"):
+        if op.get(key) is not None:
+            if not float(op[key]) > 0:
+                raise OpError(f"ray {key!r} must be > 0 Å")
+            spec[key] = float(op[key])
+    m = Measure(kind="ray", name=str(name), spec=spec, for_=op.get("for"))
+    scene.measures = [
+        x for x in scene.measures if not (x.kind == "ray" and x.name == m.name)
+    ]
+    scene.measures.append(m)
+
+
 def _op_measure(scene: Scene, op: dict[str, Any]) -> None:
     """Pin a measure (distance / angle / coordination / bond_length) with an
     optional graded goal. Replaces an existing measure over the same operands."""
@@ -523,16 +569,18 @@ def _op_measure(scene: Scene, op: dict[str, Any]) -> None:
 
 
 def _op_unmark(scene: Scene, op: dict[str, Any]) -> None:
-    """Retire an eye by name."""
+    """Retire an eye — or an observation ray — by name."""
     name = op.get("name")
     if not name:
-        raise OpError("unmark needs an eye 'name'")
+        raise OpError("unmark needs an eye or ray 'name'")
     before = len(scene.measures)
     scene.measures = [
-        x for x in scene.measures if not (x.kind == "eye" and x.name == str(name))
+        x
+        for x in scene.measures
+        if not (x.kind in ("eye", "ray") and x.name == str(name))
     ]
     if len(scene.measures) == before:
-        raise OpError(f"no eye named {name!r}")
+        raise OpError(f"no eye or ray named {name!r}")
 
 
 def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
@@ -1095,6 +1143,7 @@ _OPS = {
     "remove_bond": _op_remove_bond,
     "constrain": _op_constrain,
     "eye": _op_eye,
+    "ray": _op_ray,
     "measure": _op_measure,
     "unmark": _op_unmark,
     "remove_measure": _op_remove_measure,

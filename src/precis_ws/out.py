@@ -6,7 +6,8 @@
 or :class:`precis.structure.scene.Scene`) plus its manifest entry
 (``ports``/``relax``/``desc``/``scale``/``bonds`` — the shapes
 ``precis_se.workspace_import`` validates). ``out.instance``/
-``out.connect`` append the manifest's ``instances``/``connects``.
+``out.connect`` append the manifest's ``instances``/``connects``;
+``out.ray`` appends an observation ray to ``rays``.
 :func:`finish` writes ``out/manifest.json`` and ``out/trace.json`` (the
 run's construction trace, ``precis_geom.trace``); it also runs at
 interpreter exit, so a script that just builds still leaves both
@@ -36,6 +37,7 @@ _finished = False
 _blocks: list[dict[str, Any]] = []
 _instances: list[dict[str, Any]] = []
 _connects: list[dict[str, Any]] = []
+_rays: list[dict[str, Any]] = []
 _notes: str | None = None
 _payloads: dict[str, tuple[bytes, str]] = {}  # file name → (bytes, encoding)
 
@@ -225,6 +227,26 @@ def connect(
 
 
 @traced
+def ray(
+    r_or_name: Any,
+    *args: Any,
+    block: str | None = None,
+    frame: int | None = None,
+    **kw: Any,
+) -> None:
+    """Register one observation ray (a :class:`precis_geom.assembly.Ray`
+    or ``pga.ray`` arguments) on a declared block."""
+    from precis_geom.out import _ray_entry
+
+    entry = _ray_entry(r_or_name, args, kw, block=block, frame=frame)
+    if entry["block"] not in {b["name"] for b in _blocks}:
+        raise ValueError(f"out.ray: block {entry['block']!r} is not declared")
+    if any(r["name"] == entry["name"] for r in _rays):
+        raise ValueError(f"out.ray: duplicate ray name {entry['name']!r}")
+    _rays.append(entry)
+
+
+@traced
 def note(text: str) -> None:
     global _notes
     _notes = text if _notes is None else f"{_notes}\n{text}"
@@ -253,6 +275,8 @@ def finish() -> Path:
         "instances": _instances,
         "connects": _connects,
     }
+    if _rays:
+        manifest["rays"] = _rays
     if _notes:
         manifest["notes"] = _notes
     (out_dir / "manifest.json").write_text(
@@ -286,7 +310,8 @@ def _reset() -> None:
     _blocks.clear()
     _instances.clear()
     _connects.clear()
+    _rays.clear()
     _payloads.clear()
 
 
-__all__ = ["block", "connect", "finish", "instance", "note"]
+__all__ = ["block", "connect", "finish", "instance", "note", "ray"]

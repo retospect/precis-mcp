@@ -161,6 +161,8 @@ _VIEWS = (
     "completion",
     "completion_digest",
     "markers",
+    "ray",
+    "rays",
     "links",
     "literature",
     "pourbaix",
@@ -1511,6 +1513,8 @@ class StructureHandler(Handler):
             return self._render_runs(ref)
         if view == "markers":
             return self._render_markers(scene)
+        if view in ("ray", "rays"):
+            return self._render_rays(view, ref, scene, args or {})
         if view == "literature":
             return self._render_literature(scene, ref)
         if view == "links":
@@ -1572,7 +1576,32 @@ class StructureHandler(Handler):
         if recall:
             raise recall_refusal()
         scene, _handles = self.store.structure_load(ref.id)
+        if focus.startswith("ray:"):
+            return Response(body=self._ray_eye(ref, scene, focus[4:].strip(), ext))
         return Response(body=render(self.store, ref, scene, focus, ext, q=q, ring=ring))
+
+    def _ray_eye(self, ref: Any, scene: Scene, name: str, ext: Any) -> str:
+        """``st<id>~ray:<name>``: ``kwd`` the header, ``summary`` + per-field
+        counts, ``verbatim`` and up the hits (a bare structure has no
+        blocks or pockets to cross; its π systems are on the hits)."""
+        from precis.workers.working_set import Extent
+
+        lines = self._render_rays("ray", ref, scene, {"name": name}).body.splitlines()
+        if ext == Extent.TOC:
+            return lines[0]
+        counts: dict[str, int] = {}
+        for ln in lines[1:]:
+            parts = ln.split()
+            if len(parts) > 2 and parts[1] == "Å":
+                f = parts[2].split(".")[0]
+                counts[f] = counts.get(f, 0) + 1
+        summary = [
+            lines[0],
+            "hits: " + " · ".join(f"{k} {v}" for k, v in counts.items()),
+        ]
+        if ext == Extent.SUMMARY:
+            return "\n".join(summary)
+        return "\n".join([*summary, *lines[1:]])
 
     def _render_staircase(self, ref: Any, args: dict[str, Any]) -> Response:
         """``view='staircase'`` — the reaction staircase of this
@@ -2079,6 +2108,51 @@ class StructureHandler(Handler):
             )
         )
 
+    def _render_rays(
+        self, view: str, ref: Any, scene: Scene, args: dict[str, Any]
+    ) -> Response:
+        """``view='ray'`` (``args={'name', 'from'?}``) / ``view='rays'`` —
+        the design's observation rays (structure-workspaces 2r), events
+        recomputed from the live geometry on every read."""
+        from precis.handlers._structure_eye import _pi_data
+        from precis.structure.rayview import render_structure_ray, structure_ray
+
+        handle = handle_registry.try_format("structure", int(ref.id)) or str(ref.slug)
+        rays = [m for m in scene.measures if m.kind == "ray"]
+        if view == "rays":
+            if not rays:
+                return Response(
+                    body="# no rays yet\n\nNext: edit(kind='structure', id=…, "
+                    "ops=[{'op':'ray','name':'axis','origin':[0,0,-5],"
+                    "'direction':[0,0,1],'length':20}])"
+                )
+            pi = _pi_data(self.store, int(ref.id), scene)
+            lines = [f"# {len(rays)} ray(s)"]
+            for m in rays:
+                tr = structure_ray(scene, m, pi)
+                lines.append(
+                    f"  {m.name} · {float((m.spec or {}).get('length') or 0):g} Å · "
+                    f"{len(tr.hits)} hits · {handle}~ray:{m.name}"
+                )
+            return Response(body="\n".join(lines))
+        name = str(args.get("name") or "").strip()
+        hit = next((x for x in rays if x.name == name), None)
+        if hit is None:
+            raise NotFound(
+                f"no ray {name!r} on {handle} (rays: "
+                f"{', '.join(str(x.name) for x in rays) or 'none'})",
+                next=f"get(kind='structure', id={handle!r}, view='rays')",
+            )
+        start = args.get("from")
+        lines = render_structure_ray(
+            scene,
+            hit,
+            _pi_data(self.store, int(ref.id), scene),
+            handle=handle,
+            start=float(start) if start is not None else None,
+        )
+        return Response(body="\n".join(lines))
+
     def _render_markers(self, scene: Scene) -> Response:
         """The design's eyes + measures (§6.8/§7), each re-evaluated against
         the current geometry so value + verdict are live, never stale."""
@@ -2099,6 +2173,8 @@ class StructureHandler(Handler):
                 )
             elif "error" in value:
                 shown = value["error"]
+            elif m.kind == "ray":
+                shown = f"{value.get('hits')} hits · view='ray'"
             else:
                 unit = value.get("unit") or ""
                 shown = f"{value.get('value')}{(' ' + unit) if unit else ''}"

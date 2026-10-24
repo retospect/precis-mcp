@@ -37,6 +37,10 @@ EYE = "eye"
 #: evaluator-reuse decision this kind is only ever built ad-hoc and evaluated
 #: directly, never persisted through that path.
 MIN_DISTANCE = "min_distance"
+#: An observation ray (structure-workspaces 2r) — ``Measure.spec`` holds the
+#: definition; persisted beside eyes (``struct_measures``, the ``spec`` in
+#: ``embodiment``), events recomputed on read (:mod:`precis.structure.rayview`).
+RAY = "ray"
 
 
 def is_eye(m: Measure) -> bool:
@@ -133,6 +137,19 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     """
     if m.kind == MIN_DISTANCE:
         return _min_distance(scene, m)
+    if m.kind == RAY:
+        # An observation ray (structure-workspaces 2r): the snapshot is the
+        # counts — events are recomputed on read, never stored. π comes
+        # from the read path (the stored structure_pi row); the snapshot
+        # perceives it, pure over the same geometry.
+        from .rayview import structure_ray
+
+        tr = structure_ray(scene, m, probe.pi_perceive(scene))
+        return {
+            "hits": len(tr.hits),
+            "fields": tr.fields,
+            "end": round(tr.end, 3) if tr.end is not None else None,
+        }, None
 
     missing = _missing(scene, m.operands)
     if missing:
@@ -167,6 +184,7 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
 __all__ = [
     "EYE",
     "MIN_DISTANCE",
+    "RAY",
     "_MEASURE_ARITY",
     "_MEASURE_KINDS",
     "anchor_identity_verified",

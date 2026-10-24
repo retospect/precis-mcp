@@ -10,7 +10,8 @@ from ``0005``, ``se_topology`` — the atomic mode's L2 threading, and from
 (one table, two kinds, one retire pass) — from
 ``0007``, ``se_optics`` — the design's FRET medium/pump context, ONE live
 row per design rather than a ledger — from ``0010``, and ``se_pockets``
-— block-row keyed like ``se_ports`` — from ``0018``)
+— block-row keyed like ``se_ports`` — from ``0018``, and ``se_rays``,
+keyed the same way, from ``0024``)
 reached over the store's public connection surface (``store.tx()`` /
 ``store.pool.connection()``) — a plugin never joins core's mixin list.
 
@@ -132,6 +133,7 @@ from precis_se.ops import (
 )
 from precis_se.pockets import PocketSpec
 from precis_se.properties.measurand import measurand_resolver
+from precis_se.rays import RaySpec
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +169,22 @@ _MEASURE_COLS = (
 #: ``se_pockets`` (migration ``0018_se_regions.sql``) — block-row keyed
 #: like ``se_ports``, written in lockstep with the fresh block ids.
 _POCKET_COLS = "block_id, name, shape, regions, class_hash"
+#: ``se_rays`` (plugin migration ``0024_se_rays.sql``) — block-row keyed
+#: like ``se_pockets``; ``definition`` + ``digests``, never events.
+_RAY_COLS = "block_id, name, definition, digests"
+
+
+def _has_rays_table(cur: Any) -> bool:
+    """``se_rays`` exists — the pre-0024 guard: a plain catalog read, so a
+    DB without the table loads and saves rayless instead of aborting the
+    caller's transaction on ``UndefinedTable``."""
+    cur.execute("SELECT to_regclass('se_rays') IS NOT NULL AS ok")
+    row = cur.fetchone()
+    if row is None:
+        return False
+    return bool(row["ok"] if isinstance(row, dict) else row[0])
+
+
 _BOM_COLS = (
     "block, block_uid, a_block, a_block_uid, a_port, b_block, b_block_uid, "
     "b_port, item_kind, item, qty, uom, reason"
@@ -280,6 +298,15 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                     (block_ids,),
                 )
                 pocket_rows = cur.fetchall()
+            ray_rows: list[dict[str, Any]] = []
+            if block_ids and _has_rays_table(cur):
+                cur.execute(
+                    f"SELECT {_RAY_COLS} FROM se_rays "
+                    "WHERE retired_at IS NULL AND block_id = ANY(%s) "
+                    "ORDER BY id ASC",
+                    (block_ids,),
+                )
+                ray_rows = cur.fetchall()
             cur.execute(
                 f"SELECT {_CONNECT_COLS} FROM se_connects "
                 "WHERE ref_id = %s AND retired_at IS NULL "
@@ -428,6 +455,13 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             shape=k["shape"],
             regions=list(k["regions"] or []),
             class_hash=k.get("class_hash"),
+        )
+    for k in ray_rows:
+        block_row = by_id.get(k["block_id"])
+        if block_row is None:  # pragma: no cover — defensive only
+            continue
+        tree.blocks[block_row["name"]].rays[k["name"]] = RaySpec.from_row(
+            k["name"], k["definition"], k["digests"]
         )
     for c in connect_rows:
         tree.connects.append(
@@ -681,7 +715,22 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
             name: PocketSpec(**_known(PocketSpec, k))
             for name, k in (d.get("pockets") or {}).items()
         }
-        node = SeBlock(**{**_known(SeBlock, d), "ports": ports, "pockets": pockets})
+        rays = {
+            name: RaySpec.from_row(
+                name,
+                {k: v for k, v in r.items() if k not in ("name", "digests")},
+                r.get("digests"),
+            )
+            for name, r in (d.get("rays") or {}).items()
+        }
+        node = SeBlock(
+            **{
+                **_known(SeBlock, d),
+                "ports": ports,
+                "pockets": pockets,
+                "rays": rays,
+            }
+        )
         tree.blocks[node.name] = node
     # "equals load_tree's for the same rows" (docstring) includes pose:
     # a payload from BEFORE this engine fix has no local_pose/local_rot,
@@ -1416,6 +1465,15 @@ def save_tree(
             "(SELECT id FROM se_blocks WHERE ref_id = %s)",
             (ref_id,),
         )
+        with c.cursor() as rcur:
+            has_rays = _has_rays_table(rcur)
+        if has_rays:
+            c.execute(
+                "UPDATE se_rays SET retired_at = now() "
+                "WHERE retired_at IS NULL AND block_id IN "
+                "(SELECT id FROM se_blocks WHERE ref_id = %s)",
+                (ref_id,),
+            )
         c.execute(
             "UPDATE se_connects SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
@@ -1543,6 +1601,23 @@ def save_tree(
                         pocket.shape,
                         list(pocket.regions),
                         pocket.class_hash,
+                    ),
+                )
+            if node.rays and not has_rays:
+                log.warning(
+                    "se_rays table absent (pre-0024 DB) — %d ray(s) on %r not saved",
+                    len(node.rays),
+                    name,
+                )
+            for ray in node.rays.values() if has_rays else ():
+                c.execute(
+                    "INSERT INTO se_rays (block_id, name, definition, digests) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (
+                        name_to_id[name],
+                        ray.name,
+                        Jsonb(ray.definition()),
+                        Jsonb(list(ray.digests)),
                     ),
                 )
         for conn_spec in tree.connects:
@@ -1885,6 +1960,63 @@ def _is_protected_structure(store: Any, ref_id: int) -> bool:
     return False
 
 
+def reobserve_rays(
+    store: Any, structure_slug: str, *, service: dict[str, Any] | None = None
+) -> list[tuple[str, str]]:
+    """Re-observe every ray on every live se block bound to
+    ``structure_slug`` and store the new digest beside ``service`` (the
+    relax write-back's ``{job, version, rung}`` — structure-workspaces
+    2r: "what did the relax change along the pore" is then one
+    ``against='last'`` diff). Observation only: the digest is written to
+    the live ``se_rays`` row in place under the tree lock — no tree save,
+    no new block rows. Returns ``[(design slug, ray name)]``; a DB
+    without ``se_rays`` returns ``[]``."""
+    from precis_se import rays as se_rays
+
+    done: list[tuple[str, str]] = []
+    with store.pool.connection() as c:
+        with c.cursor() as cur:
+            if not _has_rays_table(cur):
+                return done
+        rows = c.execute(
+            "SELECT DISTINCT b.ref_id FROM se_blocks b "
+            "WHERE b.bound_kind = 'structure' AND b.bound_design = %s "
+            "AND b.retired_at IS NULL",
+            (structure_slug,),
+        ).fetchall()
+    for (ref_id,) in rows:
+        ref = store.get_ref(kind="se", id=int(ref_id))
+        if ref is None:
+            continue
+        with tree_mutation(store, int(ref_id)) as conn:
+            tree = load_tree(store, int(ref_id), conn=conn)
+            # A ray lives on a template block; it is touched when that block
+            # (or one of its instances) binds the relaxed structure.
+            touched = {
+                node.template or name
+                for name, node in tree.blocks.items()
+                if (owner := tree.blocks.get(node.template or "") or node).bound
+                == structure_slug
+                and owner.bound_kind == "structure"
+            }
+            for block, spec in se_rays.all_rays(tree):
+                if block not in touched:
+                    continue
+                try:
+                    obs = se_rays.observe(tree, block, spec, slug=str(ref.slug))
+                except se_rays.RayError:
+                    continue
+                se_rays.push_digest(spec, se_rays.digest(obs, service=service))
+                conn.execute(
+                    "UPDATE se_rays SET digests = %s WHERE name = %s "
+                    "AND retired_at IS NULL AND block_id = (SELECT id FROM "
+                    "se_blocks WHERE ref_id = %s AND name = %s AND retired_at IS NULL)",
+                    (Jsonb(list(spec.digests)), spec.name, int(ref_id), block),
+                )
+                done.append((str(ref.slug), spec.name))
+    return done
+
+
 def _bound_structures(conn: Any, ref_id: int) -> dict[str, int]:
     """``{slug: ref_id}`` of the live structure refs this design's blocks
     and ports are bound to (``bound_kind='structure'``)."""
@@ -1951,6 +2083,15 @@ def retire_design(store: Any, ref_id: int) -> tuple[int, list[str], dict[str, st
             "(SELECT id FROM se_blocks WHERE ref_id = %s)",
             (ref_id,),
         )
+        with conn.cursor() as rcur:
+            has_rays = _has_rays_table(rcur)
+        if has_rays:
+            conn.execute(
+                "UPDATE se_rays SET retired_at = now() "
+                "WHERE retired_at IS NULL AND block_id IN "
+                "(SELECT id FROM se_blocks WHERE ref_id = %s)",
+                (ref_id,),
+            )
         conn.execute(
             "UPDATE se_connects SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",

@@ -136,6 +136,10 @@ used here as-is or extended with se's own cascades:
   region selectors plus a shape on an ordinary block
   (:mod:`precis_se.pockets`); inline region measures go through
   ``add_measure``.
+- ``add_ray`` / ``set_ray`` / ``remove_ray`` / ``observe_ray`` — an
+  observation ray on a template block (:mod:`precis_se.rays`): a stored
+  definition, events recomputed on read; ``observe_ray`` stores only a
+  digest. Observation only — no ray op touches geometry.
 
 Off-the-shelf rung 1 (docs/backlog/se-off-the-shelf-fabrication.md) adds
 the ops for things you *don't* make:
@@ -392,6 +396,7 @@ from precis_se.modes import ModeError, parse_mode
 from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
 from precis_se.pockets import HULL, PocketSpec, stamp_class_hashes
 from precis_se.properties.measurand import Measurand, MeasurandResolver
+from precis_se.rays import RayError, RaySpec
 
 #: A structure design's slug → its current version (``None`` = no such
 #: design); see :attr:`SeTree.structure_versions`.
@@ -702,6 +707,11 @@ class SeBlock(BlockNode):
     #: measures; persisted to ``se_pockets`` in lockstep with the block
     #: row, the ``ports`` pattern.
     pockets: dict[str, PocketSpec] = field(default_factory=dict)
+    #: Observation rays (:mod:`precis_se.rays`), keyed by ray name — a
+    #: definition plus its last digests, never an event list.
+    #: Template-owned like pockets; persisted to ``se_rays`` in lockstep
+    #: with the block row.
+    rays: dict[str, RaySpec] = field(default_factory=dict)
     #: ``user | proposed`` stamps for authored facets, keyed by facet name
     #: (``'envelope'``, ``'pose'``) — slice 4's freedom vocabulary. An
     #: absent key means ``user`` (the default is never stored); a propose
@@ -2630,6 +2640,120 @@ def _op_remove_pocket(tree: SeTree, op: dict[str, Any]) -> None:
     del tree.blocks[block].pockets[name]
 
 
+# ── observation rays (precis_se.rays) ─────────────────────────────────────
+
+
+def _ray_shared(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str, str]:
+    """``block``/``name`` for add/set/remove_ray: a template block (rays,
+    like pockets, live on the template) and a dot-free name."""
+    block = _require_block(tree, op, "block", opname)
+    node = tree.blocks[block]
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — rays "
+            f"live on the template (same rule as pockets); {opname} on "
+            f"{node.template!r} instead"
+        )
+    name = _require_name(op, "name", opname)
+    if "." in name or "~" in name or ":" in name:
+        raise OpError(
+            f"{opname} 'name' must not contain '.', '~' or ':': {name!r} — the "
+            "'<slug>~ray:<name>' handle reserves them"
+        )
+    return block, name
+
+
+def _op_add_ray(tree: SeTree, op: dict[str, Any]) -> None:
+    """Mint an observation ray on a block — a definition, never an event
+    list (:mod:`precis_se.rays`): ``origin`` (m, or a unit vector string),
+    ``direction``, ``length`` required; ``kind``/``fields``/``step``
+    (Å)/``reach`` (Å)/``frame`` (omitted = the block, ``'world'``,
+    ``'port:<name>'``)/``anchor`` optional. Names are unique per design
+    (the ``~ray:<name>`` handle names no block)."""
+    from precis import tool_ledger
+
+    block, name = _ray_shared(tree, op, opname="add_ray")
+    from precis_se.rays import find_ray
+
+    taken = find_ray(tree, name)
+    if taken is not None:
+        raise OpError(
+            f"duplicate ray {name!r} (on block {taken[0]!r}) — ray names are "
+            "unique per design; set_ray to change it"
+        )
+    spec = RaySpec(name=name)
+    try:
+        from precis_se.rays import apply_fields
+
+        apply_fields(spec, op, partial=False)
+    except RayError as exc:
+        raise OpError(f"add_ray: {exc}") from exc
+    made_by = op.get("made_by")
+    if isinstance(made_by, dict) and made_by.get("frame") is not None:
+        spec.made_by = {"frame": int(made_by["frame"])}
+    else:
+        _sid, seq = tool_ledger.current_session_key()
+        spec.made_by = {"op": "add_ray", "call": seq}
+    tree.blocks[block].rays[name] = spec
+
+
+def _op_set_ray(tree: SeTree, op: dict[str, Any]) -> None:
+    """Presence-based update of a ray's definition; the stored digests
+    stay (a diff against them is the point of keeping them)."""
+    from precis_se.rays import apply_fields
+
+    block, name = _ray_shared(tree, op, opname="set_ray")
+    spec = tree.blocks[block].rays.get(name)
+    if spec is None:
+        roster = ", ".join(sorted(tree.blocks[block].rays)) or "(none)"
+        raise OpError(f"set_ray: no ray {name!r} on block {block!r}. Rays: {roster}")
+    keys = {"origin", "direction", "length", "kind", "fields", "step", "reach"}
+    if not (keys | {"frame", "anchor"}) & set(op):
+        raise OpError(f"set_ray needs at least one of {', '.join(sorted(keys))}")
+    try:
+        apply_fields(spec, op, partial=True)
+    except RayError as exc:
+        raise OpError(f"set_ray: {exc}") from exc
+
+
+def _op_remove_ray(tree: SeTree, op: dict[str, Any]) -> None:
+    block, name = _ray_shared(tree, op, opname="remove_ray")
+    if name not in tree.blocks[block].rays:
+        roster = ", ".join(sorted(tree.blocks[block].rays)) or "(none)"
+        raise OpError(f"remove_ray: no ray {name!r} on block {block!r}. Rays: {roster}")
+    del tree.blocks[block].rays[name]
+
+
+def _op_observe_ray(tree: SeTree, op: dict[str, Any]) -> None:
+    """Recompute ``name`` (or every ray, optionally on ``block``) and
+    store only the digest — the hash, structure versions, ``pi_key`` and
+    key numbers; last five kept. Observation only: geometry is never
+    touched."""
+    from precis_se import rays as se_rays
+
+    name = op.get("name")
+    block_tok = op.get("block")
+    block = _block_key(tree, block_tok, what="block") if block_tok else None
+    if name:
+        hit = se_rays.find_ray(tree, str(name).strip())
+        if hit is None:
+            roster = ", ".join(s.name for _b, s in se_rays.all_rays(tree)) or "(none)"
+            raise OpError(f"observe_ray: no ray {name!r}. Rays: {roster}")
+        targets = [hit]
+    else:
+        targets = [
+            (b, s) for b, s in se_rays.all_rays(tree) if block is None or b == block
+        ]
+        if not targets:
+            raise OpError("observe_ray: no rays on this design to observe")
+    for b, spec in targets:
+        try:
+            obs = se_rays.observe(tree, b, spec)
+        except RayError as exc:
+            raise OpError(f"observe_ray {spec.name!r}: {exc}") from exc
+        se_rays.push_digest(spec, se_rays.digest(obs))
+
+
 def _template_owned(tree: SeTree, name: str, *, opname: str, what: str) -> SeBlock:
     """Resolve ``name`` — a block token, label or uid — to an *ordinary*
     block, rejecting an instance/array node: realization facets (envelope,
@@ -4506,6 +4630,10 @@ _OPS = {
     "add_pocket": _op_add_pocket,
     "set_pocket": _op_set_pocket,
     "remove_pocket": _op_remove_pocket,
+    "add_ray": _op_add_ray,
+    "set_ray": _op_set_ray,
+    "remove_ray": _op_remove_ray,
+    "observe_ray": _op_observe_ray,
     "set_mode": _op_set_mode,
     "set_binding": _op_set_binding,
     "set_process_override": _op_set_process_override,

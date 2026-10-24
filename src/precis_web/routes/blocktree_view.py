@@ -1102,6 +1102,9 @@ async def _view3d_page(
     # the viewer as a data attribute — the pointer contract the atom-layer
     # highlight consumes (hop-1 solid, 2–3 fading, π tint, relax colour).
     focus = (request.query_params.get("focus") or "").strip() or None
+    # structure-workspaces 2r: ``?ray=<name>`` points at an observation
+    # ray (the eye text names it); passed through as ``data-ray``.
+    ray = (request.query_params.get("ray") or "").strip()
     # Validate BEFORE embedding anywhere downstream (scene_url, and from
     # there the scene3d.json fetch the 3D page's own JS makes) — an
     # unvalidated overrides string can otherwise ride through to a 400
@@ -1193,6 +1196,7 @@ async def _view3d_page(
             "isolate": isolate or "",
             "overrides": overrides,
             "focus": focus or "",
+            "ray": ray or "",
             "block_names": block_names,
             "scene_url": scene_url,
             "has_atomic": has_atomic,

@@ -389,7 +389,10 @@ class StructureMixin:
                     Jsonb(m.goal) if m.goal is not None else None,
                     m.strength,
                     Jsonb({"atoms": m.operands}),
-                    Jsonb({"name": m.name, "reach": m.reach}),
+                    Jsonb(
+                        {"name": m.name, "reach": m.reach}
+                        | ({"spec": m.spec} if m.spec is not None else {})
+                    ),
                     m.for_,
                     Jsonb(value),
                     verdict,
@@ -814,6 +817,7 @@ class StructureMixin:
                     goal=goal,
                     strength=str(strength or "gauge"),
                     for_=for_,
+                    spec=dict(emb["spec"]) if emb.get("spec") is not None else None,
                 )
             )
         return scene, handles

@@ -75,7 +75,9 @@ system — `pi:` also works as a region selector on an se block that binds
 the structure, `precis-se-regions-help`). `fisheye` shows the graduated
 bonded shell (bond lines at hop 1, element groups at 2–3, counts at
 4–6) and the π line (`rings <sizes> · sys st<id>~pi:<id>`). `+recall`
-refuses — an atom has no embedding.
+refuses — an atom has no embedding. A stored observation ray
+(`{'op':'ray', name, origin, direction, length}`, Å) reads with
+`view='ray'`/`'rays'` and `st<id>~ray:<name>` — `precis-se-regions-help` §Observation rays.
 
 ## Author a design — `put(id=<slug>, text=<JSON>)`
 

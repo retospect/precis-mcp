@@ -73,6 +73,7 @@
       <span class="text-[11px] text-fg-subtle sv-hl" data-atoms="{{ focus_label }}">focused
         <code>{{ focus }}</code></span>
       {% endif %}
+      {% if ray %}<span class="text-[11px] text-fg-subtle" data-ray="{{ ray }}">ray <code>{{ ray }}</code></span>{% endif %}
       {% if viewer.relaxed %}
       <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-xs ml-auto">
         <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-surface-muted">Input</button>

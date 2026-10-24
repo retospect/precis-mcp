@@ -545,6 +545,8 @@ _VERDICTS: dict[str, dict[str, str]] = {
         # add_pocket, emitted per pocket after the measures
         "pockets": "op",
         "ports": "op",
+        # add_ray, the definition only (digests/made_by are a NOT_CARRIED gap)
+        "rays": "op",
         "posed_by_state": "derived",
         # the COMPOSED world placement; local_pose/local_rot above are the
         # authored values the pose ops actually take

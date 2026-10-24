@@ -254,6 +254,7 @@
     </div>
     <div id="bt3d-viewer" class="relative w-full rounded-lg border border-line bg-surface" style="height: 520px;"
          {% if focus %}data-focus="{{ focus }}"{% endif %}
+         {% if ray %}data-ray="{{ ray }}"{% endif %}
          data-svg-url="{{ svg_url }}" data-2d-url="{{ detail_2d_url }}"></div>
     <p class="text-[11px] text-fg-faint mt-1">
       Drag to rotate · scroll to zoom · click a feature to select (vertex/edge/face/solid filter in the tree panel) ·

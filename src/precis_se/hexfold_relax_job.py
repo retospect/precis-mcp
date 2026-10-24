@@ -589,6 +589,24 @@ def _clear_ckpt(ctx: Any, path: str | None) -> None:
                 pass
 
 
+def _reobserve_rays(ctx: Any, slug: str, version: int, rung: str) -> None:
+    """The relax write-back's re-observe hook (structure-workspaces 2r —
+    the only 2r touch on this parked module): every observation ray on a
+    block bound to the relaxed structure stores a fresh digest beside
+    this job, so ``view='ray' args={'against': 'last'}`` reads what the
+    relax moved. Best-effort — an observation never fails a relax."""
+    from precis_se import persist as se_persist
+
+    try:
+        se_persist.reobserve_rays(
+            ctx.store,
+            slug,
+            service={"job": int(ctx.ref_id), "version": int(version), "rung": rung},
+        )
+    except Exception:
+        log.warning("ray re-observe after hexfold_relax failed", exc_info=True)
+
+
 def _write_checkpoint_version(
     ctx: Any,
     *,
@@ -720,6 +738,7 @@ def _write_checkpoint_version(
         },
         meta_extra={"generated": generated_next},
     )
+    _reobserve_rays(ctx, str(ref.slug), version, f"hexfold:{polish}+{fragment}")
     # The checkpointed steps cost real compute — record the passes like
     # any other relax run ('interrupted' for the in-flight stage).
     if polish_steps:
@@ -1248,6 +1267,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         },
         meta_extra={"generated": generated_next},
     )
+    _reobserve_rays(ctx, str(ref.slug), version, f"hexfold:{polish}+{fragment}")
     ctx.store.structure_record_run(
         structure_ref_id,
         fidelity=polish,

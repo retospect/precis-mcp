@@ -802,6 +802,10 @@ def render(
     if foc.kind == "frame" and foc.frame is not None:
         head.extend(_down_lines(tree, slug, foc.tr, foc.frame))
     head.extend(se_eye.pi_system_lines(pi_data, foc.ordinals, pi_prefix))
+    if foc.kind == "atom":
+        from precis_se import rays as se_rays
+
+        head.extend(se_rays.atom_ray_lines(tree, slug, foc.block, foc.keys[0][1]))
     if ext == Extent.FIDELITY:
         return "\n".join(head)
 
@@ -819,6 +823,92 @@ def render(
     hop2 = _hop2_lines(store, tree, foc, int(ref.id) if ref else None, q)
     if hop2:
         head.extend(hop2)
+    return "\n".join(head)
+
+
+def _subject_blocks(subject: str) -> set[str]:
+    """The block names a validate finding's subject names — ``p``,
+    ``p.port``, ``a—b``, ``a.x—b.y``, ``a, b``, ``p.port (state 'x')``:
+    each endpoint up to its first ``.``/space/``(``. Exact names, so block
+    ``p`` never matches ``pump``."""
+    import re
+
+    out = set()
+    for part in re.split(r"—|, ", subject):
+        m = re.match(r"[^.\s(—,]+", part.strip())
+        if m:
+            out.add(m.group(0))
+    return out
+
+
+def ray_eye(store: Any, tree: Any, slug: str, name: str, ext: Extent) -> str:
+    """``<slug>~ray:<name>`` on the ladder (structure-workspaces 2r):
+    ``kwd`` the header, ``summary`` + one count per field and the
+    ``made-by:`` line, ``verbatim`` + the hits, ``fisheye`` + the blocks,
+    pockets and π systems it crosses as handles, ``+1hop`` + their
+    measures and findings."""
+    from precis_se import rays as se_rays
+
+    hit = se_rays.find_ray(tree, name)
+    if hit is None:
+        roster = ", ".join(s.name for _b, s in se_rays.all_rays(tree)) or "none"
+        raise BadInput(
+            f"no ray {name!r} on {slug} (rays: {roster})",
+            next=f"get(kind='se', id={slug!r}, view='rays')",
+        )
+    block, spec = hit
+    try:
+        obs = se_rays.observe(tree, block, spec, slug=slug)
+    except se_rays.RayError as exc:
+        return f"ray {name} · block {block} · unavailable ({exc})"
+    head = [se_rays.header(obs)]
+    if ext == Extent.TOC:
+        return head[0]
+    counts = se_rays.field_counts(obs)
+    if counts:
+        head.append(f"hits: {counts}")
+    made = se_rays.made_by_text(store, tree, block, spec)
+    if made:
+        head.append(made)
+    if ext == Extent.SUMMARY:
+        return "\n".join(head)
+    head.extend(se_rays.hit_lines(obs))
+    if ext == Extent.FULL:
+        return "\n".join(head)
+    crosses = [
+        f"  block {b} · get(kind='se', id={slug!r}, view='block', args={{'block': {b!r}}})"
+        for b in obs.blocks_crossed
+    ]
+    crosses += [f"  pocket {p}" for p in obs.pockets_crossed]
+    crosses += [f"  {slug}~{sel}" for sel in obs.pi_crossed]
+    if crosses:
+        head.extend(["crosses:", *crosses[:12]])
+        if len(crosses) > 12:
+            head.append(f"  … +{len(crosses) - 12} more")
+    if ext == Extent.FIDELITY:
+        return "\n".join(head)
+    rows: list[str] = []
+    crossed = set(obs.blocks_crossed) | {
+        p.split(".", 1)[0] for p in obs.pockets_crossed
+    }
+    for m in tree.measures:
+        if m.block in crossed:
+            rows.append(
+                f"  measure {m.block}.{m.name}" + (f" ({m.datum})" if m.datum else "")
+            )
+    from precis_se import validate as se_validate
+
+    try:
+        findings = se_validate.validate(tree)
+    except (ValueError, KeyError, TypeError, ArithmeticError):
+        findings = []  # a validator fault never blanks the eye; view='validate' says why
+    for f in findings:
+        if crossed & _subject_blocks(str(f.subject)):
+            rows.append(f"  {f.severity} {f.rule} {f.subject}")
+    if rows:
+        head.extend(["ring — what it crosses:", *rows[:8]])
+        if len(rows) > 8:
+            head.append(f"  … +{len(rows) - 8} more — view='validate'")
     return "\n".join(head)
 
 

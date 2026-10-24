@@ -1,7 +1,7 @@
 ---
 id: precis-se-regions-help
 family: se
-title: precis — region properties on an se design (measurands, region selectors, pockets)
+title: precis — region properties on an se design (measurands, region selectors, pockets, observation rays)
 summary: declare non-geometric properties on part of a block — "this side hydrophobic, that patch negative" — as ordinary se measures that name a taxonomy measurand (surface charge density, contact angle, net partial charge, dipole moment, H-bond donor/acceptor count, electric field magnitude, absorption maximum wavelength, hydrophobicity index) and a region selector (patch:/ring: on a face, sites:/atoms: on bound atoms); group regions into a named pocket with add_pocket and read them back with view='pockets'. Nothing computes these values yet — view='drc' flags each as measurand_unchecked
 answers:
   - how do I say one face or patch of a block is hydrophobic, charged or polar?
@@ -11,6 +11,8 @@ answers:
   - why does view='drc' report measurand_unchecked?
   - why is my measurand refused or ambiguous?
   - how do I see where a bound molecule is charged, H-bond donating or accepting, polar or nonpolar?
+  - how do I bookmark a line through my design and see which atoms, π rings and pockets it passes?
+  - what did the relax change along the pore (observe_ray, view='ray' against='last')?
 applies-to: get/edit/put (kind='se'); search/get (kind='taxon') to find a measurand; read precis-se-help first for the op grammar
 status: active
 tags: design
@@ -317,3 +319,73 @@ about each one instead of passing it silently. The `realised` column in
 
 A measure keeps the measurand's taxon id; the slug shown follows a
 rename of the taxon node.
+
+## Observation rays
+
+A ray is a stored **definition** — origin, direction, length, fields —
+never an event list. Every read recomputes the events, so a ray stays
+valid when the geometry changes under it (multiscale §5.5 bookmarks).
+Rays never touch geometry.
+
+### On an se design
+
+```
+edit(kind='se', id='<slug>', ops=[{'op': 'add_ray', 'block': 'p',
+  'name': 'axis', 'origin': '[0 0 -2] nm', 'direction': [0, 0, 1],
+  'length': '12 nm', 'fields': ['pass', 'pi', 'frame'],
+  'reach': 1.5}])
+get(kind='se', id='<slug>', view='ray', args={'name': 'axis'})
+get(kind='se', id='<slug>', view='rays')
+get(kind='se', id='<slug>~ray:axis', extent='fisheye')
+```
+
+- `origin`/`length` are metres (bare numbers) or unit strings; `step`
+  (sampling, default 0.5) and `reach` (how far off the line an atom
+  still counts, default 4) are Å.
+- `frame`: omitted = the owning block's local frame (the ray moves with
+  `set_pose`, instances and arrays); `'world'`; `'port:<name>'` (origin
+  at the port, `+z` its axis).
+- Ray names are unique per design. Rays live on template blocks.
+- `set_ray` updates the definition; `remove_ray` drops it;
+  `observe_ray` (`name`, or all) stores a digest (event hash, structure
+  versions, key numbers; last five kept).
+- `view='ray'` `args={'against': 'last' | <digest index>}` recomputes the
+  events at the digest's structure versions and lists hits added,
+  removed and moved (`Δs`, `Δd`); unchanged hits fold to a count.
+  `args={'from': '14 Å'}` resumes past the 40-hit cap. A transient ray
+  takes `block`/`origin`/`direction`/`length` in `args` with no `name`.
+- A relax write-back re-observes the rays on the blocks it relaxed, so
+  `against='last'` after a relax reads what the relax moved.
+
+### Fields
+
+| field | hit |
+|---|---|
+| `pass` | an atom within `reach`: `s`, handle, `d` (Å off the line), `∠` to its local normal (POAV for 3-coordinate, bond axis for linear, `—` else) |
+| `pi` | `pi.enter`/`pi.leave` an aromatic ring's cylinder (ring plane ± 1.7 Å) or a ring-less conjugated system; carries the `pi:<block>#<id>` selector |
+| `frame` | the nearest atom's maker frame changes: `junction#8 (frame:<key> · main.py:30 layout)` |
+| `relax` | the nearest atom's per-atom relax level changes (needs slice 4a's levels; absent until then) |
+| `charge` | `q` on passes and `esp` hits (needs stored partial charges, slice 4; absent until then) |
+| `region` | a block envelope or a shaped pocket entered/left |
+| `solid` | macro: `enter`/`exit` a non-structure block's envelope, in the ray's own unit |
+
+A field with no data is absent from the header's `fields` list, never a
+per-hit gap. Atomic hits read in Å from the ray origin; macro hits in
+nm/µm/mm by ray length; all sort by `s` along the one world ray.
+
+### On a bare structure design
+
+`edit(kind='structure', id=…, ops=[{'op': 'ray', 'name': 'up',
+'origin': [x, y, z], 'direction': [0, 0, 1], 'length': 8}])` — Å
+throughout; `view='ray'` `args={'name': 'up'}`, `view='rays'`,
+`st<id>~ray:up` on the eye; `{'op': 'unmark', 'name': 'up'}` removes it.
+No trace, so `frame` is absent.
+
+### From a workspace script
+
+`pga.ray(name, origin, direction, length, block=…, fields=…,
+step=…, reach=…, frame=…)`, `pga.ray.along(geom.port('rim'), '5 nm',
+name=…)`, `pga.ray.axis(tube, name='axis')` (principal axis of the
+atoms); `out.ray(r)` writes the manifest `rays:` entry. The import makes
+each a block child with a `made-by:` line naming the script frame; a ray
+the next run stops writing retires.

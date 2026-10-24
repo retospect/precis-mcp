@@ -1061,6 +1061,11 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
     )
     if focus_label not in scene.atoms:
         focus_label = ""
+    # structure-workspaces 2r: ``?ray=<name>`` — kept only when the scene
+    # carries a ray marker of that name.
+    ray = (request.query_params.get("ray") or "").strip()
+    if ray not in [m.name for m in scene.measures if m.kind == "ray"]:
+        ray = ""
     revisions = design_history.list_revisions(store, ref.id)
     return templates.TemplateResponse(
         request,
@@ -1084,6 +1089,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "pinned_run": pin,
             "focus": focus if focus_label else "",
             "focus_label": focus_label,
+            "ray": ray,
             # Scrubber state: the shown revision, whether the page is a
             # read-only past view, the slider span (one position — the
             # current version — for a pre-record design), and the panel.
