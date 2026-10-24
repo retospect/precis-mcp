@@ -231,11 +231,12 @@ a block exists. The dialectic design is
 4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
    measures) — waits on measures-substrate (knowledge-mesh thread); supply
    numbers with identity instead of free floats.
-5. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: the quest's
-   graph is the dossier, a writer agent linearises; supersedes
-   quest-dossier-dialectic. Ranked in graph-memory-consumers Horizon 1; the
-   quest loop's dossier consumers retarget once its relation and
-   linearisation questions are decided.
+5. **backlog/retire-dossier.md** (draft) — Reto 2026-10-24 (gr510505):
+   "retire the dossier". Directions become todos `part-of` the quest,
+   evidence `serves`, the narrative is a bounded generated view, exports
+   build from the graph; 7 slices plus a dry-run-first migration of the 25
+   prod dossiers. Answers quest-graph-as-dossier's open questions. Waits on
+   a Fable review, then Reto's rulings on its 8 open questions.
 6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
 

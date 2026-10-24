@@ -6,6 +6,10 @@ prio: normal
 
 # Quest graph is the dossier — findings, structures and logbook entries belong to the quest node at the apex; a writer agent linearises on demand
 
+> Specified by `retire-dossier.md` (draft, Reto 2026-10-24 "retire the
+> dossier"), which answers the three open questions below; this file is
+> deleted in its last slice.
+
 ## Ruling (Reto, 2026-10-01, verbatim)
 
 "we want a graph that 'belongs to' the quest, and it 'is' the dossier. We can

@@ -179,9 +179,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
   — triage first; order inside the group is provisional.
 
 1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's
-   graph "is" the dossier and a writer agent linearises it; settles the
-   membership relation and the render trigger before any quest-document
-   work. Same principle as Do-next 1 (graph is truth, text is a render).
+   graph "is" the dossier and a writer agent linearises it. Specified by
+   `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5). Same
+   principle as Do-next 1 (graph is truth, text is a render).
 2. **backlog/source-code-ingest.md** — the claude-context retire it was
    sequenced with shipped 2026-10-10 (Milvus stack torn down; a
    natural-language `search(kind='python')` returns hits).
