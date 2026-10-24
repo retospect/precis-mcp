@@ -235,3 +235,5 @@ Related: `agent-workspace-containers.md` (persistent workspaces; its slice
 - Open (Reto): a package allow-list for `deps`, or ship without one?
 - Open (Reto): structure-workspaces slice 1 needs slice 4 (lane live), not slice 3 (todo sugar). Light the lane first and defer the sugar?
 - Reto 2026-10-24: publish the working se/pcb dogfood pieces to prod first, then the sandbox lane.
+- Reto 2026-10-24: no package allow-list for `deps` ("I'd say no").
+- Reto 2026-10-24: structure-workspaces slice 1 goes ahead on the live `mode:script` lane alone; slice 3 (`run:python` todo sugar) is deferred ("yes for now"; "no limits, live script lane if it works"). If the live lane does not work for slice 1, go back to Reto before building around it.
