@@ -58,7 +58,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    a mismatch is BadInput (gr338441) -----------------------------
     ("gripe", "put"): ("create", "comment"),
     # -- put: pathway frames the reaction network without ML compute ----
-    ("pathway", "put"): ("preview",),
+    ("pathway", "put"): ("preview", "revalidate"),
     # -- put: structure's sole recognised mode is the deliberate-rerun
     #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
     #    compute lane — every other value is rejected (gr499904) --------
