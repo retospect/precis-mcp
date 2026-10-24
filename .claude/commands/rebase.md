@@ -55,8 +55,9 @@ Optional base ref from the user: `$ARGUMENTS`
      **AskUserQuestion**: show the two sides tersely and ask which to take (or
      describe the merge you propose). Do not guess on behavior-changing
      conflicts.
-   - When a commit's conflicts are all staged: `git rebase --continue`
-     (it won't open an editor for you to fill — reuse the existing message).
+   - When a commit's conflicts are all staged: `GIT_EDITOR=true git rebase
+     --continue` — a bare `--continue` can spawn an editor and hang a
+     non-tty shell; `GIT_EDITOR=true` accepts the existing message.
      The rebase may stop again on a later commit; repeat this loop until it
      finishes cleanly.
    - After a clean finish, confirm with `git -c color.ui=never log --oneline

@@ -71,7 +71,10 @@ branch's tree cannot be entered from another session.
 (`git push origin <new>:main`) because all worktrees share one `.git/index`;
 a hand-rolled `merge --squash` from two sessions co-mingles staged files.
 While ship runs the tree is not yours: it resets the branch to shipped main
-at the end, destroying edits made meanwhile.
+at the end, destroying edits made meanwhile. The squash re-mints author and
+trailers under the shipper's identity, so a builder commit's own author is
+not gated — a Devin-authored commit carrying the required
+Co-Authored-By/session trailer is accepted (Reto, gr514432).
 
 ## /land — gate on GitHub (harness only)
 
@@ -111,8 +114,10 @@ local impacted pre-gate first; bare `--impacted` = legacy local-only gate.
 
 Every ship path except `--release` syncs Git Town style: squash the branch to
 one commit on its merge-base, then `git rebase origin/main`. A conflict stops
-mid-rebase: resolve, `git add -A && git rebase --continue`, re-run ship (ship
-refuses to start while a rebase is in progress). In a fleet wave the
+mid-rebase: resolve, `git add -A`, then `GIT_EDITOR=true git rebase
+--continue`, re-run ship (ship refuses to start while a rebase is in
+progress). The `GIT_EDITOR=true` accepts the existing message — a bare
+`--continue` can spawn an editor and hang a non-tty shell (gr514728). In a fleet wave the
 resolution itself belongs to a coder sub-agent or the builder's own tree —
 never a desk or coordinator main loop (the `gripe-fleet` skill's standing
 rules). The in-lock forward merge

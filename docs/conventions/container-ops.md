@@ -109,14 +109,28 @@ internally — the guard matches the command text, so the indirection "works",
 but it defeats a boundary the harness enforces deliberately. If
 `scripts/inflight --json` lacks a field you need, add it there.
 
-Note the guard is text-based, so it also fires on commands that merely
-*mention* the tool in a heredoc or a quoted string. When that blocks a
-legitimate edit, use the Edit/Write file tools instead of a shell script.
+Note the worktree-isolation guard is text-based, so it also fires on
+commands that merely *mention* the tool in a heredoc or a quoted string.
+When that blocks a legitimate edit, use the Edit/Write file tools instead
+of a shell script.
+
+"Worktree guard" names three different mechanisms — grep for the one you
+mean:
+
+- **the harness's worktree-isolation guard** — built into the driver, no
+  repo file: refuses compound Bash shapes and `git -C`/`cd` redirects out
+  of this tree.
+- `scripts/hooks/guard-cd-to-primary.py` — PreToolUse Bash hook that
+  denies a segment running after `cd` into the primary checkout.
+- `scripts/hooks/guard-worktree-path.py` — PreToolUse Edit/Write hook that
+  rewrites an absolute path pointing at the main checkout to its worktree
+  twin.
 
 ### Refused shapes and the accepted alternative
 
-5-day audit (gr456287): 308 refusals across 97 of 99 sessions. The guard
-fails closed whenever it cannot prove from the command text that git stays
+5-day audit (gr456287): 308 refusals across 97 of 99 sessions. The
+worktree-isolation guard fails closed whenever it cannot prove from the
+command text that git stays
 in this worktree — anything it cannot fully parse statically is refused,
 so write the plain shape first rather than after the refusal.
 
@@ -126,7 +140,9 @@ no pipes around `git`, no variable assignments. A command that genuinely
 needs one of those goes in a file: write the script with the Write tool,
 then run it as one plain command (this does not launder a refused
 operation — see the routing-around paragraph above). Independent commands
-go out as parallel Bash calls.
+go out as parallel Bash calls. Enforcement varies by driver — the guard
+is a backstop, not the boundary, so a chain another driver tolerates is
+still off-shape (gr514492).
 
 The guard's contract is narrower than the rule: it refuses only what it
 cannot statically prove keeps git in this worktree, so
@@ -142,13 +158,14 @@ the plain shape is the one that never surprises.
 | `rtk git …`, i.e. the rtk hook's rewrite of `git …` (34) | `RTK_DISABLED=1 git …` or `/usr/bin/git …`; see `rtk.md` Known gaps |
 | `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
 | `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
-| `git commit -m "$(cat <<'EOF' …)"` — the heredoc/`$(…)` commit shape the harness's own commit guidance shows | Write the message to a file, `git commit -F <file>`; a plain literal `-m "…"` also passes. `guard-commit-on-main.py` denies this first with a reason naming the guard (gr514943) |
+| `git commit -m "$(cat <<'EOF' …)"`, or `-m "…"` quoting `'`/`` ` ``/`$` | `git commit -F scratch/commit-msg.txt` — write the message with the Write tool (gr514617, gr514743) |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
 | `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
 | `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
 
-`github`, `git_sha` and similar word-boundary near-misses pass. The guard
-is a harness built-in; the upstream asks are tracked in
+`github`, `git_sha` and similar word-boundary near-misses pass. The
+worktree-isolation guard is a harness built-in; the upstream asks are
+tracked in
 `docs/backlog/worktree-path-guard-false-positives.md`.
 
 Package availability / licence checks are one plain command each — the

@@ -104,18 +104,20 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   …)"` recipe trips the shell rules and breaks on apostrophes (gr513763).
   `scripts/ship` reuses your branch's single commit message or takes `-m`; it
   refuses `ship(...)`/`wip(...)` placeholders and unprefixed subjects.
+  A multi-line message or one carrying `'`/`` ` ``/`$` goes via
+  `git commit -F scratch/commit-msg.txt`, never a quoted `-m` (→
+  `docs/conventions/container-ops.md`).
 
 ## Hook/gate-enforced — one-liners, detail on demand
 
 - Container-first; shell cwd is already this worktree — never `cd`. Other
   trees are NOT reachable by `git -C` (the harness refuses it) — read them
   with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
-- One plain command per Bash call: no loops, heredocs, `$(…)`, `&&` chains
-  with git, or shell variables holding paths (gr456287, ~127/12 h). The
-  worktree guard refuses only what it can't statically prove keeps git in
-  this tree — a git-free heredoc or `git add && git status` still runs;
-  the rest is fleet style, not enforced. Write a script with the Write
-  tool, then run it as one plain command.
+- One plain command per Bash call: no loops, heredocs, `$(…)`,
+  `&&`/`;`/`||` chains, or shell variables holding paths — the harness's
+  worktree-isolation guard refuses them (gr456287, ~127/12 h); a chain
+  another driver tolerates is still off-rule (gr514492). Write a script
+  with the Write tool, then run it as one plain command.
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
 - MCP handler errors: a call does what its ack says or refuses with a next
