@@ -237,9 +237,11 @@ temperature, length→overall length, price per gram→cost per unit mass;
 retired delta length, unit length, persistence length, thermal half life,
 PSS short fraction. Driver built: `scripts/onto-repoint` (dry-run/apply) +
 the 0234 `precis.allow_measurand_repoint` door — landed, awaiting
-coordinator --apply. (Reto 2026-10-22 re-ruled the five retire taxa:
-KEEP all five, no re-point — re-parent each under its Q8 group; the
-script's reparent half does that via the link path.)
+coordinator --apply. The five retire through the delete verb's tombstone
+path (`Store.retire_ref`); the ruling names no re-point target for them,
+so the script reports each taxon's attached-measure count and refuses to
+retire while rows are attached — those resolve by hand (measures are
+append-only: supersede-per-row).
 
 1. **`method` start node vs v1.5's `axis/method`.** Recommend separate
    nodes: `axis/*` names edge angles (a label vocabulary), `method/*`

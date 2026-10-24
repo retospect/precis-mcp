@@ -57,7 +57,7 @@ def _taxon(
 
 
 def _measure(
-    store: Store, measurand: int, subject: int, literal: str, unit: str = "mm"
+    store: Store, measurand: int, subject: int, literal: str, unit: str | None = "mm"
 ) -> int:
     run = store.insert_measure(
         MeasureSpec(
@@ -257,25 +257,39 @@ class TestRepointHelper:
 
 
 class TestScript:
+    def test_plan_table_matches_ruling(self) -> None:
+        """The module PLAN pins the 2026-10-22 ruling: one merge, the five
+        legacy terms retired — never re-parented under a group."""
+        by_loser = {p.loser: p for p in repoint_script.PLAN}
+        assert by_loser[460115] == repoint_script.Plan(460115, 460116, "merge")
+        for loser in (460131, 460151, 460140, 460150, 460142):
+            plan = by_loser[loser]
+            assert plan.action == "retire"
+            assert plan.target is None
+        assert all(p.action in ("merge", "retire") for p in repoint_script.PLAN)
+
     def test_dry_run_reports_and_writes_nothing(
         self, store: Store, world: dict, capsys: Any
     ) -> None:
         _measure(store, world["length"], world["paper"], "12")
+        _measure(store, world["free"], world["paper"], "0.8", unit=None)
         plans = (
             repoint_script.Plan(world["length"], world["overall"], "merge"),
-            repoint_script.Plan(world["time"], "thermal", "reparent"),
-            repoint_script.Plan(world["free"], "molecular and surface", "reparent"),
+            repoint_script.Plan(world["time"], None, "retire"),
+            repoint_script.Plan(world["free"], None, "retire"),
         )
         out: list[str] = []
         for plan in plans:
             out += repoint_script._plan_lines(store, plan)
         text = "\n".join(out)
         assert "re-point 1 measure row(s)" in text
-        assert "re-parent" in text
-        assert "would mint" in text
-        # Nothing written: both taxa live, measure unmoved.
+        assert "-> retire: 0 attached measure row(s)" in text
+        assert "-> retire: 1 attached measure row(s)" in text
+        assert "refuses while measures are attached" in text
+        # Nothing written: all taxa live, measures unmoved.
         assert _rows(store, world["length"]) != []
         assert _live(store, world["length"]) and _live(store, world["overall"])
+        assert _live(store, world["free"])
 
     def test_apply_merges_after_repoint(self, store: Store, world: dict) -> None:
         mid = _measure(store, world["length"], world["paper"], "12")
@@ -299,53 +313,44 @@ class TestScript:
         lines = repoint_script._apply_plan(store, plan, actor="tester")
         assert any("skipping" in line for line in lines)
 
-    def test_reparent_mints_group_and_links_keeping_root(
+    def test_retire_soft_deletes_without_reparenting(
         self, store: Store, world: dict
     ) -> None:
-        plan = repoint_script.Plan(world["free"], "molecular and surface", "reparent")
+        plan = repoint_script.Plan(world["free"], None, "retire")
         lines = repoint_script._plan_lines(store, plan)
-        assert any("would mint 'molecular and surface'" in line for line in lines)
+        assert any("-> retire: 0 attached measure row(s)" in l for l in lines)
         lines = repoint_script._apply_plan(store, plan, actor="tester")
-        text = "\n".join(lines)
-        assert "minted group" in text and "added specialises" in text
-        with store.pool.connection() as conn:
-            group = repoint_script._taxon_by_slug(conn, "molecular-and-surface")
-        assert group is not None
-        group_id = group["id"]
+        assert any("retired" in line for line in lines)
+        assert not _live(store, world["free"])
+        event = store.events_for(world["free"], event="deleted", limit=1)
+        assert event and event[0].payload["actor"] == "tester"
+        # Retired, NOT re-parented: the only specialises edge is the
+        # original one to the measurand root.
         with store.pool.connection() as conn:
             edges = conn.execute(
-                "SELECT dst_ref_id, meta->>'axis' FROM links "
-                "WHERE src_ref_id = %s AND relation = 'specialises' "
-                "ORDER BY dst_ref_id",
+                "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+                "AND relation = 'specialises'",
                 (world["free"],),
             ).fetchall()
-        # The group edge carries the quantity-class axis; the root edge stays.
-        assert (group_id, "quantity-class") in edges
-        assert any(d == world["root"] for d, _ in edges)
-        # Second run: edge already present — done, nothing new written.
+        assert [int(r[0]) for r in edges] == [world["root"]]
+        # Re-run: already retired — done, skipped.
         lines = repoint_script._apply_plan(store, plan, actor="tester")
-        assert any("already present" in line for line in lines)
+        assert any("skipping" in line for line in lines)
 
-    def test_reparent_resolves_existing_group(self, store: Store, world: dict) -> None:
-        group = _taxon(
-            store,
-            "geometry",
-            parent=world["root"],
-            canonical=None,
-            dimension_kind="categorical",
-            si_vector=None,
-        )
-        plan = repoint_script.Plan(world["length"], "geometry", "reparent")
+    def test_retire_refuses_while_measures_attached(
+        self, store: Store, world: dict
+    ) -> None:
+        _measure(store, world["time"], world["paper"], "40", unit="s")
+        plan = repoint_script.Plan(world["time"], None, "retire")
+        lines = repoint_script._plan_lines(store, plan)
+        text = "\n".join(lines)
+        assert "-> retire: 1 attached measure row(s)" in text
+        assert "refuses while measures are attached" in text
+        # --apply writes nothing while the refusal stands.
         lines = repoint_script._apply_plan(store, plan, actor="tester")
-        assert not any("minted" in line for line in lines)
-        with store.pool.connection() as conn:
-            edge = conn.execute(
-                "SELECT meta->>'axis' FROM links WHERE src_ref_id = %s "
-                "AND dst_ref_id = %s AND relation = 'specialises'",
-                (world["length"], group),
-            ).fetchone()
-        assert edge is not None and edge[0] == "quantity-class"
-        assert _live(store, world["length"])
+        assert any("refuses" in line for line in lines)
+        assert _live(store, world["time"])
+        assert _rows(store, world["time"]) != []
 
     def test_stray_plan_refuses_before_writes(self, store: Store, world: dict) -> None:
         store.insert_measure(

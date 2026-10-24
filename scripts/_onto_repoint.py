@@ -1,12 +1,10 @@
-"""onto-repoint — re-point live measures, merge/re-parent the Q8 taxa.
+"""onto-repoint — re-point live measures, merge/retire the Q8 taxa.
 
 Carries out Reto's ontology-v2 Q8 rulings (``docs/backlog/ontology-v2.md``,
 decisions log): "Merged/retired before slice 1: duplicate bore diameter
 and maximum service temperature, length→overall length, price per gram→
-cost per unit mass" — and, superseding the log's retire list (Reto
-2026-10-22): keep the five polymer taxa (Delta Length, Unit Length,
-Persistence Length, Thermal Half Life, PSS short fraction) and re-parent
-each under its matching Q8 measurand group.
+cost per unit mass; retired delta length, unit length, persistence
+length, thermal half life, PSS short fraction."
 
 For each entry the script either:
 
@@ -16,18 +14,18 @@ For each entry the script either:
   ``precis.allow_measurand_repoint`` door — same canonical_unit,
   dimension_kind and si_vector or it refuses), then merges through the
   garden apply/undo path (:func:`precis.graph.garden.apply.apply_merge`).
-* ``reparent`` — resolves the named Q8 group node under ``measurand``
-  (minting it as a ``dimension_kind='categorical'`` navigation node via
-  the store taxon path when absent) and adds the leaf's
-  ``specialises -> group`` edge with ``meta.axis='quantity-class'``
-  through :meth:`Store.add_link`. The leaf keeps its direct
-  ``specialises`` edge to the root — the spec's double-edge bridge until
-  ancestor-path lookup lands.
+* ``retire`` — soft-deletes the taxon through the door
+  ``delete(kind='taxon')`` uses (:meth:`Store.retire_ref`, plus the
+  ``deleted`` audit event with the reason). The ruling names no re-point
+  target for the five, so while any ``measures`` row still references
+  the node the entry reports the attached-measure count and refuses —
+  the same guard shape ``apply_merge`` runs. Attached rows resolve by
+  hand (measures are append-only: supersede-per-row).
 
 Dry run by default; ``--apply`` writes. Re-runnable: an entry already in
 its end state is reported and skipped. The merge half needs migration
 0234 applied on the target DB (without it the frozen trigger refuses);
-re-parenting needs nothing new.
+retiring needs nothing new.
 
 Usage (dev DB): ``scripts/onto-repoint [--apply]``
 Prod:            ``scripts/_prod-run scripts/onto-repoint [--apply]``
@@ -53,28 +51,24 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, slots=True)
 class Plan:
     """One taxon and what Q8 rules for it. ``action='merge'``: ``target``
-    is the winner ref id. ``action='reparent'``: ``target`` is the Q8
-    group NAME — the node is resolved by slug under ``measurand`` and
-    minted when absent."""
+    is the winner ref id. ``action='retire'``: ``target`` is ``None`` —
+    the five have no ruled re-point target, so the entry refuses while
+    ``measures`` rows are attached."""
 
     loser: int
-    target: int | str
-    action: str  # "merge" | "reparent"
+    target: int | None
+    action: str  # "merge" | "retire"
 
 
-#: The Q8 pairs not yet applied (see the module docstring). Group names are
-#: spelled as the decisions log spells them; the slug resolves the node.
+#: The Q8 pairs not yet applied (see the module docstring).
 PLAN: tuple[Plan, ...] = (
     Plan(460115, 460116, "merge"),  # Length -> Overall length (12 rows)
-    Plan(460131, "geometry", "reparent"),  # Delta Length — a length
-    Plan(460151, "geometry", "reparent"),  # Unit Length — a length
-    Plan(460140, "molecular and surface", "reparent"),  # Persistence Length
-    Plan(460150, "thermal", "reparent"),  # Thermal Half Life — stability
-    Plan(460142, "molecular and surface", "reparent"),  # PSS short fraction
+    Plan(460131, None, "retire"),  # Delta Length
+    Plan(460151, None, "retire"),  # Unit Length
+    Plan(460140, None, "retire"),  # Persistence Length
+    Plan(460150, None, "retire"),  # Thermal Half Life
+    Plan(460142, None, "retire"),  # PSS short fraction
 )
-
-#: ``meta.axis`` the slice-1 spec stamps on leaf -> group edges.
-_GROUP_AXIS = "quantity-class"
 
 
 def _ref_row(conn: Connection, ref_id: int) -> dict[str, Any] | None:
@@ -92,34 +86,6 @@ def _ref_row(conn: Connection, ref_id: int) -> dict[str, Any] | None:
         "retired": bool(row[3]),
         "meta": row[4] or {},
     }
-
-
-def _taxon_by_slug(conn: Connection, slug: str) -> dict[str, Any] | None:
-    row = conn.execute(
-        "SELECT ref_id, kind, title, retired_at IS NOT NULL, meta "
-        "FROM refs WHERE kind = 'taxon' AND retired_at IS NULL "
-        "  AND meta ->> 'slug' = %s ORDER BY ref_id LIMIT 1",
-        (slug,),
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "id": int(row[0]),
-        "kind": row[1],
-        "title": row[2],
-        "retired": bool(row[3]),
-        "meta": row[4] or {},
-    }
-
-
-def _measurand_root(conn: Connection) -> int:
-    row = conn.execute(
-        "SELECT ref_id FROM refs WHERE kind = 'taxon' "
-        "AND retired_at IS NULL AND meta ->> 'slug' = 'measurand' "
-        "ORDER BY ref_id LIMIT 1"
-    ).fetchone()
-    assert row is not None, "no live 'measurand' root taxon"
-    return int(row[0])
 
 
 def _measure_counts(conn: Connection, ref_id: int) -> dict[str, int]:
@@ -149,15 +115,6 @@ def _unit_diff(s_meta: dict[str, Any], d_meta: dict[str, Any]) -> list[str]:
     ]
 
 
-def _has_specialises_edge(conn: Connection, child: int, parent: int) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
-        "AND relation = 'specialises'",
-        (child, parent),
-    ).fetchone()
-    return row is not None
-
-
 def _pending_merge_review(store: Store, loser: int, winner: int) -> int | None:
     """The review_id of a pending garden merge proposal for this pair, if
     one is open — applying through it flips the proposal to approved (the
@@ -171,12 +128,6 @@ def _pending_merge_review(store: Store, loser: int, winner: int) -> int | None:
         if pl == loser and pw == winner:
             return prop.review_id
     return None
-
-
-def _group_slug(name: str) -> str:
-    from precis.taxonomy.nodes import slugify
-
-    return slugify(name)
 
 
 def _plan_lines(store: Store, plan: Plan) -> list[str]:
@@ -193,30 +144,26 @@ def _plan_lines(store: Store, plan: Plan) -> list[str]:
             tail = f" (superseded_by tn{done})" if done else ""
             return [f"{label}: already retired{tail} — done, skipping"]
 
-        if plan.action == "reparent":
-            group_name = str(plan.target)
-            group = _taxon_by_slug(conn, _group_slug(group_name))
-            lines = [f"{label} -> group '{group_name}' (re-parent):"]
-            if group is None:
+        if plan.action == "retire":
+            attached = counts["all"] + counts["stray"]
+            lines = [f"{label} -> retire: {attached} attached measure row(s)"]
+            if counts["all"]:
                 lines.append(
-                    f"    group node absent — would mint '{group_name}' "
-                    "under measurand (dimension_kind='categorical')"
+                    f"    {counts['all']} on measurand_ref_id ({counts['live']} live)"
                 )
-                group_id = -1
-            else:
-                group_id = group["id"]
-                lines.append(f"    group = tn{group_id} ({group['title']})")
-            if group_id != -1 and _has_specialises_edge(conn, plan.loser, group_id):
-                lines.append("    specialises edge already present — done")
-            else:
+            if counts["stray"]:
                 lines.append(
-                    f"    add specialises -> group "
-                    f"(meta.axis='{_GROUP_AXIS}'); root edge stays"
+                    f"    {counts['stray']} via subject_ref_id or an anchored link"
                 )
-            if counts["live"]:
+            if attached:
                 lines.append(
-                    f"    note: keeps {counts['live']} live measure row(s) "
-                    "on the taxon — no re-point (Reto: keep)"
+                    "    refuses while measures are attached — no ruled "
+                    "re-point target; resolve by hand (measures are "
+                    "append-only: supersede-per-row)"
+                )
+            else:
+                lines.append(
+                    "    soft-delete via store.retire_ref (the delete verb's door)"
                 )
             return lines
 
@@ -264,50 +211,20 @@ def _apply_plan(store: Store, plan: Plan, *, actor: str) -> list[str]:
         ):
             return lines
 
-    if plan.action == "reparent":
-        group_name = str(plan.target)
+    if plan.action == "retire":
         with store.tx() as conn:
-            group = _taxon_by_slug(conn, _group_slug(group_name))
-            if group is None:
-                root_id = _measurand_root(conn)
-                meta = {
-                    "name": group_name,
-                    "norm_name": group_name.lower(),
-                    "slug": _group_slug(group_name),
-                    "definition": (f"measurand group '{group_name}' (ontology-v2 Q8)"),
-                    "status": "proposed",
-                    "dimension_kind": "categorical",
-                }
-                ref = store.insert_ref(
-                    kind="taxon", slug=None, title=group_name, meta=meta, conn=conn
-                )
-                store.add_link(
-                    src_ref_id=int(ref.id),
-                    dst_ref_id=root_id,
-                    relation="specialises",
-                    set_by="agent",
-                    conn=conn,
-                )
-                store.chunks.upsert_card_combined(
-                    int(ref.id),
-                    f"{group_name} — measurand group (ontology-v2 Q8)",
-                    conn=conn,
-                )
-                group_id = int(ref.id)
-                lines.append(
-                    f"    minted group tn{group_id} '{group_name}' under measurand"
-                )
-            else:
-                group_id = group["id"]
-            store.add_link(
-                src_ref_id=plan.loser,
-                dst_ref_id=group_id,
-                relation="specialises",
-                meta={"axis": _GROUP_AXIS},
-                set_by="agent",
+            store.append_event(
+                plan.loser,
+                source="agent",
+                event="deleted",
+                payload={
+                    "reason": "ontology-v2 Q8 ruling — retired (onto-repoint)",
+                    "actor": actor,
+                },
                 conn=conn,
             )
-            lines.append(f"    added specialises -> tn{group_id}")
+            store.retire_ref(plan.loser, conn=conn)
+        lines.append("    retired")
         return lines
 
     # merge
