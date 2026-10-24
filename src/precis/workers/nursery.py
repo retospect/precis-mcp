@@ -99,7 +99,11 @@ from typing import Any
 
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.store import Store
-from precis.store._todo_sql import _doable_exclusion_clause, todo_root_sql
+from precis.store._todo_sql import (
+    _doable_exclusion_clause,
+    direction_todo_sql,
+    todo_root_sql,
+)
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.workers.runner import BatchResult
 
@@ -518,6 +522,9 @@ def _detect_orphans(store: Store) -> list[Symptom]:
                AND NOT rt.root_is_strategic
                -- And not in a recurring subtree (root is not recurring either)
                AND NOT rt.root_is_recurring
+               -- Rotation fence (retire-dossier): direction todos are a
+               -- quest's attempt tree, not work — never orphans.
+               AND NOT {direction_todo_sql("r")}
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -566,6 +573,11 @@ def _detect_stale_claims(store: Store) -> list[Symptom]:
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) <> ALL(%s)
+               -- Rotation fence (retire-dossier): direction todos are a
+               -- quest's attempt tree, not work — never claimed.
+               AND NOT """
+            + direction_todo_sql("r")
+            + """
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -633,6 +645,11 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) <> ALL(%(terminal)s)
+                   -- Rotation fence (retire-dossier): direction todos
+                   -- are a quest's attempt tree, not work — never waits.
+                   AND NOT """
+            + direction_todo_sql("r")
+            + """
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -755,6 +772,11 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
                             'open'
                           ) NOT IN ('done', 'won''t-do')
                )
+               -- Rotation fence (retire-dossier): direction todos are a
+               -- quest's attempt tree — never dispatch candidates.
+               AND NOT """
+            + direction_todo_sql("r")
+            + """
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -823,6 +845,11 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                             AND t3.namespace = 'OPEN'
                             AND t3.value = 'child-failed-final'
                        )
+                   -- Rotation fence (retire-dossier): direction todos
+                   -- are a quest's attempt tree, not work.
+                   AND NOT """
+            + direction_todo_sql("r")
+            + """
                  ORDER BY r.ref_id, rt.created_at ASC
               ) sub
              ORDER BY sub.ref_id

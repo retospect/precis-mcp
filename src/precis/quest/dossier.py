@@ -73,11 +73,54 @@ same op-mutated, never-rewritten shape as the ledger (:func:`read_dialectic`,
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+#: The ledger's TEXT layer — the :class:`AttemptNode` forest shape,
+#: quoted-text addressing (:func:`_match_nodes`), the near-dup upsert
+#: machinery (:func:`_find_near_dup_node`/:func:`_is_near_dup`), and the
+#: two prompt renders (:func:`ledger_do_not_repropose`,
+#: :func:`ledger_open_nodes` + the open-list budget) — moved to
+#: :mod:`precis.quest.directions` (retire-dossier slice 2), which is where
+#: the todo-backed direction tree shares it. This module keeps only the
+#: STORAGE (pinned chunks + ``ATTEMPT:`` tags); the names below are
+#: re-exported so existing callers (``tick``, ``roadmap_tick``, tests)
+#: need no change.
+from precis.quest.directions import (
+    _ATTEMPTS_HEADING,  # noqa: F401  (re-export)
+    _DEAD_STATUSES,  # noqa: F401  (re-export)
+    _HYP_DUP_JACCARD,  # noqa: F401  (re-export)
+    _INDENT_WIDTH,  # noqa: F401  (re-export)
+    _LEDGER_PLACEHOLDER,  # noqa: F401  (re-export)
+    _LEGACY_HEADINGS,  # noqa: F401  (re-export)
+    _OPEN_LEDGER_BUDGET_CHARS_DEFAULT,  # noqa: F401  (re-export)
+    _OPEN_LEDGER_BUDGET_ENV,  # noqa: F401  (re-export)
+    _PREFIX_MATCH_MIN_CHARS,  # noqa: F401  (re-export)
+    _STATUS_PREFIX_RE,  # noqa: F401  (re-export)
+    _STATUS_RANK,
+    _STATUSES,
+    _UNPLACED_PARENT_SHOW_CHARS,  # noqa: F401  (re-export)
+    AttemptNode,
+    _do_not_repropose_lines,  # noqa: F401  (re-export)
+    _element_signature,  # noqa: F401  (re-export)
+    _elements_conflict,  # noqa: F401  (re-export)
+    _find_near_dup_node,
+    _flatten_with_parent,
+    _is_near_dup,
+    _match_nodes,
+    _normalize_node_text,
+    _open_ledger_budget_chars,  # noqa: F401  (re-export)
+    _parse_ledger,
+    _prefix_query,  # noqa: F401  (re-export)
+    _render_ledger,
+    _resolve_text,  # noqa: F401  (re-export)
+    _sig_tokens,  # noqa: F401  (re-export)
+    _subtree_all_dead,  # noqa: F401  (re-export)
+    _subtree_size,  # noqa: F401  (re-export)
+    ledger_do_not_repropose,
+    ledger_open_nodes,
+)
 from precis.store import Tag
 
 log = logging.getLogger(__name__)
@@ -103,41 +146,6 @@ _SEED = (
     "the best leads so far, what's been ruled out, and the open questions.)_"
 )
 
-#: The pinned ledger's node statuses (dossier-hygiene design). ``open`` is
-#: the default for a freshly added node; ``active`` marks a direction
-#: currently being pursued; ``tried``/``ruled-out`` are both "do not
-#: re-propose" — the model-safe vocabulary, and every clamp target for a
-#: caller-supplied status that doesn't match falls back to ``"open"``.
-_STATUSES: tuple[str, ...] = ("open", "active", "tried", "ruled-out")
-#: Statuses that mean "don't re-propose this direction" — both an own status
-#: and (rendering-level, see :func:`ledger_do_not_repropose`) an inherited one.
-_DEAD_STATUSES = frozenset({"tried", "ruled-out"})
-#: The precedence order a near-duplicate merge advances ALONG (never
-#: backwards) — :data:`_STATUSES`' own order, ``open < active < tried <
-#: ruled-out``. Used by :func:`add_attempt`'s upsert path: merging a
-#: near-dup ``add`` whose status is further along than the matched node's
-#: own advances it there; a status earlier in this order never regresses
-#: the matched node (see :func:`_merge_near_dup_status`).
-_STATUS_RANK: dict[str, int] = {s: i for i, s in enumerate(_STATUSES)}
-
-#: The single heading for the nested attempt tree, replacing the old
-#: three-section ledger (still parsed for backward compatibility, below).
-_ATTEMPTS_HEADING = "## Attempts"
-#: Legacy three-section ledger headings → the status a bullet under them
-#: becomes (depth-0 node, no tree structure — pre-attempt-tree ledgers, and
-#: still `append_ledger_entry`'s own vocabulary).
-_LEGACY_HEADINGS: dict[str, str] = {
-    "## Tried": "tried",
-    "## Ruled out": "ruled-out",
-    "## Open": "open",
-}
-_LEDGER_PLACEHOLDER = "(none yet)"
-#: A node bullet's optional status prefix, e.g. ``[ruled-out] c with x``.
-_STATUS_PREFIX_RE = re.compile(r"^\[(?P<status>[a-z-]+)\]\s*")
-#: Spaces of indentation per tree depth (nested bullets under ``## Attempts``,
-#: :func:`_render_ledger`'s / :func:`_parse_ledger`'s markdown shape only —
-#: storage nesting is real ``parent_chunk_id``, see :func:`_load_ledger_nodes`).
-_INDENT_WIDTH = 2
 #: ``meta.pinned`` value stamped on every ledger tree-node chunk (as opposed
 #: to ``"ledger"`` on the one container chunk they nest under) — the
 #: narrative-body filters in :func:`rewrite_dossier`/:func:`read_narrative`
@@ -147,646 +155,12 @@ _INDENT_WIDTH = 2
 _LEDGER_NODE_PINNED = "ledger-node"
 
 
-@dataclass
-class AttemptNode:
-    """One node of the pinned ledger's attempt tree.
-
-    ``status`` is always the node's own STORED fact — never overwritten by a
-    ruled-out ancestor (that shadowing, plus the dead-subtree collapse, is
-    rendering-level only, see :func:`ledger_do_not_repropose`). ``children``
-    are refinements/variants of this direction. ``handle`` is the node's own
-    chunk handle (``meta.pinned='ledger-node'``) — set on every node loaded
-    from storage (:func:`_load_ledger_nodes`), ``None`` only for a node that
-    exists solely as a parsed-but-not-yet-written :class:`AttemptNode` (the
-    legacy-markdown parse result before :func:`_migrate_legacy_ledger`
-    materializes it). ``seq`` is a monotonic recency proxy — the node
-    chunk's own ``chunk_id`` when loaded from storage (higher = created
-    later; a node's ``chunk_id`` never changes across a `mark`, only its
-    ``ATTEMPT:`` tag does, so this reflects add-order, not last-marked
-    time), or a parse-order counter for a node materialized from legacy
-    markdown text (:func:`_parse_ledger`) that has no chunk_id yet. Used by
-    :func:`ledger_open_nodes` to prioritize which open directions survive
-    its budget cutoff (gr263256). ``parent_unresolved`` is the ``parent`` text
-    an ``add`` named but that matched zero or several nodes, so the node was
-    kept as a root (``meta.parent_unresolved``; gr462891) — ``None`` for a
-    node placed as asked. :func:`ledger_open_nodes` shows it to the model.
-    """
-
-    text: str
-    status: str
-    children: list[AttemptNode] = field(default_factory=list)
-    handle: str | None = None
-    seq: int = 0
-    parent_unresolved: str | None = None
-
-
-def _parse_ledger(text: str) -> list[AttemptNode]:
-    """Parse the pinned ledger chunk's markdown into a forest of root nodes.
-
-    Tolerant of the placeholder line and of anything outside a recognised
-    heading (dropped) — a human editing the ledger by hand only needs to keep
-    a heading for their edits to round-trip. Two formats parse:
-
-    * the current nested tree under ``## Attempts`` — ``- [status] text``,
-      2 spaces of indentation per depth (:data:`_INDENT_WIDTH`), a missing/
-      unrecognised status clamps to ``"open"``;
-    * the legacy flat ``## Tried`` / ``## Ruled out`` / ``## Open`` ledger —
-      each bullet (no status prefix) becomes a depth-0 node whose status is
-      that heading's — so a pre-attempt-tree ledger parses without loss and
-      needs no migration.
-
-    Each node's :attr:`AttemptNode.seq` is a simple top-to-bottom parse-order
-    counter (this text form carries no real ``chunk_id``) — later bullets get
-    a higher ``seq``, the same "more recent" direction storage-backed nodes
-    use (:func:`_load_ledger_nodes`).
-    """
-    roots: list[AttemptNode] = []
-    mode: str | None = None  # "tree" | a legacy status | None (unrecognised)
-    stack: list[tuple[int, AttemptNode]] = []
-    next_seq = 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == _ATTEMPTS_HEADING:
-            mode, stack = "tree", []
-            continue
-        if stripped in _LEGACY_HEADINGS:
-            mode = _LEGACY_HEADINGS[stripped]
-            continue
-        if stripped.startswith("## "):
-            mode = None  # an unrecognised heading — drop until a known one
-            continue
-        if mode is None or not stripped.startswith("- "):
-            continue
-        bullet = stripped[2:].strip()
-        if not bullet or bullet == _LEDGER_PLACEHOLDER:
-            continue
-        if mode == "tree":
-            m = _STATUS_PREFIX_RE.match(bullet)
-            status = m.group("status") if m else "open"
-            if status not in _STATUSES:
-                status = "open"
-            node_text = bullet[m.end() :].strip() if m else bullet
-            if not node_text:
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            depth = indent // _INDENT_WIDTH
-            node = AttemptNode(text=node_text, status=status, children=[], seq=next_seq)
-            next_seq += 1
-            while stack and stack[-1][0] >= depth:
-                stack.pop()
-            (stack[-1][1].children if stack else roots).append(node)
-            stack.append((depth, node))
-        else:
-            roots.append(
-                AttemptNode(text=bullet, status=mode, children=[], seq=next_seq)
-            )
-            next_seq += 1
-    return roots
-
-
-def _render_ledger(roots: list[AttemptNode]) -> str:
-    """Serialize a forest of :class:`AttemptNode` back to the ledger's
-    markdown — one ``## Attempts`` heading, nested ``- [status] text``
-    bullets, :data:`_INDENT_WIDTH` spaces per depth. Always the node's own
-    STORED status — no inheritance/collapse (that's rendering-level, see
-    :func:`ledger_do_not_repropose`), so this round-trips exactly through
-    :func:`_parse_ledger`."""
-    lines = [_ATTEMPTS_HEADING]
-
-    def walk(nodes: list[AttemptNode], depth: int) -> None:
-        indent = " " * (_INDENT_WIDTH * depth)
-        for n in nodes:
-            lines.append(f"{indent}- [{n.status}] {n.text}")
-            walk(n.children, depth + 1)
-
-    if roots:
-        walk(roots, 0)
-    else:
-        lines.append(f"- {_LEDGER_PLACEHOLDER}")
-    return "\n".join(lines) + "\n"
-
-
 #: A fresh ledger container chunk starts blank — the tree lives in its
 #: (initially absent) child node chunks now, not in the container's own
 #: ``text``. :func:`read_ledger`'s markdown rendering of an empty forest
 #: still shows :data:`_LEDGER_PLACEHOLDER` (via :func:`_render_ledger`); only
 #: the on-disk seed changed.
 _LEDGER_SEED = ""
-
-
-def _flatten_with_parent(
-    roots: list[AttemptNode],
-) -> list[tuple[AttemptNode, AttemptNode | None]]:
-    """Every node in the forest paired with its immediate parent (``None``
-    for a root) — the shared traversal behind node addressing."""
-    out: list[tuple[AttemptNode, AttemptNode | None]] = []
-
-    def walk(nodes: list[AttemptNode], parent: AttemptNode | None) -> None:
-        for n in nodes:
-            out.append((n, parent))
-            walk(n.children, n)
-
-    walk(roots, None)
-    return out
-
-
-def _normalize_node_text(text: str) -> str:
-    """Trim AND collapse all internal whitespace — including embedded
-    newlines — to single spaces.
-
-    Guards :func:`_render_ledger`'s tick-prompt projection: it writes a
-    node's text verbatim after its ``- [status] `` prefix, so an unmangled
-    embedded newline (raw untrusted model JSON via the tick's ``ledger_ops``)
-    would render as an extra bullet line a model could mistake for a real
-    sibling. Applied at both the storage boundary (:func:`add_attempt`'s
-    stored text) and the match boundary (:func:`_match_nodes`) — a node's
-    stored text never contains a newline.
-    """
-    return " ".join(text.split())
-
-
-#: Shortest quoted prefix :func:`_match_nodes` will resolve when no node
-#: matches exactly. Shorter prefixes are too likely to hit several nodes, and
-#: a short quote is not evidence of which node the model meant.
-_PREFIX_MATCH_MIN_CHARS = 40
-
-
-def _prefix_query(text: str) -> str | None:
-    """``text`` normalized for the prefix pass — casefolded, a trailing
-    ``…``/``...`` and whitespace stripped — or ``None`` when what remains is
-    shorter than :data:`_PREFIX_MATCH_MIN_CHARS`."""
-    q = _normalize_node_text(text).casefold()
-    for ellipsis in ("…", "..."):
-        if q.endswith(ellipsis):
-            q = q[: -len(ellipsis)]
-            break
-    q = q.rstrip()
-    return q if len(q) >= _PREFIX_MATCH_MIN_CHARS else None
-
-
-def _resolve_text(
-    pairs: list[tuple[AttemptNode, AttemptNode | None]], text: str
-) -> list[tuple[AttemptNode, AttemptNode | None]]:
-    """``pairs`` whose node text equals ``text`` (normalized, casefolded);
-    only if none do, those that START with it (see :func:`_prefix_query`)."""
-    target = _normalize_node_text(text).casefold()
-    exact = [
-        (n, p) for n, p in pairs if _normalize_node_text(n.text).casefold() == target
-    ]
-    if exact:
-        return exact
-    prefix = _prefix_query(text)
-    if prefix is None:
-        return []
-    return [
-        (n, p)
-        for n, p in pairs
-        if _normalize_node_text(n.text).casefold().startswith(prefix)
-    ]
-
-
-def _match_nodes(
-    roots: list[AttemptNode], text: str, parent: str | None = None
-) -> list[AttemptNode]:
-    """Nodes whose text matches ``text`` — trimmed, whitespace-collapsed,
-    case-insensitive (the addressing rule: quoted
-    node text, no id bookkeeping, because the model sees the ledger in its
-    prompt and can quote it; :func:`_normalize_node_text` guards
-    against an embedded newline forging a bullet-line match). Exact equality
-    wins; only when nothing matches exactly does a unique-prefix pass run: a
-    quote of at least :data:`_PREFIX_MATCH_MIN_CHARS` chars (a trailing
-    ``…``/``...`` ignored) matches nodes whose text starts with it — models
-    routinely quote the head of a long node. ``parent`` narrows to nodes
-    whose immediate parent's text also matches (same two-pass rule), the
-    documented disambiguator when the same text appears in two branches.
-    Zero or >1 matches is the caller's cue to no-op (ambiguous/unmatched —
-    never a guess)."""
-    matches = _resolve_text(_flatten_with_parent(roots), text)
-    if parent is not None:
-        # Resolve the parent text over every node, then keep the candidates
-        # whose immediate parent is one of the resolved nodes.
-        parents = {
-            id(n) for n, _p in _resolve_text(_flatten_with_parent(roots), parent)
-        }
-        matches = [(n, p) for n, p in matches if p is not None and id(p) in parents]
-    return [n for n, _p in matches]
-
-
-#: Jaccard overlap of significant tokens above which two ledger-node texts
-#: (or two hypotheses, :mod:`precis.quest.tick`'s own use of this same
-#: pair) count as "the same thought restated" — shared with
-#: :mod:`precis.quest.tick`'s hypothesis-dedup (``tick.py`` imports
-#: :func:`_sig_tokens`/:func:`_is_near_dup`/this constant from here rather
-#: than keeping its own copy — a prod dossier had ~8 near-copies of the
-#: same "identify rate-limiting step / side product / poison" ledger
-#: entries, the same spin the hypothesis-dedup constant was already tuned
-#: for). ``0.6`` on purpose ties BOTH call sites to one knob.
-_HYP_DUP_JACCARD = 0.6
-
-
-def _sig_tokens(text: str) -> set[str]:
-    """Lowercased word tokens ≥4 chars — a cheap topical fingerprint.
-
-    The length floor is what lets a short label (``"c"``, ``"path 1"``) —
-    common in tests and in a model's terse sibling-variant names — carry
-    NO significant tokens at all, so :func:`_is_near_dup` never merges two
-    such labels just because they share a short common word. It's also why
-    two same-named nodes in different branches (the documented
-    ``parent=``-disambiguated case) stay distinct under the global
-    near-dup scan in :func:`add_attempt`.
-    """
-    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
-
-
-#: Two-letter chemical symbols recognised by :func:`_element_signature`,
-#: minus the ones that collide with common English words as capitalised
-#: sentence-initial tokens (In, As, At, No, Be, He). One-letter symbols
-#: (H, N, O, C, …) are excluded wholesale — in NO→NH₃ prose they name
-#: reagent atoms, not the candidate's distinguishing dopant. Two texts
-#: whose element signatures are non-empty and UNEQUAL are never near-dups,
-#: however high their token Jaccard: :func:`_sig_tokens` drops all <4-char
-#: words, so without this guard "Rh substitutional SAA on Pd(111)" and
-#: "Ru substitutional SAA on Pd(111)" — distinct candidates — fingerprint
-#: identically (a real qu164903 dedup dry-run clustered Rh/Ru/Fe/Co into
-#: one node, and Au with Ag). Unequal-but-overlapping sets ({Ag,Cu,Zn} vs
-#: {Ag,Cu,Zn,Au}) also stay distinct — conservative on purpose: a missed
-#: merge is clutter, a wrong merge silently deletes a branch's identity.
-_ELEMENT_SYMBOLS = frozenset(
-    [
-        "Li",
-        "Ne",
-        "Na",
-        "Mg",
-        "Al",
-        "Si",
-        "Cl",
-        "Ar",
-        "Ca",
-        "Sc",
-        "Ti",
-        "Cr",
-        "Mn",
-        "Fe",
-        "Co",
-        "Ni",
-        "Cu",
-        "Zn",
-        "Ga",
-        "Ge",
-        "Se",
-        "Br",
-        "Kr",
-        "Rb",
-        "Sr",
-        "Zr",
-        "Nb",
-        "Mo",
-        "Tc",
-        "Ru",
-        "Rh",
-        "Pd",
-        "Ag",
-        "Cd",
-        "Sn",
-        "Sb",
-        "Te",
-        "Xe",
-        "Cs",
-        "Ba",
-        "La",
-        "Ce",
-        "Pr",
-        "Nd",
-        "Pm",
-        "Sm",
-        "Eu",
-        "Gd",
-        "Tb",
-        "Dy",
-        "Ho",
-        "Er",
-        "Tm",
-        "Yb",
-        "Lu",
-        "Hf",
-        "Ta",
-        "Re",
-        "Os",
-        "Ir",
-        "Pt",
-        "Au",
-        "Hg",
-        "Tl",
-        "Pb",
-        "Bi",
-        "Po",
-        "Rn",
-        "Fr",
-        "Ra",
-        "Ac",
-        "Th",
-        "Pa",
-        "Np",
-        "Pu",
-        "Am",
-        "Cm",
-        "Bk",
-        "Cf",
-        "Es",
-        "Fm",
-        "Md",
-        "Lr",
-        "Rf",
-        "Db",
-        "Sg",
-        "Bh",
-        "Hs",
-        "Mt",
-        "Ds",
-        "Rg",
-        "Cn",
-        "Nh",
-        "Fl",
-        "Mc",
-        "Lv",
-        "Ts",
-        "Og",
-    ]
-)
-
-
-def _element_signature(text: str) -> frozenset[str]:
-    """Case-sensitive two-letter element symbols appearing as standalone
-    word tokens in ``text`` (``"Rh-sub on Pd(111)"`` → ``{"Rh", "Pd"}``).
-    See :data:`_ELEMENT_SYMBOLS` for what's deliberately excluded."""
-    return frozenset(re.findall(r"\b[A-Z][a-z]\b", text or "")) & _ELEMENT_SYMBOLS
-
-
-def _elements_conflict(a: str, b: str) -> bool:
-    """True when ``a`` and ``b`` name different chemistry — both carry a
-    non-empty element signature and the signatures differ — which vetoes a
-    near-dup match regardless of token overlap."""
-    ea, eb = _element_signature(a), _element_signature(b)
-    return bool(ea) and bool(eb) and ea != eb
-
-
-def _is_near_dup(text: str, existing: list[str]) -> bool:
-    """True when ``text`` restates any of ``existing`` (token Jaccard ≥
-    :data:`_HYP_DUP_JACCARD`, and no element-signature conflict —
-    :func:`_elements_conflict`). A ``text`` with no significant tokens
-    (:func:`_sig_tokens`) never matches anything — see that function's
-    docstring."""
-    toks = _sig_tokens(text)
-    if not toks:
-        return False
-    for other in existing:
-        ot = _sig_tokens(other)
-        if not ot:
-            continue
-        if _elements_conflict(text, other):
-            continue
-        inter = len(toks & ot)
-        union = len(toks | ot)
-        if union and inter / union >= _HYP_DUP_JACCARD:
-            return True
-    return False
-
-
-def _find_near_dup_node(roots: list[AttemptNode], text: str) -> AttemptNode | None:
-    """The ledger-wide (not sibling-scoped) node whose text is the closest
-    near-duplicate of ``text``, or ``None`` when nothing crosses
-    :data:`_HYP_DUP_JACCARD`. Unlike :func:`_match_nodes` (exact-text
-    addressing, used for `parent`/`node` lookups), this scans EVERY node in
-    the forest regardless of branch — :func:`add_attempt`'s upsert path
-    (dossier dedup-before-insert): a rephrased repeat of an already-pinned
-    direction, wherever it lives, should merge into it rather than mint a
-    sibling. Ties broken by highest overlap ratio; a node with no
-    significant tokens (:func:`_sig_tokens`) is never a candidate on
-    either side of the comparison, so two short same-named siblings in
-    different branches (the ``parent=``-disambiguated case) are untouched.
-    A node whose element signature conflicts with ``text``'s
-    (:func:`_elements_conflict` — e.g. an Rh branch vs a Ru attempt) is
-    likewise never a candidate, however similar the surrounding prose.
-    """
-    toks = _sig_tokens(text)
-    if not toks:
-        return None
-    best: tuple[float, AttemptNode] | None = None
-    for n, _parent in _flatten_with_parent(roots):
-        ntoks = _sig_tokens(n.text)
-        if not ntoks:
-            continue
-        if _elements_conflict(text, n.text):
-            continue
-        inter = len(toks & ntoks)
-        union = len(toks | ntoks)
-        ratio = inter / union if union else 0.0
-        if ratio >= _HYP_DUP_JACCARD and (best is None or ratio > best[0]):
-            best = (ratio, n)
-    return best[1] if best is not None else None
-
-
-def _subtree_all_dead(node: AttemptNode) -> bool:
-    """True when ``node`` and every descendant is ``tried``/``ruled-out`` —
-    the dead-subtree collapse trigger."""
-    return node.status in _DEAD_STATUSES and all(
-        _subtree_all_dead(c) for c in node.children
-    )
-
-
-def _subtree_size(node: AttemptNode) -> int:
-    """Node count of ``node``'s subtree, itself included."""
-    return 1 + sum(_subtree_size(c) for c in node.children)
-
-
-def _do_not_repropose_lines(
-    nodes: list[AttemptNode], *, ancestor_ruled_out: bool = False
-) -> list[str]:
-    """The "do not re-propose" bullet lines for ``nodes`` — RENDER-level
-    inheritance + dead-subtree collapse (never mutates a node's own stored
-    status, see :class:`AttemptNode`).
-
-    A node's *effective* status is ``ruled-out`` when its own stored status
-    is ``ruled-out`` OR an ancestor's is — so an open/active descendant of a
-    ruled-out direction still reads as ruled out here, though its own stored
-    status is untouched (:func:`mark_attempt` never rewrites a descendant). A
-    subtree that is entirely ``tried``/``ruled-out`` collapses to its root
-    line plus a variant count (e.g. ``… (4 variants, all ruled out)``) — the
-    full per-node detail survives in the pinned chunk's edit history
-    (``prev_text``) and the logbook, just not repeated here every tick.
-    """
-    lines: list[str] = []
-    for n in nodes:
-        effective_ruled_out = ancestor_ruled_out or n.status == "ruled-out"
-        if _subtree_all_dead(n):
-            count = _subtree_size(n)
-            label = "ruled-out" if effective_ruled_out else "tried"
-            plural = "" if count == 1 else "s"
-            lines.append(
-                f"- [{label}] {n.text} … ({count} variant{plural}, all ruled out)"
-            )
-            continue
-        own_dead = n.status in _DEAD_STATUSES
-        if own_dead or (ancestor_ruled_out and n.status in ("open", "active")):
-            label = "ruled-out" if effective_ruled_out else n.status
-            lines.append(f"- [{label}] {n.text}")
-        lines.extend(
-            _do_not_repropose_lines(n.children, ancestor_ruled_out=effective_ruled_out)
-        )
-    return lines
-
-
-def ledger_do_not_repropose(ledger: list[AttemptNode] | str) -> str:
-    """The pinned ledger's "do NOT re-propose these directions" prompt block
-    — tried/ruled-out nodes (own or inherited from a ruled-out ancestor),
-    with a fully-dead subtree collapsed to one summary line (see
-    :func:`_do_not_repropose_lines`). ``open``/``active`` directions with no
-    ruled-out ancestor are excluded — those are the exploration queue, not a
-    constraint. ``"(nothing pinned yet)"`` when nothing qualifies.
-
-    Takes the forest directly (the primary form — matches storage, no
-    markdown round-trip needed). Also accepts the legacy markdown TEXT
-    (:func:`read_ledger`'s return shape) as a thin back-compat shim —
-    :mod:`precis.quest.tick`'s ``_ledger_constraints`` still calls this with
-    ``read_ledger``'s text, so that call site needed no change when the
-    ledger's storage moved off markdown.
-    """
-    roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
-    lines = _do_not_repropose_lines(roots)
-    return "\n".join(lines) if lines else "(nothing pinned yet)"
-
-
-#: Env var overriding :data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT` — mirrors the
-#: ``PRECIS_QUEST_*`` budget-knob convention used elsewhere in the package
-#: (:mod:`precis.quest.allocator`, :mod:`precis.quest.cascade`,
-#: :mod:`precis.quest.tick`).
-_OPEN_LEDGER_BUDGET_ENV = "PRECIS_QUEST_LEDGER_OPEN_BUDGET_CHARS"
-#: Default char budget for the WHOLE rendered open-ledger section
-#: (:func:`ledger_open_nodes`'s return value) — generous: a full,
-#: untruncated node line is well under 200 chars for a typical direction, so
-#: this comfortably fits 60+ nodes before cutting off, while still bounding
-#: the pathological case that motivated this budget (gr263256: 188 open
-#: nodes, this section alone 55.6k chars of a 90.3k-char prompt, because the
-#: OLD per-node truncation made most nodes un-quotable — see
-#: :func:`ledger_open_nodes`'s docstring). Cuts by NODE COUNT, never by
-#: truncating a node's own text — the fix's whole point is that what renders
-#: here must be exactly what :func:`_match_nodes` will accept (a unique
-#: prefix of at least :data:`_PREFIX_MATCH_MIN_CHARS` chars also resolves).
-_OPEN_LEDGER_BUDGET_CHARS_DEFAULT = 12_000
-
-
-#: Longest ``parent_unresolved`` text :func:`ledger_open_nodes` echoes in an
-#: ``(unplaced: …)`` marker — enough to recognise the intended parent without
-#: spending the open-list budget on a second copy of a long node.
-_UNPLACED_PARENT_SHOW_CHARS = 120
-
-
-def _open_ledger_budget_chars() -> int:
-    """:data:`_OPEN_LEDGER_BUDGET_ENV`, parsed as an int, falling back to
-    :data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT` when unset or non-numeric."""
-    raw = os.environ.get(_OPEN_LEDGER_BUDGET_ENV)
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _OPEN_LEDGER_BUDGET_CHARS_DEFAULT
-
-
-def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
-    """The pinned ledger's ``open``/``active`` directions — a compact
-    status+text bullet per node — the upsert counterpart to
-    :func:`ledger_do_not_repropose`'s tried/ruled-out list.
-
-    Model-facing purpose: the proposer only ever saw the tried/ruled-out
-    constraint, so an already-pinned OPEN direction was invisible to it —
-    "when in doubt, add" then meant a rephrased repeat of something already
-    on the ledger (dossier-hygiene design's motivating prod defect: ~8
-    near-copies of the same "identify rate-limiting step / side
-    product / poison" entries). Showing the open queue lets the model
-    `mark`/refine an existing node via `ledger_ops` instead of re-adding
-    it — :func:`add_attempt`'s near-dup merge (see its docstring) already
-    catches the case where the model adds one anyway, so this is a
-    prompt-quality aid, not the correctness backstop.
-
-    **A node's text is NEVER truncated here** (gr263256 fix — this function
-    used to cut every node to 140 chars, but `ledger_ops`' `mark`/`add`
-    addressing (:func:`_match_nodes`) requires the model to quote a node's
-    text back EXACTLY: truncating the very thing that must be quotable made
-    most nodes (78% of open nodes on the audited quest, all longer than 140
-    chars) permanently unaddressable — every `mark` targeting one silently
-    no-opped, so the model just re-added the same direction as a new node
-    every tick instead, and the section accreted (measured: 188 open nodes,
-    55.6k of a 90.3k-char prompt). What renders here must always be exactly
-    what :func:`_match_nodes` will accept (a unique prefix of at least
-    :data:`_PREFIX_MATCH_MIN_CHARS` chars also resolves).
-
-    Instead, **the budget is on node COUNT, not text length**
-    (:data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT`, env-tunable via
-    :data:`_OPEN_LEDGER_BUDGET_ENV`) — mirrors the fill-to-budget/report-the-
-    remainder shape :mod:`precis.quest.tick`'s `_served_papers_detail` uses
-    for the literature section (commit d8e2ddc4), applied to whole nodes
-    here rather than truncated snippets. Nodes are ordered by priority
-    before filling: ``active`` before ``open`` (a direction currently being
-    pursued is the one most likely to need a `mark` this tick), then
-    most-recently-added first within a status tier (:attr:`AttemptNode.seq`
-    — newer directions are the freshest ask and the likeliest to otherwise
-    get re-proposed if dropped from view). At least one node always shows
-    when any open/active node exists, even if it alone exceeds the budget
-    (avoids a false-empty section). When the budget cuts a node off
-    entirely, a trailing line reports how many were omitted — worded to
-    discourage re-adding: an omitted node is simply not addressable THIS
-    tick, which is still strictly better than the old truncate-but-show
-    behaviour (visible yet equally unaddressable).
-
-    A node kept as a root because its ``add`` named an unresolvable ``parent``
-    (:attr:`AttemptNode.parent_unresolved`) carries an `` (unplaced: meant
-    under "…")`` suffix after its text, so the model can re-home it.
-
-    Takes the forest directly or the legacy markdown text, mirroring
-    :func:`ledger_do_not_repropose`. ``"(none yet)"`` when nothing
-    qualifies.
-    """
-    roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
-    open_nodes = [
-        n
-        for n, _parent in _flatten_with_parent(roots)
-        if n.status in ("open", "active")
-    ]
-    if not open_nodes:
-        return "(none yet)"
-    ordered = sorted(
-        open_nodes, key=lambda n: (0 if n.status == "active" else 1, -n.seq)
-    )
-    budget = _open_ledger_budget_chars()
-    lines: list[str] = []
-    used = 0
-    shown = 0
-    for n in ordered:
-        line = f"- [{n.status}] {n.text}"
-        if n.parent_unresolved:
-            # Suffix, outside the quotable node text (like the status prefix):
-            # tells the model this root was meant to be a child.
-            meant = n.parent_unresolved
-            if len(meant) > _UNPLACED_PARENT_SHOW_CHARS:
-                meant = meant[:_UNPLACED_PARENT_SHOW_CHARS].rstrip() + "…"
-            line += f' (unplaced: meant under "{meant}")'
-        if shown and used + len(line) + 1 > budget:
-            break
-        lines.append(line)
-        used += len(line) + 1
-        shown += 1
-    omitted = len(ordered) - shown
-    if omitted > 0:
-        plural = "" if omitted == 1 else "s"
-        lines.append(
-            f"(+{omitted} more open direction{plural} pinned but not shown this "
-            "tick for space — they still exist and are still open; do NOT "
-            're-add them or treat their absence here as "not yet raised". '
-            "They are not addressable THIS tick (you cannot `mark` a node you "
-            "cannot see), but will resurface in a future tick as budget allows.)"
-        )
-    return "\n".join(lines)
 
 
 #: The second pinned chunk (Slice 4c-4): the candidate lineage tree. Unlike

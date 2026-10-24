@@ -962,3 +962,73 @@ def test_flat_and_index_views_list_parent_and_status(handler: TodoHandler) -> No
         assert "id | status | parent | title" in out.body
         assert f"{bid} | open | {aid}" in out.body
         assert f"{_id_of(done.body)} | done" not in out.body
+
+
+# ── rotation fence (retire-dossier slice 2) ─────────────────────────
+
+
+def _mk_quest_and_direction(store: Store) -> tuple[int, int]:
+    """A quest with one direction todo (root ``part-of`` the quest) and a
+    nested child direction. Returns ``(quest_id, direction_ref_id)``."""
+    import re
+
+    from precis.dispatch import Hub as _Hub
+    from precis.handlers.quest import QuestHandler
+    from precis.quest.directions import add_direction, read_direction_forest
+
+    resp = QuestHandler(hub=_Hub(store=store)).put(text="A striving")
+    m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert m is not None
+    qid = int(m.group(1))
+    add_direction(store, qid, "a direction")
+    add_direction(store, qid, "a nested direction", parent="a direction")
+    root = read_direction_forest(store, qid)[0]
+    assert root.ref_id is not None
+    return qid, root.ref_id
+
+
+def test_direction_todos_never_enter_doable_queue_or_nursery(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Directions are the quest's attempt tree, not work: absent from
+    ``view='doable'`` and ``view='queue'`` (the active union), the
+    doable footer counts, and the nursery's todo detectors."""
+    qid, dir_id = _mk_quest_and_direction(store)
+    # a real doable leaf alongside, so the lists aren't empty
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    handler.put(text="A doable leaf.", parent_id=_id_of(root.body))
+
+    for view in ("doable", "active", "doing", "blocked"):
+        body = handler.search(view=view).body
+        assert f"td{dir_id}" not in body
+        assert "a direction" not in body
+    # the deprecated '/queue' path alias renders the same active union
+    body = handler.get(id="/queue").body
+    assert f"td{dir_id}" not in body
+    assert "a direction" not in body
+    doable = handler.search(view="doable").body
+    assert "A doable leaf." in doable
+
+    # the nursery sweep surfaces nothing for the direction tree — its
+    # root has no rotation_root ancestor yet is no orphan
+    from precis.workers.nursery import _detect_orphans
+
+    orphan_ids = {s.ref_id for s in _detect_orphans(store)}
+    assert dir_id not in orphan_ids
+    assert "a direction" not in {s.title for s in _detect_orphans(store)}
+
+
+def test_direction_todos_not_in_open_todo_servers(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``gaps.quest_momentum``: a todo that ``serves`` AND is a direction
+    counts as a direction — never as an open todo server."""
+    from precis.quest.directions import direction_ref_ids
+    from precis.quest.gaps import quest_momentum
+
+    qid, dir_id = _mk_quest_and_direction(store)
+    # a direction that also (stray) carries a serves edge to the quest
+    store.add_link(src_ref_id=dir_id, dst_ref_id=qid, relation="serves")
+    m = quest_momentum(store, qid)
+    assert dir_id in direction_ref_ids(store, qid)
+    assert m.open_todo_servers == 0

@@ -98,3 +98,44 @@ def todo_root_sql(alias: str) -> str:
         f"SELECT 1 FROM refs _pf WHERE _pf.ref_id = {alias}.parent_id "
         f"AND _pf.kind = 'folder'))"
     )
+
+
+def direction_todo_sql(alias: str) -> str:
+    """SQL predicate: the ``alias`` row is a quest **direction** todo —
+    the rotation fence (retire-dossier slice 2).
+
+    A direction is a todo ``part-of`` a quest (either stored orientation
+    of the ``part-of``/``contains`` pair) or a ``parent_id`` descendant
+    of one — a strand's children carry no edge of their own. Directions
+    are the quest's attempt tree, not work: they must never enter
+    ``view='doable'``/``'queue'``, the nursery's todo detectors, the
+    todo count surfaces, or ``gaps.quest_momentum``'s
+    ``open_todo_servers``. The quest's own lifecycle is irrelevant — a
+    retired quest's directions still aren't work — so no
+    ``retired_at`` filter on the quest side. The recursive term uses
+    ``UNION`` (dedup) as a guard against a ``parent_id`` cycle; the
+    per-quest read is
+    :func:`precis.quest.directions.direction_ref_ids`, kept
+    semantically identical. ``alias`` is a trusted table alias —
+    never user input.
+    """
+    return (
+        "EXISTS ("
+        "WITH RECURSIVE dir(ref_id) AS ("
+        "  SELECT l.src_ref_id FROM links l"
+        "    JOIN refs s ON s.ref_id = l.src_ref_id"
+        "    JOIN refs q ON q.ref_id = l.dst_ref_id"
+        "   WHERE l.relation = 'part-of' AND q.kind = 'quest'"
+        "     AND s.kind = 'todo' AND s.retired_at IS NULL"
+        "  UNION"
+        "  SELECT l.dst_ref_id FROM links l"
+        "    JOIN refs s ON s.ref_id = l.dst_ref_id"
+        "    JOIN refs q ON q.ref_id = l.src_ref_id"
+        "   WHERE l.relation = 'contains' AND q.kind = 'quest'"
+        "     AND s.kind = 'todo' AND s.retired_at IS NULL"
+        "  UNION"
+        "  SELECT c.ref_id FROM refs c JOIN dir d ON c.parent_id = d.ref_id"
+        "   WHERE c.kind = 'todo' AND c.retired_at IS NULL"
+        ")"
+        f" SELECT 1 FROM dir WHERE dir.ref_id = {alias}.ref_id)"
+    )

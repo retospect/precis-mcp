@@ -22,6 +22,7 @@ from precis.response import Response
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
     _doable_exclusion_clause,
+    direction_todo_sql,
 )
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import todo_root_sql
@@ -1098,6 +1099,9 @@ def _fetch_doable(
            AND NOT EXISTS (
                SELECT 1 FROM ancestry_paused ap WHERE ap.ref_id = r.ref_id
            )
+           -- Rotation fence (retire-dossier): a quest's direction todos
+           -- are its attempt tree, not work — never doable.
+           AND NOT {direction_todo_sql("r")}
            -- Slice 4: the recurring umbrella itself (``meta.schedule``
            -- set) is a folder, not an action; its spawned children are
            -- normal worker-mintable subtasks (no ``meta.schedule`` of
@@ -1129,10 +1133,12 @@ def _fetch_doable(
 
 
 def _doable_counters(store: Store) -> dict[str, int]:
-    """Quick counts for the doable view's footer line."""
+    """Quick counts for the doable view's footer line. The rotation
+    fence (retire-dossier) keeps a quest's direction todos out of every
+    count — they are the attempt tree, not work."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT
               count(*) FILTER (
                 WHERE COALESCE(
@@ -1168,6 +1174,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
               ) AS asking
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND NOT {direction_todo_sql("r")}
             """,
             (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchone()
@@ -1201,10 +1208,12 @@ def render_status_flat(
 
     One SQL pass (status resolved per-row, ``'open'`` when untagged),
     newest first. The tree-aware surfaces (``doable``/``blocked``/…)
-    stay separate; this is the plain triage list."""
+    stay separate; this is the plain triage list. The rotation fence
+    (retire-dossier) keeps a quest's direction todos out of every one of
+    these status lists — they are the attempt tree, not work."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id,
                    COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -1215,6 +1224,7 @@ def render_status_flat(
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.retired_at IS NULL
+               AND NOT {direction_todo_sql("r")}
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),

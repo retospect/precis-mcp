@@ -411,7 +411,15 @@ def quest_momentum(
         recent_server_events = int(row[0]) if row else 0
 
     # Todo servers: how many still open, how many carry a child-failed bubble.
-    todo_ids = [r.id for r in live if r.kind == "todo"]
+    # The rotation fence (retire-dossier): a quest's direction todos are
+    # its attempt tree, not work — never counted as open todo servers.
+    from precis.quest.directions import direction_ref_ids
+
+    todo_ids = [
+        r.id
+        for r in live
+        if r.kind == "todo" and r.id not in direction_ref_ids(store, quest_id)
+    ]
     open_todo = blocked_todo = 0
     if todo_ids:
         with store.pool.connection() as conn:
