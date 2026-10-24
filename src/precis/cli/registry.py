@@ -192,6 +192,11 @@ COMMANDS: tuple[Command, ...] = (
         "Stream OpenAlex snapshot works parts; stage held-paper cite edges.",
     ),
     _c(
+        "backfill-oa-refs",
+        "oa_refs_backfill",
+        "Source paper_bib_entries from OpenAlex referenced_works (gr513755).",
+    ),
+    _c(
         "backfill-glyph-health",
         "glyph_backfill",
         "Flag old papers whose PDF fonts garble Greek/micro (gr228594).",

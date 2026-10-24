@@ -52,9 +52,13 @@ normal worker cadence; ``--only bib_parse`` is just the fast-path burst.
 Consumers (shipped sibling slices): the paper Sources tab reads the rows
 via ``store.list_bib_entries`` (real ``[N]`` markers, unions in entries
 S2 misses); ``bib_mark`` + ``taproot/resolve.py::resolve_citation`` wire
-inline-marker resolution into hub-refine's verify loop. Explicitly NOT in
-scope: author-year citation styles, auto-fetching a
-matched-but-not-held paper.
+inline-marker resolution into hub-refine's verify loop. A second writer
+of the table exists — :mod:`precis.backfill.oa_refs` (gr513755 slice 2)
+writes OpenAlex-``referenced_works``-sourced rows for papers this pass
+never parsed (``source='openalex'``, negative markers, ``parse_version=0``
+so :func:`_delete_stale_entries` superseded-deletes them on first real
+parse). Explicitly NOT in scope: author-year citation styles,
+auto-fetching a matched-but-not-held paper.
 """
 
 from __future__ import annotations
@@ -650,6 +654,7 @@ def ensure_bib_cites_links(
     entries: Iterable[tuple[int, int]],
     *,
     conn: Any,
+    source: str = _LINK_SOURCE,
 ) -> int:
     """Ensure one paper-level ``cites`` link per distinct ``held_ref_id``.
 
@@ -670,6 +675,11 @@ def ensure_bib_cites_links(
     context — the 0214 triggers stamp the writer's context, whatever it
     is (unconverted here, like the other machine ``cites`` writers).
     ``cited-by`` is the read-time reverse; no second row is written.
+
+    ``source`` overrides the ``meta.source`` marker (default
+    :data:`_LINK_SOURCE`) — the OpenAlex ``referenced_works`` backfill
+    (gr513755 slice 2) mints its edges through the same helper but stamps
+    its own provenance.
 
     Returns the number of ``add_link`` calls made — edges *ensured*, not
     necessarily inserted (a conflict is a no-op write).
@@ -699,7 +709,7 @@ def ensure_bib_cites_links(
             dst_ref_id=held_ref_id,
             relation="cites",
             set_by="system",
-            meta={"source": _LINK_SOURCE, "bib_entry_id": by_held[held_ref_id]},
+            meta={"source": source, "bib_entry_id": by_held[held_ref_id]},
             conn=conn,
         )
         ensured += 1

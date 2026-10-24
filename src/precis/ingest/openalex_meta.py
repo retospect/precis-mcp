@@ -81,20 +81,15 @@ def _params(email: str) -> dict[str, str]:
     return params
 
 
-def fetch_openalex_work(
-    doi: str, *, email: str = "", timeout: float = _TIMEOUT_S
-) -> dict[str, Any] | None:
-    """Fetch the free OpenAlex work object for a DOI, or ``None`` if unknown.
+def _fetch_work(selector: str, *, email: str, timeout: float) -> dict[str, Any] | None:
+    """``GET /works/{selector}`` — shared fetch behind the two public doors.
 
-    A 404 (DOI not in OpenAlex) returns ``None``; other HTTP errors
-    raise for the caller to record. ``mailto`` is polite + faster. When
-    ``PRECIS_OPENALEX_CONTENT_KEY`` resolves, the request also carries it as
-    ``api_key`` so the call draws the paid credit (the work object itself is
-    free). Raises
-    :class:`precis.utils.rate_limit.RateLimited` without calling out when the
-    shared ``openalex`` limiter refuses (daily quota spent or rate-starved).
+    A 404 returns ``None``; other HTTP errors raise for the caller to
+    record. Raises :class:`precis.utils.rate_limit.RateLimited` without
+    calling out when the shared ``openalex`` limiter refuses (daily quota
+    spent or rate-starved).
     """
-    url = f"{_OPENALEX_WORKS}/doi:{doi}"
+    url = f"{_OPENALEX_WORKS}/{selector}"
     params = _params(email)
 
     def once() -> Any:
@@ -114,6 +109,39 @@ def fetch_openalex_work(
     # off (Retry-After honoured), 4xx other than 404 raise at once.
     data = call_with_backoff(once, service="openalex")
     return data if isinstance(data, dict) else None
+
+
+def fetch_openalex_work(
+    doi: str, *, email: str = "", timeout: float = _TIMEOUT_S
+) -> dict[str, Any] | None:
+    """Fetch the free OpenAlex work object for a DOI, or ``None`` if unknown.
+
+    A 404 (DOI not in OpenAlex) returns ``None``; other HTTP errors
+    raise for the caller to record. ``mailto`` is polite + faster. When
+    ``PRECIS_OPENALEX_CONTENT_KEY`` resolves, the request also carries it as
+    ``api_key`` so the call draws the paid credit (the work object itself is
+    free).
+    """
+    return _fetch_work(f"doi:{doi}", email=email, timeout=timeout)
+
+
+def fetch_openalex_work_by_id(
+    openalex_id: str, *, email: str = "", timeout: float = _TIMEOUT_S
+) -> dict[str, Any] | None:
+    """Fetch the free OpenAlex work object by OpenAlex id, or ``None``.
+
+    Same contract as :func:`fetch_openalex_work`, addressed by ``W…`` id
+    instead of DOI (``/works/W123``). Accepts the bare id, the
+    ``https://openalex.org/W…`` URL form, or a lowercase ``w…`` (the
+    ``ref_identifiers`` storage form) — normalised to the API's
+    uppercase-W path segment.
+    """
+    oid = _short_id(openalex_id).strip()
+    if not oid:
+        return None
+    if oid[:1].lower() == "w":
+        oid = "W" + oid[1:]
+    return _fetch_work(oid, email=email, timeout=timeout)
 
 
 def _short_id(openalex_url: str | None) -> str:
@@ -312,5 +340,6 @@ __all__ = [
     "OpenAlexEnrichment",
     "enrich_ref",
     "fetch_openalex_work",
+    "fetch_openalex_work_by_id",
     "normalize",
 ]
