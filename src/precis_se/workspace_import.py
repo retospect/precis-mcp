@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,12 +66,20 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.cad.dsl import DslError
-from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern, parse_source
+from precis.cad.dsl import parse as parse_config
+from precis.cad.scene import (
+    NodeSpec,
+    SceneError,
+    SceneSpec,
+    coerce_pattern,
+    parse_source,
+)
 from precis.errors import BadInput, NotFound
 from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
+from precis.utils.units import UnitRequiredError
 from precis_geom import trace_schema
-from precis_se import persist
+from precis_se import persist, traceview
 from precis_se.atomic.generate import (
     PendingGenerate,
     finish_generate,
@@ -210,8 +220,19 @@ class BlockEntry:
     bonds: str | None
 
 
-def _vet_manifest(data: Any) -> dict[str, Any]:
-    """Validate the manifest; refusals name the offending key."""
+def _vet_manifest(
+    data: Any, site: Callable[[Any], str] | None = None
+) -> dict[str, Any]:
+    """Validate the manifest; refusals name the offending key.
+
+    ``site`` maps an entry's ``frame`` stamp to ``' at file:line
+    (frame N)'`` — ``import_workspace_run``'s trace lookup. Without it
+    the same refusals stand, minus the script locations."""
+
+    def _no_loc(frame: Any) -> str:
+        return ""
+
+    loc_of = site or _no_loc
     if not isinstance(data, dict):
         raise BadInput("manifest.json must be a JSON object")
     _unknown_keys(data, _TOP_KEYS, "manifest.json")
@@ -291,6 +312,34 @@ def _vet_manifest(data: Any) -> dict[str, Any]:
             if not isinstance(raw, dict):
                 raise BadInput(f"manifest {where}: must be an object")
             _unknown_keys(raw, allowed, where)
+    # An instance may not share a name with any block — templates and
+    # instances live in the ONE block namespace, which is why the
+    # workspace convention prefixes template blocks ``t_`` (gr514240:
+    # the op layer's generic "duplicate block name" named neither the
+    # collision nor the convention).
+    block_pos = {b.name: j for j, b in enumerate(blocks)}
+    for i, inst in enumerate(data.get("instances") or []):
+        iname = str(inst.get("name") or "").strip()
+        if not iname or iname not in block_pos:
+            continue
+        j = block_pos[iname]
+        loc_bits = []
+        for w, f in (
+            (f"blocks[{j}]", blocks[j].frame),
+            (f"instances[{i}]", inst.get("frame")),
+        ):
+            s = loc_of(f)
+            if s:
+                loc_bits.append(f"{w}{s}")
+        loc = f" — script: {', '.join(loc_bits)}" if loc_bits else ""
+        raise BadInput(
+            f"manifest instances[{i}]: instance name {iname!r} collides "
+            f"with blocks[{j}] of the same name — templates and "
+            f"instances share one namespace{loc}",
+            next=f"rename the block to 't_{iname}' and point the "
+            "instance's template at it (the t_ prefix convention: "
+            "template 't_wheel', instance 'wheel')",
+        )
     rays_raw = data.get("rays") or []
     if not isinstance(rays_raw, list):
         raise BadInput("manifest.json: 'rays' must be a list")
@@ -535,11 +584,81 @@ class ImportResult:
         return "\n".join(lines)
 
 
-def _apply(tree: SeTree, ops: list[dict[str, Any]], *, what: str) -> None:
+def _with_site(exc: BadInput, site_text: str) -> None:
+    """Append ``' at <file>:<line> (frame <id>)'`` to a refusal's cause in
+    place — mutating ``cause``/``args`` keeps the concrete exception type
+    (:class:`UnitRequiredError` included), its ``next=`` and its
+    ``options=`` untouched (gr514246)."""
+    if site_text:
+        exc.cause = f"{exc.cause}{site_text}"
+        exc.args = (exc.cause,)
+
+
+def _dsl_source_line(body: str, exc: Exception) -> str | None:
+    """Best-effort ``line 3: '<source text>'`` for a cad-DSL parse
+    failure — ``arg_name``'s own ``line N:`` when it carries one
+    (placement/dim/joint tokens), else the first source token that
+    re-raises the same error under a boundary parse (the shape
+    ``config`` token, whose ``alias:key`` ``arg_name`` names no line —
+    gr514246)."""
+    arg = getattr(exc, "arg_name", None) or ""
+    lines = body.splitlines()
+    m = re.match(r"line (\d+):", arg)
+    if m:
+        n = int(m[1])
+        if 1 <= n <= len(lines):
+            text = lines[n - 1].split("#", 1)[0].strip()
+            return f"line {n}: {text!r}" if text else f"line {n}"
+        return f"line {n}"
+    for n, raw in enumerate(lines, 1):
+        src = raw.split("#", 1)[0].strip()
+        for tok in src.split():
+            if ":" not in tok:
+                continue
+            try:
+                parse_config(tok, require_units=True)
+            except Exception as exc2:
+                if type(exc2) is type(exc) and str(exc2) == str(exc):
+                    return f"line {n}: {src!r}"
+                continue
+    return None
+
+
+def _macro_dsl_spec(entry: BlockEntry, body: str) -> SceneSpec:
+    """Parse a macro block's cad-DSL source — every refusal names the
+    block and (best effort) the DSL line (gr514246).
+    :class:`UnitRequiredError` is re-raised as the same type — its
+    ``next=`` unit hint survives — with the block and line folded into
+    the cause; :class:`DslError` and :class:`SceneError` (a bare
+    ``ValueError`` today — it would surface as Internal) become
+    ``BadInput``."""
+    try:
+        return parse_source(body)
+    except UnitRequiredError as exc:
+        dsl = _dsl_source_line(body, exc)
+        exc.cause = (
+            f"block {entry.name!r} cad DSL"
+            + (f" {dsl}" if dsl else "")
+            + f": {exc.cause}"
+        )
+        exc.args = (exc.cause,)
+        raise
+    except DslError as exc:
+        dsl = _dsl_source_line(body, exc)
+        raise BadInput(
+            f"block {entry.name!r}: cad DSL parse failed"
+            + (f" ({dsl})" if dsl else "")
+            + f": {exc}"
+        ) from exc
+    except SceneError as exc:
+        raise BadInput(f"block {entry.name!r}: cad DSL parse failed: {exc}") from exc
+
+
+def _apply(tree: SeTree, ops: list[dict[str, Any]], *, what: str, at: str = "") -> None:
     try:
         apply_ops(tree, ops)
     except OpError as exc:
-        raise BadInput(f"workspace import: {what}: {exc}") from exc
+        raise BadInput(f"workspace import: {what}: {exc}{at}") from exc
 
 
 def import_workspace_run(
@@ -572,7 +691,7 @@ def import_workspace_run(
         out_path, "manifest.json", cap=MAX_WS_FILE_BYTES, what="manifest"
     )
     try:
-        manifest = _vet_manifest(json.loads(manifest_text))
+        manifest_raw = json.loads(manifest_text)
     except json.JSONDecodeError as exc:
         raise BadInput(f"manifest.json is not valid JSON: {exc}") from exc
     findings: list[str] = []
@@ -593,45 +712,69 @@ def import_workspace_run(
     else:
         findings.append("trace.missing: out/trace.json absent — importing without it")
 
+    # Every refusal tied to a manifest entry appends the entry's script
+    # site — `` at <file>:<line> (frame <id>)`` from the entry's ``frame``
+    # stamp resolved against the run's trace (gr514246/gr514247). No
+    # trace.json → no suffix; the errors keep their types and text.
+    _tv = (
+        traceview.Trace({"run": trace.run, "frames": trace.frames})
+        if trace is not None
+        else None
+    )
+
+    def _site(frame: Any) -> str:
+        if _tv is None:
+            return ""
+        try:
+            loc = traceview.site(_tv, int(frame))
+        except (TypeError, ValueError):
+            return ""
+        return f" at {loc}" if loc else ""
+
+    # Vet runs after the trace load so instance/block refusals cite the
+    # entries' script sites too; everything still refuses before a write.
+    manifest = _vet_manifest(manifest_raw, site=_site)
+
     # Parse every geometry file BEFORE the write transaction — caps and
     # refusals happen here so nothing half-imports.
     parsed: dict[str, tuple[Any, Any]] = {}
     for entry in manifest["blocks"]:
-        body = _read_file(
-            out_path,
-            entry.file,
-            cap=MAX_WS_FILE_BYTES,
-            what=f"blocks[{entry.name!r}] file",
-        )
-        if entry.scale == "atomic":
-            scene = extxyz_to_scene(body)
-            if len(scene.atoms) > MAX_WS_BLOCK_ATOMS:
-                raise BadInput(
-                    f"block {entry.name!r}: {len(scene.atoms)} atoms exceeds "
-                    f"the {MAX_WS_BLOCK_ATOMS} atoms-per-block cap"
-                )
-            bonds_rel = entry.bonds or str(Path(entry.file).with_suffix(".bonds.json"))
-            if (out_path / bonds_rel).is_file():
-                scene.bonds = bonds_from_json(
-                    _read_file(
-                        out_path,
-                        bonds_rel,
-                        cap=MAX_WS_FILE_BYTES,
-                        what=f"{entry.name!r} bonds",
-                    )
-                )
-            parsed[entry.name] = ("atomic", scene)
-        else:
-            if entry.file.endswith(".json"):
-                spec = _spec_from_cad_json(body, what=f"{entry.name!r}.cad.json")
-            else:
-                try:
-                    spec = parse_source(body)
-                except DslError as exc:
+        try:
+            body = _read_file(
+                out_path,
+                entry.file,
+                cap=MAX_WS_FILE_BYTES,
+                what=f"blocks[{entry.name!r}] file",
+            )
+            if entry.scale == "atomic":
+                scene = extxyz_to_scene(body)
+                if len(scene.atoms) > MAX_WS_BLOCK_ATOMS:
                     raise BadInput(
-                        f"block {entry.name!r}: cad DSL parse failed: {exc}"
-                    ) from exc
-            parsed[entry.name] = ("macro", spec)
+                        f"block {entry.name!r}: {len(scene.atoms)} atoms exceeds "
+                        f"the {MAX_WS_BLOCK_ATOMS} atoms-per-block cap"
+                    )
+                bonds_rel = entry.bonds or str(
+                    Path(entry.file).with_suffix(".bonds.json")
+                )
+                if (out_path / bonds_rel).is_file():
+                    scene.bonds = bonds_from_json(
+                        _read_file(
+                            out_path,
+                            bonds_rel,
+                            cap=MAX_WS_FILE_BYTES,
+                            what=f"{entry.name!r} bonds",
+                        )
+                    )
+                parsed[entry.name] = ("atomic", scene)
+            else:
+                if entry.file.endswith(".json"):
+                    spec = _spec_from_cad_json(body, what=f"{entry.name!r}.cad.json")
+                else:
+                    spec = _macro_dsl_spec(entry, body)
+                parsed[entry.name] = ("macro", spec)
+        except BadInput as exc:
+            _with_site(exc, _site(entry.frame))
+            raise
 
     ref = store.get_ref(kind="se", id=design)
     if ref is None:
@@ -773,11 +916,12 @@ def import_workspace_run(
         cad_saves: list[tuple[str, str, SceneSpec, str]] = []
         for entry in manifest["blocks"]:
             kind, payload = parsed[entry.name]
+            bsite = _site(entry.frame)
             existing = tree.blocks.get(entry.name)
             if existing is not None and entry.name not in owned:
                 raise BadInput(
                     f"workspace import: block name {entry.name!r} is taken by a "
-                    "block this workspace does not own",
+                    f"block this workspace does not own{bsite}",
                     next="rename the block, or remove the other block first",
                 )
             gen_ctx = _generated_ctx(
@@ -843,7 +987,7 @@ def import_workspace_run(
                 ops.append(po)
             if kind == "atomic":
                 ops.append({"op": "set_mode", "block": entry.name, "mode": "atomic"})
-            _apply(tree, ops, what=f"block {entry.name!r}")
+            _apply(tree, ops, what=f"block {entry.name!r}", at=bsite)
             node = tree.blocks[entry.name]
             if kind == "atomic":
                 scene = payload
@@ -857,7 +1001,7 @@ def import_workspace_run(
                         raise BadInput(
                             f"manifest blocks[{entry.name!r}]: port "
                             f"{p['name']!r} atom {atom!r} is not in "
-                            f"{entry.file}"
+                            f"{entry.file}{bsite}"
                         )
                     ports_map[str(p["name"])] = str(atom)
                 # Port element gate — the same check prepare_generate runs.
@@ -869,7 +1013,7 @@ def import_workspace_run(
                             raise BadInput(
                                 f"manifest blocks[{entry.name!r}]: port "
                                 f"{p['name']!r} expects {exp!r}, atom "
-                                f"{p['atom']!r} is {got!r}"
+                                f"{p['atom']!r} is {got!r}{bsite}"
                             )
                 prior = store.get_ref(
                     kind="structure",
@@ -884,7 +1028,8 @@ def import_workspace_run(
                     if prior_ws != workspace:
                         raise BadInput(
                             f"workspace import: structure slug {struct_slug!r} "
-                            "is held by a design this workspace did not make",
+                            "is held by a design this workspace did not "
+                            f"make{bsite}",
                             next="rename the block",
                         )
                     store.restore_ref(prior.id, conn=conn)
@@ -916,7 +1061,8 @@ def import_workspace_run(
                     if prior_ws != workspace:
                         raise BadInput(
                             f"workspace import: cad slug {cad_slug!r} is "
-                            "held by a design this workspace did not make",
+                            "held by a design this workspace did not "
+                            f"make{bsite}",
                             next="rename the block",
                         )
                     if prior.retired_at is not None:
@@ -938,7 +1084,22 @@ def import_workspace_run(
         # ── instances + connects ──
         for inst in manifest["instances"]:
             name = str(inst["name"]).strip()
-            if name in tree.blocks and tree.blocks[name].template is not None:
+            existing_inst = tree.blocks.get(name)
+            if existing_inst is not None and existing_inst.template is None:
+                # A same-named ordinary block survived retirement — one
+                # this workspace does not own (a manifest-owned sibling
+                # is already refused by _vet_manifest). The op layer
+                # would only say "duplicate block name" (gr514240).
+                raise BadInput(
+                    f"workspace import: instance {name!r} shares a name "
+                    f"with block {name!r} already in the design — "
+                    "templates and instances share one namespace"
+                    f"{_site(inst.get('frame'))}",
+                    next="rename the instance, or rename the block and "
+                    "point the instance's template at it (the t_ prefix "
+                    "convention)",
+                )
+            if existing_inst is not None:
                 del tree.blocks[name]  # re-created below (pose/template update)
             # linear/polar make the row an array_block — the script-side
             # ``pga.tile(block, n, pitch=…)`` packed form, replayed through
@@ -964,7 +1125,12 @@ def import_workspace_run(
             ):
                 if inst.get(k) is not None:
                     op[k] = inst[k]
-            _apply(tree, [op], what=f"instance {name!r}")
+            _apply(
+                tree,
+                [op],
+                what=f"instance {name!r}",
+                at=_site(inst.get("frame")),
+            )
         for c in manifest["connects"]:
             pair = tuple(sorted((str(c["a"]), str(c["b"]))))
             have = {
@@ -977,7 +1143,12 @@ def import_workspace_run(
             for k in ("kind", "joint", "objectives"):
                 if c.get(k) is not None:
                     op[k] = c[k]
-            _apply(tree, [op], what=f"connect {c['a']}—{c['b']}")
+            _apply(
+                tree,
+                [op],
+                what=f"connect {c['a']}—{c['b']}",
+                at=_site(c.get("frame")),
+            )
 
         # ── rays (slice 2r): the manifest's rays replace this workspace's
         # previous ones IN PLACE — a ray the run still writes keeps its
@@ -1016,11 +1187,17 @@ def import_workspace_run(
             }
             if r["name"] in rnode.rays:
                 _apply(
-                    tree, [{"op": "set_ray", **fields_op}], what=f"ray {r['name']!r}"
+                    tree,
+                    [{"op": "set_ray", **fields_op}],
+                    what=f"ray {r['name']!r}",
+                    at=_site(r.get("frame")),
                 )
             else:
                 _apply(
-                    tree, [{"op": "add_ray", **fields_op}], what=f"ray {r['name']!r}"
+                    tree,
+                    [{"op": "add_ray", **fields_op}],
+                    what=f"ray {r['name']!r}",
+                    at=_site(r.get("frame")),
                 )
             ray_spec = rnode.rays[r["name"]]
             ray_spec.made_by = (

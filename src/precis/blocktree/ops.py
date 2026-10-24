@@ -303,6 +303,18 @@ def _port_pose_args(
 
 def _no_block_msg(tree: Tree[Any, Any], name: str, *, what: str) -> str:
     base = f"no such block ({what}): {name!r}"
+    if what.startswith("template"):
+        # A template only ever resolves an ordinary block — instancing an
+        # instance is refused — so the roster lists template-able blocks,
+        # not every node; naming the omitted count keeps the truncation
+        # honest (gr514247: listing instances as "available blocks" sent
+        # callers hunting the wrong namespace).
+        pool = sorted(n for n, b in tree.blocks.items() if b.template is None)
+        if not pool:
+            return f"{base} — the design has no ordinary blocks to instance"
+        roster = ", ".join(pool[:8])
+        more = "" if len(pool) <= 8 else f", … ({len(pool) - 8} more)"
+        return f"{base}. Available templates: {roster}{more}"
     if not tree.blocks:
         return f"{base} — the design has no blocks yet"
     roster = ", ".join(sorted(tree.blocks)[:8])

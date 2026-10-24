@@ -20,9 +20,11 @@ import pytest
 
 from precis.errors import BadInput
 from precis.store import Store
+from precis.utils.units import UnitRequiredError
 from precis_geom.trace_schema import MAX_FRAMES as TRACE_MAX_FRAMES
 from precis_geom.trace_schema import frame_key
 from precis_se import persist
+from precis_se.ops import apply_ops
 from precis_se.workspace_import import MAX_WS_BLOCKS, import_workspace_run
 
 DATA = Path(__file__).resolve().parent / "data"
@@ -55,6 +57,342 @@ def _import(store: Store, out: Path, **kw: Any):
         requested_by="agent:test",
         **kw,
     )
+
+
+def _trace_doc(sites: dict[int, tuple[str, int]]) -> dict[str, Any]:
+    """A minimal schema-1 trace.json: a root plus one ``core`` frame per
+    ``sites`` entry (frame id → its call-site file:line) — enough for the
+    importer's frame→script-location join."""
+    frames = [
+        {
+            "id": 0,
+            "key": "root0000",
+            "parent": None,
+            "qual": "main",
+            "file": "main.py",
+            "line": 1,
+            "occ": 0,
+            "kind": "root",
+            "args": {},
+            "made": {},
+            "touched": {},
+        }
+    ]
+    for fid, (file, line) in sorted(sites.items()):
+        frames.append(
+            {
+                "id": fid,
+                "key": f"frame{fid:04d}",
+                "parent": "root0000",
+                "qual": "out.call",
+                "file": file,
+                "line": line,
+                "occ": 0,
+                "kind": "core",
+                "args": {},
+                "made": {},
+                "touched": {},
+            }
+        )
+    return {"schema": 1, "run": {"workspace": "hcol-test"}, "frames": frames}
+
+
+def _write_out(
+    tmp_path: Path,
+    *,
+    manifest: dict[str, Any],
+    files: dict[str, str],
+    trace: dict[str, Any] | None = None,
+) -> Path:
+    """Write a minimal ``out/`` tree: manifest.json + named files +
+    optional trace.json."""
+    out = tmp_path / "out"
+    texts = {"manifest.json": json.dumps(manifest), **files}
+    if trace is not None:
+        texts["trace.json"] = json.dumps(trace)
+    else:
+        (out / "trace.json").unlink(missing_ok=True)  # no stale trace on rewrite
+    for rel, text in texts.items():
+        p = out / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    return out
+
+
+def test_macro_bad_unit_names_block_dsl_line_and_script(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514246 acceptance 1+6: a bare number in a macro block's DSL fails
+    as UnitRequiredError naming the block, the DSL line and the script
+    site — and keeps its ``next=`` unit hint."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "t_crank",
+                    "file": "blocks/t_crank.cad",
+                    "scale": "macro",
+                    "frame": 3,
+                }
+            ],
+        },
+        files={
+            "blocks/t_crank.cad": (
+                "# a crank\nbase add box:w40mmd20mmh10mm\npin cut cyl:r7h24mm\n"
+            )
+        },
+        trace=_trace_doc({3: ("main.py", 9)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert isinstance(exc.value, UnitRequiredError)
+    msg = str(exc.value)
+    assert "block 't_crank'" in msg
+    assert "line 3" in msg and "pin cut cyl:r7h24mm" in msg
+    assert "at main.py:9 (frame 3)" in msg
+    assert exc.value.next and "state units" in str(exc.value.next)
+
+
+def test_macro_bad_unit_no_trace_same_error_no_location(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514246 acceptance 5: without trace.json the same refusal keeps
+    the same type and text minus the location suffix."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "t_crank",
+                    "file": "blocks/t_crank.cad",
+                    "scale": "macro",
+                    "frame": 3,
+                }
+            ],
+        },
+        files={"blocks/t_crank.cad": "pin cut cyl:r7h24mm\n"},
+    )
+    with pytest.raises(UnitRequiredError) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "block 't_crank'" in msg and "cyl:r7h24mm" in msg
+    assert " at main.py" not in msg
+    assert exc.value.next
+
+
+def _two_block_manifest(**kw: Any) -> dict[str, Any]:
+    """A t_-templates + instances manifest for the connect/instance
+    error tests — ``o.block`` + ``o.instance`` + ``o.connect`` as the
+    unicycle script would emit them."""
+    manifest: dict[str, Any] = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "t_axle",
+                "file": "blocks/t_axle.cad",
+                "scale": "macro",
+                "frame": 1,
+                "ports": [{"name": "hub", "frame": 2}],
+            },
+            {
+                "name": "t_wheel",
+                "file": "blocks/t_wheel.cad",
+                "scale": "macro",
+                "frame": 3,
+                "ports": [{"name": "hub", "frame": 4}],
+            },
+        ],
+        "instances": [
+            {"name": "axle", "template": "t_axle", "frame": 5},
+            {"name": "wheel", "template": "t_wheel", "frame": 6},
+        ],
+    }
+    manifest.update(kw)
+    return manifest
+
+
+_CAD_FILES = {
+    "blocks/t_axle.cad": "axle add cyl:r2mmh40mm\n",
+    "blocks/t_wheel.cad": "rim add cyl:r20mmh5mm\n",
+}
+
+
+def test_connect_bad_port_names_script_line_and_ports(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514247 acceptance 2: a bad connect endpoint names the script
+    line and the block's available ports."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest=_two_block_manifest(
+            connects=[{"a": "axle.hubb", "b": "wheel.hub", "frame": 7}]
+        ),
+        files=_CAD_FILES,
+        trace=_trace_doc({7: ("main.py", 30)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "connect axle.hubb—wheel.hub" in msg
+    assert "no such port on block 'axle'" in msg
+    assert "Available ports: hub" in msg
+    assert "at main.py:30 (frame 7)" in msg
+
+
+def test_unknown_template_lists_templates_not_instances(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514247 acceptance 3: an unknown template lists the design's
+    template-able blocks — never the instances — names the omitted
+    count, and cites the script line."""
+    _design(store)
+    blocks = [
+        {
+            "name": f"t_p{i}",
+            "file": "blocks/t_p0.cad",
+            "scale": "macro",
+            "frame": 1,
+        }
+        for i in range(10)
+    ]
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": blocks,
+            "instances": [
+                {"name": "wheel", "template": "t_p0", "frame": 5},
+                {"name": "ghost", "template": "t_nope", "frame": 6},
+            ],
+        },
+        files={"blocks/t_p0.cad": "p add box:w10mmd10mmh10mm\n"},
+        trace=_trace_doc({6: ("main.py", 31)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "instance 'ghost'" in msg
+    assert "no such block (template): 't_nope'" in msg
+    assert "Available templates: t_p0" in msg
+    assert "… (2 more)" in msg
+    assert "'wheel'" not in msg  # instances are not templates
+    assert "at main.py:31 (frame 6)" in msg
+
+
+def test_connect_instance_errors_no_trace_no_location(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514247 acceptance 5: without trace.json the same refusals keep
+    the same types and text minus the location suffix."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest=_two_block_manifest(
+            connects=[{"a": "axle.hubb", "b": "wheel.hub", "frame": 7}]
+        ),
+        files=_CAD_FILES,
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert "Available ports: hub" in str(exc.value)
+    assert " at main.py" not in str(exc.value)
+
+    out = _write_out(
+        tmp_path,
+        manifest=_two_block_manifest(
+            instances=[{"name": "ghost", "template": "t_nope", "frame": 6}]
+        ),
+        files=_CAD_FILES,
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert "Available templates: t_axle, t_wheel" in str(exc.value)
+    assert " at main.py" not in str(exc.value)
+
+
+def test_instance_named_like_block_is_vet_refused_with_sites(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514240 acceptance 4+5: an instance sharing a block's name is a
+    manifest-vet refusal naming both entries and their script lines —
+    never the generic 'duplicate block name' — and stands without a
+    trace too."""
+    _design(store)
+    manifest = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "wheel",
+                "file": "blocks/wheel.cad",
+                "scale": "macro",
+                "frame": 1,
+            }
+        ],
+        "instances": [{"name": "wheel", "template": "wheel", "frame": 2}],
+    }
+    files = {"blocks/wheel.cad": "rim add cyl:r20mmh5mm\n"}
+    out = _write_out(
+        tmp_path,
+        manifest=manifest,
+        files=files,
+        trace=_trace_doc({1: ("main.py", 5), 2: ("main.py", 11)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "duplicate block name" not in msg
+    assert "instances[0]" in msg and "blocks[0]" in msg
+    assert "main.py:5" in msg and "main.py:11" in msg
+    assert "t_wheel" in str(exc.value.next)
+
+    out = _write_out(tmp_path, manifest=manifest, files=files)
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert "collides" in str(exc.value)
+    assert "script:" not in str(exc.value)
+
+
+def test_instance_named_like_existing_design_block(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514240 design-side backstop: an instance name colliding with a
+    block already in the design (vet only sees the manifest) names the
+    namespace rule and the script line."""
+    _design(store)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    apply_ops(tree, [{"op": "add_block", "name": "wheel"}])
+    persist.save_tree(store, ref_id=se_ref.id, tree=tree, card_text="ws-test")
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "t_wheel",
+                    "file": "blocks/wheel.cad",
+                    "scale": "macro",
+                    "frame": 1,
+                }
+            ],
+            "instances": [{"name": "wheel", "template": "t_wheel", "frame": 2}],
+        },
+        files={"blocks/wheel.cad": "rim add cyl:r20mmh5mm\n"},
+        trace=_trace_doc({2: ("main.py", 11)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "duplicate block name" not in msg
+    assert "share one namespace" in msg
+    assert "at main.py:11 (frame 2)" in msg
 
 
 def test_import_makes_blocks_with_generated(store: Store) -> None:

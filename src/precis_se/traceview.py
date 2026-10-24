@@ -238,6 +238,28 @@ def nearest_user(trace: Trace, frame: dict[str, Any]) -> dict[str, Any] | None:
     return last
 
 
+def site(trace: Trace, frame_id: int) -> str | None:
+    """``'main.py:30 (frame 5)'`` — the script location a manifest
+    entry's ``frame`` stamp points at, for importer refusal messages
+    (gr514246/gr514247). The frame's own ``file``/``line`` is the call
+    site (a ``kind='core'`` leaf like ``out.connect`` already cites the
+    user line that invoked it); when it lacks a location the nearest
+    ``kind='user'`` ancestor's is used. ``None`` when the id covers no
+    frame or no frame in the path carries a location."""
+    fr = trace.maker_frame(frame_id)
+    if fr is None:
+        return None
+    if not (fr.get("file") and fr.get("line")):
+        user = nearest_user(trace, fr)
+        if user is None:
+            return None
+        fr = user
+    file, lineno = fr.get("file"), fr.get("line")
+    if not file or not lineno:
+        return None
+    return f"{file}:{lineno} (frame {frame_id})"
+
+
 def creator_text(trace: Trace, frame: dict[str, Any]) -> str:
     """The findings-table ``frame`` cell: ``main.py:30 bundle →
     junction#7`` — the subject's creator leaf behind its nearest user
