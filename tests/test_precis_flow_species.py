@@ -36,6 +36,7 @@ from precis_flow.species import (
     Pulse,
     ReactiveWall,
     transport,
+    wall_sink_star,
 )
 from tests.test_se_flow import _hex_domain
 
@@ -364,6 +365,40 @@ def test_transport_limited_decay_slopes() -> None:
         slope, se = _survival_slope(paths, x_lo=0.2 * eps * pe, s_floor=0.01)
         expected = -n_w * sh / (2.0 * eps * pe)
         assert abs(slope - expected) <= 0.05 * abs(expected) + 3.0 * se
+
+
+# ── 1b. Entrance-region mass transfer (Lévêque) ───────────────────────
+
+
+def test_entrance_correction_raises_short_patch_and_recovers_developed() -> None:
+    """Slice 1b: the Lévêque entrance coefficient makes ``k*_m`` larger in
+    the developing boundary layer at a reactive region's leading edge, so
+    the short-patch wall sink the developed-Sh value under-read is raised;
+    far downstream the ratio falls back to 1 (developed)."""
+    eps, pe = 0.001, 100.0  # Pe·ε = 0.1
+    d = _rect(nx=400, ny=4)
+    f = solve(d)
+
+    # A short floor patch near the inlet, transport-limited (k_s ≫ k_m).
+    short = np.zeros((4, 400), dtype=bool)
+    short[:, 20:40] = True
+    w = ReactiveWall("floor", 50.0, cells=short)
+    sink_dev, _ = wall_sink_star(f, eps, pe, [w], entrance=False)
+    sink_ent, _ = wall_sink_star(f, eps, pe, [w], entrance=True)
+    # Never smaller, strictly larger somewhere in the developing layer.
+    assert np.all(sink_ent[short] >= sink_dev[short] - 1e-12)
+    assert sink_ent[short].sum() > sink_dev[short].sum() * 1.02
+    # Outside the patch the sink stays zero either way.
+    assert sink_ent[~short].sum() == 0.0
+
+    # A whole-floor (long) patch: the trailing cells are developed again.
+    whole = ReactiveWall("floor", math.inf)
+    k_dev, _ = wall_sink_star(f, eps, pe, [whole], entrance=False)
+    k_ent, _ = wall_sink_star(f, eps, pe, [whole], entrance=True)
+    tail = slice(350, 400)
+    assert np.allclose(k_ent[0, tail], k_dev[0, tail], rtol=0.02)
+    # and the correction is a leading-edge effect (first cells enhanced).
+    assert k_ent[0, 0] > k_dev[0, 0] * 1.2
 
 
 # ── 7. Euler ↔ Lagrange on a real shape ───────────────────────────────

@@ -5,10 +5,24 @@ The depth-averaged Eulerian solve on a solved :class:`Field`:
 
     ∂(h* c*)/∂t* + ∇*·(h* U* c*) = ∇*·(h* 𝔻* ∇* c*) − Σ_w k*_eff,w c*
     𝔻* = ε [ I/Pe + (Pe/210) h*² U_s* U_s*ᵀ ]
-    1/k*_eff,w = 1/k*_s,w + 2 h*/(Sh_w D*)
+    1/k*_eff,w = 1/k*_s,w + 1/k*_m,w
 
-with ``D* = 1/(Pe ε)``, ``k*_s = Da_w/(Pe ε)`` and ``Sh_w = 7.54`` where
-both walls are reactive at that cell, ``4.86`` where one is. ``c*`` is
+with ``D* = 1/(Pe ε)``, ``k*_s = Da_w/(Pe ε)``. The mass-transfer
+coefficient ``k*_m,w`` is the developed ``Sh_w D*/(2 h*)`` (``Sh_w = 7.54``
+where both walls react at that cell, ``4.86`` where one does) once the
+concentration boundary layer is developed, but it restarts at the
+upstream edge of each reactive region (slice 1b): there Lévêque's
+entrance coefficient is larger, so
+
+    k*_m,w = max( Sh_w D*/(2 h*),  0.978 (Ū D²/(h s))^{1/3} )
+
+with ``s`` the distance from the region's leading edge, taken from the
+advected scalar :func:`_entry_distance` (``F·∇s* = h*|U*|``, ``s* = 0``
+where flow enters the region). In reduced units the Lévêque/developed
+ratio is ``(2·0.978/Sh)·((Pe ε) h*² |U*|/s*)^(1/3)``; it exceeds 1 only
+inside the entrance zone ``s* ≲ (2·0.978/Sh)³ (Pe ε) h*² |U*|`` and
+falls to the developed value past it, so a long wall is unchanged. Set
+``entrance=False`` to force the bare developed coefficient. ``c*`` is
 ``c/c_in``; the reduced sink ``s*(x, y) = Σ_w k*_eff,w`` is the spec's
 ``(L/(h0 u0)) Σ_w k_eff,w`` term.
 
@@ -46,6 +60,11 @@ from .flow import Field
 #: both walls reactive / one wall.
 SH_BOTH_WALLS = 7.54
 SH_ONE_WALL = 4.86
+
+#: Lévêque's leading-edge mass-transfer prefactor ``k_m = C (Ū D²/(h s))^⅓``
+#: (slice 1b entrance region). ``2·C/Sh`` is the reduced Lévêque/developed
+#: ratio coefficient.
+LEVEQUE_C = 0.978
 
 #: The depth-average validity bound: transverse mixing time h0²/D at most
 #: a tenth of the transit L/u0.
@@ -138,17 +157,78 @@ def taylor_tensor(
     return out
 
 
+def _entry_distance(field: Field, cells: np.ndarray) -> np.ndarray:
+    """Reduced distance ``s*`` from the upstream edge of the reactive
+    region ``cells``, advected by the depth-averaged flux
+    (``F·∇s* = h*|U*|``, ``s* = 0`` where flow enters the region).
+
+    First-order upwind in conservative flux form — the matrix is an
+    M-matrix (diagonal = total outflow, off-diagonals = region inflow),
+    so the direct solve is stable without diffusion. Returns ``s*`` on
+    the region cells and ``+inf`` elsewhere (so the Lévêque ratio there
+    is 0 and the developed coefficient stands).
+    """
+    domain = field.domain
+    ny, nx = domain.shape
+    reg = np.asarray(cells, dtype=bool) & domain.mask
+    out = np.full((ny, nx), np.inf)
+    jj, ii = np.where(reg)
+    if jj.size == 0:
+        return out
+    h = domain.h_star
+    u = field.u_star
+    fx, fy = u[0] * h, u[1] * h
+    speed = h * np.hypot(u[0], u[1])  # h*|U*|
+    dx = domain.dx_star
+    idx = -np.ones((ny, nx), dtype=int)
+    idx[reg] = np.arange(jj.size)
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[float] = []
+    b = np.zeros(jj.size)
+    for j, i in zip(jj.tolist(), ii.tolist()):
+        k = int(idx[j, i])
+        b[k] = float(speed[j, i]) * dx
+        diag = 0.0
+        for nj, ni, q_out in (
+            (j, i - 1, -fx[j, i]),
+            (j, i + 1, fx[j, i]),
+            (j - 1, i, -fy[j, i]),
+            (j + 1, i, fy[j, i]),
+        ):
+            if q_out > 0.0:  # carrier flux leaving this cell
+                diag += float(q_out)
+            elif q_out < 0.0 and 0 <= nj < ny and 0 <= ni < nx and reg[nj, ni]:
+                # inflow from a region neighbour: −|F_in| on its s*
+                rows.append(k)
+                cols.append(int(idx[nj, ni]))
+                data.append(float(q_out))
+            # inflow from outside the region / domain boundary ⇒ s*_up = 0
+        rows.append(k)
+        cols.append(k)
+        data.append(diag if diag > 0.0 else 1.0)  # stagnant cell: pin small
+    a = sp.csr_matrix((data, (rows, cols)), shape=(jj.size, jj.size))
+    s = spla.spsolve(a.tocsc(), b)
+    out[reg] = np.maximum(s, 0.0)
+    return out
+
+
 def wall_sink_star(
     field: Field,
     epsilon: float,
     pe: float,
     walls: list[ReactiveWall] | tuple[ReactiveWall, ...],
+    *,
+    entrance: bool = True,
 ) -> tuple[np.ndarray, list[np.ndarray]]:
     """The reduced sink field ``s* = Σ_w k*_eff,w`` plus each wall's share.
 
-    ``k*_eff,w = 1/(1/k*_s,w + 2 h*/(Sh_w D*))`` with ``D* = 1/(Pe ε)``,
-    ``k*_s = Da_w/(Pe ε)`` and ``Sh_w`` per cell 7.54 where both walls
-    react, 4.86 where one does (the developed Sherwood pair).
+    ``k*_eff,w = 1/(1/k*_s,w + 1/k*_m,w)`` with ``D* = 1/(Pe ε)``,
+    ``k*_s = Da_w/(Pe ε)`` and the developed mass-transfer coefficient
+    ``k*_m,w = Sh_w D*/(2 h*)`` (``Sh_w`` per cell 7.54 where both walls
+    react, 4.86 where one does). With ``entrance`` (the default), ``k*_m``
+    is raised to Lévêque's larger entrance value inside the developing
+    boundary layer at each region's leading edge (slice 1b).
     """
     mask = field.domain.mask
     h = field.domain.h_star
@@ -160,14 +240,24 @@ def wall_sink_star(
         cell_of.append(cells)
         n_reactive += cells.astype(int)
     sh = np.where(n_reactive >= 2, SH_BOTH_WALLS, SH_ONE_WALL)
-    d_star = 1.0 / (pe * epsilon)
+    pe_eps = pe * epsilon
+    d_star = 1.0 / pe_eps
     h_safe = np.where(h > 0, h, 1.0)
+    speed = np.hypot(field.u_star[0], field.u_star[1])  # |U*|
     for w, cells in zip(walls, cell_of):
+        k_m = sh * d_star / (2.0 * h_safe)
+        if entrance:
+            s_star = _entry_distance(field, cells)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = (2.0 * LEVEQUE_C / sh) * np.cbrt(
+                    pe_eps * h_safe * h_safe * speed / s_star
+                )
+            k_m = k_m * np.where(np.isfinite(ratio), np.maximum(ratio, 1.0), 1.0)
         if np.isposinf(w.da_w):
-            k_eff = sh * d_star / (2.0 * h_safe)
+            k_eff = k_m
         else:
-            k_s = w.da_w / (pe * epsilon)
-            k_eff = 1.0 / (1.0 / k_s + 2.0 * h_safe / (sh * d_star))
+            k_s = w.da_w / pe_eps
+            k_eff = 1.0 / (1.0 / k_s + 1.0 / k_m)
         per_wall.append(np.where(cells, k_eff, 0.0))
     sink = np.zeros(mask.shape, dtype=float)
     for wf in per_wall:
@@ -186,6 +276,7 @@ def transport(
     shear_velocity: np.ndarray | None = None,
     profile: str = "poiseuille",
     limiter: bool = True,
+    entrance: bool = True,
     pulse: Pulse | None = None,
 ) -> SpeciesResult:
     """Steady (or pulsed) Eulerian solve on ``field``.
@@ -213,7 +304,7 @@ def transport(
     h = domain.h_star
     tensor = taylor_tensor(field, epsilon, pe, shear_velocity) * h[:, :, None, None]
     flux = field.u_star * h[None]
-    sink, per_wall = wall_sink_star(field, epsilon, pe, list(walls))
+    sink, per_wall = wall_sink_star(field, epsilon, pe, list(walls), entrance=entrance)
 
     if pulse is None:
         c, pe_max, lim = fv.solve_transport(

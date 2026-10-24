@@ -156,9 +156,11 @@ def test_species_computers_registered() -> None:
         assert slug in COMPUTERS and is_checked(slug)
 
 
-def test_short_reactive_patch_flags_entrance_region() -> None:
-    """A patch shorter than 0.2·Pe·h0 with k_s/k_m ≥ 0.1 carries the
-    entrance-region reason on its wall-flux-fraction (slice 1b flag)."""
+def test_short_reactive_patch_entrance_corrected_no_flag() -> None:
+    """Slice 1b: a short reactive patch (< 0.2·Pe·h0, k_s/k_m ≥ 0.1) is
+    now entrance-corrected in the Eulerian solve (Lévêque k_m at the
+    leading edge), so wall-flux-fraction answers a plain value with no
+    entrance-region flag."""
     tree = _species_tree(wall_sels=(SHORT_SEL,))
     _bc(tree, "co/species-diffusivity", 1e-9, FLOOR_SEL)
     _bc(tree, "co/inlet-velocity", 1e-5, IN_SEL)
@@ -166,8 +168,8 @@ def test_short_reactive_patch_flags_entrance_region() -> None:
     _bc(tree, "co/wall-rate-constant", 1e-5, SHORT_SEL)
     comp = FLOW_COMPUTERS["wall-flux-fraction"]
     v = comp(tree, _measure("wff", SHORT_SEL, "wall-flux-fraction"))
-    assert v is not None and v > 0.0
-    assert comp.reason is not None and "entrance" in comp.reason
+    assert v is not None and 0.0 < v <= 1.0
+    assert comp.reason is None
 
 
 def test_lagrangian_route_when_pe_eps_high() -> None:

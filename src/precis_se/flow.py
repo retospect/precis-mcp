@@ -1173,10 +1173,6 @@ _SPECIES_INPUT_PROPS = (
     "wall-rate-constant",
 )
 
-#: Developed Sherwood pair for parallel plates (spec table) — used for
-#: the entrance-region flag and the k_s/k_m line.
-_SH_WALLS = {1: 4.86, 2: 7.54}
-
 
 def _scoped_prop(name: str, species: tuple[str, ...]) -> tuple[str | None, str]:
     """Split a measure name into ``(species, prop)``: ``co/wall-rate-constant``
@@ -1283,15 +1279,6 @@ def _patch_cells(chamber: Chamber, patch: PortPatch) -> np.ndarray:
     return cells
 
 
-def _patch_streamwise_m(chamber: Chamber, patch: PortPatch) -> float:
-    """The patch's extent along the chamber's flow (x*) axis, metres —
-    the entrance-region flag's ``0.2·Pe·h0`` comparison length."""
-    xa = chamber.x_axis
-    return float(
-        2.0 * patch.half_u * abs(patch.u[xa]) + 2.0 * patch.half_v * abs(patch.v[xa])
-    )
-
-
 @dataclass(frozen=True)
 class _WallCase:
     """One reactive-wall patch bound for the solve."""
@@ -1301,7 +1288,6 @@ class _WallCase:
     da_w: float  # k_s h0 / D
     cells: np.ndarray  # (ny, nx) bool
     measure_name: str  # the measure that declared it
-    streamwise_m: float  # patch extent along x*, for the entrance flag
 
 
 @dataclass(frozen=True)
@@ -1387,7 +1373,6 @@ def _species_case_for(
                 da_w=k_s * chamber.h0 / d_m2s,
                 cells=_patch_cells(chamber, patch),
                 measure_name=m.name,
-                streamwise_m=_patch_streamwise_m(chamber, patch),
             )
         )
     if reasons:
@@ -1552,24 +1537,6 @@ def _wall_patch_index(
     return best[0] if best else None
 
 
-def _entrance_reason(case: _SpeciesCase, w: _WallCase, chamber: Chamber) -> str | None:
-    """The slice-1 entrance-region flag: a short reactive patch the
-    developed-Sh coefficient under-reads."""
-    n_side = sum(1 for x in case.walls if x.cells.any())
-    sh = _SH_WALLS.get(n_side, _SH_WALLS[2])
-    k_m = sh * case.d_m2s / (2.0 * chamber.h0)
-    if w.streamwise_m < 0.2 * case.pe * chamber.h0 and k_m > 0 and w.k_s / k_m >= 0.1:
-        return (
-            f"{w.measure_name}: patch streamwise length "
-            f"{w.streamwise_m:g} m < 0.2·Pe·h0 "
-            f"({0.2 * case.pe * chamber.h0:g} m) with k_s/k_m "
-            f"{w.k_s / k_m:.3g} ≥ 0.1 — the developed-Sh value under-reads "
-            "the entrance region; the Lagrangian is the alternative "
-            "(slice 1b)"
-        )
-    return None
-
-
 def _flow_outlet_conversion(tree: Any, measure: Any) -> tuple[float | None, str | None]:
     ctx, res, err = _species_run(tree, measure)
     if res is None:
@@ -1632,7 +1599,7 @@ def _flow_wall_flux_fraction(
         value = (
             float(res.per_wall_sink[i] / res.inlet_flux) if res.inlet_flux > 0 else 0.0
         )
-    return value, _entrance_reason(case, w, chamber)
+    return value, None
 
 
 def _flow_damkohler(tree: Any, measure: Any) -> tuple[float | None, str | None]:

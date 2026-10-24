@@ -21,6 +21,11 @@ transport, tracer `pe=`/`walls=`, species card lines, the se surface
 migration 0231 (via builder-ce), `precis-se-flow-help`, and the 12
 acceptance tests.
 
+**Landed (slice 1b), 2026-10-24** — the Lévêque entrance correction on
+the Eulerian wall coefficient (`_entry_distance` + `wall_sink_star`
+`entrance=`), the slice-1 `wall-flux-fraction` flag removed, and a kernel
+acceptance test. See slice 1b below.
+
 **Ready (slice 1 only), 2026-10-21.** The later slices stay draft; each
 gets its acceptance criteria when it goes ready. A physics review (Fable,
 2026-10-21) found the core relations correct: the Taylor coefficient with
@@ -286,10 +291,10 @@ Worked points: water, `D = 1e-9 m²/s`, `h0 = 100 µm`, `L = 20 mm`
   `outlet-concentration` (`c*`), `wall-flux-fraction` (fraction of the
   inlet flux consumed on the measure's patch; per-catalyst-patch
   selectivity), `damkohler` (gauge).
-- `wall-flux-fraction` uses the developed Sh, which under-reads short
-  patches (slice 1b). When the patch's streamwise length is below
-  `0.2 Pe h` and its `k_s/k_m ≥ 0.1`, the value carries a reason in its
-  meta naming the entrance-region bias and the Lagrangian alternative.
+- `wall-flux-fraction` is entrance-corrected (slice 1b, landed): the
+  Eulerian solve raises `k_m` to Lévêque's leading-edge value in the
+  developing boundary layer of each reactive region, so short patches are
+  no longer under-read and the slice-1 reason flag is gone.
 - `view='flow'` with `args={'species': …}` adds the `c*` field to the
   text summary and the slice-2b payload (one float32 `(ny, nx)` blob per
   species).
@@ -356,8 +361,8 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
     reaches 0.6 produces a DRC finding. A missing `wall-rate-constant`
     gives a reason string, never 0. All four computers are registered in
     `precis_se.properties.COMPUTERS`. A short reactive patch
-    (`< 0.2 Pe h`, `k_s/k_m ≥ 0.1`) gets the entrance-region reason on
-    its `wall-flux-fraction`.
+    (`< 0.2 Pe h`, `k_s/k_m ≥ 0.1`) answers `wall-flux-fraction` with a
+    plain value and no reason (entrance-corrected since slice 1b).
 12. **catpath binding.** Takes a quest fixture with `tof`, `log_tof*` and
     a slab site area. `wall_rate` writes `k_s` equal to
     `TOF/(site_area_A2 · 1e-20 · N_A · c_wall)` with
@@ -369,16 +374,18 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
 
 ## Later slices (one physics each; acceptance written when each goes `ready`)
 
-1b. **Entrance-region mass transfer.** Developed Sh ignores the
+1b. **Entrance-region mass transfer — Landed.** Developed Sh ignored the
    concentration boundary layer that restarts at the leading edge of each
-   reactive patch. There the local coefficient is Lévêque's
-   `k_m(s) = 0.978 (Ū D²/(h s))^{1/3}` (wall shear `6Ū/h`, distance `s`
-   from the patch edge), which is larger than the developed value. Slice
-   1 therefore under-reads `wall-flux-fraction` on patches shorter than
-   about `0.2 Pe h` (it flags them). Either use
-   `k_m(s) = max(Lévêque(s), Sh D/(2h))` with `s` from an advected
-   age-since-patch-entry scalar, or route short patches with
-   `k_s/k_m ≳ 0.1` to the Lagrangian. Removes the slice-1 flag.
+   reactive region. The Eulerian `wall_sink_star` now uses
+   `k_m(s) = max(Lévêque(s), Sh D/(2h))` with Lévêque's
+   `k_m(s) = 0.978 (Ū D²/(h s))^{1/3}` and `s` from the advected
+   distance-since-region-entry scalar `precis_flow.species._entry_distance`
+   (`F·∇s* = h*|U*|`, `s* = 0` where flow enters the region, a first-order
+   upwind M-matrix). The ratio exceeds 1 only inside the entrance zone and
+   falls to the developed value past it, so long walls and
+   reaction-limited cases are unchanged (tests 2/5/6/7 untouched). The
+   slice-1 `wall-flux-fraction` under-read flag is removed. `transport`
+   takes `entrance=` (default on).
 1c. **Nonlinear single-species wall kinetics.** The wall BC becomes
    `r(c_wall)` from a tabulated catpath p-sweep stored on the measure, and
    `fv` Picard-iterates the Robin coefficient `r(c_w)/c_w`, with
@@ -495,8 +502,8 @@ B. **External 3-D backend — validation and 3-D flow.** Its remit
      3-D Stokes. The `thinness` threshold stays at 0.05 only if the error
      there is ≤ 5%; the measured curve replaces the guess.
 
-Order: 1 → 1b → 5 (slip: small, unlocks gas Kn up to 0.1) → 2 → 3 → 4 →
-6 → 7 → 8. 1c when a case has `|α − 1| > 0.2` at conversion above 0.2.
+Order: 1 ✓ → 1b ✓ → 5 (slip: small, unlocks gas Kn up to 0.1) → 2 → 3 →
+4 → 6 → 7 → 8. 1c when a case has `|α − 1| > 0.2` at conversion above 0.2.
 B is unordered. Heat before electro-osmosis because Joule heating needs it.
 
 ## Explicitly NOT in scope

@@ -83,9 +83,10 @@ compares the computed value to the band (`measure_unmet` when outside,
 - `outlet-conversion` — 1 − outlet/inlet species flux.
 - `outlet-concentration` — flux-weighted mean c/c_in at the outlet.
 - `wall-flux-fraction` — share of inlet flux consumed on the measure's
-  own patch (per-catalyst-patch selectivity). A patch shorter than the
-  mass-transfer entrance length with a non-negligible rate carries a
-  reason naming the entrance-region bias.
+  own patch (per-catalyst-patch selectivity). The Eulerian solve raises
+  the mass-transfer coefficient to Lévêque's larger entrance value in the
+  developing boundary layer at each reactive region's leading edge (slice
+  1b), so short patches are no longer under-read.
 - `damkohler` — the transit Damköhler Da_I (gauge).
 
 The adapter picks the solver by the card: Pe·ε ≤ 0.1 runs the
