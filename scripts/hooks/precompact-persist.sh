@@ -14,10 +14,14 @@
 #     no documented context-injection output for this event, so under Devin
 #     stdout stays empty and the advisory goes to stderr.
 # Devin detection: its hook stdin payload carries the per-turn ids prompt_id
-# and turn_id that Claude's payload lacks; AI_AGENT=devin_* is a fallback.
+# and turn_id that Claude's payload lacks — but those ids are absent for
+# events that fire before the first user prompt (e.g. auto-compaction on a
+# resumed session, gr514171), and Devin does not set AI_AGENT. The reliable
+# marker is DEVIN_PROJECT_DIR, which Devin CLI exports for every hook spawn.
 set -euo pipefail
 
-payload="$(cat 2>/dev/null || true)"
+payload=""
+[ -t 0 ] || payload="$(cat 2>/dev/null || true)"
 
 devin=0
 case "$payload" in
@@ -26,6 +30,7 @@ esac
 case "${AI_AGENT:-}" in
     devin*) devin=1 ;;
 esac
+[ -n "${DEVIN_PROJECT_DIR:-}" ] && devin=1
 
 cd "${DEVIN_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}}" 2>/dev/null || exit 0
 
