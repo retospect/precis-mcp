@@ -53,8 +53,30 @@ see [`prod-one-off-cli`](./prod-one-off-cli.md).
   `cluster_app`, `prometheus_reader`. Defined as `postgres_roles` in the
   overlay's `group_vars/all/main.yml`. (`litellm_app` was dropped 2026-08-06Z
   with the litellm teardown.)
-- Schema changes need DDL rights `agent_rw` lacks: use the `deploy` role over
-  the local socket on caspar ([`migration-deploy-window`](./migration-deploy-window.md)).
+- The db-own cutover (`scripts/db-own-cutover`, built on the db-own tree,
+  pending — its migration numbers re-assign when it lands through
+  builder-ce) adds three roles: `precis_system` (service principal —
+  workers/agent launchers; member of `agent_rw`; the only role the vault's
+  `infra` class reveals to), `precis_ingress` (the web daemon; member of
+  `agent_rw`; the one role that writes `web_users`), `precis_owner` (the
+  owner DSN: owns every object, runs DDL and `precis migrate`; never a
+  daemon's login; password on the gateway only). After it: `agent_rw` owns
+  nothing, cannot read `vault.*` tables (keys flow through `vault.reveal`),
+  cannot write `web_users` or `_migrations`, cannot CREATE; neither it nor
+  `agent_ro` reads `web_users.password_hash` (only `precis_ingress`). Vault
+  writes are class-gated: `agent_rw` writes api names only; infra names
+  (OAuth token, HPC key, mailbox passwords) are written on the owner DSN
+  (`precis secret set`, `precis email add`), by `precis_system`, or by the
+  web daemon (`precis_ingress`). Runtime DDL — `precis migrate`,
+  `precis backfill-embedding-kinds --apply`, `precis pcb` parts bulk
+  refresh — runs on the owner DSN
+  (`PRECIS_DATABASE_URL=postgresql://precis_owner@…`); roster writes
+  (`precis users add|passwd|edit|rm|…`) on `precis_ingress`. Both refuse on
+  the wrong DSN with that hint. `scripts/db-own-cutover --verify` is the
+  canary (read-only, agent_ro).
+- Schema changes need DDL rights `agent_rw` lacks: use the `deploy` role
+  over the local socket on caspar (after the cutover: the owner DSN)
+  ([`migration-deploy-window`](./migration-deploy-window.md)).
 - **Dropping a role — check ownership cross-database.** `DROP ROLE` refuses
   while the role owns *any* object in *any* database on the cluster, but
   `\dn` / owns-objects checks only see the DB you are connected to. A role that

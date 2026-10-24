@@ -53,7 +53,11 @@ residual items.
 4. **backlog/multi-user-overhaul.md** — four-role model, per-name vault
    ACL, settings scopes, authenticated human actor; its S1/S2/S4 close the
    HPC D1/D2 and trust Q2 risks accepted 2026-10-21; S10 (2026-10-22)
-   gives agents a plumbing identity. Draft; Reto's open questions first. `backlog/out-of-box-setup.md` (admin users screen)
+   gives agents a plumbing identity. §DB ownership (Fable findings 1+3:
+   `precis_owner` owns everything, `agent_rw` loses vault/roster reach, the
+   password hash, and infra-class vault writes) is built on db-own with S1;
+   deploy is `scripts/db-own-cutover` in Reto's
+   sitting. Draft; Reto's open questions first. `backlog/out-of-box-setup.md` (admin users screen)
    waits on its S3.
 
 ## Parked
