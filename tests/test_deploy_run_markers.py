@@ -218,6 +218,33 @@ def test_a_failed_migration_moves_nothing(mfx: MarkerFixture, tmp_path: Path) ->
     assert _skipped(mfx) is None
 
 
+def test_a_failed_migration_reports_the_partial_state(
+    mfx: MarkerFixture, tmp_path: Path
+) -> None:
+    """gr511981: a died-mid-migrate run must state the partial state — the
+    prod DB is at migration N while every daemon still runs the old release.
+    The _migrations ledger is read through a stubbed prod-psql, never prod."""
+    psql = mfx.fx.repo / "scripts" / "prod-psql"
+    psql.write_text(
+        '#!/bin/sh\nprintf "BEGIN\\n0234_partial_test\\nCOMMIT\\n"\n',
+        encoding="utf-8",
+    )
+    psql.chmod(0o755)
+    output = (
+        'fatal: [gateway]: FAILED! => {"msg": "migrate: 0235 failed"}\n'
+        + "NO MORE HOSTS LEFT *************************************************\n"
+        + _recap(gateway="unreachable=0    failed=1")
+    )
+    result = _deploy(mfx, tmp_path, output, rc=2)
+
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "DB migration did not pass" in out
+    assert "PARTIAL STATE" in out and "0234_partial_test" in out
+    assert mfx.prev[:9] in out
+    assert _origin_prod(mfx) == mfx.prev
+
+
 def test_a_green_exit_without_the_completion_line_moves_nothing(
     mfx: MarkerFixture, tmp_path: Path
 ) -> None:

@@ -3,7 +3,9 @@
 # Ported from /tmp/gripe-fleet/pin-prod.sh.
 #
 # The pinned checkout is what scripts/host-ops/play runs playbooks from; this
-# is the manual re-pin step (phase B/C of the host-lanes run order).
+# is the manual re-pin step (phase B/C of the host-lanes run order). The
+# clone lives next to the main checkout (<main>-prod), not under $HOME —
+# gr513362.
 set -euo pipefail
 
 usage() {
@@ -11,8 +13,8 @@ usage() {
 usage: pin-prod
 
 Fetch origin in the prod checkout and detach HEAD at origin/prod, then print
-the pinned sha and any dirty state. Env: PROD_CHECKOUT (default
-~/precis-mcp-prod).
+the pinned sha and any dirty state. Env: PROD_CHECKOUT (default: derived
+<main-checkout>-prod; PRECIS_PROD_CHECKOUT also overrides), MAIN_CHECKOUT.
 EOF
 }
 
@@ -22,9 +24,17 @@ case "${1:-}" in
   *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
 esac
 
-PROD_CHECKOUT="${PROD_CHECKOUT:-$HOME/precis-mcp-prod}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -z "${MAIN_CHECKOUT:-}" ]]; then
+  _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  MAIN_CHECKOUT="$(dirname "${_common:-$REPO/.git}")"
+fi
+# shellcheck source=scripts/lib/env-pointers.sh
+. "${REPO}/scripts/lib/env-pointers.sh"
+
+PROD_CHECKOUT="${PROD_CHECKOUT:-$(env_prod_checkout_dir "$MAIN_CHECKOUT" || true)}"
 [[ -d "$PROD_CHECKOUT/.git" || -f "$PROD_CHECKOUT/.git" ]] || {
-  echo "no prod checkout at $PROD_CHECKOUT (set PROD_CHECKOUT)" >&2; exit 2; }
+  echo "no prod checkout at ${PROD_CHECKOUT:-<unresolved>} (the default is <main-checkout>-prod; set PROD_CHECKOUT or PRECIS_PROD_CHECKOUT)" >&2; exit 2; }
 git -C "$PROD_CHECKOUT" fetch -q origin
 git -C "$PROD_CHECKOUT" checkout -q --detach origin/prod
 cd "$PROD_CHECKOUT"

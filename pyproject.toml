@@ -660,10 +660,13 @@ dev = [
 # pass `--overrides /opt/precis/overrides.txt`, which
 # deploy/playbooks/03-precis-constraints.yml derives from the exported
 # lock's `pillow==` line. Marker's runtime path was smoke-tested on 12.3.0.
-# Drop this table (and the 03-precis-constraints overrides step, and every
-# `--overrides /opt/precis/overrides.txt`) once marker-pdf lifts its cap.
+# Drop the pillow override (and the 03-precis-constraints overrides step,
+# and every `--overrides /opt/precis/overrides.txt`) once marker-pdf lifts
+# its cap. The filelock override clears Dependabot 179/187/188
+# (ReadWriteLock race; needs a local attacker): surya-ocr 0.22.1 caps
+# filelock<4 — drop it once surya lifts the cap.
 [tool.uv]
-override-dependencies = ["pillow>=12.3.0"]
+override-dependencies = ["pillow>=12.3.0", "filelock>=4.2.1"]
 
 [tool.uv.sources]
 autocatpath = { git = "https://github.com/retospect/catpath", rev = "0b49c695b51ed5feb410f06e4fec2ebeddde83cd" }  # v0.39.0 (kinetics v2 slice 9)

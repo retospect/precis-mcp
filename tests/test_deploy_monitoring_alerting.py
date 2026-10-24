@@ -9,6 +9,7 @@ binary is assumed: the rules file is parsed as YAML and its shape checked.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -122,6 +123,38 @@ def test_restic_alert_uses_eight_day_success_marker_and_detects_probe_loss() -> 
     assert "NASResticHeartbeatOld" not in _render("alert_rules.yml.j2", group_names=[])
 
 
+def _gnu_tool_env(tmp_path: Path) -> dict[str, str]:
+    """PATH for the rendered probe: the script is a Linux deploy artifact and
+    assumes GNU coreutils — ``timeout`` and ``stat -c %Y``. macOS has neither
+    (BSD stat, no timeout), so the probe's ``|| stamp=0`` turns a tool
+    failure into a fake "missing marker" reading. Supply shims for exactly
+    the tools the host lacks; on GNU hosts the real binaries run."""
+    shims: dict[str, str] = {}
+    if shutil.which("timeout") is None:
+        shims["timeout"] = '#!/bin/sh\nshift\nexec "$@"\n'
+    if subprocess.run(["stat", "-c", "%Y", "/"], capture_output=True).returncode != 0:
+        # BSD stat: translate the one flag the probe uses.
+        shims["stat"] = (
+            "#!/bin/sh\n"
+            'if [ "$1" = "-c" ] && [ "$2" = "%Y" ]; then\n'
+            "  shift 2\n"
+            '  exec /usr/bin/stat -f %m "$@"\n'
+            "fi\n"
+            'exec /usr/bin/stat "$@"\n'
+        )
+    env = dict(os.environ)
+    if not shims:
+        return env
+    bindir = tmp_path / "gnu-tools"
+    bindir.mkdir()
+    for name, body in shims.items():
+        tool = bindir / name
+        tool.write_text(body, encoding="utf-8")
+        tool.chmod(0o755)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    return env
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell probe")
 def test_restic_probe_reports_marker_mtime_or_zero_when_missing(
     tmp_path: Path,
@@ -137,13 +170,14 @@ def test_restic_probe_reports_marker_mtime_or_zero_when_missing(
         ),
         encoding="utf-8",
     )
+    env = _gnu_tool_env(tmp_path)
     for expected in (0, 1_700_000_000, 0):
         if expected:
             heartbeat.write_text("ok", encoding="utf-8")
             os.utime(heartbeat, (expected, expected))
         else:
             heartbeat.unlink(missing_ok=True)
-        subprocess.run(["sh", str(script)], check=True)
+        subprocess.run(["sh", str(script)], check=True, env=env)
         assert metric.read_text(encoding="utf-8") == (
             f"precis_nas_restic_last_ok_timestamp_seconds {expected}\n"
         )

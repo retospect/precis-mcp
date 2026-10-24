@@ -494,6 +494,33 @@ def _chunk_scope_clauses(
     return out
 
 
+#: OR-ed fallback tsquery for a single-ref-scoped lexical leg (gr510534).
+#: ``websearch_to_tsquery`` ANDs every term, so a multi-word
+#: natural-language query whose words live in *different* chunks of the
+#: same paper matches nothing — a false "no blocks" while each single
+#: keyword hits (prod 2026-10-23: 'AMOC strengthening weakening response
+#: to regional MCB' scoped to one paper: 0 AND hits, 58 OR hits; the
+#: paper was unembedded, so the semantic leg contributed nothing either).
+#: When the strict scoped leg comes back empty, the same term set is
+#: retried OR-ed — the ``_pcb_ops`` idiom: flip ``plainto_tsquery``'s
+#: '&' to '|' at the tsquery-text level.
+#: The scalar expression only — in a FROM clause it needs a
+#: ``(SELECT <expr>) qq(qq)`` wrapper (a bare ``expr::type`` can't take a
+#: table alias); the fused leg wraps it the same way.
+_SCOPED_OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
+
+
+def _scoped_or_retry(q: str, scope_ref_id: int | None) -> bool:
+    """Whether an empty strict lexical leg gets the OR-ed scoped retry.
+
+    Only a single-ref scope relaxes: corpus-wide AND-ing is the lexical
+    leg's precision contract, but within one document the candidate set
+    is tiny and OR-recall is what "search this paper" means. A one-word
+    query ORs to itself — nothing to retry.
+    """
+    return scope_ref_id is not None and len(q.split()) > 1
+
+
 def header_card_text(title: str | None, hook: str | None) -> str:
     """``title\nhook`` with empty parts skipped (migration 0198 mirrors it)."""
     parts = [(p or "").strip() for p in (title, hook)]
@@ -786,6 +813,18 @@ class ChunkStore:
         )
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
+            assert row is not None
+            if int(row[0]) == 0 and _scoped_or_retry(q, scope_ref_id):
+                # Mirror the scoped OR retry in search_chunks_lexical —
+                # this count IS that leg's universe for the "N of K"
+                # header, so it must count the same rows.
+                row = conn.execute(
+                    sql.replace(
+                        "websearch_to_tsquery('english', %s)",
+                        f"(SELECT {_SCOPED_OR_TSQUERY})",
+                    ),
+                    params,
+                ).fetchone()
         assert row is not None
         return int(row[0])
 
@@ -928,6 +967,17 @@ class ChunkStore:
         )
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
+            assert row is not None
+            if int(row[0]) == 0 and _scoped_or_retry(q, scope_ref_id):
+                # Same scoped OR retry as search_chunks_lexical — the
+                # notice counts the universe the leg actually searched.
+                row = conn.execute(
+                    sql.replace(
+                        "websearch_to_tsquery('english', %s)",
+                        f"(SELECT {_SCOPED_OR_TSQUERY})",
+                    ),
+                    params,
+                ).fetchone()
         assert row is not None
         return int(row[0])
 
@@ -1074,22 +1124,33 @@ class ChunkStore:
         params.append(offset)
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
-        sql = (
-            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
-            "       ts_rank_cd(c.tsv, qq.qq) AS rank "
-            "FROM chunks c "
-            "JOIN refs r ON r.ref_id = c.ref_id, "
-            "websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)} "
-            # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
-            # common (short queries over boilerplate-ish chunks) and an
-            # unqualified ORDER BY lets ties shuffle between executions —
-            # under multi-leg RRF fusion that flipped fused scores and
-            # per_paper winners between page 1 and page 2.
-            "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
-        )
+
+        def _sql(tsquery_expr: str) -> str:
+            return (
+                f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
+                "       ts_rank_cd(c.tsv, qq.qq) AS rank "
+                "FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id, "
+                f"{tsquery_expr} qq(qq) "
+                f"WHERE {' AND '.join(clauses)} "
+                # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
+                # common (short queries over boilerplate-ish chunks) and an
+                # unqualified ORDER BY lets ties shuffle between executions —
+                # under multi-leg RRF fusion that flipped fused scores and
+                # per_paper winners between page 1 and page 2.
+                "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
+            )
+
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(
+                _sql("websearch_to_tsquery('english', %s)"), params
+            ).fetchall()
+            if not rows and _scoped_or_retry(q, scope_ref_id):
+                # Scoped recall fallback (gr510534): the AND tsquery
+                # missed inside a single ref — retry every term OR-ed.
+                rows = conn.execute(
+                    _sql(f"(SELECT {_SCOPED_OR_TSQUERY})"), params
+                ).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
     def search_chunks_keywords(
@@ -1461,6 +1522,12 @@ class ChunkStore:
 
         ``card_kinds`` opts the listed synthetic cards back into both
         legs (see :func:`_ord_card_clause`).
+
+        Under a single-ref ``scope_ref_id`` the lex leg gains a
+        ``lex_any`` sibling (gr510534): when the strict AND tsquery
+        matched nothing inside the scoped paper, the same terms OR-ed
+        fill the leg instead — same candidate set, recall instead of a
+        false "no blocks".
         """
         if query_vec is None:
             return self.search_chunks_lexical(
@@ -1563,6 +1630,36 @@ class ChunkStore:
             ),
             dist="d",
         )
+        # Scoped lexical fallback (gr510534): inside one ref the AND
+        # leg can miss every multi-word natural-language query while
+        # each term alone hits — ``lex_any`` re-runs the same terms
+        # OR-ed, but only when ``lex`` is empty, so strict matches keep
+        # their ordering untouched.
+        or_leg = _scoped_or_retry(q, scope_ref_id)
+        lex_any_cte = ""
+        lex_any_union = ""
+        lex_any_score = ""
+        if or_leg:
+            lex_any_cte = f"""lex_any AS (
+                SELECT c.chunk_id AS cid,
+                       row_number() OVER (
+                           ORDER BY ts_rank_cd(c.tsv, oq.oq) DESC, c.chunk_id
+                       ) AS rnk
+                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                     (SELECT {_SCOPED_OR_TSQUERY}) oq(oq)
+                WHERE c.tsv @@ oq.oq
+                      {where_extra}
+                      AND NOT EXISTS (SELECT 1 FROM lex)
+                LIMIT %s
+            ),
+            """
+            lex_any_union = "SELECT cid FROM lex_any\n                    UNION\n                    "
+            lex_any_score = (
+                "+ coalesce(\n"
+                "                           1.0 / (%s + (SELECT rnk FROM lex_any a WHERE a.cid = u.cid)),\n"
+                "                           0\n"
+                "                       )\n                       "
+            )
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -1577,7 +1674,7 @@ class ChunkStore:
                       {where_extra}
                 LIMIT %s
             ),
-            sem AS (
+            {lex_any_cte}sem AS (
                 SELECT x.cid, row_number() OVER (ORDER BY x.d ASC) AS rnk
                 FROM ({sem_core}) x
                 {sem_outer_where}
@@ -1588,14 +1685,14 @@ class ChunkStore:
                            1.0 / (%s + (SELECT rnk FROM lex l WHERE l.cid = u.cid)),
                            0
                        )
-                       + coalesce(
+                       {lex_any_score}+ coalesce(
                            1.0 / (%s + (SELECT rnk FROM sem s WHERE s.cid = u.cid)),
                            0
                        ) AS score
                 FROM (
                     SELECT cid FROM lex
                     UNION
-                    SELECT cid FROM sem
+                    {lex_any_union}SELECT cid FROM sem
                 ) u
             )
             SELECT {proj}, {_REFS_COLS_ALIASED}, fused.score
@@ -1615,16 +1712,21 @@ class ChunkStore:
 
         # Param construction sequence:
         #   lex: q + WHERE params + inner_limit
+        #   lex_any (scoped fallback only): q + WHERE params + inner_limit
         #   sem: query_vec + embedder + WHERE params
         #        + query_vec (unless the exact route) + inner_limit
         #        + [optional: max_distance]
-        #   fused: k + k
+        #   fused: k + [k] + k
         #   outer: limit + offset
         full_params: list[Any] = []
         full_params.append(q)
         full_params.extend(params)
         qv = _vec_param(query_vec)
         full_params.append(inner_limit)
+        if or_leg:
+            full_params.append(q)
+            full_params.extend(params)
+            full_params.append(inner_limit)
         full_params.append(qv)
         full_params.append(embedder)
         full_params.extend(params)
@@ -1633,7 +1735,7 @@ class ChunkStore:
         full_params.append(inner_limit)
         if max_distance is not None:
             full_params.append(float(max_distance))
-        full_params.extend([k, k])
+        full_params.extend([k] * (3 if or_leg else 2))
         full_params.append(limit)
         full_params.append(offset)
 

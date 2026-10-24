@@ -6,7 +6,12 @@ about 04:18 UTC holding ACCESS SHARE on every table, so a migration's ALTER
 TABLE waits behind the whole dump (2026-09-08: a /go at 03:22 UTC hung 17+
 min with a silent log). ``scripts/deploy`` now refuses a deploy that carries
 a pending migration while the window is open, warns-and-proceeds otherwise,
-and takes ``--ignore-backup-window`` as the operator override.
+and takes ``--ignore-backup-window`` as the operator override. Since gr511981
+the guard also probes ``pg_stat_activity`` on prod through the repo's own
+``scripts/prod-psql --ro`` (stubbed in every test here — the tests never
+touch prod): a running pg_dump/pg_basebackup refuses a migration deploy at
+ANY hour, and the fixed window is the fallback for when the probe cannot
+run.
 
 Acceptance criteria (docs/backlog/deploy-no-deploy-window-guard.md), each a
 test below:
@@ -101,9 +106,18 @@ def _lib(
 
 
 def _decide(
-    now: str, pending: str, ignore: str = "0", start: str = "03:00", end: str = "04:20"
+    now: str,
+    pending: str,
+    ignore: str = "0",
+    start: str = "03:00",
+    end: str = "04:20",
+    live: str = "unavailable",
+    slot: str = "",
+    detail: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    return _lib("backup_window_decide", start, end, now, pending, ignore)
+    return _lib(
+        "backup_window_decide", start, end, now, pending, ignore, live, slot, detail
+    )
 
 
 # ── (d) one place: the bounds file, the cron it mirrors, and what the lib reads ──
@@ -213,6 +227,105 @@ def test_clock_comes_from_DEPLOY_NOW_UTC_else_date() -> None:
     assert 0 <= int(hh) <= 23 and 0 <= int(mm) <= 59
 
 
+# ── the live check (gr511981): the probe result is a decide input ─────────
+# <live> is `running`/`clear`/`unavailable`; <slot> the pg_dump cron slot;
+# <detail> the "pid|app|backend|state|age" lines the probe echoes.
+
+_LIVE_DETAIL = "1234|pg_dump|client backend|active|00:52:10.331"
+
+
+def test_live_running_backup_refuses_at_any_hour() -> None:
+    """The r91 shape: 04:22Z is outside the window yet the dump still ran —
+    the clock alone cannot see that."""
+    for now in ("04:22", "12:00", "03:40"):
+        r = _decide(
+            now,
+            f"{MIG}/0235_x.sql",
+            live="running",
+            slot="03:30",
+            detail=_LIVE_DETAIL,
+        )
+        assert r.returncode == 1, (now, r)
+        assert "REFUSING TO DEPLOY" in r.stdout
+        assert "a backup is running on the prod DB right now" in r.stdout
+        assert _LIVE_DETAIL.split("|")[0] in r.stdout and "pg_dump" in r.stdout
+
+
+def test_live_running_backup_refuses_even_inside_the_window() -> None:
+    r = _decide(
+        "03:40",
+        f"{MIG}/0235_x.sql",
+        live="running",
+        slot="03:30",
+        detail=_LIVE_DETAIL,
+    )
+    assert r.returncode == 1
+    # The live refusal names the running backend, not the clock guess.
+    assert "pg_stat_activity shows" in r.stdout
+
+
+def test_live_probe_unavailable_is_the_fixed_window_fallback() -> None:
+    """(a) unchanged when the probe cannot run: inside+pending refuses."""
+    r = _decide("03:40", f"{MIG}/0235_x.sql", live="unavailable", slot="03:30")
+    assert r.returncode == 1
+    assert "03:00–04:20 UTC" in r.stdout and "0235_x.sql" in r.stdout
+    assert "could not run" in r.stdout and "fixed window decides" in r.stdout
+
+
+def test_live_clear_inside_window_before_the_slot_still_refuses() -> None:
+    """A clear probe at 03:10 cannot clear the scheduled 03:30 start."""
+    r = _decide("03:10", f"{MIG}/0235_x.sql", live="clear", slot="03:30")
+    assert r.returncode == 1
+    assert "03:00–04:20 UTC" in r.stdout and "0235_x.sql" in r.stdout
+    assert "still ahead" in r.stdout
+
+
+def test_live_clear_inside_window_after_the_slot_proceeds() -> None:
+    """The upside of the live check: the dump finished early (or never ran),
+    and the probe — not the clock's 04:20 guess — says so."""
+    r = _decide(
+        "04:05",
+        f"{MIG}/0235_x.sql\n{MIG}/0236_y.sql",
+        live="clear",
+        slot="03:30",
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("NOTE: live check")
+    assert "03:30 UTC cron slot has passed" in r.stdout
+    assert "0235_x.sql" in r.stdout
+
+
+def test_live_clear_unknown_pending_after_the_slot_proceeds() -> None:
+    r = _decide("04:05", "unknown", live="clear", slot="03:30")
+    assert r.returncode == 0 and r.stdout.startswith("NOTE: live check")
+
+
+def test_live_clear_with_an_unreadable_slot_falls_back_to_the_window() -> None:
+    r = _decide("04:05", f"{MIG}/0235_x.sql", live="clear", slot="")
+    assert r.returncode == 1 and "03:00–04:20 UTC" in r.stdout
+
+
+def test_live_clear_outside_window_is_silent() -> None:
+    for live in ("clear", "unavailable"):
+        r = _decide("12:00", f"{MIG}/0235_x.sql", live=live, slot="03:30")
+        assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+
+
+def test_override_proceeds_on_a_live_backup_but_names_it() -> None:
+    r = _decide(
+        "04:22",
+        f"{MIG}/0235_x.sql",
+        ignore="1",
+        live="running",
+        slot="03:30",
+        detail=_LIVE_DETAIL,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("NOTE: --ignore-backup-window")
+    # The override is honoured, and the log stays honest about what runs.
+    assert "IS running" in r.stdout and "1234" in r.stdout
+
+
 # ── pending migrations: offline, from git, origin/prod..target ─────────────
 
 
@@ -284,6 +397,96 @@ def test_guard_composes_bounds_clock_and_pending(
     assert r.returncode == 1 and "UNKNOWN" in r.stdout and "origin/prod" in r.stderr
     r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="12:00")
     assert r.returncode == 0 and r.stdout == ""
+
+
+# ── the live probe through a stubbed scripts/prod-psql ─────────────────────
+
+
+def _stub_prod_psql(repo: Path, body: str) -> Path:
+    """A fake repo scripts/prod-psql: the probe calls it, never the real
+    one — the tests never touch prod."""
+    p = repo / "scripts" / "prod-psql"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    p.chmod(0o755)
+    return p
+
+
+def test_live_backups_probe_parses_only_backend_rows(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    repo, _ = mig_repo
+    _stub_prod_psql(
+        repo,
+        "#!/bin/sh\n"
+        "printf 'BEGIN\\n"
+        "1234|pg_dump|client backend|active|00:52:10.331\\n"
+        "1299|pg_basebackup|walsender|active|00:01:02.001\\n"
+        "COMMIT\\n'\n",
+    )
+    r = _lib("backup_window_live_backups", str(repo), cwd=repo)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    assert len(lines) == 2 and lines[0].startswith("1234|pg_dump")
+
+
+def test_live_backups_probe_clear_and_unrunnable(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    repo, _ = mig_repo
+    r = _lib("backup_window_live_backups", str(repo), cwd=repo)
+    assert r.returncode == 2  # no prod-psql in the tree at all
+    _stub_prod_psql(repo, "#!/bin/sh\nexit 42\n")
+    r = _lib("backup_window_live_backups", str(repo), cwd=repo)
+    assert r.returncode == 2
+    _stub_prod_psql(repo, "#!/bin/sh\nprintf 'BEGIN\\nCOMMIT\\n'\n")
+    r = _lib("backup_window_live_backups", str(repo), cwd=repo)
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_guard_refuses_on_a_live_dump_outside_the_window(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    """The gr511981 incident, reproduced at the guard: 04:22Z, dump still
+    running, pending migration — refused, no clock involved."""
+    repo, shas = mig_repo
+    f = repo / DEFAULTS_REL
+    f.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / DEFAULTS_REL, f)
+    _stub_prod_psql(
+        repo,
+        "#!/bin/sh\nprintf 'BEGIN\\n1234|pg_dump|client backend|active|00:52:10\\nCOMMIT\\n'\n",
+    )
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="04:22")
+    assert r.returncode == 1
+    assert "a backup is running on the prod DB right now" in r.stdout
+    assert "pg_dump" in r.stdout
+
+
+def test_guard_proceeds_on_a_clear_probe_after_the_slot(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    repo, shas = mig_repo
+    f = repo / DEFAULTS_REL
+    f.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / DEFAULTS_REL, f)
+    _stub_prod_psql(repo, "#!/bin/sh\nprintf 'BEGIN\\nCOMMIT\\n'\n")
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="04:05")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("NOTE: live check")
+
+
+def test_guard_without_prod_psql_keeps_the_window_fallback(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    """No prod-psql in the tree: live=unavailable, the fixed window decides
+    exactly as it always did."""
+    repo, shas = mig_repo
+    f = repo / DEFAULTS_REL
+    f.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / DEFAULTS_REL, f)
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="03:40")
+    assert r.returncode == 1 and "fixed window decides" in r.stdout
 
 
 # ── (a) end to end: the REAL scripts/deploy stops before any ansible call ──
@@ -448,6 +651,23 @@ def test_deploy_override_flag_proceeds_inside_window(deploy_fx: DeployFixture) -
     assert r.returncode == 0, r.stdout + r.stderr
     assert "NOTE: --ignore-backup-window" in r.stdout
     assert deploy_fx.ansible_called() == {"ansible", "ansible-playbook"}
+
+
+def test_deploy_refuses_migration_on_a_live_dump_outside_the_window(
+    deploy_fx: DeployFixture,
+) -> None:
+    """gr511981 through the real script: pg_stat_activity shows pg_dump at
+    noon — refused before either ansible stub ran."""
+    _stub_prod_psql(
+        deploy_fx.repo,
+        "#!/bin/sh\nprintf 'BEGIN\\n1234|pg_dump|client backend|active|00:52:10\\nCOMMIT\\n'\n",
+    )
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="12:00")
+    assert r.returncode != 0
+    out = r.stdout + r.stderr
+    assert "a backup is running on the prod DB right now" in out
+    assert "backup-window guard refused" in out
+    assert deploy_fx.ansible_called() == set()
 
 
 def test_prune_local_sweeps_incomplete_dump_dirs_and_nas_partials() -> None:

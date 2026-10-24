@@ -198,9 +198,10 @@ def test_inside_distance_bound_holds():
     d_leaf = leaf.distance_local_np(q)
     inside = d_leaf < 0
     d_true = np.empty(len(q))
-    for i in range(0, len(q), 250):
-        d_true[i : i + 250] = np.linalg.norm(
-            q[i : i + 250, None, :] - surf[None, :, :], axis=2
+    # 64-row chunks cap the q x surf diff (see the sibling test below).
+    for i in range(0, len(q), 64):
+        d_true[i : i + 64] = np.linalg.norm(
+            q[i : i + 64, None, :] - surf[None, :, :], axis=2
         ).min(axis=1)
     assert np.all(d_leaf[inside] >= -d_true[inside] - 1e-9)
 
@@ -226,9 +227,12 @@ def test_distance_bound_never_overestimates():
     # brute-force distance to the sampled surface (upper bound on the
     # true distance; the leaf's bound must stay under it)
     d_true = np.empty(len(q))
-    for i in range(0, len(q), 250):
-        d_true[i : i + 250] = np.linalg.norm(
-            q[i : i + 250, None, :] - surf[None, :, :], axis=2
+    # 64-row chunks cap the q x surf diff at ~450 MB (250 rows over the
+    # 288k-point surface peaked at ~1.7 GB — the likeliest cause of the
+    # gw2 worker kill on the 2026-10-24 macOS leg, gr512769).
+    for i in range(0, len(q), 64):
+        d_true[i : i + 64] = np.linalg.norm(
+            q[i : i + 64, None, :] - surf[None, :, :], axis=2
         ).min(axis=1)
     assert np.all(d_leaf <= d_true + 1e-9)
 

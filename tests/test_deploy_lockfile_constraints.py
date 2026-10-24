@@ -119,9 +119,10 @@ _OVERRIDES_FLAG = "--overrides /opt/precis/overrides.txt"
 
 def test_every_constraints_install_also_passes_the_overrides_file() -> None:
     """pyproject's ``[tool.uv] override-dependencies`` forces pillow>=12.3.0
-    past marker-pdf's ``pillow<11`` cap, so the exported constraints pin
-    ``pillow==12.3.0`` — unsatisfiable for any resolve that pulls marker-pdf
-    unless the install also passes the overrides file that
+    past marker-pdf's ``pillow<11`` cap and filelock>=4.2.1 past surya-ocr's
+    ``filelock<4`` cap, so the exported constraints pin versions
+    unsatisfiable for any resolve that pulls marker-pdf or surya-ocr unless
+    the install also passes the overrides file that
     ``03-precis-constraints.yml`` derives. Every ``uv pip install`` block
     using the constraints file must carry it too."""
     misses: list[str] = []
@@ -144,8 +145,9 @@ def test_every_constraints_install_also_passes_the_overrides_file() -> None:
     assert checked > 0, "no constraints-using install lines found — scan broken"
     assert not misses, (
         "install(s) pass --constraints but not --overrides "
-        "/opt/precis/overrides.txt (pillow==12.3.0 vs marker-pdf's "
-        "pillow<11 makes the resolve unsatisfiable):\n" + "\n".join(misses)
+        "/opt/precis/overrides.txt (a locked pillow==/filelock== vs the "
+        "marker-pdf/surya-ocr caps makes the resolve unsatisfiable):\n"
+        + "\n".join(misses)
     )
 
 
@@ -155,5 +157,5 @@ def test_constraints_playbook_writes_the_overrides_file() -> None:
     text = (_DEPLOY / "playbooks" / "03-precis-constraints.yml").read_text(
         encoding="utf-8"
     )
-    assert "grep -E '^pillow==' /opt/precis/constraints.txt" in text
+    assert "grep -E '^(pillow|filelock)==' /opt/precis/constraints.txt" in text
     assert "/opt/precis/overrides.txt" in text

@@ -529,7 +529,13 @@ jobs:
   coverage-db:
     if: github.event_name == 'schedule' || inputs.full == true
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # The suite outgrew 90 min: ~41.5k items under --cov-context=test ran
+    # 51% in ~67 min on the 4-vCPU runner, then stalled >15 min with six
+    # workers inside the >240 s `nightly` cluster — every scheduled run
+    # died at the cap reading as 'cancelled' (gr512769, run 40082662214).
+    # 4 h gives the tail headroom; the timeout is a hang-catcher here,
+    # not a budget — the job is off the gate path.
+    timeout-minutes: 240
     permissions:
       contents: read
     services:

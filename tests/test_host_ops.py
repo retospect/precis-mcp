@@ -123,12 +123,18 @@ def _env(tmp_path: Path, bin_dir: dict[str, str], **extra: str) -> dict[str, str
     inv.parent.mkdir(parents=True, exist_ok=True)
     inv.write_text(extra.pop("hosts_yml", _HOSTS_YML), encoding="utf-8")
     (tmp_path / ".vault-pass").write_text("fake\n", encoding="utf-8")
-    return {
+    env = {
         **os.environ,
         "PATH": f"{bin_dir['bin']}:{os.environ['PATH']}",
         "CLUSTER_INVENTORY": str(inv),
         **extra,
     }
+    # Ambient operator vars must not steer a fixture: only the ones a test
+    # passes explicitly (via extra) count.
+    for key in ("PROD_CHECKOUT", "PRECIS_PROD_CHECKOUT", "MAIN_CHECKOUT"):
+        if key not in extra:
+            env.pop(key, None)
+    return env
 
 
 def _run(
@@ -169,6 +175,32 @@ def git_pair(tmp_path: Path) -> dict[str, str]:
     return {
         "MAIN_CHECKOUT": str(main),
         "PROD_CHECKOUT": str(prod),
+        "prod_sha": prod_sha,
+        "old_sha": old,
+    }
+
+
+@pytest.fixture
+def git_pair_sibling(tmp_path: Path) -> dict[str, str]:
+    """Like git_pair, but the prod clone sits at the DERIVED `<main>-prod`
+    sibling path (gr513362): the scripts must find it with PROD_CHECKOUT and
+    PRECIS_PROD_CHECKOUT both unset."""
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    seed = tmp_path / "seed"
+    _git(tmp_path, "clone", "-q", str(origin), str(seed))
+    _git(seed, "config", "user.email", "t@example.invalid")
+    _git(seed, "config", "user.name", "t")
+    old = _commit(seed, "one")
+    prod_sha = _commit(seed, "two")
+    _git(seed, "push", "-q", "origin", "HEAD:prod")
+    main = tmp_path / "main"
+    prod = tmp_path / "main-prod"
+    _git(tmp_path, "clone", "-q", str(origin), str(main))
+    _git(tmp_path, "clone", "-q", "--branch", "prod", str(origin), str(prod))
+    return {
+        "MAIN_CHECKOUT": str(main),
+        "DERIVED_PROD": str(prod),
         "prod_sha": prod_sha,
         "old_sha": old,
     }
@@ -394,6 +426,87 @@ def test_pin_prod_detaches_at_prod(
     assert git_pair["prod_sha"][:7] in result.stdout
     head = _git(Path(git_pair["PROD_CHECKOUT"]), "rev-parse", "HEAD")
     assert head == git_pair["prod_sha"]
+
+
+# ── PROD_CHECKOUT derivation (gr513362): the clone is <main-checkout>-prod ──
+
+
+def test_pin_prod_derives_the_clone_next_to_main(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
+) -> None:
+    """PROD_CHECKOUT unset: pin-prod derives <MAIN_CHECKOUT>-prod and works."""
+    env = _env(tmp_path, bin_dir, MAIN_CHECKOUT=git_pair_sibling["MAIN_CHECKOUT"])
+    result = _run(env, "pin-prod")
+    assert result.returncode == 0, result.stderr
+    assert git_pair_sibling["prod_sha"][:7] in result.stdout
+    head = _git(Path(git_pair_sibling["DERIVED_PROD"]), "rev-parse", "HEAD")
+    assert head == git_pair_sibling["prod_sha"]
+
+
+def test_pin_prod_missing_clone_names_the_env_var(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
+) -> None:
+    """No clone at the derived path: the error names the var to set
+    (gr513362 — the old failure was git's own 'cannot change to' message)."""
+    derived = Path(git_pair_sibling["DERIVED_PROD"])
+    derived.rename(tmp_path / "moved-away")
+    env = _env(tmp_path, bin_dir, MAIN_CHECKOUT=git_pair_sibling["MAIN_CHECKOUT"])
+    result = _run(env, "pin-prod")
+    assert result.returncode == 2
+    assert "main-prod" in result.stderr
+    assert "PROD_CHECKOUT" in result.stderr
+
+
+def test_pin_prod_precis_prod_checkout_override(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+) -> None:
+    """PRECIS_PROD_CHECKOUT (the env-pointers.sh override) is honoured when
+    PROD_CHECKOUT is unset; an explicit PROD_CHECKOUT still wins."""
+    env = _env(tmp_path, bin_dir, PRECIS_PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
+    result = _run(env, "pin-prod")
+    assert result.returncode == 0, result.stderr
+    head = _git(Path(git_pair["PROD_CHECKOUT"]), "rev-parse", "HEAD")
+    assert head == git_pair["prod_sha"]
+
+    env = _env(
+        tmp_path,
+        bin_dir,
+        PROD_CHECKOUT=git_pair["PROD_CHECKOUT"],
+        PRECIS_PROD_CHECKOUT=str(tmp_path / "nonexistent"),
+    )
+    result = _run(env, "pin-prod")
+    assert result.returncode == 0, result.stderr
+
+
+def test_play_derives_prod_checkout(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
+) -> None:
+    prod = Path(git_pair_sibling["DERIVED_PROD"])
+    (prod / "deploy").mkdir()
+    env = _env(
+        tmp_path,
+        bin_dir,
+        MAIN_CHECKOUT=git_pair_sibling["MAIN_CHECKOUT"],
+        HOST_LANES_SHA=git_pair_sibling["old_sha"],
+    )
+    result = _run(env, "play", "playbooks/10-hardening.yml")
+    assert result.returncode == 0, result.stderr
+    assert len(_calls(bin_dir["ansible_calls"])) == 1
+
+
+def test_play_missing_checkout_names_the_env_var(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
+) -> None:
+    """The gr513362 failure shape: nothing at <main>-prod → a refusal that
+    names PROD_CHECKOUT, and ansible never runs."""
+    derived = Path(git_pair_sibling["DERIVED_PROD"])
+    derived.rename(tmp_path / "moved-away")
+    env = _env(tmp_path, bin_dir, MAIN_CHECKOUT=git_pair_sibling["MAIN_CHECKOUT"])
+    result = _run(env, "play", "playbooks/10-hardening.yml")
+    assert result.returncode == 2
+    assert "main-prod" in result.stderr
+    assert "PROD_CHECKOUT" in result.stderr
+    assert _calls(bin_dir["ansible_calls"]) == []
 
 
 # ── lanes-overlay: dry-run anchors ───────────────────────────────────────────

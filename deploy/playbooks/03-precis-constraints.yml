@@ -111,18 +111,20 @@
       become: true
 
     # pyproject's [tool.uv] override-dependencies forces pillow>=12.3.0 past
-    # marker-pdf's pillow<11 cap (Dependabot #56-67). Overrides only bind the
-    # project's own lock, so the exported `pillow==` constraint alone makes
-    # every cluster resolve that pulls marker-pdf UNSATISFIABLE. An overrides
-    # file REPLACES marker's pillow requirement; every install that passes
-    # --constraints /opt/precis/constraints.txt also passes --overrides
+    # marker-pdf's pillow<11 cap (Dependabot #56-67) and filelock>=4.2.1 past
+    # surya-ocr's filelock<4 cap (Dependabot #179/187/188). Overrides only
+    # bind the project's own lock, so the exported `pillow==`/`filelock==`
+    # constraints alone make every cluster resolve that pulls marker-pdf or
+    # surya-ocr UNSATISFIABLE. An overrides file REPLACES the capped
+    # requirements; every install that passes --constraints
+    # /opt/precis/constraints.txt also passes --overrides
     # /opt/precis/overrides.txt (tests/test_deploy_lockfile_constraints.py).
     # Derived from the exported lock, not hardcoded, so a re-lock never drifts
-    # it; grep fails the play loudly if pillow ever leaves the lock.
+    # it; grep fails the play loudly if either package ever leaves the lock.
     - name: Derive the install-time overrides file from the constraints
       ansible.builtin.shell: |
         set -eu
-        grep -E '^pillow==' /opt/precis/constraints.txt > /opt/precis/overrides.txt.tmp
+        grep -E '^(pillow|filelock)==' /opt/precis/constraints.txt > /opt/precis/overrides.txt.tmp
         chmod 0644 /opt/precis/overrides.txt.tmp
         mv /opt/precis/overrides.txt.tmp /opt/precis/overrides.txt
       become: true

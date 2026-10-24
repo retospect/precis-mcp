@@ -64,8 +64,13 @@
 # window a deploy that carries a pending migration — one ADDED under
 # src/precis/migrations/ between origin/prod and the target, computed from
 # git, never by asking prod — is refused before anything is touched; a deploy
-# with no pending migration warns and proceeds. The bounds live next to the
-# backup cron in deploy/roles/backups/defaults/main.yml and the guard in
+# with no pending migration warns and proceeds. Since gr511981 the guard also
+# probes pg_stat_activity on prod (backup_window_live_backups): a RUNNING
+# pg_dump/pg_basebackup refuses a migration deploy at any hour — the dump can
+# overrun the window's end — and a clear probe after the cron slot overrides
+# the clock. When the probe cannot run, the fixed window decides as before.
+# The bounds live next to the backup cron in
+# deploy/roles/backups/defaults/main.yml and the guard in
 # scripts/lib/backup-window.sh. --ignore-backup-window is for an operator who
 # has checked the dump is not running. DEPLOY_NOW_UTC=HH:MM fakes the clock
 # (tests, rehearsing the message).
@@ -384,6 +389,28 @@ _publish_fleet_ledger() {
     return 0
 }
 
+# Best-effort: the highest migration the prod _migrations ledger records
+# (version = file stem, e.g. 0234_measures_measurand_repoint). For the
+# partial-state line when a run dies mid-migrate (gr511981): the DB can be
+# part-way through this deploy's migrations while every daemon still runs
+# the old release — the output must say both. Empty on any failure; the
+# caller prints "unknown".
+_db_migration_head() {
+    local out=""
+    if [[ -x "${REPO_ROOT}/scripts/prod-psql" ]]; then
+        out="$(PRECIS_PROD_PSQL_OPTS="-At" "${REPO_ROOT}/scripts/prod-psql" --ro \
+            "SELECT max(version) FROM public._migrations WHERE plugin='precis'" 2>/dev/null \
+            | grep -E '^[0-9]{4}' | head -1 || true)"
+        if [[ -z "$out" ]]; then
+            # Pre-0023 schema has no plugin column.
+            out="$(PRECIS_PROD_PSQL_OPTS="-At" "${REPO_ROOT}/scripts/prod-psql" --ro \
+                "SELECT max(version) FROM public._migrations" 2>/dev/null \
+                | grep -E '^[0-9]{4}' | head -1 || true)"
+        fi
+    fi
+    printf '%s' "$out"
+}
+
 _write_deploy_state_marker() {
     local sha
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
@@ -591,7 +618,14 @@ _deploy_markers_ok() {
 _marker_failure_msg() {
     case "$MARKER_FAIL" in
         migrate)
-            printf '%s' "the DB migration did not pass (no PRECIS_DEPLOY_MIGRATED line) — the run stopped at the migrate-first play, before any daemon restarted onto new code. origin/prod and the deploy-state marker were NOT moved. Fix the migration (see the failing task above) and re-run." ;;
+            # gr511981: say the partial state outright — which migration the
+            # DB reached and which release the daemons still run. The r91
+            # deploy died at 0235 with the DB at 0234 and the code on r90;
+            # "it failed" alone sent the operator digging for both facts.
+            local _mig_head _mig_prev
+            _mig_head="$(_db_migration_head)"
+            _mig_prev="${_PREV_DEPLOYED:+${_PREV_DEPLOYED:0:9}}"
+            printf '%s' "the DB migration did not pass (no PRECIS_DEPLOY_MIGRATED line) — the run stopped at the migrate-first play, before any daemon restarted onto new code. PARTIAL STATE: the prod DB is at migration ${_mig_head:-unknown — could not read public._migrations via prod-psql} (applied migrations are forward-only and skip themselves on re-run); every daemon still runs the previous release ${_mig_prev:-unknown — no deploy-state marker}. origin/prod and the deploy-state marker were NOT moved. Fix the migration (see the failing task above) and re-run." ;;
         *)
             printf '%s' "the run stopped before its last play (no PRECIS_DEPLOY_COMPLETE line) — hosts it never reached read clean in the PLAY RECAP but did not get every play. origin/prod and the deploy-state marker were NOT moved; nothing was recorded as skipped. Re-run the same pinned sha once fixed." ;;
     esac

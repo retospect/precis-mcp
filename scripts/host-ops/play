@@ -9,7 +9,9 @@
 #   scripts/host-ops/play playbooks/20c-precis-heartbeat-serving.yml --limit spark
 #   scripts/host-ops/play playbooks/10-hardening.yml --tags oom-guard --limit castor,pollux,spark
 #
-# Env: PROD_CHECKOUT (default ~/precis-mcp-prod), MAIN_CHECKOUT (default the
+# Env: PROD_CHECKOUT (default derived <main-checkout>-prod;
+# PRECIS_PROD_CHECKOUT also overrides — the prod clone lives next to the main
+# checkout, not under $HOME, gr513362), MAIN_CHECKOUT (default the
 # primary checkout of this repo; source of the origin/prod ref), OVERLAY via
 # scripts/lib/pgb-host.sh ($PRECIS_OVERLAY_DIR / $CLUSTER_INVENTORY or the
 # gitignored deploy/inventory of the main checkout).
@@ -19,15 +21,17 @@ usage() {
   cat <<'EOF'
 usage: play playbooks/<play>.yml [ansible-playbook args]
 
-Run one deploy playbook from PROD_CHECKOUT (default ~/precis-mcp-prod), which
-must be exactly origin/prod (after a fetch), clean, and contain the
-host-lanes commit. Passes the inventory overlay and deploy/.vault-pass, and
-pins precis_worker/web/embedder_git_ref to the prod sha like scripts/deploy.
-Env: PROD_CHECKOUT, MAIN_CHECKOUT, HOST_LANES_SHA (set empty to skip that gate).
+Run one deploy playbook from PROD_CHECKOUT (default <main-checkout>-prod,
+derived like scripts/lib/env-pointers.sh; PRECIS_PROD_CHECKOUT also
+overrides), which must be exactly origin/prod (after a fetch), clean, and
+contain the host-lanes commit. Passes the inventory overlay and
+deploy/.vault-pass, and pins precis_worker/web/embedder_git_ref to the prod
+sha like scripts/deploy.
+Env: PROD_CHECKOUT, PRECIS_PROD_CHECKOUT, MAIN_CHECKOUT, HOST_LANES_SHA (set
+empty to skip that gate).
 EOF
 }
 
-PROD_CHECKOUT="${PROD_CHECKOUT:-$HOME/precis-mcp-prod}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ -z "${MAIN_CHECKOUT:-}" ]]; then
   _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -37,11 +41,18 @@ HOST_LANES_SHA="${HOST_LANES_SHA-932364d0a}"
 
 # shellcheck source=scripts/lib/pgb-host.sh
 . "${REPO}/scripts/lib/pgb-host.sh"
+# shellcheck source=scripts/lib/env-pointers.sh
+. "${REPO}/scripts/lib/env-pointers.sh"
 
 case "${1:-}" in
   --help|-h) usage; exit 0 ;;
   "") echo "usage: $0 playbooks/<play>.yml [ansible-playbook args] (or --help)" >&2; exit 2 ;;
 esac
+
+PROD_CHECKOUT="${PROD_CHECKOUT:-$(env_prod_checkout_dir "$MAIN_CHECKOUT" || true)}"
+[[ -d "$PROD_CHECKOUT/.git" || -f "$PROD_CHECKOUT/.git" ]] || {
+  echo "REFUSE: no prod checkout at ${PROD_CHECKOUT:-<unresolved>} (the default is <main-checkout>-prod next to $MAIN_CHECKOUT; set PROD_CHECKOUT or PRECIS_PROD_CHECKOUT)" >&2
+  exit 2; }
 
 git -C "$MAIN_CHECKOUT" fetch -q origin
 prod="$(git -C "$MAIN_CHECKOUT" rev-parse origin/prod)"

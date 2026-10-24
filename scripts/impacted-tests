@@ -124,12 +124,13 @@ _MIGRATION_PATTERNS = (
 
 # Docs-only diffs: the DB-free hygiene battery — the same doc-reading tests
 # the qland lint runs (doc pointers, skill prose, the tree-wide secrets
-# sweep, vocab lint, backlog front-matter).
+# sweep, vocab lint, paper text, backlog front-matter).
 _DOCS_HYGIENE = (
     "tests/test_doc_pointers.py",
     "tests/test_skill_prose.py",
     "tests/test_deploy_tree_no_secrets.py",
     "tests/test_vocab_lint.py",
+    "tests/test_paper_text_gate.py",
     "tests/test_backlog_lint.py",
 )
 
@@ -163,11 +164,13 @@ _DEPTH = 3
 CONTRACT: list[str] = [
     # qland hygiene: doc pointers, skill prose, the public-tree secret scan,
     # vocabulary lint — every one of these has reddened main from a lint-only
-    # land before (gr458977, the 2026-10-03 cluster).
+    # land before (gr458977, the 2026-10-03 cluster). The paper-text gate
+    # mirrors scripts/ship's HYGIENE (gr510171).
     "tests/test_doc_pointers.py",
     "tests/test_skill_prose.py",
     "tests/test_deploy_tree_no_secrets.py",
     "tests/test_vocab_lint.py",
+    "tests/test_paper_text_gate.py",
     # code hygiene: ratchets and text-walk guards
     "tests/test_type_ignore_ratchet.py",
     "tests/test_outbound_polite_ratchet.py",
@@ -502,12 +505,20 @@ def _index(root: Path):
     return index_repo(root)
 
 
-def _symbol_diff(root: Path, base: str, head: str, files: list[str]):
+def _symbol_diff(
+    root: Path,
+    base: str,
+    head: str,
+    files: list[str],
+    *,
+    base_tree: set[str] | None = None,
+    head_tree: set[str] | None = None,
+):
     """(per-file ChangedSymbol list, base-side ModuleIndex map) from blobs."""
     from precis.handlers._python_impact import _diff_modules, _index_side
 
-    base_tree = _tree_paths(root, base)
-    head_tree = _tree_paths(root, head)
+    base_tree = _tree_paths(root, base) if base_tree is None else base_tree
+    head_tree = _tree_paths(root, head) if head_tree is None else head_tree
     base_mods = _index_side(
         {},
         {f: _blob(root, base, f) for f in files if f in base_tree},
@@ -918,6 +929,9 @@ class Selector:
         self.test_imports: dict[Path, set[str]] = {}
         self._idx: Any = None
         self._idx_tried = False
+        self._mb: str | None = None
+        self._mb_tried = False
+        self._trees: dict[str, set[str]] = {}
 
     def index(self):
         """The repo python index, built once per Selector."""
@@ -928,6 +942,21 @@ class Selector:
             except Exception:
                 self._idx = None
         return self._idx
+
+    def merge_base(self) -> str | None:
+        """merge-base of HEAD with origin/main (or main), resolved once per
+        Selector — one Selector is one snapshot view of the repo, and the
+        corpus test calls ``select()`` once per corpus ref."""
+        if not self._mb_tried:
+            self._mb_tried = True
+            self._mb = _merge_base(self.repo)
+        return self._mb
+
+    def tree_paths(self, rev: str) -> set[str]:
+        """``git ls-tree`` python listing for ``rev``, memoized per rev."""
+        if rev not in self._trees:
+            self._trees[rev] = _tree_paths(self.repo, rev)
+        return self._trees[rev]
 
     def build_corpus(self) -> None:
         if self._corpus_built:
@@ -956,7 +985,7 @@ class Selector:
         res = _select(
             self.repo,
             {f: "M" for f in files},
-            base=_merge_base(self.repo),
+            base=self.merge_base(),
             head="HEAD",
             db=db or _default_db(self.repo),
             maps=self,
@@ -1035,7 +1064,14 @@ def _select(
     sym_changes: dict[str, list] = {}
     base_mods: dict[str, Any] = {}
     if py_changed and base and head:
-        sym_changes, base_mods = _symbol_diff(root, base, head, py_changed)
+        sym_changes, base_mods = _symbol_diff(
+            root,
+            base,
+            head,
+            py_changed,
+            base_tree=maps.tree_paths(base),
+            head_tree=maps.tree_paths(head),
+        )
 
     cdb = (
         load_coverage(root, db, base)

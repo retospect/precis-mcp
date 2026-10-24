@@ -956,6 +956,22 @@ class FusedBlockSearch:
         # The lexical leg already has a natural zero (the tsquery
         # either matches or it doesn't); the floor is sem-only.
         # (Critic MAJOR #3.)
+        # The floor is a *corpus-wide* guard: under ``scope=`` the
+        # candidate set is a single paper, where "the closest blocks
+        # this paper has" IS an honest answer — a long natural-language
+        # query whose distances all sit above the floor must not come
+        # back empty while single keywords hit (gr510534). So the floor
+        # lifts when scope names one ref, paired with the store legs'
+        # OR-ed lexical retry under the same scope — except for a
+        # DOI-shaped ``q``: that is an identifier, not a natural-language
+        # ask, and an empty scoped result is what lets the renderer's
+        # DOI branch say "this DOI is already in the local corpus"
+        # instead of masking it behind closest-chunk noise.
+        sem_floor = (
+            None
+            if scope_ref_id is not None and doi_query is None
+            else SEMANTIC_DISTANCE_FLOOR
+        )
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a 7B
         # caller passing ``page=0`` doesn't blow the query up.
         search_offset = max(0, (int(page) - 1) * int(page_size))
@@ -1046,7 +1062,7 @@ class FusedBlockSearch:
                 tags=normalized_tags,
                 limit=page_size + 1,
                 offset=search_offset,
-                max_distance=SEMANTIC_DISTANCE_FLOOR,
+                max_distance=sem_floor,
                 exclude_ref_ids=exclude_ref_ids or None,
                 include_ref_ids=include_ref_ids,
                 year_from=year_from,
@@ -1093,7 +1109,7 @@ class FusedBlockSearch:
                 tags=normalized_tags,
                 limit=page_size + 1,
                 offset=search_offset,
-                max_distance=SEMANTIC_DISTANCE_FLOOR,
+                max_distance=sem_floor,
                 exclude_ref_ids=exclude_ref_ids or None,
                 include_ref_ids=include_ref_ids,
                 year_from=year_from,
@@ -1468,6 +1484,16 @@ class PaperSearchResultRenderer:
                     ]
                 )
             else:
+                if result.scope:
+                    # Under a single-paper scope the legs already retried
+                    # every term OR-ed (gr510534), so "widen the net"
+                    # means different terms, not more of the same page.
+                    body += (
+                        f"\n\nscope={result.scope!r} is a single paper — "
+                        "every query term was already retried individually "
+                        "and none matched; try different terms, or drop "
+                        "scope= to search the whole corpus."
+                    )
                 body += render_next_section(
                     [
                         (

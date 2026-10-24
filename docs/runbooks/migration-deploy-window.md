@@ -58,6 +58,17 @@ overrides. The bounds and the pg_dump cron slot live together in
 `deploy/roles/backups/defaults/main.yml`, so a schedule change moves both;
 `DEPLOY_NOW_UTC=HH:MM` fakes the clock to rehearse the message.
 
+**The live check (gr511981).** The clock is a proxy, and the dump does not
+always fit it: r91 resumed at 04:22Z — outside the window — while pg_dump
+still ran, and died on a lock timeout mid-migration. A migration deploy
+therefore also probes `pg_stat_activity` on prod (`scripts/prod-psql --ro`)
+for a running pg_dump/pg_basebackup backend and **refuses at any hour** when
+one is found. Inside the window a clear probe overrides the clock only once
+the 03:30 cron slot has passed (before it, "nothing running" says nothing
+about the scheduled start); outside the window a clear or unrunnable probe
+proceeds. When the probe cannot run at all, the fixed window is the fallback
+and decides exactly as above. Code-only deploys are never probed.
+
 *Diagnosis* (the deploy log just goes silent — ansible buffers per task):
 `pg_stat_activity` for the waiting pid → `pg_blocking_pids(<pid>)` → blockers
 show `application_name='pg_dump'`. `agent_rw` sees

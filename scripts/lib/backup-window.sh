@@ -12,6 +12,18 @@
 # to not start. Until this file the rule lived in operator memory
 # (docs/runbooks/migration-deploy-window.md).
 #
+# The live check (gr511981): the clock is only a proxy. r91 resumed at
+# 04:22Z — legitimately outside the window — while the dump still ran, and
+# died on a lock timeout mid-migration. So for a migration deploy the guard
+# also queries pg_stat_activity on prod (backup_window_live_backups): a
+# running pg_dump/pg_basebackup refuses at ANY hour. Inside the window a
+# 'clear' probe overrides the clock only once the scheduled cron slot has
+# passed — before it, "nothing running now" says nothing about the dump that
+# fires at the slot. When the live query cannot run (no prod-psql, prod
+# unreachable) the fixed window is the fallback and decides exactly as
+# before. The probe runs only when a migration may be in play; code-only
+# deploys keep the probe-free path.
+#
 # One source of truth for the bounds: deploy/roles/backups/defaults/main.yml,
 # the same file that holds the pg_dump cron slot, so a schedule change moves
 # both. Read with awk (plain `key: "HH:MM"` lines), not a YAML parser —
@@ -33,8 +45,10 @@
 #
 # Return codes of backup_window_guard / backup_window_decide:
 #   0  proceed (outside the window, or inside with nothing pending — a warning
-#      was printed — or inside on an explicit override)
-#   1  refuse (inside the window with a pending or unknown migration set)
+#      was printed — or inside on an explicit override, or cleared by the
+#      live probe after the cron slot)
+#   1  refuse (a backup is live on prod, or inside the window with a pending
+#      or unknown migration set)
 #   2  the bounds file is missing/unparseable — a tree problem, not a clock one
 
 # Where the bounds live. One place; the test asserts the cron slot is inside.
@@ -121,15 +135,45 @@ deploy_pending_migrations() {
         | grep -E '\.sql$' || true
 }
 
-# The decision, with every input explicit so a test can fake the clock and
-# the pending set:
-#   backup_window_decide <start> <end> <now> <pending> <ignore>
+# ── the live check (gr511981) ────────────────────────────────────────────
+# One pg_stat_activity probe through the repo's own scripts/prod-psql --ro.
+# Echoes one line per running backup backend —
+#   pid|application_name|backend_type|state|age
+# — empty when none runs. Return 0 when the query ran (empty output = clear),
+# 2 when it could not run (no prod-psql in the tree, ssh/psql down) — the
+# caller then falls back to the fixed window.
+#
+# agent_ro lacks pg_read_all_stats, so another role's `query` text reads
+# '<insufficient privilege>' — but application_name and backend_type are
+# visible for every session, and pg_dump/pg_basebackup name themselves there
+# (a walsender is what a base backup looks like). The query regex stays as a
+# third signal: same-role probes do see the text.
+backup_window_live_backups() {
+    local root="${1:-$PWD}" psql out
+    psql="${root}/scripts/prod-psql"
+    [[ -x "$psql" ]] || return 2
+    out="$(PRECIS_PROD_PSQL_OPTS="-At" "$psql" --ro "$_BACKUP_WINDOW_LIVE_SQL" 2>/dev/null)" || return 2
+    printf '%s\n' "$out" | grep -E '^[0-9]+\|' || true
+}
+
+# Kept single-line for the psql invocation; --ro wraps it in BEGIN READ ONLY.
+_BACKUP_WINDOW_LIVE_SQL="SELECT a.pid || '|' || coalesce(nullif(a.application_name,''),'-') || '|' || coalesce(a.backend_type,'-') || '|' || coalesce(a.state,'?') || '|' || coalesce(age(clock_timestamp(), coalesce(a.query_start, a.backend_start))::text,'?') FROM pg_stat_activity a WHERE a.pid <> pg_backend_pid() AND (a.application_name ~ 'pg_dump|pg_basebackup' OR a.backend_type = 'walsender' OR a.query ~* 'pg_dump|pg_basebackup') ORDER BY a.query_start NULLS LAST"
+
+# The decision, with every input explicit so a test can fake the clock, the
+# pending set and the live probe:
+#   backup_window_decide <start> <end> <now> <pending> <ignore> [live] [slot] [detail]
 # <pending> is the newline-separated file list, "" for none, or the literal
-# word `unknown`. <ignore> is 1 for --ignore-backup-window. Prints the
-# refusal/warning/override note; return codes as in the header.
+# word `unknown`. <ignore> is 1 for --ignore-backup-window. <live> is the
+# probe verdict — `running`, `clear`, or `unavailable` (the default, for
+# callers that never probed); <slot> is the pg_dump cron slot as HH:MM (""
+# when unreadable — treated as still ahead); <detail> is the probe's line(s)
+# naming what runs. Prints the refusal/warning/override note; return codes
+# as in the header.
 backup_window_decide() {
-    local start="$1" end="$2" now="$3" pending="$4" ignore="${5:-0}" n list
-    backup_window_contains "$start" "$end" "$now" || return 0
+    local start="$1" end="$2" now="$3" pending="$4" ignore="${5:-0}" \
+        live="${6:-unavailable}" slot="${7:-}" detail="${8:-}" n list
+    local in_window=0
+    backup_window_contains "$start" "$end" "$now" && in_window=1
 
     if [[ "$pending" == unknown ]]; then
         n=unknown
@@ -143,14 +187,45 @@ backup_window_decide() {
     fi
 
     if [[ "$n" == 0 ]]; then
+        # No migration at stake: a running dump cannot block a code-only
+        # deploy, and the guard never probed on this path.
+        (( in_window == 0 )) && return 0
         printf 'WARNING: inside the %s–%s UTC backup window (now %s UTC). No pending migration, so proceeding — but the DB node reboots at %s UTC and the nightly pg_dump runs through the window; expect dropped connections. Window ends %s UTC.\n' \
             "$start" "$end" "$now" "$start" "$end"
         return 0
     fi
 
     if [[ "$ignore" == 1 ]]; then
-        printf 'NOTE: --ignore-backup-window — inside the %s–%s UTC backup window (now %s UTC) with %s pending migration(s); proceeding on operator override. If pg_dump is running, the migration task will block until it finishes (~%s UTC).\n' \
-            "$start" "$end" "$now" "$n" "$end"
+        if [[ "$live" == running ]]; then
+            printf 'NOTE: --ignore-backup-window — proceeding on operator override even though a backup IS running on prod right now:\n%s\nThe migration task will block behind it until it exits.\n' \
+                "$(printf '%s\n' "$detail" | sed 's/^/    /')"
+        else
+            printf 'NOTE: --ignore-backup-window — inside the %s–%s UTC backup window (now %s UTC) with %s pending migration(s); proceeding on operator override. If pg_dump is running, the migration task will block until it finishes (~%s UTC).\n' \
+                "$start" "$end" "$now" "$n" "$end"
+            [[ -z "$list" ]] || printf '%s\n' "$list"
+        fi
+        return 0
+    fi
+
+    # A backup live on prod refuses at ANY hour — the r91 deploy resumed at
+    # 04:22Z, outside the window, mid-dump (gr511981).
+    if [[ "$live" == running ]]; then
+        printf 'REFUSING TO DEPLOY: a backup is running on the prod DB right now — pg_stat_activity shows:\n%s\npg_dump holds ACCESS SHARE on every table it has read, so the migration'"'"'s DDL would block behind it and the deploy could die mid-apply, leaving the DB part-migrated (gr511981). Re-run when the backup exits, or — if this backend is not the nightly dump — re-run with --ignore-backup-window. docs/runbooks/migration-deploy-window.md.\n' \
+            "$(printf '%s\n' "$detail" | sed 's/^/    /')"
+        return 1
+    fi
+
+    # Outside the window a clear or unrunnable probe proceeds: the live check
+    # only ever adds refusals out here.
+    (( in_window == 0 )) && return 0
+
+    # Inside the window. A 'clear' probe overrides the clock only once the
+    # scheduled slot has passed — before it, nothing running now says nothing
+    # about the dump that fires at <slot>.
+    if [[ "$live" == clear && "$slot" =~ ^[0-9]{2}:[0-9]{2}$ ]] \
+        && (( $(_backup_window_minutes "$now") >= $(_backup_window_minutes "$slot") )); then
+        printf 'NOTE: live check — no pg_dump/pg_basebackup backend on the prod DB (pg_stat_activity) and the %s UTC cron slot has passed (now %s UTC), so tonight'"'"'s dump finished or never ran. Proceeding with %s pending migration(s).\n' \
+            "$slot" "$now" "$n"
         [[ -z "$list" ]] || printf '%s\n' "$list"
         return 0
     fi
@@ -162,25 +237,39 @@ backup_window_decide() {
         printf 'REFUSING TO DEPLOY: inside the %s–%s UTC backup window (now %s UTC) and this deploy carries %s pending migration(s):\n%s\n' \
             "$start" "$end" "$now" "$n" "$list"
     fi
+    case "$live" in
+        clear)
+            printf 'The live check found no pg_dump/pg_basebackup running, but the scheduled %s UTC dump is still ahead — a clear probe cannot clear a run that has not started.\n' "${slot:-$start}" ;;
+        *)
+            printf 'The live pg_stat_activity check could not run (prod-psql missing or prod unreachable), so the fixed window decides.\n' ;;
+    esac
     printf 'The nightly pg_dump holds ACCESS SHARE on every table, so the migration'"'"'s DDL would block behind it and the deploy would hang with a silent log (2026-09-08). Aborting mid-deploy is worse than waiting. Wait until the window ends at %s UTC, or — after checking the dump is not running (`ps -eo pid,etime,args | grep pg_dump` on the DB node) — re-run with --ignore-backup-window. docs/runbooks/migration-deploy-window.md.\n' "$end"
     return 1
 }
 
 # The whole guard for scripts/deploy: bounds from the tree, clock from
-# DEPLOY_NOW_UTC/date, pending set from git.
+# DEPLOY_NOW_UTC/date, pending set from git, live probe from prod-psql.
 #   backup_window_guard <repo_root> <target> [ignore] [prod_ref]
 backup_window_guard() {
-    local root="$1" target="$2" ignore="${3:-0}" prod_ref="${4:-origin/prod}" bounds start end now pending
+    local root="$1" target="$2" ignore="${3:-0}" prod_ref="${4:-origin/prod}" bounds start end now pending live detail slot
     bounds="$(backup_window_bounds "$root")" || return 2
     read -r start end <<< "$bounds"
     now="$(backup_window_now)" || return 2
-    # Outside the window nothing else is computed (and nothing printed):
-    # unchanged behaviour is the contract there.
-    backup_window_contains "$start" "$end" "$now" || return 0
+    slot="$(backup_window_cron_slot "$root" 2>/dev/null || true)"
+    # The pending set is needed at ANY hour now (the live probe can refuse
+    # outside the window); still offline git work either way. The probe —
+    # the only prod round-trip — runs only when a migration may be in play.
     if ! pending="$(deploy_pending_migrations "$root" "$target" "$prod_ref")"; then
         pending=unknown
     fi
-    backup_window_decide "$start" "$end" "$now" "$pending" "$ignore"
+    live=unavailable
+    detail=""
+    if [[ "$pending" == unknown || -n "$pending" ]]; then
+        if detail="$(backup_window_live_backups "$root")"; then
+            if [[ -n "$detail" ]]; then live=running; else live=clear; fi
+        fi
+    fi
+    backup_window_decide "$start" "$end" "$now" "$pending" "$ignore" "$live" "$slot" "$detail"
 }
 
 _backup_window_yaml_value() {
