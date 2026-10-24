@@ -25,8 +25,7 @@ kinds: [paper]
 
 Papers are research articles in the store. The canonical address is
 the **record handle** `pa<id>` (e.g. `pa40`); individual blocks are
-chunk handles `pc<id>` (e.g. `pc512`). Copy the handle straight from
-search/get output back into `get`/`tag`/`link`.
+chunk handles `pc<id>` (e.g. `pc512`).
 
 ## Look up a paper when I have a handle
 ## Open a paper by handle (or DOI)
@@ -297,6 +296,26 @@ an attached PDF, an external identifier, live inbound cites (edges,
 `supersedes` (move each tombstone's redirect with `redirect_to` first).
 A duplicate of a real record wants a merge instead. `dry_run` previews.
 
+## A worker stamped a paper as done/failed — how do I re-run it?
+
+```python
+edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "context_sentence_no_abstract"})
+```
+
+Some worker passes stamp a converged/skip key into `refs.meta` and then
+stop re-claiming the paper; removing the stamp re-opens it for the next
+sweep. `id=` takes one ref or a list — re-arming a cohort is one call —
+and the ack reports, per key, refs cleared vs already clear. Each
+cleared ref gets a `metadata_edited` ref_event; `dry_run` previews.
+
+Only allow-listed retry stamps clear — `context_sentence_failed`,
+`context_sentence_no_abstract`, `s2_enriched_at`, `s2_enrich_failed`,
+`llm_band_failures`, `openalex` — anything else is refused naming the
+allowed set. The registry is `precis/workers/retry_stamps.py`: a worker
+registers its keys beside the constants that write them. There is no
+generic `refs.meta` delete door, and `clear_stamp` combines with no
+other edit field.
+
 ## I found a legal PDF for a body-less stub — how do I attach it?
 
 ```python
@@ -350,9 +369,8 @@ the log, so a successful re-check can show zero current misses.
 
 You rarely need to call it: opening a paper that has a DOI (web page, `get`
 overview, or a fisheye ring that cites it) queues **one** SI check
-automatically, ahead of the stub backlog. `meta.si_checked_at` / `si_found`
-record that it ran, and attention never queues the same paper twice; only an
-explicit `fetch-si` forces a re-check.
+automatically, ahead of the stub backlog; only an explicit `fetch-si`
+forces a re-check.
 
 Each SI PDF becomes **its own paper ref** titled `Supporting Information:
 <parent title>`, linked to the parent (edge `part-of` → parent, read as
@@ -570,8 +588,7 @@ to (`establishes`/`corroborates`/`contradicts`), with each hub's posture
 and the `role` this paper's own edge plays. A hub grounded here but not
 yet assigned a `pub_id` renders `pub_id: <uncited>` — it's a mint-
 frontier signal, not a citable claim yet. This is NOT the patent kind's
-`view='claims'` (that one is a patent's legal claim set) — the name is
-shared, the meaning is per-kind.
+`view='claims'` (that one is a patent's legal claim set).
 
 ## Chunk-level citation grounding (dark, opt-in)
 ## Does this specific claim actually check out against what it cites?

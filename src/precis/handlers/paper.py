@@ -355,8 +355,13 @@ class PaperHandler(Handler):
         # phantom stub (:meth:`_retire_stub`); ``merge_into`` folds a live
         # duplicate into a named survivor (:meth:`_merge_duplicate_into`);
         # ``reason`` is the audit string all three write into their
-        # ref_event. Subclass hooks read their own keys via _edit_args.
-        "edit": ArgsSpec({"redirect_to", "retire", "merge_into", "reason"}),
+        # ref_event; ``clear_stamp`` removes allow-listed worker-retry
+        # meta keys so the owning pass re-claims the ref
+        # (:meth:`_clear_worker_stamps`). Subclass hooks read their own
+        # keys via _edit_args.
+        "edit": ArgsSpec(
+            {"redirect_to", "retire", "merge_into", "reason", "clear_stamp"}
+        ),
     }
 
     stamps_recall = True
@@ -393,8 +398,9 @@ class PaperHandler(Handler):
         # "papers we need" backlog (the fetch_oa worker chases it); it
         # never writes a body. ``edit`` is scoped to *bibliographic
         # metadata* only (authors / year / title / abstract / doi /
-        # arxiv) — the repair affordance the web metadata editor drives;
-        # it never touches block bodies.
+        # arxiv) — the repair affordance the web metadata editor drives —
+        # plus the ``args=`` doors (merge_into / retire / redirect_to /
+        # clear_stamp); it never touches block bodies.
         supports_put=True,
         # ``put`` mints stubs; its one other door is ``mode='fetch-si'``
         # (queue a supplementary-information fetch for an existing paper).
@@ -2064,7 +2070,7 @@ class PaperHandler(Handler):
     def edit(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         title: str | None = None,
         year: int | None = None,
         authors: Any = None,
@@ -2086,6 +2092,11 @@ class PaperHandler(Handler):
         call. ``args={'merge_into': <survivor>}`` folds this live ref into
         a confirmed duplicate's survivor (:meth:`_merge_duplicate_into`),
         taking ``args['reason']`` and no other field.
+        ``args={'clear_stamp': <key|[keys]>}`` removes allow-listed
+        worker-retry stamps from ``refs.meta`` so the owning pass
+        re-claims the paper on its next sweep
+        (:meth:`_clear_worker_stamps`); alone among the ``args`` doors
+        it accepts ``id=[...]`` — a cohort re-arm is one call.
 
         The operator / agent affordance for fixing parse errors — wrong
         DOI, missing authors, off-by-one year. Paper *bodies* stay
@@ -2129,6 +2140,41 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         raw_args = dict(args) if args else {}
+        if "clear_stamp" in raw_args:
+            if (
+                "retire" in raw_args
+                or "redirect_to" in raw_args
+                or "merge_into" in raw_args
+                or supplement_of is not None
+                or any(
+                    v is not None
+                    for v in (
+                        title,
+                        year,
+                        authors,
+                        abstract,
+                        doi,
+                        arxiv,
+                        journal,
+                        entry_type,
+                    )
+                )
+            ):
+                raise BadInput(
+                    "clear_stamp= cannot be combined with other edit fields",
+                    next="make the clear_stamp call alone, then edit the rest",
+                )
+            return self._clear_worker_stamps(
+                id, raw_args["clear_stamp"], dry=bool(dry_mode)
+            )
+        if isinstance(id, list):
+            raise BadInput(
+                f"edit(kind='{self.spec.kind}') fields take one id= at a "
+                "time, not a list",
+                next=(
+                    "one call per ref — only args={'clear_stamp': ...} accepts id=[...]"
+                ),
+            )
         if "retire" in raw_args:
             if (
                 "redirect_to" in raw_args
@@ -2371,6 +2417,89 @@ class PaperHandler(Handler):
             if doi_warning:
                 body = f"{body}\n{doi_warning}"
         return Response(body=body)
+
+    def _clear_worker_stamps(
+        self,
+        id: str | int | list[str | int] | None,
+        stamps: Any,
+        *,
+        dry: bool,
+    ) -> Response:
+        """``edit(args={'clear_stamp': ...})`` — remove allow-listed
+        worker-retry stamps from ``refs.meta`` so the owning pass
+        re-claims the ref on its next sweep (gr514347 — previously raw
+        ``meta - key`` prod SQL, an op no operator agent may run).
+
+        The allow-list lives in :mod:`precis.workers.retry_stamps`: each
+        clearable key is registered beside the worker that writes it,
+        and any other meta key is refused naming the allowed set —
+        there is deliberately no generic meta-delete door. ``id=`` takes
+        one ref (slug / ``pa<id>`` / ref_id / DOI) or a list of them, so
+        a cohort re-arm is one call. ``dry`` reports what would clear
+        without writing."""
+        from precis.workers.retry_stamps import clearable_stamps
+
+        if isinstance(stamps, str):
+            keys = [stamps]
+        elif isinstance(stamps, (list, tuple)):
+            keys = list(stamps)
+        else:
+            keys = []
+        allowed = clearable_stamps()
+        bad = [k for k in keys if not isinstance(k, str) or k not in allowed]
+        if bad or not keys:
+            raise BadInput(
+                "args['clear_stamp'] wants allow-listed worker-retry meta "
+                f"keys; got {bad if bad else stamps!r}",
+                options=sorted(allowed),
+                next=(
+                    f"edit(kind='{self.spec.kind}', id=<ref>, args="
+                    "{'clear_stamp': 'context_sentence_no_abstract'})"
+                ),
+            )
+        if id is None:
+            raise BadInput(
+                "clear_stamp needs id= — one ref or a list of them",
+                next=(
+                    f"edit(kind='{self.spec.kind}', id=[<ref>, ...], args="
+                    "{'clear_stamp': 'context_sentence_no_abstract'})"
+                ),
+            )
+        ids = list(id) if isinstance(id, list) else [id]
+        if not ids:
+            raise BadInput(
+                "id=[] is empty — pass at least one ref",
+                next=f"edit(kind='{self.spec.kind}', id=[<ref>, ...], args=...)",
+            )
+        ref_ids = [self._resolve_paper_ref_id(i) for i in ids]
+        if dry:
+            live = self.store.fetch_refs_by_ids(ref_ids, include_deleted=False)
+            cleared: dict[int, list[str]] = {}
+            for rid in ref_ids:
+                ref = live.get(rid)
+                meta = (ref.meta if ref is not None else None) or {}
+                cleared[rid] = [k for k in keys if k in meta]
+        else:
+            cleared = {}
+            with self.store.tx() as conn:
+                for rid in ref_ids:
+                    cleared[rid] = self.store.clear_ref_meta_keys(
+                        rid, keys, source="edit", conn=conn
+                    )
+        verb = "would clear" if dry else "cleared"
+        parts = [
+            f"{key} ({allowed[key]}): "
+            f"{sum(1 for rid in ref_ids if key in cleared[rid])} {verb}, "
+            f"{sum(1 for rid in ref_ids if key not in cleared[rid])} already clear"
+            for key in keys
+        ]
+        prefix = "DRY RUN (nothing written) — " if dry else ""
+        return Response(
+            body=(
+                f"{prefix}clear_stamp on {len(ref_ids)} "
+                f"{self.spec.kind} ref(s): " + "; ".join(parts) + "."
+            )
+        )
 
     def _resolve_ref_incl_retired(self, id: str | int) -> Ref | None:
         """Resolve a paper address to its ref WITHOUT the liveness filter.

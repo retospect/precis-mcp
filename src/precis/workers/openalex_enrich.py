@@ -50,6 +50,7 @@ from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.store import Store
 from precis.utils.authors import author_names
 from precis.workers import _throttle
+from precis.workers.retry_stamps import register_retry_stamps
 from precis.workers.runner import BatchResult
 
 #: Env var + default for the cadence throttle (see :func:`_throttle.due`).
@@ -66,6 +67,14 @@ _STATE_KEY = "openalex_enrich:last_run"
 
 #: Lane B batch size when the caller doesn't pass a ``limit``.
 _DEFAULT_FETCH_LIMIT = 50
+
+#: ``meta.openalex`` is both the fetched block and the miss stamp —
+#: ``_fetch_batch`` only claims a ref whose block IS NULL, so clearing
+#: the key re-queues the paper for one fetch (e.g. a miss stamped during
+#: an OpenAlex outage or before the record existed). Operator door:
+#: ``edit(kind='paper', args={'clear_stamp': 'openalex'})`` —
+#: ``precis.workers.retry_stamps``.
+register_retry_stamps("openalex_enrich", "openalex")
 
 
 def _due(store: Store) -> bool:

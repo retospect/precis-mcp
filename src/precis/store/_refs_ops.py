@@ -1845,6 +1845,58 @@ class RefsMixin:
             )
         return _row_to_ref(row)
 
+    def clear_ref_meta_keys(
+        self,
+        ref_id: int,
+        keys: Iterable[str],
+        *,
+        source: str,
+        conn: Connection | None = None,
+    ) -> list[str]:
+        """Remove top-level ``keys`` from ``refs.meta``; return the
+        subset that was actually present (the rest were already clear).
+
+        ``meta || patch`` cannot express a delete, so stamp keys that
+        gate a worker's re-claim (the handlers-layer allow-list lives in
+        :mod:`precis.workers.retry_stamps`) need their own write. Logs a
+        ``metadata_edited`` ref_event naming the cleared keys — the same
+        event :meth:`update_paper_fields` writes for a merge — but only
+        when at least one key was present (a fully-absent clear is a
+        no-op, not an edit).
+        """
+        key_list = [str(k) for k in keys]
+
+        def _do(c: Connection) -> list[str]:
+            row = c.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(
+                    f"ref id={ref_id} not found (or already deleted)",
+                    next=f"check id with: get(kind=..., id={ref_id})",
+                )
+            meta = row[0] or {}
+            present = [k for k in key_list if k in meta]
+            if not present:
+                return []
+            c.execute(
+                "UPDATE refs SET meta = meta - %s::text[], updated_at = now() "
+                "WHERE ref_id = %s",
+                (key_list, ref_id),
+            )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (ref_id, source, "metadata_edited", Jsonb({"cleared": present})),
+            )
+            return present
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def update_paper_fields(
         self,
         ref_id: int,

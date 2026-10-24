@@ -62,6 +62,10 @@ to call the model at all on such a block and stamps the NON-terminal
 :data:`META_NO_ABSTRACT_KEY`: the paper needs an abstract, not a retry
 (gr346458).
 
+To force a retry after either stamp, clear it through
+``edit(kind='paper', id=<ref|[refs]>, args={'clear_stamp': '<key>'})``
+(``precis.workers.retry_stamps`` is the allow-list — gr514347).
+
 Self-contained ref-pass (shaped like ``paper_glossary``/``hub_tagline`` —
 DB reads + one outbound LLM call per paper, not a pure ``WorkerHandler``).
 
@@ -97,6 +101,7 @@ from typing import Any
 
 from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
+from precis.workers.retry_stamps import register_retry_stamps
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +137,11 @@ META_FAILED_KEY = "context_sentence_failed"
 #: backfill that gives the paper real text must clear this key to make it
 #: claimable again.
 META_NO_ABSTRACT_KEY = "context_sentence_no_abstract"
+
+#: Both stamps gate ``_claim`` and are operator-clearable via
+#: ``edit(kind='paper', id=…, args={'clear_stamp': '<key>'})`` — forcing
+#: a re-run for a cohort = clearing its stamp, no prod SQL (gr514347).
+register_retry_stamps("context_sentence", META_FAILED_KEY, META_NO_ABSTRACT_KEY)
 
 #: Hard word cap (spec: "≤ ~35 words") — enforced in code, not just prompted.
 MAX_WORDS = 35

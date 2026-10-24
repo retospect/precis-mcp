@@ -67,6 +67,7 @@ from precis.store import Store
 from precis.store._refs_ops import clear_acquire_unverified
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.llm.json_reply import extract_json_object
+from precis.workers.retry_stamps import register_retry_stamps
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +95,20 @@ _BAND_CLAIM_TTL_MIN = 10
 #: ranked by the anchor-cosine percentile alone (see
 #: :func:`_run_llm_band`'s docstring).
 _MAX_BAND_FAILURES = 3
+
+#: Retry-gating ``refs.meta`` stamps this pass writes, registered for
+#: the operator clear door (``edit(kind='paper', args={'clear_stamp':
+#: …})`` — ``precis.workers.retry_stamps``). ``s2_enriched_at`` is the
+#: S2-enrich done/miss stamp (``_claim_enrich_candidates``'s
+#: ``IS NULL`` predicate) and ``s2_enrich_failed`` its resolve-miss
+#: marker; ``llm_band_failures`` is the paid-LLM retry budget — clearing
+#: it re-arms a capped stub for the band pass. Deliberately absent:
+#: ``llm_band_claimed_at`` (a live claim lease — clearing could
+#: double-bill an in-flight batch) and ``llm_label`` (a result, not a
+#: retry gate).
+register_retry_stamps(
+    "stub_rank", "s2_enriched_at", "s2_enrich_failed", "llm_band_failures"
+)
 
 #: Cap on how many of a recently-opened paper's own (lowest-``ord``) chunk
 #: vectors get averaged into its anchor — a full-paper mean would dilute

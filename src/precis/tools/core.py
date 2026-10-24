@@ -1570,7 +1570,10 @@ def edit(
     # ``kind`` and ``id`` are functionally required; see ``search`` for
     # the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    id: str | int | None = None,
+    # paper's args={'clear_stamp': ...} door accepts id=[...] — a worker
+    # re-arm for a whole cohort in one call (gr514347). Every other edit
+    # field stays one-ref-per-call.
+    id: str | int | list[str | int] | None = None,
     mode: str = "find-replace",
     # str is the documented contract every handler parses against; dict/
     # list is ALSO accepted because some MCP client bridges auto-parse a
