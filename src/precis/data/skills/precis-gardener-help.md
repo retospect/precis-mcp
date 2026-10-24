@@ -193,8 +193,22 @@ verdicts per run, default 10):
   model call, reason `sibling_distinct_names`, both in the run's
   proposer step and by the consumer.
 
+- **Paper identity gate** — a merge of two papers needs positive
+  evidence: a shared DOI, the same `pdf_sha256`, or body-text shingle
+  Jaccard ≥ 0.8. A supplement, corrigendum, or a preprint id on one
+  side against a published record on the other (no shared DOI) closes
+  `rejected` with reason `supplement`, `corrigendum` or `version_pair`.
+  An ambiguous pair (`version_unclear`, `venue_differs`) or a
+  title/author-only one (`title_author_only`) is held for a human
+  (consumer `garden_review` row, `held=<reason>`), never applied by the
+  consumer. Checked before the model call and again inside the apply
+  transaction.
+
 `precis garden stats` lists reject reasons per detector. The ledger
-has no `applied` verdict, so applied = `approved` + `garden.applied`.
+has no `applied` verdict, so applied = `approved` + `garden.applied`;
+every consumer decision row also carries `garden.outcome`
+(`applied`/`rejected`), `loser`/`winner`, `detector`, `why`, `by_model`
+and the proposal's `evidence` (plus `identity` on a paper merge).
 
 ## Applying a proposal by hand
 

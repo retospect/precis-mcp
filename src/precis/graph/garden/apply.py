@@ -79,11 +79,16 @@ class MergeRefused(BadInput):
     """An approved merge refused by the deterministic re-check inside
     the apply transaction. ``reason`` is the machine-readable code the
     caller records on the rejected proposal (``stale``, ``target_gone``,
-    ``apply_refused``)."""
+    ``apply_refused``, or a paper-gate reason); ``detail`` carries the
+    gate's finding when it refused."""
 
-    def __init__(self, reason: str, why: str) -> None:
+    def __init__(
+        self, reason: str, why: str, detail: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(f"{reason}: {why}")
         self.reason = reason
+        self.why = why
+        self.detail = detail
 
 
 def _check_reviewed_merge(
@@ -166,6 +171,9 @@ def apply_merge(
     actor: str,
     review_id: int | None = None,
     merge_id: str | None = None,
+    model: str | None = None,
+    identity_gate: bool = False,
+    verdict_extra: dict[str, Any] | None = None,
 ) -> MergeRecord:
     """Apply an accepted merge: loser folds into winner, links repoint.
 
@@ -173,7 +181,16 @@ def apply_merge(
     :class:`NotFound` on a missing, retired, cross-kind, already-merged or
     measures-carrying pair — the whole thing runs in one transaction so
     nothing is half-applied. ``actor`` lands in the ``approved`` review
-    row written when ``review_id`` names the proposal being applied.
+    row written when ``review_id`` names the proposal being applied;
+    that row always carries ``garden.outcome='applied'``, the
+    ``loser``/``winner`` and the ``merge_id`` (gr512124), plus
+    ``verdict_extra`` (the caller's why/evidence) and ``model`` in the
+    model column.
+
+    ``identity_gate`` (the machine consumer sets it): a paper pair must
+    clear :func:`~precis.graph.garden.paper_gate.paper_identity` inside
+    the transaction, else :class:`MergeRefused` with the gate's reason
+    (gr512125). A human applying by hand is not gated.
     """
     if loser_id == winner_id:
         raise BadInput("merge needs two distinct refs")
@@ -235,16 +252,32 @@ def apply_merge(
         # the judge actually reviewed. resolve_proposal echoes the
         # proposal's key so the read view folds the pair.
         if review_id is not None:
-            from precis.graph.garden.proposals import resolve_proposal
-
             _check_reviewed_merge(store, conn, review_id, loser_id, winner_id)
+
+        if identity_gate and loser_kind == "paper":
+            from precis.graph.garden.paper_gate import paper_identity
+
+            ident = paper_identity(store, loser_id, winner_id, conn=conn)
+            if not ident.passes:
+                raise MergeRefused(str(ident.reason), ident.why, ident.as_meta())
+            verdict_extra = {**(verdict_extra or {}), "identity": ident.as_meta()}
+
+        if review_id is not None:
+            from precis.graph.garden.proposals import resolve_proposal
 
             resolved = resolve_proposal(
                 store,
                 review_id,
                 actor=actor,
                 verdict="approved",
-                extra={"applied": merge_id},
+                model=model,
+                extra={
+                    **(verdict_extra or {}),
+                    "outcome": "applied",
+                    "loser": loser_id,
+                    "winner": winner_id,
+                    "applied": merge_id,
+                },
                 conn=conn,
             )
             if resolved is None:
@@ -725,6 +758,8 @@ def apply_relink(
     *,
     actor: str,
     relink_id: str | None = None,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
 ) -> RelinkRecord:
     """Apply a reviewed relink proposal: write the edge it names.
 
@@ -868,7 +903,10 @@ def apply_relink(
             review_id,
             actor=actor,
             verdict="approved",
+            model=model,
             extra={
+                **(verdict_extra or {}),
+                "outcome": "applied",
                 "applied": relink_id,
                 "link": {
                     "src_ref_id": child,

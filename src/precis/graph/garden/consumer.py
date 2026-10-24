@@ -53,7 +53,24 @@ both run by the ``graph_garden`` job right after its tick
 **Verdict values.** The ruling names ``verdict='applied'``; the
 ``reviews`` CHECK (migration 0185) allows only proposed/approved/rejected,
 so an applied proposal is ``approved`` with ``garden.applied`` set — the
-convention ``apply_merge`` already uses. No migration.
+convention ``apply_merge`` already uses. No migration. Every decision
+row the consumer writes — applied or rejected — carries
+:func:`decision_record`: ``garden.outcome`` (``applied``/``rejected``),
+``resolves`` (the proposal id), ``loser``/``winner`` (or ``parent``),
+``detector``, ``why``, ``by_model`` (also the ``model`` column) and the
+proposal's ``evidence``, plus ``identity`` for a paper merge (gr512124:
+the first 24 applied rows carried only ``applied``/``key``/``resolves``,
+so a ledger read could not say what was merged on what evidence).
+
+**Paper identity gate (gr512125).** A merge of two papers is judged by
+:func:`~precis.graph.garden.paper_gate.paper_identity` before the model
+is asked and again inside the apply transaction: a supplement,
+corrigendum or preprint-id-vs-published pair closes ``rejected`` with
+that shape as its reason; an ambiguous pair (``version_unclear``,
+``venue_differs``) or one with no shared DOI, PDF or body text
+(``title_author_only``) is held for a human — a consumer
+``garden_review`` row with ``held=<reason>`` — and never applied by the
+consumer. An apply-time hold is held the same way, not closed.
 
 **Learning signal (gr504843).** A rejected key stays closed while its
 target is unchanged (:func:`~precis.graph.garden.proposals.key_block`),
@@ -90,6 +107,12 @@ from precis.graph.garden.candidates import (
     PROVENANCE_RELATIONS,
     SIBLING_REJECT_REASON,
     short_sibling_pair,
+)
+from precis.graph.garden.paper_gate import (
+    HOLD_REASONS,
+    SHAPE_REASONS,
+    PaperIdentity,
+    paper_identity,
 )
 from precis.graph.garden.proposals import (
     GARDEN_ACTOR,
@@ -138,6 +161,9 @@ REJECT_REASONS: dict[str, str] = {
     "cycle": "the edge would close a cycle",
     "undone": "a human undid the applied action",
     "apply_error": "the apply door raised an unexpected error — left pending",
+    # The paper gate's refusals (gr512125); its hold reasons
+    # (HOLD_REASONS) never close a proposal.
+    **{k: v for k, v in SHAPE_REASONS.items() if k != "target_gone"},
 }
 
 #: The reasons the model may give (the consumer's own are not offered).
@@ -177,6 +203,7 @@ class ConsumeReport:
     applied: int = 0
     approved_unapplied: int = 0
     rejected: int = 0
+    held: int = 0
     errors: int = 0
     paused: bool = False
     reasons: dict[str, int] = field(default_factory=dict)
@@ -190,6 +217,36 @@ class ConsumeReport:
 # ── part 1: auto-prune ─────────────────────────────────────────────────────
 
 
+def decision_record(
+    prop: GardenProposal,
+    *,
+    outcome: str,
+    why: str,
+    model: str | None,
+    identity: PaperIdentity | None = None,
+) -> dict[str, Any]:
+    """The ``garden`` fields every consumer decision row carries
+    (gr512124): what happened (``outcome`` — ``applied``/``rejected``,
+    since the ``reviews`` CHECK has no ``applied`` verdict), which
+    proposal and refs, who judged it and on what evidence. ``resolves``
+    (the proposal id) and the actor column are written by
+    :func:`~.proposals.resolve_proposal`."""
+    rec: dict[str, Any] = {
+        "outcome": outcome,
+        "action": prop.action,
+        "detector": prop.detector,
+        "why": why,
+        "by_model": model,
+        "evidence": prop.evidence,
+    }
+    for key in ("loser", "winner", "parent"):
+        if isinstance(prop.payload.get(key), int):
+            rec[key] = prop.payload[key]
+    if identity is not None:
+        rec["identity"] = identity.as_meta()
+    return rec
+
+
 def _close(
     store: Store,
     prop: GardenProposal,
@@ -199,13 +256,19 @@ def _close(
     why: str,
     model: str | None,
     report: ConsumeReport,
+    identity: PaperIdentity | None = None,
 ) -> None:
+    extra = decision_record(
+        prop, outcome="rejected", why=why, model=model, identity=identity
+    )
+    extra["reason"] = reason
     if resolve_proposal(
         store,
         prop.review_id,
         actor=actor,
         verdict="rejected",
-        extra={"reason": reason, "why": why, "by_model": model},
+        model=model,
+        extra=extra,
     ):
         report.rejected += 1
         report.reasons[reason] = report.reasons.get(reason, 0) + 1
@@ -277,7 +340,16 @@ def _prune_one(store: Store, prop: GardenProposal, report: ConsumeReport) -> Non
                     prop.review_id,
                     actor=GARDEN_ACTOR,
                     verdict="approved",
-                    extra={"applied": "prune", "link": snapshot},
+                    extra={
+                        **decision_record(
+                            prop,
+                            outcome="applied",
+                            why="the dangling-edge predicate held at apply",
+                            model=None,
+                        ),
+                        "applied": "prune",
+                        "link": snapshot,
+                    },
                     conn=conn,
                 )
                 if resolved is None:
@@ -455,7 +527,11 @@ def _note_approved_relink(
 
 
 def _apply_approved(
-    store: Store, prop: GardenProposal, v: ConsumerVerdict, report: ConsumeReport
+    store: Store,
+    prop: GardenProposal,
+    v: ConsumerVerdict,
+    report: ConsumeReport,
+    identity: PaperIdentity | None = None,
 ) -> None:
     if prop.action == "relink":
         _apply_relink(store, prop, report, why=v.why, model=v.model)
@@ -483,11 +559,34 @@ def _apply_approved(
         return
     try:
         rec = apply_merge(
-            store, loser, winner, actor=CONSUMER_ACTOR, review_id=prop.review_id
+            store,
+            loser,
+            winner,
+            actor=CONSUMER_ACTOR,
+            review_id=prop.review_id,
+            model=v.model,
+            # A machine merge of two papers re-runs the identity gate
+            # inside the apply transaction (gr512125).
+            identity_gate=True,
+            verdict_extra=decision_record(
+                prop, outcome="applied", why=v.why, model=v.model, identity=identity
+            ),
         )
     except MergeRefused as exc:
         # The in-transaction re-check refused: reason is a code like
-        # ``stale``/``target_gone``/``apply_refused``.
+        # ``stale``/``target_gone``/``apply_refused`` or a paper-gate
+        # reason. A gate *hold* (``title_author_only``, …) is held like
+        # the pre-model path, not closed.
+        if exc.reason in HOLD_REASONS:
+            _hold_for_human(
+                store,
+                prop,
+                reason=exc.reason,
+                why=f"approved ({v.why}) but at apply: {exc.why}",
+                identity=exc.detail,
+            )
+            report.held += 1
+            return
         _close(
             store,
             prop,
@@ -496,6 +595,7 @@ def _apply_approved(
             why=f"approved ({v.why}) but at apply: {exc}",
             model=v.model,
             report=report,
+            identity=identity,
         )
         return
     except (BadInput, NotFound) as exc:
@@ -528,7 +628,15 @@ def _apply_relink(
     from precis.graph.garden.apply import MergeRefused, apply_relink
 
     try:
-        rec = apply_relink(store, prop.review_id, actor=CONSUMER_ACTOR)
+        rec = apply_relink(
+            store,
+            prop.review_id,
+            actor=CONSUMER_ACTOR,
+            model=model,
+            verdict_extra=decision_record(
+                prop, outcome="applied", why=why, model=model
+            ),
+        )
     except MergeRefused as exc:
         _close(
             store,
@@ -596,6 +704,66 @@ def _short_siblings(store: Store, prop: GardenProposal) -> bool:
         and isinstance(loser, int)
         and isinstance(winner, int)
         and short_sibling_pair(store, loser, winner)
+    )
+
+
+def _paper_gate(store: Store, prop: GardenProposal) -> PaperIdentity | None:
+    """The paper identity gate's finding for a merge of two papers
+    (:mod:`~precis.graph.garden.paper_gate`), ``None`` for any other
+    proposal. Keyed on the loser's kind, not the detector: every
+    detector's paper merge clears the same bar."""
+    loser, winner = prop.payload.get("loser"), prop.payload.get("winner")
+    if prop.action != "merge" or not isinstance(loser, int):
+        return None
+    if not isinstance(winner, int):
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT kind FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()
+        if row is None or str(row[0]) != "paper":
+            return None
+        return paper_identity(store, loser, winner, conn=conn)
+
+
+def _hold_for_human(
+    store: Store,
+    prop: GardenProposal,
+    *,
+    reason: str,
+    why: str,
+    identity: dict[str, Any] | None,
+) -> None:
+    """Leave an ambiguous paper merge pending for a human (``reason`` is
+    a :data:`~.paper_gate.HOLD_REASONS` key): a non-terminal consumer
+    ``garden_review`` row (verdict ``proposed``) records why, and
+    :func:`_consumer_reviewed_ids` keeps the consumer from reconsidering
+    it. A human applies it with ``precis garden apply`` or rejects it."""
+    store.record_target_review(
+        prop.target_kind,
+        prop.target_id,
+        actor=CONSUMER_ACTOR,
+        verdict="proposed",
+        version=GARDEN_VERSION,
+        note=json.dumps(
+            {
+                "garden_review": {
+                    "v": 1,
+                    "proposal": prop.review_id,
+                    "key": prop.key,
+                    "action": prop.action,
+                    "detector": prop.detector,
+                    "held": reason,
+                    "why": why,
+                    "loser": prop.payload.get("loser"),
+                    "winner": prop.payload.get("winner"),
+                    "identity": identity,
+                    "apply": "by hand (machine merges need identity evidence)",
+                }
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     )
 
 
@@ -674,6 +842,29 @@ def review_pending(
                 report=report,
             )
             continue
+        identity = _paper_gate(store, prop)
+        if identity is not None and not identity.passes:
+            if identity.refused is not None:
+                _close(
+                    store,
+                    prop,
+                    actor=CONSUMER_ACTOR,
+                    reason=identity.refused,
+                    why=identity.why,
+                    model=None,
+                    report=report,
+                    identity=identity,
+                )
+            else:
+                _hold_for_human(
+                    store,
+                    prop,
+                    reason=str(identity.reason),
+                    why=identity.why,
+                    identity=identity.as_meta(),
+                )
+                report.held += 1
+            continue
         report.attempts += 1
         try:
             v = review(store, prop)
@@ -692,7 +883,7 @@ def review_pending(
         consec_errors = 0
         report.reviewed += 1
         if v.verdict == "approve":
-            _apply_approved(store, prop, v, report)
+            _apply_approved(store, prop, v, report, identity)
             continue
         _close(
             store,
@@ -702,6 +893,7 @@ def review_pending(
             why=v.why,
             model=v.model,
             report=report,
+            identity=identity,
         )
 
 

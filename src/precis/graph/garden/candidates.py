@@ -884,7 +884,9 @@ def paper_identity_candidates(
 
     Groups are walked by lowest ref_id past ``cursors['paper_identity']``;
     the cursor to save lands in ``next_cursors`` (wrapping at the end).
-    Proposals only — merging two papers is a human decision.
+    Proposals only. The consumer applies one only past
+    :func:`~precis.graph.garden.paper_gate.paper_identity` (gr512125):
+    title, year and author agreement here is not identity evidence.
     """
     after = (cursors or {}).get("paper_identity", 0)
     norm = _norm_title_sql("r.title")
