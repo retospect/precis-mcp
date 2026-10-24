@@ -942,12 +942,26 @@ class Board:
 
     # -- inspection ---------------------------------------------------------
 
-    def nets_of(self, refdes: str) -> dict[str, str]:
-        """``{pin name: net name}`` for every connection naming ``refdes``
-        (module-qualified), in the part's pin order."""
+    def nets_of(self, refdes: str) -> list[str]:
+        """The sorted, de-duplicated net names of the connections naming
+        ``refdes`` — "which nets does U1 touch" (gr513764: the name reads
+        as the net list, so that is what it returns). For the per-pin
+        ``{pin name: net name}`` map see :meth:`pin_nets`."""
         if refdes not in self._parts:
             raise PcbBuilderError(
                 f"nets_of: unknown refdes {refdes!r} — board {self.slug!r} "
+                f"has {len(self._part_order)} parts"
+            )
+        return sorted({c["net"] for c in self._connections if c["refdes"] == refdes})
+
+    def pin_nets(self, refdes: str) -> dict[str, str]:
+        """``{pin name: net name}`` — the pin → net map for every
+        connection naming ``refdes`` (module-qualified), in the part's
+        pin order. (Not ``pin_map``: that name is the footprint
+        pad→pin-name map in the ``pcb_apply`` payload.)"""
+        if refdes not in self._parts:
+            raise PcbBuilderError(
+                f"pin_nets: unknown refdes {refdes!r} — board {self.slug!r} "
                 f"has {len(self._part_order)} parts"
             )
         order = {n: i for i, n in enumerate(self._parts[refdes]._pin_order)}
@@ -959,7 +973,9 @@ class Board:
 
     def pins_on(self, net: str | Net) -> list[tuple[str, str]]:
         """``(refdes, pin)`` for every connection on ``net``, in authored
-        connection order. Accepts the net's name or the :class:`Net`."""
+        connection order. Accepts the net's name or the :class:`Net`.
+        The part-side directions are :meth:`nets_of` (a part's net names)
+        and :meth:`pin_nets` (its pin → net map)."""
         name = net.name if isinstance(net, Net) else str(net)
         if name not in self._nets:
             raise PcbBuilderError(

@@ -49,6 +49,18 @@ b = mod.build()
 `b.to_batch()` is then the `pcb_apply`-shaped dict; `b.manifest()` /
 `pcb.write_manifest(b, "out/")` serialise it.
 
+The netlist queries name what they return: `nets_of` is the part's
+sorted net names, `pin_nets` the pin → net map in the part's pin order,
+and `pins_on` (also `net.pins()`) the `(refdes, pin)` pairs on a net:
+
+```python
+print(b.nets_of("R1"), b.pin_nets("R1"), b.pins_on("VIN"))
+```
+
+```text
+['LED_A', 'VIN'] {'1': 'VIN', '2': 'LED_A'} [('R1', '1')]
+```
+
 ## Check and fit
 
 `b.check()` is the offline L0 pass — NOT-CHECKED names parts with
@@ -81,19 +93,22 @@ fit OK (0 finding(s))
 A too-shallow cavity fails per part, naming the overflow:
 
 ```python
-fit = b.shape().fits(pcb_shape.enclosure(30, 25, 5))
+fit = b.shape().fits(pcb_shape.enclosure(30, 25, 2))
 print(fit.summary())
 ```
 
 ```text
 fit FAIL (2 finding(s)):
-  error fit.outside_enclosure R1: R1 exceeds enclosure 'enclosure' by 8.1 mm (cavity 30×25×5 mm)
-  error fit.outside_enclosure D1: D1 exceeds enclosure 'enclosure' by 8.1 mm (cavity 30×25×5 mm)
+  error fit.outside_enclosure R1: R1 exceeds enclosure 'enclosure': z by 0.5 mm (top 2.5 > 2) (cavity 30×25×2 mm)
+  error fit.outside_enclosure D1: D1 exceeds enclosure 'enclosure': z by 0.5 mm (top 2.5 > 2) (cavity 30×25×2 mm)
 ```
 
-(8.1 mm because `CHIP-0603` matches no row of the package-height table
-and takes the 11.5 mm fallback — pass `height_mm=` on `b.part(...)` for
-an authored number. See `precis_geom.pcb_shape.height_mm`.)
+(2.5 mm because the `CHIP-0603` footprint maps to a proposed 0.9 mm in
+the package-height table — `precis_geom.pcb_shape.HEIGHT_TABLE` lists
+the regexes and which spellings each matches. An unmapped spelling
+takes the table-maximum fallback and the finding says the height was
+assumed; pass `height_mm=` on `b.part(...)` for an authored number. See
+`precis_geom.pcb_shape.height_mm`.)
 
 Unplaced parts are reported, not guessed: a part with no `.at(...)`
 gets no prism and is named in `b.shape().unplaced`.

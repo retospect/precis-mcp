@@ -397,29 +397,36 @@ def test_check_findings() -> None:
     ]
 
 
-def test_nets_of_and_pins_on() -> None:
+def test_nets_of_pin_nets_and_pins_on() -> None:
+    """gr513764: ``nets_of`` is the part's sorted net names;
+    ``pin_nets`` is the pin → net map; ``pins_on`` is the net's pins."""
     b = Board("t15")
     gnd, vcc = b.net("GND"), b.net("VCC")
     u1, r1, c1 = b.part("U1"), b.part("R1"), b.part("C1")
     vcc.tie(u1["VDD"])
     gnd.tie(u1["VSS"], r1["2"], c1["1"])
     b.wire(u1["OUT"], r1["1"], name="SIG")
-    assert b.nets_of("U1") == {"VDD": "VCC", "VSS": "GND", "OUT": "SIG"}
-    assert list(b.nets_of("U1")) == ["VDD", "VSS", "OUT"]  # pin order
-    assert b.nets_of("R1") == {"1": "SIG", "2": "GND"}
+    assert b.nets_of("U1") == ["GND", "SIG", "VCC"]
+    assert b.pin_nets("U1") == {"VDD": "VCC", "VSS": "GND", "OUT": "SIG"}
+    assert list(b.pin_nets("U1")) == ["VDD", "VSS", "OUT"]  # pin order
+    assert b.pin_nets("R1") == {"1": "SIG", "2": "GND"}
+    assert b.nets_of("R1") == ["GND", "SIG"]
     assert b.pins_on("GND") == [("U1", "VSS"), ("R1", "2"), ("C1", "1")]
     assert gnd.pins() == b.pins_on("GND")
     assert b.pins_on(gnd) == b.pins_on("GND")
     with pytest.raises(PcbBuilderError, match="3 parts"):
         b.nets_of("Q9")
+    with pytest.raises(PcbBuilderError, match="3 parts"):
+        b.pin_nets("Q9")
     with pytest.raises(PcbBuilderError, match="3 nets"):
         b.pins_on("NOPE")
 
 
 def test_nets_of_pins_on_nano_usb_pd() -> None:
     b = _example("nano_usb_pd")
-    u1 = b.nets_of("U1")
+    u1 = b.pin_nets("U1")
     assert len(u1) == 29 and len(set(u1.values())) == 28  # V5 lands on two pins
+    assert len(b.nets_of("U1")) == 28
     assert b.pins_on("GND") == [
         (c["refdes"], c["pin"])
         for c in b.to_batch()["connections"]

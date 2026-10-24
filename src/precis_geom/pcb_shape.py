@@ -64,89 +64,133 @@ _BBOX_MARGIN_MM = 2.0
 #: ``SOT-``); chip-passive imperial codes under one ``[RCL]`` row each
 #: since resistor and MLCC body heights track the same imperial size,
 #: with ``CHIP-`` and underscored (``R_0603``) spellings on the same
-#: rows (gr513752). See ``docs/backlog/pcb-se-binding.md`` §Rough box
-#: v0 / Change 1.
+#: rows (gr513752) and the ``CAP-``/``RES-``/``IND-`` functional
+#: prefixes the board examples use (gr513775). Each row's comment lists
+#: spellings that match and near-misses that do not (gr513774): the
+#: patterns are prefix-anchored, a trailing ``-`` suffix always matches
+#: (``\b`` sits before a non-word char), and the chip rows also accept a
+#: ``_`` tail — that is what ``R_0603_1608Metric`` rides. See
+#: ``docs/backlog/pcb-se-binding.md`` §Rough box v0 / Change 1.
 HEIGHT_TABLE: tuple[tuple[str, float, str], ...] = (
+    # match: R402, R0402, C_0402, CHIP-0402, RES-0402, CAP-0402-100nF,
+    #        R_0402_1005Metric
+    # miss:  "0402" (no class prefix), R-0402 (dash after a lone letter)
     (
-        r"^(?:CHIP[-_]?0?|[RCL]_?0?)402(?:\b|_)",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?|(?:CAP|RES|IND)[-_]?0?)402(?:\b|_)",
         0.55,
         "0402 chip, package drawing body max 0.55 mm (Yageo RC0402 T)",
     ),
+    # match: R603, R0603, C_0603, CHIP-0603, IND-0603, RES-0603-1uH,
+    #        R_0603_1608Metric
+    # miss:  "0603", R-0603
     (
-        r"^(?:CHIP[-_]?0?|[RCL]_?0?)603(?:\b|_)",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?|(?:CAP|RES|IND)[-_]?0?)603(?:\b|_)",
         0.9,
         "0603 chip, package drawing body max 0.9 mm (Yageo/KEMET 0603)",
     ),
+    # match: R805, R0805, C_0805, CHIP_0805, CAP-0805
+    # miss:  "0805", R-0805
     (
-        r"^(?:CHIP[-_]?0?|[RCL]_?0?)805(?:\b|_)",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?|(?:CAP|RES|IND)[-_]?0?)805(?:\b|_)",
         1.35,
         "0805 chip, package drawing body max 1.35 mm (Yageo RC0805 T)",
     ),
+    # match: R1206, C_1206, CHIP-1206, CAP-1206, R_1206_3216Metric
+    # miss:  R01206 (this row takes no ``0?`` lead-in), "1206"
     (
-        r"^(?:CHIP[-_]?|[RCL]_?)1206(?:\b|_)",
+        r"^(?:CHIP[-_]?|[RCL]_?|(?:CAP|RES|IND)[-_]?)1206(?:\b|_)",
         1.8,
         "1206 chip, package drawing body max ~1.8 mm (Samsung CL31 series)",
     ),
+    # match: R1210, C_1210, L1210
+    # miss:  C_1210_3225Metric (the ``\b`` tail rejects a ``_`` suffix —
+    #        unlike the rows above), CHIP-1210, CAP-1210
     (
         r"^[RCL]_?1210\b",
         2.8,
         "1210 MLCC, package drawing body max 2.8 mm (Samsung CL32 series)",
     ),
+    # match: CAP-SMD, CAP-SMD-6.3x5.4
+    # miss:  CAP-1206 (chip row wins it), CAP-ELEC-5P (THT can)
     (
         r"^CAP-SMD",
         6.3,
         "SMD aluminium electrolytic ~5 mm can, body max ~6.3 mm (Nichicon/Panasonic V-chip)",
     ),
+    # match: LED-SMD, LED-SMD-0805
+    # miss:  LED-3MM, LED-TH
     (
         r"^LED-SMD",
         1.1,
         "SMD LED ~2.0x1.3 mm class, body max ~1.1 mm (Kingbright APTD2012 family)",
     ),
+    # match: HDR-SMD, HDR-SMD-2x5
+    # miss:  HDR-TH (the next row)
     (
         r"^HDR-SMD",
         8.5,
         "2.54 mm SMD/female header, body ~8.5 mm (standard 2.54 header insulator)",
     ),
+    # match: HDR-TH, HDR-TH-2.54 — also the table's largest value, which
+    #        _FALLBACK reads
+    # miss:  HDR-SMD
     (
         r"^HDR-TH",
         11.5,
         "2.54 mm through-hole pin header, overall ~11.5 mm (Samtec TSW class)",
     ),
+    # match: SOT-223, SOT-223-5 — before ``^SOT-`` so it is not read as
+    #        SOT-23 class
+    # miss:  SOT-89 (the next row)
     (
         r"^SOT-223",
         1.8,
         "SOT-223, package drawing body max 1.8 mm (JEDEC TO-261)",
     ),
+    # match: SOT-89, SOT-89-5 — before ``^SOT-`` for the same reason
+    # miss:  SOT-223 (row above)
     (
         r"^SOT-89",
         1.6,
         "SOT-89, package drawing body max 1.6 mm (JEDEC TO-243)",
     ),
+    # match: SOT-23, SOT-323, SOT-563
+    # miss:  SOT-223/SOT-89 (rows above win), SOIC-8 (different prefix)
     (
         r"^SOT-",
         1.3,
         "SOT-23 class, package drawing body max ~1.3 mm (JEDEC TO-236 family)",
     ),
+    # match: TSSOP, TSSOP-8, TSSOP20
+    # miss:  SSOP-8 (SOIC-class row below), TQFP
     (
         r"^TSSOP",
         1.2,
         "TSSOP, package drawing body max 1.2 mm (JEDEC MO-153)",
     ),
+    # match: SOIC-8, SO-8, SOP-8, QSOP-16, SSOP-28
+    # miss:  SO8 (no dash form for the two-letter prefix), SOT-23
     (
         r"^(QSOP|SSOP|SOP|SOIC|SO-)",
         1.75,
         "SOP/SOIC/QSOP class, package drawing body max ~1.75 mm (JEDEC MS-012/013)",
     ),
+    # match: QFN-32, TQFN, DFN-6, USON8, WSON, WSOF, HVSON
+    # miss:  SON-8 (bare SON is not listed), QFP-64 (next row)
     (
         r"^(TQFN|QFN|HVSON|WSON|WSOF|DFN|USON)",
         1.0,
         "QFN/SON-class leadless, package drawing body max ~1.0 mm (JEDEC MO-220 family)",
     ),
+    # match: QFP-64, LQFP-48, TQFP-100
+    # miss:  QFN-32 (row above — different height class)
     (
         r"^(TQFP|LQFP|QFP)",
         1.6,
         "QFP class, package drawing body max ~1.6 mm (JEDEC MS-026)",
     ),
+    # match: SW-SMD, SW-SMD-6x6
+    # miss:  SW-TH
     (
         r"^SW-SMD",
         4.3,

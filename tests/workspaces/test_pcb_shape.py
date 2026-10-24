@@ -297,6 +297,71 @@ def test_chip_passive_spellings_map_to_chip_heights() -> None:
     assert package_heights.height_mm("R_0805")[0] == pytest.approx(1.35)
     # the KiCad-style suffixed spelling
     assert package_heights.height_mm("R_0603_1608Metric")[0] == pytest.approx(0.9)
+    # gr513775: the CAP-/RES-/IND-<eia> spellings examples/boards use
+    assert package_heights.height_mm("CAP-1206")[0] == pytest.approx(1.8)
+    assert package_heights.height_mm("CAP-0402-100nF")[0] == pytest.approx(0.55)
+    assert package_heights.height_mm("RES-0402")[0] == pytest.approx(0.55)
+    assert package_heights.height_mm("IND-0603")[0] == pytest.approx(0.9)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "expected_mm"),
+    [
+        # chip rows: [RCL]/CHIP-/CAP-/RES-/IND- prefixes share one EIA code
+        ("R0402", 0.55),
+        ("R402", 0.55),
+        ("C_0402", 0.55),
+        ("CHIP-0402", 0.55),
+        ("CAP-0402-100nF", 0.55),
+        ("CHIP-0603", 0.9),
+        ("R_0603_1608Metric", 0.9),  # rides the rows' `_` tail
+        ("IND-0603", 0.9),
+        ("RES-0603", 0.9),
+        ("CHIP_0805", 1.35),
+        ("CAP-0805", 1.35),
+        ("CAP-1206", 1.8),
+        ("R1206", 1.8),
+        # the package-class rows
+        ("C_1210", 2.8),
+        ("CAP-SMD", 6.3),
+        ("LED-SMD", 1.1),
+        ("HDR-SMD", 8.5),
+        ("HDR-TH", 11.5),
+        ("SOT-223", 1.8),  # row order: before the `^SOT-` catch-all
+        ("SOT-89", 1.6),
+        ("SOT-23", 1.3),
+        ("TSSOP-8", 1.2),
+        ("SOIC-8", 1.75),
+        ("QFN-32", 1.0),
+        ("LQFP-48", 1.6),
+        ("SW-SMD", 4.3),
+        # near-misses land the table-maximum (HDR-TH 11.5 mm) fallback
+        ("0402", 11.5),  # no class prefix
+        ("R-0402", 11.5),  # dash after a lone letter
+        ("R01206", 11.5),  # the 1206 row takes no `0?` lead-in
+        ("CHIP-1210", 11.5),  # 1210 row has no CHIP-/CAP- alternative
+        ("C_1210_3225Metric", 11.5),  # that row's `\b` rejects a `_` tail
+        ("SO8", 11.5),  # SO- needs the dash
+        ("SON-8", 11.5),  # bare SON is not a leadless alternative
+        ("IND-7x7", 11.5),  # nano_usb_pd's inductor — non-EIA spelling
+        ("CAP-ELEC-5P", 11.5),  # its THT electrolytic likewise
+        ("WIDGET-9", 11.5),  # the unknown
+    ],
+)
+def test_height_table_spellings(spelling: str, expected_mm: float) -> None:
+    """gr513774: the table contract as data — each spelling a
+    HEIGHT_TABLE row's comment documents (matched or a near-miss) lands
+    that row's height or the table-maximum fallback."""
+    h, _source = package_heights.height_mm(spelling)
+    assert h == pytest.approx(expected_mm)
+
+
+def test_height_table_fallback_names_itself() -> None:
+    """An unmapped footprint's source note says it is the fallback —
+    the fit finding quotes it."""
+    h, source = package_heights.height_mm("WIDGET-9")
+    assert h == pytest.approx(11.5)
+    assert "fallback" in source
 
 
 def test_chip_passive_footprint_fits_5mm_cavity() -> None:
