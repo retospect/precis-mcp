@@ -39,7 +39,7 @@ design-review: yes
 5. **se-flow-kernel slice 4b** — the design-optimisation kit (`precis_geom.params`, `precis_geom.optimize`: cache, `evaluate_many`, search trace, checkpoint/resume, adapters; the build-step stack cache with params in the creator frame and the per-step cost/rebuild report) + the chamber-anneal and manifold-split examples, as dogfood; the proof (cfdtest parity) that physics-only `evaluate` plus a script-side objective reproduces the point solution. After 4.
 6. **pcb-workspace-code slice 1** — importer + replace + retirements; same change refuses the batch construction put and the eight construction ops (W5 applied). After 3.
 7. **structure-workspaces slice 1b** — git objects in Postgres (ruled yes); makes `script_sha` a real FK and the host repo a cache. After 3.
-8. **structure-workspaces 2p, 2a** and **pcb-workspace-code 2, 2t** — python-kind join, assembly API, place/route as cached requests; after 2–6. (2t trace views + `frame:` selector landed 2026-10-23, sw-2t.)
+8. **structure-workspaces 2p, 2a** and **pcb-workspace-code 2, 2t** — python-kind join, assembly API, place/route as cached requests; after 2–6. (2t trace views + `frame:` selector landed 2026-10-23, sw-2t; 2p python-kind join landed 2026-10-24, sw-2p.)
 9. **se-native-fields slice 1** — `precis_fields` scalar family + Joule, `fields:` token, `material=` + value selection, computers, the fields section of the optimise skill, the fin-heat example; "then we add more physics" — unblocks every solids case (conduction, DC, Joule) a script can check. After 5 (shares `evaluate`, the kit and the card pattern).
 10. **structure-workspaces slice 3** — the 12-wall H-column prism both ways; the proof that the script path is cheaper (needs hexfold-multicell-prism slice 3).
 

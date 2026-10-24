@@ -132,7 +132,7 @@ VOCABULARY = (
     "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly | "
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
     "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>] | "
-    "frame:<key>[!|/touched|/rest] | "
+    "frame:<key>[!|/touched|/rest] | frame:qual=<qual>[!|/touched|/rest] | "
     "mpatch:<mol>:<id> | mol:<mol>@<clearance Å> | "
     "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> "
     "(<mol> = <block> or <block>!<removed atom label>)"
@@ -352,6 +352,14 @@ def _parse_frame_sel(s: str, body: str) -> Selector:
     elif body.endswith("/touched"):
         mod, body = "touched", body[: -len("/touched")]
     key = body.strip()
+    if key.startswith("qual="):
+        # ``frame:qual=<qual>`` — the union of every frame whose ``qual``
+        # matches (structure-workspaces slice 2p; ``view='placed'``'s
+        # selector form). Same modifiers as ``frame:<key>`` over the union.
+        q = key[len("qual=") :].strip()
+        if not q or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", q):
+            raise MeasureError(shape_msg)
+        return Selector(kind="trace_qual", name=q, arg=mod)
     if not re.fullmatch(r"[0-9a-fA-F]{8,64}", key):
         raise MeasureError(shape_msg)
     return Selector(kind="trace_frame", name=key, arg=mod)
@@ -765,7 +773,7 @@ def resolve(
         )
     if sel.kind in ("sites", "atoms"):
         return _resolve_atomic(tree, sel, pin, text)
-    if sel.kind == "trace_frame":
+    if sel.kind in ("trace_frame", "trace_qual"):
         return _resolve_frame(tree, node, sel, text)
     if sel.kind == "mpatch":
         return _resolve_mpatch(tree, node, sel, text)
@@ -1521,18 +1529,40 @@ def _resolve_frame(
     from precis_se.traceview import Trace
 
     tr = Trace(doc)
-    fr = tr.frame(sel.name or "")
-    if fr is None:
-        return ResolvedDatum(
-            selector=text,
-            kind=sel.kind,
-            error=(f"frame:{sel.name} is not a frame of {owner.bound!r}'s run trace"),
-        )
-    if sel.arg == "touched":
-        wanted = tr.touched_ordinals(str(sel.name))
+    if sel.kind == "trace_qual":
+        frs = [f for f in tr.frames if str(f.get("qual")) == (sel.name or "")]
+        if not frs:
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"frame:qual={sel.name} matches no frame of "
+                    f"{owner.bound!r}'s run trace"
+                ),
+            )
+        ids: set[int] = set()
+        own: set[int] = set()
+        touched: set[int] = set()
+        for f in frs:
+            ids |= tr.subtree_ids(str(f["key"]))
+            own |= set(range(int(f["id"]), int(f.get("id_end") or f["id"]) + 1))
+            touched |= tr.touched_ordinals(str(f["key"]))
     else:
+        fr = tr.frame(sel.name or "")
+        if fr is None:
+            return ResolvedDatum(
+                selector=text,
+                kind=sel.kind,
+                error=(
+                    f"frame:{sel.name} is not a frame of {owner.bound!r}'s run trace"
+                ),
+            )
         ids = tr.subtree_ids(str(sel.name))
         own = set(range(int(fr["id"]), int(fr.get("id_end") or fr["id"]) + 1))
+        touched = tr.touched_ordinals(str(sel.name))
+    if sel.arg == "touched":
+        wanted = touched
+    else:
         if sel.arg == "alone":
             ids &= own
         elif sel.arg == "rest":
@@ -1624,6 +1654,9 @@ def _selector_text(sel: Selector) -> str:
     if sel.kind == "trace_frame":
         tail = "!" if sel.arg == "alone" else (f"/{sel.arg}" if sel.arg else "")
         return f"frame:{sel.name}{tail}"
+    if sel.kind == "trace_qual":
+        tail = "!" if sel.arg == "alone" else (f"/{sel.arg}" if sel.arg else "")
+        return f"frame:qual={sel.name}{tail}"
     if sel.kind == "mpatch":
         return f"mpatch:{_mol_ref(sel)}:{sel.patch_id}"
     if sel.kind == "mol":
@@ -1699,7 +1732,17 @@ def rank_datums(
 
 
 _REGION_KINDS = frozenset(
-    {"patch", "ring", "sites", "atoms", "trace_frame", "mpatch", "mol", "mcone"}
+    {
+        "patch",
+        "ring",
+        "sites",
+        "atoms",
+        "trace_frame",
+        "trace_qual",
+        "mpatch",
+        "mol",
+        "mcone",
+    }
 )
 
 

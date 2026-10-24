@@ -2225,7 +2225,7 @@ class SeHandler(Handler):
                     next=_TRACE_NEXT,
                 )
             return f"run diff vs {raw}:\n" + tv.render_diff(
-                tv.diff(tv.Trace(old), tv.Trace(new))
+                tv.diff(tv.Trace(old), tv.Trace(new)), ws=tv.Trace(new).ws
             )
         if not docs:
             return _NO_TRACE
@@ -2246,11 +2246,13 @@ class SeHandler(Handler):
                     f"{name}/{list(bt.scene.atoms)[ordinal]}: no maker — the "
                     "atom was not placed by a traced call"
                 )
-            body = tv.chain_line(tr.path(fr), fr)
+            body = tv.chain_line(tr.path(fr), fr, ws=tr.ws)
             if a.get("touched"):
                 mods = [f for f in tr.modifiers(ordinal) if f is not fr]
                 if mods:
-                    body += "\nchanged by: " + " · ".join(tv.line(f) for f in mods)
+                    body += "\nchanged by: " + " · ".join(
+                        tv.line(f, tr.ws) for f in mods
+                    )
             return body
         if "atoms" in a:
             items = a["atoms"]
@@ -2355,7 +2357,7 @@ class SeHandler(Handler):
                 f"{len(tr.frames)} frames"
             )
             for f in tr.children.get(None, []):
-                out.append(f"  {tv.line(f)}")
+                out.append(f"  {tv.line(f, tr.ws)}")
             if len(out) > 40:
                 break
         out.append(
@@ -4680,6 +4682,51 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
     return lines
 
 
+def _made_by_line(store: Any, tree: SeTree, node: SeBlock) -> str | None:
+    """``made-by: ws-hcol::main.bundle (main.py:30) → junction(k=3)#1``
+    — the python id first so ``get(kind='python', id=…)`` is one paste
+    (structure-workspaces slice 2p, spec §Structure fisheye). The
+    block's manifest-entry frame resolves through its bound ref's
+    ``generated.trace``; an ``op`` frame reads ``made-by: op <op>
+    (call <ledger id>)``. ``None`` when the block carries no trace."""
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if owner.bound_kind not in ("structure", "cad") or not owner.bound or store is None:
+        return None
+    try:
+        bref = store.get_ref(kind=owner.bound_kind, id=owner.bound)
+    except Exception:
+        return None
+    if bref is None:
+        return None
+    meta = bref.meta or {}
+    gen = meta.get("generated") or {}
+    fid = gen.get("frame")
+    if fid is None:
+        fid = (meta.get("frames") or {}).get(owner.name)
+    if fid is None:
+        return None
+    resolver = getattr(tree, "traces", None)
+    doc = resolver(gen.get("trace")) if resolver is not None else None
+    if doc is None:
+        return None
+    from precis_se import traceview as tv
+
+    tr = tv.Trace(doc)
+    fr = tr.maker_frame(int(fid))
+    if fr is None:
+        return None
+    if fr.get("kind") == "op":
+        return f"made-by: op {fr.get('qual')} (call {fr.get('line')})"
+    user = tv.nearest_user(tr, fr)
+    ws = gen.get("workspace") or tr.ws
+    leaf = tv.line(fr)
+    if user is not None and ws:
+        head = f"ws-{ws}::{user.get('qual')} ({user.get('file')}:{user.get('line')})"
+        return f"made-by: {head}" + ("" if user is fr else f" → {leaf}")
+    return f"made-by: {leaf}"
+
+
 #: WARN codes whose finding rows ``view='block'`` folds into one
 #: count+worst+where aggregate — the full row list stays in
 #: ``view='report'`` (gr503025: ``geom.angle.dev`` fires per (ring,
@@ -4875,6 +4922,9 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     if generated:
         lines.append("")
         lines.extend(generated)
+    made_by = _made_by_line(store, tree, node)
+    if made_by is not None:
+        lines.append(made_by)
     # The bound structure's CURRENT validator read, beside the stored build
     # report above — a clean stored report does not mean the geometry
     # validates (gr486404). Degrades to nothing like ``_generated_section``.

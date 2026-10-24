@@ -193,10 +193,13 @@ def _ring1_symbol(
     mod: ModuleIndex,
     idx: RepoIndex,
     hits: list[ptests.TestHit],
+    placed: list[str] | None = None,
 ) -> list[str]:
     """The ``fisheye+1hop`` code ring for a symbol focus: callers,
     callees, the package gloss, the tests — each at signature + first
-    docstring line. Returns the edge members for the second hop."""
+    docstring line. Returns the edge members for the second hop.
+    ``placed`` is the workspace Placed group (``ws-<slug>`` roots only;
+    structure-workspaces slice 2p), rendered after Tests."""
     body: list[str] = []
     seeds: list[str] = []
 
@@ -230,6 +233,9 @@ def _ring1_symbol(
     if hits:
         body.append("Tests:")
         body.extend(_tests_rows(hits))
+    if placed:
+        body.append("Placed:")
+        body.extend(f"  {r}" for r in placed)
     if n_test_callers:
         body.append(
             f"  ({n_test_callers} test caller{'s' if n_test_callers != 1 else ''}"
@@ -386,10 +392,12 @@ def render_eye(
     idx: RepoIndex,
     extent: Extent,
     hits: list[ptests.TestHit],
+    placed: list[str] | None = None,
 ) -> str:
     """The python eye on ``sym`` at ``extent`` — the body
     ``PythonHandler.eye`` returns. ``hits`` is the focus's ranked test
-    list (``_python_tests.discover_tests``), computed by the handler."""
+    list (``_python_tests.discover_tests``), computed by the handler.
+    ``placed`` is the ws-root Placed group (pre-rendered rows)."""
     mod = idx.file(sym.file)
     assert mod is not None
     head = f"# eye on {alias}::{sym.qualname} — {extent.label}"
@@ -424,7 +432,7 @@ def render_eye(
             seeds = _ring1_module(lines, alias, mod, idx, hits)
             seen.update(s.qualname for s in idx.symbols_in(mod.qualname))
         else:
-            seeds = _ring1_symbol(lines, alias, sym, mod, idx, hits)
+            seeds = _ring1_symbol(lines, alias, sym, mod, idx, hits, placed=placed)
         seen.update(seeds)
     if extent >= Extent.HOP2:
         if sym.kind == "module":

@@ -78,6 +78,9 @@ class Trace:
     def __init__(self, doc: dict[str, Any]) -> None:
         self.doc = doc
         self.run: dict[str, Any] = dict(doc.get("run") or {})
+        #: The run's workspace slug — user frames render their python id
+        #: ``ws-<slug>::<qual>`` (slice 2p).
+        self.ws: str | None = str(self.run.get("workspace") or "") or None
         self.frames: list[dict[str, Any]] = list(doc.get("frames") or [])
         self.by_key: dict[str, dict[str, Any]] = {f["key"]: f for f in self.frames}
         #: Every id a frame covers (collapsed spans included) → the frame.
@@ -181,11 +184,13 @@ class Trace:
         return out
 
 
-def line(fr: dict[str, Any]) -> str:
+def line(fr: dict[str, Any], ws: str | None = None) -> str:
     """One frame as the spec renders it: user ``main.py:30 bundle(R=4)``;
     everything else ``junction(k=2)#7`` — ``#occ`` past the first
     occurrence of the same call site under one parent; a collapsed fold
-    shows its ``occ..occ_end`` span."""
+    shows its ``occ..occ_end`` span. ``ws`` (the run's workspace slug)
+    appends the user frame's python id `` · ws-<slug>::<qual>`` (slice
+    2p — the id is one ``get(kind='python', id=…)`` paste)."""
     qual = str(fr.get("qual") or "?")
     args = _args_text(fr.get("args"))
     occ = int(fr.get("occ") or 0)
@@ -194,6 +199,8 @@ def line(fr: dict[str, Any]) -> str:
         file = str(fr.get("file") or "")
         lineno = fr.get("line") or 0
         base = f"{file}:{lineno} {qual}{args}"
+        if ws:
+            base += f" · ws-{ws}::{qual}"
     else:
         base = f"{qual}{args}"
         if occ_end is not None:
@@ -203,10 +210,12 @@ def line(fr: dict[str, Any]) -> str:
     return base
 
 
-def chain_line(path: list[dict[str, Any]], leaf: dict[str, Any]) -> str:
+def chain_line(
+    path: list[dict[str, Any]], leaf: dict[str, Any], ws: str | None = None
+) -> str:
     """Root→leaf joined `` → `` (root skipped), then the leaf's own
     ``· made …, touched …`` — the atom→trace ask's whole answer."""
-    parts = [line(f) for f in path if f.get("kind") != "root"]
+    parts = [line(f, ws) for f in path if f.get("kind") != "root"]
     text = " → ".join(parts) if parts else "(root)"
     made = _counts_text(leaf.get("made"))
     touched = _counts_text(leaf.get("touched"))
@@ -248,7 +257,7 @@ def card(trace: Trace, key: str, *, samples: list[str] | None = None) -> str:
     fr = trace.frame(key)
     if fr is None:
         return f"frame {key} not in this trace"
-    out = [line(fr)]
+    out = [line(fr, trace.ws)]
     made = _counts_text(fr.get("made")) or "—"
     sub_made = _counts(
         {e: v for f in trace.subtree(key) for e, v in (f.get("made") or {}).items()}
@@ -262,7 +271,8 @@ def card(trace: Trace, key: str, *, samples: list[str] | None = None) -> str:
     if kids:
         out.append(f"children: {len(kids)}")
         out.extend(
-            f"  {line(c)} · made {_counts_text(c.get('made')) or '—'}" for c in kids[:8]
+            f"  {line(c, trace.ws)} · made {_counts_text(c.get('made')) or '—'}"
+            for c in kids[:8]
         )
         if len(kids) > 8:
             out.append(f"  … {len(kids) - 8} more")
@@ -324,11 +334,11 @@ def diff(old: Trace, new: Trace) -> list[DiffRow]:
     return rows
 
 
-def render_diff(rows: list[DiffRow]) -> str:
+def render_diff(rows: list[DiffRow], ws: str | None = None) -> str:
     """The diff rows as lines: ``+``/``-``/``~``/``=`` with depth indent."""
     glyphs = {"added": "+", "removed": "-", "changed": "~", "unchanged": "="}
     out = []
     for r in rows:
         note = f" ({r.note})" if r.note else ""
-        out.append(f"{glyphs[r.kind]} {'  ' * (r.depth - 1)}{line(r.frame)}{note}")
+        out.append(f"{glyphs[r.kind]} {'  ' * (r.depth - 1)}{line(r.frame, ws)}{note}")
     return "\n".join(out) if out else "(no frames)"

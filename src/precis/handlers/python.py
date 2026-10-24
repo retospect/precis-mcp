@@ -61,10 +61,15 @@ from precis.handlers._python_provenance import (
 )
 from precis.handlers._python_semantic import SemanticIndex, rrf
 from precis.handlers._python_worktrees import WorktreeRegistry
+from precis.handlers._python_ws import (
+    WorkspaceRoots,
+    render_placed,
+    render_placed_row,
+)
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.python_index.indexer import _qualname_for_file
 from precis.response import Response
@@ -98,6 +103,7 @@ _SUPPORTED_VIEWS = (
     "provenance",
     "tests",
     "impact",
+    "placed",
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
 _SEARCH_MODES = ("pattern", "lexical", "semantic")
@@ -268,6 +274,9 @@ class PythonHandler(Handler):
 
     #: edits source files on disk; fixtures may hold credential-like strings: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    #: ``args=`` keys one verb reads (dispatch gates callers on the
+    #: derived ``ARGS_KEYS``; test_dispatch_args_keys pins the pair).
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {"get": ArgsSpec({"run"})}
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="python",
@@ -296,6 +305,7 @@ class PythonHandler(Handler):
         roots: dict[str, Path],
         cache: RepoCache | None = None,
         worktrees: WorktreeRegistry | None = None,
+        workspaces: WorkspaceRoots | None = None,
     ) -> None:
         # ``hub`` is taken for signature uniformity; python is an
         # in-memory kind (no DB, no embedder), so we don't actually
@@ -318,6 +328,19 @@ class PythonHandler(Handler):
         self.roots = resolved
         self.cache = cache or RepoCache()
         self.worktrees = worktrees
+        # ``ws-<slug>`` aliases — DB-backed workspace code roots
+        # (structure-workspaces slice 2p). Default-built from the hub's
+        # store; ``None`` when the deployment has no DB (or in tests
+        # that want the feature off).
+        self.workspaces = (
+            workspaces
+            if workspaces is not None
+            else (
+                WorkspaceRoots(hub.store)
+                if getattr(hub, "store", None) is not None
+                else None
+            )
+        )
         # Semantic half of search (embedder may be None -> lexical only).
         self._semantic = SemanticIndex(getattr(hub, "embedder", None))
 
@@ -364,6 +387,7 @@ class PythonHandler(Handler):
         timeout: int = 10,
         max_events: int = 2_000,
         expand_stdlib: bool = False,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if expected_root is not None:
@@ -427,6 +451,10 @@ class PythonHandler(Handler):
                 depth=depth,
                 cross_repo=cross_repo,
             )
+
+        # Placed view — where a workspace symbol's frames landed.
+        if view == "placed":
+            return self._render_placed(parsed, idx, run=(args or {}).get("run"))
 
         # Runtrace view — gated; spawns a subprocess.
         if view == "runtrace":
@@ -573,9 +601,26 @@ class PythonHandler(Handler):
         if ext >= Extent.HOP1:
             measured = ptests.load_measured(root, idx)
             hits = ptests.discover_tests(sym, idx, measured=measured)
+        placed: list[str] | None = None
+        if (
+            ext >= Extent.HOP1
+            and self.workspaces is not None
+            and self.workspaces.owns(parsed.alias)
+        ):
+            placed = [
+                render_placed_row(r)
+                for r in self.workspaces.placed(
+                    self.workspaces.slug_of(parsed.alias), sym.qualname
+                )
+            ]
         return Response(
             body=peye.render_eye(
-                alias=parsed.alias, sym=sym, idx=idx, extent=ext, hits=hits
+                alias=parsed.alias,
+                sym=sym,
+                idx=idx,
+                extent=ext,
+                hits=hits,
+                placed=placed,
             )
         )
 
@@ -1742,7 +1787,11 @@ class PythonHandler(Handler):
                 f"({type(exc).__name__})",
                 next="get(kind='python') to inspect configured roots",
             ) from exc
-        if self.worktrees is not None and alias not in self.roots:
+        if (
+            self.worktrees is not None
+            and alias not in self.roots
+            and self.worktrees.owns(alias)
+        ):
             for gone in self.worktrees.touch(alias, root):
                 self.cache.drop(gone)
         note_index(alias, idx)
@@ -1766,6 +1815,8 @@ class PythonHandler(Handler):
         wts = self._worktree_listing()
         if alias in wts:
             return wts[alias]
+        if self.workspaces is not None and self.workspaces.owns(alias):
+            return self.workspaces.resolve(alias)
         if self.worktrees is not None and self.worktrees.owns(alias):
             raise NotFound(
                 f"worktree {alias!r} not configured: its directory does not exist "
@@ -1807,7 +1858,63 @@ class PythonHandler(Handler):
         if alias in self.roots:
             return {alias: self.roots[alias]}
         wts = self._worktree_listing()
-        return {alias: wts[alias]} if alias in wts else {}
+        if alias in wts:
+            return {alias: wts[alias]}
+        if self.workspaces is not None and self.workspaces.owns(alias):
+            try:
+                return {alias: self.workspaces.resolve(alias)}
+            except NotFound:
+                return {}
+        return {}
+
+    def _render_placed(
+        self,
+        parsed: _ParsedId,
+        idx: RepoIndex,
+        *,
+        run: int | str | None = None,
+    ) -> Response:
+        """``view='placed'`` — per design built from this workspace,
+        the frames whose ``qual`` matches the symbol (structure-
+        workspaces slice 2p, spec §Join with the python kind)."""
+        if parsed.qualname is None:
+            raise BadInput(
+                "view='placed' takes a symbol id '<alias>::<qualname>'",
+                next=f"get(kind='python', id='{parsed.alias}::<qualname>', "
+                "view='placed')",
+            )
+        if self.workspaces is None or not self.workspaces.owns(parsed.alias):
+            raise BadInput(
+                f"view='placed' applies to ws-<slug> workspace roots, "
+                f"not {parsed.alias!r}",
+                next="get(kind='python', id='ws-<slug>::<qualname>', view='placed')",
+            )
+        sym = idx.symbol(parsed.qualname)
+        if sym is None:
+            raise NotFound(
+                f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+        if sym.kind == "module":
+            raise BadInput(
+                f"view='placed' takes a function or class symbol, not "
+                f"module {parsed.qualname!r}",
+                next=f"get(kind='python', id='{parsed.alias}::"
+                "<module>.<qualname>', view='placed')",
+            )
+        if run is not None:
+            try:
+                run = int(run)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"view='placed' args.run takes a run job ref id, got {run!r}",
+                    next="args={'run': <run job ref id>} — the design's "
+                    "meta.workspaces names the latest run's job",
+                ) from None
+        rows = self.workspaces.placed(
+            self.workspaces.slug_of(parsed.alias), parsed.qualname, run=run
+        )
+        return Response(body=render_placed(parsed.alias, parsed.qualname, rows))
 
     def _render_file(
         self,

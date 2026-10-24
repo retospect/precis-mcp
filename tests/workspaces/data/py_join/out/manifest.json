@@ -1,0 +1,15 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "p",
+   "file": "blocks/p.extxyz",
+   "scale": "atomic",
+   "desc": "three cells",
+   "frame": 12
+  }
+ ],
+ "instances": [],
+ "connects": [],
+ "notes": "py join fixture"
+}
