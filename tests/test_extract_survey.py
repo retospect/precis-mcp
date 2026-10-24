@@ -11,7 +11,12 @@ import pytest
 
 from precis.extract import anchors, verify
 from precis.extract.accept import acceptance, stratified_sample, wilson_interval
-from precis.extract.proposals import build_runs, resolve_measurand
+from precis.extract.prompt import reader_prompt
+from precis.extract.proposals import (
+    READER_PROMPT_VERSION,
+    build_runs,
+    resolve_measurand,
+)
 from precis.store import Store
 from tests.extract_helpers import CHUNK1, fe_reply, survey_world
 
@@ -148,6 +153,42 @@ class TestProposals:
         )
         assert not out.proposals
         assert out.dropped[0]["reason"] == "unknown_measurand"
+
+    def test_null_measurand_drops_as_no_fitting(self, world: dict) -> None:
+        """gr511568: when the allow-list has no taxon for a number the
+        chunk states, 'measurand': null is the reader's honest answer —
+        filing it under the nearest slug is what filled 'fraction
+        attributable to climate change' with unrelated shares."""
+        out = build_runs(
+            fe_reply(measurand=None),
+            chunk_id=world["c1"],
+            chunk_text=CHUNK1,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "no_fitting_measurand"
+
+    def test_written_runs_carry_the_prompt_version(self, world: dict) -> None:
+        out = build_runs(
+            fe_reply(),
+            chunk_id=world["c1"],
+            chunk_text=CHUNK1,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model="m",
+        )
+        assert (
+            out.proposals[0].output.meta["extraction"]["prompt"]
+            == READER_PROMPT_VERSION
+        )
+
+    def test_reader_prompt_offers_the_no_fitting_door(self, world: dict) -> None:
+        text = reader_prompt(vocab=list(world["vocab"].values()), chunk_text=CHUNK1)
+        assert '"measurand": null' in text
 
     def test_bad_anchor_drops_the_result(self, world: dict) -> None:
         out = build_runs(

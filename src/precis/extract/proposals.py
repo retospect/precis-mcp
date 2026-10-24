@@ -18,7 +18,16 @@ Per result the deterministic checks are the pilot's, ported:
   (``unit_without_text_support``), the row still lands (the pilot's
   ruling: flags, not refusals, for things a sampler can still judge);
 * the measurand resolves to the vocabulary — an unknown name drops the
-  result (``unknown_measurand``) so a small model cannot mint synonyms.
+  result (``unknown_measurand``) so a small model cannot mint synonyms;
+  a ``null`` measurand is the reader's "no listed measurand fits" answer
+  and drops as ``no_fitting_measurand`` (gr511568 — a forced nearest
+  slug filled 'fraction attributable to climate change' with unrelated
+  shares).
+
+Every written run's ``meta.extraction.prompt`` carries
+:data:`READER_PROMPT_VERSION`, bumped whenever the reader contract in
+:mod:`precis.extract.prompt` changes, so rows from different prompt
+generations stay distinguishable.
 
 Attribution → tier follows Build C: ``own_work`` + anchor ⇒ ``measured``
 (the default), ``cited_work`` ⇒ ``asserted`` (the store refuses
@@ -41,6 +50,10 @@ _TIERS = {"measured", "computed", "derived", "asserted"}
 _ROLES = {"context", "preparation", "model"}
 _MEASURAND_STATUSES = {"explicit", "interpreted", "ambiguous"}
 _DIRECTIONS = {"input", "covariate"}
+
+#: The reader-contract generation stamped on every written run's
+#: ``meta.extraction.prompt`` (r1 = the unversioned castor contract).
+READER_PROMPT_VERSION = "r2"
 
 _RESULT_FIELDS = {
     "subject",
@@ -241,6 +254,18 @@ def build_runs(
                 }
             )
             continue
+        if raw.get("measurand") is None:
+            out.dropped.append(
+                {
+                    "location": location,
+                    "reason": "no_fitting_measurand",
+                    "detail": (
+                        f"{literal!r}: the reader found no listed measurand "
+                        "whose meaning fits"
+                    ),
+                }
+            )
+            continue
         entry = resolve_measurand(raw.get("measurand"), vocab)
         if entry is None:
             out.dropped.append(
@@ -388,7 +413,11 @@ def build_runs(
             "extraction_run": extraction_run,
             "anchor_id": _chunk_anchor_id(chunk_id, raw.get("anchor")),
             "anchor_scheme": _anchors.ANCHOR_SCHEME,
-            "extraction": {"chunk": chunk_id, "model": model},
+            "extraction": {
+                "chunk": chunk_id,
+                "model": model,
+                "prompt": READER_PROMPT_VERSION,
+            },
         }
         output = MeasureSpec(
             measurand_ref_id=entry.ref_id,

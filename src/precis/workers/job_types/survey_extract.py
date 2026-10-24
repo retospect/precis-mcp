@@ -401,6 +401,7 @@ def _fresh_stats() -> dict[str, int]:
         "drop:literal_not_in_span": 0,
         "drop:unknown_measurand": 0,
         "drop:unresolvable_anchor": 0,
+        "drop:no_fitting_measurand": 0,
         "unparseable_reply": 0,
         "truncated": 0,
         "write_refused": 0,

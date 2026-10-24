@@ -458,6 +458,31 @@ class TestGuards:
             store.insert_measure(spec, actor="reader")
         assert "'mA'" in str(err.value) and "'V'" in str(err.value)
 
+    def test_unit_mismatch_is_refused_on_a_non_numeric_literal(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        """gr511460: '50 %' parses as categorical (a unit glued to the
+        number is no numeric form), so the dimension check used to be
+        skipped and a relative change landed under an absolute measurand
+        with SI empty. The reported unit's dimension is checked whenever
+        the taxon has a canonical unit, numbers or not."""
+        spec = MeasureSpec(
+            world["potential"], "50 %", world["paper"], reported_unit="%"
+        )
+        with pytest.raises(BadInput) as err:
+            store.insert_measure(spec, actor="reader")
+        assert "'%'" in str(err.value) and "'V'" in str(err.value)
+
+    def test_a_matching_unit_on_a_non_numeric_literal_still_lands(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(world["fe"], "50 %", world["paper"], reported_unit="%"),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["literal"] == "50 %" and row["reported_unit"] == "%"
+
     def test_unparseable_unit_is_refused(
         self, store: Store, world: dict[str, Any]
     ) -> None:

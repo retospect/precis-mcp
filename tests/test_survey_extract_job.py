@@ -455,6 +455,32 @@ class TestCastorTrialPrep:
         assert all(e.get("chunk_kind") == "paragraph" for e in esc)
         assert "stop_reason" in next(e for e in esc if e["kind"] == "unparseable_reply")
 
+    def test_no_fitting_measurand_is_counted(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr511568: the reader may answer 'no listed measurand fits'
+        rather than file the number under the closest allowed slug."""
+        reply = {
+            "results": [
+                {
+                    "measurand": None,
+                    "literal": "40",
+                    "unit": "%",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                },
+            ]
+        }
+        replies = iter([json.dumps(reply), '{"results": []}', '{"results": []}'])
+        monkeypatch.setattr(job, "route", lambda req: llm_result(next(replies)))
+        done, _ = drive(
+            _extract_meta(world, skip_accept=True), world["store"], job.SPEC
+        )
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["drop:no_fitting_measurand"] == 1
+        assert stats["written"] == 0
+
     def test_write_refused_is_counted(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:

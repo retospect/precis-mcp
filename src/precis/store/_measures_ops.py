@@ -1001,35 +1001,42 @@ class MeasuresMixin:
                 f"(reported_unit={shown or canonical!r}), or "
                 f"reported_unit={canonical!r} when it is already in the canonical unit",
             )
-        if reported_unit and canonical and has_numbers:
+        if reported_unit and canonical:
+            # The dimension check runs even when the literal carries no
+            # numbers: '50 %' parses as categorical, and a relative change
+            # filed under an absolute measurand (gr511460) is the same
+            # refusal a numeric 'W mK^2' gets.
             try:
                 conv = self._compat_conversion(
                     c, taxon, reported_unit, canonical
                 ) or make_converter(reported_unit, canonical)
             except NeedsMolarMass as need:
-                mm = molar_mass(product) if product else None
-                if mm is None:
-                    escalation.append(
-                        {
-                            "rule": "no_molar_mass",
+                conv = None
+                if has_numbers:
+                    mm = molar_mass(product) if product else None
+                    if mm is None:
+                        escalation.append(
+                            {
+                                "rule": "no_molar_mass",
+                                "product": product,
+                                "reported_unit": reported_unit,
+                                "canonical_unit": canonical,
+                                "direction": need.direction,
+                            }
+                        )
+                        num = low = high = err = None
+                        form = "not_established"
+                    else:
+                        conv = make_converter(
+                            reported_unit, canonical, molar_mass_g_mol=mm
+                        )
+                        meta["conversion"] = {
+                            "from": reported_unit,
+                            "to": canonical,
                             "product": product,
-                            "reported_unit": reported_unit,
-                            "canonical_unit": canonical,
-                            "direction": need.direction,
+                            "molar_mass_g_mol": mm,
                         }
-                    )
-                    num = low = high = err = None
-                    form = "not_established"
-                    conv = None
-                else:
-                    conv = make_converter(reported_unit, canonical, molar_mass_g_mol=mm)
-                    meta["conversion"] = {
-                        "from": reported_unit,
-                        "to": canonical,
-                        "product": product,
-                        "molar_mass_g_mol": mm,
-                    }
-            if conv is not None:
+            if conv is not None and has_numbers:
                 if "conversion" not in meta and conv.scale != 1.0:
                     meta["conversion"] = {"from": reported_unit, "to": canonical}
                 num = None if num is None else conv.value(num)

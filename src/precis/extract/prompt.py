@@ -29,7 +29,7 @@ Each result:
 {
  "subject": "<paper-local label for the catalyst/sample/system, or null>",
  "group": "<finding or table name these results share, or null>",
- "measurand": "<a measurand slug from the list below>",
+ "measurand": "<a measurand slug from the list below, or null>",
  "literal": "<the exact printed string: '95', '<1', '550-575', 'NH3'>",
  "unit": "<the printed unit, or null>",
  "anchor": "<the [n] sentence the literal is printed in: '4' or '4-6'>",
@@ -60,6 +60,10 @@ Rules:
 - the literal must be copied EXACTLY as printed, sign and dashes included;
 - anchor to the sentence that prints the literal, nothing wider;
 - do not invent numbers, units or measurands — emit [] rather than guess;
+- file a number only under a measurand whose meaning matches it; when the
+  chunk states a real number no listed measurand describes — a share, a
+  relative change, a figure the list has no taxon for — emit
+  "measurand": null; the closest slug is not a fallback;
 - a measurand not in the list cannot be named.\
 """
 
