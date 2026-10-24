@@ -62,26 +62,33 @@ _BBOX_MARGIN_MM = 2.0
 #: ``(regex, height_mm, source)`` — ordered, first match wins. Specific
 #: prefixes before their general family (``SOT-223``/``SOT-89`` before
 #: ``SOT-``); chip-passive imperial codes under one ``[RCL]`` row each
-#: since resistor and MLCC body heights track the same imperial size.
-#: See ``docs/backlog/pcb-se-binding.md`` §Rough box v0 / Change 1.
+#: since resistor and MLCC body heights track the same imperial size,
+#: with ``CHIP-`` and underscored (``R_0603``) spellings on the same
+#: rows (gr513752). See ``docs/backlog/pcb-se-binding.md`` §Rough box
+#: v0 / Change 1.
 HEIGHT_TABLE: tuple[tuple[str, float, str], ...] = (
     (
-        r"^[RCL]0?402\b",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?)402(?:\b|_)",
         0.55,
         "0402 chip, package drawing body max 0.55 mm (Yageo RC0402 T)",
     ),
     (
-        r"^[RCL]0?603\b",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?)603(?:\b|_)",
         0.9,
         "0603 chip, package drawing body max 0.9 mm (Yageo/KEMET 0603)",
     ),
     (
-        r"^[RCL]0?805\b",
+        r"^(?:CHIP[-_]?0?|[RCL]_?0?)805(?:\b|_)",
         1.35,
         "0805 chip, package drawing body max 1.35 mm (Yageo RC0805 T)",
     ),
     (
-        r"^[RCL]1210\b",
+        r"^(?:CHIP[-_]?|[RCL]_?)1206(?:\b|_)",
+        1.8,
+        "1206 chip, package drawing body max ~1.8 mm (Samsung CL31 series)",
+    ),
+    (
+        r"^[RCL]_?1210\b",
         2.8,
         "1210 MLCC, package drawing body max 2.8 mm (Samsung CL32 series)",
     ),
@@ -297,6 +304,7 @@ class Prism:
     rot_deg: float
     extent_mm: tuple[float, float, float, float] | None
     z_mm: tuple[float, float]
+    footprint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -311,6 +319,8 @@ class Prism:
         }
         if self.source is not None:
             d["source"] = self.source
+        if self.footprint is not None:
+            d["footprint"] = self.footprint
         if self.extent_mm is not None:
             d["extent_mm"] = list(self.extent_mm)
         return d
@@ -667,6 +677,11 @@ def derive_shape(
                 rot_deg=rot,
                 extent_mm=extent,
                 z_mm=(t_mm, t_mm + h_mm) if side == "top" else (-h_mm, 0.0),
+                footprint=(
+                    str(detail["footprint"])
+                    if detail.get("footprint") is not None
+                    else None
+                ),
             )
         )
 
@@ -856,33 +871,78 @@ def _spec_aabb(
     )
 
 
+def _assumed_height_notes(shape: BoardShape) -> dict[str, str]:
+    """refdes → the honesty tail a fit finding appends when that prism's
+    height is the table fallback (gr513752): the fallback was silent, so
+    any finding naming the part must say the height was assumed — and
+    name the fix (``height_mm=`` on ``b.part``)."""
+    out: dict[str, str] = {}
+    for p in shape.prisms:
+        if p.source != _FALLBACK[1]:
+            continue
+        why = (
+            f"no height for footprint {p.footprint!r}"
+            if p.footprint
+            else "no footprint and no height"
+        )
+        out[p.refdes] = (
+            f"height assumed {p.height_mm:g} mm ({why}; pass height_mm= on b.part)"
+        )
+    return out
+
+
 def _check_containment(
     shape: BoardShape,
     spec: Mapping[str, Any],
     clearance_mm: float,
     findings: list[FitFinding],
 ) -> None:
+    assumed = _assumed_height_notes(shape)
     bx0, by0, bz0, bx1, by1, bz1 = _spec_aabb(shape, spec)
     for name, (x0, y0, z0, x1, y1, z1) in shape.solids_mm():
-        over = max(
-            bx0 + clearance_mm - x0,
-            by0 + clearance_mm - y0,
-            bz0 + clearance_mm - z0,
-            x1 - (bx1 - clearance_mm),
-            y1 - (by1 - clearance_mm),
-            z1 - (bz1 - clearance_mm),
-        )
-        if over > 0.0:
-            findings.append(
-                FitFinding(
-                    "error",
-                    "fit.outside_enclosure",
-                    name,
-                    f"{name} exceeds enclosure {spec['name']!r} by "
-                    f"{over:.3g} mm (cavity {bx1 - bx0:.4g}×"
-                    f"{by1 - by0:.4g}×{bz1 - bz0:.4g} mm)",
-                )
+        over = [
+            (
+                "x",
+                bx0 + clearance_mm - x0,
+                f"left {x0:.4g} < {bx0 + clearance_mm:.4g}",
+            ),
+            (
+                "x",
+                x1 - (bx1 - clearance_mm),
+                f"right {x1:.4g} > {bx1 - clearance_mm:.4g}",
+            ),
+            (
+                "y",
+                by0 + clearance_mm - y0,
+                f"front {y0:.4g} < {by0 + clearance_mm:.4g}",
+            ),
+            (
+                "y",
+                y1 - (by1 - clearance_mm),
+                f"back {y1:.4g} > {by1 - clearance_mm:.4g}",
+            ),
+            (
+                "z",
+                bz0 + clearance_mm - z0,
+                f"bottom {z0:.4g} < {bz0 + clearance_mm:.4g}",
+            ),
+            (
+                "z",
+                z1 - (bz1 - clearance_mm),
+                f"top {z1:.4g} > {bz1 - clearance_mm:.4g}",
+            ),
+        ]
+        bad = [(ax, amt, why) for ax, amt, why in over if amt > 0.0]
+        if bad:
+            detail = (
+                f"{name} exceeds enclosure {spec['name']!r}: "
+                + ", ".join(f"{ax} by {amt:.3g} mm ({why})" for ax, amt, why in bad)
+                + f" (cavity {bx1 - bx0:.4g}×"
+                f"{by1 - by0:.4g}×{bz1 - bz0:.4g} mm)"
             )
+            if name in assumed:
+                detail += f"; {assumed[name]}"
+            findings.append(FitFinding("error", "fit.outside_enclosure", name, detail))
 
 
 def _overlap(
@@ -916,6 +976,7 @@ def _check_interference(
     keepout polygon's own bounding box (layers and z are ignored: a
     keepout is recorded-not-enforced data, and the rough box is
     deliberately 2.5-D)."""
+    assumed = _assumed_height_notes(shape)
     s = _spec_aabb(shape, spec)
     outline_xs = [p[0] for p in shape.outline]
     outline_ys = [p[1] for p in shape.outline]
@@ -937,15 +998,13 @@ def _check_interference(
     for name, solid in shape.solids_mm():
         shortfall = _overlap(solid, s, clearance_mm)
         if shortfall is not None:
-            findings.append(
-                FitFinding(
-                    "error",
-                    "fit.interference",
-                    name,
-                    f"{spec['name']!r} comes within {shortfall:.3g} mm of "
-                    f"{name} (clearance {clearance_mm:g} mm)",
-                )
+            detail = (
+                f"{spec['name']!r} comes within {shortfall:.3g} mm of "
+                f"{name} (clearance {clearance_mm:g} mm)"
             )
+            if name in assumed:
+                detail += f"; {assumed[name]}"
+            findings.append(FitFinding("error", "fit.interference", name, detail))
     for hole in shape.holes:
         if s[0] <= hole.x_mm <= s[3] and s[1] <= hole.y_mm <= s[4]:
             findings.append(

@@ -263,6 +263,75 @@ def test_fit_partly_placed_board_splits_the_counts() -> None:
     assert "1 of 2 parts checked" in res.summary()
 
 
+def test_fit_enclosure_overflow_names_the_axis() -> None:
+    """gr513753: an overflow finding must name the axis (and amount on
+    each) — 'exceeds enclosure by 3.1 mm' made the builder guess."""
+    b = Board("fit-axis", outline=rect(50, 40))
+    b.part("U1", footprint="SOIC-8", height_mm=1.75).at(25, 20)
+    shape = b.shape()  # top at 3.35 mm; only z overflows a 3.0 mm cavity
+    res = shape.fits(pcb.enclosure(50, 40, 3.0))
+    assert not res.ok
+    f = res.findings[0]
+    assert f.code == "fit.outside_enclosure" and f.subject == "U1"
+    assert "z by 0.35 mm" in f.detail
+    assert "top" in f.detail
+    assert "x by" not in f.detail and "y by" not in f.detail
+    # one solid overflowing two axes: each is named with its own amount.
+    b2 = Board("fit-axes", outline=rect(50, 40))
+    b2.part("J1", footprint="HDR-TH", height_mm=5.0).at(0, 20)
+    res = b2.shape().fits(pcb.enclosure(40, 40, 3.0))
+    detail = next(f.detail for f in res.findings if f.subject == "J1")
+    assert "x by 5 mm" in detail and "z by 3.6 mm" in detail
+
+
+def test_chip_passive_spellings_map_to_chip_heights() -> None:
+    """gr513752(b): ``CHIP-`` and underscored ``R_``/``C_`` spellings
+    join the ``[RCL]`` chip rows (the dogfood board's ``CHIP-0603`` used
+    to miss every row and take the 11.5 mm fallback)."""
+    assert package_heights.height_mm("CHIP-0402")[0] == pytest.approx(0.55)
+    assert package_heights.height_mm("CHIP-0603")[0] == pytest.approx(0.9)
+    assert package_heights.height_mm("CHIP-0805")[0] == pytest.approx(1.35)
+    assert package_heights.height_mm("CHIP-1206")[0] == pytest.approx(1.8)
+    assert package_heights.height_mm("R_0402")[0] == pytest.approx(0.55)
+    assert package_heights.height_mm("C_0603")[0] == pytest.approx(0.9)
+    assert package_heights.height_mm("R_0805")[0] == pytest.approx(1.35)
+    # the KiCad-style suffixed spelling
+    assert package_heights.height_mm("R_0603_1608Metric")[0] == pytest.approx(0.9)
+
+
+def test_chip_passive_footprint_fits_5mm_cavity() -> None:
+    """gr513752: a CHIP-0603 part is proposed at 0.9 mm, not the 11.5 mm
+    fallback — it fits the 5 mm cavity the dogfood build used."""
+    b = Board("chip", outline=rect(30, 25))
+    b.part("R1", footprint="CHIP-0603").at(15, 12)
+    shape = b.shape()
+    p = shape.prisms[0]
+    assert p.origin == "proposed" and p.height_mm == pytest.approx(0.9)
+    assert shape.fits(pcb.enclosure(30, 25, 5)).ok
+
+
+def test_fallback_height_finding_names_the_assumption() -> None:
+    """gr513752(a): an unmapped footprint still takes the table
+    fallback, but a finding naming the part now says the height was
+    assumed and how to set a real one."""
+    b = Board("unk", outline=rect(30, 25))
+    b.part("X1", footprint="WIDGET-9").at(15, 12)
+    shape = b.shape()
+    assert shape.prisms[0].height_mm == pytest.approx(11.5)
+    res = shape.fits(pcb.enclosure(30, 25, 5))
+    assert not res.ok
+    f = next(f for f in res.findings if f.subject == "X1")
+    assert "height assumed 11.5 mm" in f.detail
+    assert "'WIDGET-9'" in f.detail
+    assert "height_mm=" in f.detail
+    # the same honesty tail on the interference path
+    res = shape.fits(pcb.box(5, 5, 3, at=(15, 12, 1.6), name="lid"))
+    f = next(
+        f for f in res.findings if f.code == "fit.interference" and f.subject == "X1"
+    )
+    assert "height assumed 11.5 mm" in f.detail
+
+
 def test_fit_part_interference_and_clearance() -> None:
     b = Board("fit2", outline=rect(50, 40))
     b.part("U1", footprint="SOIC-8", height_mm=1.75).at(25, 20)
