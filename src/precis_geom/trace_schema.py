@@ -31,7 +31,10 @@ Frame fields (all present unless noted)::
              ``out.block``).
     file     the *call site* file — ``/work``-relative for user code, the
              caller's module name (``cad.graph``) for library internals.
-    line     the call-site line that invoked this call.
+    line     the call-site line that invoked this call — for the
+             outermost user frame (its caller is the driver outside
+             ``/work``) the function's own ``def`` line instead, so the
+             root of the rendered stack always cites the script.
     occ      occurrence counter of this ``(qual, line)`` under the same
              parent, 0-based: the third ``junction`` at one call site is
              ``#2``.
@@ -41,6 +44,9 @@ Frame fields (all present unless noted)::
              ``%.6g``, objects ``<Class sha8>``.
     made     ``{entity_type: int}`` — what this frame alone placed.
     touched  ``{entity_type: int | [[lo, hi], ...]}`` — what it changed.
+    error    optional — the exception type name (``ValueError``) when
+             the call raised; only the innermost traced frame the
+             exception left carries it. Absent on success.
 
 Collapsed sibling form: past ``COLLAPSE_SIBLINGS`` (64) same-site
 *childless* siblings, occurrences 64..N fold into one frame carrying

@@ -326,6 +326,10 @@ def strip(
     ``"rim"`` the open edge, ``"top"`` the far zigzag edge,
     ``"top_full"`` that whole row (zigzag only); armchair exposes
     ``"rim"`` only."""
+    if rows < 1:
+        raise ValueError(f"strip rows must be >= 1; got {rows}")
+    if periods < 1:
+        raise ValueError(f"strip periods must be >= 1; got {periods}")
     if edge == "armchair":
         return _armchair_strip(periods, rows)
     if edge != "zigzag":

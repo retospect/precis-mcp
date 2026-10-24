@@ -15,7 +15,9 @@ sandbox). Each ``@traced`` call:
    (``precis_geom.trace_schema.frame_key``);
 3. records ``args`` as a bounded digest (scalars verbatim, ``%.6g``
    floats, ``<Class sha8>`` for objects);
-4. on exit pops itself; the frame stays in the tree under its parent.
+4. on exit pops itself (a call that raised first marks its frame
+   ``error`` = the exception type name — the innermost traced frame it
+   left); the frame stays in the tree under its parent.
 
 ``record(made=…, touched=…)`` inside a traced function counts the
 entities it placed/changed on *its own* frame; ``leaf_id()`` is the stamp
@@ -82,6 +84,9 @@ class _Frame:
     py: types.FrameType | None
     children: list[_Frame] = field(default_factory=list)
     _occ_next: dict[tuple[str, int], int] = field(default_factory=dict)
+    #: Exception type name when the call raised — set on the innermost
+    #: traced frame the exception left; ``dump`` omits it when ``None``.
+    error: str | None = None
 
 
 class Tracer:
@@ -110,6 +115,11 @@ class Tracer:
         self._next_id = 1
         self.started_utc = _utcnow()
         self.run_meta: dict[str, Any] = {}
+        #: Exceptions that already marked a deeper frame. The objects
+        #: themselves (exceptions take no weakref) — a freed ``id()``
+        #: would be recycled and silently un-mark a retry loop's next
+        #: failure.
+        self._raised: set[BaseException] = set()
 
     # -- frame minting -----------------------------------------------------
 
@@ -124,13 +134,17 @@ class Tracer:
         mod = f.f_globals.get("__name__")
         return str(mod) if mod else os.path.basename(name)
 
-    def _is_user_frame(self, f: types.FrameType) -> bool:
-        if f.f_code.co_name == "<module>":
-            return False
+    def _in_work(self, f: types.FrameType) -> bool:
+        """The frame's file lives under ``work_root`` and is not staged
+        infra — unlike ``_is_user_frame`` a ``<module>`` top level counts
+        (a script's own toplevel call site is a legal citation)."""
         if os.path.basename(f.f_code.co_filename) in _INFRA_FILES:
             return False
         rel = os.path.relpath(f.f_code.co_filename, self.work_root)
         return not rel.startswith("..") and not os.path.isabs(rel)
+
+    def _is_user_frame(self, f: types.FrameType) -> bool:
+        return f.f_code.co_name != "<module>" and self._in_work(f)
 
     def _push(
         self,
@@ -199,11 +213,19 @@ class Tracer:
                 continue
             if self._is_user_frame(f):
                 caller = f.f_back
+                if caller is not None and self._in_work(caller):
+                    file, line = self._file_of(caller), caller.f_lineno
+                else:
+                    # Outermost user frame: the caller is the driver /
+                    # harness outside /work — anchor on the callee's own
+                    # def line so the stack's root lands inside the
+                    # script (gr513668).
+                    file, line = self._file_of(f), f.f_code.co_firstlineno
                 self._push(
                     qual=_user_qual(f),
                     kind="user",
-                    file=self._file_of(caller) if caller else "",
-                    line=caller.f_lineno if caller else 0,
+                    file=file,
+                    line=line,
                     args=_frame_args(f),
                     py=f,
                 )
@@ -235,21 +257,22 @@ class Tracer:
 
         def emit(fr: _Frame) -> None:
             nonlocal collapsed
-            frames.append(
-                {
-                    "id": fr.id,
-                    "key": fr.key,
-                    "parent": fr.parent_key,
-                    "qual": fr.qual,
-                    "file": fr.file,
-                    "line": fr.line,
-                    "occ": fr.occ,
-                    "kind": fr.kind,
-                    "args": fr.args,
-                    "made": fr.made,
-                    "touched": fr.touched,
-                }
-            )
+            d = {
+                "id": fr.id,
+                "key": fr.key,
+                "parent": fr.parent_key,
+                "qual": fr.qual,
+                "file": fr.file,
+                "line": fr.line,
+                "occ": fr.occ,
+                "kind": fr.kind,
+                "args": fr.args,
+                "made": fr.made,
+                "touched": fr.touched,
+            }
+            if fr.error is not None:
+                d["error"] = fr.error
+            frames.append(d)
             groups: dict[tuple[str, str, int], list[_Frame]] = {}
             order: list[tuple[str, str, int]] = []
             for ch in fr.children:
@@ -521,7 +544,7 @@ def traced(
             tr = _ACTIVE.get()
             if tr is None:
                 return f(*args, **kwargs)
-            tr._enter(
+            fr = tr._enter(
                 qual,
                 kind,
                 _call_args(f, args, kwargs),
@@ -530,6 +553,11 @@ def traced(
             )
             try:
                 return f(*args, **kwargs)
+            except BaseException as exc:
+                if exc not in tr._raised:
+                    fr.error = type(exc).__name__
+                    tr._raised.add(exc)
+                raise
             finally:
                 tr.stack.pop()
 

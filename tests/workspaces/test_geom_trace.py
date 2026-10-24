@@ -11,9 +11,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -26,10 +28,54 @@ pytestmark = pytest.mark.filterwarnings("ignore")
 # The test module poses as ``/work`` user code for the user-frame walk.
 _WORK_ROOT = Path(__file__).resolve().parent.parent
 
+#: A two-function script — ``build`` (def line 4) delegates to ``sheet``
+#: (def line 8), which calls ``strip`` (line 9).
+_SCRIPT = (
+    "from hexfold.sheetnet import strip\n"
+    "\n"
+    "\n"
+    "def build(rows, periods):\n"
+    "    sheet(rows, periods)\n"
+    "\n"
+    "\n"
+    "def sheet(rows, periods):\n"
+    "    strip(rows=rows, periods=periods)\n"
+)
+
+
+def _load_script(tmp_path: Path, text: str = _SCRIPT) -> ModuleType:
+    """Write ``main.py`` under ``tmp_path`` and exec it as a module — the
+    sandbox's script shape, with this test file playing the driver."""
+    script = tmp_path / "main.py"
+    script.write_text(text, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("main", script)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+#: A script whose second ``strip`` call raises on a bad ``edge``.
+_FAILING_SCRIPT = (
+    "from hexfold.sheetnet import strip\n"
+    "\n"
+    "\n"
+    "def build():\n"
+    "    strip(rows=4, periods=3)\n"
+    "    strip(rows=4, periods=3, edge='bogus')\n"
+)
+
 
 def _emit(n: int = 3) -> None:
     for i in range(n):
         out.note(f"n{i}")
+
+
+@trace.traced
+def _outer_fail() -> None:
+    from hexfold.sheetnet import strip
+
+    strip(rows=4, periods=3, edge="bogus")
 
 
 def _frames(doc: dict) -> list[dict]:
@@ -62,6 +108,71 @@ def test_same_site_occ_counter() -> None:
     # …and the notes parent under it.
     u = next(u for u in users if u["qual"] == "test_geom_trace._emit")
     assert all(f["parent"] == u["key"] for f in notes)
+
+
+def test_root_user_frame_anchors_in_script(tmp_path: Path) -> None:
+    """gr513668 — the outermost user frame cites the script's own
+    ``def`` line, not the driver's call site outside ``work_root``
+    (its caller is this test file); nested user frames keep the
+    call-site rule and keys stay stable across runs."""
+    mod = _load_script(tmp_path)
+    docs = []
+    for _ in range(2):
+        with trace.run(work_root=tmp_path) as tr:
+            mod.build(8, 4)
+            docs.append(tr.dump())
+    users = [f for f in docs[0]["frames"] if f["kind"] == "user"]
+    assert [f["qual"] for f in users] == ["main.build", "main.sheet"]
+    build, sheet = users
+    assert (build["file"], build["line"]) == ("main.py", 4)
+    assert (sheet["file"], sheet["line"]) == ("main.py", 5)
+    core = next(f for f in docs[0]["frames"] if f["qual"].endswith("strip"))
+    assert (core["file"], core["line"], core["parent"]) == (
+        "main.py",
+        9,
+        sheet["key"],
+    )
+    keys = [[f["key"] for f in d["frames"]] for d in docs]
+    assert keys[0] == keys[1]
+
+
+def test_error_marks_the_raising_frame(tmp_path: Path) -> None:
+    """gr513669 — a traced call that raised leaves ``error=<ExcType>``
+    on its frame; the good sibling and every other frame stay clean."""
+    mod = _load_script(tmp_path, _FAILING_SCRIPT)
+    with trace.run(work_root=tmp_path) as tr:
+        with pytest.raises(ValueError, match="edge"):
+            mod.build()
+        doc = tr.dump()
+    marked = [f for f in doc["frames"] if "error" in f]
+    assert len(marked) == 1
+    assert marked[0]["qual"].endswith("strip")
+    assert marked[0]["error"] == "ValueError"
+    assert len([f for f in doc["frames"] if f["qual"].endswith("strip")]) == 2
+
+
+def test_error_marks_only_the_innermost_frame() -> None:
+    """An exception propagating out through a traced caller is not
+    re-marked — only the frame it left first carries ``error``."""
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        with pytest.raises(ValueError, match="edge"):
+            _outer_fail()
+        doc = tr.dump()
+    marked = [f for f in doc["frames"] if "error" in f]
+    assert len(marked) == 1 and marked[0]["error"] == "ValueError"
+    assert marked[0]["qual"].endswith("strip")
+    parent = next(f for f in doc["frames"] if f["key"] == marked[0]["parent"])
+    assert parent["qual"].endswith("_outer_fail")
+
+
+def test_success_dump_has_no_error_keys(tmp_path: Path) -> None:
+    """``error`` is omitted when ``None`` — a clean run serialises
+    exactly as before the field existed."""
+    mod = _load_script(tmp_path)
+    with trace.run(work_root=tmp_path) as tr:
+        mod.build(8, 4)
+        text = trace_schema.dumps(tr.dump())
+    assert '"error"' not in text
 
 
 def test_sibling_collapse_past_64(tmp_path: Path, monkeypatch) -> None:
