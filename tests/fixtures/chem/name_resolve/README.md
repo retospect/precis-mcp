@@ -1,5 +1,8 @@
 # Name-resolver fixtures
 
+<!-- paper-text-gate: allow — repo-authored fixture documentation -->
+
+
 Replayed by `tests/test_chem_resolve.py`; no test touches the network.
 
 - `pubchem_*.json`: recorded live from PubChem PUG REST on 2026-10-15

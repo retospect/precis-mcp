@@ -1,0 +1,6 @@
+{
+ "tests/fixtures/export/golden/": "golden export outputs \u2014 prose is the exporter's own synthetic document; an in-file marker would break the byte comparison",
+ "tests/fixtures/kinetics/README.md": "repo-authored fixture documentation (allowlist not marker: file under active edit on kin-tpd-fix)",
+ "tests/fixtures/kinetics/tpd_reference.json": "JSON (no comments); flagged run is the repo-authored dataset description field",
+ "tests/fixtures/viewer_check/unicycle-c1.ops.json": "JSON (no comments); flagged runs are repo-authored per-op rationale fields"
+}

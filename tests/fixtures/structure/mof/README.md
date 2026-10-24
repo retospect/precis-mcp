@@ -1,5 +1,8 @@
 # MOF import fixtures
 
+<!-- paper-text-gate: allow — repo-authored fixture documentation -->
+
+
 - `core_mof_ABAVIJ_clean.cif` — a real CoRE MOF 2019 record (refcode
   `ABAVIJ_clean`, 108 atoms, CC BY 4.0), recorded verbatim on 2026-10-18Z
   from the MOFX-DB JSON API's `cif` field (database "CoREMOF 2019"). The

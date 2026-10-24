@@ -1,5 +1,8 @@
 # ewod-dogfood-6 replay v1
 
+<!-- paper-text-gate: allow — repo-authored fixture documentation -->
+
+
 Deterministic gzip-compressed versioned JSON, captured 2026-10-05 with
 scripts/pcb-snapshot export-prod through prod-psql --ro (agent_ro; SELECT only).
 Reto explicitly confirmed these dogfood board data are public. Raw polygons,

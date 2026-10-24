@@ -50,6 +50,17 @@ review, the full gate for any `safe_fetch.py` change (`scripts/qgo-guard`),
 and `tests/test_safe_fetch.py` / `tests/test_safe_fetch_fallback.py`. There
 is no static ban on raw `httpx.Client` in new code; reviewers check for it.
 
+**No paper/journal chunk text in the repo** (Reto 2026-10-23). Fixtures carry
+ids, hashes, numbers and short labels — never verbatim paper or journal
+text: the `chunks` table's text is upstream-copyrighted material, and a push
+to this public repo is forever (a later delete does not unpublish it). A
+test that needs the *shape* of paper text builds it at runtime. Enforced by
+`tests/test_paper_text_gate.py`: a prose scan over `tests/fixtures/` and
+`tests/data/` pinned against the shrink-only baseline
+`tests/data/paper_text_baseline.json`; a deliberate exception carries
+`paper-text-gate: allow — <reason>` or, where the format allows no comments,
+an entry in `tests/data/paper_text_allowlist.json` (one reason per entry).
+
 ## SQL and layering gotchas
 
 - **Double `%` in psycopg SQL.** A literal `%` in a parameterised query is a
