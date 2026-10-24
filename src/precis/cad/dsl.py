@@ -797,3 +797,42 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
         for key in keys
     )
     return f"{spec.alias}:{parts}"
+
+
+def _is_length_key(alias: str, key: str) -> bool:
+    """Whether ``key`` carries a length under a uniform scale — the keys
+    :func:`scale_config` multiplies. Counts (``n``) and angles (chamfer's
+    ``angle``, a ``relief``'s draft/parting/twist) are scale-invariant."""
+    if alias == RELIEF_ALIAS:
+        return _RELIEF_KEY_KIND.get(key) == "length"
+    if alias == "chamfer":
+        return key == "size"
+    return key != "n"
+
+
+def scale_config(config: str, factor: float) -> str:
+    """Uniformly scale a canonical ``config``'s length dimensions by
+    ``factor`` about the local origin, re-emitting canonical text.
+
+    Operates on the parsed :class:`ShapeSpec` params (never the string), so
+    a ``relief:``'s ``map:<sha>`` tail and every angle/count pass through
+    untouched. A sampled ``field:`` leaf carries no scalable dims — its
+    grid's extent is baked into the stored blob — so it is refused: rescale
+    the grid before storing it (``fieldops``) or stay at ``factor == 1``.
+    Mirrors :meth:`precis.cad.primitives.CylRelief.scaled` for a relief,
+    which scales ``r``/``h``/``depth`` together and keeps the normalized
+    map."""
+    if factor <= 0.0:
+        raise DslError(f"scale_config factor must be > 0, got {factor!r}")
+    spec = parse(config)
+    if spec.alias == FIELD_ALIAS:
+        raise DslError(
+            f"field:{spec.ref or ''} cannot be uniformly scaled by config — "
+            "its grid extent is baked into the stored blob; rescale the field "
+            "before storing (fieldops) or use factor 1"
+        )
+    scaled = {
+        key: (val * float(factor) if _is_length_key(spec.alias, key) else val)
+        for key, val in spec.params.items()
+    }
+    return format_spec(ShapeSpec(spec.alias, scaled, ref=spec.ref))

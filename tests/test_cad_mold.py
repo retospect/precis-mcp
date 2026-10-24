@@ -186,3 +186,138 @@ def test_se_drc_finds_undercut(store):
         blocks={"wheel2": SeBlock(name="wheel2", bound_kind="cad", bound="moldok")}
     )
     assert se_mold.findings(store, tree2, ref2.id) == []
+
+
+# ---------------------------------------------------------------------------
+# slice 3: mold cavity geometry — scale, layout, moldability, piece specs
+# ---------------------------------------------------------------------------
+
+
+def test_scale_config_scales_lengths_not_counts_or_angles():
+    from precis.cad.dsl import scale_config
+
+    assert scale_config("cyl:r0.003h0.012", 2.0) == "cyl:r0.006h0.024"
+    # n (vertex count) is a count, not a length; chamfer angle is invariant
+    assert scale_config("ngon:n6r0.005h0.01", 2.0) == "ngon:n6r0.01h0.02"
+    assert scale_config("chamfer:0.004x0.5", 2.0) == "chamfer:0.008x0.5"
+
+
+def test_scale_config_keeps_relief_map_and_scales_only_lengths():
+    from precis.cad.dsl import parse, scale_config
+
+    cfg = "relief:r0.05h0.1d0.002k2a0.0349map:" + "a" * 64
+    out = scale_config(cfg, 2.0)
+    s = parse(out)
+    assert s.params["r"] == 0.1 and s.params["h"] == 0.2 and s.params["d"] == 0.004
+    assert s.params["k"] == 2 and abs(s.params["a"] - 0.0349) < 1e-9
+    assert s.ref == "a" * 64
+
+
+def test_scale_config_refuses_field():
+    import pytest
+
+    from precis.cad.dsl import DslError, scale_config
+
+    with pytest.raises(DslError, match="field"):
+        scale_config("field:" + "b" * 64, 2.0)
+
+
+def test_resolve_mold_layout_forms():
+    from precis.cad.mold import resolve_mold_layout
+
+    assert resolve_mold_layout("halves").k == 2
+    assert resolve_mold_layout("axial").kind == "axial"
+    assert resolve_mold_layout(3).k == 3
+    import pytest
+
+    with pytest.raises(ValueError):
+        resolve_mold_layout(4)
+
+
+def test_check_moldable_refuses_internal_cut():
+    import pytest
+
+    from precis.cad.mold import check_moldable
+    from precis.cad.scene import NodeSpec
+
+    nodes = [
+        NodeSpec("a", "add", "box:w0.02d0.02h0.02", "part"),
+        NodeSpec("b", "cut", "cyl:r0.004h0.03", "part"),
+    ]
+    with pytest.raises(ValueError, match="cut"):
+        check_moldable(nodes)
+
+
+def _cyl_design(config="cyl:r0.003h0.012"):
+    from precis.cad.scene import NodeSpec, SceneSpec, build_design, expand_instances
+
+    spec = SceneSpec(
+        nodes=[NodeSpec("body", "add", config, "part")], components=["part"]
+    )
+    return build_design(spec), expand_instances(spec).nodes
+
+
+def _sdf(design, p):
+    from precis.cad.fold import expr_sdf
+    from precis.cad.vec import vec3
+
+    return min(
+        expr_sdf(e, vec3(*p), design.instances) for e in design.components.values()
+    )
+
+
+def test_mold_piece_spec_is_box_minus_part_intersect_sector():
+    from precis.cad.mold import (
+        design_world_aabb,
+        mold_piece_spec,
+        resolve_mold_layout,
+    )
+    from precis.cad.scene import build_design
+
+    design, nodes = _cyl_design()
+    lo, hi = design_world_aabb(design)
+    lay = resolve_mold_layout("halves")
+    pieces = [
+        build_design(
+            mold_piece_spec(nodes, lo, hi, margin=0.005, shrink=0.0, layout=lay, j=j)
+        )
+        for j in range(2)
+    ]
+    # cavity hollow at the part core, split along the parting plane
+    assert _sdf(pieces[0], (0.0, 0.0, 0.006)) > 0.0
+    assert _sdf(pieces[0], (0.006, 0.0, 0.006)) < 0.0
+    assert _sdf(pieces[1], (-0.006, 0.0, 0.006)) < 0.0
+    # the two halves cover box-minus-part (sampled, off the parting plane)
+    bad = 0
+    for x in np.linspace(-0.007, 0.007, 7):
+        for z in np.linspace(-0.003, 0.015, 7):
+            if abs(x) < 1e-6:
+                continue
+            inpart = _sdf(design, (x, 0.001, z)) < 0.0
+            inbox = abs(x) <= 0.008 and -0.005 <= z <= 0.017
+            want = inbox and not inpart
+            got = (
+                _sdf(pieces[0], (x, 0.001, z)) < 0.0
+                or _sdf(pieces[1], (x, 0.001, z)) < 0.0
+            )
+            bad += want != got
+    assert bad == 0
+
+
+def test_mold_piece_spec_shrink_enlarges_cavity():
+    from precis.cad.mold import (
+        design_world_aabb,
+        mold_piece_spec,
+        resolve_mold_layout,
+    )
+    from precis.cad.scene import build_design
+
+    design, nodes = _cyl_design()
+    lo, hi = design_world_aabb(design)
+    lay = resolve_mold_layout("axial")
+    piece = build_design(
+        mold_piece_spec(nodes, lo, hi, margin=0.005, shrink=0.1, layout=lay, j=0)
+    )
+    # nominal 3 mm radius → 3.3 mm cavity at shrink 0.1
+    assert _sdf(piece, (0.00315, 0.0, 0.006)) > 0.0
+    assert _sdf(piece, (0.006, 0.0, 0.006)) < 0.0

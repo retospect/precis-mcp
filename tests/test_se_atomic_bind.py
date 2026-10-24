@@ -175,7 +175,9 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     (docs/backlog/flatpack-furniture-generator.md,
     :mod:`precis_se.flatpack.se_op`) is the second cad-writing op after
     ``realize`` — one cad design per panel, minted in the deferred
-    finisher."""
+    finisher. ``mold`` (se-cylinder-wrap-mold slice 3) is the third: one
+    cad mold piece per pull, likewise deferred, and store-read for the
+    part geometry it cuts the cavity from."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
@@ -189,6 +191,7 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
         "flatpack_box",
         "pocket_from_molecule",
         "wall_rate",
+        "mold",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

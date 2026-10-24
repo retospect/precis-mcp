@@ -82,6 +82,15 @@ MODE_FAMILIES: dict[str, ModeFamily] = {
     "laser": ModeFamily(
         key="laser", summary="laser-cut sheet — one profile at a stock thickness"
     ),
+    # The molded part itself (se-cylinder-wrap-mold slice 3) — its mold is
+    # a separate pair of ``sla``/``cnc`` blocks the ``mold`` op cuts. Recorded
+    # intent for now (no implementer checks the draft / wall-thickness rows
+    # yet), so a part declared ``molding`` reads back as planned-not-checked,
+    # the suggestive-by-contract posture applied to a molded L5.
+    "molding": ModeFamily(
+        key="molding",
+        summary="injection/cast molding — the part a two-or-three-piece mold forms",
+    ),
     "stock-cut": ModeFamily(
         key="stock-cut",
         summary="a length of stock section — cut, mitered, drilled, coped",

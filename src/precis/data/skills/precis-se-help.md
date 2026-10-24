@@ -89,9 +89,9 @@ pass `title=…` alone on a create: the slug is derived from it — a
 collision refuses rather than replacing; pass `id=` deliberately). Its
 only top-level keys are `description`, `ops`, `scenario` and `prefunits` (anything else
 is rejected). An empty op list is refused while the design has blocks —
-ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires the
-`structure` refs it bound, except ones another live design still binds
-(named "stay live") or promoted building blocks. Incremental changes go through
+ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires bound
+`structure` refs except ones another live design still binds ("stay
+live") or promoted building blocks. Incremental changes go through
 `edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
 rolls the whole batch back.
 
@@ -114,8 +114,8 @@ a write never refuses, but it no longer stays silent. For bound
 structures, `atom_clash` fires per block pair when posed atoms come
 within 2 Å (error under 1 Å, warn in [1, 2) Å — count, min distance,
 closest pair in the text). A `connect` does not excuse it —
-re-pose a block (`set_pose`). Blocks generated at the default pose
-`[0,0,0]` pile up on each other and trip it.
+re-pose the block (`set_pose`); blocks left at `[0,0,0]` pile up and
+trip it.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design. A block also carries a stable **uid** — `(uid
@@ -216,7 +216,7 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
 
 - `set_mode` — `block`, `mode` = `"family"` or `"family/material"` or
   null. Families: `purchase · fdm · sla · cnc-2.5ax · laser ·
-  stock-cut · atomic` (e.g. `"fdm/asa"`).
+  molding · stock-cut · atomic` (e.g. `"fdm/asa"`).
 - `set_binding` — `block` + (`kind` ∈ `cad|structure|component|part|pcb` +
   `design`) or `clear: true`. `pcb` binds a board design by slug, resolved
   at tree load (not an op): the board's `mechanical_profile` derives one
@@ -230,6 +230,12 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   — `block`, `field` (+ `value`) · `set_build_frame` — `block`, `down`
   [x,y,z] / `clear_build_frame` — `block`. Contracts: `precis-se-print-help`.
 - `flatpack_box` — flat-pack box (`precis-se-flatpack-help`).
+- `mold` — `block` (cad-bound part, union of positive bodies) · `layout`
+  `halves`|`axial`|`2`|`3` (default `halves`) · `alpha`/`shrink`/`margin`/
+  `phi`. One block per pull `<part>.mold.<i>` = `Inter(sector_i, Diff(box,
+  scale(part, 1+shrink)))`, fresh `cad` binding + `sla` mode; part stamped
+  `molding`. Refuses a radial layout `mold.undercut` finds undercut for;
+  sprue/gate/vents out (follow-up).
 
 ## Ops — BOM, order, notes, formfind
 
@@ -347,12 +353,11 @@ expanded. State overrides are not accepted.
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
 reproduced in another database without a `pg_dump` or prod write access.
 It is
-**final state, not history** — nothing removed ever appears, and no
-destructive op is emitted. Its header lists what the round-trip does not
-carry, and the two that bite are **block uids** (a re-`put` mints fresh
-ones, so anything pointing at a block by uid must be re-resolved by label)
-and **declared states/transitions** (they live in the shared
-`design_states` tables keyed by uid, not on the tree).
+**final state, not history** — nothing removed or destructive appears.
+Its header lists what the round-trip drops; the two that bite are
+**block uids** (a re-`put` mints fresh ones — re-resolve by label) and
+**declared states/transitions** (in `design_states` keyed by uid, not
+the tree).
 
 `view='links'` renders the design's link graph both directions. Write
 edges with the `link` verb: `link(kind='se', id='<slug>',

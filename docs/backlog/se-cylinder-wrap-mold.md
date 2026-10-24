@@ -93,16 +93,22 @@ many slides" before any geometry is cut.
    clip`, `view='mold'` with the undercut PNG, se `mold.undercut`; plus
    the Fable s1 fixes (relax units + edge-midpoint combined-normal
    bound, strict seam, pull record, interior /L).
-3. **Mold op.** se op `mold` on a block: `layout` (axial|halves|k), `α`,
-   `shrink` (% per material, default from the material card), `margin`
-   (block around the cavity), output: one mold block per piece =
-   `Inter(sector_i, Diff(box, scale(part, 1+shrink)))`, named
-   `<part>.mold.<i>`, the parting surface recorded on each. Refuses when
-   slice 2 finds undercut for the layout. Sprue, gate, vents, ejectors
-   and cooling are out (named follow-up). Prototype route: SLA-printed
-   halves (the existing `sla` mode); milled molds inherit the cutter
-   radius per the multiscale spec. New mode family `molding` in
-   `modes.py` for the molded part itself (draft, wall-thickness rows).
+3. ~~**Mold op.**~~ slice 3 landed 2026-10-24: se op `mold`
+   (`precis_se.mold.prepare_mold`/`finish_mold`, handler-level +
+   store-write-deferred like `realize`) on a cad-bound part — `layout`
+   (axial|halves|2|3), `alpha`, `shrink`, `margin`, `phi`; one mold block
+   per pull `<part>.mold.<i>` = `Inter(sector_i, Diff(box, scale(part,
+   1+shrink)))` (`precis.cad.mold.mold_piece_spec`, built as a linear
+   `box(add)→part bodies(cut)→sector(intersect)` fold, so it needs no
+   `use:`-instance scale or cross-body subtract), bound `cad` + moded
+   `sla`, parting surface on each piece's design meta; the part stamped
+   `molding` (new family in `modes.py`). Refuses a radial layout
+   `pull_check` finds undercut for, and a part that is not a union of
+   positive bodies. `precis.cad.dsl.scale_config` (param-level uniform
+   scale). `tests/test_se_mold.py`, `tests/test_cad_mold.py`. **Deferred:**
+   shrink default from the material card (explicit for now); axial's
+   constant-in-z undercut check (radial only); sprue/gate/vents/ejectors/
+   cooling; milled-mold cutter radius. Prototype route: SLA-printed halves.
 4. **Cross-dimensional (later, optional).** The wrap map (`u, v,
    repeat, twist`) is the same object as hexfold's roll-up
    (`src/hexfold/build.py::_patch_seed3`: chiral vector = the periodicity +

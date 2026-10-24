@@ -43,6 +43,7 @@ from precis_se.flatpack.se_op import (
     prepare_flatpack_box,
 )
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
+from precis_se.mold import PendingMold, finish_mold, prepare_mold
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.persist import structure_scene_resolver, structure_version_resolver
 from precis_se.properties import pocket_spec
@@ -112,6 +113,12 @@ HANDLER_LEVEL_OPS = (
     # for the quest's trusted solve record, then an add/set_measure
     # through the pure path.
     "wall_rate",
+    # The mold op (:mod:`precis_se.mold`, se-cylinder-wrap-mold slice 3):
+    # cuts one cad mold piece per pull from a molded part — store-write
+    # deferred like ``realize`` (it mints ``<design>-<part>-mold-<j>`` cad
+    # designs), store-read for the part geometry, and refuses a layout
+    # slice 2 finds undercut for.
+    "mold",
 )
 
 
@@ -223,6 +230,7 @@ def apply_ops_with_atomic(
     pending_generates: list[PendingGenerate] = []
     pending_joins: list[PendingJoin] = []
     pending_realizes: list[PendingRealize] = []
+    pending_molds: list[PendingMold] = []
     pending_chain_realizes: list[PendingRealizeChain] = []
     pending_flatpacks: list[PendingFlatpack] = []
     flatpack_last_ids: set[str] | None = None
@@ -352,6 +360,14 @@ def apply_ops_with_atomic(
                 echoes.append(echo)
                 pending_realizes.append(realize_pending)
                 continue
+            if name == "mold":
+                try:
+                    echo, mold_pending = prepare_mold(store, tree, op, design_slug)
+                except OpError as exc:
+                    raise BadInput(str(exc), next=getattr(exc, "next", None)) from exc
+                echoes.append(echo)
+                pending_molds.append(mold_pending)
+                continue
             if name == "realize_chain":
                 # Pure over the tree here (frames, occupancy, placed loop
                 # curves → atoms in the segment's frame); the structure mint
@@ -402,6 +418,8 @@ def apply_ops_with_atomic(
         finish_join(store, tree, join_pending)
     for realize_pending in pending_realizes:
         finish_realize(store, tree, realize_pending)
+    for mold_pending in pending_molds:
+        finish_mold(store, tree, mold_pending)
     for chain_pending in pending_chain_realizes:
         finish_realize_chain(store, tree, chain_pending)
     for flatpack_pending in pending_flatpacks:

@@ -1,5 +1,13 @@
-"""Mold release checks — ``n̂·p ≥ sin α`` per slide pull (spec
-``docs/backlog/se-cylinder-wrap-mold.md``, slice 2).
+"""Mold release checks and cavity geometry (spec
+``docs/backlog/se-cylinder-wrap-mold.md``, slices 2–3).
+
+Slice 2 is the release check — ``n̂·p ≥ sin α`` per slide pull. Slice 3
+adds the cavity builder (:func:`mold_piece_spec` and the ``MoldLayout``
+helpers below the checks): one stored design per mold piece,
+``Inter(sector_i, Diff(box, scale(part, 1+shrink)))``, driven by the
+se-side ``mold`` op (:mod:`precis_se.mold`).
+
+**The release check.**
 
 A ``relief`` leaf's surface is a cylindrical height field
 ``ρ(θ, z) = R + s·depth·h(u, v)``: whether it pulls from a k-slide mold
@@ -31,12 +39,15 @@ removed per leaf.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
+from precis.cad.bulk import expr_aabb
+from precis.cad.dsl import ShapeSpec, format_spec, scale_config
+from precis.cad.graph import Design
 from precis.cad.hmap import (
     HeightMap,
     _relax_flanks,
@@ -45,15 +56,21 @@ from precis.cad.hmap import (
 )
 from precis.cad.primitives import CylRelief
 from precis.cad.probe import DraftFace, probe_draft
+from precis.cad.scene import NodeSpec, SceneSpec
 from precis.cad.vec import Transform, Vec3, vec3
 
 __all__ = [
     "LeafCheck",
+    "MoldLayout",
     "PullReport",
     "SlideLayout",
+    "check_moldable",
     "clip_map",
+    "design_world_aabb",
+    "mold_piece_spec",
     "pull_check",
     "render_undercut_png",
+    "resolve_mold_layout",
     "undercut_image",
 ]
 
@@ -403,3 +420,195 @@ def render_undercut_png(leaf: CylRelief, check: LeafCheck, path: str) -> None:
     rgb[check.mask] = np.array([220, 30, 30], dtype=np.uint8)
     img = Image.fromarray(np.transpose(rgb, (1, 0, 2))[::-1], "RGB")
     img.save(path)
+
+
+# --------------------------------------------------------------------------
+# Mold cavity geometry (spec slice 3) — one mold block per piece,
+# ``Inter(sector_i, Diff(box, scale(part, 1+shrink)))``.
+#
+# The stored SceneSpec folds primitive-by-primitive within a component
+# (:func:`precis.cad.scene.build_design`), so the cavity cannot be a single
+# ``use:<part>`` instance node — an instance lands as its own separate
+# bodies, never a sub-solid the parent node's op subtracts. Instead the
+# part's *expanded* primitive nodes are embedded directly as cut nodes in
+# the box's component: ``box(add) → each part body (cut, scaled) → sector
+# planes (intersect)``. That folds to exactly the spec expression, and
+# only when the part is a **union of positive bodies** (every node ``add``)
+# — the shrink-scaled union is the cavity. A part with its own internal
+# ``cut``/``intersect`` has a net solid no linear fold can invert, so
+# :func:`check_moldable` refuses it rather than cut a wrong cavity.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MoldLayout:
+    """A resolved mold pull layout. ``kind='radial'`` splits into ``k``
+    (2|3) wedge pieces pulled at ``phi + 2πj/k`` (slice 2's
+    :class:`SlideLayout`); ``kind='axial'`` is a one-piece sleeve pulled
+    along ``+z`` (``k == 1``, no radial parting)."""
+
+    kind: str
+    k: int
+    phi: float = 0.0
+
+    @property
+    def n_pieces(self) -> int:
+        return self.k if self.kind == "radial" else 1
+
+    @property
+    def slide_layout(self) -> SlideLayout | None:
+        """The slice-2 radial layout to run the undercut check against, or
+        ``None`` for axial (whose constant-in-z model is a named
+        follow-up, not slice 2's radial cone)."""
+        return SlideLayout(k=self.k, phi=self.phi) if self.kind == "radial" else None
+
+
+def resolve_mold_layout(layout: Any, phi: float = 0.0) -> MoldLayout:
+    """``'axial'`` | ``'halves'`` | ``2`` | ``3`` (or their str forms) →
+    :class:`MoldLayout`. ``'halves'`` is ``k=2``; a bare ``k`` is radial."""
+    if isinstance(layout, str):
+        key = layout.strip().lower()
+        if key == "axial":
+            return MoldLayout(kind="axial", k=1, phi=phi)
+        if key == "halves":
+            return MoldLayout(kind="radial", k=2, phi=phi)
+        if key.isdigit():
+            layout = int(key)
+        else:
+            raise ValueError(
+                f"mold layout {layout!r} must be 'axial', 'halves', 2 or 3"
+            )
+    k = int(layout)
+    if k not in (2, 3):
+        raise ValueError(f"a radial mold layout has k = 2 or 3 pieces, got {k}")
+    return MoldLayout(kind="radial", k=k, phi=phi)
+
+
+def design_world_aabb(design: Design) -> tuple[Vec3, Vec3]:
+    """World-frame AABB over every component's additive bound
+    (:func:`precis.cad.bulk.expr_aabb`) — what sizes the cavity box."""
+    los: list[Vec3] = []
+    his: list[Vec3] = []
+    for expr in design.components.values():
+        try:
+            lo, hi = expr_aabb(design, expr)
+        except ValueError:
+            continue
+        los.append(lo)
+        his.append(hi)
+    if not los:
+        raise ValueError("part has no boundable solid to mold")
+    lo = np.min(np.array(los), axis=0)
+    hi = np.max(np.array(his), axis=0)
+    return vec3(*lo), vec3(*hi)
+
+
+def check_moldable(part_nodes: list[NodeSpec]) -> None:
+    """Refuse a part whose cavity a linear fold cannot invert: any
+    ``cut``/``intersect`` node (its net solid is not a union of bodies) or
+    a patterned node combined with shrink (handled by the caller). Raises
+    :class:`ValueError` naming the offending node."""
+    for n in part_nodes:
+        if n.op in ("cut", "intersect"):
+            raise ValueError(
+                f"part node {n.name!r} is a {n.op!r} — mold cuts the part as a "
+                "union of positive bodies, and a part with its own internal "
+                "cut/intersect has a net solid no cavity fold can invert; "
+                "model the part additively or mold its subparts"
+            )
+
+
+def _box_node(lo: Vec3, hi: Vec3, margin: float) -> NodeSpec:
+    """The cavity block: an AABB-plus-``margin`` box, base at its own z=0
+    (the ``box`` primitive is centred in x/y, base at z=0), placed so it
+    encloses ``lo..hi``."""
+    lo = np.asarray(lo, dtype=np.float64)
+    hi = np.asarray(hi, dtype=np.float64)
+    span = hi - lo
+    w, d, ht = (float(span[i]) + 2.0 * margin for i in range(3))
+    cx, cy = float((lo[0] + hi[0]) / 2.0), float((lo[1] + hi[1]) / 2.0)
+    z0 = float(lo[2]) - margin
+    cfg = format_spec(ShapeSpec("box", {"w": w, "d": d, "h": ht}))
+    return NodeSpec(
+        name="block", op="add", config=cfg, component="part", loc=(cx, cy, z0)
+    )
+
+
+def _sector_rot_angles(k: int, phi: float, j: int) -> list[float]:
+    """The z-rotation(s) orienting piece ``j``'s radial parting half-space
+    plane(s). A ``chamfer:0x(π/2)`` is the local half-space ``x ≥ 0``; the
+    node's z-rotation ``ψ`` turns its kept region into
+    ``{p : p·(cos ψ, sin ψ) ≥ 0}``. Piece ``j`` is the wedge of width
+    ``2π/k`` centred on its pull ``c = phi + 2πj/k``: a half (k=2) needs
+    one plane through the axis; a 120° wedge (k=3) is the intersection of
+    two."""
+    c = phi + 2.0 * math.pi * j / k
+    if k == 2:
+        return [c]
+    return [(c - math.pi / k) + math.pi / 2.0, (c + math.pi / k) - math.pi / 2.0]
+
+
+def _sector_nodes(layout: MoldLayout, j: int) -> list[NodeSpec]:
+    if layout.kind != "radial":
+        return []
+    cfg = format_spec(ShapeSpec("chamfer", {"size": 0.0, "angle": math.pi / 2.0}))
+    return [
+        NodeSpec(
+            name=f"wedge{j}_{m}",
+            op="intersect",
+            config=cfg,
+            component="part",
+            rot=(0.0, 0.0, float(psi)),
+        )
+        for m, psi in enumerate(_sector_rot_angles(layout.k, layout.phi, j))
+    ]
+
+
+def _cavity_cuts(part_nodes: list[NodeSpec], factor: float) -> list[NodeSpec]:
+    """The part's bodies as cut nodes, uniformly scaled by ``factor``
+    (``1 + shrink``) about the origin — config lengths via
+    :func:`precis.cad.dsl.scale_config`, placement by scaling ``loc``."""
+    out: list[NodeSpec] = []
+    for i, n in enumerate(part_nodes):
+        cfg = n.config if factor == 1.0 else scale_config(n.config, factor)
+        loc = (
+            float(n.loc[0]) * factor,
+            float(n.loc[1]) * factor,
+            float(n.loc[2]) * factor,
+        )
+        out.append(
+            replace(
+                n,
+                name=f"cav{i}",
+                op="cut",
+                component="part",
+                config=cfg,
+                loc=loc,
+                frame=None,
+            )
+        )
+    return out
+
+
+def mold_piece_spec(
+    part_nodes: list[NodeSpec],
+    lo: Vec3,
+    hi: Vec3,
+    *,
+    margin: float,
+    shrink: float,
+    layout: MoldLayout,
+    j: int,
+) -> SceneSpec:
+    """One mold piece's stored design:
+    ``Inter(sector_j, Diff(box, scale(part, 1+shrink)))``, folded in one
+    component as ``box(add) → part bodies(cut) → sector planes(intersect)``.
+    ``lo``/``hi`` are the *unscaled* part AABB; the box encloses the
+    shrink-scaled part plus ``margin``."""
+    factor = 1.0 + float(shrink)
+    lo_s = vec3(*(float(c) * factor for c in lo))
+    hi_s = vec3(*(float(c) * factor for c in hi))
+    nodes = [_box_node(lo_s, hi_s, margin)]
+    nodes += _cavity_cuts(part_nodes, factor)
+    nodes += _sector_nodes(layout, j)
+    return SceneSpec(nodes=nodes, components=["part"])
