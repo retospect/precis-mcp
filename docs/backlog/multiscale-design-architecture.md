@@ -305,7 +305,12 @@ stressed. Build detail: `complementarity-solver.md`.
 - **House guard.** The acquisition function chooses *where to evaluate*;
   objective weights stay human-set (`quest` frontier discipline — a solver
   may not tune its own objective). BO is a search scheduler, never a
-  weight-tuner.
+  weight-tuner. "Solver" means the numeric optimiser (descent, anneal,
+  BO) inside one run, not the LLM designer: the designer sets and tunes
+  weights and constraints in code, between runs, with the reason written
+  next to each, and every run records the weights it ran with (Reto
+  2026-10-24, "sure it does, the LLM's main job is to tweak these to best
+  practices"; [pcb-intent-api](pcb-intent-api.md)).
 - **BO's three loci** (Addendum A7, `multiscale-design-addendum-a.md`):
   the inner-solve stand-in above; contested decisions (runner-up within
   ~5%, spec §3.8) queued for a refinement evaluation; adaptive Pareto-
