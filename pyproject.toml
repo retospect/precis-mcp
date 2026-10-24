@@ -768,14 +768,61 @@ forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
 # carries the AST-walk belt for non-root first-party packages (precis_se etc.).
 
 [[tool.importlinter.contracts]]
-name = "precis_geom is a standalone kernel: no precis/asa imports"
+name = "precis_geom imports only the precis-geom wheel's carved precis subset"
 type = "forbidden"
 source_modules = ["precis_geom"]
 forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
-# Same shape as the precis_chain/precis_flow contracts above.
-# `tests/workspaces/test_pcb_board.py` carries the AST-walk belt, and is
-# stricter: it also refuses any third-party import (precis_geom.pcb is
-# pure stdlib).
+unmatched_ignore_imports_alerting = "none"
+ignore_imports = [
+    "precis_geom -> precis",
+    "precis_geom.* -> precis",
+    "precis_geom -> precis.cad",
+    "precis_geom.* -> precis.cad",
+    "precis_geom -> precis.cad.*",
+    "precis_geom.* -> precis.cad.*",
+    "precis_geom -> precis.structsolve",
+    "precis_geom.* -> precis.structsolve",
+    "precis_geom -> precis.structsolve.*",
+    "precis_geom.* -> precis.structsolve.*",
+    "precis_geom -> precis.structure",
+    "precis_geom.* -> precis.structure",
+    "precis_geom -> precis.structure.*",
+    "precis_geom.* -> precis.structure.*",
+    "precis_geom -> precis.errors",
+    "precis_geom.* -> precis.errors",
+    "precis_geom -> precis.utils",
+    "precis_geom.* -> precis.utils",
+    "precis_geom -> precis.utils.units",
+    "precis_geom.* -> precis.utils.units",
+    "precis_geom -> precis.component_series",
+    "precis_geom.* -> precis.component_series",
+]
+# The wheel's allow-list is the single boundary (Reto 2026-10-24, chat-9a):
+# `precis_geom` may import exactly the `precis` modules the precis-geom
+# wheel force-includes — `precis/__init__` + `precis/errors` +
+# `precis/utils/{__init__,units}` + `precis/component_series` +
+# `precis/{cad,structsolve,structure}` — listed above, not duplicated in a
+# test (`tests/test_geom_wheel_imports.py` lands with the packaging slice
+# and derives from the same list; the wheel excludes
+# `precis/structure/importers`, that one stays its concern). Sibling wheel
+# packages (`precis_flow`, `precis_chain`, `hexfold`, `precis_ws`) are
+# separate roots below and need no entry. The stdlib-only AST belt
+# narrows to `precis_geom.pcb` (`tests/workspaces/test_pcb_board.py`).
+
+[[tool.importlinter.contracts]]
+name = "precis_geom never reaches server-side precis (store/fetch/web) even via carved modules"
+type = "forbidden"
+source_modules = ["precis_geom"]
+forbidden_modules = [
+    "precis.store",
+    "precis.utils.safe_fetch",
+    "precis_web",
+    "asa_bot",
+    "asa_slack",
+]
+# No ignores on this one: its graph keeps every carved edge, so a chain
+# like `precis_geom.* -> precis.cad.* -> precis.store` still indicts — the
+# carved subset's own outbound edges stay inside the wheel's graph too.
 
 [[tool.importlinter.contracts]]
 name = "slack bridge shares asa_bot runtime but never the web app"

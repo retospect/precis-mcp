@@ -10,8 +10,10 @@ sorted keys, compact separators — authored dict order does not matter);
 trace keys are stable across two builds on structure-workspaces slice
 2's ``precis_geom.trace``.
 
-The kernel import-boundary belt (no first-party, stdlib only) mirrors
-``tests/test_precis_flow.py``.
+The kernel import-boundary belt (no first-party, stdlib only) covers
+``precis_geom.pcb`` alone — the package-wide wheel boundary is the
+import-linter contract (the carved ``precis`` subset the wheel
+force-includes; ruling 2026-10-24, structure-workspaces §Rulings).
 
 Regenerate the goldens after an intended change (then read the diff)::
 
@@ -416,20 +418,21 @@ def _imports(path: Path) -> list[str]:
     return out
 
 
-def test_precis_geom_imports_nothing_first_party_and_only_stdlib() -> None:
+def test_precis_geom_pcb_imports_nothing_first_party_and_only_stdlib() -> None:
     offenders: list[str] = []
-    for path in sorted(_GEOM_SRC.rglob("*.py")):
-        for name in _imports(path):
-            root = name.split(".")[0]
-            if root == "precis_geom":
-                continue
-            if name == "precis" or name.startswith(_FORBIDDEN_PREFIXES):
-                offenders.append(f"{path.name}: {name} (first-party)")
-            elif root not in sys.stdlib_module_names:
-                offenders.append(f"{path.name}: {name} (third-party)")
+    for name in _imports(_GEOM_SRC / "pcb.py"):
+        root = name.split(".")[0]
+        if root == "precis_geom":
+            continue
+        if name == "precis" or name.startswith(_FORBIDDEN_PREFIXES):
+            offenders.append(f"pcb.py: {name} (first-party)")
+        elif root not in sys.stdlib_module_names:
+            offenders.append(f"pcb.py: {name} (third-party)")
     assert not offenders, (
-        "src/precis_geom is the DB-free, stdlib-only wheel core "
-        f"(structure-workspaces §Packaging): {offenders}"
+        "precis_geom.pcb is the DB-free, stdlib-only board builder "
+        "(structure-workspaces §Packaging). The package-wide wheel "
+        "boundary is the import-linter contract — the carved precis "
+        f"subset the wheel force-includes (ruling 2026-10-24): {offenders}"
     )
 
 

@@ -1268,6 +1268,18 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Interface relax:** 6 Å free shell around assembly frames, widened
   by 2 Å (≤ 3×) while residual force on frozen atoms exceeds 0.1 eV/Å;
   `assembly.strain` reports what remains.
+- **precis-geom wheel allow-list is the single boundary (2026-10-24,
+  chat-9a):** `precis_geom` may import exactly the `precis` modules the
+  wheel force-includes (§Packaging — `precis.cad`, `precis.structsolve`,
+  `precis.structure` minus `importers`, `precis.errors`,
+  `precis.utils.units`, `precis.component_series`, the two `__init__`s),
+  plus the sibling kernel packages; never `precis.store`,
+  `precis.utils.safe_fetch`, `precis_web`, `asa_*` — checked transitively.
+  The list lives once in the pyproject import-linter contract (the wheel
+  import-graph test derives from it when the packaging slice lands); the
+  stdlib-only AST belt narrows to `precis_geom.pcb`. Ruled after pcb
+  slice 0's package-wide standalone contract met flow 4a's
+  `evaluate` — the carved-subset wheel makes those edges internal.
 - Decided in the text: loop collapse past 64 same-site siblings; `op`
   frames for surviving ops.
 - **Immutable products, memoised hierarchy (2026-10-22, chat-99):**
