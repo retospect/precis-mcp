@@ -102,7 +102,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -312,6 +312,9 @@ class SeHandler(Handler):
                 "against",
                 "margin",
                 "limit",
+                "atoms",
+                "frame",
+                "touched",
                 "charge",
                 "multiplicity",
                 "density",
@@ -639,6 +642,7 @@ class SeHandler(Handler):
             "print",
             "fab",
             "assembly_check",
+            "trace",
         ),
     )
 
@@ -1977,6 +1981,8 @@ class SeHandler(Handler):
             return Response(body=_render_pockets(tree))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id, args))
+        if v == "trace":
+            return Response(body=self._render_trace(tree, ref.id, args))
         if v == "mechanics":
             return Response(body=se_atomic_render.render_mechanics(self.store, tree))
         if v == "literature":
@@ -2182,6 +2188,182 @@ class SeHandler(Handler):
         """Method seam over :func:`validate_digest` (``view='drc'``)."""
         return validate_digest(findings)
 
+    def _render_trace(
+        self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None
+    ) -> str:
+        """``view='trace'`` — the construction-trace asks (spec
+        §Construction traces, slice 2t): ``atom`` → who put it here
+        (``touched`` adds the modifier frames), ``frame`` → the frame
+        card, ``atoms`` → the set's LCA + coverage, ``against`` → run vs
+        run diff, no args → the design's trace summary. The stored doc is
+        the ``ws_trace`` chunk on the run job (or the design's own ref for
+        a containerless import); bound structures' ``maker`` ids index
+        into it (:mod:`precis_se.traceview`)."""
+        from precis_se import traceview as tv
+
+        a = args or {}
+        ctx = _trace_context(tree)
+        docs = [bt.doc for bt in ctx.values() if bt.doc is not None]
+        if "against" in a:
+            raw = str(a.get("against")).strip()
+            if not raw.isdigit():
+                raise BadInput(
+                    f"view='trace' args['against'] is a run job ref id, "
+                    f"got {a.get('against')!r}",
+                    next=_TRACE_NEXT,
+                )
+            if not docs:
+                raise BadInput(_NO_TRACE, next=_TRACE_NEXT)
+            new = next(d for d in docs if d is not None)
+            old = (getattr(tree, "traces", None) or (lambda r: None))(
+                {"run_job": int(raw)}
+            )
+            if old is None:
+                raise BadInput(
+                    f"no ws_trace chunk on ref {raw} — 'against' names a "
+                    "run job (or the design ref for a containerless import)",
+                    next=_TRACE_NEXT,
+                )
+            return f"run diff vs {raw}:\n" + tv.render_diff(
+                tv.diff(tv.Trace(old), tv.Trace(new))
+            )
+        if not docs:
+            return _NO_TRACE
+        traces = {id(d): tv.Trace(d) for d in docs}
+        if "atom" in a:
+            blk, ref = _split_atom_ref(tree, a["atom"])
+            if blk is None:
+                blk = str(a.get("block") or "").strip() or None
+            hit = _atom_lookup(ctx, tree, blk, ref)
+            if isinstance(hit, str):
+                raise BadInput(hit, next=_TRACE_NEXT)
+            name, ordinal, atom = hit
+            bt = ctx[name]
+            tr = traces[id(bt.doc)]
+            fr = tr.maker_frame(atom.maker)
+            if fr is None:
+                return (
+                    f"{name}/{list(bt.scene.atoms)[ordinal]}: no maker — the "
+                    "atom was not placed by a traced call"
+                )
+            body = tv.chain_line(tr.path(fr), fr)
+            if a.get("touched"):
+                mods = [f for f in tr.modifiers(ordinal) if f is not fr]
+                if mods:
+                    body += "\nchanged by: " + " · ".join(tv.line(f) for f in mods)
+            return body
+        if "atoms" in a:
+            items = a["atoms"]
+            if not isinstance(items, (list, tuple)):
+                items = [x.strip() for x in str(items).split(",") if x.strip()]
+            makers: list[int] = []
+            bt0: _BlockTrace | None = None
+            misses: list[str] = []
+            for item in items:
+                blk, ref = _split_atom_ref(tree, item)
+                if blk is None:
+                    blk = str(a.get("block") or "").strip() or None
+                hit = _atom_lookup(ctx, tree, blk, ref)
+                if isinstance(hit, str):
+                    raise BadInput(f"atoms item {item!r}: {hit}", next=_TRACE_NEXT)
+                name, _ordinal, atom = hit
+                bt = ctx[name]
+                if bt.doc is None:
+                    misses.append(name)
+                    continue
+                if bt0 is not None and bt.doc is not bt0.doc:
+                    raise BadInput(
+                        "the atoms span several run traces — the LCA is "
+                        "per-run; query per block or per run",
+                        next=_TRACE_NEXT,
+                    )
+                bt0 = bt
+                if atom.maker is not None:
+                    makers.append(int(atom.maker))
+            if bt0 is None or not makers:
+                raise BadInput(
+                    _NO_TRACE if not misses else f"no makers on {', '.join(misses)}",
+                    next=_TRACE_NEXT,
+                )
+            tr = traces[id(bt0.doc)]
+            lca = tr.lca(makers)
+            if lca is None:
+                return "no common frame — the atoms have no makers in this trace"
+            ids = tr.subtree_ids(str(lca["key"]))
+            covered = sum(1 for m in makers if m in ids)
+            placed = {
+                i
+                for i, at in enumerate(bt0.scene.atoms.values())
+                if at.maker is not None and int(at.maker) in ids
+            }
+            parts = [
+                f"LCA: {tv.line(lca)} · covers {covered}/{len(makers)}",
+            ]
+            rest = len(placed) - covered
+            if rest > 0:
+                parts.append(
+                    f"it also made {rest} not in your set → frame:{lca['key']}/rest"
+                )
+            stray_ids = {m for m in makers if m not in ids}
+            if stray_ids:
+                stray = sorted(
+                    {
+                        tv.line(fr)
+                        for m in stray_ids
+                        if (fr := tr.maker_frame(m)) is not None
+                    }
+                )
+                parts.append("strays into: " + " · ".join(stray))
+            return "\n".join(parts)
+        if "frame" in a:
+            key = str(a["frame"]).strip()
+            for bt in ctx.values():
+                if bt.doc is None:
+                    continue
+                tr = traces[id(bt.doc)]
+                fr = tr.frame(key)
+                if fr is None:
+                    continue
+                ids = tr.subtree_ids(key)
+                labels = list(bt.scene.atoms)
+                samples = [
+                    f"{next(n for n, b in ctx.items() if b is bt)}/{labels[i]}"
+                    for i, at in enumerate(bt.scene.atoms.values())
+                    if at.maker is not None and int(at.maker) in ids
+                ][:3]
+                return tv.card(tr, key, samples=samples)
+            top = [
+                f["key"] for tr in traces.values() for f in tr.children.get(None, [])
+            ]
+            raise BadInput(
+                f"frame {key!r} is not in any of this design's traces",
+                next=_TRACE_NEXT,
+                options=top,
+            )
+        # No args: the design's trace summary — one line per top frame.
+        out = []
+        seen: set[int] = set()
+        for name in sorted(ctx):
+            bt = ctx[name]
+            if bt.doc is None or id(bt.doc) in seen:
+                continue
+            seen.add(id(bt.doc))
+            tr = traces[id(bt.doc)]
+            run = tr.run
+            out.append(
+                f"trace {bt.bound} — workspace {run.get('workspace')}, "
+                f"{len(tr.frames)} frames"
+            )
+            for f in tr.children.get(None, []):
+                out.append(f"  {tv.line(f)}")
+            if len(out) > 40:
+                break
+        out.append(
+            "asks: args={'atom': '<block>/<path>'|'frame': '<key>'|"
+            "'atoms': [...]|'against': <run_job>}"
+        )
+        return "\n".join(out)
+
     def _render_validate(
         self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None
     ) -> str:
@@ -2235,6 +2417,7 @@ class SeHandler(Handler):
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
         n_info = sum(1 for f in findings if f.severity == "info")
+        fmap = _finding_frames(tree, [f.subject for f in findings])
         rows, delta_text = se_finding_id.annotate(
             [
                 {
@@ -2242,23 +2425,22 @@ class SeHandler(Handler):
                     "rule": f.rule,
                     "subject": f.subject,
                     "detail": f.detail,
+                    **({"frame": fmap[f.subject]} if f.subject in fmap else {}),
                 }
                 for f in findings
             ],
             [se_finding_id.finding_id(f.rule, f.subject) for f in findings],
             previous,
         )
+        schema = _FINDING_SCHEMA_DELTA if previous is not None else _FINDING_SCHEMA
+        if fmap:
+            schema = [*schema[:-1], "frame", schema[-1]]
         info_suffix = f", {n_info} info" if n_info else ""
         return (
             f"# {n_error} error(s), {n_warn} warning(s){info_suffix}\n"
             f"{fill_block}\n\n"
             + (delta_text + "\n\n" if delta_text else "")
-            + render_agent_table(
-                rows,
-                schema=_FINDING_SCHEMA_DELTA
-                if previous is not None
-                else _FINDING_SCHEMA,
-            )
+            + render_agent_table(rows, schema=schema)
         )
 
     def _render_kinematics(self, tree: SeTree, ref_id: int) -> str:
@@ -5627,6 +5809,166 @@ def _render_pockets(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
+_NO_TRACE = (
+    "no construction trace on this design — view='trace' reads the "
+    "trace.json a workspace run stores on its job (precis-workspace-help); "
+    "hand-built and generator blocks have none"
+)
+
+#: ``next=`` hint every ``view='trace'`` refusal carries (mcp-authoring):
+#: the copy-pasteable call that lists the asks and their arg shapes.
+_TRACE_NEXT = "get(kind='se', id='<slug>', view='trace')"
+
+
+class _BlockTrace(NamedTuple):
+    """One structure-bound block's trace access for ``view='trace'`` and
+    the findings ``frame`` column: the bound scene (``maker`` ids index
+    scene order) and the run's parsed trace doc."""
+
+    bound: str
+    scene: Any
+    meta: dict[str, Any]
+    doc: dict[str, Any] | None
+
+
+def _trace_context(tree: SeTree) -> dict[str, _BlockTrace]:
+    """block name → its bound structure's scene + run trace doc
+    (:attr:`SeTree.structures`/``traces`` resolvers; instance blocks map
+    to their template's binding). Blocks with no structure binding or no
+    loadable scene are absent."""
+    resolver = getattr(tree, "structures", None)
+    if resolver is None:
+        return {}
+    out: dict[str, _BlockTrace] = {}
+    for name, node in tree.blocks.items():
+        owner = tree.blocks.get(node.template) if node.template else node
+        owner = owner or node
+        if owner.bound_kind != "structure" or not owner.bound:
+            continue
+        bound = resolver(owner.bound)
+        if bound is None:
+            continue
+        gen = (bound.meta or {}).get("generated") or {}
+        traces = getattr(tree, "traces", None)
+        doc = traces(gen.get("trace")) if traces is not None else None
+        out[name] = _BlockTrace(
+            bound=owner.bound,
+            scene=bound.scene,
+            meta=dict(bound.meta or {}),
+            doc=doc,
+        )
+    return out
+
+
+def _split_atom_ref(tree: SeTree, text: Any) -> tuple[str | None, str | None]:
+    """``(block token, atom ref)`` for the ``atom``/``atoms`` ask's forms:
+    ``<block>/<AtomPath-or-label>`` (``p/w3/(2,1,A)``), ``<block>#<label>``
+    (``p#aC12``), ``<#uid>/<path>`` (``#41/w3/(0,0,A)``), ``<se:UID#ORD>``,
+    or a bare label/ordinal (``block`` comes from ``args['block']``)."""
+    s = str(text).strip()
+    m = re.match(r"^<?se:(\d+)#(\d+)>?$", s)
+    if m:
+        return f"#{m.group(1)}", m.group(2)
+    if s.startswith("#"):
+        mm = re.match(r"^#(\d+)[/:]?(.*)$", s)
+        if mm:
+            return f"#{mm.group(1)}", mm.group(2) or None
+    hi = s.find("#")
+    si = s.find("/")
+    if hi != -1 and (si == -1 or hi < si):
+        return s[:hi] or None, s[hi + 1 :]
+    if si != -1:
+        return s[:si], s[si + 1 :]
+    return None, s or None
+
+
+def _atom_lookup(
+    ctx: dict[str, _BlockTrace],
+    tree: SeTree,
+    block_token: str | None,
+    ref: str | None,
+) -> tuple[str, int, Any] | str:
+    """``(block name, scene ordinal, atom)`` or an error string. ``ref``
+    is an ordinal (digits), a label, or an AtomPath — scene labels carry
+    the path text, so one lookup covers all three."""
+    from precis_se.identity import AmbiguousLabel
+
+    try:
+        node = resolve_block(tree, block_token or "")
+    except AmbiguousLabel as exc:
+        return str(exc)
+    if node is None:
+        return f"no block {block_token!r} on this design"
+    owner = tree.blocks.get(node.template) if node.template else node
+    bt = ctx.get((owner or node).name) or ctx.get(node.name)
+    if bt is None:
+        return f"block {node.name!r} binds no traced structure"
+    labels = list(bt.scene.atoms)
+    if ref is None:
+        return f"atom ref missing after {block_token!r}"
+    if ref.isdigit():
+        i = int(ref)
+        if i >= len(labels):
+            return f"{node.name!r} has {len(labels)} atoms — no ordinal {i}"
+        return node.name, i, bt.scene.atoms[labels[i]]
+    if ref not in bt.scene.atoms:
+        return f"no atom {ref!r} on {node.name!r} (labels: {', '.join(labels[:8])}…)"
+    return node.name, labels.index(ref), bt.scene.atoms[ref]
+
+
+def _finding_frames(tree: SeTree, subjects: list[str]) -> dict[str, str]:
+    """subject → ``main.py:30 bundle → junction#7`` for findings whose
+    subject resolves to a traced entity (an atom path's ``maker``, a
+    block/port's ``generated.frame``/``annotations.frame``) — the frame
+    column ``view='validate'``/``view='drc'`` gain once a workspace-built
+    structure is bound. Empty dict when nothing resolves (or no trace
+    exists): the column is omitted, not emptied."""
+    ctx = _trace_context(tree)
+    if not ctx:
+        return {}
+    from precis_se.traceview import Trace, creator_text
+
+    traces = {id(bt.doc): Trace(bt.doc) for bt in ctx.values() if bt.doc is not None}
+    if not traces:
+        return {}
+    out: dict[str, str] = {}
+    for subject in subjects:
+        head = subject.split("—")[0].strip()
+        got: Any = None
+        if "/" in head or "#" in head:
+            blk, ref = _split_atom_ref(tree, head)
+            hit = _atom_lookup(ctx, tree, blk, ref)
+            if not isinstance(hit, str):
+                _name, _i, atom = hit
+                bt = ctx.get(_name)
+                if bt is not None and bt.doc is not None:
+                    got = (traces[id(bt.doc)], atom.maker)
+        if got is None:
+            blk, _, port = head.partition(".")
+            node = tree.blocks.get(blk)
+            if node is None:
+                continue
+            owner = tree.blocks.get(node.template) if node.template else node
+            bt = ctx.get((owner or node).name) or ctx.get(node.name)
+            if bt is None or bt.doc is None:
+                continue
+            fid = None
+            if port:
+                p = effective_ports(tree, node).get(port)
+                ann = getattr(p, "annotations", None) or {}
+                fid = ann.get("frame")
+            if fid is None:
+                fid = (bt.meta.get("generated") or {}).get("frame")
+            got = (traces[id(bt.doc)], fid)
+        tr, fid = got
+        if fid is None:
+            continue
+        fr = tr.maker_frame(int(fid))
+        if fr is not None:
+            out[subject] = creator_text(tr, fr)
+    return out
+
+
 def _anchor_resolves(tree: SeTree, anchor: str) -> bool:
     """An ``about`` anchor resolves as a block name, or as a
     ``'block.measure'`` pair (split on the last dot, the relation-source
@@ -5849,6 +6191,7 @@ def _render_drc(
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"
     lines: list[str] = []
+    fmap = _finding_frames(tree, [f.subject for f in report.findings])
     drc_rows, delta_text = se_finding_id.annotate(
         [
             {
@@ -5856,6 +6199,7 @@ def _render_drc(
                 "rule": f.rule,
                 "subject": f.subject,
                 "detail": f.detail,
+                **({"frame": fmap[f.subject]} if f.subject in fmap else {}),
             }
             for f in report.findings
         ],
@@ -5872,14 +6216,10 @@ def _render_drc(
         lines.append(f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n")
         if delta_text:
             lines.append(f"{delta_text}\n")
-        lines.append(
-            render_agent_table(
-                drc_rows,
-                schema=_FINDING_SCHEMA_DELTA
-                if previous is not None
-                else _FINDING_SCHEMA,
-            )
-        )
+        drc_schema = _FINDING_SCHEMA_DELTA if previous is not None else _FINDING_SCHEMA
+        if fmap:
+            drc_schema = [*drc_schema[:-1], "frame", drc_schema[-1]]
+        lines.append(render_agent_table(drc_rows, schema=drc_schema))
     if report.dof_probes:
         lines.append("")
         lines.append("## declared-vs-derived DOF (axis-travel probe, advisory)")
@@ -7221,6 +7561,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
         {"block", "charge", "multiplicity", "scale", "density", "format"}
     ),
     "drc": frozenset({"state", "previous", "load_cases"}),
+    "trace": frozenset({"atom", "atoms", "frame", "touched", "against", "block"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),

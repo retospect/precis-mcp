@@ -132,6 +132,7 @@ VOCABULARY = (
     "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly | "
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
     "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>] | "
+    "frame:<key>[!|/touched|/rest] | "
     "mpatch:<mol>:<id> | mol:<mol>@<clearance Å> | "
     "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> "
     "(<mol> = <block> or <block>!<removed atom label>)"
@@ -290,6 +291,8 @@ def parse_selector(text: Any) -> Selector:
         return _parse_sites(s, body)
     if head == "atoms":
         return _parse_atoms(s, body)
+    if head == "frame":
+        return _parse_frame_sel(s, body)
     if head == "port":
         if "." in body or not body.strip():
             raise MeasureError(f"port selector needs a plain name, got {s!r}")
@@ -324,6 +327,34 @@ def parse_selector(text: Any) -> Selector:
     raise MeasureError(
         f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
     )
+
+
+def _parse_frame_sel(s: str, body: str) -> Selector:
+    """``frame:<key>``, ``frame:<key>!`` (the frame alone, not its
+    children), ``frame:<key>/rest`` (the subtree minus the frame — the
+    "what else it made" the LCA coverage line cites) and
+    ``frame:<key>/touched`` (the ordinals its subtree's ``touched``
+    ranges cover). ``<key>`` is the trace frame's sha8 key
+    (structure-workspaces slice 2t, spec §Construction traces); the
+    modifier lands in :attr:`Selector.arg`."""
+    shape_msg = (
+        f"frame selector is 'frame:<key>' (optionally '!', '/rest' or "
+        f"'/touched' — the frame alone, what the rest of its subtree "
+        f"made, what its touched ranges cover), got {s!r} — "
+        f"vocabulary: {VOCABULARY}"
+    )
+    mod = None
+    body = body.strip()
+    if body.endswith("!"):
+        mod, body = "alone", body[:-1]
+    elif body.endswith("/rest"):
+        mod, body = "rest", body[: -len("/rest")]
+    elif body.endswith("/touched"):
+        mod, body = "touched", body[: -len("/touched")]
+    key = body.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{8,64}", key):
+        raise MeasureError(shape_msg)
+    return Selector(kind="trace_frame", name=key, arg=mod)
 
 
 def _parse_mol(s: str, body: str) -> Selector:
@@ -734,6 +765,8 @@ def resolve(
         )
     if sel.kind in ("sites", "atoms"):
         return _resolve_atomic(tree, sel, pin, text)
+    if sel.kind == "trace_frame":
+        return _resolve_frame(tree, node, sel, text)
     if sel.kind == "mpatch":
         return _resolve_mpatch(tree, node, sel, text)
     if sel.kind == "mol":
@@ -1430,6 +1463,100 @@ def _resolve_atomic(
     )
 
 
+def _resolve_frame(
+    tree: SeTree, node: SeBlock, sel: Selector, text: str
+) -> ResolvedDatum:
+    """``frame:<key>[!|/touched|/rest]`` against the block's bound
+    structure — the atoms whose ``maker`` id sits in the frame's subtree
+    (the bare form), the frame's own ids only (``!``), the subtree minus
+    the frame's own ids (``/rest``), or the ordinals the subtree's
+    ``touched`` ranges cover (``/touched``). The trace doc comes from the
+    bound ref's ``meta['generated']['trace']`` through
+    :attr:`SeTree.traces`; the same lenient posture as the other atomic
+    selectors — an unbound, untraced or unloadable structure is declared
+    intent (``expected``), never a broken reference. Keys are stable
+    across reruns of an unchanged script, so no ``datum_pin`` — a rebuilt
+    run re-points ``generated.trace`` at its own trace and the same key
+    resolves there."""
+    name = node.name
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if owner.bound_kind != "structure" or not owner.bound:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(
+                f"block {name!r} binds no structure design — frame: "
+                "addresses atoms a workspace run made"
+            ),
+            expected=True,
+        )
+    resolver = getattr(tree, "structures", None)
+    bound = resolver(owner.bound) if resolver is not None else None
+    if bound is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(
+                f"frame: {name!r}'s bound structure {owner.bound!r} "
+                "cannot be loaded here"
+            ),
+            expected=True,
+        )
+    gen = (bound.meta or {}).get("generated") or {}
+    doc = None
+    traces = getattr(tree, "traces", None)
+    if traces is not None:
+        doc = traces(gen.get("trace"))
+    if doc is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(
+                f"frame: {owner.bound!r} carries no construction trace — "
+                "the selector resolves on a workspace-built structure"
+            ),
+            expected=True,
+        )
+    from precis_se.traceview import Trace
+
+    tr = Trace(doc)
+    fr = tr.frame(sel.name or "")
+    if fr is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=(f"frame:{sel.name} is not a frame of {owner.bound!r}'s run trace"),
+        )
+    if sel.arg == "touched":
+        wanted = tr.touched_ordinals(str(sel.name))
+    else:
+        ids = tr.subtree_ids(str(sel.name))
+        own = set(range(int(fr["id"]), int(fr.get("id_end") or fr["id"]) + 1))
+        if sel.arg == "alone":
+            ids &= own
+        elif sel.arg == "rest":
+            ids -= own
+        wanted = {
+            i
+            for i, a in enumerate(bound.scene.atoms.values())
+            if a.maker is not None and int(a.maker) in ids
+        }
+    ordinals = tuple(sorted(wanted))
+    point = None
+    if ordinals:
+        got = posed_structure_atoms(tree, name)
+        if got is not None:
+            point = got[2][list(ordinals)].mean(axis=0) * 1e-10
+    return ResolvedDatum(
+        selector=text,
+        kind=sel.kind,
+        resolved=text,
+        point=point,
+        atoms=ordinals,
+    )
+
+
 def _resolve_mpatch(
     tree: SeTree, node: SeBlock, sel: Selector, text: str
 ) -> ResolvedDatum:
@@ -1494,6 +1621,9 @@ def _selector_text(sel: Selector) -> str:
         return f"sites:{sel.instance}/{sel.seam}/s{sel.lo}..s{sel.hi}"
     if sel.kind == "atoms":
         return f"atoms:{sel.instance}[{_index_text(sel.indices)}]"
+    if sel.kind == "trace_frame":
+        tail = "!" if sel.arg == "alone" else (f"/{sel.arg}" if sel.arg else "")
+        return f"frame:{sel.name}{tail}"
     if sel.kind == "mpatch":
         return f"mpatch:{_mol_ref(sel)}:{sel.patch_id}"
     if sel.kind == "mol":
@@ -1568,7 +1698,9 @@ def rank_datums(
     return out
 
 
-_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms", "mpatch", "mol", "mcone"})
+_REGION_KINDS = frozenset(
+    {"patch", "ring", "sites", "atoms", "trace_frame", "mpatch", "mol", "mcone"}
+)
 
 
 def region_datum_notes(

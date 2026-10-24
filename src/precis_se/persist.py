@@ -568,6 +568,11 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     tree.measurands = measurand_resolver(store)
     tree.structure_versions = structure_version_resolver(store)
     tree.structures = structure_scene_resolver(store)
+    # The run trace a bound structure's ``generated.trace`` points at
+    # (``frame:<key>`` selectors, ``view='trace'``); the design's own
+    # ref_id is the chunk home for containerless (``run_job=None``)
+    # imports.
+    tree.traces = trace_doc_resolver(store, ref_id)
     # Same door for the store-free geometry paths that must resolve a
     # ``field:<sha>`` envelope (the flow COMPUTERS' chamber builder,
     # gr503066); a store without the cad ops (a read fake) leaves it off.
@@ -710,6 +715,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         tree.structure_versions = structure_version_resolver(store)
         tree.structures = structure_scene_resolver(store)
         tree.materials = material_resolver(store)
+        tree.traces = trace_doc_resolver(store, None)
     return tree
 
 
@@ -789,6 +795,64 @@ def structure_scene_resolver(store: Any) -> Callable[[str], BoundScene | None]:
         return cache[slug]
 
     return scene_of
+
+
+def _read_ws_trace(store: Any, home: int, root: Any) -> dict[str, Any] | None:
+    """Newest ``ws_trace`` chunk on ``home`` whose root frame's key is
+    ``root`` (``root=None`` → the latest chunk). A chunk that fails the
+    schema parse is skipped, never raised — the same lenient posture as
+    the other resolvers."""
+    from precis_geom import trace_schema
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND "
+            "chunk_kind = 'ws_trace' ORDER BY ord DESC",
+            (home,),
+        ).fetchall()
+    for (text,) in rows:
+        try:
+            doc = trace_schema.loads(text)
+        except Exception:
+            continue
+        if root is None:
+            return doc
+        for f in doc.get("frames") or []:
+            if f.get("parent") is None:
+                return doc if f.get("key") == root else None
+    return None
+
+
+def trace_doc_resolver(
+    store: Any, design_ref_id: int | None
+) -> Callable[[dict[str, Any] | None], dict[str, Any] | None]:
+    """A bound ref's ``meta['generated']['trace']`` record
+    (``{'run_job', 'root'}``) → the run's stored trace.json parsed
+    through :mod:`precis_geom.trace_schema`.
+
+    The ``ws_trace`` chunk sits on the run job's ref — or on the
+    design's own ref when a containerless import ran without a job
+    (:func:`precis_se.workspace_import.import_workspace_run`), so a
+    ``run_job=None`` record reads ``design_ref_id``'s chunks, and
+    ``root`` picks the matching run when several imports share a home.
+    Memoized per (home, root) — one lookup per distinct run per call."""
+    cache: dict[tuple[Any, Any], dict[str, Any] | None] = {}
+
+    def doc_of(trace_ref: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(trace_ref, dict):
+            return None
+        home = trace_ref.get("run_job")
+        if home is None:
+            home = design_ref_id
+        if home is None:
+            return None
+        root = trace_ref.get("root")
+        key = (int(home), root)
+        if key not in cache:
+            cache[key] = _read_ws_trace(store, int(home), root)
+        return cache[key]
+
+    return doc_of
 
 
 def foreign_resolver(store: Any) -> Callable[[str], SeTree | None]:

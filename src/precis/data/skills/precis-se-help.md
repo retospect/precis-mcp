@@ -309,7 +309,7 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 `tree · block · report · ports · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export · cut · ops · assembly_check`. No `mass` view — mass
+literature · fret · links · export · cut · ops · assembly_check · trace`. No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing. `assembly_check` is
 macro relax v1 (check-and-report, nothing moves): drc + mate redundancy
 (Jacobian rank, the redundant set named) + every interfering pair with
@@ -319,7 +319,13 @@ Atomic-mode views — `mechanics`/`literature`/`topology`/`sites`/
 `catalogue`, and `clearance`'s atomic path (vdW gap, `sweep`, `lining`)
 — are documented in `precis-se-atomic-help`; `view='surface'` (a bound
 molecule's GFN2-painted surface) in `precis-se-regions-help`; `view='cut'` is the
-flat-pack file (`precis-se-flatpack-help`).
+flat-pack file (`precis-se-flatpack-help`). `view='trace'` reads a
+workspace run's construction trace (who made which atom): args
+`{'atom': '<block>/<path>'}` (add `'touched': true` for modifier
+frames), `{'frame': '<key>'}` (the frame card — `frame:<key>` then works
+as a region selector, `precis-se-regions-help`), `{'atoms': [...]}` (the
+set's LCA frame + coverage), `{'against': <run_job>}` (run diff). A
+finding row on a workspace-built design carries the script line.
 
 The default tree shows, beside each structure-bound block, both halves labelled
 by source: the stored build report's error/warning counts (`build report:`) AND

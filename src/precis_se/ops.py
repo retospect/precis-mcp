@@ -823,6 +823,16 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     structures: StructureSceneResolver | None = field(
         default=None, repr=False, compare=False
     )
+    #: Store-bound construction-trace loader
+    #: (:func:`precis_se.persist.trace_doc_resolver`): a bound ref's
+    #: ``meta['generated']['trace']`` record (``{'run_job', 'root'}``) →
+    #: the run's parsed trace.json, ``None`` when absent or unreadable.
+    #: Wired by the loader like :attr:`structures`; read by ``frame:<key>``
+    #: resolution (:mod:`precis_se.datums`) and ``view='trace'``.
+    #: ``None`` on a bare tree — declared intent, never a guess.
+    traces: Callable[[dict[str, Any] | None], dict[str, Any] | None] | None = field(
+        default=None, repr=False, compare=False
+    )
     #: Store-bound ``field:<sha256>`` grid loader
     #: (:data:`precis.cad.dsl.FieldLoader`), wired by the loader like
     #: :attr:`structures`. Store-free geometry paths (the flow COMPUTERS,

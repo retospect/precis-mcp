@@ -1,0 +1,24 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "p",
+   "file": "blocks/p.extxyz",
+   "scale": "atomic",
+   "ports": [
+    {
+     "name": "tail",
+     "atom": "s1/s0",
+     "roles": ["join"],
+     "expected_element": "C",
+     "frame": 8
+    }
+   ],
+   "desc": "two strips joined",
+   "frame": 6
+  }
+ ],
+ "instances": [],
+ "connects": [],
+ "notes": "trace demo"
+}

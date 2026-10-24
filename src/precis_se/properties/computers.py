@@ -47,7 +47,7 @@ from precis_se.measures import MeasureError, MeasureSpec
 _REGION_CUT_A = 3.0
 
 #: Datum kinds whose resolve yields wall atoms the painter can score.
-_ATOM_REGION_KINDS = ("atoms", "sites", "mpatch", "mol", "mcone")
+_ATOM_REGION_KINDS = ("atoms", "sites", "trace_frame", "mpatch", "mol", "mcone")
 
 
 class _Computer:

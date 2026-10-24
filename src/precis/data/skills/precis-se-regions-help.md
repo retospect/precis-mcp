@@ -69,6 +69,7 @@ search(kind='taxon', under='measurand', q='charge')
 | `ring:<block>.<face>` | the boundary loop of a face (a rim, an edge loop) | loop centre + face normal as axis |
 | `sites:<block>/<seam>/s<i>..s<j>` | seam sites i to j of a hexfold block | the sites' atom ordinals on the bound structure (when the scene resolver is wired) |
 | `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | the atoms' ordinals + centroid |
+| `frame:<key>` | the atoms a workspace-run trace frame's subtree made — `frame:<key>!` the frame alone, `/rest` the subtree minus the frame, `/touched` its touched ranges | the atoms' ordinals + centroid |
 | `mpatch:<mol>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
 | `mol:<mol>@<clearance Å>` | the molecule's whole surface — the wall region around it | the wall atoms within clearance + 3 Å of any surface point |
 | `mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å>` | a cone with its apex on one molecule atom, axis in the molecule structure's own frame (it turns with the block's `rot`) | the wall atoms whose centres sit inside the cone |
@@ -107,6 +108,11 @@ clearance < 0 is refused, 0 allowed).
   yet, so a read returns a note instead of a value.
 - `frame`, `port:<name>`, `face:<block>.<tag>`, `axis:<block>` and the
   `face:` predicates work too (`precis-se-help`).
+- `frame:<key>` cites a construction-trace frame (slice 2t) — the key
+  comes from `get(kind='se', id=..., view='trace')`; keys are stable
+  across reruns of an unchanged script, so it needs no version pin. It
+  resolves only on a workspace-built structure (a bound ref whose
+  `generated.trace` names the run).
 
 ## Group regions into a pocket
 
