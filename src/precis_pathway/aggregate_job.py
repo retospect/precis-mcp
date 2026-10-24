@@ -53,6 +53,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis import settings as psettings
 from precis.workers.job_types import JobTypeSpec
 
 from . import step_retry
@@ -64,6 +65,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 NAME = "autocatpath_aggregate"
+
+#: The ``precis.settings`` key arming the verify-tier kinetics auto-mint
+#: — default off until the CPU-lane ruling lands (D9 says the sweep
+#: never runs on the GPU seed lane; no mechanism keeps it off yet).
+KINETICS_MINT_KEY = "pathway.kinetics_mint_enabled"
 
 #: Mint seam for the step retry: ``(parent_seed_todo_id, idem_key, params)
 #: -> job ref id`` (``None`` when the mint was refused). The default goes
@@ -270,10 +276,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     if not ok:
         return
-    # Verify-tier aggregates mint the kinetics sweep job (D9: the
-    # autocatpath_kinetics lane runs the MF (T, p_total) grid on a CPU
-    # worker). Isolated so a mint fault can never fail a finished
-    # aggregate — the job is a diagnostic bonus, not the verdict.
+    # Verify-tier aggregates mint the kinetics sweep job — only when
+    # pathway.kinetics_mint_enabled is on (dark until the CPU-lane
+    # ruling; D9: the autocatpath_kinetics lane runs the MF (T, p_total)
+    # grid on a CPU worker). Isolated so a mint fault can never fail a
+    # finished aggregate — the job is a diagnostic bonus, not the verdict.
     try:
         _mint_kinetics_job(ctx, params, pathway_ref_id)
     except Exception:
@@ -328,11 +335,17 @@ def _mint_kinetics_job(
 ) -> int | None:
     """Mint the ``autocatpath_kinetics`` job for a just-aggregated
     verify-tier pathway (D9: every verify-tier aggregate feeds the MF
-    (T, p_total) sweep). Non-verify tiers don't mint; the call is a no-op
-    otherwise so an aggregate can never fail on the mint."""
+    (T, p_total) sweep). Dark unless ``pathway.kinetics_mint_enabled``
+    resolves on — gated until the CPU-lane ruling lands — and non-verify
+    tiers never mint; the call is a no-op otherwise so an aggregate can
+    never fail on the mint. Explicit, human-requested
+    ``autocatpath_kinetics`` jobs don't come through here and are
+    unaffected."""
     from precis.dispatch import Hub
     from precis.handlers.job import JobHandler
 
+    if psettings.get_bool(KINETICS_MINT_KEY, store=ctx.store) is not True:
+        return None
     pathway = ctx.store.get_ref(kind="pathway", id=pathway_ref_id)
     if pathway is None:
         return None

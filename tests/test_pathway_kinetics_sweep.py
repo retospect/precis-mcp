@@ -39,10 +39,23 @@ def _sweep_payload() -> dict[str, Any]:
     )
 
 
+def _mint_ctx(tier: str = "verify") -> MagicMock:
+    """A MagicMock ctx whose pathway reads ``tier`` and whose store has
+    no settings DB — ``pool.connection`` raising makes the flag resolve
+    env -> compiled default only."""
+    ctx = MagicMock()
+    ctx.store.get_ref.return_value = MagicMock(meta={"tier": tier})
+    ctx.store.pool.connection.side_effect = Exception("no app_settings")
+    return ctx
+
+
 def test_verify_aggregate_mints_kinetics_job(monkeypatch):
-    """A verify-tier pathway's aggregate mints autocatpath_kinetics;
-    other tiers don't, and the mint carries no GPU-lane pin (D9)."""
+    """With the mint flag on, a verify-tier pathway's aggregate mints
+    autocatpath_kinetics; other tiers don't, and the mint carries no
+    GPU-lane pin (D9)."""
     from precis_pathway import aggregate_job
+
+    monkeypatch.setenv("PRECIS_PATHWAY_KINETICS_MINT_ENABLED", "1")
 
     minted: list[dict] = []
 
@@ -57,8 +70,7 @@ def test_verify_aggregate_mints_kinetics_job(monkeypatch):
             minted.append(kw)
             return _Resp()
 
-    ctx = MagicMock()
-    ctx.store.get_ref.return_value = MagicMock(meta={"tier": "verify"})
+    ctx = _mint_ctx()
 
     import precis.handlers.job as jh_mod
 
@@ -89,6 +101,78 @@ def test_verify_aggregate_mints_kinetics_job(monkeypatch):
         ctx, {"pathway_slug": "pw1", "config": {}}, 42
     )
     assert out is None and not minted
+
+
+def test_kinetics_mint_dark_without_flag(monkeypatch):
+    """Default off — gated until the CPU-lane ruling (D9): flag unset, a
+    verify-tier aggregate mints NO autocatpath_kinetics job."""
+    from precis_pathway import aggregate_job
+
+    monkeypatch.delenv("PRECIS_PATHWAY_KINETICS_MINT_ENABLED", raising=False)
+
+    minted: list[dict] = []
+
+    class _JH:
+        def __init__(self, hub=None):
+            pass
+
+        def put(self, **kw):
+            minted.append(kw)
+            raise AssertionError("mint must not reach JobHandler.put")
+
+    ctx = _mint_ctx()
+
+    import precis.handlers.job as jh_mod
+
+    monkeypatch.setattr(jh_mod, "JobHandler", _JH)
+    out = aggregate_job._mint_kinetics_job(
+        ctx, {"pathway_slug": "pw1", "config": {}}, 42
+    )
+    assert out is None
+    assert not minted
+
+
+def test_kinetics_mint_flag_on_mints_as_before(monkeypatch):
+    """Flag on: the verify-tier mint happens exactly as slice 4 wrote it
+    — and the flag is what armed it."""
+    from precis import settings as psettings
+    from precis_pathway import aggregate_job
+
+    calls: list[str] = []
+    real_get_bool = psettings.get_bool
+
+    def _spy(key, **kw):
+        calls.append(key)
+        return real_get_bool(key, **kw)
+
+    monkeypatch.setattr(psettings, "get_bool", _spy)
+    monkeypatch.setenv("PRECIS_PATHWAY_KINETICS_MINT_ENABLED", "1")
+
+    minted: list[dict] = []
+
+    class _Resp:
+        ref_id = 777
+
+    class _JH:
+        def __init__(self, hub=None):
+            pass
+
+        def put(self, **kw):
+            minted.append(kw)
+            return _Resp()
+
+    ctx = _mint_ctx()
+
+    import precis.handlers.job as jh_mod
+
+    monkeypatch.setattr(jh_mod, "JobHandler", _JH)
+    out = aggregate_job._mint_kinetics_job(
+        ctx, {"pathway_slug": "pw1", "config": {}}, 42
+    )
+    assert out == 777
+    assert len(minted) == 1
+    assert minted[0]["job_type"] == "autocatpath_kinetics"
+    assert aggregate_job.KINETICS_MINT_KEY in calls
 
 
 def test_kinetics_job_dispatch_runs_grid_and_persists(store, monkeypatch):

@@ -226,6 +226,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "explicit 'off' arms the retirements.",
         ),
         SettingSpec(
+            key="pathway.kinetics_mint_enabled",
+            type="bool",
+            env_var="PRECIS_PATHWAY_KINETICS_MINT_ENABLED",
+            default=False,
+            doc="Auto-mint an autocatpath_kinetics sweep job after each "
+            "verify-tier autocatpath_aggregate (precis_pathway."
+            "aggregate_job, kinetics-engine-v2.md D9). Default off — "
+            "gated until the CPU-lane ruling lands: the sweep must never "
+            "reach the GPU seed lane and no routing mechanism exists "
+            "yet. Explicit, human-requested autocatpath_kinetics jobs "
+            "are unaffected.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

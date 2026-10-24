@@ -79,6 +79,14 @@ the retry seed still computes the whole network and precis narrows what it
 records — the evidence and replacement semantics are step-scoped, the
 compute saving waits on an engine step filter.
 
+The verify-tier aggregate's ``autocatpath_kinetics`` auto-mint is dark by
+default: D9 says the sweep never runs on the GPU seed lane, and no
+mechanism pins it to a CPU node yet — until that ruling lands the mint
+sits behind the ``pathway.kinetics_mint_enabled`` setting
+(``precis settings``, default off; ``PRECIS_PATHWAY_KINETICS_MINT_ENABLED``
+for env-only boots). Explicit, human-requested ``autocatpath_kinetics``
+jobs never touch the flag.
+
 Gated on **dependency presence**, not a feature flag: with no
 ``autocatpath``/``[catalyst]`` extra installed the handler raises
 ``InitError`` at registration and the ``pathway`` kind just doesn't
