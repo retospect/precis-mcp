@@ -1059,6 +1059,9 @@ class PcbHandler(Handler):
                 apply,
                 ref_id_of=lambda r: int(r[0].id),
             )
+        except BadInput:
+            # BadInput is also a ValueError (gr514202); keep its own hint.
+            raise
         except ValueError as exc:
             raise BadInput(
                 f"pcb: {exc}",
