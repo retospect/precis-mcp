@@ -755,6 +755,42 @@ def test_an_ordinary_unknown_kind_gets_no_retired_pointer(
     assert "merged into" not in out
 
 
+# ── kind='ref' names the typed shape (gr511442) ─────────────────────
+
+
+def test_ref_kind_refuses_naming_the_typed_form(runtime: PrecisRuntime) -> None:
+    """gr511442: ``kind='ref'`` is the generic-noun near-miss — agents use
+    it meaning "any ref". The refusal names the typed call shape, not just
+    "pick from the options"."""
+    out = runtime.dispatch("get", {"kind": "ref", "id": 460128})
+    assert "[error:NotFound]" in out
+    assert "unknown kind: ref" in out
+    assert "get(kind='paper', id='pa123')" in out
+    # the generic breadcrumb still trails it
+    assert "precis-help" in out
+
+
+def test_ref_kind_names_the_real_kind_when_the_id_resolves(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A numeric id that resolves to a live ref gets the exact retry."""
+    ref = store.insert_ref(kind="todo", slug=None, title="a task")
+    out = runtime_with_store.dispatch("get", {"kind": "ref", "id": ref.id})
+    assert "[error:NotFound]" in out
+    assert f"get(kind='todo', id={ref.id})" in out
+    assert f"get(id='td{ref.id}')" in out
+
+
+def test_ref_kind_with_a_handle_id_hints_the_kind_free_call(
+    runtime: PrecisRuntime,
+) -> None:
+    """A well-formed handle in ``id=`` already carries its kind — the hint
+    is the kind-free call."""
+    out = runtime.dispatch("get", {"kind": "ref", "id": "td504852"})
+    assert "[error:NotFound]" in out
+    assert "get(id='td504852')" in out
+
+
 # ── pagination footer is lifetime-aware (gr267466) ────────────────────
 #
 # A ``PrecisRuntime.pagination`` cursor lives only as long as the

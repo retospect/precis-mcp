@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers import _comment_timeline as tl
+from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
@@ -215,6 +216,16 @@ assert set(_TREE_SEARCH_VIEWS) == set(TodoView), (
 #: top of the base class's ``links`` / ``log`` views.
 _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 
+#: ``get`` view spellings with one reading on a todo (gr511440 — the
+#: prod ledger showed ``get(kind='todo', view='full')`` refusals; the same
+#: family already folds on job/memory/gripe). ``'full'`` is the default
+#: card — a todo's plain get already is the complete read. ``None`` maps
+#: to the default view; each alias runs the canonical call and names the
+#: reading via :func:`interpreted` (gr494831's shape).
+_TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
+    "full": None,
+}
+
 #: Reserved *virtual* link relation. ``link(rel='parent')`` is a
 #: façade over the ``refs.parent_id`` column — it re-points the tree
 #: edge (running the cycle/depth/owner guards) instead of inserting a
@@ -360,6 +371,13 @@ class TodoHandler(NumericRefHandler):
             return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)
+        readings: list[str] = []
+        single = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view in _TODO_GET_VIEW_ALIASES and single and q is None:
+            canon = _TODO_GET_VIEW_ALIASES[view]
+            shown = f"view={canon!r}" if canon is not None else "the default view"
+            readings.append(f"view={view!r} read as {shown}")
+            view = canon
         # Tree view is special: needs a numeric id, dispatches before
         # the base class can complain about unknown views.
         if view == "tree":
@@ -393,11 +411,11 @@ class TodoHandler(NumericRefHandler):
             try:
                 ref_id = self._coerce_id(id)
             except BadInput:
-                return resp
+                return interpreted(resp, readings)
             extra = views.render_ancestry_section(self.store, ref_id)
             if extra:
                 resp = Response(body=resp.body + "\n" + extra)
-        return resp
+        return interpreted(resp, readings)
 
     # ── search: tree-aware view router ────────────────────────────
 

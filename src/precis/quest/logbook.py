@@ -76,6 +76,11 @@ def append_entry(
     minable later without parsing ``text`` — never overwrites the keys this
     function itself stamps (``chunk_kind``/``entry_type``/``by``/``cost``/
     ``chars``).
+
+    The returned number is 1-based for human reading; the entry's linkable
+    block handle is ``qu<quest_id>~<entry_no - 1>`` — ``~N`` selects a chunk
+    by its 0-based ``ord`` (gr511468: an ack that printed the bare number
+    produced off-by-one link targets).
     """
     entry_meta: dict[str, Any] = {
         "chunk_kind": LOG_KIND,

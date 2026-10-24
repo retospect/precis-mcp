@@ -2221,7 +2221,7 @@ class DispatchMixin(RuntimeShape):
             )
 
         try:
-            handler = self._resolve_handler(resolved_kind, verb)
+            handler = self._resolve_handler(resolved_kind, verb, raw_id=args.get("id"))
             return self._invoke_handler(
                 handler,
                 verb,
@@ -2381,6 +2381,40 @@ class DispatchMixin(RuntimeShape):
             return None
         return str(ref.kind)
 
+    def _generic_ref_hint(self, kind: str, raw_id: Any) -> str | None:
+        """The ``next`` lead for ``kind='ref'`` (gr511442); None otherwise.
+
+        ``'ref'`` is what agents reach for meaning "any ref" — ids share
+        one global ref space, but there is no generic kind: a ref is
+        addressed by its own kind name or its typed handle
+        (``get(kind='paper', id='pa123')``). When the call's ``id=`` names
+        a live ref the reply names the real kind outright; a well-formed
+        handle already carries its kind, and a bare numeric ``get(id=N)``
+        infers it (:meth:`_kind_of_bare_id`).
+        """
+        if kind != "ref":
+            return None
+        real = self._kind_of_bare_id(raw_id)
+        if real is not None:
+            handle = handle_registry.try_format(real, int(str(raw_id).strip()))
+            return f"id={raw_id} is a live {real}: get(kind={real!r}, id={raw_id})" + (
+                f" — or get(id={handle!r}), the handle carries the kind"
+                if handle
+                else ""
+            )
+        if isinstance(raw_id, str):
+            parsed = handle_registry.parse(raw_id.strip())
+            if parsed is not None and not parsed[1]:
+                return (
+                    f"{raw_id!r} is a {parsed[0]} handle — "
+                    f"get(id={raw_id.strip()!r}) works, no kind= needed"
+                )
+        return (
+            "'ref' is a generic noun, not a kind — name the ref's own kind: "
+            "get(kind='paper', id='pa123'), get(kind='todo', id=12); a bare "
+            "numeric get(id=N) or a handle get(id='pa123') needs no kind="
+        )
+
     def _missing_kind_hints(self, verb: str) -> list[str]:
         """Recovery hints for a non-``search`` verb called without ``kind=``.
 
@@ -2402,7 +2436,7 @@ class DispatchMixin(RuntimeShape):
         """
         return ["pass kind=<one of the listed options>"]
 
-    def _resolve_handler(self, kind: str, verb: str) -> Handler:
+    def _resolve_handler(self, kind: str, verb: str, *, raw_id: Any = None) -> Handler:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
 
         Raises:
@@ -2509,12 +2543,22 @@ class DispatchMixin(RuntimeShape):
             # A RETIRED kind leads with its successor (:data:`_RETIRED_KINDS`)
             # — "unknown kind" is true but unhelpful when the capability
             # simply moved. The generic breadcrumb still trails it, so the
-            # caller keeps the full kind table one call away.
-            retired = _RETIRED_KINDS.get(kind)
+            # caller keeps the full kind table one call away. gr511442:
+            # ``kind='ref'`` gets the same treatment — there is no generic
+            # 'ref' kind, so the lead names the typed call shape (the real
+            # kind when the numeric id resolves to a live ref).
+            leads = [
+                h
+                for h in (
+                    self._generic_ref_hint(kind, raw_id),
+                    _RETIRED_KINDS.get(kind),
+                )
+                if h is not None
+            ]
             raise NotFound(
                 f"unknown kind: {kind}",
                 options=verb_kinds,
-                next=[retired, next_hint] if retired is not None else next_hint,
+                next=[*leads, next_hint] if leads else next_hint,
             )
 
         if not handler.spec.supports(verb):

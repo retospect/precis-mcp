@@ -886,11 +886,12 @@ class QuestHandler(NumericRefHandler):
             self.store, ref.id, text=text, entry_type=entry_type, by=by_who, cost=cost
         )
         deed = " (a deed)" if entry_type == "milestone" else ""
+        # The ack prints the linkable block handle, not the bare 1-based
+        # entry number — '~N' selects a chunk by its 0-based ord, so the
+        # bare number missed by one as a link target (gr511468).
+        block = f"{handle_registry.format_handle('quest', ref.id)}~{entry_no - 1}"
         return Response(
-            body=(
-                f"logged {entry_type} on {self._sense()} id={ref.id}{deed} "
-                f"(entry {entry_no})"
-            )
+            body=f"logged {entry_type} on {self._sense()} id={ref.id}{deed} ({block})"
         )
 
     # ── edit: in-place rewrite of the founding striving statement ────

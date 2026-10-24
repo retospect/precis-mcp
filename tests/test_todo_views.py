@@ -361,6 +361,32 @@ def test_get_with_search_view_redirects_to_search(handler: TodoHandler) -> None:
         handler.get(view="doable")
 
 
+# ── view='full' alias (gr511440) ─────────────────────────────────
+
+
+def test_get_view_full_reads_as_default(handler: TodoHandler) -> None:
+    """gr511440: ``view='full'`` is the default card under another name —
+    run it and say so with the ``interpreted:`` line (the same fold
+    job/memory/gripe already do) instead of refusing."""
+    r = handler.put(text="finish the report")
+    rid = _id_of(r.body)
+    plain = handler.get(id=rid)
+    full = handler.get(id=rid, view="full")
+    assert (
+        full.body == f"interpreted: view='full' read as the default view\n{plain.body}"
+    )
+    assert "finish the report" in full.body
+
+
+def test_get_view_full_needs_an_id(handler: TodoHandler) -> None:
+    """``view='full'`` is not a search view on todo — with no id the call
+    still gets the 'requires id=' refusal, not a silent list."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="require id="):
+        handler.get(view="full")
+
+
 # ── view='raw' (universal debug view) ─────────────────────────────
 
 

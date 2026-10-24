@@ -134,6 +134,25 @@ class TestLogbook:
             link.dst_ref_id == other for link in h.store.links_for(qid, direction="out")
         )
 
+    def test_append_ack_prints_the_linkable_handle(self, store: Any) -> None:
+        """gr511468: the ack used to print ``(entry N)`` — 1-based, while
+        ``qu<id>~N`` selects a chunk by its 0-based ord, so a link built
+        from the ack missed by one (or hit the previous entry). The ack
+        now prints the linkable handle itself."""
+        from precis.utils.link_target import parse_link_target
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Some striving"))
+        first = h.put(id=qid, text="first", entry="note")
+        second = h.put(id=qid, text="second", entry="result")
+        assert f"(qu{qid}~0)" in first.body
+        assert f"(qu{qid}~1)" in second.body
+        # the printed handle resolves to the entry just written
+        target = parse_link_target(f"quest:qu{qid}~1", store=store)
+        assert target.pos == 1
+        block = store.chunks.get_chunk(qid, pos=target.pos)
+        assert block is not None and block.text == "second"
+
 
 class TestEdit:
     def test_edit_replace_rewrites_founding_text_keeps_logbook_and_links(
