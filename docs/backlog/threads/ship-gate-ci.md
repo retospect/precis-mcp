@@ -174,6 +174,9 @@ nightly — the diff-cover verdict is still open.
 11. **backlog/fleet-coordination-via-precis.md** — peer messages and
     wakeups cost a full ~250k-context turn each; consider moving the
     status relay into precis.
+12. **backlog/compact-handoff.md** — `/next` writes a handoff node and a
+    pointer, a SessionStart(compact) hook injects it; ends the copy-paste
+    restart. Draft, waits on Reto's ruling on its open questions.
 
 ## Parked
 
