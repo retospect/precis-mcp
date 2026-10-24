@@ -55,6 +55,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.pcb.handles import net_handle as net_handle
+from precis.pcb.handles import pad_handle as pad_handle
+
 #: Candidate-handle tokenizer. Prefixed forms take everything up to
 #: whitespace (net names carry ``/``, ``+``, ``-``); bare forms are an
 #: identifier with an optional ``.pin`` suffix.
@@ -82,14 +85,6 @@ class Resolved:
     handle: str
     kind: str
     context: dict[str, Any] = field(default_factory=dict)
-
-
-def pad_handle(refdes: str, pin: str) -> str:
-    return f"{refdes}.{pin}"
-
-
-def net_handle(name: str) -> str:
-    return f"net:{name}"
 
 
 def feature_handle(ftype: str) -> str:
