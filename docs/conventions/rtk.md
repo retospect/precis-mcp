@@ -16,6 +16,16 @@ pytest…); `scripts/*` wrappers and the already-terse `scripts/test` pass
 through untouched. The repo's Bash guards (commit-on-main / git-stash /
 prod-psql) are prefix-robust, so the rewrite can't blind them.
 
+**Search commands are exempt.** The repo-local shim
+(`scripts/hooks/rtk-hook.sh`, wired ahead of `rtk hook claude` in the
+user-level hook) leaves any command invoking `rg` or `*grep`
+(grep/egrep/fgrep/zgrep/…, which also covers `git grep`) unrewritten, in
+every session. rtk's digest rewrites matched identifiers and collapses
+match sets — `chunk_embeddings` rendered as `n`, `+N hidden` on a match
+list — silently corrupting exactly the text being searched (gr514332,
+gr513881, gr514780; Reto ruling 2026-10-24). Search output therefore always
+arrives verbatim; everything else is still a filtered digest as below.
+
 ## Consequence: filtered, not raw, output
 
 Because the hook silently rewrites the command, **Bash tool output is a
@@ -130,9 +140,11 @@ rtk summary -- <cmd>   # condensed summary
   friends are unaffected (not rewritten). Fix, in layers:
   1. `scripts/hooks/rtk-hook.sh` — a shim for the user-level hook that
      leaves a git-mentioning command unrewritten when the session cwd is
-     under `.claude/worktrees/`. Wire it in `~/.claude/settings.json`
-     (the wiring line is in the script header); the hook is read once at
-     session start, so it takes effect from the next session.
+     under `.claude/worktrees/` (and leaves `rg`/`*grep` unrewritten
+     everywhere — see "Search commands are exempt" above). Wire it in
+     `~/.claude/settings.json` (the wiring line is in the script header);
+     the hook is read once at session start, so it takes effect from the
+     next session.
   2. Per command, without the shim: `RTK_DISABLED=1 git …` — rtk's own
      general pass-through switch; the hook sees the prefix and skips the
      rewrite, and the guard accepts the plain command. `/usr/bin/git …`

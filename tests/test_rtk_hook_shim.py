@@ -8,6 +8,13 @@ a worktree session was refused, as was a grep/find whose arguments merely
 mention ``git``. The shim leaves such commands unrewritten when the session
 cwd is under ``.claude/worktrees/`` and delegates everything else to rtk.
 
+Second defect (2026-10-24, gr514332/gr513881/gr514780): rtk's digest rewrites
+matched identifiers and collapses match sets in ``rg``/``grep`` output
+(``chunk_embeddings`` rendered as ``n``), silently corrupting exactly the
+text being searched. Per Reto's ruling the shim never rewrites a command
+invoking ``rg`` or ``*grep`` (which also covers ``git grep``) — in any
+session, worktree or not.
+
 The real ``rtk`` is replaced by a stub on PATH so the delegation path is
 observable and the test does not depend on rtk being installed.
 """
@@ -82,12 +89,37 @@ def test_worktree_git_mentioning_command_passes_through(
 @pytest.mark.parametrize(
     ("cwd", "command"),
     [
+        (WORKTREE_CWD, "rg chunk_embeddings"),
+        (PRIMARY_CWD, "rg -n 'def ' src/"),
+        (WORKTREE_CWD, "grep -rn safe_fetch src/ tests/"),
+        (PRIMARY_CWD, "grep -rn safe_fetch src/"),
+        (PRIMARY_CWD, "git grep -n pattern"),
+        (PRIMARY_CWD, "egrep -r 'a|b' ."),
+        (PRIMARY_CWD, "cat log | zgrep WARN | head"),
+        (WORKTREE_CWD, "sed -n '1,5p' f | grep foo"),  # grep anywhere in the line
+        (PRIMARY_CWD, "pgrep -f pytest"),  # *grep family: also exempt
+    ],
+)
+def test_search_commands_pass_through(
+    stub_rtk: dict[str, str], cwd: str, command: str
+) -> None:
+    res = _run(stub_rtk, cwd, command)
+    assert res.returncode == 0
+    assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+@pytest.mark.parametrize(
+    ("cwd", "command"),
+    [
         (PRIMARY_CWD, "git status --short"),  # not isolated: rtk keeps digesting git
         (WORKTREE_CWD, "find . -name x"),  # no git token
         (
             WORKTREE_CWD,
             "find . -name digital -o -name gitless",
         ),  # substring, not a word
+        (PRIMARY_CWD, "cargo build"),  # contains "rgo" letters, no rg/grep word
+        (PRIMARY_CWD, "echo org mode"),  # "org" is not the word "rg"
+        (PRIMARY_CWD, "echo grepped"),  # "grep" must be at a word's tail
     ],
 )
 def test_everything_else_is_delegated_to_rtk(

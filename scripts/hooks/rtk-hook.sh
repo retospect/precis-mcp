@@ -10,10 +10,16 @@
 # git call, and any grep/find whose arguments mention git, is refused. Seen
 # on Claude Code 2.1.267 + rtk 0.49.0 (docs/conventions/rtk.md, Known gaps).
 #
-# What: when the session cwd is under .claude/worktrees/ and the command
-# mentions `git` as a word, emit nothing (= leave the command unrewritten).
-# Everything else goes to rtk as before. The only cost is rtk's digest on
-# those commands; the isolation guard still vets the plain command.
+# What: two pass-throughs emit nothing (= leave the command unrewritten).
+#  1. Search commands — `rg`, `*grep` (grep/egrep/fgrep/zgrep/…, which also
+#     covers `git grep`) — in ANY session. rtk's digest rewrites matched
+#     identifiers and collapses match sets (gr514332, gr513881, gr514780;
+#     Reto ruling 2026-10-24): the exact lines a search returns must reach
+#     the model verbatim, so these never go to rtk at all.
+#  2. When the session cwd is under .claude/worktrees/ and the command
+#     mentions `git` as a word: the isolation guard still vets the plain
+#     command; only rtk's digest is lost.
+# Everything else goes to rtk as before.
 input=$(cat)
 fields=$(printf '%s' "$input" | python3 -c '
 import json, sys
@@ -23,6 +29,9 @@ print(d.get("tool_input", {}).get("command", ""))
 ' 2>/dev/null)
 cwd=$(printf '%s\n' "$fields" | sed -n 1p)
 cmd=$(printf '%s\n' "$fields" | sed -n '2,$p')
+if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_])(rg|[a-z]*grep)([^[:alnum:]_]|$)'; then
+  exit 0
+fi
 case "$cwd" in
   */.claude/worktrees/*)
     if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)'; then
