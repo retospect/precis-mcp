@@ -14,7 +14,10 @@ import pytest
 
 from precis.pcb import realize
 from precis.pcb.capabilities import capability_for
+from precis.pcb.ir import from_graph
 from precis.pcb.pr import state as prstate
+from precis.pcb.pr import trees as prtrees
+from precis.pcb.rules import ipc2221_track_width_mm, via_capacity_a
 from tests.fixtures.pcb import qfp_fanout as qf
 
 
@@ -252,3 +255,133 @@ def test_gradient_matches_finite_difference():
         ]
     )
     assert torch.allclose(g, fd, atol=1e-4), f"grad {g} vs fd {fd}"
+
+
+# ---- Nets as trees (spec §State "Nets as trees") ----------------------
+
+
+def _current_graph() -> dict:
+    """A trunk-and-two-branch net (gr497904): U1 feeds 2 A, L1/L2 draw 1 A
+    each. Members are ordered so the star's hub (HUB, member[0]) is NOT the
+    source, so the hub-to-source edge is the trunk carrying both loads."""
+    return {
+        "instances": [{"refdes": r} for r in ("HUB", "L1", "L2", "U1")],
+        "nets": [
+            {
+                "name": "VOUT",
+                "net_class": "power",
+                "domain": "electrical",
+                "est_current_a": 2.0,
+                "members": [
+                    {"refdes": "HUB", "pin": "1"},
+                    {"refdes": "L1", "pin": "1", "meta": {"est_current_a": 1.0}},
+                    {"refdes": "L2", "pin": "1", "meta": {"est_current_a": 1.0}},
+                    {
+                        "refdes": "U1",
+                        "pin": "2",
+                        "tags": ["power_out"],
+                        "meta": {"est_current_a": 2.0},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_solve_tree_currents_star():
+    # Source +3 at node 0 feeding two loads; each edge carries its leaf draw.
+    edges = np.array([[0, 1], [0, 2]])
+    inject = np.array([3.0, -1.0, -2.0])
+    f = prtrees.solve_tree_currents(edges, inject, 3)
+    assert np.allclose(np.abs(f), [1.0, 2.0])
+
+
+def test_solve_tree_currents_trunk_sums_downstream():
+    # 0 source, 1 Steiner, 2/3 loads: the trunk 0->1 carries both.
+    edges = np.array([[0, 1], [1, 2], [1, 3]])
+    inject = np.array([3.0, 0.0, -1.0, -2.0])
+    f = prtrees.solve_tree_currents(edges, inject, 4)
+    by = {tuple(e): abs(c) for e, c in zip(edges.tolist(), f, strict=True)}
+    assert by[(0, 1)] == pytest.approx(3.0)
+    assert by[(1, 2)] == pytest.approx(1.0)
+    assert by[(1, 3)] == pytest.approx(2.0)
+
+
+def test_solve_tree_currents_rejects_unbalanced_and_non_tree():
+    with pytest.raises(ValueError, match="balance"):
+        prtrees.solve_tree_currents(np.array([[0, 1]]), np.array([1.0, 0.0]), 2)
+    with pytest.raises(ValueError, match="spanning tree"):
+        prtrees.solve_tree_currents(np.array([[0, 1], [1, 2]]), np.array([0.0, 0.0]), 2)
+
+
+def test_solve_loop_currents_divides_by_conductance():
+    # A triangle, 1 A in at node 0, out at node 2. The direct edge 0->2 and
+    # the detour 0->1->2 split by conductance; equal g gives 2:1 (the detour
+    # is two edges in series, half the conductance of the one-edge path).
+    edges = np.array([[0, 1], [1, 2], [0, 2]])
+    inject = np.array([1.0, 0.0, -1.0])
+    f = prtrees.solve_loop_currents(edges, inject, np.ones(3), 3)
+    assert f[2] == pytest.approx(2.0 / 3.0)  # direct path
+    assert f[0] == pytest.approx(1.0 / 3.0) and f[1] == pytest.approx(1.0 / 3.0)
+    # On a tree it agrees with the KCL solve.
+    tedges = np.array([[0, 1], [0, 2]])
+    tinj = np.array([3.0, -1.0, -2.0])
+    assert np.allclose(
+        prtrees.solve_loop_currents(tedges, tinj, np.ones(2), 3),
+        prtrees.solve_tree_currents(tedges, tinj, 3),
+    )
+
+
+def test_edge_min_width_floors_and_sizes_by_current():
+    floor = 0.2
+    w = prtrees.edge_min_width_mm(np.array([0.0, 5.0]), floor, layer_is_outer=True)
+    assert w[0] == pytest.approx(floor)  # zero current takes the floor
+    assert w[1] == pytest.approx(ipc2221_track_width_mm(5.0, layer_is_outer=True))
+    assert w[1] > floor
+    # A tiny current whose IPC width is below the floor still gets the floor.
+    assert prtrees.edge_min_width_mm(np.array([1e-3]), floor)[0] == pytest.approx(floor)
+
+
+def test_parallel_via_count_ceils_and_guards():
+    cap = via_capacity_a(0.3)
+    counts = prtrees.parallel_via_count(np.array([0.0, cap, cap * 2.5]), 0.3)
+    assert counts.tolist() == [1, 1, 3]
+    # No modelled via geometry: one via, never a divide-by-zero.
+    assert prtrees.parallel_via_count(np.array([5.0]), 0.0).tolist() == [1]
+
+
+def test_build_net_trees_matches_ir_seg_currents():
+    ir = from_graph(_current_graph())
+    net_id = next(i for i in range(ir.n_nets) if str(ir.net_name[i]) == "VOUT")
+    tree = prtrees.build_net_trees(ir)[net_id]
+    assert tree.is_tree and tree.n_edges == 3 and tree.n_nodes == 4
+    # edge_current_a is read off the IR's resolved per-segment current.
+    for e in range(tree.n_edges):
+        assert tree.edge_current_a[e] == pytest.approx(
+            abs(float(ir.seg_current_a[int(tree.edge_seg[e])]))
+        )
+    # The hub-balanced injections, run back through the KCL solve, reproduce
+    # those same magnitudes — the new mechanism agrees with the IR.
+    f = prtrees.solve_tree_currents(tree.edges, tree.node_inject_a, tree.n_nodes)
+    assert np.allclose(sorted(np.abs(f)), sorted(tree.edge_current_a))
+    # Trunk (to the power_out source U1) carries the sum of both loads.
+    src = next(
+        i
+        for i in range(tree.n_nodes)
+        if ir.pin_etype[int(tree.node_pin[i])] == "power_out"
+    )
+    trunk = next(e for e in range(tree.n_edges) if src in tree.edges[e].tolist())
+    assert tree.edge_current_a[trunk] == pytest.approx(2.0)
+
+
+def test_build_net_trees_on_fanout_problem():
+    prob = _problem(_built())
+    assert prob.net_trees  # the fanout's multi-pin nets each get a tree
+    for net_id, tree in prob.net_trees.items():
+        assert tree.net_id == net_id
+        assert tree.is_tree and tree.n_edges >= 1
+        floor = prob.net_rules[prob.net_name[net_id]].track_width_mm
+        # Width is never below the class floor; a zero-current edge sits on it.
+        assert np.all(tree.edge_width_mm >= floor - 1e-9)
+        zero = tree.edge_current_a == 0.0
+        assert np.allclose(tree.edge_width_mm[zero], floor)

@@ -3,9 +3,10 @@
 A :class:`PrProblem` is the structure-of-arrays view of a board the
 prototype solves: static obstacles as core+radius shapes with a layer
 set, two-pin wires as ratsnest edges (no Steiner points), the movable
-:class:`Parts` pose table (spec §State Parts) and per-net
-:class:`NetAttrs` (spec §State Net attributes), and the rule context
-every ``required(a, b, layer)`` answer is resolved against.
+:class:`Parts` pose table (spec §State Parts), per-net
+:class:`NetAttrs` (spec §State Net attributes), the per-net current trees
+(:mod:`precis.pcb.pr.trees`, spec §State "Nets as trees"), and the rule
+context every ``required(a, b, layer)`` answer is resolved against.
 Everything here is numpy; torch tensors are built downstream (the host
 venv has no torch).
 
@@ -29,13 +30,15 @@ which have none). A drilled pad's land occupies EVERY layer, matching
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from precis.pcb import realize, rules
 from precis.pcb.ir import PcbIR, pin_point
+from precis.pcb.pr import trees
+from precis.pcb.pr.trees import NetTree
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +324,12 @@ class PrProblem:
     net_name: tuple[str, ...]  # net id -> name, index-aligned with the IR
     parts: Parts  # movable-part pose table (spec §State Parts)
     net_attrs: NetAttrs  # per-net v/f/role/appetite (spec §State Net attributes)
+    #: Per-net current tree, net id -> :class:`~precis.pcb.pr.trees.NetTree`
+    #: (spec §State "Nets as trees"): the IR's star decomposition with its
+    #: per-edge current and the width that current demands. Single-pin nets
+    #: have no entry. Slice 1 routes two-pin :attr:`wires` and does not read
+    #: it; the free-part solve (slice 2+) re-plans the tree in a 4d move.
+    net_trees: dict[int, NetTree] = field(default_factory=dict)
 
     @property
     def n_layers(self) -> int:
@@ -521,4 +530,10 @@ def build_problem(
         net_name=net_name,
         parts=build_parts(ir),
         net_attrs=build_net_attrs(ir, net_name),
+        net_trees=trees.build_net_trees(
+            ir,
+            track_floor_mm={
+                i: net_rules[name].track_width_mm for i, name in enumerate(net_name)
+            },
+        ),
     )

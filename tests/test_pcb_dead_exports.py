@@ -341,19 +341,18 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # pin_etype, pin_max_voltage_v, pin_rail") so a netlist-level consumer
     # (Slice 7's firmware export, view='channel-map') never re-joins
     # pcb_pins. The Slice-5 ERC rules themselves read the GRAPH rows
-    # (they need tags+meta, which the graph's member rows already carry),
-    # so these fields are produced but not yet consumed — the L2-tier
-    # "documented future slice" pattern above.
-    "src/precis/pcb/ir.py::PcbIR.pin_etype": (
+    # (they need tags+meta, which the graph's member rows already carry).
+    # pin_etype left this list 2026-10-24: pr/trees.py's B·f=i current
+    # solve reads it for the driver/sink classification. The other two
+    # fields are still produced-but-unconsumed — the L2-tier "documented
+    # future slice" pattern above.
+    "src/precis/pcb/ir.py::PcbIR.pin_max_voltage_v": (
         "Slice-5 staged carry — produced in from_graph for Slice 7's "
         "netlist consumers (channel-map/firmware export); the ERC rules "
         "read the graph rows, not the IR"
     ),
-    "src/precis/pcb/ir.py::PcbIR.pin_max_voltage_v": (
-        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
-    ),
     "src/precis/pcb/ir.py::PcbIR.pin_rail": (
-        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
+        "Slice-5 staged carry — see PcbIR.pin_max_voltage_v's reason"
     ),
     # ---- PcbIR fields: realize.py's own remit, in flight ----------------
     "src/precis/pcb/ir.py::PcbIR.seg_copper_length_mm": (
