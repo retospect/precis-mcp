@@ -89,21 +89,31 @@ def test_small_member_routes_completely():
 
 
 @pytest.mark.slow
-@pytest.mark.timeout(840)  # CI worst 335s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(420)  # CI worst ~170s x2.5 for runner variance (gr503084)
 def test_ewod_like_member_scoreboard():
     """The EWOD-shaped member (80 pads, 55 nets, 0.8 mm pitch, grid
     sources, In2+B.Cu) with and without the warm start. Floors only;
-    the measured numbers live in the plan doc's Benchmarks section."""
+    the measured numbers live in the plan doc's Benchmarks section.
+
+    Split per member (rt-s3): two routes per item, ~170 s CI each — one
+    four-route item sat at ~335 s, over the 240 s shard-share bar."""
     cold = qf.route(EWOD_LIKE, warm="none")
     warm = qf.route(EWOD_LIKE, warm="distance")
+    print(qf.scoreboard([cold, warm]))
+    assert cold.total == warm.total == 55
+    assert warm.routed >= cold.routed
+    assert warm.complete
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(420)  # CI worst ~170s x2.5 for runner variance (gr503084)
+def test_plaza_member_scoreboard():
+    """The plaza-sources member — the dogfood's wall (2026-10-13: plaza
+    41 -> 53/55 with 35 vias vs the grid's 46 -> 55/55 with 4). The plaza
+    member's absolute floor (>= 50) is dropped (Reto 2026-10-19); the
+    scoreboard prints it."""
     plaza_cold = qf.route(PLAZA, warm="none")
     plaza_warm = qf.route(PLAZA, warm="distance")
-    print(qf.scoreboard([cold, warm, plaza_cold, plaza_warm]))
-    assert cold.total == warm.total == plaza_cold.total == plaza_warm.total == 55
-    assert warm.routed >= cold.routed
+    print(qf.scoreboard([plaza_cold, plaza_warm]))
+    assert plaza_cold.total == plaza_warm.total == 55
     assert plaza_warm.routed >= plaza_cold.routed
-    # 2026-10-13: grid 46 -> 55/55 (4 vias), plaza 41 -> 53/55 (35 vias):
-    # the plaza packing is the dogfood's wall. The plaza member's absolute
-    # floor (>= 50) is dropped (Reto 2026-10-19); the scoreboard above
-    # prints it.
-    assert warm.complete

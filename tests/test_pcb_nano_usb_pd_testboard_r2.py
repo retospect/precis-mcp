@@ -362,8 +362,11 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     )
 
     # --- DRC, both tiers ----------------------------------------------------
+    # Record first, then read the view: view='drc' reuses a recorded run
+    # whose design-revision stamp matches (gr496242), so the board pays
+    # ONE DRC pass — the old order ran it twice (the view is read-only).
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     drc = pcb.get(id=SLUG, view="drc")
-    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)  # view is read-only
     match = _DRC_HEAD_RE.search(drc.body)
     assert match is not None, f"DRC view head didn't match: {drc.body!r}"
     n_errors, n_warns = int(match.group(1)), int(match.group(2))

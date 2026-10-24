@@ -31,9 +31,17 @@ def params(**over: Any) -> dict[str, Any]:
     return p
 
 
+@pytest.fixture(scope="module")
+def stepped_block() -> Any:
+    """One shared build for the tests that read the same default-params
+    block (rt-s3: ~200 s each when co-sharded; xdist may still split them
+    across workers, which simply builds twice as before)."""
+    return build_hexfold_scene(params())
+
+
 @pytest.mark.timeout(600)  # CI worst 230s x2.5 for runner variance (gr503084)
-def test_stepped_rail_tunnel_builds() -> None:
-    block = build_hexfold_scene(params())
+def test_stepped_rail_tunnel_builds(stepped_block) -> None:
+    block = stepped_block
     findings = block.topology["report"]["findings"]
     # residual (spec docs/backlog/hexfold-nanoreactor-tube.md): the star
     # notch walls at a step seam sit ~1 A apart unbonded after relax --
@@ -72,8 +80,8 @@ def test_stepped_rail_tunnel_builds() -> None:
 
 
 @pytest.mark.timeout(600)  # CI worst 220s x2.5 for runner variance (gr503084)
-def test_stepped_sites_labelled_per_segment() -> None:
-    block = build_hexfold_scene(params())
+def test_stepped_sites_labelled_per_segment(stepped_block) -> None:
+    block = stepped_block
     sites = block.topology["sites"]["sites"]
     segs = {e.get("segment") for e in sites if "segment" in e}
     assert segs == {0, 1}
@@ -233,19 +241,35 @@ def _gate_read(
         "(> 45: step.overstrained), inner 1.66 A / 35.1 deg; the washer "
         "zone keeps 22 clash pairs + 12 nearest-not-bonded atoms "
         "(uncapped, geom.summary zones). Washer beside it: outer "
-        "1.98 A / 42.6 deg, inner 1.49 A / 103.7 deg, zone 28 + 8. "
+        "1.98 A / 42.6 deg, inner 1.49 A / 103.7 deg, zone 28 + 8 — "
+        "produced by test_stepped_washer_reading_after_relax. "
         "Margins and bars are not widened to close it"
     ),
 )
-@pytest.mark.timeout(1440)  # CI worst 570s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(600)  # CI worst ~215s x2.5 for runner variance (gr503084)
 def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
     # pass (spec §"H2 cone gate follow-up"): both step seams under the
-    # step.overstrained bars and a clean washer zone under step: cone;
-    # the washer reading of the same tube is carried beside it
+    # step.overstrained bars and a clean washer zone under step: cone.
+    # rt-s3: the washer arm moved to its own item — the pair ran ~481 s
+    # on CI, over the 240 s shard-share bar.
     read, zone = _gate_read("cone", monkeypatch)
-    washer = _gate_read("washer", monkeypatch)
     over = {tag: v for tag, v in read.items() if v[0] > 3.0 or v[1] > 45.0}
-    assert not over and zone == {"clash": 0, "nnb": 0}, (read, zone, washer)
+    assert not over and zone == {"clash": 0, "nnb": 0}, (read, zone)
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(720)  # CI worst ~265s x2.5 for runner variance (gr503084)
+def test_stepped_washer_reading_after_relax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The washer reading of the SAME gate tube, carried beside the cone
+    gate (its xfail reason records the 2026-10-21 numbers; they print
+    here on every run). Measurement item: asserts the read produced both
+    seam tags and the zone pair-count fields."""
+    read, zone = _gate_read("washer", monkeypatch)
+    assert set(read) == {"outer", "inner"}
+    assert set(zone) == {"clash", "nnb"}
+    print(f"\nwasher gate read: {read} zone={zone}")
 
 
 def test_stepped_washer_16_to_8_refused_at_the_throat() -> None:

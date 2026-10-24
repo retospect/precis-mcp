@@ -374,45 +374,20 @@ def _island_terminals_offered(pcb, store, ref_id: int) -> tuple[int, int]:
     return len(escape_pins), len(escape_pins & set(terminals.keys()))
 
 
-@pytest.mark.slow
-@pytest.mark.timeout(1260)  # CI worst 491s x2.5 for runner variance (gr503084)
-def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
-    pcb, store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The same board, routed twice: once with the OLD inscribed-circle-
-    only touch test (`_pad_poly` forced to always-``None``, reproducing
-    every pad's behaviour before this fix) and once with the real fix —
-    same generator, same ring sink, same seed. The polygon-aware touch
-    test must offer strictly more electrode escape nets a route, proving
-    the fix changes what the ROUTER does, not merely what
-    :mod:`precis.pcb.connectivity` reports in isolation. It must also
-    offer an island terminal for EVERY electrode pin with fixed copper —
-    the OLD circle-only test offers none at all (the exact gr339236
-    symptom), the fix offers all of them (whether the router's own
-    occupancy search then finds a path is independent, per (2) below)."""
-    # Both seeds run BEFORE the footprint enters the catalogue-wide cache
-    # (_ring_seed's docstring): put-time expansion then sees the same
-    # synthesized bound in both arms, while the route below — the place
-    # `pads_for_ir` actually reads pad geometry — still gets the real ring
-    # footprint.
-    _ring_seed(pcb, "ewod-ring-circle")
-    _ring_seed(pcb, "ewod-ring-poly")
-    pcb.store.part_footprint_put(
-        _RING_LCSC,
-        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
-    )
+def _old_world_patches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the pre-fix world: ``_pad_poly`` -> None reproduces every
+    pad's behaviour before the polygon touch fix, and ``_pad_primitives``
+    gets the same relocation the square-pad fixture documents — under
+    ``_pad_poly`` -> None a ``shape == "polygon"`` pad would take the
+    CIRCUMSCRIBED-disk fallback (meant for a genuinely unresolvable
+    outline), not the inscribed disk the pre-``_pad_primitives`` loops
+    used for EVERY pad; presenting those pads as "rect" -- same w/h,
+    hence the same inscribed disk -- restores the old circle-only world."""
     real_pad_primitives = pcb_connectivity._pad_primitives
 
     def _inscribed_primitives(
         model: dict[str, Any], start_group: int
     ) -> tuple[list[Any], dict[int, Any], list[Any], list[list[int]]]:
-        # Same relocation as the square-pad fixture above: under the
-        # `_pad_poly` -> None patch a `shape == "polygon"` pad takes
-        # `_pad_primitives`' CIRCUMSCRIBED-disk fallback (meant for a
-        # genuinely unresolvable outline), not the inscribed disk the
-        # pre-`_pad_primitives` loops used for EVERY pad. Presenting
-        # those pads as "rect" -- same w/h, hence the same inscribed disk
-        # -- restores the old circle-only world this arm reproduces.
         return real_pad_primitives(
             {
                 **model,
@@ -426,11 +401,46 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
 
     monkeypatch.setattr(pcb_connectivity, "_pad_primitives", _inscribed_primitives)
     monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
-    before, before_pins, before_offered = _route_and_count(
-        pcb, store, "ewod-ring-circle"
+
+
+#: Escape nets the OLD circle-only touch world realized on this fixture
+#: (rt-s3, recorded from the documented measurement — both arms realized
+#: 13 at a legal placement): the before/after route pair ran ~491 s on
+#: CI, so the before arm's live route left this item — the terminal-count
+#: comparison the fix's claim rests on is checked live (and cheaply) in
+#: ``test_ring_sink_island_terminals_offered_under_both_worlds`` and the
+#: router floor is pinned here. Reto 2026-10-01's "NO FEWER" ruling is
+#: kept as a floor at the recorded count.
+_OLD_WORLD_ESCAPE_REALIZED = 13
+
+
+def test_ring_sink_island_terminals_offered_under_both_worlds(
+    pcb, store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix's core claim, checked WITHOUT routing: the polygon-aware
+    touch test must offer an island terminal for EVERY electrode pin
+    with fixed copper, and strictly more than the old circle-only test —
+    the terminals are computed off the authored fixed copper, so this
+    pair needs no route pass at all."""
+    # Both seeds run BEFORE the footprint enters the catalogue-wide cache
+    # (_ring_seed's docstring): put-time expansion then sees the same
+    # synthesized bound in both arms, while `_island_terminals_offered`
+    # below still gets the real ring footprint.
+    _ring_seed(pcb, "ewod-ring-circle")
+    _ring_seed(pcb, "ewod-ring-poly")
+    pcb.store.part_footprint_put(
+        _RING_LCSC,
+        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
     )
+    ref_old = store.get_ref(kind="pcb", id="ewod-ring-circle")
+    ref_new = store.get_ref(kind="pcb", id="ewod-ring-poly")
+    assert ref_old is not None and ref_new is not None
+
+    _old_world_patches(monkeypatch)
+    before_pins, before_offered = _island_terminals_offered(pcb, store, ref_old.id)
     monkeypatch.undo()
-    after, after_pins, after_offered = _route_and_count(pcb, store, "ewod-ring-poly")
+    after_pins, after_offered = _island_terminals_offered(pcb, store, ref_new.id)
+
     assert after_pins == before_pins
     # Every electrode pin with fixed copper on its own net gets an island
     # terminal with the fix, whether its own escape direction is straight
@@ -447,43 +457,48 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
         f"the old circle-only test — {before_offered}/{before_pins} before, "
         f"{after_offered}/{after_pins} after"
     )
-
-    escape_nets = [n for n in after if n.startswith("ARR1_R")]
-    assert len(escape_nets) >= 50, f"too few escape nets seeded: {sorted(after)[:20]}"
-    assert escape_nets == sorted(n for n in before if n.startswith("ARR1_R"))
-
-    before_realized = {n for n in escape_nets if before[n] == "realized"}
-    after_realized = {n for n in escape_nets if after[n] == "realized"}
-    diag = (
-        f"before: {dict(collections.Counter(before.values()))}; "
-        f"after: {dict(collections.Counter(after.values()))}"
+    print(
+        f"gr339236 terminals offered: {before_offered}/{before_pins} before, "
+        f"{after_offered}/{after_pins} after"
     )
-    # A COUNT comparison, not a strict-superset one. The ring sink is a
-    # bottom-side component (``generators.py``'s own ``sink_grid`` emits
-    # it with ``layer='bottom'``), so this fixture also exercises the
-    # maze router's own per-pad layer claim (gr341516's router-side
-    # sibling, closed the same day this file's docstring was last
-    # touched: a bottom-mounted pin's pad now claims/searches on its real
-    # B.Cu cell instead of a shared F.Cu one). That shifts the WHOLE
-    # board's occupancy-grid congestion, and this module's own docstring
-    # is explicit that congestion outcomes are order/claim-dependent, not
-    # monotonic in any one input: more nets realize overall (asserted
-    # below), but the exact SET need not be a superset -- one net can
-    # lose a race it used to win even as the aggregate strictly improves.
-    # NO FEWER, not strictly more (Reto, 2026-10-01). The strict form held
-    # only while ``op='route'``'s re-place parked the sink's lands on the
-    # array's authored plaza vias: once the placer treated those vias as
-    # obstacles, both arms realize 13 at a legal placement, so the old
-    # "more" was measured on a board DRC rejects. What proves this fix is
-    # ``after_offered > before_offered`` above; this guards the router
-    # against the polygon test making routing WORSE.
-    assert len(after_realized) >= len(before_realized), (
-        f"the polygon-aware touch test realized FEWER escape nets than "
-        f"the old circle-only test — {diag}"
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(600)  # CI worst ~245s x2.5 for runner variance (gr503084)
+def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
+    pcb, store
+) -> None:
+    """The same board routed under the real fix — ``op='route'`` with the
+    polygon-aware pad touch — must realize no fewer escape nets than the
+    OLD world did (``_OLD_WORLD_ESCAPE_REALIZED``, recorded). The
+    before/after terminal-count proof this fix's claim rests on lives in
+    ``test_ring_sink_island_terminals_offered_under_both_worlds`` (rt-s3
+    split: two route passes on this fixture ran ~491 s CI, over the
+    240 s shard-share bar)."""
+    _ring_seed(pcb, "ewod-ring-poly")
+    pcb.store.part_footprint_put(
+        _RING_LCSC,
+        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
+    )
+    after, after_pins, after_offered = _route_and_count(pcb, store, "ewod-ring-poly")
+    assert after_offered == after_pins
+
+    escape_nets = sorted(n for n in after if n.startswith("ARR1_R"))
+    assert len(escape_nets) >= 50, f"too few escape nets seeded: {escape_nets[:20]}"
+
+    after_realized = {n for n in escape_nets if after[n] == "realized"}
+    # A COUNT floor, not a strict-superset one — the module docstring is
+    # explicit that congestion outcomes are order/claim-dependent, not
+    # monotonic in any one input (a bottom-mounted sink shifts the whole
+    # board's occupancy). The recorded old-world count is the floor;
+    # dropping below it means the polygon test made routing WORSE.
+    assert len(after_realized) >= _OLD_WORLD_ESCAPE_REALIZED, (
+        f"the polygon-aware route realized fewer escape nets than the "
+        f"recorded old-world floor {_OLD_WORLD_ESCAPE_REALIZED} — "
+        f"{dict(collections.Counter(after.values()))}"
     )
     print(
-        f"gr339236: {len(before_realized)}/{len(escape_nets)} realized before, "
-        f"{len(after_realized)}/{len(escape_nets)} after; island terminals "
-        f"offered {before_offered}/{before_pins} before, "
-        f"{after_offered}/{after_pins} after — {diag}"
+        f"gr339236: {len(after_realized)}/{len(escape_nets)} realized "
+        f"(old-world floor {_OLD_WORLD_ESCAPE_REALIZED}); island terminals "
+        f"offered {after_offered}/{after_pins}"
     )

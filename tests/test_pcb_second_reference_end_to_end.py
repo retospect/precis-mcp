@@ -104,8 +104,12 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
-@pytest.mark.timeout(660)  # CI worst 255s x2.5 for runner variance (gr503084)
-def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> None:
+@pytest.mark.timeout(300)  # CI worst ~120s x2.5 for runner variance (gr503084)
+@pytest.mark.parametrize("seed", _SEEDS)
+def test_motor_power_board_place_and_route_seed(store: Store, seed: int) -> None:
+    """One test per seed, not one 5-seed loop — the same discipline the
+    nano sweep uses (per-seed ids spread over the shards; a single test
+    pinned whole to one shard can't be balanced away, gr495187)."""
     with FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = json.load(fh)
 
@@ -113,73 +117,56 @@ def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> No
     fanout2_nets = {name for name, n in fanout.items() if n >= 2}
 
     pcb = PcbHandler(hub=Hub(store=store))
-    rows: list[dict[str, Any]] = []
 
-    for seed in _SEEDS:
-        slug = f"motor-power-ref-s{seed}"
-        created = pcb.put(id=slug, args=design)
-        assert "created" in created.body
-        ref = store.get_ref(kind="pcb", id=slug)
-        assert ref is not None
+    slug = f"motor-power-ref-s{seed}"
+    created = pcb.put(id=slug, args=design)
+    assert "created" in created.body
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
 
-        t0 = time.perf_counter()
-        place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
-        assert "enqueued" in place_resp.body
-        _drain_one_job(store, ref.id)
+    t0 = time.perf_counter()
+    place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
+    assert "enqueued" in place_resp.body
+    _drain_one_job(store, ref.id)
 
-        route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
-        assert "enqueued" in route_resp.body
-        _drain_one_job(store, ref.id, unrouted_ok=True)
-        runtime_s = time.perf_counter() - t0
+    route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
+    assert "enqueued" in route_resp.body
+    _drain_one_job(store, ref.id, unrouted_ok=True)
+    runtime_s = time.perf_counter() - t0
 
-        status_rows = store.pcb_route_status(ref.id)
-        routed_count = sum(
-            1
-            for row in status_rows
-            if row["name"] in fanout2_nets and row["status"] == "realized"
-        )
+    status_rows = store.pcb_route_status(ref.id)
+    routed_count = sum(
+        1
+        for row in status_rows
+        if row["name"] in fanout2_nets and row["status"] == "realized"
+    )
 
-        drc = pcb.get(id=slug, view="drc")
-        match = _DRC_HEAD_RE.search(drc.body)
-        assert match is not None, f"DRC view head didn't match: {drc.body!r}"
-        drc_error_count = int(match.group(1))
+    drc = pcb.get(id=slug, view="drc")
+    match = _DRC_HEAD_RE.search(drc.body)
+    assert match is not None, f"DRC view head didn't match: {drc.body!r}"
+    drc_error_count = int(match.group(1))
 
-        _run_id, findings = store.pcb_drc_findings_latest(ref.id)
-        error_findings = [f for f in findings if f["severity"] == "error"]
-        breakdown = collections.Counter(f["rule"] for f in error_findings)
-        disconnected = breakdown.get("connectivity", 0)
-        unrouted_rule = breakdown.get("unrouted", 0)
+    _run_id, findings = store.pcb_drc_findings_latest(ref.id)
+    error_findings = [f for f in findings if f["severity"] == "error"]
+    breakdown = collections.Counter(f["rule"] for f in error_findings)
+    disconnected = breakdown.get("connectivity", 0)
+    unrouted_rule = breakdown.get("unrouted", 0)
 
-        rows.append(
-            {
-                "seed": seed,
-                "drc_errors": drc_error_count,
-                "breakdown": dict(breakdown),
-                "routed": routed_count,
-                "of": len(fanout2_nets),
-                "disconnected_findings": disconnected,
-                "unrouted_rule_findings": unrouted_rule,
-                "runtime_s": round(runtime_s, 2),
-                "unrouted_nets": sorted(
-                    row["name"]
-                    for row in status_rows
-                    if row["name"] in fanout2_nets and row["status"] != "realized"
-                ),
-            }
-        )
+    unrouted_nets = sorted(
+        row["name"]
+        for row in status_rows
+        if row["name"] in fanout2_nets and row["status"] != "realized"
+    )
 
     # ---- report: printed for the human, not hidden behind -q ----------
-    print("\n\n# motor_power_reference — seeds 1-5\n")
-    for r in rows:
-        print(
-            f"seed={r['seed']}  drc_errors={r['drc_errors']:4d}  "
-            f"routed={r['routed']}/{r['of']}  "
-            f"disconnected={r['disconnected_findings']}  "
-            f"unrouted_rule={r['unrouted_rule_findings']}  "
-            f"runtime={r['runtime_s']}s  "
-            f"breakdown={r['breakdown']}  "
-            f"unrouted_nets={r['unrouted_nets']}"
-        )
+    print(
+        f"\n\n# motor_power_reference — seed {seed}\n"
+        f"seed={seed}  drc_errors={drc_error_count:4d}  "
+        f"routed={routed_count}/{len(fanout2_nets)}  "
+        f"disconnected={disconnected}  unrouted_rule={unrouted_rule}  "
+        f"runtime={round(runtime_s, 2)}s  breakdown={dict(breakdown)}  "
+        f"unrouted_nets={unrouted_nets}"
+    )
 
     # ---- the one thing this test DOES assert: the paired discipline ---
     # Neither number alone means anything (routing nothing satisfies DRC;
@@ -188,12 +175,11 @@ def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> No
     # either hit a specific target. A regression-catching baseline can be
     # set once these numbers are known and stable; setting one now would
     # just be encoding today's first-run number as if it were a decision.
-    for r in rows:
-        assert r["drc_errors"] >= 0
-        assert r["routed"] >= 0
-        # A net this test's own DRC "unrouted" rule (if wired -- see the
-        # report for whether it fired) reports as a finding must not also
-        # silently read "routed" -- that would be the exact "DRC clean
-        # over a board with holes" trap the plan file names.
-        if r["unrouted_nets"]:
-            assert r["routed"] < r["of"]
+    assert drc_error_count >= 0
+    assert routed_count >= 0
+    # A net this test's own DRC "unrouted" rule (if wired -- see the
+    # report for whether it fired) reports as a finding must not also
+    # silently read "routed" -- that would be the exact "DRC clean
+    # over a board with holes" trap the plan file names.
+    if unrouted_nets:
+        assert routed_count < len(fanout2_nets)

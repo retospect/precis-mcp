@@ -160,22 +160,41 @@ _GOLDEN = json.loads(
     (Path(__file__).parent / "data" / "foot_anchors.json").read_text(encoding="utf-8")
 )
 
+#: One case per anchor, except (24,0) R=8.0 which splits by candidate — as
+#: one item it ran ~274 s on CI, over the 240 s shard-share bar (rt-s3).
+#: The smaller anchors keep both candidates in one item so the planner's
+#: two-candidate choice stays covered end to end.
+_ANCHOR_CASES: list[tuple[str, tuple[int, ...]]] = []
+for _a in sorted(_GOLDEN):
+    _cands = tuple(int(k) for k in _GOLDEN[_a]["candidates"])
+    if _a == "(24,0) R=8.0":
+        _ANCHOR_CASES += [(_a, (k,)) for k in _cands]
+    else:
+        _ANCHOR_CASES.append((_a, _cands))
+
 
 @pytest.mark.slow
-@pytest.mark.parametrize("anchor", sorted(_GOLDEN))
-@pytest.mark.timeout(720)  # CI worst 274s x2.5 for runner variance (gr503084)
-def test_foot_anchor_reproduces(anchor: str) -> None:
+@pytest.mark.parametrize(
+    ("anchor", "ks"),
+    _ANCHOR_CASES,
+    ids=[f"{a} k={list(k)}" for a, k in _ANCHOR_CASES],
+)
+@pytest.mark.timeout(480)  # CI worst ~192s x2.5 for runner variance (gr503084)
+def test_foot_anchor_reproduces(anchor: str, ks: tuple[int, ...]) -> None:
     g = _GOLDEN[anchor]
-    plan = af.plan_foot(g["n"], g["radius"], candidates=tuple(g["candidates"]))
-    assert plan.k == g["k"]
-    assert plan.text == g["text"]
-    assert list(plan.positions.shape) == g["shape"]
-    assert plan.centre == pytest.approx(g["centre"], rel=1e-6)
-    assert plan.positions.sum(axis=0) == pytest.approx(g["sum"], rel=1e-6, abs=1e-6)
-    assert (plan.positions**2).sum(axis=0) == pytest.approx(g["sumsq"], rel=1e-6)
-    assert len(plan.rows) == len(g["rows"])
-    for row, want in zip(plan.rows, g["rows"], strict=True):
-        assert row.k == want["k"]
+    plan = af.plan_foot(g["n"], g["radius"], candidates=ks)
+    chosen_is_golden = plan.k == g["k"]
+    if len(ks) > 1:
+        assert chosen_is_golden
+    else:
+        # single-candidate arm of the split anchor: the winner's arm
+        # re-derives every golden field; the k=12 arm reproduces the
+        # recorded 'bond max' miss that made it lose.
+        assert plan.k == ks[0]
+    assert plan.meets == chosen_is_golden
+    want_rows = [r for r in g["rows"] if r["k"] in ks]
+    assert [r.k for r in plan.rows] == [r["k"] for r in want_rows]
+    for row, want in zip(plan.rows, want_rows, strict=True):
         assert list(row.misses) == want["misses"]
         assert list(row.errors) == want["errors"]
         assert row.passes == want["passes"]
@@ -183,7 +202,19 @@ def test_foot_anchor_reproduces(anchor: str) -> None:
             assert getattr(row, col) == pytest.approx(want[col], rel=1e-6, abs=1e-9)
     assert plan.census is not None and plan.census.heptagons == 6
     assert not build(plan.text, strict=False).report.errors()
-    assert np.isfinite(plan.positions).all()
+    if chosen_is_golden:
+        assert plan.text == g["text"]
+        assert list(plan.positions.shape) == g["shape"]
+        # positions are the relaxed coordinates of the foot's own build
+        assert plan.positions.shape == (
+            len(build(plan.text, strict=False).atoms),
+            3,
+        )
+        assert plan.centre == pytest.approx(g["centre"], rel=1e-6)
+        assert plan.positions.sum(axis=0) == pytest.approx(g["sum"], rel=1e-6, abs=1e-6)
+        assert (plan.positions**2).sum(axis=0) == pytest.approx(g["sumsq"], rel=1e-6)
+        assert np.isfinite(plan.positions).all()
+        assert plan.chosen.pyramid_max < 12.0  # under C60's
 
 
 _ROW_FLOATS = (

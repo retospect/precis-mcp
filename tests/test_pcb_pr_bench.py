@@ -161,26 +161,36 @@ def test_slice1_bench_deterministic():
 
 
 @pytest.mark.slow
-@pytest.mark.timeout(720)  # CI worst 284s x2.5 for runner variance (gr503084)
-def test_slice1_bench_main_vs_vroute():
-    """Full slice-1 fixture vs vroute on the same IR (context only — no
-    frozen-table row is 2-layer fixed-pad)."""
+@pytest.mark.timeout(360)  # CI worst ~145s x2.5 for runner variance (gr503084)
+def test_slice1_bench_main_pipeline():
+    """Full slice-1 fixture through the pr pipeline (context only — no
+    frozen-table row is 2-layer fixed-pad). rt-s3: split from the vroute
+    comparison arm — the pair ran ~248 s CI, over the 240 s bar."""
     built, cfg, prob = _built(MAIN)
     run = pipeline.run(
         prob, PrParams(K=16, rounds=3, relax=RelaxParams(steps=60, grow_steps=30))
     )
-    vrres = realize.realize(built.ir, config=built.config, footprints=built.footprints)
-    vfind, vrule = _drc(built, MAIN, vrres)
     pfind, prule = _drc(built, MAIN, run.result)
-    v_vias = len(vrres.vias)
-    v_len = sum(t.length_mm for t in vrres.tracks)
     print(
         f"\n[pr-bench main] unrouted={len(run.unrouted)}/{len(prob.wires)} "
         f"vias={run.via_count} wire={run.wire_mm:.1f}mm drc={prule}\n"
-        f"[vroute same-IR] unrouted={len(vrres.unrouted)} vias={v_vias} "
-        f"wire={v_len:.1f}mm drc={vrule}\n"
         f"[loop] hist={[round(e, 2) for e in run.entropy_hist]} "
         f"blocked={run.blocked_frac:.3f} "
         f"evals/s={run.evals / max(run.relax_seconds, 1e-9):.1f} N={run.n_segments} "
         f"wall={run.wall_s:.0f}s overcap={run.over_capacity[:2]}"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(360)  # CI worst ~145s x2.5 for runner variance (gr503084)
+def test_slice1_bench_main_vroute():
+    """The vroute half of the same-IR comparison, on the same fixture."""
+    built, cfg, prob = _built(MAIN)
+    vrres = realize.realize(built.ir, config=built.config, footprints=built.footprints)
+    vfind, vrule = _drc(built, MAIN, vrres)
+    v_vias = len(vrres.vias)
+    v_len = sum(t.length_mm for t in vrres.tracks)
+    print(
+        f"\n[vroute same-IR] unrouted={len(vrres.unrouted)} vias={v_vias} "
+        f"wire={v_len:.1f}mm drc={vrule}"
     )

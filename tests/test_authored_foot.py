@@ -85,34 +85,14 @@ def test_excess_is_zero_inside_the_bars_and_sums_the_overshoot() -> None:
     assert r.excess == pytest.approx(0.1 + 0.005)
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize(("n", "radius", "k"), [(12, 8.0, 6), (6, 3.0, 4)])
-@pytest.mark.timeout(600)  # CI worst 217s x2.5 for runner variance (gr503084)
-def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
-    # the regression anchors the planner verdict set (the pillar is (6,0)
-    # R=3, the pill (24,0)): the narrowest frustum meets every bar where
-    # k = k_min + 2 misses the bond floor
-    plan = af.plan_foot(n, radius, candidates=(k, k + 2))
-    assert plan.k == k and plan.meets
-    wide = next(r for r in plan.rows if r.k == k + 2)
-    assert not wide.meets and "bond min" in wide.misses
-    c = plan.chosen
-    assert c.pyramid_max < 12.0  # under C60's
-    assert plan.positions.shape == (len(build(plan.text, strict=False).atoms), 3)
-
-
-@pytest.mark.slow
-@pytest.mark.timeout(660)  # CI worst 249s x2.5 for runner variance (gr503084)
-def test_the_wide_24_0_frustum_meets_with_no_error_finding() -> None:
-    # the (24,0) R=8 k=10 cell passed every bar but carried three
-    # geom.seed_overlap ERRORs: the frustum seeded mirror-registered onto
-    # the sheet (gr464358).  With the seed reflected it meets, error-free;
-    # k=12 misses on bond max.  (Error rows never meeting is pinned by
-    # test_a_row_with_errors_never_meets_and_ranks_behind_a_clean_miss.)
-    plan = af.plan_foot(24, 8.0, candidates=(10, 12))
-    row = next(r for r in plan.rows if r.k == 10)
-    assert row.misses == () and row.errors == ()
-    assert row.meets and plan.meets and plan.k == 10
+# rt-s3: the S3 sweep and the wide-(24,0) regression ran the SAME three
+# plan_foot calls as tests/hexfold/test_ideal_surface.py's golden anchors
+# (byte-identical arguments) — ~600 s of repeated solves. Their assertions
+# live there now: plan.k/meets, the per-row misses ('bond min'/'bond max'),
+# the k+2 loser rows, chosen.pyramid_max < 12 (under C60's) and the
+# positions-vs-build shape check are all pinned by
+# test_foot_anchor_reproduces; the (24,0) gr464358 seed_overlap regression
+# is pinned by its golden rows' errors==[].
 
 
 def test_a_row_with_errors_never_meets_and_ranks_behind_a_clean_miss() -> None:
