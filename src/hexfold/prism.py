@@ -263,8 +263,8 @@ def prism_tube(
     strip_rows = _count(strip_rows, 2, 12, "strip rows")
     if rows % 2:
         raise ValueError(
-            "prism wall rows must be even so the top zigzag rim lands "
-            "in phase with the seam lattice"
+            f"odd_rows: prism wall rows must be even (got {rows}) so the "
+            "top zigzag rim lands in phase with the seam lattice"
         )
     signs = _signs(seams)
     n = len(signs)

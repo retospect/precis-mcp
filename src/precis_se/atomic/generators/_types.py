@@ -32,6 +32,12 @@ def fmt_length_A(x: float) -> str:
     return f"{round(float(x), 4):g}{ENVELOPE_UNIT}"
 
 
+#: Library (hexfold) refusals that reach :meth:`GeneratorError.lift` with
+#: the token already baked into the message text; the token becomes the
+#: error's ``code`` so the MCP surface can lead with it (gr503030).
+_LIFTED_CODES = ("odd_rows",)
+
+
 class GeneratorError(ValueError):
     """A rejected generator call: bad params, or an unsupported family
     member (e.g. round 1's fullerene generator only covers the Goldberg
@@ -51,6 +57,23 @@ class GeneratorError(ValueError):
         super().__init__(f"[{code}] {message}" if code else message)
         self.code = code
         self.fix = fix
+
+    @classmethod
+    def lift(cls, exc: ValueError, *, prefix: str = "") -> GeneratorError:
+        """Wrap a library ``ValueError``. An existing ``GeneratorError``
+        passes through (keeps its own ``code``/``fix``); a leading
+        ``<code>: `` token in the message (the hexfold library's way of
+        marking a coded refusal — :data:`_LIFTED_CODES`) becomes the
+        error's ``code`` and is stripped from the text so it is not
+        rendered twice. ``prefix`` prepends context (e.g. a feature
+        name) to the kept text."""
+        if isinstance(exc, GeneratorError):
+            return exc
+        msg = str(exc)
+        head, sep, rest = msg.partition(":")
+        if sep and head in _LIFTED_CODES:
+            return cls(f"{prefix}{rest.strip()}", code=head)
+        return cls(f"{prefix}{msg}")
 
 
 @dataclass

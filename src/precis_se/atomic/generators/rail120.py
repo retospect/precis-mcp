@@ -201,7 +201,7 @@ def build_rail120(params: dict[str, Any]) -> GeneratedBlock:
     try:
         net, tube = rail_tube(periods, wall_rows, strip_rows, rails, pores=pores)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     seed = tube.coords
     phi = [2.0 * math.pi * i / rails for i in range(rails)]
     tangents = [np.array([-math.sin(p), math.cos(p), 0.0]) for p in phi]

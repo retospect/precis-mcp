@@ -101,7 +101,7 @@ def build_fin120(params: dict[str, Any]) -> GeneratedBlock:
     try:
         net, tube = seam_tube(periods, wall_rows, strip_rows, side)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     seed = tube.coords
     strip_idx = np.asarray(tube.strip_atoms, dtype=np.int64)
 

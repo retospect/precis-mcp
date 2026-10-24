@@ -169,7 +169,9 @@ def foot_text(n: int, k: int) -> str:
     """The 3+3 foot: a ``hex(k/2-1)`` hole in the sheet, fused to a
     ``cap(6k,0)`` frustum with three heptagons and a ``hex(n/3-1)`` hole,
     fused to the tube."""
-    if k % 2 or k < k_min(n):
+    if k % 2:
+        raise ValueError(f"odd_rows: authored-foot k must be even for ({n},0); got {k}")
+    if k < k_min(n):
         raise ValueError(f"k must be even and >= {k_min(n)} for ({n},0); got {k}")
     r = n // 3 - 1
     c = _SHEET // 2

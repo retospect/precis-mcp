@@ -128,6 +128,19 @@ def _normalize(
                     "(no cone exists) — use step 'washer' or rails <= 5"
                 )
             steps = tuple(_int_pair(s, "tube.rail[]") for s in rail)
+            for s in steps:
+                if s[0] % 2:
+                    raise GeneratorError(
+                        f"tunnel-reservoirs stepped rail rows must be "
+                        f"even (got {s[0]} in {list(s)}) so each arc's "
+                        "top zigzag rim lands in phase with the seam "
+                        "lattice",
+                        code="odd_rows",
+                        fix="params={'tube': {'rail': [[8, <periods>], "
+                        "[8, <periods>]], 'rails': <2-6>, 'rows': "
+                        "<2-12>, 'step': 'washer'}} — the first rail "
+                        "element is the even wall-row count",
+                    )
             if len(steps) < 2:
                 raise GeneratorError(
                     "tunnel-reservoirs stepped rail needs at least two "
@@ -180,6 +193,16 @@ def _normalize(
                     "tunnel-reservoirs rail tube must be {rail: [rows, periods], "
                     "rails: int, rows: int, pores: [[arc,u,v],...]}; got "
                     f"{tube!r}"
+                )
+            if wall[0] % 2:
+                raise GeneratorError(
+                    f"tunnel-reservoirs rail rows must be even (got "
+                    f"{wall[0]}) so each arc's top zigzag rim lands in "
+                    "phase with the seam lattice",
+                    code="odd_rows",
+                    fix="params={'tube': {'rail': [8, <periods>], "
+                    "'rails': <2-6>, 'rows': <2-12>}} — rail[0] is the "
+                    "even wall-row count",
                 )
             kind = "rail"
             tspec = (
@@ -393,7 +416,7 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
         else:
             net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     seed = tun.coords
 
     zlo, zhi = tun.sheet_plane_z

@@ -208,7 +208,7 @@ def build_prism120(params: dict[str, Any]) -> GeneratedBlock:
     try:
         net, tube = prism_tube(periods, rows, strip_rows, seams, pores=pores)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     n = len(tube.signs)
     seed = tube.coords
     verts = np.asarray(tube.vertices)

@@ -307,7 +307,7 @@ def _normalize(
         try:
             check_authored_sphere_fillet(f.n, f.top_fillet, f.top_R)
         except ValueError as exc:
-            raise GeneratorError(f"{f.name}: {exc}") from exc
+            raise GeneratorError.lift(exc, prefix=f"{f.name}: ") from exc
     live = [
         f
         for f in features
@@ -686,7 +686,7 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         plan = plan_scene(sheet, features, extra=extra, k_tether=k_tether)
         net = build(plan.text, strict=False)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     except HexfoldError as exc:
         raise GeneratorError(str(exc)) from exc
     except (KeyError, IndexError) as exc:

@@ -90,8 +90,8 @@ def channel_junction(
     strip_rows = _count(strip_rows, 2, 12, "strip rows")
     if rows % 2:
         raise ValueError(
-            "channel wall rows must be even so the top zigzag rim lands "
-            "in phase with the seam lattice"
+            f"odd_rows: channel wall rows must be even (got {rows}) so "
+            "the top zigzag rim lands in phase with the seam lattice"
         )
     if any(s not in SIDES for s in sides) or len(sides) not in (2, 3, 4, 5, 6):
         raise ValueError("channel junction takes 2-6 strip sides, each 'in' or 'out'")

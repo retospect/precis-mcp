@@ -124,7 +124,7 @@ def build_channel(params: dict[str, Any]) -> GeneratedBlock:
     try:
         net, channel = channel_junction(periods, wall_rows, strip_rows, sides)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     seed = channel.coords
     phi = [2.0 * math.pi * i / channel.rails for i in range(channel.rails)]
     tangents = [np.array([-math.sin(p), math.cos(p), 0.0]) for p in phi]

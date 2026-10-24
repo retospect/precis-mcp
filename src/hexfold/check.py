@@ -376,15 +376,30 @@ def _geometry_findings(
         )
 
     # ring-corner angles: for each ring vertex, the angle between its two
-    # ring edges vs that ring's ideal interior angle
-    ang_dev: list[tuple[float, int, float, float]] = []
+    # ring edges vs that ring's ideal interior angle. A seam face and the
+    # face across it traverse the same wedge, so each (vertex, edge pair)
+    # is measured once — not once per side, which used to duplicate every
+    # seam WARN row (gr503025). A vertex whose EVERY wedge is claimed by
+    # more than one face is a seam junction atom: no single face owns its
+    # corners, so it answers to the equal-120 contract the seam was
+    # authored to (``ideal_angle_deg(6, …)`` — 120° for sp2, tetrahedral
+    # for sp3) rather than to the 8-cycle's 135° that a wedge's own ring
+    # size would suggest.
+    wedge_claims: dict[int, dict[frozenset[int], list[int]]] = {}
     for ring in net.rings:
         n = len(ring)
         for i in range(n):
             v = ring[i]
-            ideal = ideal_angle_deg(n, hyb.get(v, ""))
-            u = coords[ring[(i - 1) % n]] - coords[v]
-            w = coords[ring[(i + 1) % n]] - coords[v]
+            wedge = frozenset((ring[(i - 1) % n], ring[(i + 1) % n]))
+            wedge_claims.setdefault(v, {}).setdefault(wedge, []).append(n)
+    ang_dev: list[tuple[float, int, float, float]] = []
+    for v, claims in wedge_claims.items():
+        junction = all(len(sizes) > 1 for sizes in claims.values())
+        for pair, sizes in claims.items():
+            ideal = ideal_angle_deg(6 if junction else min(sizes), hyb.get(v, ""))
+            u_ord, w_ord = pair
+            u = coords[u_ord] - coords[v]
+            w = coords[w_ord] - coords[v]
             cos = float(u @ w) / (np.linalg.norm(u) * np.linalg.norm(w))
             ang = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
             ang_dev.append((ang - ideal, v, ang, ideal))

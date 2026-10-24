@@ -118,8 +118,8 @@ def rail_tube(
     rails = _count(rails, 2, 6, "rails")
     if rows % 2:
         raise ValueError(
-            "rail tube wall rows must be even so the top zigzag rim lands "
-            "in phase with the seam lattice"
+            f"odd_rows: rail tube wall rows must be even (got {rows}) so "
+            "the top zigzag rim lands in phase with the seam lattice"
         )
     lattice = Lattice()
     sigma = lattice.sigma_A

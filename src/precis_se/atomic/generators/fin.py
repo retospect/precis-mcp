@@ -97,7 +97,7 @@ def build_fin(params: dict[str, Any]) -> GeneratedBlock:
     try:
         net, graft = fin_tube(n, periods, rows, side)
     except ValueError as exc:
-        raise GeneratorError(str(exc)) from exc
+        raise GeneratorError.lift(exc) from exc
     seed = graft.coords
     radius = graft.radius_A
     tube_idx = np.asarray(graft.tube_atoms, dtype=np.int64)
