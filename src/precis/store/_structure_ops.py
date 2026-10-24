@@ -32,6 +32,7 @@ binary ratios survive JSON aggregation and PostgreSQL text-output settings.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import struct
 from contextlib import nullcontext
@@ -39,6 +40,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
+import psycopg
 from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -50,6 +52,8 @@ from precis.structure.scene import Atom, Bond, Measure, Scene
 
 if TYPE_CHECKING:
     from precis.structure.completion_types import CompletionSnapshot, DisplaySelector
+
+log = logging.getLogger(__name__)
 
 
 class StructurePositionsSnapshot(TypedDict):
@@ -321,8 +325,50 @@ class StructureMixin:
                     ),
                 )
             self._write_measures(conn, ref_id=ref.id, scene=scene)
+            self._write_structure_pi(conn, ref_id=ref.id, scene=scene)
             self.chunks._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
         return ref, created
+
+    def _write_structure_pi(
+        self, conn: Connection, *, ref_id: int, scene: Scene
+    ) -> None:
+        """Perceive + store the π-system record for this save
+        (structure-workspaces 2e, ``structure_pi``). Pure over
+        (geometry, bonds), keyed by :func:`precis.structure.cache.pi_key`
+        — an identical (geometry, bonds) pair is a ``ON CONFLICT`` no-op,
+        so a relax write-back recomputes on its new ``structure_sha``
+        while a re-save of identical content stores nothing twice. The
+        RDKit cross-check rides the same row (``data.check``); a
+        difference is recorded as ``pi.perception_differs`` — named,
+        never a silent override. Perception never blocks the save: a
+        failure lands as ``{'skipped': …}``."""
+        from precis.structure import cache as _cache
+        from precis.structure import probe as _probe
+
+        key = _cache.pi_key(scene)
+        try:
+            data = _probe.pi_perceive(scene)
+            if "skipped" not in data:
+                data["check"] = _probe.pi_crosscheck(scene, data)
+        except Exception as exc:
+            # Perception is advisory — log it and store the skip reason
+            # rather than failing the save.
+            log.warning("structure_pi perception failed for ref %s: %s", ref_id, exc)
+            data = {"skipped": f"perception failed: {exc}"}
+        try:
+            # conn.transaction() is a SAVEPOINT inside the save's
+            # transaction: a DB not yet migrated to 0238 (no
+            # structure_pi table) aborts just this statement — saves
+            # keep working pre-migration, and the eye/selector read a
+            # missing row as "no perception", never a failure.
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO structure_pi (ref_id, pi_key, data) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (ref_id, pi_key) DO NOTHING",
+                    (ref_id, key, Jsonb(data)),
+                )
+        except psycopg.errors.UndefinedTable:
+            log.debug("structure_pi table absent (pre-0238 DB) — save proceeds")
 
     def _write_measures(self, conn: Connection, *, ref_id: int, scene: Scene) -> None:
         """Insert the live eye/measure set, snapshotting each marker's derived

@@ -2159,6 +2159,58 @@ class SeHandler(Handler):
             "directions)",
         )
 
+    def eye(
+        self,
+        *,
+        id: str | int | None = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        """The fisheye ladder — ``<slug>`` is the note eye, ``<slug>~<focus>``
+        the spatial eye (:mod:`precis_se.eyeview`; structure-workspaces
+        slice 2e). Focus: ``<block>#<label>`` / ``<block>/<path>`` /
+        ``#uid:<path>`` / ``<block>#<ord>`` (one atom), ``frame:<key>``
+        (a trace frame), or any region selector (``pi:<block>#<id>``,
+        ``atoms:``, ``sites:``, ``mol:``, …). ``eyeview`` lazy-imports
+        back into this module for ``_trace_context``/``_atom_lookup``."""
+        from precis.handlers._eye import EYE_NEXT
+        from precis.utils.eye_render import parse_extent
+        from precis_se import eyeview
+
+        try:
+            ext, recall = parse_extent(extent)
+        except ValueError as exc:
+            raise BadInput(str(exc), next=EYE_NEXT) from exc
+        s = str(id or "").strip()
+        slug, sep, focus = s.partition("~")
+        ref = self.store.get_ref(kind="se", id=slug)
+        if ref is None:
+            raise NotFound(
+                f"se design {slug!r} not found",
+                next="search(kind='se', q='...') to find one",
+            )
+        if not sep or not focus.strip():
+            return Response(
+                body=eyeview.note_eye(
+                    self.store, ref, ext, recall=recall, q=q, ring=ring
+                )
+            )
+        if focus.lstrip("-").isdigit():
+            # A digit ~ suffix is the chunk selector, not an atom
+            # ordinal — the base eye's note/chunk path owns it.
+            return super().eye(id=s, extent=extent, q=q, ring=ring)
+        if recall:
+            raise Unsupported(eyeview._RECALL_MSG, next=eyeview._RECALL_NEXT)
+        tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
+        return Response(
+            body=eyeview.render(
+                self.store, tree, str(ref.slug), focus, ext, q=q, ring=ring
+            )
+        )
+
     def _validate_findings(
         self,
         tree: SeTree,

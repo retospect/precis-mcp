@@ -133,6 +133,7 @@ VOCABULARY = (
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
     "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>] | "
     "frame:<key>[!|/touched|/rest] | frame:qual=<qual>[!|/touched|/rest] | "
+    "pi:<block>#<sys id>[/rings|/aromatic] | "
     "mpatch:<mol>:<id> | mol:<mol>@<clearance Å> | "
     "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> "
     "(<mol> = <block> or <block>!<removed atom label>)"
@@ -324,6 +325,8 @@ def parse_selector(text: Any) -> Selector:
         return _parse_mpatch(s, body)
     if head == "mcone":
         return _parse_mcone(s, body)
+    if head == "pi":
+        return _parse_pi(s, body)
     raise MeasureError(
         f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
     )
@@ -363,6 +366,35 @@ def _parse_frame_sel(s: str, body: str) -> Selector:
     if not re.fullmatch(r"[0-9a-fA-F]{8,64}", key):
         raise MeasureError(shape_msg)
     return Selector(kind="trace_frame", name=key, arg=mod)
+
+
+def _parse_pi(s: str, body: str) -> Selector:
+    """``pi:<block>#<sys id>[/rings|/aromatic]`` — the atoms of one
+    perceived π system of the block's bound structure
+    (structure-workspaces slice 2e; ``/rings`` = its ring members,
+    ``/aromatic`` = its aromatic-ring members only). ``<sys id>`` is the
+    system's stored index in the ``structure_pi`` row (``systems[].id`` —
+    the eye prints it as ``pi:<block>#<id>``). The block name is explicit
+    because the record is per bound structure."""
+    shape_msg = (
+        f"pi selector is 'pi:<block>#<sys id>' (optionally '/rings' or "
+        f"'/aromatic'), got {s!r} — vocabulary: {VOCABULARY}"
+    )
+    block, hash_, rest = body.partition("#")
+    if not hash_ or not block.strip():
+        raise MeasureError(shape_msg)
+    sys_s, slash, mod = rest.partition("/")
+    if slash and mod not in ("rings", "aromatic"):
+        raise MeasureError(shape_msg)
+    mod_arg = mod if slash else None
+    if not re.fullmatch(r"\d+", sys_s.strip()):
+        raise MeasureError(shape_msg)
+    return Selector(
+        kind="pi",
+        instance=block.strip(),
+        lo=int(sys_s),
+        arg=mod_arg,
+    )
 
 
 def _parse_mol(s: str, body: str) -> Selector:
@@ -775,6 +807,8 @@ def resolve(
         return _resolve_atomic(tree, sel, pin, text)
     if sel.kind in ("trace_frame", "trace_qual"):
         return _resolve_frame(tree, node, sel, text)
+    if sel.kind == "pi":
+        return _resolve_pi(tree, sel, text)
     if sel.kind == "mpatch":
         return _resolve_mpatch(tree, node, sel, text)
     if sel.kind == "mol":
@@ -1587,6 +1621,72 @@ def _resolve_frame(
     )
 
 
+def _resolve_pi(tree: SeTree, sel: Selector, text: str) -> ResolvedDatum:
+    """``pi:<block>#<sys id>[/rings|/aromatic]`` against the bound
+    structure's stored ``structure_pi`` row — same lenient posture as the
+    other atomic selectors: an unbound/unperceived structure is declared
+    intent (``expected``), never a broken reference."""
+    name = sel.instance or ""
+    node = tree.blocks.get(name)
+    if node is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"no block {name!r} — pi: names the block whose bound "
+            "structure holds the π system",
+        )
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if owner.bound_kind != "structure" or not owner.bound:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"block {name!r} binds no structure design — pi: "
+            "addresses atoms of a bound structure",
+            expected=True,
+        )
+    data = tree.structure_pi(owner.bound) if tree.structure_pi is not None else None
+    if not data or "skipped" in data:
+        why = (data or {}).get("skipped") or "no structure_pi row"
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"pi: {owner.bound!r} has no perception ({why})",
+            expected=True,
+        )
+    sys = next((s for s in data.get("systems") or [] if s.get("id") == sel.lo), None)
+    if sys is None:
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=f"pi: no system {sel.lo} on {owner.bound!r} "
+            f"(has {len(data.get('systems') or [])})",
+        )
+    atoms: set[int] = set(sys.get("atoms") or [])
+    if sel.arg:
+        ring_ids = (
+            set(sys.get("aromatic_rings") or [])
+            if sel.arg == "aromatic"
+            else {
+                i
+                for i, r in enumerate(data.get("rings") or [])
+                if set(r.get("atoms") or []) <= atoms
+            }
+        )
+        atoms = {
+            a
+            for i, r in enumerate(data.get("rings") or [])
+            if i in ring_ids
+            for a in (r.get("atoms") or [])
+        }
+    return ResolvedDatum(
+        selector=text,
+        kind=sel.kind,
+        resolved=text,
+        atoms=tuple(sorted(atoms)),
+    )
+
+
 def _resolve_mpatch(
     tree: SeTree, node: SeBlock, sel: Selector, text: str
 ) -> ResolvedDatum:
@@ -1657,6 +1757,9 @@ def _selector_text(sel: Selector) -> str:
     if sel.kind == "trace_qual":
         tail = "!" if sel.arg == "alone" else (f"/{sel.arg}" if sel.arg else "")
         return f"frame:qual={sel.name}{tail}"
+    if sel.kind == "pi":
+        tail = f"/{sel.arg}" if sel.arg else ""
+        return f"pi:{sel.instance}#{sel.lo}{tail}"
     if sel.kind == "mpatch":
         return f"mpatch:{_mol_ref(sel)}:{sel.patch_id}"
     if sel.kind == "mol":
@@ -1739,6 +1842,7 @@ _REGION_KINDS = frozenset(
         "atoms",
         "trace_frame",
         "trace_qual",
+        "pi",
         "mpatch",
         "mol",
         "mcone",

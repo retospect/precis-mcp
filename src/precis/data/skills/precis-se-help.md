@@ -361,6 +361,22 @@ the design serves, default `related-to` for a sibling variant,
 `rel='parent'` (with `target='folder:N'`) files it into a folder;
 `mode='remove'` deletes the edge.
 
+## The spatial eye (`~<focus>`)
+
+The fisheye ladder focuses one atom, frame or region:
+`get(kind='se', id='<slug>~<focus>', extent='kwd|summary|verbatim|fisheye|fisheye+1hop|fisheye+2hop')`.
+Focus is one atom (`<block>#<label>`, `<block>/<path>`, `#uid:<path>`,
+`<block>#<ord>`), a trace frame (`frame:<key>`), or any region selector
+(`pi:<block>#<id>` — the π system an atom's `pi:` line names —
+`atoms:`, `sites:`, `mol:`, …). `fisheye` walks the merged bond graph —
+the block's bonds plus `kind='bond'` seam connects — as a graduated
+shell (one line per bond at hop 1, element/hyb/relax groups at 2–3,
+counts at 4–6), then the `Up:` construction ladder to the run and the
+`pi:` line. A `frame:` focus shows `Down:` children and the set's
+boundary shell, never an atom list. `+recall` refuses — atoms have no
+embedding. A bare `<slug>` (or a digit `~<ord>`) keeps the note/chunk
+eye.
+
 ## Design history and provenance
 
 `view='revisions'` lists every saved revision of the design — rev number,

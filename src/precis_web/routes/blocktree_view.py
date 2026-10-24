@@ -1097,6 +1097,11 @@ async def _view3d_page(
     )
     level = level if level in LEVELS else "refined"
     isolate = isolate if isolate in tree.blocks else None
+    # structure-workspaces 2e: the eye emits ``?focus=<handle>`` pointers
+    # (``<slug>~<block>#<label>``, ``st<id>~<label>``). Passed through to
+    # the viewer as a data attribute — the pointer contract the atom-layer
+    # highlight consumes (hop-1 solid, 2–3 fading, π tint, relax colour).
+    focus = (request.query_params.get("focus") or "").strip() or None
     # Validate BEFORE embedding anywhere downstream (scene_url, and from
     # there the scene3d.json fetch the 3D page's own JS makes) — an
     # unvalidated overrides string can otherwise ride through to a 400
@@ -1187,6 +1192,7 @@ async def _view3d_page(
             "level": level,
             "isolate": isolate or "",
             "overrides": overrides,
+            "focus": focus or "",
             "block_names": block_names,
             "scene_url": scene_url,
             "has_atomic": has_atomic,

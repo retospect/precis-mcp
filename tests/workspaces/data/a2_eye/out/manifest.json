@@ -1,0 +1,50 @@
+{
+ "schema": 1,
+ "blocks": [
+  {
+   "name": "p",
+   "file": "blocks/p.extxyz",
+   "scale": "atomic",
+   "ports": [
+    {
+     "name": "seam",
+     "atom": "aC30",
+     "roles": [
+      "covalent"
+     ],
+     "expected_element": "C",
+     "frame": 8
+    }
+   ],
+   "desc": "A2 sheet",
+   "frame": 6
+  },
+  {
+   "name": "u",
+   "file": "blocks/u.extxyz",
+   "scale": "atomic",
+   "ports": [
+    {
+     "name": "stem",
+     "atom": "aC1",
+     "roles": [
+      "covalent"
+     ],
+     "expected_element": "C",
+     "frame": 9
+    }
+   ],
+   "desc": "fetched unit u123",
+   "frame": 9
+  }
+ ],
+ "instances": [],
+ "connects": [
+  {
+   "a": "p.seam",
+   "b": "u.stem",
+   "kind": "bond"
+  }
+ ],
+ "notes": "A2 eye fixture"
+}

@@ -13,6 +13,7 @@ never SI.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -463,6 +464,275 @@ def rings(scene: Scene, max_size: int = 8) -> list[list[str]]:
         if len(ring) <= max_size:
             found.setdefault(frozenset(ring), ring)
     return sorted(found.values(), key=len)
+
+
+# -- shared π electrons (structure-workspaces 2e, §Structure fisheye) --------
+
+#: Elements whose declared sp2/sp atom carries a lone pair that conjugates
+#: when it sits on a π bond (the ``view='surface'`` acceptor rule).
+_PI_LONE_PAIR = frozenset({"N", "O", "S"})
+
+#: Perception cap — ``rings()`` is one BFS per bond, so huge slabs skip
+#: perception at save rather than paying an unbounded graph walk; the row
+#: records ``skipped`` so the eye can say so (never a silent absence).
+PI_MAX_ATOMS = 2000
+
+
+def _pi_bonds(scene: Scene) -> list[Bond]:
+    """Bonds carrying π: ``kind='aromatic'`` or ``order ≥ 1.5``."""
+    return [
+        b
+        for b in scene.bonds
+        if b.kind == "aromatic"
+        or (b.order >= 1.5 and b.i in scene.atoms and b.j in scene.atoms)
+    ]
+
+
+def pi_perceive(scene: Scene) -> dict[str, Any]:
+    """Rings, conjugated systems and per-atom membership over the bond
+    graph — ours, not RDKit's (the eye's canonical read; RDKit is the
+    cross-check only — hexfold rims and periodic cells do not sanitise).
+
+    A bond carries π when ``kind='aromatic'`` or ``order ≥ 1.5``; an atom
+    is in a π system when it has ≥ 1 such bond, or is declared sp2/sp on
+    N/O/S adjacent to a π-bonded atom (lone pair). A system is a connected
+    component over that augmented graph; rings are
+    :func:`rings(max_size=8)` — smallest cycles, deduplicated by atom set.
+
+    A ring is aromatic when every member is in one π system and (size 6
+    with all ring bonds aromatic/order 1.5 — the hexfold / ``from_smiles``
+    case — or an isolated ring passing Hückel 4n+2 over its π electron
+    count: 1 per π-bonded member, 2 per lone-pair member).
+
+    Returns the ``structure_pi`` JSONB payload: ``{rings: [[ordinals,
+    aromatic?]…], systems: [{id, atoms, aromatic_rings}], atom: {ord:
+    {rings, system}}}`` — ordinals index ``scene.atoms`` order (the same
+    numbering ``atoms:`` selectors and ``maker``/``touched`` use), system
+    ids are 0..n sorted by lowest member ordinal so ``pi:<id>`` selectors
+    are stable for identical input.
+    """
+    labels = list(scene.atoms)
+    pos = {la: i for i, la in enumerate(labels)}
+    if len(labels) > PI_MAX_ATOMS:
+        return {"skipped": f"{len(labels)} atoms > {PI_MAX_ATOMS}"}
+
+    pi_edges = _pi_bonds(scene)
+    pi_adj: dict[str, set[str]] = {la: set() for la in labels}
+    for b in pi_edges:
+        pi_adj[b.i].add(b.j)
+        pi_adj[b.j].add(b.i)
+    pi_atoms = {la for la, nbrs in pi_adj.items() if nbrs}
+    adj = _adjacency(scene)
+    # lone-pair acceptors: declared sp2/sp N/O/S bonded to a π atom join
+    # the system over their ordinary bond.
+    augmented: dict[str, set[str]] = {la: set(n) for la, n in pi_adj.items()}
+    for la, atom in scene.atoms.items():
+        hyb = (atom.hybridization or "").lower()
+        if hyb not in ("sp2", "sp") or atom.element not in _PI_LONE_PAIR:
+            continue
+        for nxt in adj[la]:
+            if nxt in pi_atoms:
+                augmented.setdefault(la, set()).add(nxt)
+                augmented[nxt].add(la)
+    members = pi_atoms | {
+        la for la, nbrs in augmented.items() if nbrs and la not in pi_atoms
+    }
+    # connected components over the augmented π graph → systems
+    seen: set[str] = set()
+    systems: list[list[str]] = []
+    for start in sorted(members):
+        if start in seen:
+            continue
+        comp: list[str] = []
+        stack = [start]
+        seen.add(start)
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for nxt in augmented.get(cur, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        systems.append(sorted(comp, key=lambda la: pos[la]))
+    systems.sort(key=lambda c: pos[c[0]])
+
+    all_rings = rings(scene, max_size=8)
+    ring_ords = [sorted(pos[la] for la in r) for r in all_rings]
+    bond_map: dict[frozenset[str], Bond] = {}
+    for b in scene.bonds:
+        bond_map[frozenset((b.i, b.j))] = b
+
+    def _ring_electrons(ring_labels: list[str]) -> int:
+        e = 0
+        for la in ring_labels:
+            on_pi = any(
+                (b := bond_map.get(frozenset((la, m)))) is not None
+                and (b.kind == "aromatic" or b.order >= 1.5)
+                for m in ring_labels
+                if m != la
+            )
+            if on_pi:
+                e += 1
+            elif scene.atoms[la].element in _PI_LONE_PAIR and (
+                scene.atoms[la].hybridization or ""
+            ).lower() in ("sp2", "sp"):
+                e += 2
+        return e
+
+    def _aromatic(ring_labels: list[str], ring_ord: list[int]) -> bool:
+        sys_of = next(
+            (i for i, comp in enumerate(systems) if set(ring_labels) <= set(comp)),
+            None,
+        )
+        if sys_of is None:
+            return False
+        ring_bonds = [
+            bond_map[frozenset((a, b))]
+            for a, b in zip(ring_labels, [*ring_labels[1:], ring_labels[0]])
+        ]
+        if len(ring_labels) == 6 and all(
+            b is not None and (b.kind == "aromatic" or b.order >= 1.5)
+            for b in ring_bonds
+        ):
+            return True
+        # isolated ring: no member's π bond leaves the ring
+        outside = any(
+            pi_adj[la] - set(ring_labels) for la in ring_labels if la in pi_adj
+        )
+        return not outside and _ring_electrons(ring_labels) % 4 == 2
+
+    ring_aromatic = [_aromatic(list(r), ring_ords[i]) for i, r in enumerate(all_rings)]
+    sys_of_ord: dict[int, int] = {}
+    for i, comp in enumerate(systems):
+        for la in comp:
+            sys_of_ord[pos[la]] = i
+
+    atom_map: dict[str, Any] = {}
+    for i, la in enumerate(labels):
+        ring_idxs = [k for k, r in enumerate(ring_ords) if i in r]
+        if not ring_idxs and i not in sys_of_ord:
+            continue
+        atom_map[str(i)] = {"rings": ring_idxs, "system": sys_of_ord.get(i)}
+    return {
+        "rings": [
+            {"atoms": r, "aromatic": bool(a)} for r, a in zip(ring_ords, ring_aromatic)
+        ],
+        "systems": [
+            {
+                "id": i,
+                "atoms": [pos[la] for la in comp],
+                "aromatic_rings": [
+                    k
+                    for k, r in enumerate(ring_ords)
+                    if ring_aromatic[k] and set(r) <= {pos[la] for la in comp}
+                ],
+            }
+            for i, comp in enumerate(systems)
+        ],
+        "atom": atom_map,
+    }
+
+
+def pi_crosscheck(scene: Scene, perceived: dict[str, Any]) -> dict[str, Any]:
+    """RDKit cross-check of :func:`pi_perceive` — read-only, canonical
+    answer stays ours. Runs only on a finite scene ≤ 500 atoms with rdkit
+    installed (the ``[chem]`` extra); anything else is ``skipped`` with
+    the reason. ``agrees`` when RDKit's aromatic-ring atom sets match
+    ours, ``differs`` naming the ring ordinals when not — the eye surfaces
+    that as the ``pi.perception_differs`` finding, never a silent override.
+    """
+    if any(scene.cell.pbc):
+        return {"rdkit": "skipped", "why": "periodic cell"}
+    if len(scene.atoms) > 500:
+        return {"rdkit": "skipped", "why": f"{len(scene.atoms)} atoms > 500"}
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return {"rdkit": "skipped", "why": "rdkit not installed"}
+    labels = list(scene.atoms)
+    pos = {la: i for i, la in enumerate(labels)}
+    try:
+        rw = Chem.RWMol()
+        for la in labels:
+            rw.AddAtom(Chem.Atom(scene.atoms[la].element))
+        _BT = {
+            "aromatic": Chem.BondType.AROMATIC,
+            "pairwise": Chem.BondType.SINGLE,
+        }
+        for b in scene.bonds:
+            if b.i not in pos or b.j not in pos or b.image != (0, 0, 0):
+                continue
+            bt = _BT.get(b.kind, Chem.BondType.SINGLE)
+            if b.kind != "aromatic":
+                if b.order >= 3:
+                    bt = Chem.BondType.TRIPLE
+                elif b.order >= 1.9:
+                    bt = Chem.BondType.DOUBLE
+                elif b.order >= 1.4:
+                    bt = Chem.BondType.AROMATIC
+            rw.AddBond(pos[b.i], pos[b.j], bt)
+        mol = rw.GetMol()
+        Chem.SanitizeMol(mol)
+        Chem.SetAromaticity(mol)
+    except Exception as exc:
+        return {"rdkit": "skipped", "why": f"rdkit could not sanitise ({exc})"}
+    rdkit_aromatic: set[frozenset[int]] = set()
+    for ring in mol.GetRingInfo().AtomRings():
+        if len(ring) > 8:
+            continue
+        bonds_ok = all(
+            mol.GetBondBetweenAtoms(a, b) is not None
+            and mol.GetBondBetweenAtoms(a, b).GetIsAromatic()
+            for a, b in zip(ring, [*ring[1:], ring[0]])
+        )
+        if bonds_ok:
+            rdkit_aromatic.add(frozenset(ring))
+    ours = {
+        frozenset(r["atoms"]) for r in perceived.get("rings") or [] if r["aromatic"]
+    }
+    if rdkit_aromatic == ours:
+        return {"rdkit": "agrees"}
+    diff = sorted(sorted(r) for r in rdkit_aromatic.symmetric_difference(ours))
+    return {
+        "rdkit": "differs",
+        "finding": "pi.perception_differs",
+        "rings": diff,
+    }
+
+
+def bonded_shell(
+    scene: Scene, labels: list[str], *, max_hop: int = 6
+) -> dict[int, list[tuple[str, Bond | None]]]:
+    """BFS over the bond graph from ``labels`` — ``{hop: [(label, the bond
+    that reached it, None for the focus set itself)]}``, hop 0 = the focus
+    set. Periodic images ride the returned ``Bond.image``."""
+    adj_bond: dict[str, list[tuple[str, Bond]]] = {la: [] for la in scene.atoms}
+    for b in scene.bonds:
+        if b.i in adj_bond and b.j in adj_bond:
+            adj_bond[b.i].append((b.j, b))
+            adj_bond[b.j].append((b.i, b))
+    out: dict[int, list[tuple[str, Bond | None]]] = {0: [(la, None) for la in labels]}
+    depth = {la: 0 for la in labels}
+    queue = list(labels)
+    while queue:
+        cur = queue.pop(0)
+        d = depth[cur]
+        if d >= max_hop:
+            continue
+        for nxt, bond in adj_bond[cur]:
+            if nxt in depth:
+                continue
+            depth[nxt] = d + 1
+            out.setdefault(d + 1, []).append((nxt, bond))
+            queue.append(nxt)
+    for d in out:
+        out[d].sort(key=lambda t: pos_order(scene, t[0]))
+    return out
+
+
+def pos_order(scene: Scene, label: str) -> int:
+    """``label``'s ordinal in ``scene.atoms`` order (0 when absent)."""
+    return next((i for i, la in enumerate(scene.atoms) if la == label), 0)
 
 
 # -- diff (the most insightful single relaxation view, §6.3) -----------------

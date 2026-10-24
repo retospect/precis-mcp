@@ -63,6 +63,20 @@ skill documents (`get(kind='structure', id=<handle>, view='atom'|'runs')`).
 - A bond crossing a cell wall carries a **periodic image offset** `[i,j,k]`:
   `aPd1 — aPd2[−1,0,0]` bonds aPd1 to aPd2's image one cell back along **a**.
 
+## The spatial eye — `extent=...` on `~<focus>`
+
+`get(kind='structure', id='st<id>~<focus>', extent=<rung>)` — the same
+fisheye ladder as every kind (`kwd | summary | verbatim | fisheye |
+fisheye+1hop | fisheye+2hop`), focused on the bond graph instead of the
+link graph. `st<id>#<label>` is an accepted alias for `st<id>~<label>`.
+Focus forms: `<label>` / `#<label>` (one atom), `find:element=<El>` or
+`find:undercoordinated`, `pi:<id>[/rings|/aromatic]` (a perceived π
+system — `pi:` also works as a region selector on an se block that binds
+the structure, `precis-se-regions-help`). `fisheye` shows the graduated
+bonded shell (bond lines at hop 1, element groups at 2–3, counts at
+4–6) and the π line (`rings <sizes> · sys st<id>~pi:<id>`). `+recall`
+refuses — an atom has no embedding.
+
 ## Author a design — `put(id=<slug>, text=<JSON>)`
 
 The payload is JSON: a **cell** + a list of **ops**. Atoms wrap into the

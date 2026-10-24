@@ -1530,6 +1530,50 @@ class StructureHandler(Handler):
             )
         return self._render_probe(view, scene, args or {}, ref=ref)
 
+    def eye(
+        self,
+        *,
+        id: str | int | None = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        """The fisheye ladder — a bare ``st<id>``/slug is the note eye
+        (default), ``<ref>~<focus>`` the spatial eye
+        (:mod:`precis.handlers._structure_eye`; structure-workspaces 2e).
+        ``st<id>#<label>`` is the ``~`` form's alias
+        (precis-structure-help's atom addressing)."""
+        from precis.handlers._eye import EYE_NEXT
+        from precis.handlers._structure_eye import recall_refusal, render
+        from precis.utils.eye_render import parse_extent
+
+        try:
+            ext, recall = parse_extent(extent)
+        except ValueError as exc:
+            raise BadInput(str(exc), next=EYE_NEXT) from exc
+        s = str(id or "").strip()
+        if s.startswith("structure:"):
+            s = s[len("structure:") :]
+        focus = ""
+        base = s
+        if "~" in s:
+            base, _sep, focus = s.partition("~")
+        elif "#" in s and handle_registry.parse(s.partition("#")[0]):
+            # st<id>#<focus> — the precis-structure-help atom alias.
+            base, _sep, focus = s.partition("#")
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=base)
+        if not focus:
+            # Bare ref (or an empty trailing separator like `st7#`).
+            return super().eye(id=base, extent=extent, q=q, ring=ring)
+        if focus.lstrip("-").isdigit():
+            # A digit ~ suffix is the chunk selector (st<id>~<ord>),
+            # not an atom — the base eye owns it and needs the suffix.
+            return super().eye(id=s, extent=extent, q=q, ring=ring)
+        if recall:
+            raise recall_refusal()
+        scene, _handles = self.store.structure_load(ref.id)
+        return Response(body=render(self.store, ref, scene, focus, ext, q=q, ring=ring))
+
     def _render_staircase(self, ref: Any, args: dict[str, Any]) -> Response:
         """``view='staircase'`` — the reaction staircase of this
         structure's best linked pathway (SPSO slice 3), re-tilted at

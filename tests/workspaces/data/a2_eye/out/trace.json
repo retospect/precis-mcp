@@ -1,0 +1,218 @@
+{
+ "schema": 1,
+ "run": {
+  "workspace": "hcol",
+  "job": null,
+  "script_sha": null,
+  "lock_sha": null,
+  "started_utc": null,
+  "finished_utc": null,
+  "collapsed": 0,
+  "truncated": false
+ },
+ "frames": [
+  {
+   "id": 0,
+   "key": "a200000000000000",
+   "parent": null,
+   "qual": "main",
+   "file": "main.py",
+   "line": 1,
+   "occ": 0,
+   "kind": "root",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 1,
+   "key": "a200000000000001",
+   "parent": "a200000000000000",
+   "qual": "main.build",
+   "file": "main.py",
+   "line": 10,
+   "occ": 0,
+   "kind": "user",
+   "args": {
+    "P": 6,
+    "R": 4
+   },
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 2,
+   "key": "a200000000000002",
+   "parent": "a200000000000001",
+   "qual": "main.bundle",
+   "file": "main.py",
+   "line": 20,
+   "occ": 0,
+   "kind": "user",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 3,
+   "key": "a200000000000003",
+   "parent": "a200000000000002",
+   "qual": "main.layout",
+   "file": "main.py",
+   "line": 30,
+   "occ": 0,
+   "kind": "user",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 4,
+   "key": "a200000000000004",
+   "parent": "a200000000000003",
+   "qual": "sheetnet.strip",
+   "file": "main.py",
+   "line": 31,
+   "occ": 0,
+   "kind": "core",
+   "args": {
+    "rows": 6
+   },
+   "made": {
+    "atoms": 15
+   },
+   "touched": {}
+  },
+  {
+   "id": 5,
+   "key": "a200000000000005",
+   "parent": "a200000000000003",
+   "qual": "sheetnet.strip",
+   "file": "main.py",
+   "line": 32,
+   "occ": 0,
+   "kind": "core",
+   "args": {
+    "rows": 6
+   },
+   "made": {
+    "atoms": 14
+   },
+   "touched": {}
+  },
+  {
+   "id": 6,
+   "key": "a200000000000006",
+   "parent": "a200000000000003",
+   "qual": "sheetnet.assemble",
+   "file": "main.py",
+   "line": 40,
+   "occ": 0,
+   "kind": "core",
+   "args": {},
+   "made": {},
+   "touched": {}
+  },
+  {
+   "id": 7,
+   "key": "a200000000000007",
+   "parent": "a200000000000006",
+   "qual": "sheetnet.junction",
+   "file": "main.py",
+   "line": 41,
+   "occ": 0,
+   "kind": "core",
+   "args": {
+    "k": 3
+   },
+   "made": {
+    "atoms": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 8,
+   "key": "a200000000000008",
+   "parent": "a200000000000006",
+   "qual": "sheetnet.junction",
+   "file": "main.py",
+   "line": 41,
+   "occ": 1,
+   "kind": "core",
+   "args": {
+    "k": 3
+   },
+   "made": {
+    "atoms": 1
+   },
+   "touched": {}
+  },
+  {
+   "id": 9,
+   "key": "a200000000000009",
+   "parent": "a200000000000002",
+   "qual": "unit.fetch",
+   "file": "main.py",
+   "line": 50,
+   "occ": 0,
+   "kind": "core",
+   "args": {
+    "unit": "u123"
+   },
+   "made": {
+    "atoms": 4
+   },
+   "touched": {}
+  },
+  {
+   "id": 40,
+   "key": "a200000000000028",
+   "parent": "a200000000000006",
+   "qual": "relax",
+   "file": "hexfold_relax",
+   "line": 0,
+   "occ": 0,
+   "kind": "service",
+   "args": {
+    "method": "xtb",
+    "scope": "interfaces",
+    "block": "p",
+    "shell_A": 6
+   },
+   "made": {},
+   "touched": {
+    "atoms": [
+     [
+      29,
+      29
+     ]
+    ]
+   }
+  },
+  {
+   "id": 41,
+   "key": "a200000000000029",
+   "parent": "a200000000000006",
+   "qual": "relax",
+   "file": "hexfold_relax",
+   "line": 0,
+   "occ": 0,
+   "kind": "service",
+   "args": {
+    "method": "gfnff",
+    "scope": "unit",
+    "unit": "u123",
+    "block": "u"
+   },
+   "made": {},
+   "touched": {
+    "atoms": [
+     [
+      0,
+      3
+     ]
+    ]
+   }
+  }
+ ]
+}

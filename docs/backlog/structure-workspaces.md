@@ -824,6 +824,9 @@ and the rest of that system as counts plus one selector
   the bond list. A relax that moves atoms but keeps bonds recomputes
   (new `structure_sha`); a cache hit copies. The se block reads it
   through its bound structure; an unbound block has no π block.
+  *Follow-up:* `structure_pi` rows accumulate per `(ref_id, pi_key)`
+  and nothing prunes dead keys — the same housekeeping question
+  `material_values` already has (sw-2e review).
 
 **Relaxation awareness** (Reto's addition). The relax block on an atom
 focus, from the trace's `service` frames (`relax(...)` with `args`

@@ -1,0 +1,233 @@
+{
+ "schema": 1,
+ "bonds": [
+  {
+   "i": "aC1",
+   "j": "aC2",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC1",
+   "j": "aC5",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC2",
+   "j": "aC3",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC3",
+   "j": "aC6",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC4",
+   "j": "aC5",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC4",
+   "j": "aC11",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC5",
+   "j": "aC12",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC6",
+   "j": "aC7",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC6",
+   "j": "aC12",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC7",
+   "j": "aC8",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC7",
+   "j": "aC16",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC8",
+   "j": "aC9",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC9",
+   "j": "aC18",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC10",
+   "j": "aC11",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC10",
+   "j": "aC19",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC11",
+   "j": "aC13",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC12",
+   "j": "aC14",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC13",
+   "j": "aC14",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC13",
+   "j": "aC21",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC14",
+   "j": "aC15",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC15",
+   "j": "aC16",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC15",
+   "j": "aC23",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC16",
+   "j": "aC17",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC17",
+   "j": "aC18",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC17",
+   "j": "aC25",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC19",
+   "j": "aC20",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC20",
+   "j": "aC21",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC20",
+   "j": "aC26",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC21",
+   "j": "aC22",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC22",
+   "j": "aC23",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC22",
+   "j": "aC27",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC23",
+   "j": "aC24",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC24",
+   "j": "aC25",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC24",
+   "j": "aC29",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC26",
+   "j": "aC30",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC27",
+   "j": "aC28",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC27",
+   "j": "aC30",
+   "order": 1.5,
+   "kind": "aromatic"
+  },
+  {
+   "i": "aC28",
+   "j": "aC29",
+   "order": 1.5,
+   "kind": "aromatic"
+  }
+ ]
+}

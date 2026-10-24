@@ -70,6 +70,7 @@ search(kind='taxon', under='measurand', q='charge')
 | `sites:<block>/<seam>/s<i>..s<j>` | seam sites i to j of a hexfold block | the sites' atom ordinals on the bound structure (when the scene resolver is wired) |
 | `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | the atoms' ordinals + centroid |
 | `frame:<key>` | the atoms a workspace-run trace frame's subtree made — `frame:<key>!` the frame alone, `/rest` the subtree minus the frame, `/touched` its touched ranges | the atoms' ordinals + centroid |
+| `pi:<block>#<id>` | π system `id` on the block's bound structure (the spatial eye's `pi:` line names it); `/rings` the system's rings, `/aromatic` only aromatic rings | the system's atom ordinals + centroid |
 | `mpatch:<mol>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
 | `mol:<mol>@<clearance Å>` | the molecule's whole surface — the wall region around it | the wall atoms within clearance + 3 Å of any surface point |
 | `mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å>` | a cone with its apex on one molecule atom, axis in the molecule structure's own frame (it turns with the block's `rot`) | the wall atoms whose centres sit inside the cone |
@@ -113,6 +114,8 @@ clearance < 0 is refused, 0 allowed).
   across reruns of an unchanged script, so it needs no version pin. It
   resolves only on a workspace-built structure (a bound ref whose
   `generated.trace` names the run).
+- `pi:<block>#<id>` cites a perceived π system (2e); on a bare structure
+  the form is `pi:<id>` (`st<id>~pi:<id>`).
 
 ## Group regions into a pocket
 

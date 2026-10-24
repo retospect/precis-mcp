@@ -403,10 +403,12 @@ class BoundScene(NamedTuple):
     the loaded ``scene`` (atom ordinals are ``id ASC`` positions, the
     ``atoms:`` selector's numbering) and the ref's ``meta`` — which
     carries ``generated`` (the build record with seam-site lists for
-    ``sites:``) and ``version`` (the pin's currency check)."""
+    ``sites:``) and ``version`` (the pin's currency check). ``ref_id`` is
+    the ref's primary key — the ``structure_pi`` row key (slice 2e)."""
 
     scene: Any
     meta: dict[str, Any]
+    ref_id: int | None = None
 
 
 #: A structure design's slug → :class:`BoundScene` (``None`` = no such
@@ -831,6 +833,15 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: resolution (:mod:`precis_se.datums`) and ``view='trace'``.
     #: ``None`` on a bare tree — declared intent, never a guess.
     traces: Callable[[dict[str, Any] | None], dict[str, Any] | None] | None = field(
+        default=None, repr=False, compare=False
+    )
+    #: Store-bound π-perception lookup
+    #: (:func:`precis_se.persist.structure_pi_resolver`): a structure
+    #: design's slug → its ``structure_pi`` row's data for the current
+    #: scene's ``pi_key`` (slice 2e — ``pi:`` selectors, the spatial
+    #: eye's π block). ``None`` on a bare tree leaves ``pi:`` lenient-
+    #: unresolved like the other structure-bound selectors.
+    structure_pi: Callable[[str], dict[str, Any] | None] | None = field(
         default=None, repr=False, compare=False
     )
     #: Store-bound ``field:<sha256>`` grid loader

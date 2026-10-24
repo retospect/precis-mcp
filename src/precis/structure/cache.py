@@ -107,6 +107,28 @@ def run_cache_key(
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def pi_key(scene: Scene) -> str:
+    """The π-perception content key — ``sha256(structure_sha · sorted bonds)``.
+
+    :func:`structure_sha` is bond-independent by design (bonds are graph
+    intent, not a relax input), so the π key folds the bond list in: a
+    bond-order change with geometry fixed changes ``pi_key`` while
+    ``structure_sha`` — and the relax cache key — does not. Bond endpoints
+    are design-scoped labels: ``pi_key`` is only ever compared within one
+    ref's versions (``structure_pi.ref_id``), never across designs.
+    """
+    bonds = sorted(
+        (b.i, b.j, round(float(b.order), _HASH_NDIGITS), b.kind, tuple(b.image))
+        for b in scene.bonds
+    )
+    payload = {
+        "sha": structure_sha(scene),
+        "bonds": [[i, j, o, k, list(g)] for i, j, o, k, g in bonds],
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def canonical_order(scene: Scene) -> list[str]:
     """Atom labels in the same label-free canonical order :func:`structure_sha`
     sorts on. Capture this on the **input** scene *before* relaxing: it is the

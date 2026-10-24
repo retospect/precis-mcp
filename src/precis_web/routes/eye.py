@@ -59,11 +59,22 @@ DEFAULT_EXTENT = "fisheye+1hop"
 #: A skill eye's handle form (``handlers.skill``'s slug addressing).
 _SKILL_PREFIX = "sk:"
 
-#: A universal record/chunk handle in rendered text (``me4641``,
-#: ``pc13234``) — the shape ``handle_registry.parse`` decodes. Word-bounded
-#: so ``mx2`` inside ``5mx20`` or a cite key doesn't match.
-_HANDLE_IN_TEXT = re.compile(r"(?<![\w:/.-])([a-z]{2}\d+)(?![\w-])")
-_SKILL_IN_TEXT = re.compile(r"(?<![\w/])sk:([a-z0-9][a-z0-9-]*)")
+#: One pass over every linkable token in rendered eye text
+#: (structure-workspaces 2e): a ``~``/``#a<El><n>`` focus handle, a
+#: ``sk:<slug>`` skill handle, or a plain universal handle. The single
+#: alternation keeps ``st7~aC12`` one link — a multi-pass linkifier used
+#: to nest an ``<a>`` on the base inside it. The ``~`` focus allows the
+#: selector alphabet (``: / ( ) [ ] , ! * + - _ .``) but not trailing
+#: sentence punctuation (stripped below); the ``#`` focus requires the
+#: ``#a<El><n>`` atom shape so ``issue#5`` and ``c#1`` stay text.
+_TOKEN_IN_TEXT = re.compile(
+    r"(?<![\w/:.-])("
+    r"sk:[a-z0-9][a-z0-9-]*"
+    r"|[a-z0-9][a-z0-9-]*~[A-Za-z0-9_.#:/()\[\],!*+-]+"
+    r"|[a-z0-9][a-z0-9-]*#a[A-Z][a-z]?\d+"
+    r"|[a-z]{2}\d+"
+    r")(?![\w-])"
+)
 
 #: A ``fisheye+2hop`` count line as rendered (already HTML-escaped) by
 #: ``eye_render._second_hop``: "  12 paper via cites". The label may read
@@ -78,7 +89,7 @@ def _eye_href(
     kinds: frozenset[str] | None = None,
     spaces: frozenset[str] | None = None,
 ) -> str:
-    href = f"/eye/{quote(handle, safe=':')}?extent={quote(extent, safe='')}"
+    href = f"/eye/{quote(handle, safe=':~')}?extent={quote(extent, safe='')}"
     if kinds:
         href += "&kind=" + quote(",".join(sorted(kinds)), safe="")
     if spaces:
@@ -100,20 +111,28 @@ def linkify_handles(
     ``ab12`` with no such code — is left as text, so a false positive
     costs a plain word, never a dead link."""
 
-    def _record(m: re.Match[str]) -> str:
-        h = m.group(1)
+    def _link(m: re.Match[str]) -> str:
+        tok = m.group(1)
+        # Sentence punctuation clinging to a focus handle
+        # (``hcol-a2~p#aC12,``) is not part of the link; a trailing ``)``
+        # only splits when it never opened — ``~p/w3/(2,1,A)` legitimately
+        # ends on it.
+        h = tok.rstrip(",.;")
+        while h.endswith(")") and h.count(")") > h.count("("):
+            h = h[:-1]
+        tail = tok[len(h) :]
+        if not h:
+            return tok
+        if h.startswith(_SKILL_PREFIX) or "~" in h or "#a" in h:
+            href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
+            return f'<a class="eye-handle" href="{href}">{h}</a>{tail}'
         if handle_registry.parse(h) is None:
-            return h
+            return tok  # ``sp2``/``mx3``-shaped non-handles stay text
         href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-        return f'<a class="eye-handle" href="{href}">{h}</a>'
-
-    def _skill(m: re.Match[str]) -> str:
-        h = m.group(0)
-        href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-        return f'<a class="eye-handle" href="{href}">{h}</a>'
+        return f'<a class="eye-handle" href="{href}">{h}</a>{tail}'
 
     escaped = html.escape(text, quote=False)
-    return _SKILL_IN_TEXT.sub(_skill, _HANDLE_IN_TEXT.sub(_record, escaped))
+    return _TOKEN_IN_TEXT.sub(_link, escaped)
 
 
 def _tree_root_handle(request: Request, target: dict[str, Any]) -> str | None:
@@ -162,12 +181,29 @@ def _linkify_second_hop(
     return _SECOND_HOP_LINE.sub(_sub, body_html)
 
 
-def _handle_target(handle: str) -> dict[str, Any] | None:
+def _handle_target(handle: str, store: Any = None) -> dict[str, Any] | None:
     """The ``get`` args that focus ``handle``, or ``None`` when it is not a
-    handle at all (a query)."""
+    handle at all (a query). ``~``/``#`` focus forms (``st7~aC12``,
+    ``hcol-a2~p#aC12``, ``st7#aC12``) route by their base: the decimal
+    handle's kind, else an ``se``/``structure`` slug when ``store`` is
+    given (structure-workspaces 2e)."""
     h = handle.strip()
     if h.startswith(_SKILL_PREFIX):
         return {"kind": "skill", "id": h[len(_SKILL_PREFIX) :]}
+    if "~" in h or "#" in h:
+        base = re.split(r"[~#]", h, maxsplit=1)[0]
+        normalized = handle_registry.normalize(base)
+        parsed = handle_registry.parse(normalized)
+        if parsed is not None:
+            return {"kind": parsed[0], "id": h}
+        if store is not None:
+            for kind in ("se", "structure"):
+                try:
+                    if store.get_ref(kind=kind, id=base) is not None:
+                        return {"kind": kind, "id": h}
+                except Exception:
+                    continue
+        return None
     normalized = handle_registry.normalize(h)
     if handle_registry.parse(normalized) is not None:
         # kind= from the code so a dead handle is still routed to its kind's
@@ -315,7 +351,7 @@ async def eye_index(request: Request, q: str | None = None) -> Any:
     hits: str | None = None
     error: str | None = None
     if q and q.strip():
-        if _handle_target(q) is not None:
+        if _handle_target(q, store=get_store(request)) is not None:
             return RedirectResponse(_eye_href(q.strip()), status_code=303)
         body, is_error = await await_dispatch(request, "search", {"q": q.strip()})
         if is_error:
@@ -341,7 +377,7 @@ async def eye_focus(
     """The focus page for one handle at one rung, optionally narrowed by
     ``kind=``/``space=`` ring filters."""
     t0 = time.monotonic()
-    target = _handle_target(handle)
+    target = _handle_target(handle, store=get_store(request))
     if target is None:
         return timed_response(
             request,

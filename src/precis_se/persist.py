@@ -106,6 +106,7 @@ from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Any
 
+import psycopg
 from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -573,6 +574,9 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     # ref_id is the chunk home for containerless (``run_job=None``)
     # imports.
     tree.traces = trace_doc_resolver(store, ref_id)
+    # The bound structure's stored π perception (``pi:`` selectors, the
+    # structure fisheye's π block — slice 2e).
+    tree.structure_pi = structure_pi_resolver(store)
     # Same door for the store-free geometry paths that must resolve a
     # ``field:<sha>`` envelope (the flow COMPUTERS' chamber builder,
     # gr503066); a store without the cad ops (a read fake) leaves it off.
@@ -716,6 +720,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         tree.structures = structure_scene_resolver(store)
         tree.materials = material_resolver(store)
         tree.traces = trace_doc_resolver(store, None)
+        tree.structure_pi = structure_pi_resolver(store)
     return tree
 
 
@@ -788,13 +793,53 @@ def structure_scene_resolver(store: Any) -> Callable[[str], BoundScene | None]:
                 ref = store.get_ref(kind="structure", id=slug)
                 if ref is not None:
                     scene, _handles = store.structure_load(ref.id)
-                    out = BoundScene(scene=scene, meta=dict(ref.meta or {}))
+                    out = BoundScene(
+                        scene=scene, meta=dict(ref.meta or {}), ref_id=int(ref.id)
+                    )
             except Exception:
                 out = None
             cache[slug] = out
         return cache[slug]
 
     return scene_of
+
+
+def structure_pi_resolver(store: Any) -> Callable[[str], dict[str, Any] | None]:
+    """A structure design's slug → its ``structure_pi`` row for the
+    CURRENT scene's ``pi_key`` (structure-workspaces 2e): the perceived
+    rings / conjugated systems / per-atom membership JSONB, or ``None``
+    when the design is gone, unbound-loadable or predates the write path.
+    The key is recomputed from the loaded scene so a reverted version
+    reads its own row, never a stale latest. Memoized per returned
+    closure — one load + one lookup per slug per call."""
+    scenes = structure_scene_resolver(store)
+    data_cache: dict[str, dict[str, Any] | None] = {}
+
+    def pi_of(slug: str) -> dict[str, Any] | None:
+        if slug not in data_cache:
+            out: dict[str, Any] | None = None
+            bs = scenes(slug)
+            if bs is not None and bs.ref_id is not None:
+                from precis.structure.cache import pi_key
+
+                key = pi_key(bs.scene)
+                try:
+                    with store.pool.connection() as conn:
+                        row = conn.execute(
+                            "SELECT data FROM structure_pi "
+                            "WHERE ref_id = %s AND pi_key = %s",
+                            (bs.ref_id, key),
+                        ).fetchone()
+                except psycopg.errors.UndefinedTable:
+                    # Pre-0238 DB — the row cannot exist.
+                    out = None
+                else:
+                    if row is not None:
+                        out = dict(row[0])
+            data_cache[slug] = out
+        return data_cache[slug]
+
+    return pi_of
 
 
 def _read_ws_trace(store: Any, home: int, root: Any) -> dict[str, Any] | None:

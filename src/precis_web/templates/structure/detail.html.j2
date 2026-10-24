@@ -68,6 +68,11 @@
         <a class="text-success-strong hover:underline" href="/structure/{{ slug }}/run/{{ pinned_run }}">r{{ pinned_run }}</a>'s geometry
         <a class="text-fg-faint hover:text-fg-muted" href="/structure/{{ slug }}">(latest)</a></span>
       {% endif %}
+      {% if focus_label %}
+      {# Arrived from the spatial eye (?focus=<handle>) — glow that atom on load #}
+      <span class="text-[11px] text-fg-subtle sv-hl" data-atoms="{{ focus_label }}">focused
+        <code>{{ focus }}</code></span>
+      {% endif %}
       {% if viewer.relaxed %}
       <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-xs ml-auto">
         <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-surface-muted">Input</button>
@@ -812,6 +817,9 @@
 
     // Default: relaxed if we have it (that is the interesting result), else input.
     setMode(V.relaxed ? 'relaxed' : 'initial');
+    {%- if focus_label %}
+    applyHL([{{ focus_label | tojson }}]);
+    {%- endif %}
   }
 
   if (document.readyState === 'loading') {

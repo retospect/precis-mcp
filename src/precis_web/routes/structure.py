@@ -1050,6 +1050,17 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
         store, ref, runs, pin_run_id=pin, version=shown if read_only else None
     )
     scene, _handles = store.structure_load(ref.id, version=shown if read_only else None)
+    # structure-workspaces 2e: the eye emits ``?focus=<handle>`` pointers
+    # (``st<id>~<label>`` / ``st<id>#<label>`` / ``<slug>~<label>``).
+    # Resolve to the atom label the cell viewer glows on load.
+    focus = (request.query_params.get("focus") or "").strip()
+    focus_label = (
+        (focus.rsplit("#", 1)[-1] if "#" in focus else focus.rsplit("~", 1)[-1])
+        if focus
+        else ""
+    )
+    if focus_label not in scene.atoms:
+        focus_label = ""
     revisions = design_history.list_revisions(store, ref.id)
     return templates.TemplateResponse(
         request,
@@ -1071,6 +1082,8 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "proposal": _latest_proposal(store, ref.id),
             "quest_context": _quest_context(store, ref.id),
             "pinned_run": pin,
+            "focus": focus if focus_label else "",
+            "focus_label": focus_label,
             # Scrubber state: the shown revision, whether the page is a
             # read-only past view, the slider span (one position — the
             # current version — for a pre-record design), and the panel.

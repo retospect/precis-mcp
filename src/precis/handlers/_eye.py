@@ -187,6 +187,15 @@ def eye_handle(
     ref_id = _resolve_ref_id(store, kind, base)
     if sep:
         if not ord_s.strip().lstrip("-").isdigit():
+            if kind in ("structure", "se"):
+                # The spatial eyes consume ``~<focus>`` in their own eye()
+                # overrides before this path; a miss that lands here still
+                # deserves the true form in the message, not "<id>~<ord>".
+                raise BadInput(
+                    f"bad focus selector {s!r}: expected <id>~<focus> "
+                    f"(<block>#<label>, frame:<key>, pi:<id>, find:<pred>)",
+                    next=EYE_NEXT,
+                )
             raise BadInput(
                 f"bad chunk selector {s!r}: expected <id>~<ord>", next=EYE_NEXT
             )
