@@ -251,6 +251,10 @@ def run_in_child(
     deadline = time.monotonic() + timeout_s
     msg: tuple[Any, ...] | None = None
     stop: str | None = None
+    # The deadline/should_stop checks run at least every poll_s even
+    # while events stream in: a child emitting faster than poll_s used to
+    # skip them on every pass, so a cancel or kill never landed.
+    next_check = time.monotonic() + poll_s
     try:
         if on_start is not None:
             on_start(dict(handle))
@@ -261,12 +265,14 @@ def run_in_child(
                     got = parent_conn.recv()
                 except EOFError:
                     break
-                if got[0] == "event":
-                    if on_event is not None:
-                        on_event(got[1], got[2])
+                if got[0] != "event":
+                    msg = got
+                    break
+                if on_event is not None:
+                    on_event(got[1], got[2])
+                if time.monotonic() < next_check:
                     continue
-                msg = got
-                break
+            next_check = time.monotonic() + poll_s
             if not proc.is_alive() and not parent_conn.poll(0):
                 break
             if time.monotonic() >= deadline:
