@@ -39,6 +39,24 @@ def test_subclass_hierarchy() -> None:
         assert issubclass(cls, PrecisError)
 
 
+def test_bad_input_is_also_value_error() -> None:
+    # gr514202: scripts wrapping pga.geom in `except ValueError` (hexfold
+    # raises plain ValueError) must also catch the BadInput it raises.
+    assert issubclass(BadInput, ValueError)
+    try:
+        raise BadInput("bad arg", next="fix the arg")
+    except ValueError as e:
+        assert isinstance(e, BadInput)
+        assert isinstance(e, PrecisError)
+
+
+def test_only_bad_input_is_value_error() -> None:
+    # The ValueError door is BadInput-specific; sibling typed errors stay
+    # PrecisError-only so `except ValueError` doesn't swallow e.g. Gone.
+    for cls in (NotFound, Unsupported, Upstream, RateLimited, Internal):
+        assert not issubclass(cls, ValueError)
+
+
 def test_chain_via_from() -> None:
     src = ValueError("root")
     try:

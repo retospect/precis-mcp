@@ -728,6 +728,15 @@ def test_session_start_lock_never_steals_a_live_unrelated_lock(
     _git(primary, "worktree", "unlock", str(b))
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "process-table session lookup (session-lock.sh other_session_in) is "
+        "authoritative in the scripts/test container; on Darwin its ps/lsof "
+        "reads miss the fake survivor session and the tree is reaped under "
+        "it (gr514910)"
+    ),
+)
 def test_session_end_reap_hands_the_lock_to_a_second_session_in_the_tree(
     repo_trio: dict[str, Path],
     tmp_path: Path,
@@ -770,6 +779,15 @@ cat "{payload}" | bash "{end_hook}"
     _git(primary, "worktree", "unlock", str(b))
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "process-table session lookup (session-lock.sh other_session_in) is "
+        "authoritative in the scripts/test container; on Darwin its ps/lsof "
+        "reads miss the fake survivor session and the tree is reaped under "
+        "it (gr514910)"
+    ),
+)
 def test_reap_worktrees_skips_a_dead_locked_tree_with_a_live_session_in_it(
     repo_trio: dict[str, Path],
     tmp_path: Path,

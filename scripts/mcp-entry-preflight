@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# scripts/mcp-entry-preflight — re-add the user-scope `precis` MCP client
+# entry when it is missing, idempotently (gr513664).
+#
+# The server-side ensure script (deploy/mcp-http/precis-mcp-http-ensure.sh)
+# keeps the shared streamable-http server up, but nothing checked the
+# *client* entry: on 2026-10-24 a rewrite of ~/.claude.json (a /login is
+# the suspect) dropped the user-scope `precis` entry and the whole fleet
+# ran without precis until it was re-added by hand and every session
+# restarted. This preflight is the client-side half: run it before
+# sessions start (scripts/fleet up does, inside wait_mcp) and the entry
+# heals itself.
+#
+#   scripts/mcp-entry-preflight            check; re-add only when missing
+#   scripts/mcp-entry-preflight --dry-run  print what it would run; change nothing
+#
+# It goes through the `claude mcp` registry commands only — it never edits
+# ~/.claude.json or any settings file itself, and it never touches an
+# existing entry. Output is exactly what it changed: silent when the entry
+# is already present, one line per action otherwise (the Bearer token in
+# the server config is never printed).
+#
+# Exit: 0 entry present or re-added; 2 usage / no claude CLI / no ensure
+#       script; 3 ensure --config failed; 4 `claude mcp add-json` failed
+#       or the entry still does not resolve afterwards.
+#
+# Test seams: PRECIS_MCP_ENSURE (ensure-script path, as scripts/fleet),
+# PRECIS_MCP_CLAUDE (the registry command, default `claude`), and PATH (a
+# fake `claude` ahead of the real one).
+set -euo pipefail
+
+CLAUDE="${PRECIS_MCP_CLAUDE:-claude}"
+
+dry=0
+case "${1:-}" in
+    --dry-run) dry=1 ;;
+    "") ;;
+    *)  echo "usage: $(basename "$0") [--dry-run]" >&2
+        exit 2 ;;
+esac
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! command -v "$CLAUDE" >/dev/null 2>&1; then
+    echo "mcp-entry-preflight: no '$CLAUDE' on PATH — cannot check the MCP registry" >&2
+    exit 2
+fi
+
+if "$CLAUDE" mcp get precis >/dev/null 2>&1; then
+    if [ "$dry" = 1 ]; then
+        echo "mcp-entry-preflight: user-scope precis entry present — nothing to do"
+    fi
+    exit 0
+fi
+
+# The entry the ensure script's --config prints is the same one the fleet
+# re-added by hand: {"type":"http","url":...,"headers":{"Authorization":...}}.
+# Prefer the installed copy (PRECIS_MCP_ENSURE, as scripts/fleet does);
+# fall back to the repo copy next to this script.
+ensure="${PRECIS_MCP_ENSURE:-$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh}"
+if [ ! -x "$ensure" ]; then
+    ensure="$self_dir/../deploy/mcp-http/precis-mcp-http-ensure.sh"
+fi
+if [ ! -x "$ensure" ]; then
+    echo "mcp-entry-preflight: precis entry missing but no ensure script to mint" \
+        "the config (looked at PRECIS_MCP_ENSURE and $self_dir/../deploy/mcp-http/)" >&2
+    exit 2
+fi
+
+if [ "$dry" = 1 ]; then
+    echo "mcp-entry-preflight: user-scope precis entry MISSING — would run:"
+    echo "  claude mcp add-json -s user precis \"\$($ensure --config)\""
+    exit 0
+fi
+
+cfg="$("$ensure" --config)" || {
+    echo "mcp-entry-preflight: '$ensure --config' failed" >&2
+    exit 3
+}
+"$CLAUDE" mcp add-json -s user precis "$cfg" || {
+    echo "mcp-entry-preflight: 'claude mcp add-json -s user precis' failed" >&2
+    exit 4
+}
+"$CLAUDE" mcp get precis >/dev/null 2>&1 || {
+    echo "mcp-entry-preflight: re-added, but 'claude mcp get precis' still fails" >&2
+    exit 4
+}
+url="$(printf '%s' "$cfg" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+echo "mcp-entry-preflight: re-added the missing user-scope precis entry" \
+    "(${url:-url unknown}) via 'claude mcp add-json -s user'; running" \
+    "sessions pick it up on restart"

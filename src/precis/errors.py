@@ -67,8 +67,15 @@ class NotFound(PrecisError):
     """Identifier or path does not exist."""
 
 
-class BadInput(PrecisError):
-    """Parameter invalid or unparseable."""
+class BadInput(PrecisError, ValueError):
+    """Parameter invalid or unparseable.
+
+    Also a :class:`ValueError` (gr514202): callers that wrap precis calls
+    in ``except ValueError`` — e.g. code that also calls hexfold, which
+    raises plain ``ValueError`` — catch this too. ``PrecisError`` stays
+    first on the MRO, so ``except PrecisError`` and the dispatcher's
+    typed-error path are unchanged.
+    """
 
 
 class Gone(PrecisError):

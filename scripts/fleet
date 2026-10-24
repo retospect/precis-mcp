@@ -161,6 +161,13 @@ wait_mcp() {
   local start=$SECONDS said=""
   [ -x "$ensure" ] && [ "$limit" != 0 ] || return 0
   bash "$ensure" || true
+  # The client half of the same check: the server can be healthy while the
+  # user-scope registry entry is gone (gr513664) — re-add it before windows
+  # are created. Silent when the entry is already present; fail-open so a
+  # checkout without the script still gets the server wait. $root falls back
+  # to the cwd's toplevel because tests extract this function alone.
+  local preflight="${root:-$(git rev-parse --show-toplevel 2>/dev/null || true)}/scripts/mcp-entry-preflight"
+  [ ! -x "$preflight" ] || "$preflight" || true
   until [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -X POST "http://127.0.0.1:$port/mcp")" != 000 ]; do
     if [ $((SECONDS - start)) -ge "$limit" ]; then
       echo "scripts/fleet: no answer from the session MCP server on :$port after ${limit}s;" \
