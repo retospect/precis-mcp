@@ -81,6 +81,22 @@ def test_local_place_then_route_reuses_the_placed_ir() -> None:
     assert routing.nets > 0
 
 
+def test_board_default_stackup_is_four_routable_layers() -> None:
+    """gr514459: ``Board()`` emits no stackup key and resolves to the
+    semantic default — 4 routable copper layers
+    (``DEFAULT_STACKUP``); ``stackup=4`` emits the same names verbatim."""
+    from precis.pcb import local as kernel
+    from precis.pcb.ir import layer_is_routable
+
+    bare = kernel._stackup(pcb.Board("bare").to_batch())
+    assert [e["name"] for e in bare] == ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    assert all(layer_is_routable(e) for e in bare)
+
+    counted = kernel._stackup(pcb.Board("four", stackup=4).to_batch())
+    assert [e["name"] for e in counted] == [e["name"] for e in bare]
+    assert all(layer_is_routable(e) for e in counted)
+
+
 def test_local_kernel_miss_names_the_extra(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

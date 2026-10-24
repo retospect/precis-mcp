@@ -21,7 +21,6 @@ BOARD_MM = 100.0
 INSET_MM = 25.0
 PINS = 10
 PITCH_MM = 2.54
-LAYERS = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
 
 
 def permutation(seed: int | None) -> list[int]:
@@ -58,7 +57,7 @@ def build(
 ) -> pcb.Board:
     b = pcb.Board(
         "sanity",
-        stackup=LAYERS,
+        stackup=4,
         outline=[(0.0, 0.0), (BOARD_MM, 0.0), (BOARD_MM, BOARD_MM), (0.0, BOARD_MM)],
     )
     fp = b.footprint(header_footprint())

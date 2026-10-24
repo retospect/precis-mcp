@@ -167,10 +167,10 @@ def test_board_emits_only_what_was_said() -> None:
         b.outline(rect(1, 1))
 
 
-def test_stackup_list_sides_and_point_outline() -> None:
+def test_stackup_count_sides_and_point_outline() -> None:
     b = Board(
         "t2",
-        stackup=["F.Cu", "In1.Cu", "B.Cu"],
+        stackup=3,
         sides="top",
         outline=[(0, 0), (10, 0), (10, 10)],
     )
@@ -180,6 +180,33 @@ def test_stackup_list_sides_and_point_outline() -> None:
         "placement_sides": "top",
     }
     assert batch["features"][0]["geom"]["path"] == [[0, 0], [10, 0], [10, 10]]
+
+
+def test_stackup_forms_and_layer_indices() -> None:
+    """gr514459: ``stackup=`` is a count or a preset, omitted means the
+    semantic 4-layer default; copper layers are addressed by index."""
+    assert Board("bare").layer_names == ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    assert "stackup_layers" not in Board("bare").to_batch().get("meta", {})
+    assert Board("t2l", stackup=2).layer_names == ["F.Cu", "B.Cu"]
+    assert Board("t2p", stackup="2l").layer_names == ["F.Cu", "B.Cu"]
+
+    legacy_names: Any = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    with pytest.raises(PcbBuilderError, match="stackup=4"):
+        Board("bad", stackup=legacy_names)
+    with pytest.raises(PcbBuilderError):
+        Board("bad", stackup=1)
+    with pytest.raises(PcbBuilderError):
+        Board("bad", stackup=True)
+
+    b = Board("t8")
+    gnd = b.net("GND")
+    assert b.plane(1, net=gnd, priority=1)["layer"] == "In1.Cu"
+    assert b.plane(-1, net=gnd)["layer"] == "B.Cu"
+    with pytest.raises(PcbBuilderError, match="index 1"):
+        b.plane("In1.Cu", net=gnd)
+    with pytest.raises(PcbBuilderError, match="out of range"):
+        b.plane(4, net=gnd)
+    assert b.keepout([[0, 0], [1, 0], [1, 1]], layers=[0])["layers"] == ["F.Cu"]
 
 
 def test_part_pins_connections_shape() -> None:
@@ -273,8 +300,8 @@ def test_mechanical_features_and_keepout() -> None:
     b.fiducial(1, 1)
     b.testpoint(gnd, x=5, y=5)
     b.corner_nuts()
-    b.keepout([[0, 0], [1, 0], [1, 1]], layers=["F.Cu"], reason="RF")
-    b.plane("In1.Cu", net=gnd, priority=1)
+    b.keepout([[0, 0], [1, 0], [1, 1]], layers=[0], reason="RF")
+    b.plane(1, net=gnd, priority=1)
     b.feature("mask_open", geom={"poly": [[0, 0]]})
     feats = b.to_batch()["features"]
     assert [f_["ftype"] for f_ in feats] == [

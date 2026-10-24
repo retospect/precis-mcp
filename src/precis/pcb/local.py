@@ -95,9 +95,10 @@ def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         layers = copy.deepcopy(DEFAULT_STACKUP)
     try:
-        # ``Board(stackup=["F.Cu", ...])`` is the builder's name shorthand —
-        # validate_stackup wants dicts, so a bare name becomes a signal row
-        # (the same expansion the importer runs on ``meta.stackup_layers``).
+        # ``Board(stackup=4)``/an authored ``meta.stackup_layers`` emits
+        # bare names — validate_stackup wants dicts, so a bare name
+        # becomes a signal row (the same expansion the importer runs on
+        # ``meta.stackup_layers``).
         return validate_stackup(
             [
                 entry

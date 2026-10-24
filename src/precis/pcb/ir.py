@@ -1767,6 +1767,35 @@ def reference_layer(stackup: list[dict[str, Any]], index: int) -> str | None:
 OUTER_LAYER_NAMES = ("F.Cu", "B.Cu")
 
 
+def layer_name(index: int, n_layers: int) -> str:
+    """The standard copper name for stackup index ``index`` in a board
+    of ``n_layers`` — ``0`` -> ``"F.Cu"``, ``n_layers - 1`` ->
+    ``"B.Cu"``, else ``f"In{i}.Cu"`` on the normalised index. Negative
+    indexes count from the bottom (``-1`` -> ``"B.Cu"``).
+
+    Code addresses layers by INDEX (R-d, gr514459); the standard names
+    are what the batch, gerber and dsn emit. This is the one
+    index→name map — ``precis_geom.pcb._layer_name`` is a byte-identical
+    mirror (the wheel is stdlib-only and cannot import this); keep them
+    in sync.
+    """
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise ValueError(f"layer index {index!r} is not an int")
+    if isinstance(n_layers, bool) or not isinstance(n_layers, int) or n_layers < 2:
+        raise ValueError(
+            f"n_layers {n_layers!r} — a board has at least the two outer "
+            f"copper layers {list(OUTER_LAYER_NAMES)}"
+        )
+    i = index + n_layers if index < 0 else index
+    if i < 0 or i >= n_layers:
+        raise ValueError(f"layer index {index!r} out of range for {n_layers} layers")
+    if i == 0:
+        return "F.Cu"
+    if i == n_layers - 1:
+        return "B.Cu"
+    return f"In{i}.Cu"
+
+
 def validate_stackup(layers: Any) -> list[dict[str, Any]]:
     """Check and normalise an AUTHORED stackup — the input side of
     ``put(args={'op':'stackup'})``, kept here because this module already

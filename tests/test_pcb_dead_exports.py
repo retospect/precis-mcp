@@ -186,6 +186,11 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/ir.py::validate_embedding": (
         "read-only L2/L3 consistency check; no DRC or session pass invokes it yet"
     ),
+    "src/precis/pcb/ir.py::layer_name": (
+        "authority for the index->name map; the wheel's "
+        "precis_geom.pcb._layer_name is a byte-identical copy (no precis "
+        "import there), so server-side code has no caller yet"
+    ),
     "src/precis/pcb/ir.py::unconnected_items": (
         "dangling-pin/net report; no handler surfaces it yet"
     ),

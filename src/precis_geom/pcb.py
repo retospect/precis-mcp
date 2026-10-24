@@ -39,7 +39,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis_geom import pcb_shape as _shape
 from precis_geom import trace as _trace
@@ -68,6 +68,39 @@ class PcbBuilderError(ValueError):
     """A builder-time misuse: a reused refdes/prefix, a module touching a
     net it was not handed, a non-electrical net domain, an unknown
     footprint name."""
+
+
+#: Layer counts of the named stackup presets, for index→name resolution
+#: in ``plane()``/``keepout()``. Mirrors the authority,
+#: ``precis.pcb.STACKUP_PRESETS`` — this module is stdlib-only and
+#: cannot read it, so keep in sync (2l → 2, both 4l presets → 4).
+_PRESET_LAYER_COUNTS = {"2l": 2, "4l-two-sided": 4, "4l-top-only": 4}
+
+#: Copper-layer count when ``stackup=`` is omitted — the semantic
+#: default is ``precis.pcb.DEFAULT_STACKUP`` (4 layers, all routable).
+#: ``Board()`` emits no stackup key at all: the store/local kernel
+#: defaults the same way and a hard-coded list would desync goldens.
+_DEFAULT_LAYER_COUNT = 4
+
+
+def _layer_name(index: int, n_layers: int) -> str:
+    """Index → standard copper name — a byte-identical mirror of
+    :func:`precis.pcb.ir.layer_name` (the authority), duplicated because
+    this module stays stdlib-only. ``0`` → ``"F.Cu"``,
+    ``n_layers - 1`` → ``"B.Cu"``, else ``"In<i>.Cu"`` on the normalised
+    index; negative indexes count from the bottom."""
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise PcbBuilderError(f"layer index {index!r} is not an int")
+    i = index + n_layers if index < 0 else index
+    if i < 0 or i >= n_layers:
+        raise PcbBuilderError(
+            f"layer index {index!r} out of range for a {n_layers}-layer board"
+        )
+    if i == 0:
+        return "F.Cu"
+    if i == n_layers - 1:
+        return "B.Cu"
+    return f"In{i}.Cu"
 
 
 # --------------------------------------------------------------------------
@@ -538,14 +571,23 @@ def rect(w: float, h: float, *, corner_mm: float | None = None) -> dict[str, Any
 class Board:
     """A pcb design built in memory; ``to_batch()`` is the
     ``pcb_apply``-shaped payload. ``meta`` is the batch's free-form
-    ``meta`` dict (the script writes into it directly)."""
+    ``meta`` dict (the script writes into it directly).
+
+    ``stackup=`` is a copper-layer COUNT (``stackup=4``) or a preset
+    name (``'2l'``, ``'4l-two-sided'``, ``'4l-top-only'``). Omitted means
+    the semantic default, 4 layers — ``precis.pcb.DEFAULT_STACKUP``:
+    F.Cu/In1.Cu/In2.Cu/B.Cu, all routable — and emits no stackup key.
+    A list of names is refused: say ``stackup=4`` or a preset; the dict
+    form belongs to ``op='stackup'`` (R-d, gr514459). Copper layers are
+    addressed by INDEX everywhere in code — ``plane(1, …)``,
+    ``keepout(layers=[0])``; the standard names are what export emits."""
 
     def __init__(
         self,
         slug: str,
         *,
         profile: str | None = None,
-        stackup: str | list[Any] | None = None,
+        stackup: str | int | None = None,
         sides: str = "both",
         outline: dict[str, Any] | list[tuple[float, float]] | None = None,
         meta: dict[str, Any] | None = None,
@@ -571,7 +613,25 @@ class Board:
         self._frame_stack: list[_ModuleFrame] = []
 
         if isinstance(stackup, list):
-            self.meta["stackup_layers"] = list(stackup)
+            raise PcbBuilderError(
+                f"stackup= takes a layer count or a preset name, not a list "
+                f"({stackup!r}) — use stackup={len(stackup)}"
+            )
+        if isinstance(stackup, bool) or (
+            stackup is not None and not isinstance(stackup, int | str)
+        ):
+            raise PcbBuilderError(
+                f"stackup {stackup!r} is not a layer count or preset name"
+            )
+        if isinstance(stackup, int) and stackup < 2:
+            raise PcbBuilderError(
+                f"stackup {stackup} — a board has at least the two outer "
+                f"copper layers (F.Cu/B.Cu)"
+            )
+        if isinstance(stackup, int):
+            self.meta["stackup_layers"] = [
+                _layer_name(i, stackup) for i in range(stackup)
+            ]
         elif stackup is not None:
             self.meta["stackup_preset"] = stackup
         if sides != "both":
@@ -745,11 +805,53 @@ class Board:
         self._roles[name] = r
         return r
 
+    # -- copper layers by index (R-d, gr514459) ----------------------------
+
+    def _layer_count(self) -> int:
+        """Copper layers for index→name resolution: an int ``stackup``
+        is the count, a preset reads ``_PRESET_LAYER_COUNTS`` (mirroring
+        ``precis.pcb.STACKUP_PRESETS``), no stackup means the semantic
+        default — ``_DEFAULT_LAYER_COUNT``."""
+        if isinstance(self.stackup, int):
+            return self.stackup
+        if isinstance(self.stackup, str):
+            n = _PRESET_LAYER_COUNTS.get(self.stackup)
+            if n is None:
+                raise PcbBuilderError(
+                    f"unknown stackup preset {self.stackup!r} — known: "
+                    f"{sorted(_PRESET_LAYER_COUNTS)}"
+                )
+            return n
+        return _DEFAULT_LAYER_COUNT
+
+    @property
+    def layer_names(self) -> list[str]:
+        """The resolved stackup's copper names, top→bottom."""
+        n = self._layer_count()
+        return [_layer_name(i, n) for i in range(n)]
+
+    def _layer_at(self, layer: Any, what: str) -> str:
+        """The standard name for a copper layer given by INDEX — a
+        string is refused with its index equivalent named."""
+        n = self._layer_count()
+        if isinstance(layer, str):
+            names = [_layer_name(i, n) for i in range(n)]
+            hint = (
+                f" — {layer!r} is index {names.index(layer)}" if layer in names else ""
+            )
+            raise PcbBuilderError(
+                f"{what}() takes a layer index (0 = top … {n - 1} = bottom), "
+                f"not a name{hint}"
+            )
+        return _layer_name(layer, n)
+
     @traced
-    def plane(self, layer: str, *, net: Net, priority: int = 0) -> dict[str, Any]:
+    def plane(self, layer: int, *, net: Net, priority: int = 0) -> dict[str, Any]:
+        """A whole-layer pour for ``net`` on copper layer INDEX ``layer``
+        (``0`` = top … n-1 = bottom; ``-1`` counts from the bottom)."""
         entry = {
             "ftype": "plane_net",
-            "layer": layer,
+            "layer": self._layer_at(layer, "plane"),
             "net": net.name,
             "priority": priority,
         }
@@ -825,12 +927,12 @@ class Board:
     def keepout(
         self,
         poly: list[list[float]],
-        layers: Iterable[str] = (),
+        layers: Iterable[int] = (),
         reason: str | None = None,
     ) -> dict[str, Any]:
         f_: dict[str, Any] = {"ftype": "keepout", "geom": {"poly": poly}}
         if layers:
-            f_["layers"] = list(layers)
+            f_["layers"] = [self._layer_at(layer, "keepout") for layer in layers]
         if reason is not None:
             f_["reason"] = reason
         self._features.append(f_)
@@ -1224,11 +1326,27 @@ def _kernel() -> Any:
         ) from exc
 
 
+if TYPE_CHECKING:
+    # The lazy-alias pattern (gr514458): a lazy submodule whose target
+    # can't be imported at all — this module is stdlib-only and
+    # ``test_pcb_board._imports`` walks ``TYPE_CHECKING`` blocks too, so
+    # a ``from precis.pcb import local`` here would trip the belt even
+    # though it never runs — is *declared* for checkers instead. With
+    # this binding ``from precis_geom.pcb import local`` type-checks and
+    # lints clean in an agent's own script; ``__getattr__`` below stays
+    # the runtime resolver. ``local`` stays out of ``__all__`` on
+    # purpose: a star-import would call ``_kernel()`` and raise the
+    # install hint on a wheel without ``[pcb-kernel]``.
+    local: Any
+
+
 def __getattr__(name: str) -> Any:
     """``pcb.local`` resolves to :mod:`precis.pcb.local` on demand —
     ``pcb.local.place(b)`` reads like the spec's table while the builder
     itself stays dependency-light (a wheel without ``[pcb-kernel]`` can
-    still run ``to_batch``/``check``/``write_manifest``)."""
+    still run ``to_batch``/``check``/``write_manifest``). The next lazy
+    alias copies the ``TYPE_CHECKING`` declaration above, never an
+    import."""
     if name == "local":
         return _kernel()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

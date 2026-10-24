@@ -101,7 +101,7 @@ def test_shape_height_origins_and_holes_and_keepouts() -> None:
     b = Board("mech", outline=rect(60, 40))
     b.hole(4.0, 4.0, drill=3.2, ring=6.5)
     b.hole(56.0, 36.0, drill=3.2, ring=6.5)
-    b.keepout([[45, 30], [58, 30], [58, 38], [45, 38]], layers=["F.Cu"], reason="RF")
+    b.keepout([[45, 30], [58, 30], [58, 38], [45, 38]], layers=[0], reason="RF")
     fp = Footprint(
         "MNT-2",
         [

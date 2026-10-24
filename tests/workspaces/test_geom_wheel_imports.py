@@ -15,9 +15,15 @@ imports ``SeHandler`` and the DB stack. Walks the shipped sources with
 from __future__ import annotations
 
 import ast
+import importlib
 import os
+import shutil
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _SRC = _ROOT / "src"
@@ -338,3 +344,79 @@ def test_imports_must_resolve_into_the_shipped_set() -> None:
     assert unshipped is not None and not _is_shipped(unshipped)
     # A nonexistent module doesn't resolve at all.
     assert _module_source("precis.cad.does_not_exist") is None
+
+
+# ---------------------------------------------------------------------------
+# gr514458: the ``pcb.local`` lazy alias must lint clean — agents lint
+# their own scripts, and ``from precis_geom.pcb import local`` must not
+# read as a gotcha.
+# ---------------------------------------------------------------------------
+
+_PCB_SRC = _SRC / "precis_geom" / "pcb.py"
+
+
+def test_pcb_local_alias_declared_for_checkers() -> None:
+    """A lazy alias whose target can't be imported (the stdlib-only belt
+    in ``test_pcb_board`` walks ``TYPE_CHECKING`` blocks too) is
+    *declared*, not imported, so ``from precis_geom.pcb import local``
+    type-checks in an agent's own lint. ``local`` stays out of
+    ``__all__``: a star-import on a wheel without ``[pcb-kernel]`` would
+    call ``_kernel()`` and raise the install hint."""
+    tree = ast.parse(_PCB_SRC.read_text(encoding="utf-8"), filename=str(_PCB_SRC))
+    declared = {
+        node.target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "local" in declared, (
+        "precis_geom.pcb must declare ``local`` under TYPE_CHECKING so "
+        "the lazy alias type-checks"
+    )
+    star_names = {
+        e.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+        for e in (node.value.elts if isinstance(node.value, ast.List) else [])
+        if isinstance(e, ast.Constant)
+    }
+    assert "local" not in star_names
+
+
+def test_pcb_local_alias_resolves_or_names_the_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``from precis_geom.pcb import local`` works with ``[pcb-kernel]``
+    and raises the install hint without it."""
+    import precis_geom.pcb as pcb
+
+    local = pcb.local
+    assert local.__name__ == "precis.pcb.local"
+
+    def fake_module(name: str) -> object:
+        raise ImportError("No module named 'precis.pcb.local'")
+
+    monkeypatch.setattr(importlib, "import_module", fake_module)
+    with pytest.raises(ImportError, match="pcb-kernel"):
+        _ = pcb.local
+
+
+# Whether ruff is reachable from the test process (same probe as
+# test_python_handler_writes).
+_RUFF_AVAILABLE = (
+    shutil.which("ruff") is not None or (Path(sys.executable).parent / "ruff").is_file()
+)
+
+
+@pytest.mark.skipif(not _RUFF_AVAILABLE, reason="ruff binary not on PATH")
+def test_precis_geom_ruff_clean() -> None:
+    """The shipped builder package passes ``ruff check`` with no noqa —
+    the alias fix must not lean on suppression."""
+    ruff = shutil.which("ruff") or str(Path(sys.executable).parent / "ruff")
+    result = subprocess.run(
+        [ruff, "check", "src/precis_geom"],
+        cwd=_ROOT,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
