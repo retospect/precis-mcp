@@ -280,7 +280,10 @@ class Run:
     """One run's ``out/`` under construction. ``blocks`` files are
     written eagerly (a crashed script leaves inspectable geometry);
     ``finish()`` writes ``manifest.json`` and the live tracer's
-    ``trace.json``."""
+    ``trace.json``. ``diff`` is the vs-previous-run frame diff
+    ``finish()`` computes when this ``root`` already holds a
+    ``trace.json`` (gr513671) — ``None`` on a first run or when no
+    tracer was live."""
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.root = Path(root)
@@ -291,6 +294,7 @@ class Run:
         self._ray_names: set[str] = set()
         self._names: set[str] = set()
         self._finished = False
+        self.diff: dict[str, Any] | None = None
 
     # -- manifest calls ---------------------------------------------------
 
@@ -475,24 +479,102 @@ class Run:
         notes: str | None = None,
         run_meta: dict[str, Any] | None = None,
     ) -> Path:
-        """Write ``manifest.json`` + ``trace.json``; returns the out dir."""
+        """Write ``manifest.json`` + ``trace.json``; returns the out dir.
+
+        When the dir already holds a ``trace.json`` the new dump is
+        diffed against it before it is overwritten — frames matched by
+        (qual path from the root, ``occ``), NOT ``key`` (keys are
+        line-based until the structural-keys spec lands). The result is
+        ``self.diff`` (``added``/``removed`` path lists, ``changed``
+        frames with was/now ``made``), echoed as a ``vs previous: +A -R
+        ~C`` line and stored as manifest ``notes`` when ``notes`` is
+        unset."""
         if self._finished:
             raise ValueError(f"out.run: finish() already ran for {self.root}")
         self._finished = True
         self.root.mkdir(parents=True, exist_ok=True)
         doc = self.manifest()
+        tr = _trace.current()
+        trace_doc = tr.dump(run_meta or {}) if tr is not None else None
+        prev = self.root / "trace.json"
+        if trace_doc is not None and prev.is_file():
+            try:
+                self.diff = _trace_diff(
+                    _ts.loads(prev.read_text(encoding="utf-8")), trace_doc
+                )
+            except (OSError, ValueError):
+                pass  # an unreadable old trace diffs as a first run
+        line = _diff_note(self.diff) if self.diff is not None else None
         if notes is not None:
             doc["notes"] = str(notes)
+        elif line is not None:
+            doc["notes"] = line
         (self.root / "manifest.json").write_text(
             json.dumps(doc, indent=1) + "\n", encoding="utf-8"
         )
-        tr = _trace.current()
-        if tr is not None:
-            trace_doc = tr.dump(run_meta or {})
+        if line is not None:
+            print(f"{self.root}: {line}")
+        if trace_doc is not None:
             (self.root / "trace.json").write_text(
                 _ts.dumps(trace_doc) + "\n", encoding="utf-8"
             )
         return self.root
+
+
+def _frame_paths(doc: dict[str, Any]) -> dict[tuple[tuple[str, ...], int], dict]:
+    """``{(qual path from the root, occ): frame}`` — the match id a
+    run-to-run diff uses in place of ``key`` (line-based today)."""
+    frames = [f for f in doc.get("frames", []) if isinstance(f, dict)]
+    by_key = {f["key"]: f for f in frames if "key" in f}
+    out: dict[tuple[tuple[str, ...], int], dict] = {}
+    for f in frames:
+        if f.get("kind") == "root":
+            continue
+        chain: list[str] = []
+        cur: dict[str, Any] | None = f
+        while cur is not None and cur.get("kind") != "root":
+            chain.append(str(cur.get("qual", "")))
+            cur = by_key.get(cur.get("parent"))
+        out.setdefault((tuple(reversed(chain)), int(f.get("occ", 0))), f)
+    return out
+
+
+def _render_path(k: tuple[tuple[str, ...], int]) -> str:
+    return ">".join(k[0])
+
+
+def _trace_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Frames added/removed/changed between two trace documents."""
+    old_map, new_map = _frame_paths(old), _frame_paths(new)
+    changed = [
+        {
+            "path": _render_path(k),
+            "was": old_map[k].get("made") or {},
+            "now": new_map[k].get("made") or {},
+        }
+        for k in sorted(new_map.keys() & old_map.keys())
+        if (old_map[k].get("made") or {}) != (new_map[k].get("made") or {})
+    ]
+    return {
+        "added": sorted(_render_path(k) for k in new_map.keys() - old_map.keys()),
+        "removed": sorted(_render_path(k) for k in old_map.keys() - new_map.keys()),
+        "changed": changed,
+    }
+
+
+def _diff_note(diff: dict[str, Any]) -> str:
+    """``vs previous: +A -R ~C (atoms 224 -> 280 on main.build>strip)``."""
+    note = (
+        f"vs previous: +{len(diff['added'])} -{len(diff['removed'])} "
+        f"~{len(diff['changed'])}"
+    )
+    deltas = [
+        f"{e} {c['was'].get(e, 0)} -> {c['now'].get(e, 0)} on {c['path']}"
+        for c in diff["changed"]
+        for e in sorted(set(c["was"]) | set(c["now"]))
+        if c["was"].get(e, 0) != c["now"].get(e, 0)
+    ]
+    return note + (" (" + "; ".join(deltas) + ")" if deltas else "")
 
 
 def _resolve_target(target: str | os.PathLike[str]) -> Path:

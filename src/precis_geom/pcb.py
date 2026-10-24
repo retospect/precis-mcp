@@ -35,6 +35,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,12 @@ _ELECTRICAL_DOMAINS = frozenset({None, "electrical"})
 _PIN_MARKERS = ("unused", "nc", "must_terminate")
 
 MANIFEST_SCHEMA = 1
+
+#: The one not-checked cause ``check()`` can see offline (gr513667): the part
+#: has neither a catalog part nor an authored footprint, so the store binds a
+#: synthesized landpattern at import. Prefix of each ``not_checked_groups``
+#: key (``"<reason>: <refdes letters> <value hint>"``).
+_NOT_CHECKED_REASON = "no lcsc, no authored footprint (synthesized landpattern)"
 
 
 class PcbBuilderError(ValueError):
@@ -306,6 +313,11 @@ class Net:
             self.board._connect(self, p, note)
         return self
 
+    def pins(self) -> list[tuple[str, str]]:
+        """``(refdes, pin)`` for every connection on this net —
+        ``board.pins_on(self.name)``."""
+        return self.board.pins_on(self.name)
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name}
         if self.cls is not None:
@@ -455,6 +467,10 @@ class CheckFinding:
 class CheckResult:
     findings: list[CheckFinding]
     not_checked: list[str]
+    #: ``not_checked`` grouped by ``"<reason>: <refdes letters> <value
+    #: hint>"`` — the actionable form (gr513667): one key per cause+kind,
+    #: largest group first, refdes in board order.
+    not_checked_groups: dict[str, list[str]] = field(default_factory=dict)
 
     def summary(self) -> str:
         lines = [
@@ -464,7 +480,22 @@ class CheckResult:
         for f_ in self.findings:
             where = f_.refdes or f_.net or ""
             lines.append(f"  {f_.code} {where}: {f_.message}")
-        if self.not_checked:
+        reasons: list[str] = []
+        for key, refdes in self.not_checked_groups.items():
+            reason, _, label = key.partition(": ")
+            if reason not in reasons:
+                reasons.append(reason)
+            shown = ", ".join(refdes[:6])
+            if len(refdes) > 6:
+                shown += f", +{len(refdes) - 6} more"
+            lines.append(f"  {len(refdes)} x {label}: {shown}")
+        if reasons:
+            lines.append(
+                f"  cause: {'; '.join(reasons)}; "
+                "fix: pcb.catalog / b.footprint(...) / lcsc="
+            )
+        elif self.not_checked:
+            # a CheckResult built without groups keeps the flat list
             lines.append("  NOT-CHECKED: " + ", ".join(self.not_checked))
         return "\n".join(lines)
 
@@ -911,6 +942,32 @@ class Board:
 
     # -- inspection ---------------------------------------------------------
 
+    def nets_of(self, refdes: str) -> dict[str, str]:
+        """``{pin name: net name}`` for every connection naming ``refdes``
+        (module-qualified), in the part's pin order."""
+        if refdes not in self._parts:
+            raise PcbBuilderError(
+                f"nets_of: unknown refdes {refdes!r} — board {self.slug!r} "
+                f"has {len(self._part_order)} parts"
+            )
+        order = {n: i for i, n in enumerate(self._parts[refdes]._pin_order)}
+        pairs = [
+            (c["pin"], c["net"]) for c in self._connections if c["refdes"] == refdes
+        ]
+        pairs.sort(key=lambda kv: order.get(kv[0], len(order)))
+        return dict(pairs)
+
+    def pins_on(self, net: str | Net) -> list[tuple[str, str]]:
+        """``(refdes, pin)`` for every connection on ``net``, in authored
+        connection order. Accepts the net's name or the :class:`Net`."""
+        name = net.name if isinstance(net, Net) else str(net)
+        if name not in self._nets:
+            raise PcbBuilderError(
+                f"pins_on: unknown net {name!r} — board {self.slug!r} "
+                f"has {len(self._net_order)} nets"
+            )
+        return [(c["refdes"], c["pin"]) for c in self._connections if c["net"] == name]
+
     def check(self) -> CheckResult:
         """Pure, offline L0 checks (§Q1): parts with no catalog part and no
         authored footprint are NOT-CHECKED (a synthesized landpattern
@@ -923,6 +980,15 @@ class Board:
             for r in self._part_order
             if self._parts[r].lcsc is None and self._parts[r].footprint is None
         ]
+        groups: dict[str, list[str]] = {}
+        for r in not_checked:
+            p = self._parts[r]
+            m = re.match(r"[A-Za-z]+", r.rsplit(".", 1)[-1])
+            label = m.group(0) if m else r
+            if p.value is not None:
+                label += f" {p.value}"
+            groups.setdefault(f"{_NOT_CHECKED_REASON}: {label}", []).append(r)
+        groups = dict(sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])))
         findings: list[CheckFinding] = []
         for r in self._part_order:
             fp = self._parts[r].footprint
@@ -951,7 +1017,11 @@ class Board:
             for c in self._connections
             if c["net"] not in self._nets
         ]
-        return CheckResult(findings=findings, not_checked=not_checked)
+        return CheckResult(
+            findings=findings,
+            not_checked=not_checked,
+            not_checked_groups=groups,
+        )
 
     # -- the 3-D shape (slice 0b) -------------------------------------------
 

@@ -394,6 +394,73 @@ def test_check_findings() -> None:
     ]
 
 
+def test_nets_of_and_pins_on() -> None:
+    b = Board("t15")
+    gnd, vcc = b.net("GND"), b.net("VCC")
+    u1, r1, c1 = b.part("U1"), b.part("R1"), b.part("C1")
+    vcc.tie(u1["VDD"])
+    gnd.tie(u1["VSS"], r1["2"], c1["1"])
+    b.wire(u1["OUT"], r1["1"], name="SIG")
+    assert b.nets_of("U1") == {"VDD": "VCC", "VSS": "GND", "OUT": "SIG"}
+    assert list(b.nets_of("U1")) == ["VDD", "VSS", "OUT"]  # pin order
+    assert b.nets_of("R1") == {"1": "SIG", "2": "GND"}
+    assert b.pins_on("GND") == [("U1", "VSS"), ("R1", "2"), ("C1", "1")]
+    assert gnd.pins() == b.pins_on("GND")
+    assert b.pins_on(gnd) == b.pins_on("GND")
+    with pytest.raises(PcbBuilderError, match="3 parts"):
+        b.nets_of("Q9")
+    with pytest.raises(PcbBuilderError, match="3 nets"):
+        b.pins_on("NOPE")
+
+
+def test_nets_of_pins_on_nano_usb_pd() -> None:
+    b = _example("nano_usb_pd")
+    u1 = b.nets_of("U1")
+    assert len(u1) == 29 and len(set(u1.values())) == 28  # V5 lands on two pins
+    assert b.pins_on("GND") == [
+        (c["refdes"], c["pin"])
+        for c in b.to_batch()["connections"]
+        if c["net"] == "GND"
+    ]
+
+
+def test_check_not_checked_groups() -> None:
+    b = Board("t16")
+    for i in range(1, 9):
+        b.part(f"R{i}")
+    for i in range(1, 4):
+        b.part(f"C{i}", value="100nF")
+    b.part("C4", value="1uF")
+    b.part("U1", lcsc="C2040")  # checked — never lands in the groups
+    result = b.check()
+    groups = result.not_checked_groups
+    assert sum(len(v) for v in groups.values()) == len(result.not_checked)
+    r_key = "no lcsc, no authored footprint (synthesized landpattern): R"
+    assert groups[r_key] == [f"R{i}" for i in range(1, 9)]
+    assert groups[r_key[:-1] + "C 100nF"] == ["C1", "C2", "C3"]
+    assert groups[r_key[:-1] + "C 1uF"] == ["C4"]
+    s = result.summary()
+    assert "8 x R: R1, R2, R3, R4, R5, R6, +2 more" in s
+    assert "3 x C 100nF: C1, C2, C3" in s
+    assert "fix: pcb.catalog / b.footprint(...) / lcsc=" in s
+
+
+def test_nano_check_groups_shorter_than_the_refdes_wall() -> None:
+    b = _example("nano_usb_pd")
+    result = b.check()
+    groups = result.not_checked_groups
+    assert sum(len(v) for v in groups.values()) == 42
+    assert [k.rsplit(": ", 1)[1] for k in groups] == ["R", "C", "LED"]
+    assert "+16 more" in result.summary()  # the 22-strong R group is capped
+    wall = (
+        f"{len(result.findings)} finding(s), {len(result.not_checked)} "
+        "NOT-CHECKED (no catalog part, no footprint)\n  NOT-CHECKED: "
+        + ", ".join(result.not_checked)
+    )
+    s = result.summary()
+    assert "NOT-CHECKED" in s and len(s) < len(wall)
+
+
 # --- kernel boundary (mirrors test_precis_flow.py) --------------------------
 
 _GEOM_SRC = ROOT / "src" / "precis_geom"

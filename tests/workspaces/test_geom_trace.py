@@ -180,3 +180,34 @@ def test_overhead_budget() -> None:
         f"trace overhead {overhead_us:.0f}µs/call "
         f"(fixture build {cold * 1e3:.2f}ms cold / {warm * 1e3:.2f}ms warm)"
     )
+
+
+def test_out_run_diffs_against_the_previous_trace(tmp_path: Path) -> None:
+    """gr513671: a second ``precis_geom.out.run`` into the same dir diffs
+    its trace against the one it overwrites — matched by (qual path from
+    the root, occ), not the line-based ``key``, so a ``rows=8 -> 10``
+    edit reads as one changed frame, not add/remove churn."""
+    from hexfold.sheetnet import strip
+    from precis_geom import out as geom_out
+
+    def build(rows: int) -> None:
+        strip(rows=rows, periods=12)
+
+    out_dir = tmp_path / "out" / "re"
+    with geom_out.run(out_dir, work_root=_WORK_ROOT) as r1:
+        build(8)
+    assert r1.diff is None  # first run: nothing to diff against
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "notes" not in manifest
+
+    with geom_out.run(out_dir, work_root=_WORK_ROOT) as r2:
+        build(10)
+    assert r2.diff is not None
+    assert r2.diff["added"] == [] and r2.diff["removed"] == []
+    [changed] = r2.diff["changed"]
+    assert changed["path"].endswith("sheetnet.strip")
+    assert changed["was"]["atoms"] == 224
+    assert changed["now"]["atoms"] == 280
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["notes"].startswith("vs previous: +0 -0 ~1")
+    assert "atoms 224 -> 280" in manifest["notes"]

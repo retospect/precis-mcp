@@ -142,6 +142,7 @@ PRECIS_MCP_REPO=<main checkout> PRECIS_MCP_WORKTREE=<tree>
 scripts/wt-mcp up        start (idempotent); port recorded in .claude/wt-mcp/port
 scripts/wt-mcp claude    up + src/ watcher + `claude --mcp-config <state>/mcp.json
                          --strict-mcp-config`: the session's ONLY precis is this server
+scripts/wt-mcp watch     the src/ watcher (auto-restart + down-recovery), foreground
 scripts/wt-mcp status    probe (proxy 200 / backend 401), watcher pid, --status
 scripts/wt-mcp restart   --restart: respawn the serve child, port held
 scripts/wt-mcp down      containers, network, uv-cache volume and state removed
@@ -194,6 +195,20 @@ scripts/wt-mcp down      containers, network, uv-cache volume and state removed
   container survived, and the reaper then keeps the tree rather than orphan
   a prod read-write server. One tree root per server name: a second
   worktree with the same directory name is refused at `up`.
+- **Attach an already-running session.** `up` writes the client config to
+  the tree's ensure state dir: `~/.cache/precis-mcp-wt/<tree>/mcp.json`
+  (`$PRECIS_WT_STATE_HOME/<tree>/mcp.json` when set; `wt-mcp status` prints
+  the path). MCP config is launch-time only — a session started without it
+  picks the tree server up by relaunching:
+
+  ```
+  claude --mcp-config ~/.cache/precis-mcp-wt/<tree>/mcp.json --strict-mcp-config
+  ```
+
+  the same argv `wt-mcp claude` execs, so the tree server is again the
+  session's only `precis`. `up` alone starts no watcher: `wt-mcp claude`
+  runs one for its session's lifetime; without a Claude session,
+  `scripts/wt-mcp watch` is the foreground form.
 
 ## One-time cutover from the single-container layout
 
