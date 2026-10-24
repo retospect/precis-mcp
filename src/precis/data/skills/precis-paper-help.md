@@ -14,6 +14,7 @@ answers:
   - how do I search inside one paper for a passage?
   - how do I get a paper whose DOI isn't indexed yet?
   - how do I resolve a journal/volume/page/year citation to a paper?
+  - how do I merge two refs that are the same paper?
 applies-to: get/search/tag/link (kind='paper')
 status: active
 tags: [addressing, workflow]
@@ -168,12 +169,11 @@ search (links-only — Scholar has no API and isn't scraped). A
 paper-level Scholar lookup (DOI-keyed when a DOI is on file, else
 title) follows the table.
 
-**Tier ladder** (each write only ever raises the paper toward a more
-authoritative source, never displaces a `human` row): `orcid` (ORCID's
-own record) > `crossref`/`openalex`/`s2` (publisher/index metadata) >
-`pdf`/`legacy` (scraped from the PDF or pre-1NF backfill) — but `human`
-(a manual `edit`) always wins over every later tier's re-resolution,
-regardless of where it sits on this ladder.
+**Tier ladder** (a write only ever raises the paper toward a more
+authoritative source): `orcid` (ORCID's own record) >
+`crossref`/`openalex`/`s2` (publisher/index metadata) > `pdf`/`legacy`
+(scraped from the PDF) — but `human` (a manual `edit`) always wins over
+every later re-resolution.
 
 `edit(kind='paper', authors=[…])` accepts the same tolerant name shapes
 `author=` search does, **plus** an optional bracketed ORCID iD per line
@@ -220,20 +220,16 @@ distinctive words with the paper's own chunk-0 text (e.g. an SI PDF that
 would otherwise take an unrelated paper's DOI), it withholds the write
 instead — tags the ref `paper-meta:title-mismatch`, records the withheld
 `doi`/`title`/`reason` under `meta.registry_mismatch` on the Meta tab, and
-clears the stored DOI only for the zero-overlap case (edition mismatches —
-registry version/year newer than the body — and title formulas absent from
-the body park the same way but keep the DOI). Parked refs leave the triage
-sweep until the tag is removed by hand. Never touches a ref with
-`human_verified_at` set.
+clears the stored DOI only for the zero-overlap case. Parked refs leave the
+triage sweep until the tag is removed by hand; `human_verified_at` is never
+touched.
 
-ALL-CAPS titles (journals that print titles in capitals) are repaired by
-the paper-meta enrich worker, not by agents: for a DOI paper whose stored
-title is all caps, the Crossref title replaces it when the two agree apart
-from casing, and the old string is kept as `meta.title_raw`. Registry casing
-wins; `human_verified_at` freezes a title; a substantively different
-registry title is left alone. Papers without a DOI stay manual — fix them on
-the Meta tab. Do not hand-normalise titles. BibTeX export brace-protects
-acronym/formula tokens (`{DFT}`, `{CO2}`) so styles don't lowercase them.
+ALL-CAPS titles are repaired by the paper-meta enrich worker, not by agents:
+for a DOI paper whose stored title is all caps, the agreeing Crossref title
+replaces it (old kept as `meta.title_raw`); `human_verified_at` freezes a
+title, and a substantively different registry title is left alone. Do not
+hand-normalise titles; BibTeX export brace-protects acronym/formula tokens
+(`{DFT}`) so styles don't lowercase them.
 
 ## Resolving a duplicate ref
 ## `already belongs to ref id=N` — what now?
@@ -243,33 +239,34 @@ Two *live* refs holding the same `doi`/`arxiv` is a duplicate-paper pair —
 `edit`/`set_ref_identifier` raises `BadInput` rather than silently
 stealing the other ref's claim. The fix is a merge, not a retry.
 
-The merge primitive is `precis.ingest.dedup.merge_duplicate`; no
-session-MCP verb wraps it, and there is no single-pair "merge these two
-refs" door — only a standing sweep. Run it on the box (not the session
-`precis` MCP; prod invocation via `docs/runbooks/prod-one-off-cli.md`):
+## Fold a confirmed duplicate pair — `merge_into`
+## Two live refs are the same paper — how do I merge them?
 
-```
-precis reconcile-duplicates          # dry-run — prints the planned merges
-precis reconcile-duplicates --apply  # commits: doi-case, pdf_sha256, title-sim groups
+```python
+edit(kind="paper", id="pa498282", args={"merge_into": "pa508953", "reason": "same paper, stub vs held twin"})
 ```
 
-It auto-picks the survivor (has an external id → non-junk title → most
-authors, tiebreak lowest ref id; the doi-case path instead keeps
-whichever side actually holds chunks/body over an empty stub) and
-soft-deletes the rest with a `supersedes` edge. If the pair shares no
-`pdf_sha256`/DOI-case/title-similarity signal, there's no targeted
-single-pair door either — call `merge_duplicate(survivor_ref_id=…,
-duplicate_ref_id=…, ...)` directly inside a transaction via the prod
-one-off CLI recipe. Pick the survivor you want to keep (usually the one
-whose handle/identifiers people use): a bodiless survivor now takes the
-duplicate's body, PDF (`pdf_sha256`) and content ids (`content_hash`, and
-`paper_id`/`pub_id` when it has none), so a wanted stub can survive a merge
-with a bodied twin. Chunks are re-inserted on the survivor and deleted from
-the duplicate; embeddings are re-filled by the worker. A survivor that
-already has a body keeps it and the duplicate's body stays behind. An inbox
-file named `pa<id>.pdf` follows the same rule: if its bytes match a
-different live twin, the twin merges into `pa<id>` (when titles corroborate),
-never the reverse.
+Folds the `id=` loser into the `merge_into` survivor (a `pa<id>` handle,
+slug or ref_id) in one transaction: external identifiers, links and bib
+holds migrate, a body/PDF the survivor lacks moves over, the loser
+retires with a `supersedes` redirect so its handle keeps resolving, and
+both sides get ref_events carrying `reason` (required). `dry_run`
+previews. A bodiless survivor takes the duplicate's body, `pdf_sha256`
+and content ids, so a wanted stub can survive a merge with a bodied twin
+— pick the side whose handle/identifiers people use.
+
+Refuses, naming the fix: a self-merge; a missing `reason`; a loser
+already merged (re-point with `redirect_to`, below) or plain-retired
+(`retire: False` restores first); a target that isn't live (an
+itself-merged target names the chain end to aim at); and a pair that
+fails the shared title gate — trigram similarity ≥ 0.85, ≥ 5 distinctive
+title tokens, known years within ±1 (a missing year needs near-identical
+titles), agreeing first-author family. On a gate refusal that is still
+the same paper, fix the disagreeing field with `edit` and retry.
+
+The standing sweep (`precis reconcile-duplicates`, an operator CLI —
+prod invocation via `docs/runbooks/prod-one-off-cli.md`) folds the
+groups nobody pointed at and picks its own survivor.
 
 ## A merged stub resolves to the wrong paper — how do I re-point the redirect?
 
@@ -348,10 +345,8 @@ short by the pass time budget (`deadline` miss), or one that queued nothing
 because of a transient network failure (connect/read timeout), retries on the
 next pass, up to 3 times.
 
-`si_misses` describes the latest check; earlier misses remain in the log.
-The retry counter is cumulative, so a successful later check can have zero
-current misses after earlier retries. Even a check claimed after its pass
-deadline records a miss/event when re-armed.
+`si_misses`/`si_skipped` describe the latest check; earlier misses stay in
+the log, so a successful re-check can show zero current misses.
 
 You rarely need to call it: opening a paper that has a DOI (web page, `get`
 overview, or a fisheye ring that cites it) queues **one** SI check
@@ -375,12 +370,10 @@ instead of minting a twin. A handle that names a paper which already has a
 body, a retired ref or a non-paper is ignored and the file ingests as a new
 paper.
 You can also attach a PDF to a Discord message to asa in a served channel
-after linking your Discord identity on `/account`. Asa queues it in the paper
-inbox and replies with the resulting paper handle. Include one `pa<id>` in
-the message to request a fold into that wanted stub; ingest checks the PDF's
-identity before folding. The sidecar records the message id, author and
-requested handle. Multiple distinct handles are refused as ambiguous. PDFs
-must pass the 50 MB cap and PDF-header check; other attachments are refused.
+after linking your Discord identity on `/account` — asa queues it in the
+inbox and replies with the paper handle. One `pa<id>` in the message
+requests the same stub fold (the same identity checks apply); multiple
+handles are refused as ambiguous.
 To declare an existing record as an SI after the fact, run
 `edit(kind="paper", id="<si handle>", mode="replace",
 args={"supplement_of": "<parent slug or paN>"})`; it refuses when the record

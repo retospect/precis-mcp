@@ -88,6 +88,7 @@ from precis.utils.link_tag_ops import (
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
+from precis.utils.title_merge import title_merge_refusal
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
 
@@ -156,6 +157,16 @@ _SUGGEST_CORPUS_CAP = 5000
 # Matches ``ProvenanceResult.has_metadata_mismatch``'s title threshold
 # in ``precis.ingest.provenance`` — same signal, same cutoff.
 _DOI_EDIT_TITLE_MISMATCH_THRESHOLD = 0.6
+
+#: Trigram title-similarity floor for the ``merge_into`` door (gr509659):
+#: the same auto-merge cutoff ``dedup._TITLE_AUTO_SIM`` uses — an
+#: agent-asserted pair still needs its titles to corroborate the fold.
+_MERGE_TITLE_SIM_FLOOR = 0.85
+#: A missing year on either side passes the title gate only at
+#: near-identical titles — the same relaxation the mint-time stub guard
+#: uses (``Store.upsert_stub_paper``). A known-year mismatch always
+#: refuses.
+_MERGE_UNKNOWN_YEAR_SIM = 0.95
 
 
 # ``_coerce_search_year`` / ``_embed_query_batch`` / ``_broad_args_suffix`` used
@@ -341,10 +352,11 @@ class PaperHandler(Handler):
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
         # redirect (:meth:`_repoint_supersede`); ``retire`` soft-deletes a
-        # phantom stub (:meth:`_retire_stub`); ``reason`` is the audit
-        # string both write into their ref_event. Subclass hooks read their
-        # own keys via _edit_args.
-        "edit": ArgsSpec({"redirect_to", "retire", "reason"}),
+        # phantom stub (:meth:`_retire_stub`); ``merge_into`` folds a live
+        # duplicate into a named survivor (:meth:`_merge_duplicate_into`);
+        # ``reason`` is the audit string all three write into their
+        # ref_event. Subclass hooks read their own keys via _edit_args.
+        "edit": ArgsSpec({"redirect_to", "retire", "merge_into", "reason"}),
     }
 
     stamps_recall = True
@@ -2071,7 +2083,9 @@ class PaperHandler(Handler):
         ``supplement_of=<parent slug | paN>`` instead declares this record
         the supplementary information (SI) of that paper
         (:meth:`_declare_supplement`); it takes no other field in the same
-        call.
+        call. ``args={'merge_into': <survivor>}`` folds this live ref into
+        a confirmed duplicate's survivor (:meth:`_merge_duplicate_into`),
+        taking ``args['reason']`` and no other field.
 
         The operator / agent affordance for fixing parse errors — wrong
         DOI, missing authors, off-by-one year. Paper *bodies* stay
@@ -2118,6 +2132,7 @@ class PaperHandler(Handler):
         if "retire" in raw_args:
             if (
                 "redirect_to" in raw_args
+                or "merge_into" in raw_args
                 or supplement_of is not None
                 or any(
                     v is not None
@@ -2144,6 +2159,34 @@ class PaperHandler(Handler):
                 dry=bool(dry_mode),
             )
         if "redirect_to" in raw_args:
+            if (
+                "merge_into" in raw_args
+                or supplement_of is not None
+                or any(
+                    v is not None
+                    for v in (
+                        title,
+                        year,
+                        authors,
+                        abstract,
+                        doi,
+                        arxiv,
+                        journal,
+                        entry_type,
+                    )
+                )
+            ):
+                raise BadInput(
+                    "redirect_to= cannot be combined with other edit fields",
+                    next="make the redirect_to call alone, then edit the rest",
+                )
+            return self._repoint_supersede(
+                id,
+                raw_args["redirect_to"],
+                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
+                dry=bool(dry_mode),
+            )
+        if "merge_into" in raw_args:
             if supplement_of is not None or any(
                 v is not None
                 for v in (
@@ -2158,12 +2201,12 @@ class PaperHandler(Handler):
                 )
             ):
                 raise BadInput(
-                    "redirect_to= cannot be combined with other edit fields",
-                    next="make the redirect_to call alone, then edit the rest",
+                    "merge_into= cannot be combined with other edit fields",
+                    next="make the merge_into call alone, then edit the rest",
                 )
-            return self._repoint_supersede(
+            return self._merge_duplicate_into(
                 id,
-                raw_args["redirect_to"],
+                raw_args["merge_into"],
                 reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
                 dry=bool(dry_mode),
             )
@@ -2396,9 +2439,9 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"{src_h} is live — redirect_to re-points a retired/merged "
                 "ref's supersede pointer only",
-                next="folding a live duplicate is a different door: "
-                "get(kind='skill', id='precis-paper-help') "
-                "(merge_duplicate / reconcile-duplicates)",
+                next=f"folding a live duplicate is a different door: "
+                f"edit(kind='{kind}', id='{src_h}', args="
+                "{'merge_into': 'pa<M>', 'reason': '<why>'})",
             )
         try:
             old_id = int(str((src.meta or {}).get("superseded_by")))
@@ -2507,6 +2550,167 @@ class PaperHandler(Handler):
             )
         )
 
+    def _merge_duplicate_into(
+        self, id: str | int, target: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'merge_into': <live paper>})`` — fold this live
+        ref into the named survivor (gr509659).
+
+        The single-pair door for a duplicate the caller has already
+        confirmed (a stub a user dropped a PDF for, a reconcile-missed
+        twin): it wraps :func:`precis.ingest.dedup.merge_duplicate`, which
+        migrates external identifiers, links and bib holds to the
+        survivor, moves the body/PDF when the survivor lacks them, stamps
+        ``meta.superseded_by`` + a ``supersedes`` edge on the loser,
+        soft-deletes it, and logs ``duplicate_merged`` /
+        ``soft_deleted_duplicate`` ref_events carrying ``reason``.
+
+        ``id=`` is the *loser* (the ref that retires); ``merge_into`` is
+        the *winner*. The call is caller-asserted but still gated on the
+        shared title-compatibility check
+        (:func:`precis.utils.title_merge.title_merge_refusal` plus a
+        trigram-similarity floor — the same cutoffs
+        ``reconcile_by_title_similarity`` and the mint-time stub guard
+        use): a pair whose titles don't corroborate it refuses rather
+        than retire a live ref on a maybe (gr501446 was a same-DOI pair
+        that wasn't one work).
+
+        Refuses (each with a ``next=``): a loser that isn't live
+        (already merged → re-point with ``redirect_to``; retired
+        otherwise → restore with ``retire: False`` first), a target that
+        isn't live (missing, itself merged → aim at the chain end it
+        names), a target equal to the loser, a missing ``reason``, and a
+        title-gate failure naming the refusal (``short-title`` /
+        ``year-unknown`` / ``year-mismatch`` / ``author-mismatch`` /
+        low similarity) — fix the disagreeing field and retry.
+        """
+        from precis.ingest.dedup import merge_duplicate
+
+        kind = self.spec.kind
+        loser = self._resolve_ref_incl_retired(id)
+        if loser is None:
+            raise NotFound(
+                f"{kind} id={id!r} resolves to no ref (live or retired)",
+                next=f"search(kind='{kind}', q='...') to find the ref",
+            )
+        loser_h = _pa(loser)
+        if loser.retired_at is not None:
+            if (loser.meta or {}).get("superseded_by") is not None:
+                end_id = self.store.follow_supersede(loser.id)
+                end_h = (
+                    handle_registry.format_handle(kind, end_id)
+                    if end_id is not None
+                    else "its survivor"
+                )
+                raise BadInput(
+                    f"{loser_h} is already merged into {end_h} — nothing to fold",
+                    next=f"to aim its redirect at a different survivor: "
+                    f"edit(kind='{kind}', id='{loser_h}', args="
+                    "{'redirect_to': 'pa<M>', 'reason': '<why>'})",
+                )
+            raise BadInput(
+                f"{loser_h} is already retired — merge_into folds a live ref only",
+                next=f"restore it first: edit(kind='{kind}', id='{loser_h}', "
+                "args={'retire': False, 'reason': '<why>'})",
+            )
+        if not reason:
+            raise BadInput(
+                "args['merge_into'] needs args['reason'] — the dedup "
+                "ref_events carry it",
+                next=f"edit(kind='{kind}', id='{loser_h}', args="
+                "{'merge_into': 'pa<M>', 'reason': '<why>'})",
+            )
+        tgt_raw = "" if target is None else str(target).strip()
+        winner = self._resolve_ref_incl_retired(tgt_raw) if tgt_raw else None
+        if winner is None:
+            raise BadInput(
+                f"merge_into={tgt_raw!r} resolves to no {kind} ref",
+                next=f"search(kind='{kind}', q='...') for the live "
+                "survivor's pa<id> or slug",
+            )
+        winner_h = _pa(winner)
+        if winner.id == loser.id:
+            raise BadInput(
+                "merge_into names the record itself",
+                next="pass the other live ref of the duplicate pair",
+            )
+        if winner.retired_at is not None:
+            chain_end = self.store.follow_supersede(winner.id)
+            if chain_end is not None:
+                end_h = handle_registry.format_handle(winner.kind, chain_end)
+                raise BadInput(
+                    f"{winner_h} is itself merged into {end_h} — a merge "
+                    "must land on a live ref",
+                    next=f"edit(kind='{kind}', id='{loser_h}', args="
+                    f"{{'merge_into': '{end_h}', 'reason': '{reason}'}})",
+                )
+            raise BadInput(
+                f"{winner_h} is deleted (retired, no survivor) — a merge "
+                "must land on a live ref",
+                next=f"search(kind='{kind}', q='...') for a live target",
+            )
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT similarity(%s, %s)",
+                (loser.title or "", winner.title or ""),
+            ).fetchone()
+        sim = float(row[0]) if row is not None and row[0] is not None else 0.0
+        refusal = title_merge_refusal(
+            loser.title,
+            loser.year,
+            loser.authors,
+            winner.title,
+            winner.year,
+            winner.authors,
+            sim=sim,
+            unknown_year_min_sim=_MERGE_UNKNOWN_YEAR_SIM,
+        )
+        if sim < _MERGE_TITLE_SIM_FLOOR or refusal is not None:
+            raise BadInput(
+                f"{loser_h} and {winner_h} fail the merge title gate "
+                f"({refusal or 'low-similarity'}; sim {sim:.2f})",
+                next=f"if they are the same paper, fix the disagreeing "
+                f"field first (edit(kind='{kind}', id='{loser_h}', "
+                "title=/year=/authors=[...])) then retry the merge_into "
+                "call",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would fold {loser_h} into "
+                    f"{winner_h}: identifiers, links and bib holds migrate "
+                    f"to {winner_h}, its missing body/PDF move over, "
+                    f"{loser_h} is soft-deleted with a supersede redirect "
+                    "and ref_events 'duplicate_merged' / "
+                    "'soft_deleted_duplicate' are logged."
+                )
+            )
+        with self.store.tx() as conn:
+            merge_duplicate(
+                self.store,
+                survivor_ref_id=winner.id,
+                duplicate_ref_id=loser.id,
+                source="agent",
+                reason=reason,
+                conn=conn,
+            )
+        merged_events = self.store.events_for(
+            winner.id, event="duplicate_merged", limit=1
+        )
+        moved: list[str] = []
+        if merged_events:
+            moved = merged_events[0].payload.get("moved") or []
+        moved_note = f"; {'/'.join(moved)} moved to {winner_h}" if moved else ""
+        return Response(
+            body=(
+                f"merged {loser_h} into {winner_h}: external identifiers, "
+                f"links and bib holds migrated{moved_note}; {loser_h} "
+                "retired (supersede redirect; ref_events "
+                "'duplicate_merged' / 'soft_deleted_duplicate' logged). "
+                f"{loser_h} now resolves to {winner_h}."
+            )
+        )
+
     def _retire_stub(
         self, id: str | int, retire: Any, *, reason: str, dry: bool
     ) -> Response:
@@ -2569,9 +2773,9 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"{handle} is not a phantom stub — refusing to retire: "
                 + "; ".join(blockers),
-                next="a duplicate of a real record wants a merge, not a "
-                "retire: get(kind='skill', id='precis-paper-help') "
-                "(merge_duplicate / reconcile-duplicates)",
+                next=f"a duplicate of a real record wants a merge, not a "
+                f"retire: edit(kind='{kind}', id='{handle}', args="
+                "{'merge_into': 'pa<M>', 'reason': '<why>'})",
             )
         if dry:
             return Response(
@@ -2589,9 +2793,9 @@ class PaperHandler(Handler):
                 raise BadInput(
                     f"{handle} is not a phantom stub — refusing to retire: "
                     + "; ".join(blockers),
-                    next="a duplicate of a real record wants a merge, not "
-                    "a retire: get(kind='skill', id='precis-paper-help') "
-                    "(merge_duplicate / reconcile-duplicates)",
+                    next=f"a duplicate of a real record wants a merge, not "
+                    f"a retire: edit(kind='{kind}', id='{handle}', args="
+                    "{'merge_into': 'pa<M>', 'reason': '<why>'})",
                 )
             # The event goes in BEFORE the UPDATE: migration 0229's
             # trail trigger writes its own ('db','retired') row unless a

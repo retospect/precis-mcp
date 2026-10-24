@@ -3514,14 +3514,20 @@ class DispatchMixin(RuntimeShape):
         if (
             resolved.redirected_from is not None
             and isinstance(args.get(_EXTRAS_KEY), dict)
-            and ("redirect_to" in args[_EXTRAS_KEY] or "retire" in args[_EXTRAS_KEY])
+            and (
+                "redirect_to" in args[_EXTRAS_KEY]
+                or "retire" in args[_EXTRAS_KEY]
+                or "merge_into" in args[_EXTRAS_KEY]
+            )
         ):
-            # The paper redirect_to and retire doors operate ON the
-            # merged tombstone: rewriting id= to the survivor (the
+            # The paper redirect_to, retire and merge_into doors operate
+            # ON the merged tombstone: rewriting id= to the survivor (the
             # transparent redirect below) would land the re-point /
-            # un-retire on the wrong ref. Route the decoded tombstone
-            # ref_id through instead so the handler can resolve it with
-            # include_deleted (gr501446, gr509441).
+            # un-retire / merge on the wrong ref — a merge_into aimed at
+            # a tombstone would fold the *survivor* instead of refusing
+            # "already merged". Route the decoded tombstone ref_id
+            # through instead so the handler can resolve it with
+            # include_deleted (gr501446, gr509441, gr509659).
             args["kind"] = resolved.kind
             parsed = handle_registry.parse(normalized)
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
@@ -3577,12 +3583,13 @@ class DispatchMixin(RuntimeShape):
         if handler is None:
             return False
         extras = args.get(_EXTRAS_KEY)
-        if isinstance(extras, dict) and "retire" in extras:
-            # The paper retire door resolves tombstones itself
-            # (_resolve_ref_incl_retired), so a soft-deleted ``pa<id>``
-            # still routes: without this, ``args={'retire': False}`` —
-            # the undo — died on the NotFound below before the handler
-            # could see it (gr509441).
+        if isinstance(extras, dict) and ("retire" in extras or "merge_into" in extras):
+            # The paper retire and merge_into doors resolve tombstones
+            # themselves (_resolve_ref_incl_retired), so a soft-deleted
+            # ``pa<id>`` still routes: without this, ``args={'retire':
+            # False}`` — the undo — and ``args={'merge_into': …}`` on a
+            # retired loser died on the NotFound below before the handler
+            # could see them (gr509441, gr509659).
             args["kind"] = kind
             args["id"] = str(pk) + suffix
             return True
