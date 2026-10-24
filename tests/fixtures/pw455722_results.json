@@ -1,6 +1,6 @@
 {
  "_refs_note": "gas/bare references reconstructed by least squares from the stored kinetics closure dGs and landing-state pricing; only those combinations are determined",
- "_source": "pw455722 (NO -> NH3 on Pd(111), autocatpath ); read-only prod export 2026-10-20, trimmed for the kinetics v2 slice-1 replay",
+ "_source": "pw455722 (NO -> NH3 on Pd(111), autocatpath ); read-only prod export 2026-10-20, trimmed for the kinetics v2 slice-1 replay; config.slab.relax_lattice flipped to false so run_seed_partial tests can feed config as-is — relax_lattice:true + a:null would build a real calculator just to price the lattice (gr514403)",
  "config": {
   "auto": {
    "desorb": true,
@@ -143,7 +143,7 @@
    "element": "Pd",
    "fix_layers": 2,
    "miller": null,
-   "relax_lattice": true,
+   "relax_lattice": false,
    "size": [
     3,
     3,

@@ -15,7 +15,9 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("autocatpath")
+from tests._autocatpath import needs_engine
+
+needs_engine()
 
 from precis.dispatch import Hub
 from precis.store import Store

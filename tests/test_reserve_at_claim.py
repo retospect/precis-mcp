@@ -25,6 +25,7 @@ from precis.workers.executors._common import (
     release_job_reservation,
     set_status,
 )
+from tests._autocatpath import needs_engine
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def _autocatpath_seed_registered(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot, so a pyproject entry-point isn't live without a reinstall.
     ``monkeypatch.setitem`` auto-reverts, so this doesn't leak into other
     test modules."""
-    pytest.importorskip("autocatpath")
+    needs_engine()
     from precis.workers import job_types as jt
     from precis_pathway import seed_job
 

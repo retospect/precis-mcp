@@ -13,6 +13,7 @@ import pytest
 
 from precis.store import Store, Tag
 from precis_pathway import aggregate_job, step_retry
+from tests._autocatpath import needs_engine
 
 BASE_KEY = "a" * 64
 CONFIG: dict[str, Any] = {
@@ -431,7 +432,7 @@ def test_retry_round_aggregate_collects_base_partials_and_replaces_the_step(
     ``base_agg_todo_ids``, folds the narrowed retry in, prunes the failed
     measurement, and persists onto the same pathway — the whole-network
     engine call itself is faked."""
-    pytest.importorskip("autocatpath")
+    needs_engine()
     from precis_pathway import runner
 
     cand, agg, pw = _tree(store)

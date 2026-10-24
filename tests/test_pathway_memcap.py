@@ -9,7 +9,9 @@ import sys
 
 import pytest
 
-pytest.importorskip("autocatpath")
+from tests._autocatpath import needs_engine
+
+needs_engine()
 
 from precis_pathway import runner
 

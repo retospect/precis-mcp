@@ -21,6 +21,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.store import Store
+from tests._autocatpath import needs_engine
 
 
 def test_construct_does_not_import_matplotlib(
@@ -29,7 +30,7 @@ def test_construct_does_not_import_matplotlib(
     # The probe under test is "is autocatpath installed"; without the
     # catalyst extra (the CI lint/test lanes run --no-extra catalyst) the
     # handler refuses to construct and there is no boot path to measure.
-    pytest.importorskip("autocatpath")
+    needs_engine()
     # Purge every module the boot-time chain could re-pull, plus any prior
     # matplotlib import from an earlier test in this worker — otherwise a
     # regression would hide behind "already imported by someone else".

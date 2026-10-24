@@ -21,9 +21,13 @@ so a new extra-only module joins the rule automatically. Coverage is one hop
 (test → src module → ``autocatpath``), which is the demonstrated failure shape;
 a deeper chain would need an import graph and has not bitten yet.
 
-Failure means: add the guard above the offending import::
+Failure means: add the guard above the offending import. Every engine gate
+goes through ``tests._autocatpath.needs_engine`` (gr514397) — a bare
+``importorskip`` hides that the fix is an install::
 
-    pytest.importorskip("autocatpath")
+    from tests._autocatpath import needs_engine
+
+    needs_engine()
 
     from precis_pathway import runner
 """
@@ -91,8 +95,13 @@ def _infected_src_modules() -> set[str]:
 
 
 def _guards_the_extra(source: str) -> bool:
+    # needs_engine (tests/_autocatpath.py, gr514397) IS the guard — a
+    # needs_engine() call skips the module the way a bare importorskip did,
+    # but with the missing-extra reason attached. The importorskip spellings
+    # stay accepted for the non-autocatpath extras this walk may grow.
     return any(
-        f'importorskip("{m}")' in source
+        "needs_engine(" in source
+        or f'importorskip("{m}")' in source
         or f"importorskip('{m}')" in source
         or (m in source and "skipif" in source)
         for m in _EXTRA_ONLY

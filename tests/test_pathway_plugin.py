@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,9 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("autocatpath")
+from tests._autocatpath import needs_engine
+
+needs_engine()
 
 # Heaviest cluster in the suite: real materials/chemistry compute (seed fanout,
 # computed graphs, EMT analysis) — ~65% of the top-50 durations live here, at
@@ -2858,17 +2861,43 @@ def test_seed_job_kill_delegates_to_runner(
     assert calls == [{"pid": 1, "pgid": 1, "dir": "/tmp/nope"}]
 
 
+_FANOUT_PARTIALS = Path(__file__).parent / "fixtures" / "fanout_seed_partials.json"
+_SEED_PARTIALS: list[dict[str, Any]] | None = None
+
+
+def _seed_partials() -> list[dict[str, Any]]:
+    """The FANOUT seed units, baked (``tests/fixtures/fanout_seed_partials.json``)
+    — ``run_seed_partial`` is deterministic (seeded rattle, EMT) and the
+    aggregate-dispatch tests exercise the collect/merge/persist seam, not the
+    seed compute. Baking them removes ~45 s of real EMT per xdist worker —
+    the leg that pushed this test past the 300 s pytest-timeout and got its
+    worker killed on a loaded VM (gr514388). The seed compute itself keeps
+    real coverage in ``test_run_seed_partial_shape`` and
+    ``test_seed_fanout_matches_monolith_run``. Deepcopy on the way out, same
+    contract as ``_cached_run``."""
+    global _SEED_PARTIALS
+    if _SEED_PARTIALS is None:
+        _SEED_PARTIALS = json.loads(_FANOUT_PARTIALS.read_text(encoding="utf-8"))[
+            "seed_results"
+        ]
+    return copy.deepcopy(_SEED_PARTIALS)
+
+
 def _seed_a_todo_tree(
     store: Store, cfg: dict, seeds: tuple[int, ...] = (0, 1)
-) -> tuple[Any, int]:
+) -> tuple[Any, int, list[dict[str, Any]]]:
     """Build a minimal (pathway ref + aggregate todo + N succeeded seed-todo
     -> seed-job children) tree, mirroring the shape
     ``quest.compute.dispatch_autocatpath`` mints — enough for
-    ``aggregate_job._dispatch`` to walk. Returns ``(pathway_ref, agg_todo_id)``."""
+    ``aggregate_job._dispatch`` to walk. Returns ``(pathway_ref, agg_todo_id,
+    seed_results)`` — the seed units also serve as the expected-merge input,
+    so the caller never re-derives them."""
     from precis.store import Tag
     from precis.store.types import ChunkInsert
 
     eff = runner.effective_config(cfg, force_backend="emt")
+    baked = {r["seed"]: r for r in _seed_partials()}
+    seed_results: list[dict[str, Any]] = []
     with store.tx() as c:
         ref = store.insert_ref(
             kind="pathway",
@@ -2890,7 +2919,8 @@ def _seed_a_todo_tree(
             kind="todo", slug=None, title="agg", meta={}, conn=c
         )
         for seed in seeds:
-            result = runner.run_seed_partial(cfg, seed, 0, force_backend="emt")
+            result = baked[seed]
+            seed_results.append(result)
             seed_todo = store.insert_ref(
                 kind="todo",
                 slug=None,
@@ -2920,11 +2950,11 @@ def _seed_a_todo_tree(
             store.add_tag(
                 job.id, Tag.closed("STATUS", "succeeded"), set_by="system", conn=c
             )
-    return ref, int(agg_todo.id)
+    return ref, int(agg_todo.id), seed_results
 
 
 def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
-    pathway_store: Store,
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The `autocatpath_aggregate` job dispatch (what the dispatch worker
     mints under T_agg once every seed todo is done — see
@@ -2932,9 +2962,26 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     tree, combines the partials (pure numpy), and writes the SAME pathway
     contract `autocatpath_explore` used to write in one shot."""
     from precis_pathway import aggregate_job
+    from precis_pathway import runner as runner_mod
+
+    # gr514388: a real kinetics solve on this network wedges inside the
+    # engine's ``_evolve`` BDF ``solve_ivp`` fallback — the same suspect path
+    # ``run_kinetics_subprocess``'s docstring names — so under xdist
+    # contention the 300 s pytest-timeout SIGKILLs the worker ("node down",
+    # observed on unmodified main). Stub the fold exactly like the sibling
+    # dispatch tests; the real solve and the bounded-child machinery keep
+    # their coverage in the run_kinetics tests and
+    # tests/test_pathway_kinetics_timeout.py.
+    monkeypatch.setattr(
+        runner_mod,
+        "run_kinetics_subprocess",
+        lambda config, artifact, **_kw: artifact["results_json"].__setitem__(
+            "kinetics", {"tof": 4.2e-3}
+        ),
+    )
 
     cfg = _yaml_dict(FANOUT)
-    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+    ref, agg_todo_id, seed_results = _seed_a_todo_tree(pathway_store, cfg)
 
     ctx = _FakeCtx(
         store=pathway_store,
@@ -2969,12 +3016,17 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     assert struct_refs, "aggregate persisted no structure_refs"
     assert all(isinstance(v, int) for v in struct_refs.values())
 
-    # matches what the monolith would have produced on the same seeds
-    monolith = runner.run_pathway(cfg, force_backend="emt")
-    assert _json_eq(got.meta["results"]["nodes"], monolith["results_json"]["nodes"])
+    # matches the merge of the same partials. A full ``run_pathway`` monolith
+    # used to sit here as the oracle (~7 s of real EMT on a quiet host — the
+    # redundant leg that pushed this test past the 300 s pytest-timeout under
+    # xdist contention, gr514388). The in-process merge is pure numpy and
+    # proves the same thing transitively: fan-out == monolith byte-identity
+    # is test_seed_fanout_matches_monolith_run's job.
+    merged = runner.aggregate_seed_partials(cfg, seed_results, force_backend="emt")
+    assert _json_eq(got.meta["results"]["nodes"], merged["results_json"]["nodes"])
 
-    # slice A: kinetics runs right after the aggregate — in a bounded child
-    # process since 2026-09-26 — yielding either a real solve (`kinetics`) or
+    # slice A: kinetics runs right after the aggregate — stubbed here (see
+    # the monkeypatch above) — yielding either a real solve (`kinetics`) or
     # a diagnostic note (`kinetics_error`, e.g. a deployed engine predating
     # the module, a solve that couldn't converge on this tiny fan-out
     # network, or the wall-clock ceiling firing); either way it never fails
@@ -3009,7 +3061,7 @@ def test_aggregate_job_dispatch_folds_in_kinetics_when_engine_has_it(
     )
 
     cfg = _yaml_dict(FANOUT)
-    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+    ref, agg_todo_id, _ = _seed_a_todo_tree(pathway_store, cfg)
     ctx = _FakeCtx(
         store=pathway_store,
         params={
@@ -3049,7 +3101,7 @@ def test_aggregate_job_dispatch_kinetics_missing_engine_module_never_fails(
     monkeypatch.setattr(runner_mod, "_import_kinetics", lambda: None)
 
     cfg = _yaml_dict(FANOUT)
-    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+    ref, agg_todo_id, _ = _seed_a_todo_tree(pathway_store, cfg)
     ctx = _FakeCtx(
         store=pathway_store,
         params={

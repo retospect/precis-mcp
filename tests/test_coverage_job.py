@@ -18,7 +18,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-pytest.importorskip("autocatpath")
+from tests._autocatpath import needs_engine
+
+needs_engine()
 
 from precis.quest import pourbaix_map
 from precis.store import Store

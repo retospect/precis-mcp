@@ -24,11 +24,13 @@ from typing import cast
 
 import pytest
 
+from tests._autocatpath import needs_engine
+
 # `runner` imports `autocatpath` at module scope (it IS the catalyst-extra
 # module; every src/ caller imports it lazily for exactly this reason). The CI
 # test lanes run `--no-extra catalyst`, so importing runner here without the
 # guard fails COLLECTION of the whole shard, not just these tests.
-pytest.importorskip("autocatpath")
+needs_engine()
 
 from precis_pathway import runner
 from precis_pathway.types import PathwayArtifact

@@ -45,6 +45,7 @@ from precis.quest.frontier import (
 from precis.quest.tick import run_quest_tick
 from precis.store import Tag
 from precis.structure import preflight as preflight_mod
+from tests._autocatpath import needs_engine
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -6007,7 +6008,7 @@ class TestDispatchAutocatpath:
         entry-point added mid-worktree isn't live without a reinstall.
         ``monkeypatch.setitem`` auto-reverts, so this doesn't leak into other
         test modules."""
-        pytest.importorskip("autocatpath")
+        needs_engine()
         from precis.workers import job_types as jt
         from precis_pathway import aggregate_job, seed_job
 

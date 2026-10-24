@@ -25,8 +25,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-pytest.importorskip("autocatpath")
-pytest.importorskip("autocatpath.environment")  # engine >= 0.32
+from tests._autocatpath import needs_engine
+
+needs_engine()
+needs_engine("autocatpath.environment", note="engine >= 0.32")
 
 from autocatpath import kinetics
 from autocatpath.config import Config
@@ -524,7 +526,7 @@ def test_core_checks_green_on_pw455722(replay) -> None:
     """The three lattice-independent D3 checks pass on the fixture chain —
     and they actually run (the v2 record's consistency block, stamped
     beside v1)."""
-    pytest.importorskip("autocatpath.consistency")  # engine >= 0.33
+    needs_engine("autocatpath.consistency", note="engine >= 0.33")
     _data, v2 = replay(ENV)
     assert isinstance(v2, dict)
     assert v2["consistency"]["elementary_ratio"] is True
@@ -535,7 +537,7 @@ def test_core_checks_green_on_pw455722(replay) -> None:
 def test_v1_block_is_unchanged_on_the_fixture(replay) -> None:
     """D8 "beside, never in place": the v1 kinetics block carries no new
     keys — `consistency` and `kinetics_v2` live beside it, not inside."""
-    pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    needs_engine("autocatpath.records", note="engine >= 0.33")
     data, _v2 = replay(ENV)
     assert "consistency" not in data and "kinetics_v2" not in data
     for key in (
@@ -556,10 +558,10 @@ def test_clipped_reverse_fails_barrier_identity_naming_the_step() -> None:
     G_TS_eff - G_FS, and the check names the step.  (The production-path
     clip is exercised in the engine's own suite via a step_pair
     monkeypatch; pw455722's replay carries no Eyring steps.)"""
-    cons = pytest.importorskip("autocatpath.consistency")  # engine >= 0.33
+    cons = needs_engine("autocatpath.consistency", note="engine >= 0.33")
     import math
 
-    thermo = pytest.importorskip("autocatpath.thermo")
+    thermo = needs_engine("autocatpath.thermo")
     T = 298.15
     kt = thermo.K_B_EV * T
     nu = kt / kinetics.H_EV_S
@@ -599,12 +601,12 @@ def test_hindered_moves_nh3_desorption_k_and_the_version() -> None:
     """adsorbate_mode=hindered (Q4): NH3's adsorbate entropy shifts the
     desorption K by the Campbell-Sellers amount (0.332 eV at 298.15 K,
     well inside the 0.1 eV band) and the derived corrections stamp moves."""
-    thermo = pytest.importorskip("autocatpath.thermo")
+    thermo = needs_engine("autocatpath.thermo")
     if not hasattr(thermo, "cs_entropy"):
         pytest.skip("engine < 0.33: no adsorbate_mode")
     import math
 
-    cm = pytest.importorskip("autocatpath.corrections")
+    cm = needs_engine("autocatpath.corrections")
     t0 = thermo.Table(
         temperature=298.15, pressures={}, species={}, adsorbate_mode="ts0"
     )
@@ -624,7 +626,7 @@ def test_hindered_moves_nh3_desorption_k_and_the_version() -> None:
 
 
 def test_kinetics_v2_record_round_trips(replay) -> None:
-    records = pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    records = needs_engine("autocatpath.records", note="engine >= 0.33")
     data, v2 = replay(ENV)
     rec = records.KineticsResult.from_dict(v2)
     assert rec.schema == "kinetics" and rec.schema_version == 2
@@ -638,7 +640,7 @@ def test_kinetics_subprocess_carries_kinetics_v2(fx: dict[str, Any]) -> None:
     """The production path: run_kinetics_subprocess hands the child's
     payload across the process boundary — both the v1 block and the v2
     record must survive, or meta.kinetics_v2 can never reach prod."""
-    pytest.importorskip("autocatpath.records")  # engine >= 0.33
+    needs_engine("autocatpath.records", note="engine >= 0.33")
     from precis_pathway import runner
 
     cfg = copy.deepcopy(fx["config"])
@@ -795,7 +797,7 @@ def test_pw455722_correlated_band_and_pairing(fx, monkeypatch):
     a rank probability.  The absolute-TOF widening and a directed rank are
     asserted on the engine side — here >60% of draws are censored, so
     absolute widths and the rank direction are noise."""
-    draws = pytest.importorskip("autocatpath.draws")
+    draws = needs_engine("autocatpath.draws")
     from autocatpath import kinetics as kin
     from autocatpath.config import Config
     from autocatpath.environment import Environment
@@ -877,7 +879,7 @@ def test_pw455722_screening_replay_reports_bep_share(replay) -> None:
     so every step is BEP-rated — the scalars must report
     kinetics_trusted=False with the note naming bep_flux_share, even
     though H2's sticking is also uncited."""
-    pytest.importorskip("autocatpath.draws")  # engine >= 0.34
+    needs_engine("autocatpath.draws", note="engine >= 0.34")
     data, v2 = replay(ENV)
     assert v2 is not None
     share = v2["bep_flux_share"]
@@ -893,7 +895,7 @@ def test_pw455722_verify_replay_reports_zero_share(fx, replay) -> None:
     measured barrier — the solve stays NEB-rated, share == 0, and the TOF
     is the engine's own (the assertion is exact: the NEB rate path is
     byte-identical to v0.33.0's)."""
-    pytest.importorskip("autocatpath.draws")  # engine >= 0.34
+    needs_engine("autocatpath.draws", note="engine >= 0.34")
     edges = [
         dict(
             e,

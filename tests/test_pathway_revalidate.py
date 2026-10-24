@@ -22,8 +22,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytest.importorskip("autocatpath")
-pytest.importorskip("autocatpath.manifest")  # engine >= 0.38
+from tests._autocatpath import needs_engine
+
+needs_engine()
+needs_engine("autocatpath.manifest", note="engine >= 0.38")
 
 from autocatpath import kinetics, pipeline
 from autocatpath import manifest as engine_manifest
@@ -436,12 +438,31 @@ def _fake_run_one_seed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _seed_config(fx: dict[str, Any]) -> dict[str, Any]:
-    """``fx["config"]`` minus the lattice relax (``relax_lattice`` with
-    ``a: null`` would build a real calculator — the fake checkpoint test
-    only wants the hash path, not a MACE load)."""
-    config = copy.deepcopy(fx["config"])
-    config["slab"]["relax_lattice"] = False
-    return config
+    """``fx["config"]`` for a seed-unit test: a plain deepcopy a caller can
+    rewrite ``mlip`` on without touching the fixture. The fixture itself
+    carries ``relax_lattice: false`` (gr514403) — a true value paired with
+    ``a: null`` would build a real calculator just to price the lattice."""
+    return copy.deepcopy(fx["config"])
+
+
+def test_fixture_config_runs_seed_partial_without_a_calculator(
+    fx: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr514403: ``fx["config"]`` is a ``run_seed_partial`` input AS-IS —
+    its prod-export ``relax_lattice: true`` + ``a: null`` would have built
+    a real calculator (a MACE load on the GPU lane) just to price the
+    lattice. The override now lives in the fixture; this pins it so a
+    re-export can't quietly re-arm the trap."""
+    from autocatpath import calculators
+
+    def _no_calc(*a: Any, **k: Any) -> Any:
+        raise AssertionError("run_seed_partial built a real calculator")
+
+    monkeypatch.setattr(calculators, "make_calculator", _no_calc)
+    _fake_run_one_seed(monkeypatch)
+    result = runner.run_seed_partial(fx["config"], 0, 0, force_backend="emt")
+    assert result["model"].startswith("emt")  # the fixture's model tag rides along
+    assert result["lattice"] == {}
 
 
 def test_seed_stamps_the_checkpoint_hash_where_it_lives(

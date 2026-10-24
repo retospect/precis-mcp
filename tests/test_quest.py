@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from tests._autocatpath import needs_engine
+
 
 def _handler(store: Any) -> Any:
     from precis.dispatch import Hub
@@ -367,9 +369,7 @@ def test_reaction_config_allowlist_pinned_to_engine_fields() -> None:
     silently accepts)."""
     import dataclasses
 
-    import pytest
-
-    autocatpath_config = pytest.importorskip("autocatpath.config")
+    autocatpath_config = needs_engine("autocatpath.config")
     from precis.handlers.quest import _REACTION_CONFIG_KEYS
 
     engine = {f.name for f in dataclasses.fields(autocatpath_config.Config)}

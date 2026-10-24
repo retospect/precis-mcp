@@ -61,6 +61,7 @@ from typing import Any
 import pytest
 
 from precis_web.pathway_kinetics import kinetics_verdict
+from tests._autocatpath import needs_engine
 
 GOLDEN = (
     Path(__file__).parent.parent
@@ -224,7 +225,7 @@ def test_regenerate_golden() -> None:
     """Rewrite the golden from the installed engine. Not a check — it is the
     documented way to record an intended engine change, and it fails loudly
     rather than writing a half-corpus if the engine is missing."""
-    report = pytest.importorskip("autocatpath.report")
+    report = needs_engine("autocatpath.report")
     out = {
         name: report._kinetics_verdict(dict(rec)) for name, rec in sorted(CASES.items())
     }
@@ -249,14 +250,14 @@ def test_verdict_matches_golden(name: str) -> None:
 def test_golden_matches_live_engine(name: str) -> None:
     """Drift on the CATPATH side. Needs the engine, so it gates in the dev
     image and locally, not on the GitHub shards (see the module docstring)."""
-    report = pytest.importorskip("autocatpath.report")
+    report = needs_engine("autocatpath.report")
     assert report._kinetics_verdict(dict(CASES[name])) == _golden()[name]
 
 
 def test_noise_threshold_is_the_same_number() -> None:
     """The one bare constant both copies branch on, pinned across the repos.
     Backstop for a threshold nudge too small to flip any bracketed case."""
-    report = pytest.importorskip("autocatpath.report")
+    report = needs_engine("autocatpath.report")
     from precis_web import pathway_kinetics
 
     assert pathway_kinetics._TOF_NOISE == report._TOF_NOISE

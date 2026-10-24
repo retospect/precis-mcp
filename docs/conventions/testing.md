@@ -12,6 +12,14 @@ loop.
   not real bugs, just a missing extra the dev container bakes in. See the
   `host_pytest_paper_extra` gotcha for the specific symptom (ingest/paper/
   triage tests fail on host, pass in the container gate/CI).
+- **A fresh worktree has no `.venv` at all.** Session start does not sync
+  one — the first `uv run` builds it lazily (fast: uv shares its cache
+  across trees). The plain sync is also missing the optional extras, so
+  the autocatpath engine sources a pathway task needs to read (or its
+  EMT-only tests need to run on host) don't exist until
+  `uv sync --extra catalyst` — or any one-shot
+  `uv run --extra catalyst …` — materialises them under
+  `.venv/lib/python*/site-packages/autocatpath/` (gr514396).
 - **`scripts/dev pytest`.** `scripts/dev` bind-mounts **MAIN**, not your
   worktree — you'd be testing someone else's tree. Use `scripts/test`
   instead, which mounts *your* worktree.

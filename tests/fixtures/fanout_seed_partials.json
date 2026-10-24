@@ -1,0 +1,1338 @@
+{
+ "_source": "runner.run_seed_partial(FANOUT, seed, 0, force_backend=\"emt\") for seeds 0,1 \u2014 tests/test_pathway_plugin.py FANOUT config; autocatpath 0.39.0; deterministic EMT partials baked so the aggregate-dispatch tests pay no seed compute (gr514388)",
+ "config_yaml": "\nname: fanout_smoke\nsubstrate: \"NO\"\ntarget: \"NO3\"\nnetwork: oxidation\nslab: {element: Pd, size: [2, 2, 3], vacuum: 8.0, fix_layers: 1, relax_lattice: false}\nmlip: {backend: emt}\nsearch: {seeds: [0, 1], neb_images: 3, neb_max_steps: 15, neb_retries: 0, max_steps: 40, pose_count: 2}\n",
+ "seed_results": [
+  {
+   "lattice": {},
+   "model": "emt",
+   "model_index": 0,
+   "partial": {
+    "ads_barriers": {},
+    "model": "emt",
+    "refs": {
+     "bare": {},
+     "gas": {
+      "H2": 1.0705412622860413,
+      "H2O": 1.8788838346906451,
+      "NO": 0.5906821032121812
+     },
+     "mu": {
+      "O": 0.8083425724046038
+     }
+    },
+    "seed": 0,
+    "shed": {},
+    "states": {
+     "*": 2.1928524399639038,
+     "NO+O": 2.0892225283456805,
+     "NO2": 1.8140255463684785,
+     "NO2+O": 1.741479554595256,
+     "NO3": 1.7452516490637873
+    },
+    "steps": {
+     "NO+O->NO2": {
+      "barrier": 0.0,
+      "delta_e": -0.275196981977202,
+      "product": "NO2",
+      "reactant": "NO+O"
+     },
+     "NO2+O->NO3": {
+      "barrier": 0.02503074896175761,
+      "delta_e": 0.003772094468539322,
+      "product": "NO3",
+      "reactant": "NO2+O"
+     }
+    },
+    "trust": [
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": true,
+       "exhausted": false,
+       "fmax": 0.0478,
+       "steps": 49
+      },
+      "id": "NO+O@NO+O->NO2#s0#relax_convergence",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 2.089223,
+       "fingerprint": "720fc9e4a040",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO+O@NO+O->NO2#s0#endpoint_identity",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.31
+      },
+      "id": "NO+O@NO+O->NO2#s0#clash",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.11,
+       "detached_fragments": 0,
+       "n_fragments": 2,
+       "worst_A": 2.85
+      },
+      "id": "NO+O@NO+O->NO2#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO+O@NO+O->NO2#s0#wrong_binder",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO+O@NO+O->NO2#s0#fragment_merge",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.07,
+       "disp_ratio": 0.026,
+       "disp_rmsd_A": 0.04,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO+O@NO+O->NO2#s0#reconstruction",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": false,
+       "exhausted": false,
+       "fmax": 0.0327,
+       "steps": 58
+      },
+      "id": "NO2@NO+O->NO2#s0#relax_convergence",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.814026,
+       "fingerprint": "48a44254632d",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO2@NO+O->NO2#s0#endpoint_identity",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.76
+      },
+      "id": "NO2@NO+O->NO2#s0#clash",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.14,
+       "detached_fragments": 0,
+       "n_fragments": 1,
+       "worst_A": 2.33
+      },
+      "id": "NO2@NO+O->NO2#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO2@NO+O->NO2#s0#wrong_binder",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO2@NO+O->NO2#s0#fragment_merge",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.06,
+       "disp_ratio": 0.023,
+       "disp_rmsd_A": 0.03,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO2@NO+O->NO2#s0#reconstruction",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": true,
+       "exhausted": false,
+       "fmax": 0.0454,
+       "steps": 64
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#relax_convergence",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.74148,
+       "fingerprint": "0d7350e7cf4b",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#endpoint_identity",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.78
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#clash",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.14,
+       "detached_fragments": 0,
+       "n_fragments": 3,
+       "worst_A": 2.29
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {
+       "notes": [
+        "fragments merged during relax: O + O -> OO"
+       ]
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#wrong_binder",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "marginal"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {
+       "events": [
+        {
+         "atoms": [
+          13,
+          15
+         ],
+         "fragment": "OO",
+         "kind": "fragment_merge",
+         "parts": [
+          "O",
+          "O"
+         ]
+        }
+       ]
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#fragment_merge",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "marginal"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.03,
+       "disp_ratio": 0.012,
+       "disp_rmsd_A": 0.02,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO2+O@NO2+O->NO3#s0#reconstruction",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": true,
+       "exhausted": false,
+       "fmax": 0.0226,
+       "steps": 119
+      },
+      "id": "NO3@NO2+O->NO3#s0#relax_convergence",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "marginal"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.745252,
+       "fingerprint": "057111513b5b",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO3@NO2+O->NO3#s0#endpoint_identity",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.75
+      },
+      "id": "NO3@NO2+O->NO3#s0#clash",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.16,
+       "detached_fragments": 0,
+       "n_fragments": 2,
+       "worst_A": 2.33
+      },
+      "id": "NO3@NO2+O->NO3#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO3@NO2+O->NO3#s0#wrong_binder",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO3@NO2+O->NO3#s0#fragment_merge",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.04,
+       "disp_ratio": 0.014,
+       "disp_rmsd_A": 0.02,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO3@NO2+O->NO3#s0#reconstruction",
+      "seed": 0,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 2,
+      "check": "neb_convergence",
+      "evidence": {
+       "method": "ci-neb",
+       "retried": true
+      },
+      "id": "NO+O->NO2#s0#neb_convergence#a2",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "fail"
+     },
+     {
+      "attempt": 1,
+      "check": "saddle_verified",
+      "evidence": {
+       "barrier_eV": 0.0,
+       "images": 5,
+       "reason": "ts-at-endpoint",
+       "ts_image": 1
+      },
+      "id": "NO+O->NO2#s0#saddle_verified",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "fail"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "desorbed_images": 0,
+       "images": 5,
+       "ts_image": 1
+      },
+      "id": "NO+O->NO2#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "neb_convergence",
+      "evidence": {
+       "method": "ci-neb",
+       "retried": false
+      },
+      "id": "NO2+O->NO3#s0#neb_convergence",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "saddle_verified",
+      "evidence": {
+       "barrier_eV": 0.025,
+       "curvature_eV": -0.011,
+       "images": 5,
+       "ts_image": 3
+      },
+      "id": "NO2+O->NO3#s0#saddle_verified",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "desorbed_images": 0,
+       "images": 5,
+       "ts_image": 3
+      },
+      "id": "NO2+O->NO3#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": false,
+       "exhausted": false,
+       "fmax": 0.0,
+       "steps": 9
+      },
+      "id": "*#s0#relax_convergence",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 2.192852,
+       "fingerprint": "2c24c7f20e1d",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "*#s0#endpoint_identity",
+      "seed": 0,
+      "severity": "warn",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 0.0
+      },
+      "id": "*#s0#clash",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 0.0,
+       "detached_fragments": 0,
+       "n_fragments": 0,
+       "worst_A": 0.0
+      },
+      "id": "*#s0#detachment",
+      "seed": 0,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.0,
+       "disp_ratio": 0.0,
+       "disp_rmsd_A": 0.0,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "*#s0#reconstruction",
+      "seed": 0,
+      "severity": "warn",
+      "state": "*",
+      "verdict": "pass"
+     }
+    ],
+    "vib": {},
+    "warnings": [
+     "NO2+O seed=0 fragments merged during relax: O + O -> OO",
+     "NO+O->NO2 seed=0 NEB not converged"
+    ]
+   },
+   "seed": 0,
+   "structures": {
+    "*": {
+     "energy": 2.1928524399639038,
+     "extxyz": "12\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd      -0.00000000       1.58808585      10.19480685  T        2\nPd       2.75064538       1.58808585      10.19480685  T        2\nPd       1.37532269       3.97021462      10.19480685  T        2\nPd       4.12596807       3.97021462      10.19480685  T        2\nPd       0.00000000      -0.00000000      12.38961371  T        1\nPd       2.75064538       0.00000000      12.38961371  T        1\nPd       1.37532269       2.38212877      12.38961371  T        1\nPd       4.12596807       2.38212877      12.38961371  T        1\n"
+    },
+    "NO+O": {
+     "energy": 2.0892225283456805,
+     "extxyz": "15\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.01886061       1.57600560      10.20338869  T        2\nPd       2.76796401       1.57513250      10.19520719  T        2\nPd       1.40425418       3.95439083      10.19838792  T        2\nPd       4.14456521       3.96025635      10.19747768  T        2\nPd       0.04924321      -0.01126706      12.42991510  T        1\nPd       2.81038617      -0.03562164      12.38125660  T        1\nPd       1.40997824       2.35219589      12.41891119  T        1\nPd       4.14793489       2.36742908      12.39351275  T        1\nN        1.65963286       0.70176209      13.99448312  T        0\nO        0.84433332       0.93055065      14.99892201  T        0\nO        5.37956559       1.67115389      14.17934883  T        0\n"
+    },
+    "NO2": {
+     "energy": 1.8140255463684785,
+     "extxyz": "15\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.00166959       1.56309821      10.19208954  T        2\nPd       2.75080090       1.55934287      10.19098528  T        2\nPd       1.38051062       3.93818544      10.19131003  T        2\nPd       4.12718632       3.94828249      10.18645916  T        2\nPd      -0.00516201      -0.04965067      12.39818169  T        1\nPd       2.75776518      -0.04766874      12.39449386  T        1\nPd       1.37514535       2.32453146      12.41060676  T        1\nPd       4.12609337       2.35072475      12.38030509  T        1\nN        1.36032970       0.60253343      13.90689054  T        0\nO        2.85768225       1.55195525      14.07468312  T        0\nO       -0.11150395       1.55905809      14.07917771  T        0\n"
+    },
+    "NO2+O": {
+     "energy": 1.741479554595256,
+     "extxyz": "16\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.01594775       1.59109802      10.19465183  T        2\nPd       2.76748293       1.59080378      10.19189574  T        2\nPd       1.38916553       3.97141950      10.19111344  T        2\nPd       4.13915378       3.97058517      10.19187902  T        2\nPd       0.02466792       0.00702705      12.40389678  T        1\nPd       2.77652676       0.00442301      12.40532085  T        1\nPd       1.40544559       2.38619425      12.40431771  T        1\nPd       4.15498512       2.38736604      12.39546779  T        1\nN        1.40537913       0.68228867      13.90419801  T        0\nO        2.81304729       1.79235514      14.13267599  T        0\nO        0.00994547       1.80773517      14.13096315  T        0\nO        4.15862312       0.63394695      14.12448789  T        0\n"
+    },
+    "NO3": {
+     "energy": 1.7452516490637873,
+     "extxyz": "16\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.00528726       1.60471458      10.19356941  T        2\nPd       2.75531535       1.60013866      10.19542723  T        2\nPd       1.38006374       3.98093533      10.19449261  T        2\nPd       4.12915621       3.98698856      10.19111103  T        2\nPd      -0.00091974       0.03425158      12.40140914  T        1\nPd       2.76237848       0.01514158      12.40340266  T        1\nPd       1.39078006       2.39812477      12.41981829  T        1\nPd       4.13046053       2.41768357      12.39591155  T        1\nN        1.38190607       0.71676773      13.91590220  T        0\nO        2.93855367       1.53300346      14.14099086  T        0\nO       -0.06119884       1.68598157      14.09508851  T        0\nO        0.00268306      -1.47617972      14.08356188  T        0\n"
+    }
+   },
+   "weights_sha256": null
+  },
+  {
+   "lattice": {},
+   "model": "emt",
+   "model_index": 0,
+   "partial": {
+    "ads_barriers": {},
+    "model": "emt",
+    "refs": {
+     "bare": {},
+     "gas": {
+      "H2": 1.0705412622860413,
+      "H2O": 1.8788838346906451,
+      "NO": 0.5906821032121812
+     },
+     "mu": {
+      "O": 0.8083425724046038
+     }
+    },
+    "seed": 1,
+    "shed": {},
+    "states": {
+     "*": 2.1928524399639038,
+     "NO+O": 2.088253573414912,
+     "NO2": 1.8153274134872612,
+     "NO2+O": 1.862283645206193,
+     "NO3": 1.7447392818954697
+    },
+    "steps": {
+     "NO+O->NO2": {
+      "barrier": 0.0,
+      "delta_e": -0.27292615992765157,
+      "low_confidence": true,
+      "low_confidence_from": [
+       "NO+O->NO2#s1#detachment"
+      ],
+      "product": "NO2",
+      "reactant": "NO+O"
+     },
+     "NO2+O->NO3": {
+      "barrier": 0.07728155499734246,
+      "delta_e": -0.11754436331072338,
+      "product": "NO3",
+      "reactant": "NO2+O"
+     }
+    },
+    "trust": [
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": false,
+       "exhausted": false,
+       "fmax": 0.0302,
+       "steps": 39
+      },
+      "id": "NO+O@NO+O->NO2#s1#relax_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 2.088254,
+       "fingerprint": "9cd98dac6b36",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO+O@NO+O->NO2#s1#endpoint_identity",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.32
+      },
+      "id": "NO+O@NO+O->NO2#s1#clash",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.12,
+       "detached_fragments": 0,
+       "n_fragments": 2,
+       "worst_A": 2.86
+      },
+      "id": "NO+O@NO+O->NO2#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO+O@NO+O->NO2#s1#wrong_binder",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO+O@NO+O->NO2#s1#fragment_merge",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.05,
+       "disp_ratio": 0.02,
+       "disp_rmsd_A": 0.03,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO+O@NO+O->NO2#s1#reconstruction",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO+O",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": false,
+       "exhausted": false,
+       "fmax": 0.0475,
+       "steps": 42
+      },
+      "id": "NO2@NO+O->NO2#s1#relax_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.815327,
+       "fingerprint": "4195526bb4e4",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO2@NO+O->NO2#s1#endpoint_identity",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.78
+      },
+      "id": "NO2@NO+O->NO2#s1#clash",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.12,
+       "detached_fragments": 0,
+       "n_fragments": 2,
+       "worst_A": 2.33
+      },
+      "id": "NO2@NO+O->NO2#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO2@NO+O->NO2#s1#wrong_binder",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO2@NO+O->NO2#s1#fragment_merge",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.05,
+       "disp_ratio": 0.017,
+       "disp_rmsd_A": 0.02,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO2@NO+O->NO2#s1#reconstruction",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2",
+      "step": "NO+O->NO2",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": true,
+       "exhausted": false,
+       "fmax": 0.0323,
+       "steps": 63
+      },
+      "id": "NO2+O@NO2+O->NO3#s1#relax_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.862284,
+       "fingerprint": "1a154166ac65",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO2+O@NO2+O->NO3#s1#endpoint_identity",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.62
+      },
+      "id": "NO2+O@NO2+O->NO3#s1#clash",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.11,
+       "detached_fragments": 0,
+       "n_fragments": 3,
+       "worst_A": 2.31
+      },
+      "id": "NO2+O@NO2+O->NO3#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO2+O@NO2+O->NO3#s1#wrong_binder",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO2+O@NO2+O->NO3#s1#fragment_merge",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.03,
+       "disp_ratio": 0.012,
+       "disp_rmsd_A": 0.02,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO2+O@NO2+O->NO3#s1#reconstruction",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO2+O",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": true,
+       "exhausted": false,
+       "fmax": 0.0168,
+       "steps": 81
+      },
+      "id": "NO3@NO2+O->NO3#s1#relax_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 1.744739,
+       "fingerprint": "651f37a11629",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "NO3@NO2+O->NO3#s1#endpoint_identity",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 1.79
+      },
+      "id": "NO3@NO2+O->NO3#s1#clash",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 2.15,
+       "detached_fragments": 0,
+       "n_fragments": 3,
+       "worst_A": 2.3
+      },
+      "id": "NO3@NO2+O->NO3#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "wrong_binder",
+      "evidence": {},
+      "id": "NO3@NO2+O->NO3#s1#wrong_binder",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "fragment_merge",
+      "evidence": {},
+      "id": "NO3@NO2+O->NO3#s1#fragment_merge",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.04,
+       "disp_ratio": 0.015,
+       "disp_rmsd_A": 0.02,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "NO3@NO2+O->NO3#s1#reconstruction",
+      "seed": 1,
+      "severity": "warn",
+      "state": "NO3",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 2,
+      "check": "neb_convergence",
+      "evidence": {
+       "method": "ci-neb",
+       "retried": true
+      },
+      "id": "NO+O->NO2#s1#neb_convergence#a2",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "fail"
+     },
+     {
+      "attempt": 1,
+      "check": "saddle_verified",
+      "evidence": {
+       "barrier_eV": 0.0,
+       "images": 5,
+       "reason": "ts-at-endpoint",
+       "ts_image": 1
+      },
+      "id": "NO+O->NO2#s1#saddle_verified",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "fail"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "desorbed_images": 1,
+       "events": [
+        {
+         "closest_A": 3.89,
+         "fragment": "N",
+         "image": 4
+        }
+       ],
+       "images": 5,
+       "ts_image": 1
+      },
+      "id": "NO+O->NO2#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO+O->NO2",
+      "verdict": "fail"
+     },
+     {
+      "attempt": 1,
+      "check": "neb_convergence",
+      "evidence": {
+       "method": "ci-neb",
+       "retried": false
+      },
+      "id": "NO2+O->NO3#s1#neb_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "saddle_verified",
+      "evidence": {
+       "barrier_eV": 0.0773,
+       "curvature_eV": -0.1197,
+       "images": 5,
+       "ts_image": 3
+      },
+      "id": "NO2+O->NO3#s1#saddle_verified",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "desorbed_images": 0,
+       "images": 5,
+       "ts_image": 3
+      },
+      "id": "NO2+O->NO3#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "step": "NO2+O->NO3",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "relax_convergence",
+      "evidence": {
+       "escalated": false,
+       "exhausted": false,
+       "fmax": 0.0,
+       "steps": 9
+      },
+      "id": "*#s1#relax_convergence",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "endpoint_identity",
+      "evidence": {
+       "e_eV": 2.192852,
+       "fingerprint": "2c24c7f20e1d",
+       "fingerprint_method": "mic-dist-2dp-sha1-12"
+      },
+      "id": "*#s1#endpoint_identity",
+      "seed": 1,
+      "severity": "warn",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "clash",
+      "evidence": {
+       "min_dist_A": 0.0
+      },
+      "id": "*#s1#clash",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "detachment",
+      "evidence": {
+       "closest_A": 0.0,
+       "detached_fragments": 0,
+       "n_fragments": 0,
+       "worst_A": 0.0
+      },
+      "id": "*#s1#detachment",
+      "seed": 1,
+      "severity": "fatal",
+      "state": "*",
+      "verdict": "pass"
+     },
+     {
+      "attempt": 1,
+      "check": "reconstruction",
+      "evidence": {
+       "baseline": "relaxed_clean_slab",
+       "bonds_broken": 0,
+       "bonds_formed": 0,
+       "d_nn_A": 2.71,
+       "disp_max_A": 0.0,
+       "disp_ratio": 0.0,
+       "disp_rmsd_A": 0.0,
+       "host": "Pd",
+       "template_disp_max_A": 0.1,
+       "template_min_dist_A": 2.71
+      },
+      "id": "*#s1#reconstruction",
+      "seed": 1,
+      "severity": "warn",
+      "state": "*",
+      "verdict": "pass"
+     }
+    ],
+    "vib": {},
+    "warnings": [
+     "NO+O->NO2 seed=1 NEB not converged",
+     "NO+O->NO2 seed=1: adsorbate detached mid-band (image 4 of 5, d=3.89 A) \u2014 barrier untrustworthy, off a non-surface path"
+    ]
+   },
+   "seed": 1,
+   "structures": {
+    "*": {
+     "energy": 2.1928524399639038,
+     "extxyz": "12\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd      -0.00000000       1.58808585      10.19480685  T        2\nPd       2.75064538       1.58808585      10.19480685  T        2\nPd       1.37532269       3.97021462      10.19480685  T        2\nPd       4.12596807       3.97021462      10.19480685  T        2\nPd       0.00000000      -0.00000000      12.38961371  T        1\nPd       2.75064538       0.00000000      12.38961371  T        1\nPd       1.37532269       2.38212877      12.38961371  T        1\nPd       4.12596807       2.38212877      12.38961371  T        1\n"
+    },
+    "NO+O": {
+     "energy": 2.088253573414912,
+     "extxyz": "15\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.00771686       1.57657212      10.19853068  T        2\nPd       2.75444749       1.57447956      10.19294747  T        2\nPd       1.39377270       3.95310124      10.19807415  T        2\nPd       4.13468824       3.96369814      10.19309827  T        2\nPd       0.02840212      -0.00833912      12.42817056  T        1\nPd       2.79265882      -0.03400561      12.38845220  T        1\nPd       1.38376203       2.34976615      12.42947980  T        1\nPd       4.11934009       2.37590954      12.37324533  T        1\nN        1.61477780       0.69436641      13.99220484  T        0\nO        0.79932683       1.07919088      14.96269577  T        0\nO        5.23464190       1.67325574      14.18056698  T        0\n"
+    },
+    "NO2": {
+     "energy": 1.8153274134872612,
+     "extxyz": "15\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd      -0.01679770       1.59038344      10.19666286  T        2\nPd       2.73108926       1.59236214      10.20253930  T        2\nPd       1.35381117       3.96765333      10.19401510  T        2\nPd       4.10411052       3.97533510      10.19470829  T        2\nPd      -0.03763923      -0.00722189      12.40443126  T        1\nPd       2.72925111      -0.00416502      12.40739159  T        1\nPd       1.34804645       2.36563589      12.42303196  T        1\nPd       4.10326313       2.39372595      12.39699358  T        1\nN        1.33722176       0.56585115      13.91635881  T        0\nO        2.83255489       1.62973351      14.08412730  T        0\nO       -0.10353165       1.60151744      14.08523606  T        0\n"
+    },
+    "NO2+O": {
+     "energy": 1.862283645206193,
+     "extxyz": "16\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd      -0.00163871       1.59968926      10.19392910  T        2\nPd       2.74879761       1.60024559      10.19533226  T        2\nPd       1.37463317       3.97720786      10.19580757  T        2\nPd       4.12649860       3.98639976      10.18985744  T        2\nPd      -0.00277411       0.01421556      12.40163111  T        1\nPd       2.76729429       0.01617317      12.40405598  T        1\nPd       1.37211733       2.38121676      12.41457414  T        1\nPd       4.12886277       2.41430430      12.39391419  T        1\nN        1.37329736       0.34931729      13.96711566  T        0\nO        2.83201117       1.58586397      14.11264048  T        0\nO        1.08777595       1.85603585      14.49536399  T        0\nO        5.02351285       1.37428900      14.15509026  T        0\n"
+    },
+    "NO3": {
+     "energy": 1.7447392818954697,
+     "extxyz": "16\nLattice=\"5.50129075763134 0.0 0.0 2.75064537881567 4.764257549713281 0.0 0.0 0.0 20.491785094295288\" Properties=species:S:1:pos:R:3:move_mask:L:1:tags:I:1 n_slab=12 pbc=\"T T T\"\nPd       1.37532269       0.79404292       8.00000000  F        3\nPd       4.12596807       0.79404292       8.00000000  F        3\nPd       2.75064538       3.17617170       8.00000000  F        3\nPd       5.50129076       3.17617170       8.00000000  F        3\nPd       0.01523252       1.58412401      10.18635542  T        2\nPd       2.76401235       1.58216856      10.19191196  T        2\nPd       1.38274848       3.96900439      10.19544133  T        2\nPd       4.13725813       3.97030910      10.19494937  T        2\nPd       0.00789304      -0.00711166      12.40067446  T        1\nPd       2.75774457      -0.01044868      12.42897251  T        1\nPd       1.40687405       2.37500024      12.39631570  T        1\nPd       4.15672410       2.36959655      12.38381102  T        1\nN        1.28994369       0.82929101      13.90974403  T        0\nO        2.85421077       1.67230986      14.08754520  T        0\nO        0.07662101       3.06909207      14.07734046  T        0\nO        1.18753387      -0.96712810      14.13184264  T        0\n"
+    }
+   },
+   "weights_sha256": null
+  }
+ ]
+}

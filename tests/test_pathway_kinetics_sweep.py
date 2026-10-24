@@ -12,10 +12,10 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
+from tests._autocatpath import needs_engine
 
 # precis_pathway imports autocatpath; CI's default env has no catalyst extra.
-pytest.importorskip("autocatpath")
+needs_engine()
 
 
 def _sweep_payload() -> dict[str, Any]:
