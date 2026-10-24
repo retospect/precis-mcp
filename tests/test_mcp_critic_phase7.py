@@ -28,6 +28,8 @@ not a comprehensive surface re-test.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from precis.dispatch import Hub
@@ -512,12 +514,17 @@ class TestBareIdAndIndexView:
 
     def test_numeric_ref_search_index_view_folds(self, runtime: PrecisRuntime) -> None:
         runtime.dispatch("put", {"kind": "gripe", "text": "idxview gripe"})
-        for view in ("index", "ids"):
-            out = runtime.dispatch(
-                "search", {"kind": "gripe", "q": "idxview", "view": view}
-            )
-            assert "[error" not in out
-            assert "idxview gripe" in out
+        out = runtime.dispatch(
+            "search", {"kind": "gripe", "q": "idxview", "view": "index"}
+        )
+        assert "[error" not in out
+        assert "idxview gripe" in out
+        # view='ids' is one bare handle per line (gr514477), no title.
+        out = runtime.dispatch(
+            "search", {"kind": "gripe", "q": "idxview", "view": "ids"}
+        )
+        assert "[error" not in out
+        assert re.search(r"^gr\d+$", out, re.MULTILINE)
 
 
 # ── sigil-prefixed ids self-identify their kind ─────────────────
