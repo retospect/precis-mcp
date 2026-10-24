@@ -371,6 +371,31 @@ class TestCastorTrialPrep:
                 job.SPEC,
             )
 
+    def test_measurands_accept_tn_handles(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr511455: the ``tn<id>`` handle every taxon surface prints
+        resolves alongside slugs and ref_ids."""
+        store = world["store"]
+        allow = job._measurand_allow(
+            store, [f"tn{world['fe']}", f"TN{world['ads']}", str(world["jtot"])]
+        )
+        assert allow == sorted([world["fe"], world["ads"], world["jtot"]])
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        done, _ = drive(
+            _extract_meta(world, measurands=[f"tn{world['fe']}"], skip_accept=True),
+            store,
+            job.SPEC,
+        )
+        assert done.success
+
+    def test_measurands_non_taxon_handle_refuses(self, world: dict) -> None:
+        store = world["store"]
+        with pytest.raises(BadInput, match="tn<id> handles or ids"):
+            job._measurand_allow(store, [f"pa{world['paper']}"])
+        with pytest.raises(BadInput, match="unknown measurand"):
+            job._measurand_allow(store, ["tn999999999"])
+
     def test_per_reason_drop_counters(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:

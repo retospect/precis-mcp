@@ -66,6 +66,7 @@ from precis.errors import BadInput
 from precis.extract import accept as _accept
 from precis.extract import prompt as _prompt
 from precis.extract.proposals import VocabEntry, build_runs, vocab_entry
+from precis.utils import handle_registry
 from precis.utils.env import env_int
 from precis.utils.llm.router import (
     LlmRequest,
@@ -178,14 +179,15 @@ def _measurand_root(store: Store, raw: Any) -> int | None:
 
 def _measurand_allow(store: Store, raw: Any) -> list[int] | None:
     """``measurands`` param → resolved live taxon ref_ids, ``None`` when
-    unset. Entries are taxon slugs or ref_ids (a digit string counts as
-    an id); anything that is not a live taxon refuses the job up front."""
+    unset. Entries are taxon slugs, ``tn<id>`` handles or ref_ids (a
+    digit string counts as an id); anything that is not a live taxon
+    refuses the job up front."""
     if raw is None:
         return None
     if not isinstance(raw, (list, tuple)):
         raise BadInput(
             f"survey_extract: params.measurands must be a list, got {raw!r}",
-            next="pass measurands=[<taxon slug or ref_id>, …]",
+            next="pass measurands=[<taxon slug, tn<id> or ref_id>, …]",
         )
     if not raw:
         return None
@@ -199,8 +201,14 @@ def _measurand_allow(store: Store, raw: Any) -> list[int] | None:
             want_ids.append(item)
         elif isinstance(item, str):
             text = item.strip()
+            handle = handle_registry.parse(text)
             if text.isdigit():
                 want_ids.append(int(text))
+            elif handle is not None:
+                if handle[0] == "taxon" and not handle[1]:
+                    want_ids.append(handle[2])
+                else:
+                    bad.append(repr(item))
             elif text:
                 want_slugs.append(text)
             else:
@@ -209,9 +217,9 @@ def _measurand_allow(store: Store, raw: Any) -> list[int] | None:
             bad.append(repr(item))
     if bad:
         raise BadInput(
-            "survey_extract: params.measurands entries must be taxon slugs "
-            f"or ids, got {bad}",
-            next="pass measurands=[<taxon slug or ref_id>, …]",
+            "survey_extract: params.measurands entries must be taxon slugs, "
+            f"tn<id> handles or ids, got {bad}",
+            next="pass measurands=[<taxon slug, tn<id> or ref_id>, …]",
         )
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -229,7 +237,7 @@ def _measurand_allow(store: Store, raw: Any) -> list[int] | None:
         raise BadInput(
             f"survey_extract: unknown measurand(s) {missing}",
             next=(
-                "pass live taxon slugs or ref_ids — "
+                "pass live taxon slugs, tn<id> handles or ref_ids — "
                 "search(kind='taxon', q='<name>') lists them"
             ),
         )
