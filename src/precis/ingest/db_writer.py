@@ -544,6 +544,10 @@ def register_aliases_and_maybe_upgrade(
          set the canonical PDF (when it carries one) and write its
          chunks (PDF-Marker *or* markup). The derived queue picks the new
          chunks up; any finding waiting on this stub resumes naturally.
+         When the ref already carried a ``pdf_sha256`` (an earlier ingest
+         that yielded no body text — gr510690), the canonical sha is
+         re-pointed to this ingest's file: it is the copy that actually
+         produced a body.
        * **Has body, pinned (``meta.markup_refetch``)** — the
          gr372781 item 3 backfill case: the existing body is a
          front-matter-only Elsevier preview, which is *worse* than no
@@ -646,24 +650,42 @@ def register_aliases_and_maybe_upgrade(
     ).fetchone()
     assert has_body_row is not None  # SELECT EXISTS always returns one row
     has_body = bool(has_body_row[0])
+    new_body = sum(1 for c in paper.chunks if c.ord >= 0)
 
     # Promote the canonical PDF when this ingest brings bytes and the ref
     # has none yet (stub upgrade *or* markup-ref printable attach). If the
     # ref already carries a PDF this ingest is a multi-hash alias — the
-    # alias rows above suffice, no promotion.
-    if paper.pdf_sha256 and not already_has_pdf:
+    # alias rows above suffice, no promotion. gr510690 exception: a
+    # *bodiless* ref whose stored sha is the file that yielded no body
+    # text gets its canonical sha re-pointed when this ingest actually
+    # lands body chunks — the new file is the real full-text copy, the
+    # stored one only ever produced a preview/empty extraction.
+    if paper.pdf_sha256 and (not already_has_pdf or (not has_body and new_body > 0)):
         pdf_pages: str | None = None
         if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
             pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
-        conn.execute(
-            "UPDATE refs SET "
-            "  pdf_sha256 = %s, "
-            "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
-            "  pdf_role   = COALESCE(%s, pdf_role), "
-            "  updated_at = now() "
-            "WHERE ref_id = %s AND retired_at IS NULL",
-            (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
-        )
+        if already_has_pdf:
+            # The stored range described the old (bodiless) file, so
+            # overwrite rather than COALESCE.
+            conn.execute(
+                "UPDATE refs SET "
+                "  pdf_sha256 = %s, "
+                "  pdf_pages  = %s::int4range, "
+                "  pdf_role   = COALESCE(%s, pdf_role), "
+                "  updated_at = now() "
+                "WHERE ref_id = %s AND retired_at IS NULL",
+                (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE refs SET "
+                "  pdf_sha256 = %s, "
+                "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
+                "  pdf_role   = COALESCE(%s, pdf_role), "
+                "  updated_at = now() "
+                "WHERE ref_id = %s AND retired_at IS NULL",
+                (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
+            )
         # The fetched bytes confirm the paper exists: reconcile an
         # acquire stub minted unverified (gr489237).
         clear_acquire_unverified(conn, existing_ref_id, by="fetch")
@@ -690,7 +712,6 @@ def register_aliases_and_maybe_upgrade(
     # backfill into a no-op for every paper it touches. Skipping keeps the
     # pin intact for whichever ingest actually brings a body (the markup,
     # or a full Marker run if the markup leg failed).
-    new_body = sum(1 for c in paper.chunks if c.ord >= 0)
     if has_body and new_body > 0:
         meta_row = conn.execute(
             "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",

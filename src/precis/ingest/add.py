@@ -234,6 +234,17 @@ class IngestResult:
     #: watcher routes this case to ``errors/`` instead of reporting
     #: success and leaves the fetch sidecar unconsumed.
     fallback_empty_body: bool = False
+    #: gr510690 — body-chunk presence on the target ref *after* this call:
+    #: ``EXISTS chunks ord >= 0`` on the dedup-hit paths, the extraction's
+    #: own ``ord >= 0`` count on a fresh insert. ``None`` on paths where
+    #: body presence was not evaluated — the watcher's zero-body guard
+    #: fires only on an explicit ``False``.
+    ref_has_body: bool | None = None
+    #: gr510690 — how many ``ord >= 0`` chunks this call wrote. Lets the
+    #: watcher tell "this ingest populated a bodiless ref" (the file is
+    #: the body source and belongs in the corpus) from a genuine
+    #: duplicate re-drop on an already-bodied ref (attach-only → 0).
+    body_chunks_written: int = 0
 
 
 class MarkupTriggerSpent(Exception):
@@ -321,6 +332,25 @@ def precis_add(
             # against a stub (the SI's filename stem is not a cite_key).
             return _reuse_supplement(input, existing_ref_id, store=store)
         if existing_ref_id is not None:
+            # gr510690 — a ``pdf_sha256`` hit is a genuine duplicate only
+            # when the matched ref already carries body chunks. A bodiless
+            # ref holding these bytes means the first ingest produced no
+            # text; short-circuiting here would keep it bodiless forever
+            # and send every re-upload to ``errors/duplicates/``. Fall
+            # through to the claim + extraction instead: the slow-path
+            # probe re-matches this ref and
+            # ``register_aliases_and_maybe_upgrade`` fills its body.
+            with store.pool.connection() as conn:
+                existing_has_body = _ref_has_body(existing_ref_id, conn=conn)
+            if not existing_has_body:
+                log.info(
+                    "precis_add: %s pdf_sha256 matches ref_id=%s which has "
+                    "no body chunks — re-extracting to fill it rather than "
+                    "short-circuiting as duplicate",
+                    input.pdf_path.name,
+                    existing_ref_id,
+                )
+        if existing_ref_id is not None and existing_has_body:
             # Fast-path hit: re-applying ``extra_tags`` is the watcher's
             # signal that re-dropping a known PDF under a different
             # ``tagging/`` dir should merge tags additively (rather than
@@ -396,6 +426,15 @@ def precis_add(
         crossref_mailto=crossref_mailto,
         s2_api_key=s2_api_key,
     )
+
+
+def _ref_has_body(ref_id: int, *, conn: Any) -> bool:
+    """``EXISTS chunks ord >= 0`` — does the ref carry extracted body text?"""
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0)",
+        (ref_id,),
+    ).fetchone()
+    return bool(row and row[0])
 
 
 #: ``ref_events.source`` of the PDF leg's "finished without a body" journal row.
@@ -714,6 +753,15 @@ def _ingest_pdf(
                     conn=conn,
                     fallback=paper,
                     chunks_written=chunks_written,
+                    # ``chunks_written`` counts submitted rows (cards
+                    # included, conflict-skips counted anyway); the body
+                    # count is what tells the watcher a bodiless ref just
+                    # got filled (gr510690).
+                    body_chunks_written=(
+                        sum(1 for c in paper.chunks if c.ord >= 0)
+                        if chunks_written
+                        else 0
+                    ),
                 ),
                 kind=stored_kind,
             )
@@ -764,6 +812,8 @@ def _ingest_pdf(
         # degraded extraction to errors/ without re-deriving it here.
         used_marker_fallback=bool(paper.meta.get("extract_used_fallback")),
         fallback_empty_body=bool(paper.meta.get("extract_fallback_empty")),
+        ref_has_body=any(c.ord >= 0 for c in paper.chunks),
+        body_chunks_written=sum(1 for c in paper.chunks if c.ord >= 0),
     )
 
 
@@ -967,6 +1017,8 @@ def _ingest_supplement(
         kind=paper.kind,
         used_marker_fallback=bool(paper.meta.get("extract_used_fallback")),
         fallback_empty_body=bool(paper.meta.get("extract_fallback_empty")),
+        ref_has_body=any(c.ord >= 0 for c in paper.chunks),
+        body_chunks_written=sum(1 for c in paper.chunks if c.ord >= 0),
     )
 
 
@@ -1817,6 +1869,15 @@ def _ingest_markup(
                     conn=conn,
                     fallback=paper,
                     chunks_written=chunks_written,
+                    # ``chunks_written`` counts submitted rows (cards
+                    # included, conflict-skips counted anyway); the body
+                    # count is what tells the watcher a bodiless ref just
+                    # got filled (gr510690).
+                    body_chunks_written=(
+                        sum(1 for c in paper.chunks if c.ord >= 0)
+                        if chunks_written
+                        else 0
+                    ),
                 ),
                 kind=stored_kind,
             )
@@ -1854,6 +1915,8 @@ def _ingest_markup(
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
         kind=paper.kind,
+        ref_has_body=any(c.ord >= 0 for c in paper.chunks),
+        body_chunks_written=sum(1 for c in paper.chunks if c.ord >= 0),
     )
 
 
@@ -2069,6 +2132,8 @@ def _ingest_metadata(
         content_hash=paper.content_hash,
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
+        ref_has_body=any(c.ord >= 0 for c in paper.chunks),
+        body_chunks_written=sum(1 for c in paper.chunks if c.ord >= 0),
     )
 
 
@@ -2249,6 +2314,7 @@ def _hit_result_from_db(
     conn: Any,
     fallback: PaperToWrite | None = None,
     chunks_written: int = 0,
+    body_chunks_written: int = 0,
 ) -> IngestResult:
     """Build an ``inserted=False`` result by re-fetching the existing
     ref's identifiers from the DB.
@@ -2295,6 +2361,17 @@ def _hit_result_from_db(
         content_hash=content_hash,
         chunks_written=chunks_written,
         identifiers=identifiers,
+        # gr510690 — propagate the fallback flags through hit results too:
+        # a stub-fold whose Marker run fell back to fitz and still found
+        # nothing must not read as a plain "duplicate" to the watcher.
+        used_marker_fallback=bool(
+            fallback and fallback.meta.get("extract_used_fallback")
+        ),
+        fallback_empty_body=bool(
+            fallback and fallback.meta.get("extract_fallback_empty")
+        ),
+        ref_has_body=_ref_has_body(ref_id, conn=conn),
+        body_chunks_written=body_chunks_written,
     )
 
 

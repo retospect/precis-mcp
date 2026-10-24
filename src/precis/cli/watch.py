@@ -921,8 +921,15 @@ def process_pdf(
     fallback yielded 0 body chunks on a ≥1-page PDF), which routes to
     ``errors/`` instead and leaves the sidecar unconsumed; any
     ``result.used_marker_fallback`` also raises a rate-limited ops alert
-    (:func:`_check_marker_fallback`); (5) on ``inserted=False`` move to
-    ``errors/duplicates``; (6) on exception write ``.error.txt`` next to
+    (:func:`_check_marker_fallback`); gr510690 generalises that guard:
+    ANY paper-PDF ingest that leaves its ref with no body chunks
+    (``result.ref_has_body is False``) routes to ``errors/`` at ERROR
+    level — ``printable_only`` companions and SI files are exempt since
+    they carry no body by design; (5) on ``inserted=False`` move to
+    ``errors/duplicates`` — unless the corpus lacks the file
+    (``status=recovered``) or this call wrote the ref's first body chunks
+    (``status=filled``, gr510690: a bodiless ref is fillable, not a
+    duplicate); (6) on exception write ``.error.txt`` next to
     the PDF in ``errors/<ts>/`` and swallow — contained so the watcher
     loop survives a single bad PDF.
     """
@@ -1120,6 +1127,43 @@ def process_pdf(
     _check_elsevier_truncation(pdf, sidecar, result, store=store)
     _stamp_source_url(sidecar, result, store=store)
 
+    if (
+        isinstance(input_, PdfInput)
+        and not printable_only
+        and input_.supplement_of is None
+        and result.ref_has_body is False
+    ):
+        # gr510690 — the general form of the gr236139 guard above: ANY
+        # paper-PDF ingest that leaves its ref with no body chunks is a
+        # failure, not a success — a fresh insert whose extractor
+        # returned nothing, a stub fold that still produced no body, or a
+        # dedup-hit fill of a bodiless ref that yielded none again. The
+        # DB rows are already committed, but the *reported* marks —
+        # corpus move, "inserted"/"recovered" ingest.log line, sidecar
+        # consumption — would be the same silent data loss gr236139
+        # hardened against. Route to errors/ with an ERROR line; the
+        # sidecar stays so a re-upload or re-fetch can retry the fold.
+        # ``printable_only`` companions and SI files never carry body
+        # chunks by design and are exempt.
+        log.error(
+            "precis ingest: %s left ref_id=%d with 0 body chunks "
+            "(inserted=%s) — routing to errors/ instead of reporting "
+            "success; sidecar left in place for retry",
+            pdf.name,
+            result.ref_id,
+            result.inserted,
+        )
+        try:
+            raise RuntimeError(
+                f"ingest produced 0 body chunks for {pdf.name} "
+                f"(ref_id={result.ref_id}, paper_id={result.paper_id!r}, "
+                f"inserted={result.inserted}) — the ref stays bodiless "
+                "(gr510690)"
+            )
+        except RuntimeError as exc:
+            _handle_failure(pdf, exc, errors_dir=errors_dir)
+        return None
+
     dest = _handle_success(
         pdf,
         result,
@@ -1140,7 +1184,14 @@ def process_pdf(
 #: (as opposed to ``existed*`` re-drops parked under ``duplicates/``). Only
 #: these rewrite ``pdfs.storage_path`` — see :func:`_handle_success`.
 _CORPUS_PLACING_STATUSES = frozenset(
-    {"inserted", "inserted_pres", "recovered", "recovered_pres"}
+    {
+        "inserted",
+        "inserted_pres",
+        "recovered",
+        "recovered_pres",
+        "filled",
+        "filled_pres",
+    }
 )
 
 
@@ -1190,7 +1241,7 @@ def _handle_success(
             result.kind,
         )
     else:
-        # ``inserted=False`` means the *ref* already existed. Two cases:
+        # ``inserted=False`` means the *ref* already existed. Three cases:
         #
         #  (a) the corpus already holds this paper's file → a genuine
         #      duplicate re-drop; park it in errors/duplicates.
@@ -1206,6 +1257,12 @@ def _handle_success(
         #      into the corpus. Re-dropping a previously-stranded file
         #      flows through here too, so the inbox is a valid recovery
         #      channel for the backlog of stranded PDFs.
+        #  (c) the corpus holds a file AND this call wrote the ref's first
+        #      body chunks → gr510690: a bodiless ref is fillable, not a
+        #      duplicate — the dropped file is the body source and joins
+        #      the corpus (``status=filled``) instead of parking under
+        #      errors/duplicates while the earlier, extraction-empty copy
+        #      stays canonical.
         target_root = corpus_pres_dir if is_pres else corpus_dir
         corpus_dest = (
             _corpus_pdf_dest(result.cite_key, target_root) if result.cite_key else None
@@ -1226,6 +1283,32 @@ def _handle_success(
                 pdf.name,
                 result.cite_key,
                 result.ref_id,
+                result.kind,
+            )
+        elif result.body_chunks_written > 0 and corpus_dest is not None:
+            # gr510690 — the ref already has a corpus file, but this call
+            # wrote the ref's *first* body chunks: it filled a bodiless
+            # ref rather than duplicating a bodied one. The dropped file
+            # is the body source and belongs in the corpus alongside the
+            # earlier (preview/bodiless-producing) copy —
+            # ``_move_to_corpus`` timestamp-disambiguates.
+            if is_pres:
+                dest = _move_to_pres_corpus(
+                    pdf, slug=result.cite_key, corpus_pres_dir=corpus_pres_dir
+                )
+            else:
+                dest = _move_to_corpus(
+                    pdf, cite_key=result.cite_key, corpus_dir=corpus_dir
+                )
+            status = "filled_pres" if is_pres else "filled"
+            log.info(
+                "precis ingest: filled bodiless ref with %s as %s "
+                "(ref_id=%d existed with a file but 0 body chunks; "
+                "+%d body chunks this ingest, kind=%s)",
+                pdf.name,
+                result.cite_key,
+                result.ref_id,
+                result.body_chunks_written,
                 result.kind,
             )
         else:

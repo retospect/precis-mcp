@@ -274,7 +274,10 @@ class TestPrecisAddIdempotent:
         pdf.write_bytes(b"%PDF-1.4 seeded")
         sha = hashlib.sha256(b"%PDF-1.4 seeded").hexdigest()
 
-        # Seed a minimal ref with just the pdf_sha256 identifier.
+        # Seed a minimal ref with the pdf_sha256 identifier AND a body
+        # chunk — gr510690: a sha-only (bodiless) ref is a *fillable*
+        # stub, not a duplicate, so the fast path only short-circuits on
+        # a ref that already carries extracted text.
         with store.pool.connection() as conn:
             row = conn.execute(
                 "INSERT INTO refs (kind, set_by, title) "
@@ -288,6 +291,11 @@ class TestPrecisAddIdempotent:
                 "VALUES (%s, %s, %s)",
                 ("pdf_sha256", sha, seeded_ref_id),
             )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 0, 'paragraph', 'seeded body', '{}'::jsonb)",
+                (seeded_ref_id,),
+            )
             conn.commit()
 
         with patch("precis.ingest.pipeline.extract_paper") as m:
@@ -299,6 +307,132 @@ class TestPrecisAddIdempotent:
         assert result.ref_id == seeded_ref_id
         assert result.pdf_sha256 == sha
         assert result.chunks_written == 0
+
+
+class TestFastPathBodilessFill:
+    """gr510690: a ``pdf_sha256`` hit on a ref with no body chunks is a
+    fill, not a duplicate — the upload re-extracts and populates the ref
+    instead of short-circuiting to ``inserted=False``."""
+
+    @staticmethod
+    def _seed_bodiless_sha_ref(store, sha: str, slug: str = "fillme24"):
+        """A ref that holds ``sha`` but has zero ``ord >= 0`` chunks —
+        the state a zero-body ingest leaves behind."""
+        ref = store.insert_ref(kind="paper", slug=slug, title="Bodiless")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 10, '/tmp/old.pdf')",
+                (sha, sha),
+            )
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s",
+                (sha, ref.id),
+            )
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'pdf_sha256', %s, 'manual')",
+                (ref.id, sha),
+            )
+            conn.commit()
+        return ref
+
+    def test_sha_hit_on_bodiless_ref_reruns_extraction(self, store, tmp_path: Path):
+        """Byte-identical re-upload of a bodiless ref's file: the fast
+        path must NOT short-circuit — extraction runs and fills it."""
+        raw = b"%PDF-1.4 bodiless-fill"
+        pdf = tmp_path / "fill.pdf"
+        pdf.write_bytes(raw)
+        sha = hashlib.sha256(raw).hexdigest()
+        ref = self._seed_bodiless_sha_ref(store, sha)
+
+        paper = _fixture_paper(paper_id="fillpid", doi=None, pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper) as m:
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+
+        assert m.call_count == 1  # extraction ran — no short-circuit
+        assert isinstance(result, IngestResult)
+        assert result.inserted is False  # the ref pre-existed
+        assert result.ref_id == ref.id
+        assert result.ref_has_body is True
+        assert result.body_chunks_written == 1
+        with store.pool.connection() as conn:
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (ref.id,),
+            ).fetchone()[0]
+        assert body == 1
+
+    def test_doi_hit_on_bodiless_ref_fills_and_repoints_sha(
+        self, store, tmp_path: Path
+    ):
+        """A *different-bytes* upload whose DOI matches a bodiless ref
+        fills it AND becomes the canonical PDF — the stored sha only ever
+        produced an empty extraction."""
+        old_sha = hashlib.sha256(b"%PDF-1.4 old-preview").hexdigest()
+        ref = self._seed_bodiless_sha_ref(store, old_sha, slug="fillme25")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.1/fill-doi', 'manual')",
+                (ref.id,),
+            )
+            conn.commit()
+
+        raw = b"%PDF-1.4 new-fulltext"
+        pdf = tmp_path / "new.pdf"
+        pdf.write_bytes(raw)
+        new_sha = hashlib.sha256(raw).hexdigest()
+        paper = _fixture_paper(
+            paper_id="fillpid2", doi="10.1/fill-doi", pdf_sha256=new_sha
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+
+        assert isinstance(result, IngestResult)
+        assert result.inserted is False
+        assert result.ref_id == ref.id
+        assert result.body_chunks_written == 1
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (ref.id,)
+            ).fetchone()
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (ref.id,),
+            ).fetchone()[0]
+        assert body == 1
+        assert row[0] == new_sha  # canonical re-pointed to the body source
+
+    def test_sha_hit_on_bodiless_ref_still_empty_stays_bodiless(
+        self, store, tmp_path: Path
+    ):
+        """A re-extraction that again yields no body lands no chunks —
+        the ref reports ``ref_has_body=False`` so the watcher routes to
+        errors/ instead of calling it a duplicate."""
+        raw = b"%PDF-1.4 bodiless-again"
+        pdf = tmp_path / "again.pdf"
+        pdf.write_bytes(raw)
+        sha = hashlib.sha256(raw).hexdigest()
+        ref = self._seed_bodiless_sha_ref(store, sha, slug="fillme26")
+
+        paper = _fixture_paper(paper_id="fillpid3", doi=None, pdf_sha256=sha)
+        paper = dataclasses.replace(
+            paper, chunks=[c for c in paper.chunks if c.ord < 0]
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+
+        assert isinstance(result, IngestResult)
+        assert result.ref_id == ref.id
+        assert result.ref_has_body is False
+        assert result.body_chunks_written == 0
+        with store.pool.connection() as conn:
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (ref.id,),
+            ).fetchone()[0]
+        assert body == 0
 
 
 class TestDoiCaseCanonicalization:

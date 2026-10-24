@@ -1153,6 +1153,164 @@ class TestProcessPdf:
         log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
         assert "\tinserted\t" in log_text
 
+    def test_zero_body_insert_goes_to_errors(self, tmp_path: Path):
+        """gr510690: a fresh PDF ingest whose extraction produced no body
+        chunks *without* a Marker fallback (Marker returned an empty
+        document) is an error like the fallback case, not a success."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "empty.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nno extractable text")
+        write_sidecar(
+            pdf,
+            ref_id=140,
+            identifiers={"doi": "10.1/e"},
+            source="fetcher:unpaywall",
+        )
+
+        fake_result = IngestResult(
+            ref_id=140,
+            inserted=True,
+            paper_id="ee00ff11",
+            pub_id="doi:10.1/e",
+            cite_key="empty24",
+            pdf_sha256="3" * 64,
+            content_hash="4" * 64,
+            chunks_written=1,  # cards only; 0 body chunks
+            identifiers={"doi": "10.1/e", "cite_key": "empty24"},
+            ref_has_body=False,
+        )
+
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=cast(Store, object()),
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is None
+        assert not pdf.exists()
+        assert not (corpus_dir / "e" / "empty24.pdf").exists()
+        # Sidecar preserved for a retry of the fold.
+        assert sidecar_path(pdf).exists()
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert len(ts_buckets) == 1
+        err_files = list(ts_buckets[0].glob("*.error.txt"))
+        assert len(err_files) == 1
+        assert "0 body chunks" in err_files[0].read_text(encoding="utf-8")
+        assert not (corpus_dir / "ingest.log").exists()
+
+    def test_zero_body_redrop_goes_to_errors_not_duplicates(self, tmp_path: Path):
+        """gr510690: re-uploading the file of a *still-bodiless* ref —
+        extraction ran again and again found nothing — is an error, never
+        a 'duplicate' parked under errors/duplicates."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "redrop.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nsame bytes as before")
+
+        # The corpus holds the earlier (bodiless-producing) copy.
+        stale = corpus_dir / "e" / "empty24.pdf"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"%PDF-1.7\nsame bytes as before")
+
+        fake_result = IngestResult(
+            ref_id=140,
+            inserted=False,
+            paper_id="ee00ff11",
+            pub_id="doi:10.1/e",
+            cite_key="empty24",
+            pdf_sha256="3" * 64,
+            content_hash="4" * 64,
+            chunks_written=1,
+            identifiers={"doi": "10.1/e", "cite_key": "empty24"},
+            ref_has_body=False,
+            body_chunks_written=0,
+        )
+
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=cast(Store, object()),
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is None
+        assert not pdf.exists()
+        assert list(duplicates_dir.iterdir()) == []
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert len(ts_buckets) == 1
+        err_files = list(ts_buckets[0].glob("*.error.txt"))
+        assert len(err_files) == 1
+        assert "0 body chunks" in err_files[0].read_text(encoding="utf-8")
+        assert not (corpus_dir / "ingest.log").exists()
+
+    def test_bodiless_ref_filled_moves_to_corpus(self, tmp_path: Path):
+        """gr510690: a re-upload whose ingest wrote the ref's *first* body
+        chunks (``inserted=False``, ``body_chunks_written > 0``) filled a
+        bodiless ref — the file belongs in the corpus even though the
+        earlier extraction-empty copy already sits at the cite_key dest."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "fulltext.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nfull text this time")
+
+        # Stale preview at the canonical dest — previously this alone
+        # shunted the better file to errors/duplicates.
+        stale = corpus_dir / "f" / "filled24.pdf"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"%PDF-1.7\npreview only")
+
+        fake_result = IngestResult(
+            ref_id=140,
+            inserted=False,
+            paper_id="ee00ff11",
+            pub_id="doi:10.1/e",
+            cite_key="filled24",
+            pdf_sha256="5" * 64,
+            content_hash="6" * 64,
+            chunks_written=10,
+            identifiers={"doi": "10.1/e", "cite_key": "filled24"},
+            ref_has_body=True,
+            body_chunks_written=9,
+        )
+
+        store = MagicMock()
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=store,
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is not None
+        assert dest.parent == corpus_dir / "f"
+        assert dest.exists()
+        assert list(duplicates_dir.iterdir()) == []
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
+        assert "\tfilled\t" in log_text
+        # A corpus placement rewrites storage_path to the new file.
+        store.set_pdf_storage_path.assert_called_once_with("5" * 64, str(dest))
+
 
 # ---------------------------------------------------------------------------
 # CLI parser smoke test
