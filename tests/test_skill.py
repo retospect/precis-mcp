@@ -481,7 +481,7 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
     from precis.handlers.skill import _list_skills
 
     skills = _list_skills()
-    assert 5 <= len(skills) <= 209  # +precis-ai-contributions-help
+    assert 5 <= len(skills) <= 210  # +precis-workspace-help
 
 
 # ── subdirectory discovery + include expansion ───────────────────────

@@ -514,7 +514,7 @@ share an id (diffed as a multiset).
 
 See [[precis-se-atomic-help]].
 
-The construction ops `generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces, not new ops.
+The construction ops `generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces ([[precis-workspace-help]]), not new ops.
 
 Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
@@ -547,6 +547,6 @@ scadnano/caDNAno/oxDNA/PDB.
 - [[precis-se-atomic-help]] — atomic-mode block trees over real chemistry
 - [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing
 - [[precis-se-states-help]] — discrete states, transitions, the derived swing, view='sweep'
-- [[precis-se-fret-help]] — FRET links as a comm channel: chromophores, optical links, view='fret'
-- [[precis-se-flatpack-help]] — flat-pack boxes with shelves from one sheet: finger joints from t, nesting, laser SVG / CNC DXF
+- [[precis-se-fret-help]] — FRET links as a comm channel: chromophores, optical links
+- [[precis-se-flatpack-help]] — flat-pack boxes with shelves from one sheet
 - [[precis-se-search-help]] — ranked library search (wants=), the composition proposer (compose=) and the lever family

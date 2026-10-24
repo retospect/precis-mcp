@@ -6037,7 +6037,9 @@ def _render_pockets(tree: SeTree) -> str:
 
 _NO_TRACE = (
     "no construction trace on this design — view='trace' reads the "
-    "trace.json a workspace run stores on its job (precis-workspace-help); "
+    "trace.json a workspace run stores on its job, for structure-bound "
+    "(atomic) blocks only; cad-bound macro blocks carry made-by: on the "
+    "block eye but have no trace views yet (precis-workspace-help); "
     "hand-built and generator blocks have none"
 )
 

@@ -224,3 +224,4 @@ cadence is due, not broken (any live worker may claim it).
 - [[precis-rxn-help]] — the retrosynthesis lane
 - [[precis-status-help]] — the build serving *your own* process
 - [[precis-nursery-help]] — alerts
+- [[precis-workspace-help]] — the workspace script loop a `sandbox_run` will execute

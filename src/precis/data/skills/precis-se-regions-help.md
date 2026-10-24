@@ -418,4 +418,6 @@ atoms), `pga.ray.bundle(r, '4 mm', 8)` (a tool's tube),
 `thread` at the nominal ⌀, `clearance_for` within ISO 273 fine–coarse);
 `out.ray(r)` writes the manifest `rays:` entry. The import makes
 each a block child with a `made-by:` line naming the script frame; a ray
-the next run stops writing retires.
+the next run stops writing retires. `pg`/`pga`/`out` are the import
+aliases every workspace example uses — the whole loop is in
+[[precis-workspace-help]].

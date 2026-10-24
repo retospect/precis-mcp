@@ -82,7 +82,7 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
 
 ## Atomic-mode ops — `generate` (exact parameter list)
 
-`generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the structure), not new ops.
+`generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the structure — [[precis-workspace-help]]), not new ops.
 
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
   cyclodextrin|hexfold|hexfold_scene|tpms|schwarzite|smooth_drum`, `params` (dict), `name` (new block) · `parent`/`pose`/
