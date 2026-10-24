@@ -1,0 +1,143 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/board — the fleet status board: routine one-line status posts.
+
+Routine status (landed, red, waiting, done) goes on the board — a line
+costs nothing and wakes nobody. SendMessage stays for things that need
+action NOW (gr515152): every message wakes a whole session at full
+context. The coordinator reads the board each sweep instead of polling
+panes.
+
+  scripts/board post <window> <one line>   append a status line
+  scripts/board read [--since <ts>]        print posts (optionally at/after <ts>)
+  scripts/board clear                      empty the board
+
+The board is one append-only file, <main checkout>/.claude/fleet/board.log
+(gitignored). It is resolved through the common git dir, so every worktree
+of this checkout posts to the same board. PRECIS_BOARD overrides the path
+(tests). Each line: <UTC ISO Z>\t<window>\t<text>. post takes an exclusive
+flock and writes the whole line in one call — a burst of builders cannot
+interleave a line.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+def _git(*args: str) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cp.stdout.strip() if cp.returncode == 0 else None
+
+
+def _board_path() -> Path:
+    override = os.environ.get("PRECIS_BOARD", "").strip()
+    if override:
+        return Path(override)
+    common = _git("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        sys.exit("scripts/board: not inside a git checkout")
+    return Path(common.strip()).parent / ".claude" / "fleet" / "board.log"
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _tsv(text: str) -> str:
+    """One field: tabs and newlines would break the line format."""
+    return " ".join(text.split())
+
+
+def cmd_post(a: argparse.Namespace) -> int:
+    text = _tsv(" ".join(a.text))
+    if not text:
+        print("scripts/board: post needs a non-empty line", file=sys.stderr)
+        return 2
+    line = f"{_now()}\t{_tsv(a.window)}\t{text}\n"
+    path = _board_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.write(line)
+        fh.flush()
+    print(line, end="")
+    return 0
+
+
+def cmd_read(a: argparse.Namespace) -> int:
+    try:
+        lines = _board_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    since = a.since.strip()
+    for ln in lines:
+        if since and ln.split("\t", 1)[0] < since:
+            continue
+        print(ln)
+    return 0
+
+
+def cmd_clear(a: argparse.Namespace) -> int:
+    path = _board_path()
+    n = 0
+    try:
+        n = len(path.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.truncate()
+    print(f"board cleared ({n} line{'s' if n != 1 else ''} dropped)")
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="board",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("post", help="append one status line")
+    s.add_argument("window", help="your window or tree name")
+    s.add_argument("text", nargs="+", help="the one-line status")
+    s.set_defaults(fn=cmd_post)
+
+    s = sub.add_parser("read", help="print board lines")
+    s.add_argument(
+        "--since",
+        default="",
+        metavar="TS",
+        help="only lines stamped at/after TS (ISO prefix compare)",
+    )
+    s.set_defaults(fn=cmd_read)
+
+    sub.add_parser("clear", help="empty the board").set_defaults(fn=cmd_clear)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = parser().parse_args(argv)
+    return int(a.fn(a))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

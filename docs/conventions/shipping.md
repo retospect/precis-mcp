@@ -82,6 +82,13 @@ for the check.yml gate (shape and duration: `docs/conventions/testing.md`
 squash-merge to `main`. A full-gate ship lands an exactly-tested tree, or
 says it did not and pins nothing.
 
+Wait on any CI gate — a ship or release log, or a check.yml run id —
+with `scripts/ship-wait <log|run-id>` in the background: one until-loop
+that exits on green, red or cancelled, prints the verdict plus the first
+failure line, and exits nonzero on red or cancelled. It is the only way
+to wait on a gate (gr515152): no polling subagents, no log-tail loops in
+the main loop.
+
 Under the release train (Reto 2026-10-23) `--remote` is the HARNESS lane:
 required when the diff has any path under `scripts/ship`, `scripts/test`,
 `scripts/lib/` or `.github/`, refused otherwise ("`--remote` is for harness
@@ -316,6 +323,13 @@ sha after the sync attempt, `scripts/deploy`'s confirmation
 (`_confirm_prod_clone`) fails the run naming both shas.
 
 ## Rounds and the fleet
+
+Routine fleet status — landed, red, waiting, done — goes on the board,
+never in a message: `scripts/board post <window> <one line>` appends a
+stamped line to the shared gitignored `.claude/fleet/board.log` in the
+main checkout; the coordinator reads it each sweep with
+`scripts/board read [--since <ts>]`. SendMessage is only for things that
+need action now.
 
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,

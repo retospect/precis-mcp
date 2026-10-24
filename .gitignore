@@ -82,6 +82,11 @@ board*.svg
 !.claude/agents/
 !.claude/fleet/
 
+# Fleet status board (scripts/board): an append-only line log shared by all
+# worktrees through the main checkout — timestamps and window names, never
+# committed.
+.claude/fleet/board.log
+
 # Fleet review queue + design/review notes (scripts/fleet; outside .claude so
 # file-tool writes raise no "sensitive file" prompt).
 /fleet-notes/

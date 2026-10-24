@@ -61,6 +61,10 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
    ```
+   Wait on it with `scripts/ship-wait /tmp/ship.log` in the background —
+   it exits on green, red or cancelled with the verdict and the first
+   failure line, nonzero on red or cancelled. That watcher is the only
+   way to wait on the gate: no polling subagents, no log-tail loops.
    Output is quiet by default (gr497896): `/tmp/ship.log` captures the
    epilogue — ✖ lines, a conflict's file list, the printed `/tmp/ship-*.log`
    full-transcript path, and a final `SHIP_STATUS:` token. Tail the printed

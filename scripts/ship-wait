@@ -1,0 +1,263 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/ship-wait — the one gate waiter: a ship/release log or a run id.
+
+Run it in the background; it prints nothing until the gate resolves, then
+one verdict line (plus the first failure line on red). It is the only
+sanctioned way to wait on a CI gate — no polling subagents, no tail loops
+in a main loop (gr515152).
+
+  scripts/ship-wait <log>      watch a scripts/ship or scripts/release log
+  scripts/ship-wait <run-id>   poll `gh run view <id>` for a check.yml run
+
+Log mode reads the whole log each tick and exits on the first terminal
+marker found, in this order: the last `SHIP_STATUS:` token, the last
+`RELEASE_EXIT=N`, the first `✖` line (every scripts/ship failure ends in
+one — red, conflict, timeout, NETWORK, stayed-cancelled), `remote gate
+GREEN` / `CI green on`, then `CI red on` / `CI not green after` /
+`deploy failed`. A cancelled verdict exits 3; red exits 1 with the first
+failure line and the log's `gh run view --log-failed` pointer when there
+is one. Both the caller's epilogue log and ship's own full transcript
+carry these markers.
+
+Run-id mode polls `gh run view <id> --json status,conclusion`; on a
+completed non-success conclusion it names the first failing job from
+`--json jobs` and prints the `--log-failed` pointer.
+
+Exit codes: 0 green · 1 red/failed · 3 cancelled · 4 timed out (or the log
+never appeared) · 2 bad usage. Knobs: --interval SEC (default 20 for a
+log, 60 for a run id; env PRECIS_SHIP_WAIT_INTERVAL), --timeout-min MIN
+(default 150, env PRECIS_SHIP_WAIT_TIMEOUT_MIN). A log that never appears
+gives up after PRECIS_SHIP_WAIT_APPEAR_S seconds (default 60).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+GREEN, RED, CANCELLED, TIMEOUT = 0, 1, 3, 4
+#: scripts/release failure phrasings — its die() prints no ✖ marker.
+RELEASE_FAIL_PATS = ("CI red on", "CI not green after", "deploy failed")
+
+
+def _strip(text: str) -> str:
+    return ANSI.sub("", text)
+
+
+def _first_failure(lines: list[str]) -> str:
+    """First failure line: the indented job line under the first ✖ header
+    (the remote gate's `  <job>: <conclusion>` list), else the ✖ line,
+    else the first scripts/release failure phrasing."""
+    for i, ln in enumerate(lines):
+        if "✖" in ln:
+            for nxt in lines[i + 1 :]:
+                if not nxt.strip():
+                    continue
+                if nxt.startswith((" ", "\t")):
+                    return nxt.strip()
+                break
+            return ln.strip()
+    named = next(
+        (ln.strip() for ln in lines if any(p in ln for p in RELEASE_FAIL_PATS)),
+        None,
+    )
+    return named or ""
+
+
+def _log_pointer(raw: str) -> str:
+    m = re.findall(r"gh run view \d+ --log-failed", raw)
+    return m[-1] if m else ""
+
+
+def _log_verdict(text: str) -> tuple[int, str, str] | None:
+    """(rc, detail, fail_line) once a terminal marker appears; else None."""
+    raw = _strip(text)
+    lines = raw.splitlines()
+    ship = re.findall(r"SHIP_STATUS:\s*(\S+)", raw)
+    if ship:
+        tok = ship[-1]
+        if tok == "shipped":
+            return (GREEN, "SHIP_STATUS: shipped", "")
+        fail = _first_failure(lines)
+        if "cancel" in fail.lower():
+            return (CANCELLED, fail.lstrip("✖ ").strip(), fail)
+        return (RED, f"SHIP_STATUS: {tok}", fail)
+    rex = re.findall(r"RELEASE_EXIT=(\d+)", raw)
+    if rex:
+        if rex[-1] == "0":
+            return (GREEN, "RELEASE_EXIT=0", "")
+        fail = _first_failure(lines)
+        if "cancel" in fail.lower():
+            return (CANCELLED, fail.lstrip("✖ ").strip(), fail)
+        return (RED, f"RELEASE_EXIT={rex[-1]}", fail)
+    header = next((ln for ln in lines if "✖" in ln), None)
+    if header is not None:
+        det = header.strip()
+        if "cancel" in det.lower():
+            return (CANCELLED, det, det)
+        return (RED, det, _first_failure(lines))
+    green = next(
+        (
+            ln.strip()
+            for ln in lines
+            if "remote gate GREEN" in ln or "CI green on" in ln
+        ),
+        None,
+    )
+    if green:
+        return (GREEN, green, "")
+    red = next(
+        (ln.strip() for ln in lines if any(p in ln for p in RELEASE_FAIL_PATS)),
+        None,
+    )
+    if red:
+        return (RED, red, red)
+    return None
+
+
+def _read_log(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _gh(*args: str) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cp.stdout if cp.returncode == 0 else None
+
+
+def _first_failing_job(run_id: str) -> str:
+    out = _gh(
+        "run",
+        "view",
+        run_id,
+        "--json",
+        "jobs",
+        "--jq",
+        '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped"'
+        ' and .conclusion != null) | .name + ": " + .conclusion',
+    )
+    if out and out.strip():
+        return out.strip().splitlines()[0]
+    return "(jobs unavailable)"
+
+
+def _run_verdict(run_id: str) -> tuple[int, str, str] | None:
+    out = _gh(
+        "run",
+        "view",
+        run_id,
+        "--json",
+        "status,conclusion",
+        "--jq",
+        '.status + " " + (.conclusion // "")',
+    )
+    if out is None:
+        return None  # transient gh failure — keep polling
+    status = out.strip()
+    if not status.startswith("completed"):
+        return None
+    conclusion = status.partition(" ")[2].strip()
+    if conclusion.startswith("success"):
+        return (GREEN, f"run {run_id} green", "")
+    if conclusion.startswith("cancelled"):
+        return (CANCELLED, f"run {run_id} cancelled", "cancelled")
+    return (
+        RED,
+        f"run {run_id} {conclusion or 'failed'}",
+        _first_failing_job(run_id),
+    )
+
+
+def _report(rc: int, detail: str, fail: str, pointer: str) -> int:
+    word = {GREEN: "GREEN", RED: "RED", CANCELLED: "CANCELLED"}.get(rc, "RED")
+    print(f"ship-wait: {word} — {detail}")
+    if rc == RED:
+        if fail and fail != detail:
+            print(f"first failure: {fail}")
+        if pointer:
+            print(f"  → {pointer}")
+    return rc
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="ship-wait",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("target", help="a ship/release log path, or a check.yml run id")
+    ap.add_argument("--interval", type=float, default=None, metavar="SEC")
+    ap.add_argument("--timeout-min", type=float, default=None, metavar="MIN")
+    a = ap.parse_args(argv)
+
+    run_id = a.target if re.fullmatch(r"\d+", a.target) else ""
+    interval = a.interval
+    if interval is None:
+        env = os.environ.get("PRECIS_SHIP_WAIT_INTERVAL", "")
+        interval = float(env) if env else (60.0 if run_id else 20.0)
+    timeout_min = a.timeout_min
+    if timeout_min is None:
+        timeout_min = float(os.environ.get("PRECIS_SHIP_WAIT_TIMEOUT_MIN", "150"))
+    deadline = time.monotonic() + timeout_min * 60
+
+    pointer = ""
+    state: dict[str, str] = {}
+    if run_id:
+
+        def verdict() -> tuple[int, str, str] | None:
+            return _run_verdict(run_id)
+
+        pointer = f"gh run view {run_id} --log-failed"
+        desc = f"run {run_id}"
+    else:
+        log = Path(a.target)
+        appear_deadline = time.monotonic() + float(
+            os.environ.get("PRECIS_SHIP_WAIT_APPEAR_S", "60")
+        )
+        while not log.is_file():
+            if time.monotonic() >= appear_deadline:
+                print(f"ship-wait: TIMEOUT — log never appeared: {log}")
+                return TIMEOUT
+            time.sleep(min(interval, 5) or 5)
+
+        def _log_check() -> tuple[int, str, str] | None:
+            raw = _read_log(log)
+            v = _log_verdict(raw)
+            if v:
+                state["pointer"] = _log_pointer(raw)
+            return v
+
+        verdict = _log_check
+        desc = str(log)
+
+    while True:
+        v = verdict()
+        if v is not None:
+            rc, detail, fail = v
+            return _report(rc, detail, fail, pointer or state.get("pointer", ""))
+        if time.monotonic() >= deadline:
+            print(f"ship-wait: TIMEOUT — {desc} unresolved after {timeout_min:g} min")
+            return TIMEOUT
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

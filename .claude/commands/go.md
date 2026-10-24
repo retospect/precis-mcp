@@ -82,9 +82,11 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/release > .claude/release.log 2>&1; echo "RELEASE_EXIT=$?" >> .claude/release.log
    ```
-   Wait on `^RELEASE_EXIT=` (Bash `run_in_background`), and arm a Monitor on
-   the log for `^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]|queued|riding|red`
-   so silence is never ambiguous. The deploy step still tees to the main
+   Wait on it with `scripts/ship-wait .claude/release.log` in the
+   background — it exits on green, red or cancelled with the verdict and
+   the first failure line, nonzero on red or cancelled. That watcher is
+   the only way to wait on the gate: no polling subagents, no log-tail
+   loops. The deploy step still tees to the main
    checkout's `.deploy-logs/<ts>-<ref>.log`.
 
    | Exit | Meaning | Do |

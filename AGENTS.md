@@ -136,10 +136,13 @@ session integrates then empties it. No other memory writes, no replay tooling.
 ## Agent sizing
 
 Delegate down: start each task on the cheapest agent that fits. Per-agent
-remits are in `.claude/agents/`. Mechanical work (search, extraction, test
-runs, tidying) goes to the small tier; a decided edit to a coder, test
-author or documenter; design, schema and domain judgment stay with the
-main loop. Subagent prompts must forbid `docker ... prune` and forbid
+remits are in `.claude/agents/`. Spec, verify and review work uses the
+named Sonnet agents (`ready`, `reviewer`, `root-cause`, `test-author`);
+pollers and runners use the Haiku agents (`cmd-runner`, `test-runner`) —
+never `general-purpose` or a fork for these jobs. Other mechanical work
+(search, extraction, tidying) goes to the small tier; a decided edit to a
+coder, test author or documenter; design, schema and domain judgment stay
+with the main loop. Subagent prompts must forbid `docker ... prune` and forbid
 writing scripts in the shared `/tmp`.
 
 An editing subagent either works in your tree (you stay off its files) or
