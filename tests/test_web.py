@@ -453,6 +453,9 @@ def test_missing_fitz_is_unsupported(
     ``pip install 'precis-mcp[paper]'`` hint, like the trafilatura gate."""
     import importlib as _il
 
+    # Build the PDF first: the patch below replaces importlib.import_module
+    # module-wide, so pytest.importorskip("fitz") inside _make_pdf would hit it.
+    pdf = _make_pdf(["some text"])
     real_import = _il.import_module
 
     def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -464,7 +467,7 @@ def test_missing_fitz_is_unsupported(
         "precis.utils.optional_deps.importlib.import_module", _fake_import
     )
     _StubClient.response = _StubResp(
-        content=_make_pdf(["some text"]), headers={"content-type": "application/pdf"}
+        content=pdf, headers={"content-type": "application/pdf"}
     )
     with pytest.raises(Unsupported) as exc_info:
         handler.get(id="https://example.com/needs-fitz.pdf")
