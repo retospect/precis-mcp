@@ -33,9 +33,12 @@ acquire_main_gated_publication() {
 }
 
 # A retained attempt owns the release even after its controller exits.
+# $1 names the release branch the caller is about to mutate — only that
+# record's pending cut or live deploy journal blocks; a different record's
+# journal does not.
 release_journal_clear() {
     local common reader
     reader="$(dirname "${BASH_SOURCE[0]}")/round_state.py"
     common="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
-    python3 "$reader" "$common/precis-round/round.json" journal
+    python3 "$reader" "$common/precis-round/round.json" journal "${1:-}"
 }

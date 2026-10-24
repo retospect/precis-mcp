@@ -22,7 +22,9 @@ from tests.test_round_gate import (
     Rig,
     _commit,
     _git,
+    _live,
     _push_branch,
+    _rel,
     _round_json,
 )
 from tests.test_round_gate import rig as rig
@@ -33,7 +35,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 RELEASE = REPO_ROOT / "scripts" / "release"
-FAST = ("--poll", "0.01", "--ci-timeout", "0.02", "--queue-timeout", "0.02")
+FAST = ("--poll", "0.01", "--ci-timeout", "0.02")
 
 
 def _release(rig: Rig, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -98,12 +100,14 @@ def test_rides_an_unrecorded_release_that_contains_s(rig: Rig) -> None:
     assert rig.deploy_log() == []
 
 
-def test_queue_timeout_exits_four(rig: Rig) -> None:
+def test_release_not_containing_s_rides_the_next_cut(rig: Rig) -> None:
+    """No queueing (release-train §5): an in-flight release that lacks S
+    reports and exits 0 — the driver cuts N+1 at deploy start."""
     _push_branch(rig, "release/r7", rig.shas["c0"])
     out = _release(rig, *FAST)
-    assert out.returncode == 4
-    assert out.stdout.count("queued: release/r7 in flight") == 1
-    assert f"{rig.shas['c3'][:9]} is on main" in out.stderr
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"{rig.shas['c3'][:9]} rides the next cut" in out.stdout
+    assert "queued" not in out.stdout
     assert rig.deploy_log() == []
 
 
@@ -117,7 +121,7 @@ def test_fresh_path_opens_cuts_waits_and_deploys(rig: Rig) -> None:
     assert _next_line(s) in out.stdout
     assert rig.origin_ref("release/r1") == s
     assert rig.deploy_log() == [f"{s} --pinned"]
-    assert _round_json(rig)["release"]["deployment"]["sha"] == s
+    assert _rel(_round_json(rig))["deployment"]["sha"] == s
 
 
 def test_red_check_run_exits_two_with_job_and_url(rig: Rig) -> None:
@@ -176,7 +180,7 @@ def test_rerun_after_cut_resumes_without_recutting(rig: Rig) -> None:
     assert out.returncode == 3, out.stdout + out.stderr
     assert "resuming release release/r1" in out.stdout
     assert " cut at " not in out.stdout
-    assert _round_json(rig)["release"]["base"] == before["release"]["base"] == s
+    assert _rel(_round_json(rig))["base"] == _rel(before)["base"] == s
     assert _round_json(rig)["n"] == 1
     assert rig.deploy_log() == [f"{s} --pinned"]
     assert _next_line(s) in out.stdout
@@ -203,7 +207,7 @@ def test_deployed_round_is_closed_and_reopened_before_cutting(rig: Rig) -> None:
     )
     assert confirm.returncode == 0, confirm.stderr
     state = _round_json(rig)
-    assert state["open"] and state["deployed"] and "release" not in state
+    assert state["open"] and state["deployed"] and not _live(state)
     s2 = _commit(rig.root, "src/c.py", "c4 code")
     _git(rig.root, "push", "-q", "origin", "main")
     verdict = {**_verdict(s2), "DEPLOY_STUB_VERIFY": "1"}
@@ -239,7 +243,7 @@ def _marker(rig: Rig) -> Path:
 def test_cut_writes_owner_marker(rig: Rig) -> None:
     assert _release(rig, *FAST).returncode == 2  # cut, CI never green
     mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
-    rel = _round_json(rig)["release"]
+    rel = _rel(_round_json(rig))
     assert (mark["branch"], mark["base"]) == (rel["branch"], rel["base"])
     assert mark["cut_at"] == rel["cut_at"]
     assert mark["worktree"] == str(rig.root)
@@ -303,15 +307,16 @@ def test_failed_cut_push_keeps_ownership_and_never_rides(rig: Rig) -> None:
     hook = _reject_release_pushes(rig)
     out = _release(rig, "--sha", c2, *FAST)
     assert out.returncode == 1
-    assert _round_json(rig)["release"]["cut_pending"] is True
+    assert _rel(_round_json(rig))["cut_pending"] is True
     assert _marker(rig).exists()
     assert rig.origin_ref("release/r1") == ""
-    # a sibling must neither ride the unpushed record nor deploy: it queues
+    # a sibling neither rides the unpushed record nor deploys: next cut
     saved = _marker(rig).read_text(encoding="utf-8")
     _marker(rig).unlink()
     sib = _release(rig, "--sha", c2, *FAST)
-    assert sib.returncode == 4, sib.stdout + sib.stderr
-    assert "riding" not in sib.stdout
+    assert sib.returncode == 0, sib.stdout + sib.stderr
+    assert "riding release" not in sib.stdout
+    assert "rides the next cut" in sib.stdout
     # the owner resumes with the recorded base (not the newer main tip)
     _marker(rig).write_text(saved, encoding="utf-8")
     hook.unlink()
@@ -430,7 +435,11 @@ def test_reconciling_anothers_pending_cut_does_not_claim_ownership(
         "rnd",
         lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=cut_out, stderr=""),
     )
-    monkeypatch.setattr(mod, "round_state", lambda: {"n": 1, "release": rel})
+    monkeypatch.setattr(
+        mod,
+        "round_state",
+        lambda: {"n": 1, "releases": [{**rel, "n": 1, "state": "cut"}]},
+    )
     monkeypatch.setattr(mod, "finish", lambda args, s: 77)
     args = mod.argparse.Namespace(adopt=False)
     assert mod.cut_and_finish(args, sha) == (77 if claims else -1)
@@ -448,7 +457,7 @@ def test_stale_round_number_cut_refusal_exits_one_and_clears_marker(rig: Rig) ->
     assert "deployed/r1 is already tagged on origin" in out.stderr
     assert not _marker(rig).exists()
     assert rig.origin_ref("release/r1") == ""
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
 
 
 # ── stale-verdict re-gate (release re-runs CI instead of refusing) ──────────
@@ -485,7 +494,7 @@ def test_partial_deploy_resumes_after_fresh_same_sha_verdict(rig: Rig) -> None:
     s = rig.shas["c3"]
     failed = _release(rig, "--sha", s, *FAST, **_verdict(s), DEPLOY_STUB_RC="9")
     assert failed.returncode == 9, failed.stdout + failed.stderr
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal["sha"] == s and "rollout_at" not in journal
     _verdict_file(rig, "v-stale", s, 9.0)
     _verdict_file(rig, "v-fresh", s, 0.1)
@@ -498,7 +507,7 @@ def test_partial_deploy_resumes_after_fresh_same_sha_verdict(rig: Rig) -> None:
     )
     assert resumed.returncode == 3, resumed.stdout + resumed.stderr
     assert "re-ran check.yml run 4242" in resumed.stdout
-    assert _round_json(rig)["release"]["deployment"]["sha"] == s
+    assert _rel(_round_json(rig))["deployment"]["sha"] == s
     assert rig.deploy_log() == [f"{s} --pinned", f"{s} --pinned"]
     assert rig.origin_ref("release/r1") == s
 

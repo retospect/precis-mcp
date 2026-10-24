@@ -253,6 +253,7 @@ SLOW="${PRECIS_GATE_SLOW:-0}"
 # into main (design note 5, ship-gate-ci). Implies --quick; see the usage header.
 RELEASE=0
 ALLOW_MIGRATION=0
+RELEASE_BRANCH=""
 # --verbose (or PRECIS_SHIP_VERBOSE=1): the full transcript on the terminal,
 # as before. Default is quiet (gr497896): the run goes to a /tmp log and the
 # terminal sees only its ✖ lines, a conflict's file list, the log path and a
@@ -263,6 +264,7 @@ ORIG_ARGV=("$@")
 while :; do
     case "${1:-}" in
         --release)  RELEASE=1; QUICK=1; shift ;;
+        --release-branch) RELEASE_BRANCH="${2:-}"; shift 2 ;;
         --allow-migration) ALLOW_MIGRATION=1; shift ;;
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
@@ -277,13 +279,14 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
 
 [[ "$RELEASE" == 1 && "$REMOTE" == 1 ]] && { printf '\033[31m✖ --release and --remote are contradictory (the release push'"'"'s own CI run is the gate) — drop --remote.\033[0m\n' >&2; exit 2; }
 [[ "$ALLOW_MIGRATION" == 1 && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --allow-migration only means something with --release.\033[0m\n' >&2; exit 2; }
+[[ -n "$RELEASE_BRANCH" && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --release-branch only means something with --release.\033[0m\n' >&2; exit 2; }
 
 # --checked implies --quick, so its --remote refusal must come first or it
 # would die on the generic "--remote vs --quick" message.
@@ -1494,20 +1497,32 @@ _release_scan_paths() {
 }
 
 _release_preflight() {
-    local out heads n ncommits
-    out="$(git ls-remote --heads origin 'refs/heads/release/*')" \
-        || die "could not read origin's release branches (git ls-remote failed) — check the network and re-run scripts/ship --release."
-    heads="$(printf '%s\n' "$out" | sed -n 's#^[0-9a-f]*[[:space:]]*refs/heads/\(release/.*\)$#\1#p')"
-    n="$(printf '%s' "$heads" | grep -c . || true)"
-    if [[ "$n" == 0 ]]; then
-        die "no open release branch on origin (release/r<N>) — nothing to apply a fix onto. The coordinator cuts one with 'scripts/round cut'; without a release, qland to main."
-    elif [[ "$n" != 1 ]]; then
-        die "$n release branches are open on origin ($(printf '%s' "$heads" | tr '\n' ' ')) — --release applies to exactly one. Ask the coordinator to settle or abandon the extras. Nothing was pushed."
+    local out ncommits relinfo rc next
+    # The fix target is the OPEN release recorded in round state (cut..green),
+    # not the count of release/* branches on origin (release-train §5): while
+    # N deploys, r<N+1> is already cut and takes the fixes.
+    relinfo="$(python3 "${WORKTREE}/scripts/lib/round_state.py" \
+        "$(git rev-parse --path-format=absolute --git-common-dir)/precis-round/round.json" \
+        open-release)" || rc=$?
+    rc=${rc:-0}
+    if (( rc == 2 )); then
+        die "could not read release state (precis-round/round.json) — refusing. Nothing was pushed."
+    elif (( rc != 0 )); then
+        next="${relinfo#next }"
+        [[ "$next" =~ ^r[0-9]+$ ]] || next="the next release"
+        die "no open release in round state — land on main with --quick; it rides ${next}. (The coordinator cuts one with 'scripts/round cut'.)"
     fi
-    REL_BRANCH="$heads"
+    REL_BRANCH="$relinfo"
+    if [[ -n "$RELEASE_BRANCH" && "$RELEASE_BRANCH" != "$REL_BRANCH" ]]; then
+        die "--release-branch ${RELEASE_BRANCH} is not the open release (${REL_BRANCH}) — refusing. Nothing was pushed."
+    fi
     [[ "$REL_BRANCH" =~ ^release/r([0-9]+)$ ]] \
         || die "the open release branch '${REL_BRANCH}' is not named release/r<N> — refusing. Nothing was pushed."
     REL_N="${BASH_REMATCH[1]}"
+    out="$(git ls-remote --heads origin "refs/heads/${REL_BRANCH}")" \
+        || die "could not read origin's branches (git ls-remote failed) — check the network and re-run scripts/ship --release."
+    [[ -n "$out" ]] \
+        || die "the recorded open release ${REL_BRANCH} is not on origin — reconcile round state with the coordinator. Nothing was pushed."
     RELEASE_B="$(git merge-base HEAD origin/main)" \
         || die "no merge-base between HEAD and origin/main — refusing. Nothing was pushed."
 
@@ -1616,7 +1631,7 @@ _release_land() {
     say "shipping release fix to ${REL_BRANCH}, forwarding into main"
     . "${WORKTREE}/scripts/lib/round-lock.sh"
     acquire_round_lock || die "release lifecycle busy — nothing pushed."
-    release_journal_clear || die "release deployment journal owns the head — resume round deploy before any release fix. Nothing pushed."
+    release_journal_clear "$REL_BRANCH" || die "release deployment journal owns the head — resume round deploy before any release fix. Nothing pushed."
     acquire_ship_lock
     while :; do
         try=$(( try + 1 ))

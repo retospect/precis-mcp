@@ -139,10 +139,12 @@ leaves runtime proof to the session: verify boot shas and the session MCP,
 then `round deploy --confirm-runtime S --runtime-evidence …` tags
 `deployed/r<N>`, deletes the branch, and `round close` ends the round.
 
-Main pushes after the cut never reach the release. One release at a time:
-a `/go` whose sha the in-flight release contains exits 0 (rides along); any
-other waits for it to retire, then cuts the next (exit 4 if the wait times
-out). Release CI has no diff-coverage gate or mutation pass yet
+Main pushes after the cut never reach the release. One *open* release at a
+time, but the train pipelines (release-train §5): once release N is deploying,
+`round cut` may cut r<N+1> at `origin/main` (which must contain N's head with
+a differing tree). A `/go` whose sha an in-flight release contains exits 0
+(rides along); any other exits 0 with "rides the next cut" — the driver cuts
+N+1 at deploy start, there is no queue. Release CI has no diff-coverage gate or mutation pass yet
 (`docs/backlog/release-ci-diff-coverage.md`); the local full gate with
 both is still `scripts/ship --mutate --full` + `scripts/deploy <.ship-sha>
 --pinned`, now off the `/go` path. Exit-code table: `.claude/commands/go.md`

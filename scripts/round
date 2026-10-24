@@ -26,8 +26,9 @@ and nothing is tracked or pushed.
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
-Marks carry the round number, so a mark left from an earlier round reads as
-"no mark" — `open` never has to clean up after anyone. `in` and `none` are
+Marks carry the open release's number (the round number when no release is
+open), so a mark left from an earlier release or round reads as "no mark" —
+`open` never has to clean up after anyone. `in` and `none` are
 final for the round; `eta` is not, so an `eta` peer stays in `pending`.
 
 There is no local gate and no ship lock in a round any more. A push to main
@@ -48,11 +49,18 @@ a round. Peers do not deploy — the coordinator
 runs `deploy`.
 
 `cut` freezes what the round ships: it pushes `release/r<N>` at the candidate
-(the sha `gate` names, or `--sha`), records it in round.json and prints the
+(the sha `gate` names, or `--sha`), appends a record to round.json's
+`releases` list and prints the
 peers' marked shas the cut does not contain (`late: <peer> <sha>`). check.yml
-runs the full gate shape on every `release/**` push. It refuses while any
-release branch exists on origin, off main's first-parent line, or when the cut
-tree carries a new duplicate migration number. While recorded, gate/deploy
+runs the full gate shape on every `release/**` push. Each record carries a
+state (release-train §5): open while it can take fixes (cut, gating, fixing,
+green), deploying/deployed while a rollout journal is live, then terminal
+(confirmed, superseded, abandoned). `cut` refuses while an open release is
+recorded or an unrecorded release branch exists on origin, off main's
+first-parent line, or when the cut tree carries a new duplicate migration
+number. Once release N is deploying or later, `cut` may append r<N+1> at
+origin/main — only when main contains N's head and its tree differs, so the
+train pipelines while a release deploys. While recorded, gate/deploy
 read only its exact remote head's full CI certificate and age, bound to one
 check.yml run/attempt with distinct required jobs: no earlier green SHA or
 main fallback. The head need not yet be
@@ -113,6 +121,13 @@ from pathlib import Path
 from typing import Any, cast
 
 FINAL = ("in", "none")
+# Release-record states (docs/backlog/release-train.md §5): a record is *open*
+# while it can take fixes, then moves through the deploy journal to terminal.
+# The strict reader in scripts/lib/round_state.py validates the same sets —
+# keep them in sync (a test pins it).
+_OPEN_STATES = frozenset({"cut", "gating", "fixing", "green"})
+_DEPLOYING_STATES = frozenset({"deploying", "deployed"})
+_TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned"})
 # check.yml `plan`'s docs-lane classifier: a commit touching only paths that
 # match this is docs-only. A test pins that the workflow still says the same.
 DOCS_ONLY_RE = r"^(docs/|[^/]+\.md$)"
@@ -181,8 +196,12 @@ def _archive_receipt(state: Path, cur: dict[str, Any]) -> None:
     """Exclusive atomic publication retains immutable evidence across round open."""
     if not cur.get("deployed"):
         return
-    receipt = {"n": cur["n"], "base": cur.get("base", ""), "deployed": cur["deployed"]}
-    path = state / "receipts" / f"r{cur['n']}.json"
+    receipt = {
+        "n": cur["deployed"].get("n", cur["n"]),
+        "base": cur.get("base", ""),
+        "deployed": cur["deployed"],
+    }
+    path = state / "receipts" / f"r{receipt['n']}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -198,21 +217,21 @@ def _archive_receipt(state: Path, cur: dict[str, Any]) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _completed_deployment(cur: dict[str, Any]) -> dict[str, Any]:
-    rel = cur["release"]
+def _completed_deployment(cur: dict[str, Any], rel: dict[str, Any]) -> dict[str, Any]:
     return {
         **rel["deployment"],
-        "tag": f"deployed/r{cur['n']}",
+        "n": rel["n"],
+        "tag": f"deployed/r{rel['n']}",
         "branch": rel["branch"],
         "at": rel["deployment"]["runtime_confirmed_at"],
     }
 
 
 def _reconcile_completion_archive(
-    state: Path, cur: dict[str, Any], *, dry_run: bool
+    state: Path, cur: dict[str, Any], rel: dict[str, Any], *, dry_run: bool
 ) -> int | None:
     """Archive publication commits completion, before any later install repair."""
-    path = state / "receipts" / f"r{cur['n']}.json"
+    path = state / "receipts" / f"r{rel['n']}.json"
     try:
         archived = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -221,14 +240,14 @@ def _reconcile_completion_archive(
         return _deploy_refuse("immutable completion archive is a dangling link")
     except (OSError, ValueError):
         return _deploy_refuse("immutable completion archive is unreadable")
-    if not cur["release"].get("deployment", {}).get("runtime_confirmed_at"):
+    if not rel.get("deployment", {}).get("runtime_confirmed_at"):
         return _deploy_refuse(
             "immutable completion archive conflicts with the retained journal"
         )
     expected = {
-        "n": cur["n"],
+        "n": rel["n"],
         "base": cur.get("base", ""),
-        "deployed": _completed_deployment(cur),
+        "deployed": _completed_deployment(cur, rel),
     }
     if archived != expected:
         return _deploy_refuse(
@@ -240,7 +259,7 @@ def _reconcile_completion_archive(
         )
         return 0
     cur["deployed"] = archived["deployed"]
-    del cur["release"]
+    rel["state"] = "confirmed"
     _write(state / "round.json", cur)
     print(
         f"round {cur['n']} completion already archived at {cur['deployed']['sha'][:9]}; "
@@ -273,11 +292,52 @@ def _open_round(state: Path) -> dict[str, Any] | None:
     return cur if cur and cur.get("open") else None
 
 
-def _marks(state: Path, n: int) -> dict[str, dict[str, Any]]:
+def _releases(cur: dict[str, Any]) -> list[dict[str, Any]]:
+    return cur.get("releases") or []
+
+
+def _live(cur: dict[str, Any]) -> list[dict[str, Any]]:
+    """Non-terminal release records (open or deploying/deployed)."""
+    return [r for r in _releases(cur) if r["state"] not in _TERMINAL_STATES]
+
+
+def _open_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
+    """The open release (cut..green) — the fix target and the marks' scope."""
+    return next((r for r in _live(cur) if r["state"] in _OPEN_STATES), None)
+
+
+def _dep_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
+    """The release whose rollout journal is live (deploying/deployed)."""
+    return next((r for r in _live(cur) if r["state"] in _DEPLOYING_STATES), None)
+
+
+def _active_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
+    """The release gate/deploy act on: a live rollout first, else the open one."""
+    return _dep_rel(cur) or _open_rel(cur)
+
+
+def _mark_scope(cur: dict[str, Any]) -> int:
+    """Peer marks attach to the open release, else the next cut's number."""
+    rel = _open_rel(cur)
+    if rel:
+        return int(rel["n"])
+    records = _releases(cur)
+    if records:
+        return max(int(r["n"]) for r in records) + 1
+    return int(cur.get("n", 0))
+
+
+def _mark_matches(mark: dict[str, Any], scope: int) -> bool:
+    return (
+        mark.get("release") if mark.get("release") is not None else mark.get("round")
+    ) == scope
+
+
+def _marks(state: Path, scope: int) -> dict[str, dict[str, Any]]:
     marks: dict[str, dict[str, Any]] = {}
     for path in sorted((state / "marks").glob("*.json")):
         mark = _read(path)
-        if mark and mark.get("round") == n:
+        if mark and _mark_matches(mark, scope):
             marks[path.stem] = mark
     return marks
 
@@ -315,9 +375,9 @@ def _origin_round_max(root: Path) -> int | None:
 
 def cmd_open(state: Path, args: argparse.Namespace) -> int:
     prev = _read_round(state)
-    if prev.get("open") or prev.get("release"):
+    if prev.get("open") or _live(prev):
         print(
-            f"scripts/round: round {prev['n']} is still open or has a release — close it first",
+            f"scripts/round: round {prev['n']} is still open or has a live release — close it first",
             file=sys.stderr,
         )
         return 1
@@ -331,12 +391,13 @@ def cmd_open(state: Path, args: argparse.Namespace) -> int:
         return 1
     _archive_receipt(state, prev)
     base = args.base or _git("rev-parse", "origin/prod") or ""
-    cur = {
+    cur: dict[str, Any] = {
         "n": max(int(prev.get("n", 0)), taken) + 1,
         "open": True,
         "opened": _now(),
         "by": _peer(),
         "base": base,
+        "releases": [],
     }
     _write(state / "round.json", cur)
     print(f"round {cur['n']} open (base {base[:8] or 'unknown'})")
@@ -345,9 +406,9 @@ def cmd_open(state: Path, args: argparse.Namespace) -> int:
 
 def cmd_close(state: Path, _args: argparse.Namespace) -> int:
     cur = _require_round(state)
-    if cur.get("release"):
+    if _live(cur):
         sys.exit(
-            "scripts/round: close refused — deploy/retire or abandon the open release first"
+            "scripts/round: close refused — deploy/retire or abandon the live release first"
         )
     cur.update({"open": False, "closed": _now()})
     _write(state / "round.json", cur)
@@ -360,8 +421,9 @@ def cmd_mark(state: Path, args: argparse.Namespace) -> int:
     peer = _peer()
     path = state / "marks" / f"{peer}.json"
     mark = _read(path) or {}
-    if mark.get("round") != cur["n"]:
-        mark = {"round": cur["n"], "shas": []}
+    scope = _mark_scope(cur)
+    if not _mark_matches(mark, scope):
+        mark = {"round": cur["n"], "release": scope, "shas": []}
     if args.cmd == "in":
         if not _SHA.match(args.sha):
             print(f"scripts/round: {args.sha!r} is not a commit sha", file=sys.stderr)
@@ -379,7 +441,15 @@ def cmd_mark(state: Path, args: argparse.Namespace) -> int:
     if args.cmd == "eta" and not note:
         print("scripts/round: eta needs text — what remains, and when", file=sys.stderr)
         return 1
-    mark.update({"status": args.cmd, "note": note, "at": _now()})
+    mark.update(
+        {
+            "status": args.cmd,
+            "note": note,
+            "at": _now(),
+            "round": cur["n"],
+            "release": scope,
+        }
+    )
     _write(path, mark)
     shas = " ".join(s[:8] for s in mark["shas"])
     print(
@@ -389,7 +459,7 @@ def cmd_mark(state: Path, args: argparse.Namespace) -> int:
 
 
 def _rows(state: Path, cur: dict[str, Any]) -> list[dict[str, Any]]:
-    marks = _marks(state, cur["n"])
+    marks = _marks(state, _mark_scope(cur))
     rows = []
     for name in sorted(set(_worktrees()) | set(marks)):
         mark = marks.get(name, {})
@@ -419,15 +489,14 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
         print(json.dumps({"round": cur, "peers": rows}))
         return 0
     print(
-        f"round {cur['n']} — opened {cur['opened']} by {cur['by']}, base {cur.get('base', '')[:8] or 'unknown'}"
+        f"round {cur['n']} — opened {cur.get('opened', '?')} by {cur.get('by', '?')}, base {cur.get('base', '')[:8] or 'unknown'}"
     )
-    rel = cur.get("release")
-    if rel:
+    for rel in _live(cur):
         hrs = _hours_since(rel.get("cut_at", ""))
         age = f"{hrs:.1f}h" if hrs is not None else "unknown age"
         head = _remote(_root(), f"refs/heads/{rel['branch']}")
         print(
-            f"  release {rel['branch']} at {(head or rel['base'])[:9]}, cut {age} ago"
+            f"  release {rel['branch']} at {(head or rel['base'])[:9]}, cut {age} ago [{rel['state']}]"
         )
         if head is None:
             print("  release head unreadable on origin")
@@ -724,7 +793,7 @@ def _refresh_release_pointers(
 
 def _gate_facts(root: Path) -> dict[str, Any]:
     cur = _read_round(_round_state(root))
-    rel = cur.get("release")
+    rel = _active_rel(cur)
     if rel:
         _fetch(root)
         release_facts = _release_candidate(root, rel)
@@ -761,7 +830,7 @@ def _gate_facts(root: Path) -> dict[str, Any]:
         if rel.get("cut_pending"):
             facts.update(candidate="", candidate_state="unreadable")
             return facts
-        if not cur.get("open") or rel.get("branch") != f"release/r{cur.get('n')}":
+        if not cur.get("open"):
             facts.update(candidate="", candidate_state="unreadable")
             return facts
         journal = rel.get("deployment", {})
@@ -894,7 +963,7 @@ def _refusal(root: Path, f: dict[str, Any]) -> str:
             or not certificate.get("attempt")
         ):
             return "exact release head lacks its CI workflow/run/attempt certificate"
-        rel = (_read_round(_round_state(root))).get("release", {})
+        rel = _active_rel(_read_round(_round_state(root))) or {}
         if not _ancestor(root, rel.get("base", ""), cand):
             return "release head is not a descendant of its recorded cut SHA"
     pin = root / ".ship-sha"
@@ -977,9 +1046,10 @@ def _confirmed_receipt_matches(root: Path, journal: dict[str, Any]) -> bool:
     return receipt is not None and receipt == journal.get("runtime_receipt")
 
 
-def _confirmation_head_matches(root: Path, cur: dict[str, Any]) -> bool:
+def _confirmation_head_matches(
+    root: Path, cur: dict[str, Any], rel: dict[str, Any]
+) -> bool:
     """Missing branch is recoverable only with prior proof and completed refs."""
-    rel = cur["release"]
     journal = rel["deployment"]
     sha = journal["sha"]
     head = _remote(root, f"refs/heads/{rel['branch']}")
@@ -994,7 +1064,7 @@ def _confirmation_head_matches(root: Path, cur: dict[str, Any]) -> bool:
     ):
         return False
     if (
-        _remote(root, f"refs/tags/deployed/r{cur['n']}") != sha
+        _remote(root, f"refs/tags/deployed/r{rel['n']}") != sha
         or not _deploy_receipt_matches(root, sha, journal["started_epoch"])
         or _rgit(root, "fetch", "-q", "origin", "main") is None
     ):
@@ -1003,11 +1073,12 @@ def _confirmation_head_matches(root: Path, cur: dict[str, Any]) -> bool:
     return bool(main and _ancestor(root, sha, main))
 
 
-def _finish_release(root: Path, state: Path, cur: dict[str, Any]) -> int:
-    """Idempotent tag → final forward merge → leased delete → record clear."""
-    rel = cur["release"]
+def _finish_release(
+    root: Path, state: Path, cur: dict[str, Any], rel: dict[str, Any]
+) -> int:
+    """Idempotent tag → final forward merge → leased delete → record confirm."""
     sha = rel["deployment"]["sha"]
-    branch, tag = rel["branch"], f"deployed/r{cur['n']}"
+    branch, tag = rel["branch"], f"deployed/r{rel['n']}"
     if not _confirmed_receipt_matches(root, rel["deployment"]):
         return _deploy_refuse(
             "runtime-confirmed deployment receipt/prod no longer matches the pinned SHA"
@@ -1104,9 +1175,9 @@ def _finish_release(root: Path, state: Path, cur: dict[str, Any]) -> int:
         return _deploy_refuse("leased release retirement failed; tag/main preserved")
     if _remote(root, f"refs/heads/{branch}") != "":
         return _deploy_refuse("release deletion was not confirmed")
-    cur["deployed"] = _completed_deployment(cur)
+    cur["deployed"] = _completed_deployment(cur, rel)
     _archive_receipt(state, cur)
-    del cur["release"]
+    rel["state"] = "confirmed"
     _write(state / "round.json", cur)
     print(
         f"{branch} deployed at {sha[:9]}, tagged {tag}, forwarded to main and retired"
@@ -1118,19 +1189,19 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
     root = _root()
     state = _round_state(root)
     cur = _read_round(state)
-    rel = cur.get("release")
+    rel = _active_rel(cur)
     if not rel and cur.get("deployed"):
         print(
             f"round {cur['n']} already completed at {cur['deployed']['sha'][:9]}; "
             "no new deploy performed — close/open the next round"
         )
         return 0
-    if rel and (not cur.get("open") or rel.get("branch") != f"release/r{cur.get('n')}"):
+    if rel and not cur.get("open"):
         return _deploy_refuse(
             "recorded release identity/open-round state is inconsistent"
         )
     if rel:
-        recovered = _reconcile_completion_archive(state, cur, dry_run=args.dry_run)
+        recovered = _reconcile_completion_archive(state, cur, rel, dry_run=args.dry_run)
         if recovered is not None:
             return recovered
     journal = rel.get("deployment", {}) if rel else {}
@@ -1213,14 +1284,14 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
                     "dry-run: would resume runtime-confirmed release retirement without reinstalling"
                 )
                 return 0
-            return _finish_release(root, state, cur)
+            return _finish_release(root, state, cur, rel)
         if args.confirm_runtime != sha or not args.runtime_evidence.strip():
             print(
                 f"rollout {sha[:9]} returned success; runtime verification pending. Verify every required daemon's boot SHA/readiness and the session MCP, then run:\n"
                 f"  scripts/round deploy --confirm-runtime {sha} --runtime-evidence '<observed service/boot-SHA/readiness evidence>'"
             )
             return 3
-        if not _confirmation_head_matches(root, cur):
+        if not _confirmation_head_matches(root, cur, rel):
             return _deploy_refuse(
                 "release head changed or missing retirement evidence before runtime confirmation"
             )
@@ -1236,7 +1307,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             runtime_receipt=receipt,
         )
         _write(state / "round.json", cur)
-        return _finish_release(root, state, cur)
+        return _finish_release(root, state, cur, rel)
     if getattr(args, "catch_up", False):
         return _deploy_refuse(
             "--catch-up requires a recorded rollout journal — re-run deploy normally"
@@ -1263,7 +1334,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             return _deploy_refuse(
                 f"partial deployment pins {pinned[:9]}, release now names {cand[:9]}"
             )
-        tag = _remote(root, f"refs/tags/deployed/r{cur['n']}")
+        tag = _remote(root, f"refs/tags/deployed/r{rel['n']}")
         if tag is None or (tag and tag != cand):
             return _deploy_refuse("immutable deployed tag differs or is unreadable")
         if not _release_unchanged(root, rel["branch"], cand):
@@ -1290,7 +1361,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         print(f"dry-run: would run scripts/deploy {cand} --pinned")
         if rel:
             print(
-                f"dry-run: would tag deployed/r{cur['n']}, forward merge and lease-retire {rel['branch']}"
+                f"dry-run: would tag deployed/r{rel['n']}, forward merge and lease-retire {rel['branch']}"
             )
         return 0
     if rel:
@@ -1301,6 +1372,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "gated_before": f["origin_gated"],
             "gated_action": "retain" if retain_gated else "publish",
         }
+        rel["state"] = "deploying"
         _write(state / "round.json", cur)
     if retain_gated:
         if os.environ.get("PRECIS_ENV_POINTERS", "1") == "0":
@@ -1372,6 +1444,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "deploy returned zero without matching fresh success marker and origin/prod"
         )
     rel["deployment"]["rollout_at"] = _now()
+    rel["state"] = "deployed"
     skipped = _deploy_skipped(root, cand)
     if skipped:
         rel["deployment"]["skipped_hosts"] = skipped
@@ -1435,9 +1508,9 @@ def _on_first_parent(root: Path, sha: str) -> bool:
     return sha in line.split()
 
 
-def _late(root: Path, state: Path, n: int, cut: str) -> list[str]:
+def _late(root: Path, state: Path, scope: int, cut: str) -> list[str]:
     lines = []
-    for peer, mark in _marks(state, n).items():
+    for peer, mark in _marks(state, scope).items():
         for sha in mark.get("shas", []):
             if not _ref(root, f"{sha}^{{commit}}"):
                 lines.append(f"late: {peer} {sha[:9]} (not fetched)")
@@ -1465,9 +1538,10 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         return _cut_abandon(root, state, args)
     cur = _require_round(state)
     n = cur["n"]
-    branch = f"release/r{n}"
-    if cur.get("release"):
-        rel = cur["release"]
+    records = _releases(cur)
+    open_rel = _open_rel(cur)
+    if open_rel is not None:
+        rel = open_rel
         if rel.get("cut_pending"):
             tip = _remote(root, f"refs/heads/{rel['branch']}")
             if tip is None or (tip and tip != rel["base"]):
@@ -1503,39 +1577,85 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             print(f"{rel['branch']} pending cut reconciled at {rel['base'][:9]}")
             return 0
         return _cut_refuse(
-            f"round.json already records an open release ({cur['release']['branch']})"
+            f"round.json already records an open release ({open_rel['branch']})"
             " — `scripts/round cut --abandon` first"
         )
-    if cur.get("deployed"):
+    _fetch(root)
+    prev = max(records, key=lambda r: r["n"], default=None)
+    if prev is None and cur.get("deployed"):
         return _cut_refuse(
             "this round already deployed — close and open the next round"
         )
-    _fetch(root)
-    taken = _remote(root, f"refs/tags/deployed/r{n}")
+    n_new = prev["n"] + 1 if prev is not None else n
+    branch = f"release/r{n_new}"
+    taken = _remote(root, f"refs/tags/deployed/r{n_new}")
     if taken is None:
         return _cut_refuse("could not read origin's tags (git ls-remote failed)")
     if taken:
         return _cut_refuse(
-            f"deployed/r{n} is already tagged on origin (another checkout used this"
-            " number) — `scripts/round close` then `scripts/round open` to renumber"
+            f"deployed/r{n_new} is already tagged on origin (another checkout used"
+            " this number) — `scripts/round close` then `scripts/round open` to renumber"
         )
     existing = _release_branches(root)
     if existing is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")
-    if existing:
+    recorded = {r["branch"] for r in records}
+    foreign = [b for b in existing if b not in recorded]
+    if foreign:
         return _cut_refuse(
-            f"release branch {', '.join(existing)} exists on origin — one release at a time"
+            f"release branch {', '.join(foreign)} exists on origin — one open release at a time"
         )
-    if args.sha:
-        sha = _ref(root, f"{args.sha}^{{commit}}")
-        if not sha:
-            return _cut_refuse(f"{args.sha} is not a commit in this checkout")
+    if prev is not None and prev["state"] != "abandoned":
+        # Pipelined cut (release-train §5): N+1 only while N is deploying or
+        # later, at origin/main, which must contain N's head and differ in
+        # tree. An abandoned N never shipped — the next cut behaves like a
+        # first cut (candidate/--sha on main's first-parent line).
+        main = _ref(root, "refs/remotes/origin/main")
+        if not main:
+            return _cut_refuse("could not resolve origin/main after fetch")
+        if args.sha:
+            asked = _ref(root, f"{args.sha}^{{commit}}")
+            if not asked:
+                return _cut_refuse(f"{args.sha} is not a commit in this checkout")
+            if asked != main:
+                return _cut_refuse(
+                    f"the next release cuts at origin/main ({main[:9]}), not {asked[:9]}"
+                )
+        sha = main
+        n_head = _remote(root, f"refs/heads/{prev['branch']}")
+        if n_head is None:
+            return _cut_refuse(
+                "could not read origin's branches (git ls-remote failed)"
+            )
+        n_head = n_head or prev.get("deployment", {}).get("sha") or prev["base"]
+        if not _ancestor(root, n_head, main):
+            return _cut_refuse(
+                f"origin/main does not contain {prev['branch']}'s head {n_head[:9]}"
+                " — forward it to main first"
+            )
+        same = subprocess.run(
+            ["git", "-C", str(root), "diff", "--quiet", n_head, main],
+            capture_output=True,
+            check=False,
+        )
+        if same.returncode == 0:
+            return _cut_refuse(
+                f"origin/main's tree equals {prev['branch']}'s head {n_head[:9]}"
+                " — nothing new to ship yet"
+            )
+        if same.returncode > 1:
+            return _cut_refuse("git diff of the release head and origin/main failed")
     else:
-        sha, cstate = _candidate(root)
-        if not sha:
-            return _cut_refuse(_NO_CANDIDATE[cstate])
-    if not _on_first_parent(root, sha):
-        return _cut_refuse(f"{sha[:9]} is not on origin/main's first-parent line")
+        if args.sha:
+            sha = _ref(root, f"{args.sha}^{{commit}}")
+            if not sha:
+                return _cut_refuse(f"{args.sha} is not a commit in this checkout")
+        else:
+            sha, cstate = _candidate(root)
+            if not sha:
+                return _cut_refuse(_NO_CANDIDATE[cstate])
+        if not _on_first_parent(root, sha):
+            return _cut_refuse(f"{sha[:9]} is not on origin/main's first-parent line")
     for name in ("gated", "prod"):
         tip = _remote(root, f"refs/heads/{name}")
         if tip is None or (tip and not _ancestor(root, tip, sha)):
@@ -1548,17 +1668,20 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             "migration number collision in the cut tree (renumber the unshipped one on main first):\n  "
             + "\n  ".join(collisions)
         )
-    for line in _late(root, state, n, sha):
+    for line in _late(root, state, _mark_scope(cur), sha):
         print(line)
     if args.dry_run:
         print(f"dry-run: would push {sha[:9]} to origin as {branch}")
         return 0
-    cur["release"] = {
+    rel = {
+        "n": n_new,
         "branch": branch,
         "base": sha,
         "cut_at": _now(),
+        "state": "cut",
         "cut_pending": True,
     }
+    cur.setdefault("releases", []).append(rel)
     _write(state / "round.json", cur)
     push = _rgit(
         root,
@@ -1578,22 +1701,22 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             return _cut_refuse(
                 f"git push of {branch} failed; intent retained, re-run cut"
             )
-    del cur["release"]["cut_pending"]
+    del rel["cut_pending"]
     _write(state / "round.json", cur)
-    print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n + 1}")
+    print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n_new + 1}")
     print(
         f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: a release'
         f" fix goes in only when the coordinator asks, via scripts/ship --release from"
         f" a fresh tree cut from the release head (claude -w, or git worktree add"
         f" <path> origin/{branch}) holding only the fix; everything else qlands to"
-        f' main for round {n + 1}"'
+        f' main for round {n_new + 1}"'
     )
     return 0
 
 
 def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
     cur = _read_round(state)
-    rel = cur.get("release")
+    rel = _open_rel(cur)
     if not rel:
         return _cut_refuse(
             "no open release is recorded in round.json — nothing to abandon"
@@ -1607,10 +1730,11 @@ def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
     if head is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")
     if not head:
-        # Already gone from origin: only the record is left to clear.
-        print(f"{branch} is not on origin — clearing the record")
+        # Already gone from origin: only the record is left to mark.
+        print(f"{branch} is not on origin — marking the record abandoned")
         if not args.dry_run:
-            del cur["release"]
+            rel["state"] = "abandoned"
+            rel.pop("cut_pending", None)
             _write(state / "round.json", cur)
         return 0
     if (
@@ -1642,10 +1766,11 @@ def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
         is None
     ):
         return _cut_refuse(f"deleting {branch} on origin failed")
-    del cur["release"]
+    rel["state"] = "abandoned"
+    rel.pop("cut_pending", None)
     _write(state / "round.json", cur)
     print(
-        f"{branch} abandoned ({head[:9]} is on main) — deleted on origin, record cleared"
+        f"{branch} abandoned ({head[:9]} is on main) — deleted on origin, record marked abandoned"
     )
     return 0
 

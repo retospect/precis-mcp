@@ -479,6 +479,30 @@ def _round_json(rig: Rig) -> dict[str, Any]:
     return data
 
 
+TERMINAL_STATES = ("confirmed", "superseded", "abandoned")
+
+
+def _rels(cur: dict[str, Any]) -> list[dict[str, Any]]:
+    return cur.get("releases") or []
+
+
+def _live(cur: dict[str, Any]) -> list[dict[str, Any]]:
+    """Non-terminal release records (open or deploying/deployed)."""
+    return [r for r in _rels(cur) if r.get("state") not in TERMINAL_STATES]
+
+
+def _rel(cur: dict[str, Any], n: int | None = None) -> dict[str, Any]:
+    """Exactly one release record: the live one, or release/r<n>'s. Asserts."""
+    rels = _rels(cur)
+    if n is not None:
+        found = [r for r in rels if r.get("n") == n]
+        assert len(found) == 1, f"expected one r{n} record, got {len(found)}"
+        return found[0]
+    live = _live(cur)
+    assert len(live) == 1, f"expected one live release record, got {len(live)}"
+    return live[0]
+
+
 def _child(rig: Rig, parent: str, msg: str) -> str:
     """A commit on top of `parent` with the same tree (object only, no ref)."""
     return _git(rig.root, "commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", msg)
@@ -502,7 +526,7 @@ def test_cut_pushes_the_release_at_the_candidate_and_records_it(rig: Rig) -> Non
         in out.stdout
     )
     assert 'fleet say -m "release/r1 is cut at' in out.stdout
-    rel = _round_json(rig)["release"]
+    rel = _rel(_round_json(rig))
     assert (rel["branch"], rel["base"]) == ("release/r1", rig.shas["c2"])
     assert str(rel["cut_at"]).endswith("Z")
     assert rig.origin_ref("main") == rig.shas["c3"]  # main untouched
@@ -513,7 +537,7 @@ def test_cut_sha_overrides_the_candidate(rig: Rig) -> None:
     out = rig.round("cut", "--sha", rig.shas["c1"][:10], **_fresh(rig, "c3"))
     assert out.returncode == 0, out.stderr
     assert rig.origin_ref("release/r1") == rig.shas["c1"]
-    assert _round_json(rig)["release"]["base"] == rig.shas["c1"]
+    assert _rel(_round_json(rig))["base"] == rig.shas["c1"]
 
 
 def test_cut_needs_an_open_round(rig: Rig) -> None:
@@ -541,7 +565,7 @@ def test_cut_refuses_while_a_release_branch_exists_on_origin(rig: Rig) -> None:
     assert out.returncode == 1
     assert "release/r0" in out.stderr
     assert rig.origin_ref("release/r1") == ""
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
 
 
 def test_cut_refuses_when_round_json_records_an_open_release(rig: Rig) -> None:
@@ -616,7 +640,7 @@ def test_cut_refuses_a_new_duplicate_migration_number(rig: Rig) -> None:
     assert out.returncode == 1
     assert "0001: 0001_a.sql, 0001_b.sql" in out.stderr
     assert rig.origin_ref("release/r1") == ""
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
 
 
 def test_cut_accepts_a_duplicate_migration_number_prod_already_carries(
@@ -669,7 +693,7 @@ def test_abandon_deletes_a_release_whose_head_is_on_main(rig: Rig) -> None:
     assert out.returncode == 0, out.stderr
     assert "abandoned" in out.stdout
     assert rig.origin_ref("release/r1") == ""
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
     # The slot is free again.
     assert rig.round("cut", **_fresh(rig, "c3")).returncode == 0
 
@@ -684,7 +708,20 @@ def test_abandon_refuses_and_lists_commits_not_on_main(rig: Rig) -> None:
     assert "release fix not forwarded" in out.stderr
     assert fix[:7] in out.stderr
     assert rig.origin_ref("release/r1") == fix
-    assert _round_json(rig)["release"]["branch"] == "release/r1"
+    assert _rel(_round_json(rig))["branch"] == "release/r1"
+
+
+def test_cut_after_abandon_recuts_the_same_main(rig: Rig) -> None:
+    """An abandoned release never shipped: the recut is a first cut, not a
+    pipelined one — it does not need main to move past the abandoned head."""
+    _open_round(rig)
+    assert rig.round("cut", **_fresh(rig, "c3")).returncode == 0  # r1 at tip
+    assert rig.round("cut", "--abandon").returncode == 0
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+    assert _rel(_round_json(rig), 2)["base"] == rig.shas["c3"]
 
 
 def test_abandon_without_a_recorded_release_refuses(rig: Rig) -> None:

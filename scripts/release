@@ -9,22 +9,24 @@ All lifecycle logic stays in `scripts/round` (open, close, cut, gate, deploy
 and their guards); this is a thin orchestrator that calls it as a subprocess
 and never bypasses a refusal.
 
-  scripts/release [--sha S] [--queue-timeout MIN] [--ci-timeout MIN]
+  scripts/release [--sha S] [--ci-timeout MIN]
                   [--poll SEC] [--dry-run] [--adopt]
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
      origin/main's first-parent line (else exit 1).
   2. S already in origin/prod: "already live", exit 0.
-  3. A release in flight (round.json record or any origin `release/*`):
-     - this worktree owns it (`.release-owner` marker at the worktree root,
-       written at cut, matching the recorded branch + base; round.json is
-       shared by every worktree, so "recorded" is not "mine") and its head
-       contains S: resume (6-7). `--adopt` takes ownership of a recorded
-       release whose cutting session died (prints a warning);
-     - any other release's head contains S: "riding release ...", exit 0;
-     - otherwise queue: poll until none is in flight (--queue-timeout, exit 4),
-       then redo 1-2.
+  3. A release in flight (a live round.json record or an unrecorded origin
+     `release/*`):
+     - this worktree owns the record (`.release-owner` marker at the worktree
+       root, written at cut, matching the recorded branch + base; round.json
+       is shared by every worktree, so "recorded" is not "mine"): resume
+       (6-7). `--adopt` takes ownership of a recorded release whose cutting
+       session died (prints a warning);
+     - the open release's (or the deploying one's, or an unrecorded
+       branch's) head contains S: "riding release ...", exit 0;
+     - otherwise exit 0: S "rides the next cut". No queueing (release-train
+       §5): the next cut is made at deploy start by the driver.
   4. Round: open one if none; close + reopen one that already deployed.
   5. `round cut --sha S` (its stdout, incl. `late:` and `fleet say`, passes
      through). Losing a race to a sibling cut goes back to 3.
@@ -50,8 +52,8 @@ failed); a journal with rollout done prints the `next:` line at once.
 --dry-run only reads; it prints the plan and passes --dry-run to round cut and
 round deploy where they apply.
 
-Exit codes: 0 live / riding / done; 1 refused; 2 CI red or timeout;
-3 runtime confirmation pending; 4 queue timeout; any other = `round deploy`'s.
+Exit codes: 0 live / riding / next-cut / done; 1 refused; 2 CI red or
+timeout; 3 runtime confirmation pending; any other = `round deploy`'s.
 
 PRECIS_ROUND_ROOT selects the checkout (as for scripts/round).
 """
@@ -74,6 +76,9 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
+OPEN_STATES = ("cut", "gating", "fixing", "green")
+DEPLOYING_STATES = ("deploying", "deployed")
+TERMINAL_STATES = ("confirmed", "superseded", "abandoned")
 _JQ = (
     '.check_runs[] | [.name, .status, (.conclusion // ""), .html_url,'
     ' (.details_url // ""), .id] | @tsv'
@@ -456,9 +461,24 @@ def next_line(sha: str) -> str:
     )
 
 
+def live_releases(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        r
+        for r in (state.get("releases") or [])
+        if r.get("state") not in TERMINAL_STATES
+    ]
+
+
+def _release_by_state(state: dict[str, Any], states: tuple[str, ...]) -> dict[str, Any]:
+    return next((r for r in live_releases(state) if r.get("state") in states), {})
+
+
 def release_label(state: dict[str, Any]) -> str:
     """``r<N>`` from the recorded release branch, else the round number."""
-    branch = str((state.get("release") or {}).get("branch") or "")
+    rel = _release_by_state(state, DEPLOYING_STATES) or _release_by_state(
+        state, OPEN_STATES
+    )
+    branch = str(rel.get("branch") or "")
     return branch.rsplit("/", 1)[-1] if branch else f"r{state.get('n')}"
 
 
@@ -518,12 +538,13 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         facts = gate_facts()
         head = str(facts.get("release_head") or "")
         cand = str(facts.get("candidate") or "")
-        if facts.get("candidate_state") == "release_missing":
+        rbranch = str(facts.get("release_branch") or "")
+        if facts.get("candidate_state") == "release_missing" and rbranch == branch:
             return die(1, f"release {branch} is missing on origin — investigate")
-        if head and cand == head:
+        if head and cand == head and rbranch == branch:
             say(f"CI green on {branch} at {head[:9]}")
             return 0
-        if head:
+        if head and rbranch == branch:
             red = ci_red(head)
             if red is False:
                 if not warned:
@@ -571,7 +592,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         # `scripts/round deploy --confirm-runtime`. The deploy note posts
         # here, the one exit of this script a deploy takes in practice.
         cur = round_state() or {}
-        head = pending_sha(cur.get("release") or {}, sha)
+        head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
         note_gripes(
             prev, head, f"deployed {label} ({{sha}}); runtime confirmation pending"
         )
@@ -584,7 +605,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
             "scripts/release (it resumes) or scripts/round deploy",
         )
     cur = round_state() or {}
-    if cur.get("open") and cur.get("deployed") and not cur.get("release"):
+    if cur.get("open") and cur.get("deployed") and not live_releases(cur):
         if rnd("close", stream=True).returncode:
             return 0  # deployed; keep the marker, a re-run retries the close
     clear_owner()
@@ -592,8 +613,6 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    queue_deadline = time.monotonic() + args.queue_timeout * 60
-    queued_said = False
     races = 0
     while True:
         fetch()
@@ -616,8 +635,13 @@ def run(args: argparse.Namespace) -> int:
         cur = round_state()
         if cur is None:
             return die(1, "scripts/release: cannot read `scripts/round status --json`")
-        rel = cur.get("release") or {}
-        if args.adopt and rel and not args.dry_run and not owns(rel):
+        live = live_releases(cur)
+        open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
+        dep_rel = next((r for r in live if r.get("state") in DEPLOYING_STATES), None)
+        owned = next((r for r in live if owns(r)), None)
+        rel = owned or open_rel or dep_rel or {}
+        mine = owned is not None
+        if args.adopt and rel and not args.dry_run and not mine:
             print(
                 f"warning: adopting release {rel.get('branch')} cut elsewhere — "
                 "the cutting session must not also deploy it",
@@ -627,13 +651,13 @@ def run(args: argparse.Namespace) -> int:
             write_owner(
                 str(rel.get("branch")), str(rel.get("base")), str(rel.get("cut_at"))
             )
-        mine = owns(rel)
+            mine = True
         owner = read_owner()
         deployed = cur.get("deployed") or {}
         closing = bool(
             cur.get("open")
             and deployed
-            and not rel
+            and not live
             and owner.get("branch")
             and owner.get("branch") == deployed.get("branch")
         )
@@ -672,39 +696,27 @@ def run(args: argparse.Namespace) -> int:
         branches = release_branches()
         if branches is None:
             return die(1, "scripts/release: cannot read origin's branches")
-        if rel and rel.get("branch") not in branches:
-            branches.append(rel["branch"])  # record without a branch: still in flight
+        recorded = {r["branch"] for r in live}
+        foreign = [b for b in branches if b not in recorded]
 
-        if branches:
+        if live or foreign:
             if rel and mine:
                 tip, has = head_containing(s, rel["branch"], rel.get("base", ""))
                 return resume(args, s, rel, tip, has)
-            for b in branches:
-                if (
-                    rel
-                    and b == rel["branch"]
-                    and (rel.get("cut_pending") or not remote(f"refs/heads/{b}"))
-                ):
-                    continue  # not (yet) a real release: only its owner resumes
+            for r in (open_rel, dep_rel):
+                if not r or r.get("cut_pending"):
+                    continue
+                tip, has = head_containing(s, r["branch"], r.get("base", ""))
+                if has:
+                    say(f"riding release {r['branch']} at {tip[:9]}: it ships {s9}")
+                    return 0
+            for b in foreign:
                 tip, has = head_containing(s, b, "")
                 if has:
                     say(f"riding release {b} at {tip[:9]}: it ships {s9}")
                     return 0
-            flight = rel.get("branch") if rel else branches[0]
-            if args.dry_run:
-                say(f"would queue: {flight} in flight; wait for it to retire")
-                return 0
-            if not queued_said:
-                say(f"queued: {flight} in flight; waiting for it to retire")
-                queued_said = True
-            if time.monotonic() >= queue_deadline:
-                return die(
-                    4,
-                    f"queued: {flight} still in flight after {args.queue_timeout:g} min — "
-                    f"re-run scripts/release later; {s9} is on main",
-                )
-            time.sleep(args.poll)
-            continue
+            say(f"{s9} rides the next cut")
+            return 0
 
         # Nothing in flight: prepare the round, then cut.
         n = int(cur.get("n", 0) or 0)
@@ -781,7 +793,7 @@ def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
     if not (fresh or preowned or args.adopt):
         clear_owner()  # reconciled someone else's pending cut: not ours
         return -1
-    rel = (round_state() or {}).get("release") or {}
+    rel = _release_by_state(round_state() or {}, OPEN_STATES)
     if rel:
         write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at", "")))
     return finish(args, s)
@@ -789,7 +801,7 @@ def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
 
 def finish(args: argparse.Namespace, s: str) -> int:
     cur = round_state() or {}
-    rel = cur.get("release") or {}
+    rel = _release_by_state(cur, OPEN_STATES)
     branch = str(rel.get("branch") or f"release/r{cur.get('n')}")
     rc = wait_ci(branch, args)
     if rc:
@@ -829,7 +841,8 @@ def resume(
         return 0
     facts = gate_facts()
     head = str(facts.get("release_head") or "")
-    if not (head and facts.get("candidate") == head):
+    ours = facts.get("release_branch") == branch
+    if not (head and ours and facts.get("candidate") == head):
         rc = wait_ci(branch, args)
         if rc:
             return rc
@@ -842,7 +855,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Cut a release at main SHA S, wait for CI, deploy it.",
     )
     ap.add_argument("--sha", default="", help="commit on origin/main (default: tip)")
-    ap.add_argument("--queue-timeout", type=float, default=120.0, metavar="MIN")
+    ap.add_argument(
+        "--queue-timeout",
+        type=float,
+        default=0.0,
+        metavar="MIN",
+        help=argparse.SUPPRESS,  # removed: step 3 no longer queues (release-train §5)
+    )
     ap.add_argument("--ci-timeout", type=float, default=90.0, metavar="MIN")
     ap.add_argument("--poll", type=float, default=60.0, metavar="SEC")
     ap.add_argument("--dry-run", action="store_true")

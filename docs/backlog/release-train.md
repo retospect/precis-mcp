@@ -271,7 +271,7 @@ with only the session's fix and confirm steps by hand.
 | 4 | done 6377acfc7 — `failed-first` job, reader updates, per-branch release concurrency | — | §3 acceptance |
 | 5 | Round state as release list; cut at `deploying`; `ship --release` targets open release; no queueing | — | §5 tests except supersede |
 | 6 | `round deploy --supersede` | 5 | §5 supersede tests |
-| 7 | `scripts/release-train` driver, owner runbook in `docs/runbooks/release-cycle.md` | 5 | §6 acceptance |
+| 7 | `scripts/release-train` driver, owner runbook in `docs/runbooks/release-cycle.md`; shrink the `round deploy` lifecycle-lock hold (it currently spans the whole rollout, so `cut` and `ship --release` read busy during a slow rollout — the driver hits this every cycle) | 5 | §6 acceptance |
 
 ## Rulings on the open questions (Reto 2026-10-23 ~23:15Z)
 

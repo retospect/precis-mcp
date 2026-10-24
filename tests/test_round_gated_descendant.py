@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.test_round_gate import Rig, _child, _git, _push_branch, _round_json
+from tests.test_round_gate import Rig, _child, _git, _push_branch, _rel, _round_json
 from tests.test_round_gate import rig as rig
 from tests.test_round_release import _cut, _deploy, _load_round, _verdict
 
@@ -41,10 +41,10 @@ def test_certified_release_preserves_monotone_gated_and_exact_payload(
     assert rig.deploy_log() == [f"{head} --pinned"]
     cur = _round_json(rig)
     assert (
-        cur["release"]["deployment"]["ci"]
+        _rel(cur)["deployment"]["ci"]
         == json.loads(_verdict(head)["LGM_EXACT"])["certificate"]
     )
-    journal = cur["release"]["deployment"]
+    journal = _rel(cur)["deployment"]
     assert journal["gated_before"] == prior
     assert journal["gated_after"] == expected
     assert journal["gated_action"] == ("retain" if gated == "descendant" else "publish")
@@ -126,7 +126,7 @@ printf '%s | %s\\n' "$PWD" "$*" >> {log}
     )
     assert refused.returncode == 1
     assert ".ship-sha here pins" in refused.stderr
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
     pin.write_text(head, encoding="utf-8")
     out = subprocess.run(
@@ -147,7 +147,7 @@ printf '%s | %s\\n' "$PWD" "$*" >> {log}
     assert all(line == f"{rig.root} | --exact {head}" for line in ci_calls)
     assert rig.origin_ref("gated") == rig.shas["c3"]
     assert rig.origin_ref("prod") == head
-    assert _round_json(rig)["release"]["deployment"]["sha"] == head
+    assert _rel(_round_json(rig))["deployment"]["sha"] == head
     assert not (controller / ".git/precis-round").exists()
     assert not (controller / "deploy.log").exists()
     confirmed = subprocess.run(
@@ -187,7 +187,7 @@ def test_release_rejects_incompatible_gated_before_journal(
     out = rig.round("deploy", **_verdict(head))
     assert out.returncode == 1
     assert "gated moves fast-forward only" in out.stderr
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.origin_ref("gated") == other
     assert rig.deploy_log() == []
 
@@ -207,7 +207,7 @@ def test_descendant_gated_does_not_relax_freshness(rig: Rig, age: float | None) 
     _push_branch(rig, "gated", rig.shas["c3"])
     out = rig.round("deploy", **_verdict(head, age))
     assert out.returncode == 1
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
 
 
@@ -229,7 +229,7 @@ def test_descendant_gated_requires_exact_certificate(rig: Rig, bad: str) -> None
         }.get(bad, 0)
     out = rig.round("deploy", LGM_EXACT=json.dumps(verdict))
     assert out.returncode == 1
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
 
 
@@ -240,7 +240,7 @@ def test_descendant_gated_cannot_authorize_prod_rollback(rig: Rig) -> None:
     out = rig.round("deploy", **_verdict(head))
     assert out.returncode == 1
     assert "prod moves fast-forward only" in out.stderr
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
 
 
@@ -254,7 +254,7 @@ def test_descendant_gated_release_head_race_still_refuses(rig: Rig) -> None:
     )
     assert out.returncode == 1
     assert "moved during the CI lookup" in out.stderr
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
 
 
@@ -308,7 +308,7 @@ def test_unreadable_release_pointers_never_use_stale_tracking_refs(
     assert rig.deploy_log() == []
     assert rig.origin_ref("gated") == rig.shas["c3"]
     if stage < 3:
-        assert "deployment" not in _round_json(rig)["release"]
+        assert "deployment" not in _rel(_round_json(rig))
 
 
 @pytest.mark.parametrize("stage", [2, 3])
@@ -431,7 +431,7 @@ def test_compatible_gated_advance_is_rechecked_and_preserved(
     assert rig.deploy_log() == [f"{head} --pinned"]
     assert rig.origin_ref("gated") == newer
     assert rig.origin_ref("prod") == head
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal["gated_after"] == newer
     assert "runtime_confirmed_at" not in journal
 
@@ -457,7 +457,7 @@ def test_successful_fetch_must_contain_the_exact_observed_pointer(
     monkeypatch.setattr(mod, "_remote", remote)
     monkeypatch.setattr(mod, "_rgit", fetch_other_head)
     assert mod.main(["deploy"]) == 1
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
     assert rig.deploy_log() == []
 
 
@@ -501,9 +501,9 @@ def test_authoritative_gated_observation_cannot_be_forgotten(
     assert rig.origin_ref("gated") == regressed
     assert rig.deploy_log() == []
     if stage == 2:
-        assert "deployment" not in _round_json(rig)["release"]
+        assert "deployment" not in _rel(_round_json(rig))
     else:
-        assert _round_json(rig)["release"]["deployment"]["gated_before"] == observed
+        assert _rel(_round_json(rig))["deployment"]["gated_before"] == observed
 
 
 @pytest.mark.parametrize("initial_remote", ["absent", "ancestor"])
@@ -524,7 +524,7 @@ def test_cached_gated_never_establishes_authoritative_lower_bound(
     assert rig.origin_ref("gated") == head
     assert rig.deploy_log() == [f"{head} --pinned"]
     expected_before = "" if initial_remote == "absent" else rig.shas["c0"]
-    assert _round_json(rig)["release"]["deployment"]["gated_before"] == expected_before
+    assert _rel(_round_json(rig))["deployment"]["gated_before"] == expected_before
 
 
 @pytest.mark.parametrize("journal_source", ["before", "after"])
@@ -562,7 +562,7 @@ def test_unfinished_install_journal_retains_authoritative_gated_evidence(
         monkeypatch.setattr(mod, "_remote", advance)
         assert mod.main(["deploy"]) == 7
         assert rig.deploy_log() == [f"{head} --pinned"]
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal[f"gated_{journal_source}"] == observed
     before_log = rig.deploy_log()
     if regression == "compatible_forward":
@@ -582,7 +582,7 @@ def test_unfinished_install_journal_retains_authoritative_gated_evidence(
     else:
         assert retry.returncode == 1
         assert rig.deploy_log() == before_log
-        assert _round_json(rig)["release"]["deployment"] == journal
+        assert _rel(_round_json(rig))["deployment"] == journal
     assert rig.origin_ref("gated") == current
 
 
@@ -635,9 +635,9 @@ def test_older_journal_after_observation_cannot_erase_stronger_before_bound(
     first = rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(head))
     assert first.returncode == 7
     cur = _round_json(rig)
-    assert cur["release"]["deployment"]["gated_before"] == observed
+    assert _rel(cur)["deployment"]["gated_before"] == observed
     # Reproduce a historical1017076 journal that accepted a later backward observation.
-    cur["release"]["deployment"]["gated_after"] = head
+    _rel(cur)["deployment"]["gated_after"] = head
     (rig.root / ".git/precis-round/round.json").write_text(
         json.dumps(cur), encoding="utf-8"
     )

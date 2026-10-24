@@ -14,6 +14,7 @@ rig cuts ``release/r1`` at that sha, as ``scripts/round cut`` would.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -85,12 +86,38 @@ class ReleaseRig(Rig):
             self.g(
                 self.primary, "push", "-q", "origin", f"{self.cut_sha}:refs/heads/{REL}"
             )
-        subprocess.run(
-            ["git", "clone", "-q", str(self.origin), str(self.relracer)],
-            check=True,
-            capture_output=True,
-            env=self._git_env,
+            self.record_release(REL, self.cut_sha)
+
+    def record_release(self, branch: str, base: str, state: str = "cut") -> None:
+        """round.json's open-release record, as `scripts/round cut` writes."""
+        n = int(branch.rsplit("r", 1)[1])
+        self.record_releases(
+            n,
+            [
+                {
+                    "n": n,
+                    "branch": branch,
+                    "base": base,
+                    "cut_at": "2026-01-01T00:00:00Z",
+                    "state": state,
+                }
+            ],
         )
+
+    def record_releases(self, n: int, releases: list[dict]) -> None:
+        d = self.primary / ".git" / "precis-round"
+        d.mkdir(exist_ok=True)
+        (d / "round.json").write_text(
+            json.dumps({"n": n, "open": True, "releases": releases}),
+            encoding="utf-8",
+        )
+        if not self.relracer.exists():
+            subprocess.run(
+                ["git", "clone", "-q", str(self.origin), str(self.relracer)],
+                check=True,
+                capture_output=True,
+                env=self._git_env,
+            )
 
     def _stage_repo(self) -> None:
         super()._stage_repo()
@@ -423,20 +450,76 @@ def test_no_open_release_is_refused(tmp_path: Path) -> None:
     main = rr.origin_ref("main")
     rc, out = rr.release_ship(wt)
     assert rc != 0, out
-    assert "no open release branch" in out
+    assert "no open release" in out
+    assert "land on main with --quick" in out
     assert rr.origin_ref("main") == main
 
 
-def test_two_open_releases_are_refused(rr: ReleaseRig) -> None:
+def test_release_targets_the_open_release_with_two_branches(
+    rr: ReleaseRig,
+) -> None:
+    """release-train §5: the fix lands on the OPEN release from round state,
+    not on a branch count — a second release/* on origin is ignored."""
     rr.g(rr.primary, "push", "-q", "origin", f"{rr.cut_sha}:refs/heads/release/r2")
     wt = rr.worktree("two", {"app.py": _app(l1="L1")})
+    p, log = rr.ship(wt, "--release", "--release-branch", REL, sleep=1)
+    out = _finish(p, log)
+    main, rel = rr.refs()
+    assert "L1" in rr.show(rel, "app.py")
+    assert rr.parents(main)[1] == rel
+    assert rr.origin_ref("release/r2") == rr.cut_sha, "r2 must be untouched"
+
+
+def test_fix_lands_on_open_release_while_prior_awaits_confirmation(
+    rr: ReleaseRig,
+) -> None:
+    """release-train §5: r1's live deploy journal owns ITS head — it does not
+    block a `ship --release` fix onto the open r2."""
+    rr.g(rr.primary, "push", "-q", "origin", f"{rr.cut_sha}:refs/heads/release/r2")
+    rr.record_releases(
+        1,
+        [
+            {
+                "n": 1,
+                "branch": "release/r1",
+                "base": rr.cut_sha,
+                "cut_at": "2026-01-01T00:00:00Z",
+                "state": "deployed",
+                "deployment": {
+                    "sha": rr.cut_sha,
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "started_epoch": 1,
+                    "ci": {"sha": rr.cut_sha},
+                    "rollout_at": "2026-01-01T01:00:00Z",
+                },
+            },
+            {
+                "n": 2,
+                "branch": "release/r2",
+                "base": rr.cut_sha,
+                "cut_at": "2026-01-01T02:00:00Z",
+                "state": "cut",
+            },
+        ],
+    )
+    wt = rr.worktree_from("fix", "origin/release/r2", {"app.py": _app(l1="L1")})
+    p, log = rr.ship(wt, "--release", sleep=1)
+    out = _finish(p, log)
+    rel2 = rr.origin_ref("release/r2")
+    assert "L1" in rr.show(rel2, "app.py")
+    assert rr.parents(rr.origin_ref("main"))[1] == rel2
+
+
+def test_release_branch_naming_the_wrong_release_is_refused(
+    rr: ReleaseRig,
+) -> None:
+    rr.g(rr.primary, "push", "-q", "origin", f"{rr.cut_sha}:refs/heads/release/r2")
+    wt = rr.worktree("wrong", {"app.py": _app(l1="L1")})
     before = rr.refs()
-    rc, out = rr.release_ship(wt)
+    rc, out = rr.release_ship(wt, "--release-branch", "release/r2")
     assert rc != 0, out
-    assert "2 release branches are open" in out
-    assert "release/r1" in out and "release/r2" in out
+    assert "not the open release" in out
     assert rr.refs() == before
-    assert rr.origin_ref("release/r2") == rr.cut_sha
 
 
 @pytest.mark.parametrize(

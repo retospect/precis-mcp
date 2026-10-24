@@ -19,10 +19,14 @@ if sys.platform != "win32":
 from tests.test_round_gate import (
     Rig,
     _child,
+    _commit,
     _fresh,
     _git,
+    _live,
     _open_round,
     _push_branch,
+    _rel,
+    _rels,
     _round_json,
 )
 from tests.test_round_gate import (
@@ -60,7 +64,7 @@ def _verdict(sha: str, age: float | None = 1.0, state: str = "found") -> dict[st
 def _deploy(rig: Rig, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
     out = rig.round("deploy", *args, **extra)
     if out.returncode == 3 and extra.get("DEPLOY_STUB_VERIFY") == "1":
-        sha = _round_json(rig)["release"]["deployment"]["sha"]
+        sha = _rel(_round_json(rig))["deployment"]["sha"]
         return rig.round(
             "deploy",
             "--confirm-runtime",
@@ -262,7 +266,7 @@ def test_new_same_sha_receipt_requires_fresh_runtime_observation_without_reinsta
         'while read old new ref; do case "$ref" in refs/tags/*) exit 1;; esac; done\n',
     )
     assert _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head)).returncode == 1
-    old = _round_json(rig)["release"]["deployment"]["runtime_receipt"]
+    old = _rel(_round_json(rig))["deployment"]["runtime_receipt"]
     marker = rig.root / ".git/precis-deploy-state"
     # Even second-resolution deploy timestamps can repeat: file generation matters.
     marker.write_text(
@@ -273,7 +277,7 @@ def test_new_same_sha_receipt_requires_fresh_runtime_observation_without_reinsta
     out = rig.round("deploy")
     assert out.returncode == 3
     assert "runtime verification pending" in out.stdout
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert "runtime_confirmed_at" not in journal
     assert journal["superseded_runtime"][0]["runtime_receipt"] == old
     assert rig.origin_ref("release/r1") == head
@@ -360,7 +364,7 @@ def _lost_retirement_ack(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> str:
     with mod._lifecycle(rig.root) as fd:
         assert mod.cmd_deploy(args, fd) == 1
     assert rig.origin_ref("release/r1") == ""
-    assert _round_json(rig)["release"]["deployment"]["runtime_confirmed_at"]
+    assert _rel(_round_json(rig))["deployment"]["runtime_confirmed_at"]
     return head
 
 
@@ -385,7 +389,7 @@ def _interrupt_final_state_write(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> s
         mod.cmd_deploy(args, fd)
     assert rig.origin_ref("release/r1") == ""
     assert _tag(rig) == head
-    assert "release" in _round_json(rig)
+    assert _live(_round_json(rig))
     assert (rig.root / ".git/precis-round/receipts/r1.json").is_file()
     return head
 
@@ -428,7 +432,7 @@ def test_published_archive_is_terminal_after_interrupted_state_write_and_receipt
     out = rig.round("deploy", *flags)
     assert out.returncode == 0, out.stderr
     assert "completion already archived" in out.stdout
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
     assert _round_json(rig)["deployed"] == original["deployed"]
     assert archive.read_bytes() == original_bytes
     assert {name: rig.origin_ref(name) for name in refs_before} == refs_before
@@ -470,7 +474,7 @@ def test_receipt_refresh_after_lost_retirement_ack_completes_without_reinstall(
     rig: Rig, monkeypatch: pytest.MonkeyPatch, same_content: bool
 ) -> None:
     head = _lost_retirement_ack(rig, monkeypatch)
-    old = _round_json(rig)["release"]["deployment"]["runtime_receipt"]
+    old = _rel(_round_json(rig))["deployment"]["runtime_receipt"]
     marker = rig.root / ".git/precis-deploy-state"
     marker.write_text(
         old["content"] if same_content else f"{head} {int(time.time()) + 1} success\n",
@@ -512,7 +516,7 @@ def test_receipt_refresh_after_remote_delete_requires_all_recovery_evidence(
     else:
         path = rig.root / ".git/precis-round/round.json"
         cur = _round_json(rig)
-        cur["release"]["deployment"]["superseded_runtime"] = []
+        _rel(cur)["deployment"]["superseded_runtime"] = []
         path.write_text(json.dumps(cur), encoding="utf-8")
     out = rig.round(
         "deploy",
@@ -522,8 +526,8 @@ def test_receipt_refresh_after_remote_delete_requires_all_recovery_evidence(
         "fake fresh observation",
     )
     assert out.returncode == 1
-    assert "release" in _round_json(rig)
-    assert "runtime_confirmed_at" not in _round_json(rig)["release"]["deployment"]
+    assert _live(_round_json(rig))
+    assert "runtime_confirmed_at" not in _rel(_round_json(rig))["deployment"]
     assert rig.deploy_log() == [f"{head} --pinned"]
 
 
@@ -604,7 +608,7 @@ def test_missing_release_and_unrecorded_release_do_not_deploy_main(rig: Rig) -> 
     assert _deploy(rig, **_fresh(rig, "c3")).returncode == 1
     state = rig.root / ".git/precis-round/round.json"
     cur = _round_json(rig)
-    del cur["release"]
+    cur["releases"] = []
     state.write_text(json.dumps(cur), encoding="utf-8")
     _push_branch(rig, "release/r1", head)
     out = _deploy(rig, **_fresh(rig, "c3"))
@@ -638,7 +642,7 @@ def test_release_deploy_second_parent_tag_merge_and_retirement(rig: Rig) -> None
     ]
     assert rig.origin_ref("gated") == rig.origin_ref("prod") == _tag(rig) == fix
     assert rig.origin_ref("release/r1") == ""
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
     assert _round_json(rig)["deployed"]["sha"] == fix
     assert rig.deploy_log() == [f"{fix} --pinned"]
     assert _git(rig.root, "rev-list", "--count", f"{fix}..{main}") == "2"
@@ -683,7 +687,7 @@ def test_release_zero_exit_without_health_or_prod_never_retires(rig: Rig) -> Non
     assert out.returncode == 1
     assert "matching fresh success marker and origin/prod" in out.stderr
     assert rig.origin_ref("release/r1") == head
-    assert not _round_json(rig)["release"]["deployment"].get("runtime_confirmed_at")
+    assert not _rel(_round_json(rig))["deployment"].get("runtime_confirmed_at")
     assert rig.round("cut", "--abandon").returncode == 1
     assert rig.round("close").returncode == 1
     retry = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
@@ -694,7 +698,7 @@ def test_release_failed_deploy_retains_pin_and_returns_exit_code(rig: Rig) -> No
     head = _cut(rig)
     out = _deploy(rig, DEPLOY_STUB_RC="7", **_verdict(head))
     assert out.returncode == 7
-    assert _round_json(rig)["release"]["deployment"]["sha"] == head
+    assert _rel(_round_json(rig))["deployment"]["sha"] == head
     assert rig.origin_ref("release/r1") == head
 
 
@@ -709,7 +713,7 @@ def test_release_head_race_during_ci_lookup_stops_before_rollout(rig: Rig) -> No
     assert out.returncode == 1
     assert "moved during the CI lookup" in out.stderr
     assert rig.deploy_log() == []
-    assert "deployment" not in _round_json(rig)["release"]
+    assert "deployment" not in _rel(_round_json(rig))
 
 
 def test_failed_deploy_hook_cannot_be_falsely_runtime_confirmed(rig: Rig) -> None:
@@ -727,7 +731,7 @@ def test_failed_deploy_hook_cannot_be_falsely_runtime_confirmed(rig: Rig) -> Non
     assert rig.origin_ref("prod") == ""
     assert rig.origin_ref("main") == rig.shas["c3"]
     assert _git(rig.origin, "tag", "--list", "deployed/r1") == ""
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal["sha"] == head
     assert "rollout_at" not in journal
     assert "runtime_confirmed_at" not in journal
@@ -749,8 +753,8 @@ def test_release_head_race_during_rollout_retains_pin_without_tag(rig: Rig) -> N
     )
     assert out.returncode == 1
     assert "changed during rollout" in out.stderr
-    assert _round_json(rig)["release"]["deployment"]["sha"] == head
-    assert "rollout_at" not in _round_json(rig)["release"]["deployment"]
+    assert _rel(_round_json(rig))["deployment"]["sha"] == head
+    assert "rollout_at" not in _rel(_round_json(rig))["deployment"]
     assert rig.origin_ref("prod") == head
     assert rig.origin_ref("gated") == head
     assert _git(rig.origin, "tag", "--list", "deployed/r1") == ""
@@ -779,7 +783,7 @@ def test_failed_retirement_resumes_at_same_sha(rig: Rig) -> None:
     out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
     assert out.returncode == 1
     assert "leased release retirement failed" in out.stderr
-    assert _round_json(rig)["release"]["deployment"]["runtime_confirmed_at"]
+    assert _rel(_round_json(rig))["deployment"]["runtime_confirmed_at"]
     assert _tag(rig) == head
     hook.unlink()
     out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_fresh(rig, "c3"), **_verdict(head))
@@ -800,7 +804,7 @@ def test_resume_after_remote_deleted_before_state_clear(rig: Rig) -> None:
     out = _deploy(rig, **_fresh(rig, "c3"))
     assert out.returncode == 0, out.stderr
     assert rig.deploy_log() == [f"{head} --pinned"]
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
 
 
 @pytest.mark.parametrize("phase", ["tag", "main"])
@@ -817,7 +821,7 @@ def test_failed_tag_or_main_publish_preserves_verified_pin_and_resumes(
     )
     out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
     assert out.returncode == 1
-    assert _round_json(rig)["release"]["deployment"]["runtime_confirmed_at"]
+    assert _rel(_round_json(rig))["deployment"]["runtime_confirmed_at"]
     assert rig.origin_ref("release/r1") == head
     assert rig.origin_ref("prod") == head
     assert rig.origin_ref("main") == rig.shas["c3"]
@@ -879,7 +883,7 @@ def test_retirement_lease_preserves_a_release_push_after_last_head_read(
     out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
     assert out.returncode == 1
     assert rig.origin_ref("release/r1") == newer
-    assert _round_json(rig)["release"]["deployment"]["sha"] == head
+    assert _rel(_round_json(rig))["deployment"]["sha"] == head
     assert _tag(rig) == head
     hook.unlink()
 
@@ -939,7 +943,7 @@ def test_successful_rollout_waits_for_current_coordinator_runtime_confirmation(
     assert out.returncode == 3
     assert "runtime verification pending" in out.stdout
     assert rig.origin_ref("release/r1") == head
-    assert not _round_json(rig)["release"]["deployment"].get("runtime_confirmed_at")
+    assert not _rel(_round_json(rig))["deployment"].get("runtime_confirmed_at")
     out = rig.round(
         "deploy",
         "--confirm-runtime",
@@ -985,7 +989,7 @@ def test_zero_exit_with_old_same_sha_receipt_does_not_confirm_rollout(rig: Rig) 
     assert out.returncode == 1
     assert "matching fresh success marker" in out.stderr
     assert rig.origin_ref("prod") == rig.origin_ref("release/r1") == head
-    assert not _round_json(rig)["release"]["deployment"].get("rollout_at")
+    assert not _rel(_round_json(rig))["deployment"].get("rollout_at")
 
 
 def test_verified_closeout_ignores_expired_ci_and_never_reinstalls(rig: Rig) -> None:
@@ -1018,13 +1022,13 @@ def test_cut_intent_recovers_remote_creation_without_local_ack(rig: Rig) -> None
     head = _cut(rig)
     state = rig.root / ".git/precis-round/round.json"
     cur = _round_json(rig)
-    cur["release"]["cut_pending"] = True
+    _rel(cur)["cut_pending"] = True
     state.write_text(json.dumps(cur), encoding="utf-8")
     assert rig.round("deploy", **_verdict(head)).returncode == 1
     out = rig.round("cut", **_fresh(rig, "c3"))
     assert out.returncode == 0, out.stderr
     assert "pending cut reconciled" in out.stdout
-    assert "cut_pending" not in _round_json(rig)["release"]
+    assert "cut_pending" not in _rel(_round_json(rig))
     assert rig.origin_ref("release/r1") == head
 
 
@@ -1165,7 +1169,7 @@ def test_cut_refuses_when_deployed_tag_exists_for_open_round(rig: Rig) -> None:
     assert out.returncode == 1
     assert "deployed/r1 is already tagged on origin" in out.stderr
     assert "scripts/round close" in out.stderr
-    assert "release" not in _round_json(rig)
+    assert not _live(_round_json(rig))
     assert rig.origin_ref("release/r1") == ""
 
 
@@ -1195,7 +1199,7 @@ def test_skipped_hosts_are_journaled_and_shown_in_status(rig: Rig) -> None:
     )
     assert out.returncode == 3, out.stdout + out.stderr
     assert "WARNING: skipped hosts" in out.stdout
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal["skipped_hosts"] == hosts
     status = rig.round("status").stdout
     assert "lagging hosts" in status and "serving" in status
@@ -1211,7 +1215,7 @@ def test_a_stale_or_absent_skipped_record_journals_nothing(rig: Rig) -> None:
         **_verdict(head),
     )
     assert out.returncode == 3, out.stdout + out.stderr
-    assert "skipped_hosts" not in _round_json(rig)["release"]["deployment"]
+    assert "skipped_hosts" not in _rel(_round_json(rig))["deployment"]
 
 
 def test_catch_up_redeploys_the_pinned_sha_and_clears_the_journal(rig: Rig) -> None:
@@ -1231,7 +1235,7 @@ def test_catch_up_redeploys_the_pinned_sha_and_clears_the_journal(rig: Rig) -> N
     assert out.returncode == 3, out.stdout + out.stderr  # runtime still pending
     assert "every skipped host" in out.stdout
     assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
-    assert "skipped_hosts" not in _round_json(rig)["release"]["deployment"]
+    assert "skipped_hosts" not in _rel(_round_json(rig))["deployment"]
 
 
 def test_catch_up_keeps_hosts_still_down_in_the_journal(rig: Rig) -> None:
@@ -1254,7 +1258,7 @@ def test_catch_up_keeps_hosts_still_down_in_the_journal(rig: Rig) -> None:
     )
     assert out.returncode == 3, out.stdout + out.stderr
     assert "still lagging" in out.stdout
-    journal = _round_json(rig)["release"]["deployment"]
+    journal = _rel(_round_json(rig))["deployment"]
     assert journal["skipped_hosts"] == hosts
 
 
@@ -1273,3 +1277,215 @@ def test_catch_up_refuses_before_any_rollout(rig: Rig) -> None:
     assert out.returncode == 1
     assert "requires a recorded rollout" in out.stderr
     assert rig.deploy_log() == []
+
+
+# ── release-train §5: pipelined releases (records carry state) ──────────
+
+
+def _journal(rig: Rig, sha: str) -> dict[str, object]:
+    return {
+        "sha": sha,
+        "started_at": "2026-01-01T00:00:00Z",
+        "started_epoch": 1,
+        "ci": {"sha": sha},
+    }
+
+
+def _record(
+    n: int, base: str, state: str, journal: dict[str, object] | None = None
+) -> dict[str, object]:
+    rec: dict[str, object] = {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": base,
+        "cut_at": "2026-01-01T00:00:00Z",
+        "state": state,
+    }
+    if journal is not None:
+        rec["deployment"] = journal
+    return rec
+
+
+def _state_write(rig: Rig, *recs: dict[str, object], n: int = 1) -> None:
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"n": n, "open": True, "releases": list(recs)}),
+        encoding="utf-8",
+    )
+
+
+def _deploying(rig: Rig, n: int = 1) -> str:
+    """A recorded release in `deploying`: cut it, then journal a failed deploy."""
+    head = _cut(rig)
+    return _journal_deploy(rig, head, n)
+
+
+def _journal_deploy(rig: Rig, head: str, n: int = 1) -> str:
+    """Journal a failed deploy on the already-cut release → `deploying`."""
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(head)).returncode == 7
+    assert _rel(_round_json(rig), n)["state"] == "deploying"
+    return head
+
+
+@pytest.mark.parametrize("state", ["cut", "gating", "fixing", "green"])
+def test_cut_refused_while_a_release_is_open(rig: Rig, state: str) -> None:
+    _cut(rig)
+    _state_write(rig, _record(1, rig.shas["c2"], state))
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "already records an open release (release/r1)" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_cut_n1_allowed_while_n_is_deploying_with_main_moved(rig: Rig) -> None:
+    head = _deploying(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = rig.round("cut")
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r2") == newer
+    rels = _rels(_round_json(rig))
+    assert [r["state"] for r in rels] == ["deploying", "cut"]
+    assert _rel(_round_json(rig), 2)["base"] == newer
+    assert rig.origin_ref("release/r1") == head
+
+
+def test_cut_n1_refused_when_mains_tree_equals_n_head(rig: Rig) -> None:
+    head = _deploying(rig)
+    # main's tip carries exactly the release head's tree: nothing new to ship.
+    same = _git(
+        rig.root,
+        "commit-tree",
+        f"{head}^{{tree}}",
+        "-p",
+        rig.shas["c3"],
+        "-m",
+        "same tree",
+    )
+    _push_branch(rig, "main", same)
+    out = rig.round("cut")
+    assert out.returncode == 1
+    assert "tree equals release/r1's head" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_cut_n1_refused_when_main_lacks_n_head(rig: Rig) -> None:
+    head = _deploying(rig)
+    fix = _child(rig, head, "unforwarded release fix")
+    _push_branch(rig, "release/r1", fix)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = rig.round("cut")
+    assert out.returncode == 1
+    assert "does not contain release/r1's head" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_cut_n1_refuses_a_sha_other_than_origin_main(rig: Rig) -> None:
+    _deploying(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = rig.round("cut", "--sha", rig.shas["c2"])
+    assert out.returncode == 1
+    assert f"cuts at origin/main ({newer[:9]})" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_old_single_release_shape_is_read_as_the_open_release(rig: Rig) -> None:
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "n": 1,
+                "open": True,
+                "release": {"branch": "release/r1", "base": rig.shas["c2"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _push_branch(rig, "release/r1", rig.shas["c2"])
+    out = rig.round("status")
+    assert out.returncode == 0, out.stderr
+    assert "release release/r1 at" in out.stdout
+    assert rig.round("cut", **_fresh(rig, "c3")).returncode == 1
+    # The next write upgrades the file to the list shape.
+    assert rig.round("cut", "--abandon").returncode == 0
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"n":1,"open":true,"releases":{}}',
+        '{"n":1,"open":true,"release":{},"releases":[]}',
+        '{"n":1,"open":true,"releases":[{"branch":"release/r1","base":"'
+        + "a" * 40
+        + '","state":"cut"},{"branch":"release/r2","base":"'
+        + "b" * 40
+        + '","state":"gating"}]}',
+        '{"n":1,"open":true,"releases":[{"branch":"release/r1","base":"'
+        + "a" * 40
+        + '","state":"bogus"}]}',
+        '{"n":1,"open":false,"releases":[{"branch":"release/r1","base":"'
+        + "a" * 40
+        + '","state":"cut"}]}',
+    ],
+)
+@pytest.mark.parametrize("command", ["deploy", "open"])
+def test_invalid_releases_list_refuses(rig: Rig, content: str, command: str) -> None:
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    out = rig.round(command, **_fresh(rig))
+    assert out.returncode == 1
+    assert "invalid" in out.stderr
+    assert path.read_text(encoding="utf-8") == content
+    assert rig.deploy_log() == []
+
+
+def test_peer_marks_attach_to_the_open_release(rig: Rig) -> None:
+    head = _cut(rig)
+    assert rig.round("in", rig.shas["c3"], PRECIS_ROUND_PEER="alice").returncode == 0
+    marks = rig.root / ".git" / "precis-round" / "marks"
+    assert (
+        json.loads((marks / "alice.json").read_text(encoding="utf-8"))["release"] == 1
+    )
+    _journal_deploy(rig, head)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    assert rig.round("cut").returncode == 0
+    # The tally resets for the new open release: alice's r1 mark is out of
+    # scope — she is neither credited nor pending under r2.
+    assert "alice" not in rig.round("status").stdout
+    assert rig.round("in", newer, PRECIS_ROUND_PEER="bob").returncode == 0
+    assert json.loads((marks / "bob.json").read_text(encoding="utf-8"))["release"] == 2
+    status = rig.round("status").stdout
+    assert any(
+        cols[0] == "bob" and cols[1] == "in"
+        for line in status.splitlines()
+        if len(cols := line.split()) > 1
+    )
+    assert head == rig.origin_ref("release/r1")
+    # Abandon the open release: no open release remains, so the next marks
+    # attach to the release the NEXT cut would mint (max record n + 1) —
+    # never back to r1's scope.
+    assert rig.round("cut", "--abandon").returncode == 0
+    assert rig.round("in", newer, PRECIS_ROUND_PEER="alice").returncode == 0
+    assert (
+        json.loads((marks / "alice.json").read_text(encoding="utf-8"))["release"] == 3
+    )
+
+
+def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> None:
+    """`round deploy` acts on the deploying record, not the open one."""
+    head = _deploying(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    assert rig.round("cut").returncode == 0
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
+    assert _rel(_round_json(rig), 1)["state"] == "deployed"
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
