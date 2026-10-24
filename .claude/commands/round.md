@@ -65,7 +65,7 @@ Note from the user: `$ARGUMENTS`
    while any `release/*` branch exists, off main's first-parent line, or on a
    new duplicate migration number. `scripts/round cut --abandon` deletes the
    branch with a head lease once everything on it is on main. After the cut,
-   `gate`/`deploy` read only the exact remote release head: lint and all six
+   `gate`/`deploy` read only the exact remote release head: lint and all ten
    shards must be green, with a known fresh verdict age. A red/incomplete or
    missing release never falls back to main or an earlier green SHA. Fixes
    onto the release: see "Release fixes" below.
