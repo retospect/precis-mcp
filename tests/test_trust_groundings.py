@@ -2,8 +2,8 @@
 the trust-subject sha, the admit gate and the structural apply path.
 
 DB-backed (``store`` fixture). Owner identity under lax Q2: the
-configured ``PRECIS_OWNER`` default ``"owner"`` plus the legacy ``reto``
-actor — tests use ``owner``.
+configured ``PRECIS_OWNER`` default ``"reto"`` (Config.owner;
+the legacy ``owner`` placeholder is not an owner) — tests use ``reto``.
 """
 
 from __future__ import annotations
@@ -162,25 +162,25 @@ def test_defined_needs_owner_review_and_considered(store: Store) -> None:
             reason="r",
         )
     owner_review = store.record_target_review(
-        "ref", rid, actor="owner", verdict="approved", sha_basis="trust-subject"
+        "ref", rid, actor="reto", verdict="approved", sha_basis="trust-subject"
     )
     g = store.record_grounding(
         "ref",
         rid,
         grounding="defined",
         review_id=int(owner_review.review_id),
-        actor="owner",
+        actor="reto",
         actor_type="human",
         reason="r",
     )
     state = store.trust_state("ref", rid)
     assert state is not None and g.definition_sha == state.sha
     label = store.definition_label("ref", rid)
-    assert label is not None and label.startswith("definition (owner,")
+    assert label is not None and label.startswith("definition (reto,")
     # not-considered path
     rid2 = _ref(store)
     review2 = store.record_target_review(
-        "ref", rid2, actor="owner", verdict="approved", sha_basis="trust-subject"
+        "ref", rid2, actor="reto", verdict="approved", sha_basis="trust-subject"
     )
     with pytest.raises(BadInput, match="defined-not-considered"):
         store.record_grounding(
@@ -188,7 +188,7 @@ def test_defined_needs_owner_review_and_considered(store: Store) -> None:
             rid2,
             grounding="defined",
             review_id=int(review2.review_id),
-            actor="owner",
+            actor="reto",
             actor_type="human",
             reason="r",
         )
@@ -198,14 +198,14 @@ def test_sibling_grounding_no_inplace_upgrade(store: Store) -> None:
     rid = _ref(store)
     _consider(store, "ref", rid)
     owner_review = store.record_target_review(
-        "ref", rid, actor="owner", verdict="approved", sha_basis="trust-subject"
+        "ref", rid, actor="reto", verdict="approved", sha_basis="trust-subject"
     )
     store.record_grounding(
         "ref",
         rid,
         grounding="defined",
         review_id=int(owner_review.review_id),
-        actor="owner",
+        actor="reto",
         actor_type="human",
         reason="r",
     )
@@ -378,14 +378,14 @@ def test_evidential_edge_refused_on_definition_only_endpoint(store: Store) -> No
     dst = _ref(store)
     _consider(store, "ref", dst)
     owner_review = store.record_target_review(
-        "ref", dst, actor="owner", verdict="approved", sha_basis="trust-subject"
+        "ref", dst, actor="reto", verdict="approved", sha_basis="trust-subject"
     )
     store.record_grounding(
         "ref",
         dst,
         grounding="defined",
         review_id=int(owner_review.review_id),
-        actor="owner",
+        actor="reto",
         actor_type="human",
         reason="r",
     )
@@ -438,7 +438,7 @@ def test_apply_structural_by_owner_defined(store: Store) -> None:
     child = _ref(store, "taxon")
     parent = _ref(store, "taxon")
     prop = _structural_proposal(store, child, parent)
-    out = apply_structural(store, prop, actor="owner")
+    out = apply_structural(store, prop, actor="reto")
     assert out["defined_grounding_id"] is not None
     assert store.grounding_set("link", out["link_id"]) == frozenset({"defined"})
     # edge is considered and origin stays generated
@@ -453,7 +453,7 @@ def test_apply_structural_stale_proposal_refused(store: Store) -> None:
     prop = _structural_proposal(store, child, parent)
     _body_chunk(store, child, "drift the subject")
     with pytest.raises(BadInput, match="structural-proposal-stale"):
-        apply_structural(store, prop, actor="owner")
+        apply_structural(store, prop, actor="reto")
 
 
 def test_apply_structural_bare_actor_refused(store: Store) -> None:
