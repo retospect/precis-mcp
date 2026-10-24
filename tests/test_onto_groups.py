@@ -20,8 +20,8 @@ import pytest
 from precis.store import Store
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import _onto_common
 import _onto_groups as groups_script
-import _onto_repoint
 
 _SI_LEN = "1,0,0,0,0,0,0"
 
@@ -105,7 +105,7 @@ def _edges(store: Store, src: int) -> list[tuple[int, str | None, str | None]]:
 
 def _group(store: Store, slug: str) -> dict[str, Any] | None:
     with store.pool.connection() as conn:
-        return _onto_repoint._taxon_by_slug(conn, slug)
+        return _onto_common._taxon_by_slug(conn, slug)
 
 
 class TestTable:

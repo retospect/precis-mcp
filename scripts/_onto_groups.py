@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _onto_repoint import (
+from _onto_common import (
     _has_specialises_edge,
     _measurand_root,
     _taxon_by_slug,
