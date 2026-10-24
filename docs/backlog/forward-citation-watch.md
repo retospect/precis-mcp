@@ -195,6 +195,14 @@ Decided (Reto 2026-10-24, relayed by COORDINATOR):
 - Over-cap citers are kept on a ledger and drawn on later days.
 - Relevance gate on hold: queue on citation score alone.
 - `scripts/find-citing-papers` stays as the S2 cross-check.
+- **Question #6 (relevance gate) resolved: "A for now, B later if junk."**
+  v1 queues on citation score alone, plus the over-cap ledger (#5). If v1
+  proves noisy, option B is replaced by Reto's alternative: pull only
+  papers that were recently accessed ("less noise"). That alternative is
+  blocked by gr514186: `touch_recalled_for` (`src/precis/store/_refs_ops.py`)
+  skips chunk reads, so most paper access goes unrecorded, and finding reads
+  do not stamp the cited paper. Recommended fix: count chunk reads, and
+  record finding→paper as a separate derived signal.
 
 Open:
 
@@ -202,9 +210,8 @@ Open:
    reads count? A true access counter needs a schema change and a write per
    read; the 1-hour throttle on `last_recalled_at` already makes it recency
    only. Default here: no counter.
-2. **Relevance gate — ON HOLD.** Queue on citation score alone for now;
-   whether to also require similarity to an active quest before spending a
-   fetch is unruled (`stub_rank` already ranks the queue by quest anchors).
+2. **Relevance gate — resolved** (see Decided, #6): citation score alone
+   in v1; recently-accessed filter later if noisy, blocked on gr514186.
 3. **Paid key.** Pending the coordinator's check; see the dependency
    section. If unconfigured and the polite pool is already exhausted, slice 2
    cannot ship without it.

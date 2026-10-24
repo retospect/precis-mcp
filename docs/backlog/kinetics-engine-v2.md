@@ -1230,10 +1230,12 @@ where the paper gives them and records `theta0` otherwise.
    ~4000-8000× fewer events per simulated second than brute force with
    the TOF inside its 99 % interval; channel scaling ~100×.
 7. **Lateral interactions (pair cluster expansion + ω) + diffusion
-   patterns.** After the first paper (Reto, Q8); the paper is not yet
-   named and the cluster-expansion parameters of the O/Pt(111) fixture
-   have no cited source, so this slice stays out of any unattended wave
-   until both are named. Slice 8 does not depend on it and runs ahead. Acceptance: loop check
+   patterns.** After the first paper (Reto, Q8). Unblocked on Q8: fixture
+   source is Schmidt–Chen–Wolverton–Schneider, JCTC 8, 264 (2012) — SI
+   pa513172 holds the ~50-configuration DFT database and the full ECI table
+   (pc5232037: 1NN 50, 2NN 8 … meV/site); main paper pa513167 is a stub,
+   fetch pending. Cross-check: Tang–Van der Ven–Trout, Mol. Phys. 102, 273
+   (2004), doi 10.1080/0026897042000178088 (stub pa514184). Slice 8 does not depend on it and runs ahead. Acceptance: loop check
    and cluster finite-difference test green on random configurations;
    O/Pt(111) ordering fixture reproduces the p(2×2) phase at the published
    coverage.
@@ -1440,6 +1442,9 @@ affiliation beyond the work e-mail, and the exact licence term text.
   "upper 400s K at 2 K/s" figure in `perplexity-research:498670` is not
   in the held text. A digitised Fig. 1 (or another measured series)
   replaces the derived rows in the YAML without a code change.
+  **Reto 2026-10-24: "keep A and digitize fig 1".** Option A stays; option
+  C replaces the derived rows once the digitiser capability (gr514185)
+  lands.
   For Reto: the held-out miss (-12 K on the fixture CO model) is
   structural — the fit reproduces pa498800's derived rows almost
   exactly, so the held-out check effectively tests pa498702 (530 K)
@@ -1470,9 +1475,9 @@ blockers, 11 advisories) is folded into D1 (legacy rule, repricing,
 equilibrium composition, basis field, adapter readers), D3 (`hindered`
 inputs, derived `VERSION`), D4 (`σ_c`, `σ_model`, `_capped`), D8
 (migration), D10 (hash sources), the slices and the blast radius, in
-the commit after ceb385f69. Still open from it: slice 7's paper and
-cluster-expansion source (unnamed; slice stays out of unattended waves),
-and the Zacros licence (unsubmitted; gates nothing before slice 5).
+the commit after ceb385f69. Slice 7's cluster-expansion source is
+resolved (Q8, slice 7). Still open: the Zacros licence (requested; review
+of its "Preview terms" clause pending; gates nothing before slice 5).
 
 ## Data flow
 
