@@ -101,6 +101,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC
+from difflib import get_close_matches
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
@@ -321,6 +322,7 @@ class SeHandler(Handler):
                 "reach",
                 "margin",
                 "limit",
+                "offset",
                 "atoms",
                 "frame",
                 "touched",
@@ -2099,85 +2101,14 @@ class SeHandler(Handler):
         if v == "ops":
             from precis_se.ops_export import render_ops
 
-            return Response(body=render_ops(tree, ref.title or str(ref.slug)))
+            return Response(body=render_ops(tree, ref.title or str(ref.slug), args))
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
             return render_links_view(self.store, ref, sense="se")
         raise BadInput(
             f"unknown se view {view!r}",
-            next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'block':...}) | view='report' (stored build findings, "
-            "optional args={'block':...}) | view='catalogue' (each join "
-            "side's consulted catalogue row and resolution label, optional "
-            "args={'block':...}) | view='ports' "
-            "| view='surface_deviation' (args={'block':...}; matching exact generated target receipt, legacy unavailable; explicit target.features override permits rigid z_offset_A; stored local Å atoms, no fitting/generation) "
-            "| view='topology' (L2: threading, declared dof, strand domains) | "
-            "view='chain' (nucleic acids: helices with motif/turns/segments/"
-            "occupancy, strands with their routes, derived pairing) | "
-            "view='measures' "
-            "(+ stack-up) | view='datums' (datum ranking + which "
-            "measures hang off each) | view='pockets' (each pocket's "
-            "regions and their measure specs) | view='ray' "
-            "(args={'name':…, 'from'?, 'against'?: 'last'|<i>} — an "
-            "observation ray's events, recomputed) | view='rays' | "
-            "view='validate' | "
-            "view='clearance' "
-            "(args={'a':...,'b':...}, or omit args for an all-pairs "
-            "CONNECTS digest; on two structure-bound blocks the atomic "
-            "vdW path, which also takes 'sweep', 'pocket_gap_A' and "
-            "'lining') | view='sites' (attachment-site enumerator on "
-            "structure-bound blocks — args={'block'} or {'a','b'}) | "
-            "view='sweep' (does anything collide in ANY "
-            "declared state? — the cross product of every state-carrying "
-            "block's declared states, budget-bounded) | view='stations' "
-            "(args={'walker':...,'cursor'?:...,'target'?:'<block>.<port>'}: "
-            "the walker's cursor per settled station) | view='pick' "
-            "(args={'block':...,'atom':<ordinal or label>} or "
-            "args={'token':'<se:UID#ORD>'}: every level an atom belongs to "
-            "— residue, base pair, domain, strand, blocks — each with a "
-            "citable token) | view='surface' (args={'block':...,'charge'?,"
-            "'multiplicity'?,'scale'?,'density'?,'format'?:'text'|'json'}: "
-            "a bound molecule's vdW surface painted with GFN2 ESP, H-bond "
-            "and polarity classes) | view='drc' "
-            "(graph tier + DOF "
-            "probe) | view='kinematics' (derived axis/angle/arm/tip for "
-            "every declared transition's ports — port_pose_overrides, "
-            "R_to·R_fromᵀ as axis-angle) | view='bom' (bought items, "
-            "multiplied through the "
-            "arrays, with cost/mass) | view='order' (what to buy — the "
-            "instanced tree walked to purchasable leaves and bought-whole "
-            "assemblies, merged with explicit BOM lines, plus a to-make "
-            "table for the rest) | view='fasten' (screw joints: grip "
-            "stack-up, the holes it stamps — clearance, countersink or "
-            "counterbore, and whatever the far end's thread_strategy "
-            "names — thread lead, and which driver can reach it) "
-            "| view='interview' "
-            "(the question/answer/decision ledger, open questions first) "
-            "| view='freedom' (what is still undecided, and by whom) "
-            "| view='assembly_check' (macro relax v1 check-and-report: "
-            "mate redundancy, interference depth, stack-up worst-case + RSS, "
-            "mold pull, formfind equilibrium — one findings list) "
-            "| view='stability' (Maxwell/Calladine rigid / mechanism / "
-            "prestress-stabilized over the axial members, plus the "
-            "taut/slack load-path solve per case — args={'load_cases': "
-            "[{'name':..., 'loads': {'<block>': [x,y,z]}}]}, "
-            "args={'bistable': {'member':..., 'trans':..., 'cis':...}}) "
-            "| view='mechanics' (atomic mode: advisory L4 ceilings — "
-            "buckling, strain energy, min-cut tensile) | view='literature' "
-            "(atomic mode: a deterministic paper query, optional "
-            "args={'block':...}) "
-            "| view='fret' (optical domain: per-donor FRET budget solved "
-            "against every other chromophore block at once, declared-link "
-            "PASS/FAIL, orientation/Dexter/negligible/crosstalk findings) "
-            "| view='print' (fdm process DRC + STL/3MF export, "
-            "args={'block':...,'fmt':...,'path':...}) | view='fab' (the "
-            "whole fabrication plan, one row per implementation-bearing "
-            "block) | view='ops' (the design back out as a replayable "
-            "ops list — paste into put(kind='se') to reproduce it in "
-            "another database; states and uids are not carried) "
-            "| view='links' (the design's link graph, both "
-            "directions)",
+            next=_unknown_view_next(v),
         )
 
     def eye(
@@ -7846,6 +7777,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "links": frozenset(),
     "print": frozenset({"block", "fmt", "path", "scale"}),
     "fab": frozenset(),
+    "ops": frozenset({"offset", "limit"}),
 }
 assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS
 
@@ -9037,6 +8969,58 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
             "— not clear, not reached"
         )
     return body
+
+
+#: ``get``'s view roster, grouped by family — the ``next=`` hint on an
+#: unknown ``view=``. Every dispatched view appears exactly once; the
+#: families keep the ~45 names scannable (gr514236: the old one-line
+#: ~50-view wall named everything and was findable in nothing).
+_VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
+    ("shape", "tree block ports topology chain datums pockets surface_deviation"),
+    (
+        "records",
+        "report catalogue measures contracts provenance revisions "
+        "branches diff interview freedom ops links export cut trace",
+    ),
+    (
+        "checks",
+        "validate drc clearance sites sweep stations pick stability "
+        "assembly_check mechanics kinematics surface flow fret",
+    ),
+    ("build", "bom order fasten print fab ray rays literature"),
+)
+
+#: Every view name in :data:`_VIEW_FAMILIES` — difflib's candidate list
+#: for the nearest-match suggestion.
+_VIEWS_ALL = sorted({v for _fam, names in _VIEW_FAMILIES for v in names.split()})
+
+#: Words a caller reaches for when they want the connects/joints table.
+#: There is no whole-design one (a small spec of its own), so these get a
+#: pointed answer instead of the roster.
+_CONNECT_LIKE_VIEWS = frozenset({"connect", "connects", "joint", "joints"})
+
+
+def _unknown_view_next(v: str) -> str:
+    """The ``next=`` for an unrecognized ``view=`` (gr514236). Connects
+    and joints get a pointed answer — no whole-design table exists yet;
+    the reply names where they actually render. Anything else gets the
+    closest real view name plus :data:`_VIEW_FAMILIES` — every view, one
+    line per family, instead of the old ~50-view single-line wall."""
+    if v in _CONNECT_LIKE_VIEWS:
+        return (
+            "no whole-design connects/joints view — connects show "
+            "per-port in view='ports' (the 'peer' column) and per-block "
+            "in view='block' args={'block': ...}; view='clearance' with "
+            "no args is the all-pairs CONNECTS digest"
+        )
+    nearest = get_close_matches(v, _VIEWS_ALL, n=1, cutoff=0.0)
+    roster = "\n".join(
+        f"{fam}: " + " ".join(f"view={n!r}" for n in names.split())
+        for fam, names in _VIEW_FAMILIES
+    )
+    if nearest:
+        return f"did you mean view={nearest[0]!r}?\n{roster}"
+    return roster
 
 
 def _block_not_found(tree: SeTree, name: str) -> str:

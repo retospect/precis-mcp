@@ -27,12 +27,7 @@ refine, tradeoffs) see `precis-se-design-help`; for screwing a design
 together — picking a real ISO screw, what a printed part's threaded hole
 should be, and what `view='fasten'` reports — see `precis-se-fasten-help`;
 for printing a block — `realize`, build frame, process DRC, STL/3MF
-export, `view='fab'`'s fabrication table — see `precis-se-print-help`;
-for a block with more than one shape — declared states, transitions,
-`view='kinematics'`, `view='sweep'` — see `precis-se-states-help`; for
-FRET links between blocks — see `precis-se-fret-help`; for the
-checking views (`stability`, `drc`, `fasten`, `clearance`,
-`surface_deviation`) — see `precis-se-check-help`.
+export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
 
 ## Units and geometry conventions — read first
 
@@ -83,16 +78,14 @@ It decides which checks are meaningful, so `view='validate'` and
 `view='drc'` print the governing scenario — or `scenario: none chosen`.
 An unknown name is rejected; an *absent* key keeps the earlier choice.
 
-`view='drc'` ends with a one-line `validate:` digest (error/warning
-counts, first finding, or `validate: clean`), and a DRC-clean design with
-validate warnings reads `no DRC findings; validate has N warning(s)` — a
-clean DRC never implies a clean design.
-
-**Every `put`/`edit` reply ends with the digest** (`validate: clean`,
-or `validate: N error(s), M warning(s) — first: <rule> <detail>; see
-view='validate'`), and `/se/<slug>` shows it above the findings table —
-a write never refuses, but it no longer stays silent. For bound
-structures, `atom_clash` fires per block pair when posed atoms come
+**Every `put`/`edit` reply ends with a `validate:` digest** —
+`validate: clean`, or `validate: N error(s), M warning(s) — first:
+<rule> <detail>; see view='validate'` — and `/se/<slug>` shows it above
+the findings table — a write never refuses, but it no longer stays
+silent. `view='drc'` prints the same digest as its last
+line, and a DRC-clean design with validate warnings reads `no DRC
+findings; validate has N warning(s)` — a clean DRC never implies a clean
+design. For bound structures, `atom_clash` fires per block pair when posed atoms come
 within 2 Å (error under 1 Å, warn in [1, 2) Å — count, min distance,
 closest pair in the text). A `connect` does not excuse it —
 re-pose the block (`set_pose`); blocks left at `[0,0,0]` pile up and
@@ -250,12 +243,11 @@ C-number).
 
 ## Discrete states, transitions and kinematics
 
-See [[precis-se-states-help]].
-
 A block that can be in more than one shape — a bistable, a photoswitch, an
 assembly step — declares its states and the stimulus-labelled transitions
 between them; `view='kinematics'` reads the swing a transition performs off
-the two port frames, and `view='sweep'` checks every declared state at once.
+the two port frames, and `view='sweep'` checks every declared state at
+once. See [[precis-se-states-help]].
 
 ## Finding and composing library blocks — search(kind='se')
 
@@ -266,10 +258,9 @@ Both, with their worked examples, are in [[precis-se-search-help]].
 
 ## Optical (FRET) ops — energy transfer as a comm channel
 
-See [[precis-se-fret-help]].
-
 Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
-`set_optical_link` / `set_optics`, checked by `view='fret'`.
+`set_optical_link` / `set_optics`, checked by `view='fret'`. See
+[[precis-se-fret-help]].
 
 ## The axial member (ties, struts, rods, spokes)
 
@@ -314,18 +305,19 @@ as a region selector, `precis-se-regions-help`), `{'atoms': [...]}` (the
 set's LCA frame + coverage), `{'against': <run_job>}` (run diff). A
 finding row on a workspace-built design carries the script line.
 
-The default tree shows, beside each structure-bound block, both halves labelled
-by source: the stored build report's error/warning counts (`build report:`) AND
-the bound structure's current validator tally (`validator:`) — a clean build
-report does not mean the geometry validates. `view='validate'` includes stored
-ERROR/WARN findings by block (grouped by error code, warnings summarised) plus
-`structure_validator_*` findings re-run on the bound geometry; the build rows
-are build-time evidence, the validator rows are the current read.
+Beside each structure-bound block the default tree shows both halves
+labelled by source: the stored build report's error/warning counts
+(`build report:`) and the bound structure's current validator tally
+(`validator:`) — a clean build report does not mean the geometry
+validates. `view='validate'` adds stored ERROR/WARN findings by block
+(grouped by error code, warnings summarised) plus `structure_validator_*`
+findings re-run on the bound geometry — build rows are build-time
+evidence, validator rows the current read.
 
 `view='report'` reads stored generate/join build findings (severity, code,
-where, message, span) plus each bound structure's current `validator:` tally
-(one cached geometry read per structure — the tally, not the finding list;
-full detail stays in `view='validate'`/`view='block'`). Omit args for every
+where, message, span) plus the same `validator:` tally (one cached
+geometry read per structure — full detail stays in
+`view='validate'`/`view='block'`). Omit args for every
 direct block, or use `args={'block': '<label or #uid>'}`. Missing records are
 unavailable, not evidence of a successful build; template occurrences are not
 expanded. State overrides are not accepted.
@@ -333,12 +325,14 @@ expanded. State overrides are not accepted.
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
 reproduced in another database without a `pg_dump` or prod write access.
-It is
-**final state, not history** — nothing removed or destructive appears.
-Its header lists what the round-trip drops; the two that bite are
+It is **final state, not history** — nothing removed or destructive
+appears. Its header lists what the round-trip drops; the two that bite are
 **block uids** (a re-`put` mints fresh ones — re-resolve by label) and
 **declared states/transitions** (in `design_states` keyed by uid, not
-the tree).
+the tree). Exports run bigger than the tool-result fold (and `more()`
+re-folds, so the middle stays unreachable) — slice it:
+`args={'offset': <0-based op index>, 'limit': <count>}` (`limit=0` =
+everything from `offset`); concatenated slices are the whole payload.
 
 `view='links'` renders the design's link graph both directions. Write
 edges with the `link` verb: `link(kind='se', id='<slug>',
@@ -415,16 +409,85 @@ every cone. `view='contracts'` shows both.
 
 ## Checking views — stability, drc, fasten, clearance
 
-See [[precis-se-check-help]] — rigidity (`view='stability'`), capacity
-+ plausibility (`view='drc'`), the screw stack-up (`view='fasten'`),
-envelope gaps (`view='clearance'`), authored-surface deviation
-(`view='surface_deviation'`), and the finding-id delta grammar.
+- Model (stated in its header): axial members attach at **port world
+  positions** (block pose + `add_port` pose); a block met at different
+  points is a 6-DOF body (hub spokes on rim-offset ports carry axle
+  torque), else a pin node. `rigid` connects merge blocks into ONE 6-DOF
+  body (reference = first grounded member, else first by name), so a rim
+  or frame needs no axial-truss stand-in; an axial inside one group is
+  skipped. Other connects (`revolute` …) are NOT in the matrix.
+- `fixed` pins each grounded block's point on its body: one foot grounds
+  3 DOF, two 5, three non-collinear 6. Clamp: `x`+`y`+`z` on a body's ONLY
+  grounded block grounds all 6; `["z"]` stays a pin; any of
+  `rx`/`ry`/`rz` unclamps, grounding exactly those (axle
+  bearing on a lone hub: `["x","y","z","rx","ry"]`); `pinned=true` keeps
+  all three free (ball joint). Pin-node rotation unmodelled; `c` = grounded.
+- Verdicts: `rigid` · `prestress-stabilized` · `first-order mobile —
+  NOT stabilized …` · the not-checked tripwire line.
+- Declared preloads are checked as a self-stress state (out-of-balance
+  vs a preload-scaled tolerance); all-zero preloads read "no preload
+  declared — nothing to verify", never a pass.
+- A loaded block outside the analysed subgraph is NOT flagged — check
+  membership yourself (j of N blocks in the header).
+- **Load path** (`## load path`): the complementarity solve — per member
+  taut/slack/bearing/separated per load case; unrated members skipped
+  and named.
+- **Load cases**: `args={'load_cases':[{'name':…,'loads':{block:[x,y,z]}}]}`
+  on `view='stability'`/`'drc'`/`'validate'` — a tie driven compressive
+  is a warn `completeness` finding.
+- **Bistability**: `args={'bistable':{'member':'a.p—b.p','trans':m,'cis':m}}`
+  probes two free lengths as two stable states.
+
+## Checking views — drc, fasten, clearance
+
+`view='drc'`: capacity vs declared load ("X N compression against a Y N
+buckling/crush ceiling"), mechanism-implied BOM demands, undeclared
+interpenetration, dof_disagreement, unconnected ports, and **connect
+plausibility** (all warn): `connect_envelope_disjoint` (envelopes never
+touch), `mechanism_no_interference` (`press`/`snap`, zero overlap),
+`captive_not_contained`, `screw_axis_no_overlap` (the `screw` *class*; the
+mechanism is `view='fasten'`'s), `axis_not_coaxial`/
+`axis_not_radially_contained` (`bearing`/`revolute`/`cylindrical` axes not
+lined up or nested). A declared bearing/press interference stays clean.
+**Joining precedent** (a `bonded` transition's `driver_ref` names the
+reaction): a known joining (`CuAAC`, ...) with no `reaction` transition is
+`joining_unnamed` (info); a named rxn without `reaction_class` is
+`joining_class_unknown` (warn); a class with no yield rows is
+`joining_unprecedented` (warn), with rows `joining_precedent` (info) — the
+read is `search(kind='rxn', property='yield', reaction_class=...)`. The
+header's counts ignore `info` rows.
+`view='fasten'` refuses a stack-up with no screw-form component bound. It
+also decides **nothing** about what a printed member's far end threads into
+— `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |
+tapped`) is contract-classed and required there, because a cut thread in
+plastic is the wrong default; metal members still default to `tapped`. The
+view reports the stack, the grip, the thread as a lead, which driver can
+reach the head, and every stamped hole with the provenance of its diameter.
+Full workflow: `precis-se-fasten-help`.
+
+`view='clearance'`: with `args={'a': <block>, 'b': <block>}`, the signed
+envelope gap between those two blocks (interference/touching/clear).
+Omit `args` (or pass `{}`) for an all-pairs digest instead — every unique
+block pair named by the design's CONNECTS, worst gap first, capped at 64
+pairs; a block missing an effective envelope is skipped with a note
+rather than failing the whole survey.
+
+**Finding ids and deltas.** `view='validate'`, `'drc'` and the
+`'clearance'` digest carry a 12-hex `id` per row: the `pcb` DRC hash over
+`(rule, sorted participants)` (`precis-pcb-help`), so `a—b` and `b—a` match
+and detail, depth or row order never change it. `se` stores nothing: pass
+an earlier report's ids as `args={'previous': [...]}` (list or comma
+string) and the head reads `vs previous: N new, M still, K gone`, rows gain
+a `delta` column (`new`/`still`) and `## gone since previous` lists the
+vanished ids. A malformed id is refused. Rows sharing rule and subject
+share an id (diffed as a multiset).
 
 ## Build a block tree over atoms (atomic mode)
 
-See [[precis-se-atomic-help]].
-
-The construction ops `generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces ([[precis-workspace-help]]), not new ops.
+See [[precis-se-atomic-help]]. The construction ops `generate`, `join` and
+`terminate` still work but are being retired when structure workspace
+slice 1 ships; new construction capability goes to workspaces
+([[precis-workspace-help]]), not new ops.
 
 Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
@@ -432,9 +495,7 @@ and a binding into a real `structure` design.
 
 ## Nucleic-acid chains (DNA/RNA design)
 
-See [[precis-se-chain-help]].
-
-Seven pure ops over ordinary blocks: `declare_helix` (geometry — centre
+Seven pure ops over ordinary blocks (see [[precis-se-chain-help]]): `declare_helix` (geometry — centre
 line, motif, unit count) · `declare_strand` (route chemistry — sequence
 optional) · `add_domain`/`set_domain`/`remove_domain` (a strand's ordered
 route along a helix; `set_domain` edits one row in place, `remove_domain` is

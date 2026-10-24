@@ -506,6 +506,91 @@ def test_the_view_is_reachable_and_an_unknown_view_still_lists_it(
     assert "view='ops'" in str(exc.value.next)
 
 
+# ── offset/limit slices (gr514235) ─────────────────────────────────────
+
+
+#: A design whose export exceeds the write-time fold (~4 KB), so a whole
+#: ``view='ops'`` is unreadable end to end in one session — the gripe's
+#: exact situation. 119 ops mirrors the real unicycle-c1.
+_BIG_OPS: list[dict[str, Any]] = [
+    {"op": "add_block", "name": f"b{i}", "desc": f"block {i} " + "x" * 40}
+    for i in range(119)
+]
+
+
+def test_slices_concatenate_back_into_the_full_ops_list(
+    handler: SeHandler,
+) -> None:
+    """The fix for the unrecoverable middle: a caller slices the list
+    with ``offset``/``limit`` and stitches the fenced ``ops`` arrays —
+    the concatenation IS ``design_ops(tree)``, with no elision marker
+    anywhere in the pages."""
+    handler.put(id="big-ops", text=json.dumps({"ops": _BIG_OPS}))
+    full = _fenced_ops(handler.get(id="big-ops", view="ops").body)
+    assert len(full) == len(_BIG_OPS)
+    recovered: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        body = handler.get(
+            id="big-ops", view="ops", args={"offset": offset, "limit": 40}
+        ).body
+        assert "elided" not in body
+        window = _fenced_ops(body)
+        if not window:
+            break
+        recovered += window
+        offset += len(window)
+    assert recovered == full == design_ops(_tree_of(handler, "big-ops"))
+
+
+def test_a_slice_names_its_window_and_hands_the_next_call(
+    handler: SeHandler,
+) -> None:
+    """A slice body still fences ``{"ops": [...]}`` (pasteable shape),
+    says which window it is, and names the args that continue it."""
+    handler.put(id="big-ops2", text=json.dumps({"ops": _BIG_OPS}))
+    body = handler.get(id="big-ops2", view="ops", args={"offset": 40, "limit": 40}).body
+    assert "ops 41–80" in body
+    assert "args={'offset': 80, 'limit': 40}" in body
+    assert len(_fenced_ops(body)) == 40
+
+
+def test_limit_zero_means_everything_from_offset(handler: SeHandler) -> None:
+    handler.put(id="big-ops3", text=json.dumps({"ops": _BIG_OPS}))
+    body = handler.get(id="big-ops3", view="ops", args={"offset": 100}).body
+    assert len(_fenced_ops(body)) == len(_BIG_OPS) - 100
+    assert "next slice" not in body
+
+
+def test_an_offset_past_the_end_is_an_honest_empty_slice(
+    handler: SeHandler,
+) -> None:
+    handler.put(id="big-ops4", text=json.dumps({"ops": _BIG_OPS}))
+    body = handler.get(id="big-ops4", view="ops", args={"offset": 999}).body
+    assert "past the end" in body
+    assert _fenced_ops(body) == []
+
+
+def test_slice_args_are_vetted_not_dropped(handler: SeHandler) -> None:
+    """``view='ops'`` now vets ``args`` like every sibling view: bad
+    slice values refuse with a next step, and an unknown key is the
+    usual loud reject rather than a silent drop."""
+    handler.put(id="big-ops5", text=json.dumps({"ops": _BIG_OPS}))
+    for bad in (
+        {"offset": -1},
+        {"offset": 1.5},
+        {"offset": True},
+        {"limit": "x"},
+        {"limit": -2},
+        {"limit": False},
+    ):
+        with pytest.raises(BadInput) as exc:
+            handler.get(id="big-ops5", view="ops", args=bad)
+        assert exc.value.next
+    with pytest.raises(BadInput, match="unknown args key"):
+        handler.get(id="big-ops5", view="ops", args={"bogus": 1})
+
+
 # ── totality: no field may be added without a verdict ───────────────────
 
 

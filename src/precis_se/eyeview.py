@@ -946,6 +946,12 @@ def note_eye(
         return f"· {head}"
     body, _total = _ordered_body(store, int(ref.id), cap=4000)
     block = f"{head}\n{body}" if body else head
+    # The design's own structure (blocks/ports/connects) is not part of
+    # this eye — name the view that shows it (gr514234's discoverability
+    # half; a real structure eye is a spec of its own).
+    block += (
+        f"\nblocks/ports/connects: get(kind='se', id={str(ref.slug)!r}, view='tree')"
+    )
     if ext < Extent.HOP1:
         return block
     sections = _rings(store, int(ref.id), "se", ext, recall=False, expand=q, ring=ring)

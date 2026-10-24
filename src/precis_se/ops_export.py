@@ -65,6 +65,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis.errors import BadInput
 from precis.utils.units import vector_canonical
 from precis_se.measures import measurand_name
 from precis_se.ops import SeTree
@@ -527,17 +528,67 @@ def design_ops(tree: SeTree) -> list[dict[str, Any]]:
     ]
 
 
-def render_ops(tree: SeTree, title: str) -> str:
+def _slice_args(args: dict[str, Any] | None) -> tuple[int, int]:
+    """``view='ops'``'s ``offset``/``limit`` slice window (gr514235).
+
+    A real design's export is bigger than the write-time fold cap and
+    ``more()`` re-folds, so the middle is unrecoverable — a caller
+    slices instead: ``args={'offset': <0-based op index>, 'limit':
+    <count>}`` (the same names ``list_refs``/``view='sites'`` use;
+    ``limit=0`` means "everything from ``offset`` on"), and the
+    concatenated slices' ``ops`` arrays equal :func:`design_ops`.
+    """
+    a = args or {}
+    offset = a.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise BadInput(
+            f"view='ops' 'offset' must be a whole op index >= 0; got {offset!r}",
+            next="get(kind='se', id='<slug>', view='ops', "
+            "args={'offset': 0, 'limit': 50})",
+        )
+    limit = a.get("limit", 0)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise BadInput(
+            f"view='ops' 'limit' must be a whole number of ops >= 0 "
+            f"(0 = every op from 'offset' on); got {limit!r}",
+            next="get(kind='se', id='<slug>', view='ops', "
+            "args={'offset': 0, 'limit': 50})",
+        )
+    return offset, limit
+
+
+def render_ops(tree: SeTree, title: str, args: dict[str, Any] | None = None) -> str:
     """The view body: the caveats first, then one fenced JSON object in
     exactly the shape ``put(kind='se', text=...)`` accepts, so the block
-    can be copied straight into a call without reshaping."""
+    can be copied straight into a call without reshaping. ``args`` may
+    carry ``offset``/``limit`` (:func:`_slice_args`) to window the ops
+    list — a slice still fences ``{"ops": [...]}``, so concatenating
+    every slice's array reproduces the full payload."""
     ops = design_ops(tree)
+    offset, limit = _slice_args(args)
+    window = ops[offset : offset + limit] if limit else ops[offset:]
+    sliced = offset > 0 or len(window) < len(ops)
+    lead = (
+        f"{len(ops)} op(s) reconstructing this design's FINAL STATE. "
+        "Paste the block below into `put(kind='se', id='<new-slug>', "
+        "text=...)` to rebuild it in another database."
+    )
+    if sliced:
+        lo = offset + 1 if window else 0
+        hi = offset + len(window)
+        lead = (
+            f"{len(ops)} op(s) reconstructing this design's FINAL STATE — "
+            f"this is a slice (ops {lo}–{hi}). Concatenate every slice's "
+            "`ops` array before pasting into `put(kind='se', "
+            "id='<new-slug>', text=...)` — a partial list rebuilds a "
+            "partial design."
+        )
+        if not window:
+            lead += f" (offset {offset} is past the end — nothing to show)"
     lines = [
         f"# {title} — ops export",
         "",
-        f"{len(ops)} op(s) reconstructing this design's FINAL STATE. Paste the "
-        "block below into `put(kind='se', id='<new-slug>', text=...)` to "
-        "rebuild it in another database.",
+        lead,
         "",
         "Not carried by the round-trip:",
         "",
@@ -555,7 +606,12 @@ def render_ops(tree: SeTree, title: str) -> str:
             "",
         ]
         lines += [f"- {ref}" for ref in needed]
-    lines += ["", "```json", _ops_json(ops), "```"]
+    lines += ["", "```json", _ops_json(window), "```"]
+    if len(window) < len(ops) - offset:
+        lines += [
+            "",
+            f"next slice: args={{'offset': {offset + len(window)}, 'limit': {limit}}}",
+        ]
     return "\n".join(lines)
 
 
