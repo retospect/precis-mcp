@@ -174,6 +174,125 @@ def test_terminal_no_inline_cites_establishes_chain(store) -> None:
     assert "primary=primary" in card[0]
 
 
+# ── own-source grounding pin (gr510556) ────────────────────────────
+
+
+def test_own_source_chunk_pin_establishes_not_dead_chain(store) -> None:
+    """gr510556: a finding grounded on a resolvable chunk of its own
+    source paper (the kin-evidence/castor mint: a paper-level
+    ``derived-from`` plus a ``dst_chunk_id`` pin into the same ref)
+    terminates AT the pin — the inline cites inside the pinned chunk
+    belong to the claim's subject, not to a chain the finding must keep
+    walking. Before the fix, the no-LLM terminal proxy
+    (``not inline_cites``) forced a hop the paper's references could not
+    resolve → ``dead_chain(no_resolvable_cite)`` with the evidence in
+    hand (fi509632/fi509636/fi509640 on pa508953)."""
+    pid = _seed_paper(
+        store,
+        cite_key="dumesic00",
+        blocks=[
+            "Setup prose for the kinetics discussion with a cite [1].",
+            "The net rate of an elementary step equals its forward rate "
+            "times one minus the exponential term, derived earlier [3].",
+        ],
+        identifiers=[("doi", "10.1/dumesic")],
+    )
+    # Prod shape: chain=[{ref_id, ord:None}] (bare cited_in) plus a
+    # separate chunk-pin derived-from edge the reader wrote alongside.
+    fid = _seed_finding(store, cite_key="dumesic00")
+    with store.pool.connection() as conn:
+        store.add_link(
+            src_ref_id=fid,
+            dst_ref_id=pid,
+            dst_pos=1,
+            relation="derived-from",
+            conn=conn,
+        )
+        conn.commit()
+
+    with patch("precis.workers.chase._load_s2_references", return_value=None):
+        result = run_finding_chase_pass(store, limit=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "established"
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    meta = dict(meta_row[0] or {})
+    assert meta.get("primary_cite_key") == "dumesic00"
+    assert "dead_reason" not in meta
+    # The resolved landing is recorded on the chain hop: the pin
+    # selected ord 1 (the lexical fallback would have picked ord 0).
+    assert meta["chain"][0]["ord"] == 1
+    assert meta["chain"][0]["chunk_id"] is not None
+
+
+def test_chunk_pin_does_not_override_stance_no(store) -> None:
+    """The pin supplies terminality, not support: an LLM stance-'no'
+    verdict on the pinned chunk still refuses establishment — the chain
+    walks on (and here dies honestly on no_resolvable_cite)."""
+    pid = _seed_paper(
+        store,
+        cite_key="dumesic00",
+        blocks=["A passage that fails to support the asserted claim [2]."],
+    )
+    fid = _seed_finding(store, cite_key="dumesic00")
+    with store.pool.connection() as conn:
+        store.add_link(
+            src_ref_id=fid,
+            dst_ref_id=pid,
+            dst_pos=0,
+            relation="derived-from",
+            conn=conn,
+        )
+        conn.commit()
+    verdict = {
+        "supports": "no",
+        "support_reason": "pinned chunk does not corroborate the claim",
+        "caveats": [],
+        "cited_others": [],
+        "terminal": False,
+    }
+    with patch(_VERIFY_PATH, return_value=verdict):
+        with store.pool.connection() as conn:
+            outcome, _ev = advance_finding(
+                conn, store, _finding_row(store, fid), with_llm=True
+            )
+            conn.commit()
+
+    assert outcome == "dead"
+    assert _status_tag(store, fid) == "dead_chain"
+
+
+def test_established_transition_clears_stale_dead_reason(store) -> None:
+    """gr510556 (fi509645): a finding that recorded a dead_chain reason
+    and then establishes — e.g. a concurrent claim read STATUS:tracing
+    before the dead commit — drops the stale ``meta.dead_reason``. An
+    established finding must not keep reporting a death it survived."""
+    _seed_paper(
+        store,
+        cite_key="primary",
+        blocks=["A direct measurement statement with no citations at all."],
+    )
+    fid = _seed_finding(store, cite_key="primary")
+    store.update_ref(fid, meta_patch={"dead_reason": "no_resolvable_cite"})
+
+    with store.pool.connection() as conn:
+        outcome, _ev = advance_finding(
+            conn, store, _finding_row(store, fid), with_llm=False
+        )
+        conn.commit()
+
+    assert outcome == "terminated"
+    assert _status_tag(store, fid) == "established"
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    assert "dead_reason" not in (meta_row[0] or {})
+
+
 # ── stub_waiting: frontier has no chunks ────────────────────────────
 
 

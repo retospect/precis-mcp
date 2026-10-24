@@ -490,9 +490,16 @@ def advance_finding(
             return "dead", ev
         return "waiting", ev
 
-    # Locate the relevant chunk in the target paper.
+    # Locate the relevant chunk in the target paper. A finding may
+    # carry its own grounding pin — a ``derived-from`` edge into this
+    # ref with ``dst_chunk_id`` set (``put(cited_in='slug~N')``, or a
+    # reader grounding a finding on a chunk of its own source paper,
+    # e.g. the kin-evidence/castor mint shape ``derived-from pa…`` +
+    # ``derived-from pa…~ord``). The pin is the mint's own grounding
+    # assertion, so it wins the selection over the lexical heuristic.
+    pinned = _pinned_derived_chunks(conn, finding.ref_id, frontier_ref_id)
     target_chunk = _select_target_chunk(
-        target_chunks, frontier_ord, finding, with_llm=with_llm
+        target_chunks, frontier_ord, finding, with_llm=with_llm, pinned=pinned
     )
     if target_chunk is None:
         _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="no_target_chunk")
@@ -502,6 +509,15 @@ def advance_finding(
     chunk_id, chunk_ord, chunk_text = target_chunk
     ev.frontier["chunk_id"] = chunk_id
     ev.frontier["resolved_ord"] = chunk_ord
+    # Resolving TO a chunk the finding itself pins means the chain has
+    # arrived: the claim was asserted OF this chunk, so the inline
+    # cites inside it belong to the claim's subject — they are not a
+    # next hop the finding must walk (gr510556: findings grounded on
+    # their own source paper died ``no_resolvable_cite`` because the
+    # no-LLM terminal proxy forced a hop into an unresolvable cite).
+    grounded = chunk_id in pinned
+    if grounded:
+        ev.frontier["grounded"] = True
 
     # Inline cite scan on the target chunk text.
     inline_cites = _detect_inline_cites(chunk_text)
@@ -537,13 +553,20 @@ def advance_finding(
     # walk continues on this chunk's cited_others like any non-terminal
     # hop (and dies honestly on no_resolvable_cite when it can't). The
     # deterministic path (verification is None) has no verdict to read and
-    # keeps the inline-cites rule.
-    is_terminal = terminal_flag and (
+    # keeps the inline-cites rule. ``grounded`` adds the mint's own
+    # chunk-pin as a second terminal condition — a verdict of "no" on a
+    # pinned chunk still walks/dies, the pin asserts support, it does
+    # not prove it.
+    is_terminal = (terminal_flag or grounded) and (
         verification is None
         or str(verification.get("supports") or "") in ("yes", "partial")
     )
 
     if is_terminal:
+        # Record the terminal landing on the last hop — the
+        # deterministic path resolves chunk_id/ord only here (the
+        # with_llm path already wrote the same resolved values above).
+        chain[-1] = {**chain[-1], "chunk_id": chunk_id, "ord": chunk_ord}
         _snapshot_chain(conn, store, finding.ref_id, chain)
         if taproot_enabled and verification is not None:
             _taproot_bridge(
@@ -823,6 +846,7 @@ def _ground_on_stub(
         replace_prefix=True,
         conn=conn,
     )
+    _clear_dead_reason(conn, finding.ref_id)
     ev.next = {"ref_id": stub_ref_id, "chunk_id": chunk_id, "ord": chunk_ord}
     ev.reason = "grounded"
     return "advanced", ev
@@ -1120,6 +1144,27 @@ def _fetch_chunks(conn: Connection, ref_id: int) -> list[tuple[int, int, str]]:
     return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
 
 
+def _pinned_derived_chunks(
+    conn: Connection, finding_ref_id: int, frontier_ref_id: int
+) -> set[int]:
+    """Chunk ids inside ``frontier_ref_id`` the finding itself pins via a
+    ``derived-from`` edge carrying ``dst_chunk_id`` — the mint's own
+    grounding assertion (``put(cited_in='slug~N')`` resolves ``dst_pos``
+    to ``dst_chunk_id``; a reader minting a finding on its own source
+    paper links the specific chunk the same way). Paper-level
+    ``derived-from`` edges (``dst_chunk_id IS NULL`` — the plain
+    ``cited_in='slug'`` mint and chase's own hop appends) carry no such
+    assertion and are not returned.
+    """
+    rows = conn.execute(
+        "SELECT dst_chunk_id FROM links "
+        "WHERE src_ref_id = %s AND dst_ref_id = %s "
+        "AND dst_chunk_id IS NOT NULL AND relation = %s",
+        (finding_ref_id, frontier_ref_id, _DERIVED_FROM),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def _waiting_run_stats(conn: Connection, ref_id: int) -> tuple[int, float]:
     """Stats for the *current* consecutive-``waiting`` run of a finding.
 
@@ -1195,6 +1240,7 @@ def _select_target_chunk(
     finding: FindingRow,
     *,
     with_llm: bool,
+    pinned: set[int] | None = None,
 ) -> tuple[int, int, str] | None:
     """Pick the chunk in the target paper to walk from.
 
@@ -1202,6 +1248,12 @@ def _select_target_chunk(
     take the chunk with the highest lexical overlap with the
     finding's title (simple unigram match; ANN would be better but
     requires embedder access from the worker — defer).
+
+    ``pinned`` (chunk ids the finding's own ``derived-from`` edges
+    carry into this ref — :func:`_pinned_derived_chunks`) outranks the
+    lexical pick but not an explicit ``frontier_ord``: the mint's
+    grounding assertion is exact evidence, while the overlap guess is
+    a heuristic. Only chunks surviving the pinnable filter can match.
 
     With ``--with-llm``, the LLM verifier confirms the pick or
     proposes an alternate ord.
@@ -1220,6 +1272,10 @@ def _select_target_chunk(
             return match
         # Frontier ord was specified but no longer exists (re-ingest
         # renumbered the chunks). Fall through to lexical pick.
+    if pinned:
+        match = next((c for c in chunks if c[0] in pinned), None)
+        if match is not None:
+            return match
 
     title_tokens = _tokenize(finding.title)
     if not title_tokens:
@@ -1649,6 +1705,11 @@ def _snapshot_chain(
         replace_prefix=True,
         conn=conn,
     )
+    # An established finding carries no death marker — a finding that
+    # was dead_chained once and re-advanced (a concurrent claim taken
+    # before the dead commit) keeps the stale meta.dead_reason
+    # otherwise (gr510556).
+    _clear_dead_reason(conn, finding_ref_id)
 
 
 def _taproot_bridge(
@@ -1963,6 +2024,23 @@ def _file_taproot_review_todo(
         )
 
 
+def _clear_dead_reason(conn: Connection, finding_ref_id: int) -> None:
+    """Drop a stale ``meta.dead_reason`` on a transition to a live status.
+
+    ``dead_reason`` is only meaningful while ``STATUS:dead_chain`` holds.
+    A finding that re-advances past a recorded death — a concurrent
+    claim read ``STATUS:tracing`` before the dead commit landed
+    (gr510556: fi509645 died ``no_resolvable_cite`` then established 79 s
+    later, keeping the stale reason) — must not keep reporting a death
+    it survived.
+    """
+    conn.execute(
+        "UPDATE refs SET meta = meta - 'dead_reason' "
+        "WHERE ref_id = %s AND meta ? 'dead_reason'",
+        (finding_ref_id,),
+    )
+
+
 def _set_status(
     conn: Connection,
     finding_ref_id: int,
@@ -2006,6 +2084,8 @@ def _set_status(
             "UPDATE refs SET meta = meta || %s, updated_at = now() WHERE ref_id = %s",
             (Jsonb({"dead_reason": reason}), finding_ref_id),
         )
+    elif value != _DEAD_CHAIN:
+        _clear_dead_reason(conn, finding_ref_id)
     if value == _DEAD_CHAIN:
         _release_dead_waiters(conn, finding_ref_id)
     # Tag is imported above for type-checker visibility; the SQL
