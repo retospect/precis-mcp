@@ -48,6 +48,7 @@ arguments accept a bare 3-vector (native) or a unit string the shared
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -350,18 +351,42 @@ def _scene_bonds(scene: Any, labels: list[str]) -> list[tuple[int, int, float]]:
     ]
 
 
-def geom(obj: Any, *, ports: Any = None, meta: dict[str, Any] | None = None) -> Geom:
+def _is_net(obj: Any) -> bool:
+    """A hexfold ``Net`` — the only input ``geom``'s ``coords=`` can
+    re-seat (its exported geometry lives in the replaceable ``seed3``;
+    a ``Block``/``Strip``/``Scene``'s ``coords`` is already final)."""
+    return hasattr(obj, "atoms") and hasattr(obj, "seed3")
+
+
+def geom(
+    obj: Any,
+    *,
+    ports: Any = None,
+    meta: dict[str, Any] | None = None,
+    coords: Any = None,
+) -> Geom:
     """Wrap a built object — a ``Scene``, a hexfold ``Net`` / ``Block`` /
     ``Strip``, or a cad ``Design`` — as a :class:`Geom`. ``ports`` is a
     mapping name → :class:`Port` or kwargs dict (``pos``/``direction``/
     ``roles``/``atom``/``annotations``); ``meta`` rides through (e.g.
-    ``{'chiral_index': [n, m]}``, flipped by :func:`mirror`)."""
+    ``{'chiral_index': [n, m]}``, flipped by :func:`mirror`).
+
+    A ``Net`` exports ``net.seed3`` — the *unrelaxed* seed (gr514053).
+    ``coords`` overrides it with an ``(n, 3)`` array in ``Net.atoms``
+    ordinal order, e.g. ``pga.geom(net, coords=stick(net))``; ``meta``
+    records ``coords="relaxed"`` or ``"seed"`` either way."""
     ports_d: dict[str, Port] = {}
     for name, p in (ports or {}).items():
         if isinstance(p, Port):
             ports_d[name] = p
         else:
             ports_d[name] = Port(name=name, **{k: v for k, v in dict(p).items()})
+    if coords is not None and not _is_net(obj):
+        raise BadInput(
+            "pga.geom: coords= applies only to a hexfold Net — a "
+            "Scene/Block/Strip already carries its own coordinates",
+            next="drop coords=, or relax the Net first: coords=stick(net)",
+        )
     if isinstance(obj, Geom):
         if ports_d or meta:
             return replace(
@@ -379,25 +404,58 @@ def geom(obj: Any, *, ports: Any = None, meta: dict[str, Any] | None = None) -> 
     # hexfold Net / Block / Strip — atomic geometry in Å
     block = getattr(obj, "block", obj)
     elements = getattr(block, "elements", None)
-    coords = getattr(block, "coords", None)
+    xyz = getattr(block, "coords", None)
     bonds = getattr(block, "bonds", None)
+    coord_kind = "seed"
     if elements is None:
         atoms = getattr(obj, "atoms", None)
-        seed3 = getattr(obj, "seed3", None)
-        if atoms is not None and seed3 is not None:  # a Net
+        if atoms is not None and hasattr(obj, "seed3"):  # a Net
             ordered = sorted(atoms, key=lambda a: a.ord)
             elements = [a.element for a in ordered]
-            coords = np.asarray(seed3, dtype=np.float64)
             bonds = list(getattr(obj, "bonds", ()))
-    if elements is not None and coords is not None:
+            if coords is not None:
+                try:
+                    xyz = np.asarray(coords, dtype=np.float64)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"pga.geom: coords must be an ({len(ordered)},3) "
+                        "array in Net.atoms ord order — stick(net) returns "
+                        "exactly that array"
+                    ) from exc
+                if xyz.shape != (len(ordered), 3):
+                    raise ValueError(
+                        f"pga.geom: coords must be an ({len(ordered)},3) "
+                        "array in Net.atoms ord order, got "
+                        f"{tuple(xyz.shape)} — stick(net) returns exactly "
+                        "that array"
+                    )
+                coord_kind = "relaxed"
+            else:
+                if obj.seed3 is None:
+                    raise BadInput(
+                        "pga.geom: this Net has no seed3 coordinates to export",
+                        next="pass them explicitly: pga.geom(net, coords=stick(net))",
+                    )
+                seed_kind = getattr(obj, "seed_kind", "spectral")
+                coord_kind = "relaxed" if seed_kind == "relaxed" else "seed"
+                if seed_kind != "relaxed":
+                    warnings.warn(
+                        "pga.geom: exporting the Net's unrelaxed seed3 "
+                        f"coordinates (seed_kind={seed_kind!r}) — "
+                        "relax first: pga.geom(net, coords=stick(net))",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                xyz = np.asarray(obj.seed3, dtype=np.float64)
+    if elements is not None and xyz is not None:
         scene = _scene_from_parts(
             list(elements),
-            np.asarray(coords, dtype=np.float64),
+            np.asarray(xyz, dtype=np.float64),
             # (i, j, order) or (i, j, order, kind) — GeneratedBlock and
             # hexfold Block/Net bond rows alike
             [(int(b_[0]), int(b_[1]), float(b_[2])) for b_ in (bonds or ())],
         )
-        m = {"units": "A", **dict(meta or {})}
+        m = {"units": "A", "coords": coord_kind, **dict(meta or {})}
         return Geom(scene=scene, ports=ports_d, meta=m)
     raise BadInput(
         f"pga: unrecognised geometry {type(obj).__name__} — want a "

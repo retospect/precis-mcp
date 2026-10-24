@@ -92,7 +92,7 @@ class _ArmchairSegment:
 def _count(value: object, lo: int, hi: int, what: str, label: str = "seam tube") -> int:
     """Integer parameter bound, shared by every layout (was ``fin._count``
     and ``fin120._count``; ``label`` carries each builder's error prefix —
-    "seam tube", "fin")."""
+    "prism tube", "rail tube", "channel", "seam tube", "fin")."""
     if type(value) is not int or not lo <= value <= hi:
         raise ValueError(f"{label} {what} must be an integer in [{lo},{hi}]")
     return value

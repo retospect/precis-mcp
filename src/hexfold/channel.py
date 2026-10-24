@@ -85,9 +85,9 @@ def channel_junction(
     authors the k3-sp3-z dimer chain on every corner seam (even period
     counts); False authors the equal-120 sp2 registration — preview only,
     free relaxation dimerises it (module docstring)."""
-    periods = _count(periods, 2, 60, "periods")
-    rows = _count(rows, 4, 40, "wall rows")
-    strip_rows = _count(strip_rows, 2, 12, "strip rows")
+    periods = _count(periods, 2, 60, "periods", "channel")
+    rows = _count(rows, 4, 40, "wall rows", "channel")
+    strip_rows = _count(strip_rows, 2, 12, "strip rows", "channel")
     if rows % 2:
         raise ValueError(
             f"odd_rows: channel wall rows must be even (got {rows}) so "

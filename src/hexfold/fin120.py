@@ -89,9 +89,9 @@ def seam_tube(
     """``periods`` seam periods along the axis, two wall halves of ``rows``
     row pairs and a strip of ``strip_rows`` row pairs standing ``side``
     ("out" or "in") of the wall, all three on one equal-120 seam."""
-    periods = _count(periods, 2, 60, "periods")
-    rows = _count(rows, 4, 40, "wall rows")
-    strip_rows = _count(strip_rows, 2, 12, "strip rows")
+    periods = _count(periods, 2, 60, "periods", "seam tube")
+    rows = _count(rows, 4, 40, "wall rows", "seam tube")
+    strip_rows = _count(strip_rows, 2, 12, "strip rows", "seam tube")
     if side not in SIDES:
         raise ValueError(f"seam tube side must be one of {SIDES}, got {side!r}")
     lattice = Lattice()

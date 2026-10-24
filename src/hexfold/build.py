@@ -158,6 +158,7 @@ class Net:
     lattice: Lattice
     seed3: tuple[tuple[float, float, float], ...] | None = None
     # closed-form | cylinder | cone | flat-perturbed | mixed | spectral
+    # | relaxed (with_stick)
     seed_kind: str = "spectral"
     # authored attachment bonds (bond connects): excluded from the
     # per-component Euler bookkeeping
@@ -376,6 +377,27 @@ class Net:
     def to_json(self, *, fidelity: str = "check") -> str:
         return (
             json.dumps(self.to_dict(fidelity=fidelity), sort_keys=True, indent=2) + "\n"
+        )
+
+    def with_stick(self, coords: Any = None) -> Net:
+        """This Net with relaxed coordinates as its ``seed3`` and
+        ``seed_kind="relaxed"`` — the form ``pga.geom`` should export
+        (gr514053).  ``coords`` supplies an externally relaxed ``(n, 3)``
+        array in ``atoms`` ord order; ``None`` runs ``stick``."""
+        if coords is None:
+            from .stick import stick  # deferred: stick.py imports this module
+
+            coords = stick(self)
+        xyz = np.asarray(coords, dtype=np.float64)
+        if xyz.shape != (len(self.atoms), 3):
+            raise ValueError(
+                f"with_stick coords must be an ({len(self.atoms)},3) array "
+                f"in atoms ord order, got {tuple(xyz.shape)}"
+            )
+        return replace(
+            self,
+            seed3=tuple(tuple(row) for row in xyz.tolist()),
+            seed_kind="relaxed",
         )
 
 

@@ -159,6 +159,24 @@ def test_odd_wall_rows_refused() -> None:
         prism_tube(8, 5, 4, "++++++")
 
 
+def test_count_errors_name_the_builder() -> None:
+    """gr514058 — ``sheetnet._count``'s error prefix is the calling
+    layout, never the default "seam tube" (only ``fin120.seam_tube``
+    keeps that one)."""
+    from hexfold.channel import channel_junction
+    from hexfold.fin120 import seam_tube
+    from hexfold.railtube import rail_tube
+
+    with pytest.raises(ValueError, match=r"^prism tube periods"):
+        prism_tube(99, 4, 2, "++++++")
+    with pytest.raises(ValueError, match=r"^rail tube periods"):
+        rail_tube(99, 4, 2, 3)
+    with pytest.raises(ValueError, match=r"^channel periods"):
+        channel_junction(99, 4, 3, ("out", "out", "out"))
+    with pytest.raises(ValueError, match=r"^seam tube periods"):
+        seam_tube(99, 4, 2, "out")
+
+
 def test_rib_tips_colliding_refused() -> None:
     # two ribs face each other across a skinny waist: tips 1.4 A apart
     with pytest.raises(ValueError, match=r"prism\.rib\.clearance"):

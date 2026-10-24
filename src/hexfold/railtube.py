@@ -112,10 +112,10 @@ def rail_tube(
     ``strip_rows`` row pairs, the arcs meeting at ``rails`` equal-120 sp2
     seam lines at 360/N spacing. ``pores`` are ``(arc, u, v)`` cells of
     each arc's ``strip``; each removes one hexagon before composition."""
-    periods = _count(periods, 2, 60, "periods")
-    rows = _count(rows, 4, 40, "wall rows")
-    strip_rows = _count(strip_rows, 2, 12, "strip rows")
-    rails = _count(rails, 2, 6, "rails")
+    periods = _count(periods, 2, 60, "periods", "rail tube")
+    rows = _count(rows, 4, 40, "wall rows", "rail tube")
+    strip_rows = _count(strip_rows, 2, 12, "strip rows", "rail tube")
+    rails = _count(rails, 2, 6, "rails", "rail tube")
     if rows % 2:
         raise ValueError(
             f"odd_rows: rail tube wall rows must be even (got {rows}) so "

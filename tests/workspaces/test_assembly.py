@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from precis.structure.cache import structure_sha
 from precis.structure.cell import Cell
@@ -136,7 +138,8 @@ def test_fused_tile_equals_longer_prism() -> None:
     a = math.sqrt(3.0) * Lattice().sigma_A
     net2, _ = prism_tube(periods=2, rows=4, strip_rows=2, seams="++++++")
     net6, _ = prism_tube(periods=6, rows=4, strip_rows=2, seams="++++++")
-    g2, g6 = pga.geom(net2), pga.geom(net6)
+    with pytest.warns(UserWarning, match="unrelaxed seed3"):
+        g2, g6 = pga.geom(net2), pga.geom(net6)
     with _trace.run():
         fused = pga.tile(g2, 3, period=[0.0, 0.0, 2.0 * a], fused=True)
     flat = fused.flatten()
@@ -146,6 +149,86 @@ def test_fused_tile_equals_longer_prism() -> None:
 
 def _carts(scene: Scene) -> np.ndarray:
     return np.asarray([scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()])
+
+
+def _bond_lengths(scene: Scene) -> np.ndarray:
+    return np.asarray(
+        [
+            np.linalg.norm(
+                scene.cell.frac_to_cart(scene.atoms[b.i].frac)
+                - scene.cell.frac_to_cart(scene.atoms[b.j].frac)
+            )
+            for b in scene.bonds
+        ]
+    )
+
+
+def test_geom_net_coords_kwarg() -> None:
+    """gr514053 — ``pga.geom(net, coords=xyz)`` exports ``xyz`` in
+    ``Net.atoms`` ord order instead of the unrelaxed ``seed3``; a
+    wrong-shaped array refuses with the fix; ``meta`` records where the
+    positions came from."""
+    from hexfold.prism import prism_tube
+    from hexfold.stick import stick
+
+    net, _ = prism_tube(4, 4, 2, "++++++")
+    xyz = stick(net)
+    g = pga.geom(net, coords=xyz)
+    assert g.meta["coords"] == "relaxed"
+    np.testing.assert_allclose(_carts(g.scene), xyz, atol=1e-6)
+    # the relaxed export's bonds spread around 1.42 A; the seed's are
+    # all exactly 1.420 (the silent export the gripe hit)
+    lengths = _bond_lengths(g.scene)
+    assert np.std(lengths) > 1e-3
+    with pytest.warns(UserWarning, match="unrelaxed seed3"):
+        g_seed = pga.geom(net)
+    assert g_seed.meta["coords"] == "seed"
+    np.testing.assert_allclose(_bond_lengths(g_seed.scene), 1.420)
+    with pytest.raises(ValueError, match=rf"\({len(net.atoms)},3\)"):
+        pga.geom(net, coords=xyz[:-1])
+
+
+def test_geom_net_seed_export_warns() -> None:
+    """gr514053 — a bare ``pga.geom(net)`` still exports ``seed3`` but
+    warns once per call, naming the unrelaxed seed and the
+    ``coords=stick(net)`` fix; ``coords=`` and a ``seed_kind='relaxed'``
+    Net stay quiet."""
+    from dataclasses import replace
+
+    from hexfold.prism import prism_tube
+    from hexfold.stick import stick
+
+    net, _ = prism_tube(4, 4, 2, "++++++")
+    with pytest.warns(UserWarning, match="unrelaxed seed3.*coords=stick"):
+        pga.geom(net)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pga.geom(net)
+    assert len(caught) == 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        pga.geom(net, coords=stick(net))
+        pga.geom(replace(net, seed_kind="relaxed"))
+
+
+def test_net_with_stick_marks_coords_relaxed() -> None:
+    """``net.with_stick()`` re-seats ``seed3`` on the relaxed geometry
+    and marks it, so ``pga.geom`` exports it without the seed warning."""
+    from hexfold.prism import prism_tube
+    from hexfold.stick import stick
+
+    net, _ = prism_tube(4, 4, 2, "++++++")
+    relaxed = net.with_stick()
+    assert relaxed.seed_kind == "relaxed"
+    assert relaxed.seed3 is not None
+    np.testing.assert_allclose(np.asarray(relaxed.seed3, dtype=np.float64), stick(net))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        g = pga.geom(relaxed)
+    assert g.meta["coords"] == "relaxed"  # seed3 IS the relaxed array now
+    assert np.std(_bond_lengths(g.scene)) > 1e-3
+    with pytest.raises(ValueError, match="with_stick coords"):
+        net.with_stick(np.zeros((3, 3)))
 
 
 def test_mirror_flips_chiral_index() -> None:

@@ -258,9 +258,9 @@ def prism_tube(
     the walls meeting at the signed equal-120 seam lines of the
     cross-section polygon.  ``pores`` are ``(wall, u, v)`` cells of each
     wall's ``strip``; each removes one hexagon before composition."""
-    periods = _count(periods, 2, 60, "periods")
-    rows = _count(rows, 4, 40, "wall rows")
-    strip_rows = _count(strip_rows, 2, 12, "strip rows")
+    periods = _count(periods, 2, 60, "periods", "prism tube")
+    rows = _count(rows, 4, 40, "wall rows", "prism tube")
+    strip_rows = _count(strip_rows, 2, 12, "strip rows", "prism tube")
     if rows % 2:
         raise ValueError(
             f"odd_rows: prism wall rows must be even (got {rows}) so the "
