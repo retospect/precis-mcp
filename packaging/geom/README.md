@@ -135,6 +135,12 @@ scratch/out/blinky
 ['manifest.json', 'trace.json']
 ```
 
+If the body raises, `out.run` still writes the record — `manifest.json`
+carries `status: "failed"` plus the error anchored at the user frame,
+`trace.json` keeps the error-marked frames (a previous good one moves
+to `trace.prev.json`), and a `failed -> …/trace.json` line lands on
+stderr.
+
 ## Which line made U1
 
 On an authored board the question is grep-able — `b.part("D1", ...)` is

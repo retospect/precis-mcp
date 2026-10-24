@@ -28,6 +28,11 @@ and a manifest entry's ``frame`` defaults to its own call's frame id —
 the manifest↔trace join the sandbox's ``precis_ws.out`` stamps the same
 way. ``finish()`` is the explicit form when the context manager doesn't
 fit; ``run()`` calls it on exit.
+
+A ``with`` body that raises is written by :meth:`Run.fail` — a
+``status="failed"`` manifest + the trace's error-marked frames — and
+re-raised untouched; a previous good ``trace.json`` is kept as
+``trace.prev.json`` and stays the run diff's baseline (gr514056).
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ import itertools
 import json
 import os
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -284,7 +290,8 @@ class Run:
     ``trace.json``. ``diff`` is the vs-previous-run frame diff
     ``finish()`` computes when this ``root`` already holds a
     ``trace.json`` (gr513671) — ``None`` on a first run or when no
-    tracer was live."""
+    tracer was live. ``fail(exc)`` is the failure form of ``finish()`` —
+    :func:`run` calls it on an exception inside the ``with``."""
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.root = Path(root)
@@ -492,7 +499,10 @@ class Run:
         ``notes`` is unset. The old trace is then rotated to
         ``trace.prev.json`` (one level, clobbering an older
         ``trace.prev.json``) so the run just diffed against stays
-        inspectable after the overwrite (gr514055)."""
+        inspectable after the overwrite (gr514055) — unless
+        ``trace.json`` holds a failed run's dump, in which case the
+        ``trace.prev.json`` that failure preserved already *is* the
+        baseline and stays put (gr514056)."""
         if self._finished:
             raise ValueError(f"out.run: finish() already ran for {self.root}")
         self._finished = True
@@ -500,14 +510,9 @@ class Run:
         doc = self.manifest()
         tr = _trace.current()
         trace_doc = tr.dump(run_meta or {}) if tr is not None else None
-        prev = self.root / "trace.json"
-        if trace_doc is not None and prev.is_file():
-            try:
-                self.diff = _trace_diff(
-                    _ts.loads(prev.read_text(encoding="utf-8")), trace_doc
-                )
-            except (OSError, ValueError):
-                pass  # an unreadable old trace diffs as a first run
+        prev, rotate = _prev_trace(self.root)
+        if trace_doc is not None and prev is not None:
+            self.diff = _trace_diff(prev, trace_doc)
         line = _diff_note(self.diff) if self.diff is not None else None
         if notes is not None:
             doc["notes"] = str(notes)
@@ -519,12 +524,181 @@ class Run:
         if line is not None:
             print(f"{self.root}: {line}")
         if trace_doc is not None:
-            if prev.is_file():
-                prev.replace(self.root / "trace.prev.json")
+            if rotate is not None:
+                rotate.replace(self.root / "trace.prev.json")
             (self.root / "trace.json").write_text(
                 _ts.dumps(trace_doc) + "\n", encoding="utf-8"
             )
         return self.root
+
+    def fail(
+        self,
+        exc: BaseException,
+        *,
+        notes: str | None = None,
+        run_meta: dict[str, Any] | None = None,
+    ) -> Path:
+        """The failure form of :meth:`finish`, called by :func:`run`
+        while the tracer is still live: ``manifest.json`` with
+        ``status="failed"`` + the exception, and the dump (its
+        error-marked frames) to ``trace.json``.
+
+        A previous good ``trace.json`` is moved aside to
+        ``trace.prev.json`` first — the failed dump must not silently
+        clobber the baseline the next run diffs against (gr514056)."""
+        self._finished = True
+        self.root.mkdir(parents=True, exist_ok=True)
+        tr = _trace.current()
+        if tr is not None and exc not in tr._raised and tr.stack[-1].kind != "root":
+            # The raise left user code without crossing a traced call
+            # (a bare ``raise`` in the script): mark the innermost live
+            # frame so the dump still names a culprit.
+            tr.stack[-1].error = type(exc).__name__
+            tr._raised.add(exc)
+        trace_doc = (
+            tr.dump({**(run_meta or {}), "status": "failed"})
+            if tr is not None
+            else None
+        )
+        doc = self.manifest()
+        doc["status"] = "failed"
+        doc["error"] = _error_entry(exc, tr, trace_doc)
+        if notes is not None:
+            doc["notes"] = str(notes)
+        (self.root / "manifest.json").write_text(
+            json.dumps(doc, indent=1) + "\n", encoding="utf-8"
+        )
+        if trace_doc is not None:
+            prev = self.root / "trace.json"
+            try:
+                old = _ts.loads(prev.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                old = None  # absent/corrupt — nothing good to preserve
+            if old is not None and (old.get("run") or {}).get("status") != "failed":
+                prev.replace(self.root / "trace.prev.json")
+            (self.root / "trace.json").write_text(
+                _ts.dumps(trace_doc) + "\n", encoding="utf-8"
+            )
+        at = doc["error"].get("at") or {}
+        loc = f" at {at['file']}:{at['line']}" if "file" in at else ""
+        where = "trace.json" if trace_doc is not None else "manifest.json"
+        print(
+            f"out.run: failed -> {self.root}/{where} (error={type(exc).__name__}{loc})",
+            file=sys.stderr,
+        )
+        return self.root
+
+
+#: ``error.message`` cap in a failed manifest — a pointer, not a log.
+_ERR_MSG_CAP = 240
+
+
+def _error_entry(
+    exc: BaseException,
+    tr: _trace.Tracer | None,
+    doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """A failed manifest's ``error``: the exception type, a capped
+    message, the user-code anchor (``at``) and the library frames the
+    anchor collapsed (``below``)."""
+    msg = str(exc)
+    entry: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "message": (msg if len(msg) <= _ERR_MSG_CAP else msg[: _ERR_MSG_CAP - 1] + "…"),
+    }
+    anchor, below = _error_path(doc)
+    at = _failure_at(exc, tr, anchor)
+    if at is not None:
+        entry["at"] = at
+    if below:
+        entry["below"] = below
+    return entry
+
+
+def _error_path(
+    doc: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The dump's failure chain — ``(nearest kind=user ancestor of the
+    error-marked frame, the frames collapsed below it down to and
+    including that frame)``: the rendered stack ends in user code, the
+    library frames go below (gr513668's rule applied to failures)."""
+    frames = [f for f in (doc or {}).get("frames", []) if isinstance(f, dict)]
+    err = next((f for f in reversed(frames) if f.get("error")), None)
+    if err is None:
+        return None, []
+    by_key = {f.get("key"): f for f in frames}
+    below: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = err
+    while cur is not None and cur.get("kind") not in ("user", "root"):
+        below.append(cur)
+        cur = by_key.get(cur.get("parent"))
+    anchor = cur if cur is not None and cur.get("kind") == "user" else None
+    path = [
+        {"qual": f["qual"], "file": f["file"], "line": f["line"]}
+        for f in reversed(below)
+    ]
+    return anchor, path
+
+
+def _failure_at(
+    exc: BaseException,
+    tr: _trace.Tracer | None,
+    anchor: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """``{file, line, qual?}`` of the failure's user-code anchor — the
+    trace's nearest ``kind=user`` frame (``anchor``) names it, and the
+    traceback's innermost frame under ``work_root`` (``Tracer._in_work``,
+    the same predicate the user-frame walk mints with) pins the exact
+    line; the dump's frame or the raise site are the fallbacks."""
+    user = deepest = None
+    tb = exc.__traceback__
+    while tb is not None:
+        deepest = tb
+        if tr is not None and tr._in_work(tb.tb_frame):
+            user = tb
+        tb = tb.tb_next
+    if user is not None and tr is not None:
+        f = user.tb_frame
+        at: dict[str, Any] = {"file": tr._file_of(f), "line": user.tb_lineno}
+        if anchor is not None:
+            at["qual"] = anchor["qual"]
+        elif f.f_code.co_name != "<module>":
+            at["qual"] = _trace._user_qual(f)
+        return at
+    if anchor is not None:
+        return {
+            "file": anchor["file"],
+            "line": anchor["line"],
+            "qual": anchor["qual"],
+        }
+    if deepest is None:
+        return None
+    f = deepest.tb_frame
+    file = tr._file_of(f) if tr is not None else f.f_code.co_filename
+    return {"file": file, "line": deepest.tb_lineno}
+
+
+def _prev_trace(root: Path) -> tuple[dict[str, Any] | None, Path | None]:
+    """``(the trace a new run diffs against, the file to rotate to
+    ``trace.prev.json`` before the overwrite)`` — ``trace.json`` and its
+    doc, normally. When ``trace.json`` holds a failed run's dump
+    (``run.status="failed"``) the ``trace.prev.json`` that failure
+    preserved is the last-good baseline instead: it already sits where
+    the rotation would put it, so nothing rotates (a crash can't
+    promote its dump into the good baseline or clobber it). An
+    unreadable ``trace.json`` diffs as a first run but still rotates."""
+    prev = root / "trace.json"
+    try:
+        doc = _ts.loads(prev.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, prev if prev.is_file() else None
+    if (doc.get("run") or {}).get("status") != "failed":
+        return doc, prev
+    kept = root / "trace.prev.json"
+    try:
+        return _ts.loads(kept.read_text(encoding="utf-8")), None
+    except (OSError, ValueError):
+        return doc, prev  # no good baseline survived — diff vs the failed dump
 
 
 def _frame_paths(doc: dict[str, Any]) -> dict[tuple[tuple[str, ...], int], dict]:
@@ -663,16 +837,32 @@ def run(
     ``<work>/out/<run>`` parent-of-parent (``scratch/`` for a named run),
     the host analogue of the sandbox's ``/work``. When a tracer is
     already live it is used as-is (``work_root`` is then moot).
+
+    An exception inside the ``with`` still writes the run record via
+    :meth:`Run.fail` — ``manifest.json`` carrying ``status="failed"``
+    plus the error, and the live dump's error-marked frames — then
+    re-raises with its traceback untouched.
     """
     root = _resolve_target(target)
     wr = Path(work_root) if work_root is not None else root.parent.parent
     o = Run(root)
-    if _trace.current() is not None:
-        yield o
-        o.finish(notes=notes, run_meta=run_meta)
-        return
-    with _trace.run(work_root=wr, **(run_meta or {})):
-        yield o
+    live = (
+        contextlib.nullcontext()
+        if _trace.current() is not None
+        else _trace.run(work_root=wr, **(run_meta or {}))
+    )
+    with live:
+        try:
+            yield o
+        except BaseException as exc:
+            try:
+                o.fail(exc, notes=notes, run_meta=run_meta)
+            except Exception as werr:
+                print(
+                    f"out.run: could not write the failure record: {werr}",
+                    file=sys.stderr,
+                )
+            raise
         o.finish(notes=notes, run_meta=run_meta)
 
 
