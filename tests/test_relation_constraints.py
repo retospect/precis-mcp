@@ -263,6 +263,21 @@ class TestAcyclic:
                 store, parent, link="component:comp-c", unlink=None, rel="part-of"
             )
 
+    def test_part_of_todo_to_quest_passes_constraints(self, store: Store) -> None:
+        """retire-dossier: a direction todo is ``part-of`` its quest. The
+        row has NULL domain/range (0095 registered it for components), so the
+        kind check passes; the acyclic walk (``contains`` swapped) refuses a
+        quest that would end up inside its own direction."""
+        quest = _ref(store, "quest", "Q")
+        todo = _ref(store, "todo", "direction")
+        apply_link_ops(store, todo, link=f"quest:{quest}", unlink=None, rel="part-of")
+        assert (quest, "part-of") in _links(store, todo)
+        with pytest.raises(BadInput, match="cycle"):
+            apply_link_ops(
+                store, quest, link=f"todo:{todo}", unlink=None, rel="part-of"
+            )
+        assert _links(store, quest) == []
+
     def test_a_dag_diamond_is_fine(self, store: Store) -> None:
         a, b, c, d = (_ref(store, "quest", n) for n in "ABCD")
         for s, t in ((a, b), (a, c), (b, d), (c, d)):

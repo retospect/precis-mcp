@@ -69,7 +69,7 @@ component wording of the description only shows in a refusal message; slice
 **Strand.** A todo `part-of` a quest that has child todos. A direction is
 any todo in that tree. A root with no children is a direction directly
 `part-of` the quest. The migration mints no synthetic strand; the tick may
-open an umbrella strand (§Quest navigation, open question 1).
+open an umbrella strand (§Quest navigation, §Decision).
 
 **Status mapping** (todo `STATUS` vocabulary is closed and trigger-enforced,
 `store/types.py::_KIND_STATUS_VALUES`, migration 0176:
@@ -126,11 +126,12 @@ as `contains` under Parts, 8 per label (`_NEIGHBOR_GROUP_CAP`) then
 | quest | roots | strands | nodes | live roots (childless) | children per strand |
 |---|---|---|---|---|---|
 | qu202467 | 200 | 75 | 442 | 118 (85) | avg 2.0, max 13, 3 over 8 |
-| qu164903 | 225 | 74 | 545 | 145 (108) | avg 1.9, max 9 |
+| qu164903 | 53 live (225 counted retired chunks too, see Spike 1) | 40 | 249 live | 13 (5 open/active) | avg 2.5, max 9 |
 | qu202468 | 85 | 30 | 223 | 42 (36) | — |
 
-The census below counts 51 roots on qu164903; slice 1 reconciles
-(`parent_unresolved` nodes are the likely difference).
+qu164903 reconciled by slice 1 (§Spike 1 results): the 225 counted 172
+soft-retired nodes parented on a retired chunk; live roots are 53 (the
+census's 51 predates two adds). qu164903 never needs `nest` or clustering.
 
 **Cost per path** on qu202467. One neighbour line ≈ 30 tokens (handle,
 ≤ 80-char title, label, status); fisheye header (quest text + other groups)
@@ -141,20 +142,24 @@ The census below counts 51 roots on qu164903; slice 1 reconciles
 | today | 2 (quest, `q='contains'`) | ~7,000 | 242 non-root directions unreachable |
 | (a) parameterised fisheye: every live root listed, strands first, terminal roots as count lines | 2 live (quest, strand); 3 terminal | ~5,100 live; ~7,500 terminal | 3.5k list paid on every quest open |
 | (b) index nodes, fanout 12 (17 nodes) | 3 (quest, index, strand) | ~2,600 | index label is a summary the agent guesses from; a mis-grouped direction is hidden |
-| scoped search (`under=` quest) | 2 (search, strand) | ~850 | needs words for the target |
+| scoped search (`under=` quest) | 2 (search, strand) | ~850 | needs a query that ranks the target in the top hits; default hybrid (lexical + semantic) so a paraphrase also lands, `mode='lexical'`/`'verbatim'` for exact terms |
+| (c) balanced TOC on the overflowing ring (Reto 2026-10-24; §Balanced TOC) | 3.0 to 3.6 mean | ~2,100 | computed, no minted nodes; labels are keywords, so a miss on a label costs one backtrack call |
 
-**Decision: (a) + scoped search; no synthetic index nodes.** Strand todos are
-the index nodes. (b) saves ≤ 2.5k tokens on the worst path and costs a node
-class, a minter, re-grouping as every tick adds and marks directions, a
-fence entry, and labels an agent has to guess from; a flat status-tagged
-list cannot hide a direction. (a)'s list stays inside one call up to the
-hub cap (300 rows). What is wide on prod is the childless roots (85 live on
-qu202467), so the tick, which owns directions, keeps them bounded: when a
-quest has > 40 live childless roots its prompt carries a `nest` direction op
-(move a direction under an existing strand, or open an umbrella strand todo
-with ≥ 3 members). The umbrella is a direction the model authored, `part-of`
-the quest, inside the rotation fence; no other process mints or maintains
-index structure. Open question 1.
+**Decision (revised after slice 1): (c) balanced TOC on the overflowing ring
++ scoped search; no synthetic index nodes.** Strand todos stay the only
+authored structure. Measured on qu202467's real titles (§Spike 1 results),
+(c) reaches any direction in 3.0 to 3.6 calls and ~2.1k tokens on average,
+(a) in 2.1 calls and ~6.2k (first call alone ~4.6k), and (b) is dropped (a
+node class, a minter, re-grouping on every tick, labels an agent has to
+guess; (c) gives the same index computed on read). The loosened-cap list (a)
+is folded into (c): a ring of ≤ k renders flat as today, a larger one
+renders as clusters. Reto approved, 2026-10-24, the tick `nest` op opening
+umbrella strand todos above 40 live childless roots (move a direction under
+an existing strand, or open an umbrella strand todo with ≥ 3 members; the
+umbrella is a direction the model authored, `part-of` the quest, inside the
+rotation fence). With (c) navigation cost no longer depends on the root
+count, so `nest` is tick hygiene (keeps the prompt's open list short), not
+a navigation requirement; the 40 threshold stays as approved.
 
 **Navigation layer** (slice 3; rendering only, `utils/eye_render.py`,
 `utils/refeye.py`, `handlers/quest.py`, `handlers/todo.py`):
@@ -163,31 +168,172 @@ index structure. Open question 1.
    (`_HUB_MEMBER_LABEL`, `_HUB_LIST_CAP`, today keyed on memory
    `section:index`), extended to "quest with `part-of` todos" and "todo with
    `parent_id` children".
-2. Order: strands before leaves; within each, `active`, `open`, newest
-   `updated_at` first. Terminal directions collapse to one line per
-   model-side status with an expansion:
-   `… 42 tried · get(kind='quest', id='qu202467', extent='fisheye+1hop', q='contains:tried')`.
+2. A ring of ≤ k members (k default 8, a parameter) renders flat: strands
+   before leaves; within each, `active`, `open`, newest `updated_at` first.
+   A larger ring renders through §Balanced TOC; there is no ordering
+   constraint on clusters. Terminal directions stay reachable by
+   `q='contains:tried'`, which lists exactly those members (clustered when
+   > k).
 3. `_neighbor_label` prefixes every todo with its model-side status
    (`[active]`, `[tried]`, …) and a strand with its child count (`+13`), on
    every fisheye, not only quests.
 4. A todo focus renders its `parent_id` parent and children.
-5. `search(kind='todo', q=…, args={'under': '<quest handle>'})` scopes to
-   the quest's direction tree, as memory `under=` scopes to a hub.
+5. `search(kind='todo', q=…, under='<handle>')` scopes to the item's
+   subtree, as memory `under=` scopes to a hub (§`under=` semantics).
 6. After step 6, evidence sits on directions; a direction focus shows it
    under Roadmap `served-by`, ordered by the existing
    `RING_GROUP_KIND_RANK`.
+
+`under=` semantics, `ring` filter and the TOC follow below.
 
 `view='directions'` returns the bounded open + do-not-repropose lists the
 tick prompt reads (12 000-char budget, `dossier._OPEN_LEDGER_BUDGET_CHARS_DEFAULT`
 moved to `directions`, `+N more` lines).
 
 **Pinned by** `tests/test_quest_navigation.py` on a fixture shaped like
-qu202467 (200 roots, 75 strands, 118 live): the quest fisheye lists every
-live root with its status, strands first, terminal roots as count lines,
-≤ 5,000 tokens (chars / 4); `q='contains:tried'` lists exactly the tried
-roots; a strand focus lists its `parent_id` children; `under=` search
-returns only tree members. Existing memory-hub fisheye tests stay green
-unchanged.
+qu202467 (200 roots, 75 strands, 118 live): the quest fisheye renders the
+200-root ring as a balanced cluster tree (§Balanced TOC) with every cluster
+page ≤ 2,500 tokens (chars / 4); every root is reachable and appears once;
+`q='contains:tried'` lists exactly the tried roots; a strand focus lists its
+`parent_id` children; `under=` search returns only subtree members. Existing
+memory-hub fisheye tests stay green unchanged.
+
+### `under=` semantics
+
+Follows the house convention (`term-taxonomy.md` `/x/**` = `under=x`,
+`/x/*` = `under=x, depth=1`; `knowledge-mesh.md`; the taxon kind's
+`under=`/`depth=`): `under=<any item id>` takes a quest, a strand todo or a
+direction todo and returns the whole subtree below it, never the item
+itself. `depth=N` limits it; `depth=1` is the direct children. Reto's
+question, "is things directly linked, or can i say under=<id> hops=2?",
+maps to `depth=2` (children and grandchildren); the parameter stays
+`depth=`, not `hops=`.
+
+Which edges count as "under" (the subtree of node X):
+
+- child todos by `parent_id` (depth +1 per level);
+- todos `part-of` a quest (depth 1 under the quest), then their
+  `parent_id` descendants;
+- evidence that `serves` a node in the subtree (finding, measure, paper,
+  structure, draft): included **by kind, not by flag**. `search(kind='todo',
+  under=X)` returns directions only; `search(kind='finding'|'paper'|'measure',
+  under=X)` returns the evidence that serves X or any todo in its subtree
+  (the set `directions.quest_evidence` defines, slice 5), at depth =
+  serving node's depth + 1 (so `depth=1` under a quest is its direct
+  `serves` evidence). Omitting `kind` mixes both. A list `under=[a, b]`
+  intersects, as on taxon.
+- not counted: `related-to`, `cites`, and hypothesis edges
+  (`supports`/`disputes`/`tests`), which are claims about a node, not
+  membership.
+
+The search ranks in the handler's default hybrid mode (lexical + semantic)
+and honours `mode=` (`lexical`, `semantic`, `verbatim`).
+
+### Ring filter `q=`
+
+`RingFilter` (`utils/eye_render.py`) gains `q`: `args={'ring': {'q':
+'urea coupling'}}` keeps the ring members matching the query (the handler's
+hybrid match, restricted to the ring's ids; `mode=` honoured), before
+clustering. Evaluated: worth adding, cheap, no new index; it makes the
+filter work on any focus (a paper's neighbours, a finding's evidence), where
+`under=` only exists for tree kinds. Composes with the TOC: filter, then
+cluster what is left. Slice 3b.
+
+### Balanced TOC on the overflowing ring
+
+Reto 2026-10-24: "I really like toc on fisheye, we don't even need the
+order, we can just make the best clusters (most even, shannon stuff), and
+then drill for details ... The 8 for toc was arbitrary, it can be a param
+but 8^3 is very large ... If we can well-balance the TOC tree (we are
+allowed to!) then it's super awesome."
+
+- **Applies** to any ring group (or the `under=` subtree) with more than k
+  members, where today the cap prints `… +N more` (`_NEIGHBOR_GROUP_CAP`).
+  A group of ≤ k renders flat with no cluster level.
+- **Balance is the primary objective**, at every level: balanced k-way
+  splits (size-constrained k-means, capacity `ceil(n/k)` per cluster),
+  applied recursively. A minimum cohesion floor keeps labels meaningful (a
+  split whose mean centroid cosine is below the floor falls back to the
+  unconstrained split for that node). Depth is derived from N
+  (`ceil(log_k N)`), never a fixed level count. k defaults to 8 and is a
+  parameter (`args={'toc_k': 6}`).
+- **Alternative mode** `toc='specific'`: cohesion first (average-linkage
+  dendrogram cut top-down by splitting the largest cluster until k
+  children). Measured below; not the default.
+- **Labels** are per-cluster keywords (top terms of the cluster minus its
+  parent's), with a count and a drill handle; leaves render as normal
+  fisheye lines (handle, status, title). Keyword extraction reuses
+  `utils/rake.py` and `utils/semantic_keywords.py` (what `view='toc'` uses
+  for its segment labels; `utils/toc.py` segments one ref's chunks in
+  reading order, so only its labelling is reused, not its contiguous
+  segmentation; `utils/cluster_map.py` has the batch SOM and
+  `ctfidf_words` for sibling-scoped labels).
+- **Features**: chunk or title embeddings when present. New refs may have
+  none (gr513749 embedding backlog), so a lexical fallback is specified:
+  TF-IDF over title tokens (stopwords out, plural stripped), used for the
+  whole ring when more than 10% of members lack an embedding and per
+  member otherwise. The spike measured the lexical path only (no embedder
+  in the spike), so the numbers below are the fallback's; embeddings should
+  only improve label hit-rate.
+- **Computed on read, never minted.** Cached per `(focus, ring filter, k,
+  mode)` and invalidated when the neighbourhood fingerprint (member ids +
+  statuses + max `updated_at`) changes. Deterministic seed, so the same
+  fingerprint gives the same tree and drill handles stay valid.
+
+### Spike 1 results (2026-10-24)
+
+Mint: prod ledger chunks of qu202467 (442 live nodes, 200 roots) and
+qu164903 (249 live nodes, 53 roots) read with `scripts/prod-psql --ro` and
+minted as todos (`parent_id`, `part-of` quest, `STATUS` by the mapping
+table) on the dev DB; `get(kind='quest', extent='fisheye+1hop')` rendered
+in-process. The cluster numbers are an offline model over the same real
+titles (lexical features, k = 8, a 35-token cluster line, 30-token leaf
+line, 1,000-token first call, 150 per later call; target = each of the 442
+nodes, plus 10 random), with an oracle that always picks the right cluster.
+Label hit-rate is the share of path clusters whose label shares a stem with
+the target's title.
+
+| Path (qu202467, N = 442, ring = 200 roots) | calls (mean) | tokens (mean / max) | shape |
+|---|---|---|---|
+| today (flat, 8 + `+192 more`) | 2, 242 unreachable | 185 first call | measured |
+| (a) loosened: all live roots listed | 2.09 | 6,153 / 7,738 (first call 4,588) | 118 live, 82 terminal |
+| (c) balanced TOC, roots ring | 3.55 | 2,119 / 2,520 | 2 levels, L0 8 × 25, CV 0.00; L1 64 × 3.1, CV 0.33 |
+| (c) balanced TOC, whole subtree (`under=`) | 3.00 | 2,067 / 2,070 | 2 levels, L0 8 × 55, CV 0.02; L1 64 × 6.9, CV 0.06 |
+| specific TOC, roots ring | 3.62 | 2,156 / 2,590 | 3 levels, L0 CV 0.28, L1 CV 0.62, sizes 1..10 |
+| specific TOC, whole subtree | 3.66 | 2,241 / 2,440 | 3 levels, L0 sizes 6..115, CV 0.57 |
+| `under=` search, 10 hits | 1 (+1 on a miss) | ~500 per call | hit@10 1.00 with the target's 3 rarest words (oracle, optimistic) |
+
+Label hit-rate: balanced 0.86 (roots) / 0.76 (subtree); specific 0.86 /
+0.87. Fanout: k = 12 gives 2 levels and 2,339 tokens at 3.55 calls (balanced
+roots), k = 5 gives 3 levels, 4.55 calls, 2,180 tokens. For the 10 random
+targets, balanced roots took [3,4,3,4,4,3,4,4,4,4] calls at 2,127 tokens
+mean; loosened (a) [2,2,1,3,2,1,3,3,2,3] at 6,058.
+
+Reading: balanced and specific TOC cost the same tokens (~2.1k) and calls
+(~3.6); balanced has even sizes (CV 0.00 to 0.33 against 0.28 to 0.73), a
+2-level tree where specific needs 3, and nearly the same label quality, so
+balanced is the default and specific an option. TOC beats (a) on tokens by
+~3x for ~1.5 more calls and does not grow with the root count; `under=`
+search is the cheapest path when the agent has a term, TOC when it browses.
+They complement; neither replaces the other. Hub cap: the 300-row cap is
+replaced by the clustering bound `_FIRST_HOP_EXPAND_CAP` = 500 (a ring over
+500 clusters its first 500 by recency and says so). `nest` threshold 40:
+see §Decision.
+
+**qu164903 root-count reconciliation.** Chunks with `parent_chunk_id` =
+the ledger container: 53 live roots (40 strands, 13 childless, 5 of those
+open/active). The 225 in the Prod-shape table was every node whose parent
+is the container plus the 172 soft-retired nodes parented on a retired
+chunk (53 + 172 = 225); 296 of 545 nodes are retired in all. The census's
+51 predates two adds; one live root carries `meta.parent_unresolved`. So
+the earlier "145 live childless roots" for qu164903 was wrong: it needs
+neither clustering nor `nest`, and slice 5's apply must skip retired node
+chunks (`_load_ledger_nodes` already does, via `reading_order`).
+
+**Relation pin.** `test_part_of_todo_to_quest_passes_constraints` is in
+`tests/test_relation_constraints.py` and passes: todo → quest `part-of` is
+accepted; quest → todo `part-of` afterwards is refused as a cycle. No
+constraint migration needed before slice 5.
 
 ## Export
 
@@ -482,9 +628,10 @@ complete spec; Opus = design judgment inside the slice.
 
 | # | Slice | Size | Tier | Acceptance |
 |---|---|---|---|---|
-| 1 | Spike on the dev DB (`scripts/dev`): mint qu202467's and qu164903's forests as todos from a prod dump of their ledger chunks; measure the §Quest navigation paths with real titles; reconcile the qu164903 root count | S | Sonnet | a table of calls/tokens per path appended to this file; the 300-row hub cap and the 40-root `nest` threshold confirmed or replaced by measured values |
-| 2 | `quest/directions.py` (todo-backed list/add/mark/nest, near-dup upsert, do-not-repropose + open renders, both status maps, `quest_evidence`; text logic moved from `dossier.py`, which re-imports it); rotation fence | M | Sonnet | `test_quest_directions.py` ports every `test_dossier_hygiene.py` assertion onto todos (Rh/Ru veto, prefix match ≥ 40 chars, never-regress merge, ancestor shadow) and pins the model-side map (`blocked`/`paused` on the open list); `test_todo_views` case: a direction todo is absent from `doable`/`queue`/nursery; `test_part_of_todo_to_quest_passes_constraints` |
-| 3 | Navigation layer (§Quest navigation 1–6) and `view='directions'`/`'frontier'` | M | Opus | `tests/test_quest_navigation.py` as pinned above; memory-hub fisheye tests unchanged |
+| 1 | Spike on the dev DB — **done 2026-10-24**, results in §Spike 1 results (delete this row when slice 2 lands) | S | Sonnet | table of calls/tokens per path, qu164903 count reconciled, relation pin test landed |
+| 2 | `quest/directions.py` (todo-backed list/add/mark/nest, near-dup upsert, do-not-repropose + open renders, both status maps, `quest_evidence`; text logic moved from `dossier.py`, which re-imports it); rotation fence | M | Sonnet | `test_quest_directions.py` ports every `test_dossier_hygiene.py` assertion onto todos (Rh/Ru veto, prefix match ≥ 40 chars, never-regress merge, ancestor shadow) and pins the model-side map (`blocked`/`paused` on the open list); `test_todo_views` case: a direction todo is absent from `doable`/`queue`/nursery (the relation pin test already landed in slice 1) |
+| 3 | Navigation layer (§Quest navigation 1–6, minus clustering) and `view='directions'`/`'frontier'`; todo status labels, `parent_id` parent/children, `under=`/`depth=` search with the edge rules above | M | Opus | `tests/test_quest_navigation.py` as pinned above (flat rings); `under=` returns exactly the subtree, `depth=1` the direct children, evidence kinds include `serves` evidence; memory-hub fisheye tests unchanged |
+| 3b | Balanced TOC on fisheye overflow (§Balanced TOC): size-constrained k-means tree, keyword labels, lexical fallback, cache by neighbourhood fingerprint, `toc_k`, `toc='specific'`, ring `q=` filter; replaces the `… +N more` cap and the loosened-cap list | M | Opus | on the qu202467-shaped fixture: every root reachable exactly once, per-level size CV ≤ 0.35, ≤ 2 levels at k = 8, each page ≤ 2,500 tokens, same tree for the same fingerprint, lexical fallback with no embeddings, a ≤ k ring unchanged; the 3 pre-existing cap tests updated, not loosened |
 | 4 | Tick on the flag: quests with `meta.dossier_retired` and quests with no dossier use directions + synthesis entry + `direction_ops` (incl. `nest`); apply and finish re-read the flag; `ensure_dossier` refuses (raises `DossierRetired`) when the quest is flagged **or has no dossier**, so from this slice on it returns existing dossiers and creates none; each pre-slice-8 caller (`roadmap_tick`, `draft_refresh` via `add_attempt`/`mark_attempt`; `rulings` only reads via `dossier_ref_id` and already no-ops without a dossier) catches the refusal and skips its dossier write with a log line | L | Opus | Synthesis entry = `entry_type='reflection'` + `meta.synthesis=true`, WORM, ≤ `target_words`, gated by `narrative_growth_gate` against the previous synthesis entry; archive marker = `entry_type='note'` + `meta.archived_narrative=true`; no `ENTRY_TYPES` change, because the vocabulary is listed to the model in the tick prompt and accepted by the handler's `entry=`, model entries carry no meta (`_stage_apply` calls `append_entry` without `extra_meta`) so a model `reflection` never reads as a synthesis, and an added `synthesis` type would invite writes that `clamp_entry_type` would otherwise turn into `note`. Tests in `test_quest_tick.py`: flagged fixture runs llm→finish with no `dossier-of` link created and one synthesis entry; the prompt picks the synthesis entry over a newer plain `reflection`; `test_prompt_context_sections_bounded` (synthesis + directions sections ≤ `target_words` words + 12 000 chars on a 500-direction fixture); `nest` moves a direction under a strand and opens an umbrella only with ≥ 3 members; `test_no_dossier_resurrection` — every `ensure_dossier` path (`update_frontier_tree`, `ensure_ledger_chunk` and its readers/writers, `rewrite_dossier`, `ensure_dialectic_chunk`, `roadmap_tick`, `draft_refresh`) on a flagged quest and on a dossier-less quest creates nothing, plus a tick checkpointed at `tick:apply` and one at `tick:finish` on an unflagged quest, flag flipped, resumed: no dossier write, its ledger ops present as todos, its `dossier_text` as the synthesis entry; unflagged-with-dossier fixtures unchanged |
 | 5 | `retire-dossier` tool: dry run, apply (steps 1–7), `--undo`, `--rehome`, in-flight check, step-0 stamp check; `serves`-set readers switched to `directions.quest_evidence` | M | Sonnet | `test_retire_dossier.py`: lossless round trip (forest == todo tree, statuses by the table), idempotent re-run, archived entry excluded from `_logbook_tail`, `test_serving_draft_untouched`, `test_apply_undo_apply_round_trip`, re-home by rule a, b and c, deepest-on-path, disjoint hits stay on the quest and print as ambiguous, refuses while the job is `running` or at `tick:*`, refuses a quest with narrative and no `key_ideas_extracted_at`; reader tests: quest evidence counts equal before and after a re-home |
 | 6 | Step 0: `extract-key-ideas` (prompt, verbatim-span check, restated-hub dedupe, cites, idempotency, stamp) | M | Sonnet build; Opus reviews the prompt on 3 real dossiers' dry runs | `test_key_ideas.py` with a stubbed LLM: a claim without a verbatim span is dropped and listed; a restated claim links the existing finding; cites resolve to `cites` edges; re-run writes nothing; stamp set |
@@ -522,9 +669,11 @@ surviving design input is in this file or in code).
 - **Todo-surface flood.** 1376 direction todos land on prod. Without the
   rotation fence they would appear in doable/nursery/hub counts and draw
   workers. Fence ships in slice 2, before any todo is written.
-- **Wide fisheye on every open.** (a) lists every live root: ~3.5k tokens on
-  qu202467. Mitigation: terminal roots collapse to count lines; `nest`
-  keeps childless roots ≤ 40 live; the 300-row hub cap bounds the worst case.
+- **Wide fisheye on every open.** Mitigation: balanced TOC clusters any ring
+  over k (~2.1k tokens to any direction on qu202467, independent of root
+  count); `nest` keeps childless roots ≤ 40 live as tick hygiene. Residual:
+  keyword labels can mislead (label hit-rate 0.76 to 0.86 lexical), costing
+  a backtrack call; `under=` search is the escape.
 - **Evidence miscounted after re-home.** A reader that still counts only
   direct quest `serves` edges would see a quest lose evidence. Mitigation:
   slice 5 switches every reader to `quest_evidence` before the tool moves
@@ -560,6 +709,13 @@ clean up and wind up", same day, ~11:53Z); confirmed in chat at ~14:00Z.
 - Weave: "yes see if a weave like thing does the graph work. If so delete it
   otherwise port it." → deleted (Q8 below).
 
+**Reto 2026-10-24:** approved as specified, including the tick `nest` op
+opening umbrella strand todos above 40 live childless roots (was open
+question 1). Same day, on the spike: `under=` follows the house convention
+(§`under=` semantics); "I really like toc on fisheye ... If we can
+well-balance the TOC tree (we are allowed to!) then it's super awesome" →
+§Balanced TOC, slice 3b.
+
 **Reto 2026-10-24, chat-99:**
 
 - **Q1–Q3:** as recommended (one write-once synthesis entry per tick; map
@@ -592,16 +748,6 @@ clean up and wind up", same day, ~11:53Z); confirmed in chat at ~14:00Z.
 - **Q9 unplaced evidence:** no new strands from clusters, as recommended,
   but keep looking for ways the graph can absorb it (re-home re-runs, the
   gardener, the castor finding reader, slice 7's quest seed).
-
-## Open questions for Reto
-
-1. **Tick-authored umbrella strands.** When a quest has > 40 live childless
-   roots (qu202467: 85, qu164903: 108), may the tick's `nest` op open an
-   umbrella strand todo to group them? Rec: yes — it is the only index
-   structure that is not synthetic, the tick already owns directions, and
-   it shortens the quest fisheye from ~3.5k toward ~1.5k tokens.
-   Alternative: no `nest`; the flat status-tagged list (a) carries
-   navigation alone.
 
 ## Links
 
