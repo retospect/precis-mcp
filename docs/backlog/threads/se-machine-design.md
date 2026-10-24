@@ -236,7 +236,7 @@ off that gap until it closes.
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1
    (species advection–diffusion, Taylor dispersion, wall reactions)
-   landed 2026-10-21 on `mp-s1c` (`src/precis_flow/fv.py`/`species.py`,
+   landed 2026-10-23 on main as `a12959f47` (`src/precis_flow/fv.py`/`species.py`,
    tracer `pe=`/`walls=`, species card lines, `fluid=`/`species=` token
    keys + four species COMPUTERS, `wall_rate`, migration 0231 via
    builder-ce, skills `precis-se-flow-help` + regions section); slice 1b

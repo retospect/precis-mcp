@@ -15,7 +15,7 @@ slices add one physics each on the same grid and operator. A pluggable
 external 3-D backend (FEniCSx / Elmer / OpenFOAM) takes what the thin-gap
 form cannot carry.
 
-**Landed (slice 1), 2026-10-21 on `mp-s1c`** — fv kernel + species
+**Landed (slice 1), 2026-10-23 on main as `a12959f47`** — fv kernel + species
 transport, tracer `pe=`/`walls=`, species card lines, the se surface
 (`fluid=`/`species=`, BC patch measures, four COMPUTERS), `wall_rate`,
 migration 0231 (via builder-ce), `precis-se-flow-help`, and the 12
