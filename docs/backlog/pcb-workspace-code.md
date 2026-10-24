@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: pcb-ws4
 title: PCB workspaces — netlists and modules built by code, place/route as cached services, DRC in MCP
 pillar: 3d-design
 prio: high
