@@ -298,6 +298,11 @@ is verified done on prod.
      remaining failures should be embedder-unreachable/infra only.
    - Ref 464821 (last bodiless anon) is a no-pdf stub — it will drain
      through the fetch queue like the rest; no special action.
+11. **gr512169 prod repair (Reto's call, prod write)** — the identity
+    gate shipped (stub reconcile now refuses series siblings /
+    first-author mismatches); what remains is the prod split of
+    pa512121 (Part II) back out of pa509714's Part I DOI — the exact
+    repair steps are on the gripe.
 
 ## Horizon
 

@@ -49,6 +49,7 @@ from precis.ingest.pres import (
 from precis.store import Store
 from precis.store.revision_context import trust_door
 from precis.store.types import Tag
+from precis.utils.title_merge import _first_family
 
 log = logging.getLogger(__name__)
 
@@ -658,6 +659,36 @@ def _ingest_pdf(
                     _note_printable_doi_override(
                         store, fold_ref_id, input, paper, conn=conn
                     )
+            if existing is not None and not input.printable_only:
+                # Identity (gr512169): a *no-DOI* fetched file passes the
+                # DOI-conflict gate on nothing, so a series sibling
+                # fetched for this stub would take the stub's body in
+                # place. Check part markers + first author against the
+                # stub before handing it a body.
+                s_title, s_authors = _ref_identity(conn, existing)
+                refusal = _stub_identity_refusal(
+                    s_title, s_authors, paper.title or "", paper.authors
+                )
+                if refusal is not None:
+                    log.warning(
+                        "precis_add: refusing fold of %s into stub "
+                        "ref_id=%s: %s (stub %r vs fetched %r) — ingesting "
+                        "as a new ref, stub left live",
+                        input.pdf_path.name,
+                        existing,
+                        refusal,
+                        s_title[:60],
+                        (paper.title or "")[:60],
+                    )
+                    _note_stub_fold_refused(
+                        store,
+                        existing,
+                        input=input,
+                        paper=paper,
+                        reason=refusal,
+                        conn=conn,
+                    )
+                    existing = None
             if (
                 existing is not None
                 and input.fold_ref_id is None
@@ -1196,6 +1227,248 @@ def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> b
     return title_overlap(stub_title, "\n".join(parts)) >= need
 
 
+#: Series-part markers recognised in a title (gr512169): ``…: I.``,
+#: ``Part 2``, ``Vol. III`` and a trailing `` II.`` — roman and arabic
+#: numerals both compare as ints so ``I.`` and ``Part 1`` agree. Roman
+#: numerals are matched uppercase-only so words like ``id``/``vitro``
+#: can't read as markers; a separator followed by whitespace is required
+#: so ``COVID-19.`` can't read as part 19.
+_SERIES_MARKER_RES = (
+    re.compile(r"(?i:\bpart)\s+(?:no\.?\s*)?(\d{1,3}|[IVXLCDM]{1,7})\b"),
+    re.compile(r"(?i:\bvol(?:ume)?)\.?\s*(?:no\.?\s*)?(\d{1,3}|[IVXLCDM]{1,7})\b"),
+    re.compile(r"[:;.–—-]\s+(?:part\s+)?(\d{1,3}|[IVXLCDM]{1,7})\s*\."),
+    re.compile(r"[\s:;.,–—-]([IVX]{1,4})\.\s*$"),
+)
+
+_ROMAN_VALS = {
+    "I": 1,
+    "V": 5,
+    "X": 10,
+    "L": 50,
+    "C": 100,
+    "D": 500,
+    "M": 1000,
+}
+
+
+def _marker_int(token: str) -> int:
+    """A series numeral as an int: arabic digits, else roman (``IV`` → 4)."""
+    if token.isdigit():
+        return int(token)
+    total, prev = 0, 0
+    for ch in reversed(token):
+        v = _ROMAN_VALS.get(ch, 0)
+        total += v if v >= prev else -v
+        prev = max(prev, v)
+    return total
+
+
+def _series_markers(title: str) -> frozenset[int]:
+    """The series-part numbers a title claims (``{1}`` for ``'…: I.'``)."""
+    return frozenset(
+        n
+        for rx in _SERIES_MARKER_RES
+        for m in rx.finditer(title)
+        if (n := _marker_int(m.group(1)))
+    )
+
+
+def _ref_identity(conn: Any, ref_id: int) -> tuple[str, Any]:
+    """``(title, authors)`` for a ref — the identity a fold is checked against."""
+    row = conn.execute(
+        "SELECT coalesce(title, ''), authors FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    return (str(row[0]), row[1]) if row else ("", None)
+
+
+def _stub_identity_refusal(
+    stub_title: str,
+    stub_authors: Any,
+    held_title: str,
+    held_authors: Any,
+) -> str | None:
+    """Why ``held`` must not take the stub's identity (``None`` = OK).
+
+    gr512169: the cite_key reconcile folded a *Part II* PDF into a Part I
+    DOI stub — series siblings share every distinctive title token, so
+    the token-overlap corroboration could not tell them apart. On top of
+    that gate require (a) series-part markers to agree exactly — the part
+    number is the reliable tell between siblings, and a marker on only
+    one side cannot be corroborated — and (b) first-author family names
+    to match whenever both sides carry one. Missing *author* evidence is
+    not a refusal: extraction gaps would strand legitimate stubs in the
+    re-fetch loop the reconcile exists to stop.
+    """
+    if _series_markers(stub_title) != _series_markers(held_title):
+        return "series-marker-mismatch"
+    stub_first, held_first = (
+        _first_family(stub_authors),
+        _first_family(held_authors),
+    )
+    if stub_first and held_first and stub_first != held_first:
+        return "author-mismatch"
+    return None
+
+
+_STUB_REVIEW_SOURCE = "ingest:stub-reconcile-review"
+_STUB_IDENTITY_REVIEW_TAG = "paper-stub-identity-review"
+
+
+def _note_stub_reconcile_refused(
+    store: Store,
+    ref_id: int,
+    *,
+    stub_id: int,
+    file_stem: str,
+    reason: str,
+    conn: Any,
+) -> None:
+    """Journal + quarantine-tag a refused stub fold on ``ref_id`` (gr512169).
+
+    ``ref_id`` is whichever ref holds the fetched content — the minted
+    survivor in :func:`_reconcile_orphan_stub`, the dedup-matched twin in
+    :func:`_fold_into_named_stub`. It keeps its own identity (it may be a
+    perfectly good *other* paper — the incident's Part II was) but is
+    tagged ``paper-stub-identity-review`` so the suspect copy is
+    findable, and the refusal is journalled so the ref's log shows why
+    the stub's identifiers did NOT move. Best-effort, like
+    :func:`_note_pdf_no_body`.
+    """
+    try:
+        store.append_event(
+            ref_id,
+            source="ingest:dedup",
+            event="stub_reconcile_refused",
+            payload={
+                "stub_ref_id": stub_id,
+                "file_stem": file_stem,
+                "reason": reason,
+            },
+            conn=conn,
+        )
+        store.add_tag(
+            ref_id,
+            Tag.parse_strict(_STUB_IDENTITY_REVIEW_TAG),
+            set_by="system",
+            conn=conn,
+        )
+    except Exception as exc:  # journalling is best-effort
+        log.warning(
+            "precis_add: could not journal stub_reconcile_refused for ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
+def _note_stub_fold_refused(
+    store: Store,
+    stub_id: int,
+    *,
+    input: PdfInput,
+    paper: Any,
+    reason: str,
+    conn: Any,
+) -> None:
+    """Journal + quarantine-tag a stub whose fetched file failed identity.
+
+    The in-place-fold counterpart of :func:`_note_stub_reconcile_refused`:
+    the fetched file has no ref of its own yet (it goes on to mint one),
+    so the refusal is journalled on the *stub* — the ref whose body the
+    file nearly became — and the stub is tagged
+    ``paper-stub-identity-review`` so the contested target is findable.
+    Best-effort, like :func:`_note_pdf_no_body`.
+    """
+    try:
+        store.append_event(
+            stub_id,
+            source="ingest:dedup",
+            event="stub_fold_refused",
+            payload={
+                "file": input.pdf_path.name,
+                "pdf_sha256": paper.pdf_sha256,
+                "reason": reason,
+            },
+            conn=conn,
+        )
+        store.add_tag(
+            stub_id,
+            Tag.parse_strict(_STUB_IDENTITY_REVIEW_TAG),
+            set_by="system",
+            conn=conn,
+        )
+    except Exception as exc:  # journalling is best-effort
+        log.warning(
+            "precis_add: could not journal stub_fold_refused for ref_id=%s: %s",
+            stub_id,
+            exc,
+        )
+
+
+def _raise_stub_identity_review(
+    store: Store,
+    *,
+    stub_id: int,
+    survivor_ref_id: int,
+    file_stem: str,
+    reason: str,
+    conn: Any,
+) -> None:
+    """File a ``STATUS:open`` review todo for a refused stub reconcile.
+
+    Deduped on ``(source, stub, survivor)`` like
+    ``dedup._raise_doi_case_review``: a standing todo already covering
+    the pair is not re-filed, so a re-fetch loop can't re-raise it each
+    pass. Runs on the caller's connection so the todo commits or rolls
+    back with the rest of the ingest.
+    """
+    from precis.config import load_config
+    from precis.utils.handle_registry import format_handle
+
+    standing = conn.execute(
+        "SELECT 1 FROM refs t "
+        "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
+        "  AND t.meta->>'source' = %s AND t.meta->>'stub_ref_id' = %s "
+        "  AND t.meta->>'survivor_ref_id' = %s "
+        "  AND NOT EXISTS (SELECT 1 FROM ref_tags rt "
+        "    JOIN tags tg USING (tag_id) "
+        "    WHERE rt.ref_id = t.ref_id "
+        "      AND tg.namespace = 'STATUS' AND tg.value = 'done')",
+        (_STUB_REVIEW_SOURCE, str(stub_id), str(survivor_ref_id)),
+    ).fetchone()
+    if standing is not None:
+        return
+    todo_ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=(
+            f"Review refused stub reconcile "
+            f"{format_handle('paper', stub_id)} vs "
+            f"{format_handle('paper', survivor_ref_id)}: the PDF dropped "
+            f"as {file_stem!r} failed the stub identity check ({reason}). "
+            "The stub keeps its identifiers and stays live; merge by "
+            "hand only if they really are the same paper (gr512169)."
+        ),
+        meta={
+            "source": _STUB_REVIEW_SOURCE,
+            "stub_ref_id": stub_id,
+            "survivor_ref_id": survivor_ref_id,
+            "file_stem": file_stem,
+            "reason": reason,
+        },
+        conn=conn,
+    )
+    store.add_tag(
+        todo_ref.id,
+        Tag.closed("STATUS", "open"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    for tag in (_STUB_IDENTITY_REVIEW_TAG, f"waiting-for:{load_config().owner}"):
+        store.add_tag(todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn)
+
+
 def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
     """Does the PDF look like the paper ``stub_id`` is? (gr479094 wrong fold.)
 
@@ -1405,6 +1678,40 @@ def _fold_into_named_stub(
             file_stem,
         )
         return matched_ref_id
+    # Identity (gr512169): a series sibling passes both the rendered-text
+    # and token gates — it shares the stub's tokens. Require part markers
+    # + first author to agree before the twin's body lands on the stub.
+    stub_title, stub_authors = _ref_identity(conn, stub_id)
+    twin_title, twin_authors = _ref_identity(conn, matched_ref_id)
+    refusal = _stub_identity_refusal(stub_title, stub_authors, twin_title, twin_authors)
+    if refusal is not None:
+        log.warning(
+            "precis_add: not folding twin ref_id=%s into named stub ref_id=%s "
+            "(stem=%r): %s (stub %r vs twin %r) — both left live",
+            matched_ref_id,
+            stub_id,
+            file_stem,
+            refusal,
+            stub_title[:60],
+            twin_title[:60],
+        )
+        _note_stub_reconcile_refused(
+            store,
+            matched_ref_id,
+            stub_id=stub_id,
+            file_stem=file_stem,
+            reason=refusal,
+            conn=conn,
+        )
+        _raise_stub_identity_review(
+            store,
+            stub_id=stub_id,
+            survivor_ref_id=matched_ref_id,
+            file_stem=file_stem,
+            reason=refusal,
+            conn=conn,
+        )
+        return matched_ref_id
     merge_duplicate(
         store,
         survivor_ref_id=stub_id,
@@ -1510,6 +1817,45 @@ def _reconcile_orphan_stub(
             stub_id,
             survivor_ref_id,
             stem,
+        )
+        return None
+
+    # Identity (gr512169): token corroboration can't tell series
+    # siblings apart — Part II shares Part I's distinctive tokens — so a
+    # sibling's PDF minted under the stub's cite_key name would take the
+    # stub's DOI. Require part markers + first author to agree before
+    # the stub's identifiers move; on a mismatch quarantine the fetched
+    # ref for review instead of corrupting the stub's identity.
+    stub_title, stub_authors = _ref_identity(conn, stub_id)
+    surv_title, surv_authors = _ref_identity(conn, survivor_ref_id)
+    refusal = _stub_identity_refusal(stub_title, stub_authors, surv_title, surv_authors)
+    if refusal is not None:
+        log.warning(
+            "precis_add: not folding stub ref_id=%s into survivor ref_id=%s "
+            "(stem=%r): %s (stub %r vs fetched %r) — stub left live, "
+            "survivor quarantined for review",
+            stub_id,
+            survivor_ref_id,
+            stem,
+            refusal,
+            stub_title[:60],
+            surv_title[:60],
+        )
+        _note_stub_reconcile_refused(
+            store,
+            survivor_ref_id,
+            stub_id=stub_id,
+            file_stem=stem,
+            reason=refusal,
+            conn=conn,
+        )
+        _raise_stub_identity_review(
+            store,
+            stub_id=stub_id,
+            survivor_ref_id=survivor_ref_id,
+            file_stem=stem,
+            reason=refusal,
+            conn=conn,
         )
         return None
 

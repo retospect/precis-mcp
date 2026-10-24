@@ -757,6 +757,278 @@ class TestReconcileOrphanStub:
         assert held_row is not None and held_row[0] is None
 
 
+class TestStubIdentityGate:
+    """gr512169: a *series sibling's* PDF must not reconcile into a DOI stub.
+
+    The token-overlap corroboration can't tell '…: I.' from '…: II.' —
+    series siblings share every distinctive token and often most of the
+    author list. Before a fetched PDF takes a stub's identifiers, the
+    identity gate requires series-part markers to agree and the first
+    authors to match; on a mismatch the fetched ref is quarantined
+    (``paper-stub-identity-review`` tag + ``stub_reconcile_refused``
+    event + review todo) and the stub keeps its identifiers, live.
+    """
+
+    # The gripe's shape, synthetic strings: a Part I DOI stub vs the
+    # Part II PDF minted as a fresh ref under the stub's cite_key name.
+    PART_I = (
+        "Methane abatement in synthetic grazing systems: I. A review of enteric options"
+    )
+    PART_II = (
+        "Methane abatement in synthetic grazing systems: II. "
+        "A review of manure management"
+    )
+
+    def _doi_stub(self, store, slug: str, title: str, authors=None, doi=None):
+        stub = store.insert_ref(kind="paper", slug=slug, title=title, authors=authors)
+        if doi is not None:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(ref_id, id_kind, id_value, source) "
+                    "VALUES (%s, 'doi', %s, 'manual')",
+                    (stub.id, doi),
+                )
+                conn.commit()
+        return stub
+
+    def test_series_sibling_not_reconciled(self, store):
+        """The incident shape: Part II's PDF mints a new ref; folding the
+        Part I stub into it hands Part I's DOI to the sibling."""
+        stub = self._doi_stub(
+            store,
+            "special13",
+            self.PART_I,
+            authors=[{"name": "Alvarez, Maria"}, {"name": "Becker, Tom"}],
+            doi="10.1234/series-i",
+        )
+        # The Part II ref the fetched PDF minted — overlapping author
+        # list, different first author, different part marker.
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="becker13",
+            title=self.PART_II,
+            authors=[{"name": "Becker, Tom"}, {"name": "Alvarez, Maria"}],
+        )
+
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="special13",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None
+
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1234/series-i'",
+            ).fetchone()
+            event = conn.execute(
+                "SELECT payload->>'reason' FROM ref_events "
+                "WHERE ref_id=%s AND event='stub_reconcile_refused'",
+                (survivor.id,),
+            ).fetchone()
+            link = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id=%s AND dst_ref_id=%s "
+                "AND relation='supersedes'",
+                (survivor.id, stub.id),
+            ).fetchone()
+            tag = conn.execute(
+                "SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
+                "WHERE rt.ref_id=%s AND tg.value='paper-stub-identity-review'",
+                (survivor.id,),
+            ).fetchone()
+            todo = conn.execute(
+                "SELECT 1 FROM refs WHERE kind='todo' AND retired_at IS NULL "
+                "AND meta->>'source'='ingest:stub-reconcile-review' "
+                "AND meta->>'stub_ref_id'=%s",
+                (str(stub.id),),
+            ).fetchone()
+        # Stub untouched: live, keeps its DOI, no supersede edge.
+        assert stub_row is not None and stub_row[0] is None
+        assert stub_row[1] is None
+        assert doi_owner is not None and doi_owner[0] == stub.id
+        assert link is None
+        # Quarantined: journalled on the survivor, tagged, review todo.
+        assert event is not None and event[0] == "series-marker-mismatch"
+        assert tag is not None
+        assert todo is not None
+
+    def test_first_author_mismatch_not_reconciled(self, store, caplog):
+        """Same title, different first author: the fetched PDF is not the
+        stub's paper even with no series marker to separate them."""
+        stub = self._doi_stub(
+            store,
+            "zebra26",
+            "Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Alvarez, Maria"}],
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="zebraheld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Becker, Tom"}],
+        )
+
+        with store.pool.connection() as conn:
+            with caplog.at_level("WARNING", logger="precis.ingest.add"):
+                merged = _reconcile_orphan_stub(
+                    store,
+                    survivor_ref_id=survivor.id,
+                    file_stem="zebra26",
+                    conn=conn,
+                )
+            conn.commit()
+        assert merged is None
+
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+            event = conn.execute(
+                "SELECT payload->>'reason' FROM ref_events "
+                "WHERE ref_id=%s AND event='stub_reconcile_refused'",
+                (survivor.id,),
+            ).fetchone()
+        assert stub_row is not None and stub_row[0] is None
+        assert event is not None and event[0] == "author-mismatch"
+
+    def test_minor_title_variant_still_reconciles(self, store):
+        """The same paper, extracted with a case/punctuation-variant
+        title, still folds its stub in."""
+        stub = self._doi_stub(
+            store,
+            "zebra27",
+            "Zebra finch neuroplasticity in changing climates: a survey",
+            authors=[{"name": "Alvarez, Maria"}],
+            doi="10.1234/zebra27",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="zebraheld2",
+            title="Zebra-Finch Neuroplasticity in Changing Climates — A Survey",
+            authors=[{"name": "Alvarez, Maria"}],
+        )
+
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="zebra27",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1234/zebra27'",
+            ).fetchone()
+        assert stub_row is not None and stub_row[0] is not None
+        assert stub_row[1] == str(survivor.id)
+        assert doi_owner is not None and doi_owner[0] == survivor.id
+
+    def test_named_stub_twin_series_sibling_not_merged(self, store):
+        """``pa<stub>.pdf`` naming a Part I stub while the bytes dedup
+        against a Part II twin: the named-stub-wins fold must refuse too."""
+        stub = self._doi_stub(
+            store,
+            "wanted26",
+            self.PART_I,
+            authors=[{"name": "Alvarez, Maria"}],
+            doi="10.1234/series-i",
+        )
+        twin = store.insert_ref(
+            kind="paper",
+            slug="twin26",
+            title=self.PART_II,
+            authors=[{"name": "Becker, Tom"}],
+        )
+        with store.pool.connection() as conn:
+            merged = _fold_into_named_stub(
+                store,
+                matched_ref_id=twin.id,
+                file_stem=f"pa{stub.id}",
+                pdf_path=Path(f"pa{stub.id}.pdf"),  # unreadable: passes
+                conn=conn,
+            )
+            conn.commit()
+        # Refused: the twin stays the result, the stub stays live.
+        assert merged == twin.id
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+                "AND retired_at IS NOT NULL",
+                ([stub.id, twin.id],),
+            ).fetchall()
+            event = conn.execute(
+                "SELECT payload->>'reason' FROM ref_events "
+                "WHERE ref_id=%s AND event='stub_reconcile_refused'",
+                (twin.id,),
+            ).fetchone()
+        assert retired == []
+        assert event is not None and event[0] == "series-marker-mismatch"
+
+    def test_fetch_of_series_sibling_mints_new_ref_not_stub_upgrade(
+        self, store, tmp_path: Path
+    ):
+        """End-to-end: a Part II PDF fetched *for* the Part I stub (named
+        by its cite_key, sidecar pointing at it) must mint its own ref —
+        never upgrade the stub's body nor inherit the stub's DOI."""
+        stub = self._doi_stub(
+            store,
+            "special13",
+            self.PART_I,
+            authors=[{"name": "Alvarez, Maria"}, {"name": "Becker, Tom"}],
+            doi="10.1234/series-i",
+        )
+        pdf = tmp_path / "special13.pdf"
+        pdf.write_bytes(b"%PDF-1.4 part-ii")
+        sha = hashlib.sha256(b"%PDF-1.4 part-ii").hexdigest()
+        part_ii = dataclasses.replace(
+            _fixture_paper(paper_id="partii1", doi=None, pdf_sha256=sha),
+            title=self.PART_II,
+            authors=[{"name": "Becker, Tom"}, {"name": "Alvarez, Maria"}],
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=part_ii):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
+            )
+
+        assert isinstance(result, IngestResult)
+        assert result.inserted is True
+        assert result.ref_id != stub.id
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at, pdf_sha256 FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1234/series-i'",
+            ).fetchone()
+            n_body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (stub.id,),
+            ).fetchone()[0]
+        # Stub live, still bodiless, still owns its DOI.
+        assert stub_row[0] is None and stub_row[1] is None
+        assert doi_owner is not None and doi_owner[0] == stub.id
+        assert n_body == 0
+
+
 class TestSidecarFold:
     """A fetched PDF whose *extracted* identity doesn't dedup against any
     ref folds into the OA-fetch sidecar's designated stub in place —
