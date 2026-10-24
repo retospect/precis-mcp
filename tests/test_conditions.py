@@ -268,6 +268,25 @@ def test_pass_dead_ignores_a_ghost_handler_name(
     assert [f for f in _probe_pass_dead(store) if ghost in f.key] == []
 
 
+def test_pass_dead_ignores_a_shadowed_service_token(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr506756: ``fetch`` is the service *token* — the pass's log
+    identity is ``fetch_oa`` (``ServiceSpec.log_name``). Runner failure
+    paths used to mint ``fetch`` rows, so when the deadline crashes
+    stopped the token went silent and pass-dead fired on a live pass. A
+    shadowed token is never emitted: its silence must not fire, while
+    the real emitter's own silence still does."""
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "fetch", n=10, last_age_s=4 * 3600.0, registered=False)
+    _seed_pass_logs(store, "fetch_oa", n=10, last_age_s=4 * 3600.0, registered=False)
+    found = _probe_pass_dead(store)
+    assert [f for f in found if f.key.endswith("/fetch")] == []
+    assert [f for f in found if f.key.endswith("/fetch_oa")]
+
+
 def _service_config_services(store: Store) -> set[str]:
     with store.pool.connection() as conn:
         rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()

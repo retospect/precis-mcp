@@ -837,3 +837,36 @@ def test_ref_pass_registers_activity_under_its_service_name(
 
     run_loop([], store, once=True, ref_passes=[_orcidish_pass, _axis_pass])
     assert seen == ["orcidish", "axis:test"]
+
+
+def test_failing_ref_pass_rows_mint_the_registry_log_name(
+    store, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr506756: a ref-pass's failure rows must land under the same
+    ``payload.handler`` its success rows report — the registry
+    ``log_handler`` (the ``fetch`` pass logs as ``fetch_oa``), not the
+    service token. Minting the token instead wrote failure-only rows
+    under a name that went silent the moment the failures stopped, and
+    pass-dead fired on a live pass. ``activity``'s stamp (the stuck
+    warning's ``payload.handler`` / ``meta.activity``) follows the same
+    identity.
+    """
+    from precis.workers import activity
+
+    seen: list[str] = []
+    monkeypatch.setattr(activity, "set_pass", seen.append)
+
+    def _fetch_pass(batch_size: int) -> BatchResult:
+        raise ValueError("claim query blew up")
+
+    with caplog.at_level("ERROR", logger="precis.workers.runner"):
+        run_loop([], store, once=True, ref_passes=[_fetch_pass])
+
+    errored = [r for r in caplog.records if (p := _payload(r)) is not None]
+    assert len(errored) == 1
+    payload = _payload(errored[0])
+    assert payload is not None
+    assert payload["handler"] == "fetch_oa"
+    assert payload["failed"] == 1
+    assert payload.get("error") == "ValueError"
+    assert seen == ["fetch_oa"]

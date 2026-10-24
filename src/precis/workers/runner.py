@@ -276,6 +276,32 @@ def _service_name(ref_pass: RefPass) -> str | None:
     return None
 
 
+def _emit_handler(service: str | None, fallback: str) -> str:
+    """The ``payload.handler`` name a ref-pass's liveness rows land under.
+
+    The success row carries ``result.handler`` — the pass's self-reported
+    log identity (``ServiceSpec.log_handler``: ``fetch`` logs as
+    ``fetch_oa``, ``chase`` as ``finding_chase``). The failure paths have
+    no result to read, so they resolve the same identity from the
+    registry here. Minting the service token instead (the pre-gr506756
+    behaviour) wrote *failure-only* rows under a name no success ever
+    used — when the fetch pass's deadline crashes stopped, ``fetch`` went
+    silent and pass-dead fired on a live pass; it also made the crashes
+    invisible to the ``/factory`` console, which reads by ``log_name``.
+    Services outside the static registry (``axis:*`` closures, ad-hoc
+    ``--only`` passes) emit under their service name — ``fallback``.
+    """
+    if service is not None:
+        # Lazy import: workers.registry pulls in utils.llm.router at
+        # module level — keep it out of this module's own import cost.
+        from precis.workers.registry import SERVICES
+
+        for spec in SERVICES:
+            if spec.name == service:
+                return spec.log_handler
+    return fallback
+
+
 def _env_seconds(name: str, default: float) -> float:
     """``float($name)``, or ``default`` when unset or unparseable."""
     raw = os.environ.get(name)
@@ -431,6 +457,11 @@ def run_loop(
         ``True`` when it claimed work."""
         service = _service_name(ref_pass)
         handler_name = str(service or getattr(ref_pass, "__name__", "ref_pass"))
+        # The liveness identity — what this pass's ``payload.handler``
+        # rows are read under. ``handler_name`` stays the bookkeeping key
+        # (pending/rescue dicts key on the service token); ``emit_name``
+        # is what every minted log row and the activity stamp carry.
+        emit_name = _emit_handler(service, handler_name)
         if handler_name in rescue_last:
             # Stamped at the attempt, not the finish: the budget bounds the
             # wait between starts, and a gated-off or still-detached rescue
@@ -455,30 +486,32 @@ def run_loop(
                         log.info(
                             "worker: %s still running detached past its "
                             "deadline; skipping this cycle",
-                            handler_name,
+                            emit_name,
                         )
                     else:
                         log.debug(
                             "worker: %s still running detached; skipping",
-                            handler_name,
+                            emit_name,
                         )
                     return False
                 pending.pop(handler_name)
                 pending_logged.discard(handler_name)
-                log.info("worker: %s detached ref-pass run finished", handler_name)
-        # Stamp the canonical liveness name (service/result-handler), not
-        # the closure ``__name__``: the stuck warning logs this as
-        # ``payload.handler``, so keying on ``__name__`` minted a ghost
-        # handler (``_orcid_enrich_pass``) the pass-dead probe later read
-        # as a dead pass when the name went silent (gr501991).
-        activity.set_pass(handler_name)
+                log.info("worker: %s detached ref-pass run finished", emit_name)
+        # Stamp the canonical liveness name — the pass's *log* identity
+        # (``ServiceSpec.log_handler`` == ``BatchResult.handler``), not
+        # the closure ``__name__`` or the service token: the stuck
+        # warning logs this as ``payload.handler``, so keying on
+        # ``__name__`` minted a ghost handler (``_orcid_enrich_pass``,
+        # gr501991) and keying on the service token minted ``fetch``
+        # rows only failures ever wrote (gr506756).
+        activity.set_pass(emit_name)
         t0 = time.monotonic()
         try:
             if deadline_s:
                 result = call_with_deadline(
                     partial(ref_pass, batch_size),
                     deadline_s=deadline_s,
-                    label=handler_name,
+                    label=emit_name,
                 )
             else:
                 result = ref_pass(batch_size)
@@ -487,11 +520,11 @@ def run_loop(
             log.error(
                 "worker: %s ref-pass exceeded its %gs deadline; abandoned "
                 "(still running detached)",
-                handler_name,
+                emit_name,
                 deadline_s,
                 extra={
                     "payload": {
-                        "handler": handler_name,
+                        "handler": emit_name,
                         "claimed": 0,
                         "ok": 0,
                         "failed": 1,
@@ -519,10 +552,10 @@ def run_loop(
             # here).
             log.exception(
                 "worker: %s ref-pass raised; continuing",
-                handler_name,
+                emit_name,
                 extra={
                     "payload": {
-                        "handler": handler_name,
+                        "handler": emit_name,
                         "claimed": 0,
                         "ok": 0,
                         "failed": 1,

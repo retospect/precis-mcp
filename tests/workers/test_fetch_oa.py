@@ -26,11 +26,13 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import httpx
 import pytest
+from psycopg import Connection
+from psycopg.errors import LockNotAvailable
 
 from precis.alerts import list_open_alerts
 from precis.ingest.fetch_sidecar import read_sidecar
@@ -725,6 +727,25 @@ class TestClaimStubs:
             f"distinct ref over 20 trials, got {explored_picks!r} — "
             "looks like it's falling back to pure prio order"
         )
+
+    def test_lock_contention_claim_returns_a_skipped_batch(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """gr506756 (2026-10-24 04:37Z): under prod's ``lock_timeout=5s``
+        the ``FOR UPDATE`` claim racing a sibling's held row raises
+        ``psycopg.errors.LockNotAvailable`` — expected fleet contention,
+        not a crash. The claim logs once at INFO and returns an empty
+        batch, so the pass retries next cycle instead of dying as an
+        uncaught ``ref-pass raised`` runner error row."""
+
+        class _LockedConn:
+            def execute(self, *_a: Any, **_k: Any) -> Any:
+                raise LockNotAvailable("could not obtain lock")
+
+        conn = cast("Connection", _LockedConn())
+        with caplog.at_level(logging.INFO, logger="precis.workers.fetch_oa"):
+            assert claim_stubs_to_fetch(conn, limit=4) == []
+        assert "lock contention" in caplog.text
 
 
 # ---------------------------------------------------------------------------

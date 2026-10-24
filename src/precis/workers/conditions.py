@@ -234,7 +234,11 @@ def _liveness_handler_names(store: Store) -> set[str]:
     or removed pass — not a dead handler. gr501991: ``_orcid_enrich_pass``
     was minted only by the stuck-pass warning's ``__name__`` keying while
     the pass logged ``orcid_enrich``; when the pass stopped hanging the
-    ghost name went silent and pass-dead fired on a name nothing writes."""
+    ghost name went silent and pass-dead fired on a name nothing writes.
+
+    Membership here is the coarse "still registers" gate; a name in this
+    set can still be unemittable — :func:`_shadowed_service_names` filters
+    those at the probe."""
     from precis.workers.registry import SERVICES
 
     names = {s.name for s in SERVICES} | {s.log_handler for s in SERVICES}
@@ -242,6 +246,25 @@ def _liveness_handler_names(store: Store) -> set[str]:
         rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()
     names.update(str(r[0]) for r in rows)
     return names
+
+
+def _shadowed_service_names() -> set[str]:
+    """Registry ``name`` tokens a divergent ``log_name`` shadows
+    (``fetch`` → ``fetch_oa``, ``chase`` → ``finding_chase``, …).
+
+    The runner mints a pass's ``payload.handler`` rows under its *log*
+    identity on every path — success (``BatchResult.handler``), the
+    deadline-abandon and crash rows, and ``activity``'s stuck warning —
+    so the bare service token can never be emitted; its silence is the
+    ``log_name`` row's business. Before that fix the error paths minted
+    the token: ``fetch`` ended up a name only failure rows ever wrote,
+    and when the deadline crashes stopped the token went silent and
+    pass-dead fired on a live pass (gr506756, the gr501991 ghost shape on
+    the opposite axis).
+    """
+    from precis.workers.registry import SERVICES
+
+    return {s.name for s in SERVICES if s.log_name}
 
 
 def _parked_workers(store: Store) -> set[tuple[str, str]]:
@@ -343,10 +366,16 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     parked = _parked_workers(store)
     installed = _fresh_unit_lists(store)
     live_names = _liveness_handler_names(store)
+    shadowed = _shadowed_service_names()
     out: list[ConditionFinding] = []
     for host, process, handler, silent_h in rows:
         if str(handler) not in live_names:
             continue  # renamed/removed pass — stale history, not a death
+        if str(handler) in shadowed:
+            # A service token shadowed by its own ``log_name`` is never a
+            # ``payload.handler`` emitter — the log name's row carries
+            # this pass's liveness (gr506756).
+            continue
         if (str(host), str(process)) in parked:
             continue
         service = _handler_service(str(handler))

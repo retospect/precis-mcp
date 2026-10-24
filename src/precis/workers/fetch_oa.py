@@ -103,6 +103,7 @@ from urllib.parse import urlparse, urlsplit
 
 import httpx
 from psycopg import Connection
+from psycopg.errors import DeadlockDetected, LockNotAvailable
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -988,27 +989,30 @@ def claim_stubs_to_fetch(
         explore_n = min(max(1, math.floor(limit * explore_fraction)), limit)
 
     explored_rows: list[Any] = []
-    if explore_n:
-        explore_sql = (
-            select_cols
-            + from_where
-            + " ORDER BY random() LIMIT %(explore_n)s FOR UPDATE OF r SKIP LOCKED"
-        )
-        explored_rows = conn.execute(
-            explore_sql, {**params, "explore_n": explore_n}
-        ).fetchall()
-
-    remaining = limit - len(explored_rows)
     main_rows: list[Any] = []
-    if remaining > 0:
-        exclude_sql = (
-            " AND r.ref_id <> ALL(%(explored_ids)s::bigint[])" if explored_rows else ""
-        )
-        main_sql = (
-            select_cols
-            + from_where
-            + exclude_sql
-            + """
+    try:
+        if explore_n:
+            explore_sql = (
+                select_cols
+                + from_where
+                + " ORDER BY random() LIMIT %(explore_n)s FOR UPDATE OF r SKIP LOCKED"
+            )
+            explored_rows = conn.execute(
+                explore_sql, {**params, "explore_n": explore_n}
+            ).fetchall()
+
+        remaining = limit - len(explored_rows)
+        if remaining > 0:
+            exclude_sql = (
+                " AND r.ref_id <> ALL(%(explored_ids)s::bigint[])"
+                if explored_rows
+                else ""
+            )
+            main_sql = (
+                select_cols
+                + from_where
+                + exclude_sql
+                + """
          -- jsonb_exists(...) not the `?` operator: `?` collides with the
          -- param placeholder scan in a parameterised query.
          -- Quest striving weight (slice 2) tiers between the re-queue signal
@@ -1028,15 +1032,26 @@ def claim_stubs_to_fetch(
          LIMIT %(remaining)s
            FOR UPDATE OF r SKIP LOCKED
             """
+            )
+            main_rows = conn.execute(
+                main_sql,
+                {
+                    **params,
+                    "explored_ids": [int(r[0]) for r in explored_rows],
+                    "remaining": remaining,
+                },
+            ).fetchall()
+    except (LockNotAvailable, DeadlockDetected) as exc:
+        # Expected fleet contention under prod's lock_timeout=5s: the
+        # ``FOR UPDATE`` claim raced a sibling still holding the row
+        # (gr506756's 2026-10-24 04:37Z pass-kill). A skipped batch, not a
+        # crash — nothing was claimed or committed, the caller's
+        # transaction exits aborted, and the pass retries next cycle.
+        log.info(
+            "fetch_oa: claim skipped on lock contention (%s) — retrying next pass",
+            exc,
         )
-        main_rows = conn.execute(
-            main_sql,
-            {
-                **params,
-                "explored_ids": [int(r[0]) for r in explored_rows],
-                "remaining": remaining,
-            },
-        ).fetchall()
+        return []
 
     rows = explored_rows + main_rows
     return [
