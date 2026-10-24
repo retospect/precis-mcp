@@ -188,5 +188,10 @@ docs/backlog/threads/PRIORITIES.md
 # Per-checkout scratch (session caches, one-off merge probes): never source.
 .scratch/
 
+# Dev-loop scratch (dev-loop-scratch D0): every worktree gets the dir via
+# .keep; scripts and their out/ runs under it are never source.
+scratch/*
+!scratch/.keep
+
 # local CFD scratch repo (own git), never tracked here
 cfdtest/

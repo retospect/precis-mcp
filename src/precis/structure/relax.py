@@ -19,7 +19,12 @@ tblite wheel installs — the relaxer of record for hexfold blocks (Reto
 2026-10-11, gr472846); the MCP handler treats it as **dispatch-only**,
 always staging a ``struct_relax`` job rather than running it in-request
 (gr496562), so local ``_relax_xtb`` here serves the job's in-process run
-and direct calls, not the request path. The remaining rungs are
+and direct calls, not the request path. ``jiggle`` is the dev loop's
+**fake rung** (dev-loop-scratch spec D0): a seeded Gaussian displacement
+with a fabricated-but-consistent convergence report, for testing how the
+system tolerates moved/"relaxed" geometry — never a default, reached
+only by name, and honestly labelled (``rung='jiggle'``,
+``forces_approx=True``). The remaining rungs are
 **rented backends**
 (``ff``/``ml``/``dft-fast``/``dft-tight``) gated behind the ``[dft-ml]`` /
 ``[dft-gpaw]`` extras — calling one without its backend raises
@@ -123,6 +128,23 @@ def _attach_step_hook(
 #: ``emt`` (rung 1) is deliberately *not* here — it's ours, like ``clean``,
 #: always-on (ASE is a core dependency).
 _RENTED_RUNGS = {"ff", "ml", "dft-fast", "dft-tight"}
+
+#: Fake spring constant (eV/Å²) backing the ``jiggle`` rung's fabricated
+#: report: the perturbed geometry reads as a harmonic well, so the
+#: reported ``energy``/``max_force``/per-atom ``forces`` stay
+#: self-consistent with the displacement the rung actually applied.
+#: Typical covalent bond-stretch scale (~5–15 eV/Å²).
+_JIGGLE_SPRING = 10.0
+
+#: Default per-axis σ (Å) of the ``jiggle`` rung's Gaussian displacement.
+_JIGGLE_SIGMA = 0.05
+
+
+class JiggleDied(RuntimeError):
+    """``relax(fidelity='jiggle', die_at_step=k)``'s simulated kill — the
+    stand-in for a mid-run crash (OOM, SIGKILL) when testing
+    kill/resume, never raised by a real rung."""
+
 
 #: EMT's built-in interatomic-potential coverage (ASE's ``emt.py`` parameter
 #: table) — a closed set of fcc catalytic metals + light adsorbate elements.
@@ -265,6 +287,9 @@ def relax(
     multiplicity: int | None = None,
     fmax: float | None = None,
     on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    seed: int | None = None,
+    sigma: float | None = None,
+    die_at_step: int | None = None,
 ) -> RelaxResult:
     """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
 
@@ -302,13 +327,19 @@ def relax(
     callback may keep) and the per-step convergence trace so far. The
     ``geo`` kernel runs its whole loop inside numba with no per-step
     view, so it never calls it.
+
+    ``seed``/``sigma``/``die_at_step`` are ``jiggle``-rung options
+    (:func:`_relax_jiggle`) — a seeded Gaussian displacement with a
+    fabricated convergence report, the dev loop's tolerance-test rung
+    (dev-loop-scratch spec D0). They are refused on every other rung
+    rather than silently ignored.
     """
     if cell not in CELL_MODES:
         raise RelaxUnsupported(
             f"unknown cell relax mode {cell!r} (use 'inplane', 'full', or omit)"
         )
     cell_mode = None if cell == "fixed" else cell
-    if cell_mode is not None and fidelity in ("clean", "0", "geo"):
+    if cell_mode is not None and fidelity in ("clean", "0", "geo", "jiggle"):
         raise RelaxUnsupported(
             "variable-cell relax needs an energy rung (fidelity='ml'); the "
             "'clean'/'geo' geometry rungs have no stress to relax the cell "
@@ -324,11 +355,18 @@ def relax(
             raise RelaxUnsupported(
                 f"fmax must be a positive force target (eV/Å), got {fmax!r}"
             )
-        if fidelity in ("clean", "0", "geo"):
+        if fidelity in ("clean", "0", "geo", "jiggle"):
             raise RelaxUnsupported(
                 f"fmax is a force target — rung {fidelity!r} is a geometry "
                 "repair with no forces to converge"
             )
+    if (seed is not None or sigma is not None or die_at_step is not None) and (
+        fidelity != "jiggle"
+    ):
+        raise RelaxUnsupported(
+            f"seed/sigma/die_at_step are 'jiggle'-rung options; rung "
+            f"{fidelity!r} has no use for them"
+        )
     if dispersion and fidelity not in ("ml",):
         raise RelaxUnsupported(
             f"dispersion=True needs an MLIP rung (fidelity='ml'); rung "
@@ -343,6 +381,16 @@ def relax(
         return _relax_clean(scene, steps=steps, tol=tol, on_step=on_step)
     if fidelity == "geo":
         return _relax_geo(scene, steps=steps, tol=tol)
+    if fidelity == "jiggle":
+        return _relax_jiggle(
+            scene,
+            steps=steps,
+            tol=tol,
+            seed=seed,
+            sigma=sigma,
+            die_at_step=die_at_step,
+            on_step=on_step,
+        )
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol, fmax=fmax, on_step=on_step)
     if fidelity == "xtb":
@@ -543,6 +591,146 @@ def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         forces=approx_forces,
         forces_approx=approx_forces is not None,
         forces_source="emt" if approx_forces is not None else None,
+    )
+
+
+def _relax_jiggle(
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    seed: int | None,
+    sigma: float | None,
+    die_at_step: int | None,
+    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+) -> RelaxResult:
+    """Rung ``jiggle``: a seeded Gaussian perturbation wearing an energy
+    rung's report (dev-loop-scratch spec D0 — Reto's FakeRelaxer: "jiggle
+    things about a random amount so we can test how the system tolerates
+    moving/relaxed things").
+
+    Each free atom takes one per-axis ``N(0, sigma)`` draw (``sigma``
+    defaults to :data:`_JIGGLE_SIGMA` = 0.05 Å), the per-atom displacement
+    capped at 3σ and masked by ``fixed`` axes exactly like ``clean``.
+    The displacement lands incrementally — ``1/steps`` of it per
+    fabricated optimiser step — so ``die_at_step=k`` leaves the scene at
+    a mid-run state (the model for a kill between checkpoints: step k's
+    work never happened, steps 1..k-1 did).
+
+    The report is fabricated but self-consistent: the perturbation reads
+    as a harmonic well of stiffness :data:`_JIGGLE_SPRING`, so
+    ``energy`` = −½kΣ‖d‖², per-atom ``forces`` = the spring force scaled
+    by the converged fraction, and ``curve`` is a monotone geometric
+    decay of the max force to below ``max(tol, 0.05)`` (the rungs' usual
+    convergence floor). Progress lines match the energy rungs' format,
+    and ``on_step`` fires per fabricated step with the same
+    ``(steps_done, positions, curve)`` contract (gr508493) — a
+    ``die_at_step`` kill therefore leaves a real mid-run checkpoint
+    trail. It is **never** a default — only ``fidelity='jiggle'``
+    reaches it — and ``forces_approx``/``forces_source='jiggle'`` label
+    the numbers fabricated so they can never be mistaken for a
+    calculator's.
+    """
+    labels = list(scene.atoms)
+    if not labels:
+        return RelaxResult(
+            rung="jiggle",
+            converged=True,
+            n_steps=0,
+            max_disp=0.0,
+            curve=[],
+            energy=0.0,
+            max_force=0.0,
+            model="jiggle",
+        )
+    if sigma is not None and sigma < 0:
+        raise RelaxUnsupported(f"jiggle sigma must be >= 0 (Å), got {sigma!r}")
+    sig = _JIGGLE_SIGMA if sigma is None else float(sigma)
+    if die_at_step is not None and (
+        isinstance(die_at_step, bool)
+        or not isinstance(die_at_step, int)
+        or die_at_step < 1
+    ):
+        raise RelaxUnsupported(
+            f"jiggle die_at_step must be a step number >= 1, got {die_at_step!r}"
+        )
+    rng = np.random.default_rng(seed)
+    disp = rng.normal(0.0, sig, size=(len(labels), 3))
+    for k, la in enumerate(labels):
+        disp[k] *= _free_axes(scene.atoms[la].fixed)
+    norms = np.linalg.norm(disp, axis=1)
+    cap = 3.0 * sig
+    if cap > 0.0:
+        over = norms > cap
+        disp[over] *= (cap / norms[over])[:, None]
+        norms = np.linalg.norm(disp, axis=1)
+    max_move = float(norms.max()) if len(norms) else 0.0
+
+    # The fake landscape: a harmonic well of stiffness _JIGGLE_SPRING.
+    # f_start is the max force the full displacement would sit under;
+    # the curve decays geometrically from it to below force_tol.
+    force_tol = max(tol, 0.05)
+    f_start = _JIGGLE_SPRING * max_move
+    t0 = time.monotonic()
+    curve: list[float] = []
+    step_disp = disp / steps if steps else disp
+    n = 0
+    for n in range(1, steps + 1):
+        if die_at_step is not None and n == die_at_step:
+            raise JiggleDied(
+                f"relax jiggle: die_at_step={n} — simulated kill "
+                f"({n - 1}/{steps} steps applied)"
+            )
+        for k, la in enumerate(labels):
+            atom = scene.atoms[la]
+            dfrac = scene.cell.cart_to_frac(step_disp[k])
+            atom.frac = scene.cell.wrap(atom.frac + dfrac)
+        f_now = (
+            f_start * (force_tol * 0.8 / f_start) ** (n / steps)
+            if f_start > 0.0
+            else 0.0
+        )
+        curve.append(round(f_now, 4))
+        if on_step is not None:
+            on_step(
+                n,
+                np.array(
+                    [scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels]
+                ),
+                list(curve),
+            )
+        if n % PROGRESS_EVERY == 0:
+            log.info(
+                "relax[%s]: step %d/%d on %d atoms, max force %s eV/A, %.0fs elapsed",
+                "jiggle",
+                n,
+                steps,
+                len(labels),
+                f"{curve[-1]:.4f}" if curve else "?",
+                time.monotonic() - t0,
+            )
+    # Residual spring force per atom at the converged fraction — the same
+    # scale the last curve point reports (max over atoms = curve[-1]).
+    frac_left = curve[-1] / f_start if f_start > 0.0 else 0.0
+    per_atom_forces = {
+        la: [float(x) for x in (-_JIGGLE_SPRING * disp[k] * frac_left)]
+        for k, la in enumerate(labels)
+    }
+    energy = -0.5 * _JIGGLE_SPRING * float((norms**2).sum())
+    return RelaxResult(
+        rung="jiggle",
+        converged=True,
+        n_steps=n,
+        max_disp=round(max_move / steps, 4) if steps else 0.0,
+        curve=curve,
+        energy=round(energy, 4),
+        max_force=curve[-1] if curve else 0.0,
+        model="jiggle",
+        forces=per_atom_forces,
+        forces_approx=True,
+        forces_source="jiggle",
+        note="jiggle rung: fabricated report — seeded displacement, no "
+        "calculator (dev-loop tolerance test)",
     )
 
 

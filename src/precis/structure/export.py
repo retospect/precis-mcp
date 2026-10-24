@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from .scene import FIX_ALL, Scene
+from .scene import FIX_ALL, Bond, Scene
 
 
 def _grouped(scene: Scene) -> tuple[list[str], dict[str, list]]:
@@ -127,20 +127,24 @@ def to_extxyz(scene: Scene, *, constraints: bool = False) -> str:
             return buf.getvalue()
         except ImportError:
             pass  # no ASE → degrade to the constraint-free form below
-    flat = " ".join(f"{x:.8f}" for x in np.asarray(scene.cell.lattice).flatten())
-    pbc = " ".join("T" if p else "F" for p in scene.cell.pbc)
-    atoms = list(scene.atoms.items())
-    has_maker = any(a.maker is not None for _l, a in atoms)
-    props = "species:S:1:pos:R:3:label:S:1" + (":maker:I:1" if has_maker else "")
-    head = f'Lattice="{flat}" Properties={props} pbc="{pbc}"'
-    lines = [str(len(atoms)), head]
-    for label, a in atoms:
-        x, y, z = scene.cell.frac_to_cart(a.frac)
-        row = f"{a.element} {x:.8f} {y:.8f} {z:.8f} {label}"
-        if has_maker:
-            row += f" {a.maker if a.maker is not None else -1}"
-        lines.append(row)
-    return "\n".join(lines) + "\n"
+    # The label-carrying form's canonical writer is ``precis_geom.extxyz``
+    # — ``precis_geom`` is a standalone kernel (the import-linter contract
+    # forbids it importing ``precis``), so the shared code lives low and
+    # this delegates down, never the reverse.
+    from precis_geom import extxyz as _extxyz
+
+    return _extxyz.to_extxyz(scene)
+
+
+def bonds_to_json(bonds: list[Bond]) -> str:
+    """The ``*.bonds.json`` sidecar — the write side of
+    :func:`precis.structure.importers.extxyz.bonds_from_json`, same shape
+    (``{"schema": 1, "bonds": [{"i", "j", "order"?, "kind"?, "maker"?}]}``,
+    defaults omitted). Canonical implementation:
+    :func:`precis_geom.extxyz.bonds_to_json`."""
+    from precis_geom import extxyz as _extxyz
+
+    return _extxyz.bonds_to_json(bonds)
 
 
 def ase_available() -> bool:

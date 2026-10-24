@@ -2466,7 +2466,7 @@ class StructureHandler(Handler):
                 "(use 'inplane', 'full', or omit for an atoms-only relax)",
                 options=["inplane", "full"],
             )
-        if cell_mode is not None and fidelity in ("clean", "0"):
+        if cell_mode is not None and fidelity in ("clean", "0", "jiggle"):
             raise BadInput(
                 "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
                 "geometry repair has no stress to relax the cell against",
@@ -2499,7 +2499,7 @@ class StructureHandler(Handler):
                     f"got {fmax_raw!r}",
                     next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
                 )
-            if fidelity in ("clean", "0", "geo"):
+            if fidelity in ("clean", "0", "geo", "jiggle"):
                 raise BadInput(
                     f"relax fmax is a force target — rung {fidelity!r} is a "
                     "geometry repair with no forces to converge",
@@ -2521,10 +2521,13 @@ class StructureHandler(Handler):
 
         # Cache-first for the expensive energy rungs. The rung-0
         # ``clean`` repair is instant + pure + energy-free, so it is never
-        # cached — it just runs. The key is over the *input* geometry (this
-        # scene, after graph ops, before relax mutates it), so capture the
-        # content address + canonical order now.
-        cached_rung = fidelity not in ("clean", "0")
+        # cached — it just runs. ``jiggle`` is uncached too: it is a
+        # stochastic test rung whose seed/sigma aren't part of the key,
+        # so a cached hit would silently freeze one random draw and let
+        # two different jiggles collide. The key is over the *input*
+        # geometry (this scene, after graph ops, before relax mutates
+        # it), so capture the content address + canonical order now.
+        cached_rung = fidelity not in ("clean", "0", "jiggle")
         cache_key = structure_sha = None
         order: list[str] = []
         if cached_rung:
