@@ -143,20 +143,12 @@ The vision call is internal to the view, not an agent-facing verb.
 
 ## Slices
 
-1. **Calibration core** (`src/precis/figdigit/axis.py`, numpy only). Test:
-   a synthetic matplotlib figure with known ticks recovers the map within
-   0.5 px; non-monotone tick labels are refused.
-2. **Series extraction** (`figdigit/series.py`): colour mask, centroids,
-   polyline, sub-pixel peak with sigma. Test: synthetic TPD-like traces
-   (Gaussian peaks at known T, four rates, noise, similar colours); the
-   recovered T_p lies within the reported sigma in at least 95 percent of
-   seeded trials. If colour masking is too slow or brittle in numpy, this
-   slice adds the `digitise` extra with `opencv-python-headless`.
-3. **Render + checked proposal** (`figdigit/page.py`, `figdigit/propose.py`):
-   Sonnet vision proposer plus the offline geometry-only mode (caller names
-   colours and tick values). Test: with a fake proposer, a wrong tick label
-   and a hallucinated peak are both returned `unverified`; the offline mode
-   needs no proposer; no network.
+Slices 1-3 landed in `src/precis/figdigit/` (axis calibration, series
+extraction, render + checked-proposal seam with the Sonnet proposer wired
+but untested beyond fakes; numpy masking proved fast enough that no
+`digitise`/opencv extra was added — ~33 ms/figure, 99/100 seeded TPD
+trials inside sigma).
+
 4. **MCP view + write path + tier migration** (`view='digitise'`, sidecar,
    measure rows). Forward-only migration `0240_measures_tier_digitised.sql`
    (next free number after `0239_vault_key_table.sql`; recheck at build):
