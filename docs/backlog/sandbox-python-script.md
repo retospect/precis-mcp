@@ -224,3 +224,14 @@ Not started until a capacity need shows.
 Related: `agent-workspace-containers.md` (persistent workspaces; its slice
 2 can later give `mode:script` a `workspace:` param),
 `render-sandbox-network-jail.md`.
+
+## Open questions / decisions log
+
+- 2026-10-24 ready-vet: needs-work (4 blockers, 3 advisories, no split). The `mode:script` spine is in code: `sandbox_run.py`, `claude_docker.py::build_script_argv`, `_sandbox_script.py::compile_lock` (`--no-build`, e5c505471, on prod), `_sandbox_inputs.py`, `_sandbox_read_mcp.py`, `_sandbox_stage.py` (1302b2306), `deploy/playbooks/35-precis-worker-sandbox.yml`, and the `child_job_succeeded` auto_check injected by `dispatch.py`.
+- Blocker: slices 1–2 are never listed, yet structure-workspaces cites "slice 4". Add a one-line "shipped" note for them.
+- Blocker: slice 3 names a "non-closing auto_check", but no evaluator in `auto_check_evaluators/` fits. Name one or specify a new one.
+- Blocker: slice 3 names no todo put handler or symbol for the `run:python` tag hook.
+- Blocker: slice 4 is ops only (pollux play, `service prio` rows, smoke jobs) and needs real podman plus an operator flip. It is cluster-desk scope, not builder scope.
+- Open (Reto): a package allow-list for `deps`, or ship without one?
+- Open (Reto): structure-workspaces slice 1 needs slice 4 (lane live), not slice 3 (todo sugar). Light the lane first and defer the sugar?
+- Reto 2026-10-24: publish the working se/pcb dogfood pieces to prod first, then the sandbox lane.
