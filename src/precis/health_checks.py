@@ -245,6 +245,65 @@ def backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
         return compute_backlog_counts(conn)
 
 
+def embed_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] | None:
+    """Embed-queue drain vs inflow over the last ``window_hours``.
+
+    ``{"drained": N, "inflow": M}`` — rows inserted into
+    ``chunk_embeddings`` for the default embedder vs eligible chunks
+    created, each in the window. This is what the digest's
+    ``discovery/embed`` check needs to tell "writes are happening" (a
+    fresh ``last_ts``) apart from "the backlog is actually shrinking"
+    (gr506753: steady 2000-chunk jobs kept ``last_ts`` minutes-fresh while
+    inflow outpaced them 2:1 and the backlog doubled — the old check's
+    recency test read that as "draining").
+
+    Two windowed counts (sequential scans — no index covers either
+    ``created_at``); cheap enough at the digest's cadence, run only when
+    the check is in its ambiguous "pending>0, writes fresh" state anyway.
+    Returns ``None`` on any error (degrade to the caller's prior verdict —
+    a broken probe must not become a false alert), after a rollback so
+    later sections on the shared connection still run.
+    """
+    from precis.workers.embed import _default_embedder_name
+
+    try:
+        model_name = _default_embedder_name(conn)
+        if model_name is None:
+            return {"drained": 0, "inflow": 0}
+        window = f"{window_hours} hours"
+        drained = conn.execute(
+            "SELECT count(*) FROM chunk_embeddings "
+            "WHERE embedder = %s AND created_at > now() - %s::interval",
+            (model_name, window),
+        ).fetchone()
+        inflow = conn.execute(
+            "SELECT count(*) FROM chunks c "
+            "WHERE c.created_at > now() - %s::interval "
+            "AND c.chunk_kind <> ALL(%s) "
+            "AND (c.meta->>'no_index') IS DISTINCT FROM 'true'",
+            (window, list(_embed_skip_kinds())),
+        ).fetchone()
+        return {
+            "drained": int(drained[0]) if drained else 0,
+            "inflow": int(inflow[0]) if inflow else 0,
+        }
+    except Exception:
+        log.exception("health_checks: embed backlog rate probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_checks: rollback after rate probe failed")
+        return None
+
+
+def _embed_skip_kinds() -> tuple[str, ...]:
+    """``EmbedHandler.skip_chunk_kinds`` behind a function-local import —
+    same dependency-light discipline as :func:`compute_backlog_counts`."""
+    from precis.workers.embed import EmbedHandler
+
+    return EmbedHandler.skip_chunk_kinds
+
+
 #: How many drifted ref_ids :func:`paper_authors_drift` surfaces as
 #: examples — enough to spot-check without a second query.
 _PAPER_AUTHORS_DRIFT_EXAMPLES = 5

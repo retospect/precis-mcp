@@ -399,3 +399,58 @@ class TestEmbedHandlerPriorityTiers:
             conn.commit()
 
         assert [row.chunk_id for row in claimed] == chunk_ids
+
+
+class TestEmbedHandlerRestCursor:
+    """gr506753: the ``rest`` tier's ``ORDER BY c.chunk_id`` used to rescan
+    the whole already-embedded prefix on EVERY micro-batch (~9s/claim on a
+    4.5M-chunk prod corpus — claim SQL, not the embedder, was the drain's
+    bound). ``EmbedHandler._rest_after`` resumes each claim past the
+    previous one's high-water instead of re-walking from chunk_id 1."""
+
+    def test_second_claim_resumes_past_first_high_water(self, store):
+        h = EmbedHandler(make_mock_bge_m3())
+        _ref, ids = seed_chunks(store, [f"c{i}" for i in range(6)])
+        with store.pool.connection() as conn:
+            first = h.claim_batch(conn, limit=4)
+            conn.commit()
+            # Released unembedded — without the cursor the next claim would
+            # re-return this SAME lowest window.
+            h.release_claims(conn, [row.chunk_id for row in first])
+            conn.commit()
+            second = h.claim_batch(conn, limit=4)
+            conn.commit()
+
+        assert [row.chunk_id for row in first] == ids[:4]
+        assert [row.chunk_id for row in second] == ids[4:]
+        assert h._rest_after == ids[-1]
+
+    def test_repended_low_id_chunk_found_after_tail_reset(self, store):
+        """An edit re-pends a chunk at its ORIGINAL chunk_id (content_sha
+        bumps in place), which may sit below the cursor. An empty rest
+        result at a set cursor resets to a full rescan so the re-pended
+        row is found rather than skipped forever."""
+        h = EmbedHandler(make_mock_bge_m3())
+        _ref, (low_id, high_id) = seed_chunks(store, ["low", "high"])
+        with store.pool.connection() as conn:
+            # Embed the low chunk, then drain the tail — the cursor parks
+            # above the low id.
+            vec = h.process(ClaimedChunk(chunk_id=low_id, text="low"))
+            h.write_ok(conn, low_id, vec)
+            conn.commit()
+            first = h.claim_batch(conn, limit=10)
+            conn.commit()
+        assert [row.chunk_id for row in first] == [high_id]
+        assert h._rest_after == high_id
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET content_sha = 'edited' WHERE chunk_id = %s",
+                (low_id,),
+            )
+            conn.commit()
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [low_id]
+        assert h._rest_after == low_id

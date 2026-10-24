@@ -165,6 +165,58 @@ def test_default_limit_when_params_omit_it(
     assert _embedding_count(store) == 3  # queue emptied well under the default
 
 
+def test_empty_claim_retries_before_concluding_queue_empty(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr506753: a sibling claiming the same lowest-``chunk_id`` frontier
+    in the same instant makes this statement's ``ON CONFLICT DO NOTHING``
+    return zero rows — the job must retry the claim on a fresh snapshot,
+    not exit "embedded 0" while the backlog is full."""
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+    seed_chunks(store, [f"chunk {i}" for i in range(3)])
+
+    calls = {"n": 0}
+    real_claim = EmbedHandler.claim_batch
+
+    def _contended(self: EmbedHandler, conn: Any, *, limit: int) -> list[Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []  # the sibling's claims won this snapshot
+        return real_claim(self, conn, limit=limit)
+
+    monkeypatch.setattr(EmbedHandler, "claim_batch", _contended)
+    ctx = _mk_ctx(store, params={"limit": 100})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert ctx.failures == []
+    assert calls["n"] >= 2  # the empty claim was retried
+    assert _embedding_count(store) == 3
+    assert "embedded 3 chunk(s)" in ctx.summaries[0][1]
+
+
+def test_truly_empty_queue_exits_after_bounded_retries(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry is bounded — a genuinely empty queue still exits after
+    ``_EMPTY_CLAIM_ATTEMPTS`` empty claims, not a hang."""
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+
+    calls = {"n": 0}
+    real_claim = EmbedHandler.claim_batch
+
+    def _counting(self: EmbedHandler, conn: Any, *, limit: int) -> list[Any]:
+        calls["n"] += 1
+        return real_claim(self, conn, limit=limit)
+
+    monkeypatch.setattr(EmbedHandler, "claim_batch", _counting)
+    ctx = _mk_ctx(store, params={"limit": 100})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert ctx.failures == []
+    assert calls["n"] == embed_batch._EMPTY_CLAIM_ATTEMPTS
+    assert "embedded 0 chunk(s)" in ctx.summaries[0][1]
+
+
 # ── EmbedderUnavailable → failed(infra) ──────────────────────────────────
 
 

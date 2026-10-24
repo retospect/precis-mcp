@@ -5,9 +5,12 @@ A scheduler :class:`~precis.workers.scheduler.Cadence` (300s, fleet-
 singleton via the lease claim, mirroring ``health_digest``'s shape) that
 mints a bounded batch of ``embed_batch`` jobs when the unembedded-chunk
 backlog crosses a high-water mark, and does nothing otherwise. Hysteresis
-is the pair of "mint only above HIGH" + "mint nothing while the previous
-batch hasn't fully drained" — churn coalesces into few large batches by
-construction rather than a trickle of tiny ones.
+is the pair of "mint only above HIGH" + a live-jobs ceiling with top-up
+(gr506753: keep at most ``PRECIS_EMBED_BATCH_MAX_JOBS`` live, minting only
+for the backlog not already covered by in-flight jobs — the old
+"no re-mint until the whole batch drained" rule idled the lane between
+batches). Churn still coalesces: each job is bounded at
+``params.limit`` chunks.
 
 **ON by default (§F cycle b cutover).** :func:`run_materialize_pass` is
 active unless ``PRECIS_MATERIALIZE_EMBED=0`` (or any non-truthy token) —
@@ -719,19 +722,34 @@ def _materialize_one(store: Store, src: _BacklogSource) -> int:
         )
     if count <= high:
         return _materialize_age_trigger(store, src, count)
-    if _live_jobs(store, src.job_type) > 0:
-        # A bounded batch and no more until it drains.
+    live = _live_jobs(store, src.job_type)
+    max_jobs = _max_jobs()
+    if live >= max_jobs:
+        # The live cap is the bound — a full queue in flight mints nothing.
         return 0
     if _in_failed_cooldown(store, src.job_type):
         return 0
-    n = max(1, min(math.ceil(count / src.batch_limit), _max_jobs()))
+    # Top-up, not whole-batch hysteresis (gr506753): mint only for the
+    # backlog NOT already covered by in-flight jobs, keeping up to
+    # ``max_jobs`` live. The old "no re-mint while anything is live" rule
+    # idled the lane between the last job's drain and the next 300s tick
+    # — dead time that mattered once jobs were fast enough to finish
+    # before the next tick. ``live`` jobs each drain up to
+    # ``batch_limit`` chunks, so only ``count - live*batch_limit`` still
+    # needs minting; ``live`` counts QUEUED rows too (their capacity is
+    # already spoken for).
+    uncovered = count - live * src.batch_limit
+    n = min(math.ceil(uncovered / src.batch_limit), max_jobs - live)
+    if n <= 0:
+        return 0
     minted = _mint_jobs(store, src, n)
     if minted:
         log.info(
-            "materialize: %s backlog=%d > high=%d — minted %d %s job(s)",
+            "materialize: %s backlog=%d > high=%d (live=%d) — minted %d %s job(s)",
             src.name,
             count,
             high,
+            live,
             minted,
             src.job_type,
         )

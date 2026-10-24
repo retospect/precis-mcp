@@ -459,6 +459,29 @@ def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
             )
             continue
         if age is not None and age <= budget_hours:
+            # "Writes are fresh" is not "the backlog is shrinking"
+            # (gr506753): steady embed_batch successes kept
+            # ``chunk_embeddings.created_at`` minutes-fresh while inflow
+            # outpaced drain and the backlog doubled — the recency test
+            # alone read that as "draining" and the stall alert never
+            # fired. For the embed queue, gate the ok verdict on the net
+            # rate over the budget window. A probe failure (or no conn —
+            # tests) degrades to the recency verdict, never a false alert.
+            if key == _EMBED_BACKLOG_KEY and conn is not None:
+                rates = health_checks.embed_backlog_rates(
+                    conn, window_hours=budget_hours
+                )
+                if rates is not None:
+                    net = (rates["drained"] - rates["inflow"]) / budget_hours
+                    detail = _embed_net_verdict(
+                        pending, net, rates, age, budget_hours, what
+                    )
+                    if detail is not None:
+                        detail += " — " + _diagnose_embed_pipeline(conn)
+                        out.append(
+                            CheckResult(group, key, "stale", detail, severity, age)
+                        )
+                        continue
             out.append(
                 CheckResult(
                     group,
@@ -483,6 +506,40 @@ def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
             detail += " — " + _diagnose_embed_pipeline(conn)
         out.append(CheckResult(group, key, "stale", detail, severity, age))
     return out
+
+
+def _embed_net_verdict(
+    pending: int,
+    net_per_h: float,
+    rates: dict[str, int],
+    age: float,
+    budget_hours: float,
+    what: str,
+) -> str | None:
+    """The embed backlog's net-rate verdict — a stale ``detail`` string, or
+    ``None`` when the queue is genuinely on track to empty within budget.
+
+    The check's contract ("empty or draining within ``budget_hours``",
+    precis-health-digest-help) maps onto the measured net rate: backlog
+    *growing or flat* (``net <= 0``) means it never drains; a positive net
+    whose eta exceeds the budget is the same failure in slow motion.
+    Both name the observed rates so the alert carries its own evidence.
+    """
+    if net_per_h <= 0:
+        return (
+            f"{what}: {pending} pending and still growing "
+            f"(+{rates['inflow'] / budget_hours:.0f}/h inflow vs "
+            f"{rates['drained'] / budget_hours:.0f}/h embedded over "
+            f"{budget_hours:.0f}h; last batch {age:.1f}h ago)"
+        )
+    eta = pending / net_per_h
+    if eta > budget_hours:
+        return (
+            f"{what}: {pending} pending, draining too slowly — "
+            f"net -{net_per_h:.0f}/h puts the queue ~{eta:.0f}h out "
+            f"(budget {budget_hours:.0f}h; last batch {age:.1f}h ago)"
+        )
+    return None
 
 
 # ── §F coupling: embed-pipeline culprit diagnosis ────────────────────────

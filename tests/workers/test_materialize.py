@@ -308,6 +308,65 @@ def test_second_tick_with_live_jobs_mints_nothing(
     assert _queued_job_count(store, "fake_batch") == 4  # unchanged
 
 
+def test_live_below_cap_mints_only_uncovered_backlog(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr506753 top-up minting: jobs still in flight don't block the next
+    mint — with 2 live (each covering up to batch_limit) of a 10k backlog,
+    the uncovered 6k mints 2 more (ceil(6000/2000)=3, capped at the live
+    ceiling of 4). The old all-or-nothing hysteresis idled the lane until
+    the whole batch drained."""
+    backlog = {"n": 10_000}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+    clock = _fake_clock(monkeypatch)
+
+    first = m.run_materialize_pass(store)
+    assert first.claimed == 4
+
+    # Two of the four drain; two stay live.
+    with store.pool.connection() as conn:
+        done_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' "
+                "AND meta->>'job_type' = 'fake_batch' ORDER BY ref_id LIMIT 2"
+            ).fetchall()
+        ]
+    for rid in done_ids:
+        store.add_tag(
+            rid,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+    clock["t"] += m._TICK_BUCKET_S  # next cadence tick, a new window
+
+    second = m.run_materialize_pass(store)
+
+    # uncovered = 10000 - 2*2000 = 6000 → ceil = 3, capped at 4-2 live.
+    assert second.claimed == 2
+    assert m._live_jobs(store, "fake_batch") == 4  # 2 still live + 2 new
+
+
+def test_live_jobs_fully_covering_backlog_mints_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Top-up never over-mints: live jobs whose combined capacity already
+    covers the backlog mint nothing even below the live ceiling."""
+    backlog = {"n": 3_000}  # > high(500); one job covers it, four is overkill
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+    clock = _fake_clock(monkeypatch)
+
+    first = m.run_materialize_pass(store)
+    assert first.claimed == 2  # ceil(3000/2000) = 2
+    clock["t"] += m._TICK_BUCKET_S
+
+    second = m.run_materialize_pass(store)
+
+    assert second.claimed == 0  # 2 live × 2000 = 4000 already covers 3000
+    assert _queued_job_count(store, "fake_batch") == 2
+
+
 def test_drained_then_still_above_remints(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

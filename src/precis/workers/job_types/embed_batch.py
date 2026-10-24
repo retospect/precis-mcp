@@ -77,6 +77,17 @@ _DEFAULT_LIMIT = 2000
 #: the worker CLI's --batch-size default (cli/worker.py).
 _MICRO_BATCH = 32
 
+#: How many consecutive empty claims the drain tolerates before concluding
+#: the queue is empty. An empty claim is not always "queue drained": a
+#: sibling job claiming the same lowest-``chunk_id`` frontier in the same
+#: instant makes this statement's ``INSERT ... ON CONFLICT DO NOTHING``
+#: skip every candidate it computed — the sibling's claim rows only appear
+#: to a statement started AFTER its commit (gr506753: prod jobs exited
+#: "embedded 0" mid-backlog for exactly this). A retried claim runs in a
+#: fresh transaction/snapshot, sees the sibling's claims, and moves past
+#: them. Bounded so a genuinely empty queue still exits.
+_EMPTY_CLAIM_ATTEMPTS = 3
+
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
     params = dict(ctx.meta.get("params") or {})
@@ -156,9 +167,16 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
             )
             return None
         batch_limit = min(_MICRO_BATCH, limit - processed)
-        with ctx.store.pool.connection() as conn:
-            rows = handler.claim_batch(conn, limit=batch_limit)
-            conn.commit()
+        rows = []
+        for _attempt in range(_EMPTY_CLAIM_ATTEMPTS):
+            # Each retry needs its own transaction: the claim's snapshot is
+            # per-statement, so only a fresh conn sees a sibling's just-
+            # committed chunk_claims rows.
+            with ctx.store.pool.connection() as conn:
+                rows = handler.claim_batch(conn, limit=batch_limit)
+                conn.commit()
+            if rows:
+                break
         if not rows:
             break  # the derived queue is empty (or fully leased elsewhere)
 

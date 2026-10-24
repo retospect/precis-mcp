@@ -63,7 +63,7 @@ from precis.workers.registry import ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence
 from precis.workers.service_config import set_service_prio
 from tests._gripe import insert_gripe
-from tests.workers._helpers import make_mock_bge_m3, seed_ref
+from tests.workers._helpers import make_mock_bge_m3, seed_chunks, seed_ref
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────
 
@@ -486,6 +486,68 @@ def test_backlog_pending_but_last_batch_recent_is_ok(store, monkeypatch) -> None
         },
     )
     results = _idle_aware_backlog_checks(conn=None)
+    embed = next(r for r in results if r.name == "embed")
+    assert embed.status == "ok"
+    assert "draining" in embed.detail
+
+
+def _seed_embed_rows(
+    store, *, old_pending: int, fresh_pending: int, embedded_now: int
+) -> None:
+    """A real embed backlog: ``old_pending`` chunks backdated out of the
+    rate window, ``fresh_pending`` created just now, ``embedded_now``
+    chunks with a fresh ``bge-m3`` row (a just-written drain event).
+    The embedded chunks are backdated too — they arrived BEFORE the
+    window, so the drain count isn't cancelled by their own inflow."""
+    _r1, old_ids = seed_chunks(store, [f"old {i}" for i in range(old_pending)])
+    _r2, _new_ids = seed_chunks(store, [f"new {i}" for i in range(fresh_pending)])
+    _r3, emb_ids = seed_chunks(store, [f"emb {i}" for i in range(embedded_now)])
+    embedder = make_mock_bge_m3()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - interval '5 hours' "
+            "WHERE chunk_id = ANY(%s)",
+            (old_ids + emb_ids,),
+        )
+        for cid in emb_ids:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status) VALUES (%s, 'bge-m3', %s, 'ok')",
+                (cid, embedder.embed_one("x")),
+            )
+        conn.commit()
+
+
+def test_growing_embed_backlog_with_fresh_writes_is_stale(store) -> None:
+    """gr506753 regression: steady embed_batch successes kept
+    ``chunk_embeddings.created_at`` minutes-fresh while inflow outpaced
+    drain — the recency test read a doubling backlog as "draining" and
+    the stall alert never fired. The net-rate gate must now fire it."""
+    _seed_embed_rows(store, old_pending=40, fresh_pending=60, embedded_now=10)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    embed = next(r for r in results if r.name == "embed")
+    assert embed.status == "stale"
+    assert "growing" in embed.detail
+
+
+def test_embed_backlog_draining_too_slowly_is_stale(store) -> None:
+    """Same defect's other half: a positive net rate whose eta exceeds
+    the 2h budget is 'not draining within 2h' too."""
+    _seed_embed_rows(store, old_pending=30, fresh_pending=0, embedded_now=4)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    embed = next(r for r in results if r.name == "embed")
+    assert embed.status == "stale"
+    assert "too slowly" in embed.detail
+
+
+def test_embed_backlog_draining_within_budget_is_ok(store) -> None:
+    """Positive control: a backlog on pace to empty inside the budget
+    stays ok — the rate gate must not cry wolf on a draining queue."""
+    _seed_embed_rows(store, old_pending=5, fresh_pending=0, embedded_now=25)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "ok"
     assert "draining" in embed.detail

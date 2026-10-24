@@ -124,6 +124,15 @@ class EmbedHandler(WorkerHandler):
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder
+        # Resume cursor for the ``rest`` tier's ``ORDER BY c.chunk_id``
+        # scan. Without it every 32-chunk micro-batch re-walks the whole
+        # already-embedded prefix (gr506753: ~4M row probes, ~9s per claim
+        # on a 4.5M-chunk corpus — claim SQL, not the embedder, was the
+        # drain's wall-clock bound). ``None`` = scan from the bottom (first
+        # claim, or a post-tail reset); a re-pended low-id chunk is only
+        # visible to an uncursored scan, so an empty rest result resets it
+        # and retries once (see :meth:`_claim_fresh`).
+        self._rest_after: int | None = None
         # ``model_name`` / ``name`` are resolved lazily (see the
         # properties below), NOT here. Both read ``embedder.model``,
         # which for the remote backend is a ``GET /model`` round-trip.
@@ -326,6 +335,9 @@ class EmbedHandler(WorkerHandler):
             if remaining <= 0:
                 break
             kind_pred, order_by = _FRESH_TIERS[tier]
+            cursored = tier == "rest" and self._rest_after is not None
+            if cursored:
+                kind_pred += " AND c.chunk_id > %(rest_after)s"
             sql = _TIERED_FRESH_CLAIM_SQL.format(
                 output_table=self.output_table,
                 model_column=self.model_column,
@@ -339,8 +351,31 @@ class EmbedHandler(WorkerHandler):
             }
             if skip_kinds:
                 params["skip_kinds"] = skip_kinds
+            if cursored:
+                params["rest_after"] = self._rest_after
             rows = conn.execute(sql, params).fetchall()
-            claimed += [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+            if tier == "rest" and not rows and self._rest_after is not None:
+                # Cursor past the live tail: either the queue truly drained,
+                # or a chunk re-pended BELOW the cursor (an edit bumps
+                # content_sha in place — the chunk resurfaces at its ORIGINAL
+                # id, not the tail). One unbounded rescan sees both cases;
+                # it also reseeds the cursor from the true frontier.
+                self._rest_after = None
+                sql = _TIERED_FRESH_CLAIM_SQL.format(
+                    output_table=self.output_table,
+                    model_column=self.model_column,
+                    kind_pred=_FRESH_TIERS["rest"][0],
+                    order_by=order_by,
+                    skip_clause=skip_clause,
+                )
+                rows = conn.execute(sql, params).fetchall()
+            batch = [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
+            if tier == "rest" and batch:
+                # 'rest' orders by c.chunk_id ASC — the last row is the
+                # high-water this claim reached; the next micro-batch
+                # resumes past it.
+                self._rest_after = batch[-1].chunk_id
+            claimed += batch
         return claimed
 
 
