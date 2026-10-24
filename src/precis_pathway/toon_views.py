@@ -642,6 +642,48 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
             f"Competitive coverage ({' vs '.join(map(str, pair))}):",
             toon.dump(c_rows),
         ]
+    # slice 5 (D7): the lattice KMC runs only at kmc_points — the only rows
+    # with tof_kmc (90 % interval) and correlation_effect = log10(kmc/mf)
+    kmc_points = [p for p in (sweep.get("kmc_points") or []) if isinstance(p, dict)]
+    if kmc_points:
+        k_rows = []
+        for p in kmc_points:
+            raw = p.get("tof_kmc")
+            kmc: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            effect = p.get("correlation_effect")
+            k_rows.append(
+                {
+                    "point": p.get("label"),
+                    "T_K": p.get("T"),
+                    "p_total": _num_str(p.get("p_total")),
+                    "tof_mf_/s": _num_str(p.get("tof_mf")),
+                    "tof_kmc_/s": _num_str(kmc.get("median")),
+                    "kmc_p5": _num_str(kmc.get("p5")),
+                    "kmc_p95": _num_str(kmc.get("p95")),
+                    "corr_effect_dec": (
+                        f"{effect:+.2f}"
+                        if isinstance(effect, (int, float)) and math.isfinite(effect)
+                        else "—"
+                    ),
+                }
+            )
+        lines += [
+            "",
+            "Lattice KMC at kmc_points (90 % interval; correlation_effect = log10(tof_kmc/tof_mf), a diagnostic):",
+            toon.dump(
+                k_rows,
+                schema=[
+                    "point",
+                    "T_K",
+                    "p_total",
+                    "tof_mf_/s",
+                    "tof_kmc_/s",
+                    "kmc_p5",
+                    "kmc_p95",
+                    "corr_effect_dec",
+                ],
+            ),
+        ]
     inhibitors = sweep.get("inhibitors") or []
     if inhibitors:
         lines += ["", "Inhibitors: " + ", ".join(map(str, inhibitors))]

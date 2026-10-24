@@ -287,6 +287,27 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     if tof_mf is not None:
         out["tof"] = tof_mf  # D8: the MF TOF is the ranked one
         out["tof_mf"] = tof_mf
+    # kinetics v2 slice 5 (D8): a lattice-KMC TOF on the record (the KMC ran
+    # at the record's own point) outranks the MF one; kinetics_method names
+    # the model behind the ranked tof, and correlation_effect rides along
+    # only where both exist (D7)
+    tof_kmc = v2.get("tof_kmc")
+    kmc_med = _finite_num(tof_kmc.get("median")) if isinstance(tof_kmc, dict) else None
+    if kmc_med is not None and kmc_med > 0.0 and isinstance(tof_kmc, dict):
+        out["tof"] = kmc_med
+        out["tof_kmc"] = kmc_med
+        for band in ("p5", "p95"):
+            val = _finite_num(tof_kmc.get(band))
+            if val is not None:
+                out[f"tof_kmc_{band}"] = val
+        out["kinetics_method"] = "kmc"
+        effect = _finite_num(v2.get("correlation_effect"))
+        if effect is not None:
+            out["correlation_effect"] = effect
+    elif tof_mf is not None:
+        out["kinetics_method"] = "mf"
+    elif tof is not None:
+        out["kinetics_method"] = "chain"
     drc_mf = v2.get("drc")
     if isinstance(drc_mf, dict):
         finite_mf = {k: v for k, v in drc_mf.items() if _finite_num(v) is not None}
@@ -308,6 +329,25 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 out["optimum_T"] = t_opt
             if p_opt is not None:
                 out["optimum_p_total"] = p_opt
+        # slice 5 (D7): the KMC confirmation at the MF optimum — the
+        # sweep's kmc_points are the only rows with tof_kmc/correlation_effect
+        kmc_points = sweep.get("kmc_points")
+        if isinstance(kmc_points, list):
+            out["n_kmc_points"] = len(kmc_points)
+            for pt in kmc_points:
+                if not (isinstance(pt, dict) and pt.get("label") == "optimum"):
+                    continue
+                pt_kmc = pt.get("tof_kmc")
+                med = (
+                    _finite_num(pt_kmc.get("median"))
+                    if isinstance(pt_kmc, dict)
+                    else None
+                )
+                if med is not None:
+                    out["optimum_tof_kmc"] = med
+                effect = _finite_num(pt.get("correlation_effect"))
+                if effect is not None:
+                    out["optimum_correlation_effect"] = effect
     return out
 
 

@@ -321,7 +321,10 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    sibling `kinetics_v2` key onto the pathway meta at review-ready.
    The slice-9 literature dataset (D11 TPD/adsorption reference) is
    landed at `tests/fixtures/kinetics/` (`tpd_reference.json` +
-   provenance snapshot + README).
+   provenance snapshot + README). Slice 5 (lattice KMC core behind the
+   pluggable `KmcBackend` seam, `zacros` writer/reader, `kmc_points` in
+   the sweep with `correlation_effect`) is catpath v0.36.0; slice 6
+   (MCAMC + accelerator harness) is next.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing

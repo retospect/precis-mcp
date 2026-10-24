@@ -6,7 +6,10 @@ in ``pyproject.toml``. Runs on a CPU worker (``ssh_node``, empty
 aggregated pathway's ``meta.results`` + ``meta.config``, runs the
 ``autocatpath.kinetics.sweep`` (T, p_total) MF grid out-of-process, and
 persists ``meta.kinetics_sweep`` (the competitive coverage map +
-optimum) and the refreshed ``meta.kinetics_v2`` onto the pathway ref.
+optimum; from engine 0.36 also ``kmc_points`` — the lattice KMC at the
+corners, centre and optimum, each with ``tof_kmc`` and
+``correlation_effect``) and the refreshed ``meta.kinetics_v2`` onto the
+pathway ref.
 Minted by ``autocatpath_aggregate``'s dispatch on every verify-tier
 pathway — never user-facing.
 """
@@ -98,6 +101,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.append_chunk(
             "job_event", f"autocatpath_kinetics: {n_pts} points; no optimum"
         )
+    # slice 5 (D7): the lattice KMC at kmc_points (engine >= 0.36)
+    kmc_points = [p for p in (sweep.get("kmc_points") or []) if isinstance(p, dict)]
+    if kmc_points:
+        ran = sum(1 for p in kmc_points if isinstance(p.get("tof_kmc"), dict))
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_kinetics: lattice KMC at {ran} of {len(kmc_points)} kmc_points",
+        )
 
     # persist onto the pathway ref: re-read the meta just before writing
     # (a sibling job may have touched it), merge the sweep block into
@@ -130,12 +141,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     # stamp the job's own meta with the lifted scalars so the harvest lane
-    # reads them without opening the artifact
+    # reads them without opening the artifact.  The aggregate's v1 block
+    # goes in too: _kinetics_scalars lifts nothing (not even the sweep
+    # optimum) without it, so the slice-4 stamp carried n_sweep_points only.
     try:
         from precis_pathway._dispatch_common import _kinetics_scalars
 
         scalars = _kinetics_scalars(
-            {"kinetics_v2": results.get("kinetics_v2"), "kinetics_sweep": sweep}
+            {
+                "kinetics": results.get("kinetics"),
+                "kinetics_error": results.get("kinetics_error"),
+                "kinetics_v2": results.get("kinetics_v2"),
+                "kinetics_sweep": sweep,
+            }
         )
         ctx.set_meta({**scalars, "n_sweep_points": n_pts})
     except Exception:

@@ -295,3 +295,147 @@ def test_kinetics_scalars_lift_v2_fields():
     opt = _sweep_payload()["optimum"]
     assert out["optimum_T"] == opt["T"]
     assert out["optimum_p_total"] == opt["p_total"]
+
+
+# --- kinetics v2 slice 5: the lattice KMC at kmc_points (D7/D8) --------------
+
+
+def _kmc_payload() -> dict[str, Any]:
+    """A REAL catpath 0.36 ``kinetics.sweep`` payload with ``kmc_points``
+    (single-site fixture, numbers only): regenerate with the catpath tree's
+    test_kmc.py::test_correlation_effect_only_at_kmc_points setup plus
+    ``objective: {maximise: tof}``, ``kmc: {L: 8, replicas: 4,
+    n_events: 400000, seed: 4}`` and no explicit ``kmc_points``."""
+    import json
+    from pathlib import Path
+
+    return json.loads(
+        (Path(__file__).parent / "fixtures" / "kinetics_sweep_kmc.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_kinetics_sweep_view_renders_kmc_points():
+    """view='kinetics-sweep' lists every kmc_point with its MF TOF, the KMC
+    TOF and 90 % interval, and correlation_effect — and the grid table
+    carries no KMC column (the KMC ran only at kmc_points)."""
+    from precis_pathway.toon_views import kinetics_sweep_text
+
+    payload = _kmc_payload()
+    text = kinetics_sweep_text({"results": {"kinetics_sweep": payload}})
+    assert "Lattice KMC at kmc_points" in text
+    head, _, kmc_part = text.partition("Lattice KMC at kmc_points")
+    assert "tof_kmc" not in head
+    opt = next(p for p in payload["kmc_points"] if p["label"] == "optimum")
+    assert f"{opt['tof_kmc']['median']:.2e}" in kmc_part
+    assert f"{opt['tof_kmc']['p5']:.2e}" in kmc_part
+    assert f"{opt['correlation_effect']:+.2f}" in kmc_part
+    for label in ("corner", "centre", "optimum"):
+        assert label in kmc_part
+
+
+def test_kinetics_scalars_lift_kmc():
+    """D8: a tof_kmc on the record outranks tof_mf (kinetics_method='kmc',
+    its interval and correlation_effect lifted); without one the method is
+    'mf'; the sweep's optimum kmc_point lifts its KMC TOF and effect."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    payload = _kmc_payload()
+    v2 = {
+        "tof_mf": 100.0,
+        "tof_kmc": {
+            "median": 98.7,
+            "p5": 95.1,
+            "p95": 102.3,
+            "n_events": 1,
+            "replicas": 4,
+            "accelerator": "none",
+        },
+        "correlation_effect": -0.0057,
+    }
+    out = _kinetics_scalars(
+        {"kinetics": {"tof": 1.0}, "kinetics_v2": v2, "kinetics_sweep": payload}
+    )
+    assert out["tof"] == 98.7 and out["tof_kmc"] == 98.7
+    assert (out["tof_kmc_p5"], out["tof_kmc_p95"]) == (95.1, 102.3)
+    assert out["kinetics_method"] == "kmc"
+    assert out["correlation_effect"] == -0.0057
+    assert out["tof_mf"] == 100.0
+    opt = next(p for p in payload["kmc_points"] if p["label"] == "optimum")
+    assert out["optimum_tof_kmc"] == opt["tof_kmc"]["median"]
+    assert out["optimum_correlation_effect"] == opt["correlation_effect"]
+    assert out["n_kmc_points"] == len(payload["kmc_points"])
+
+    mf_only = _kinetics_scalars(
+        {"kinetics": {"tof": 1.0}, "kinetics_v2": {"tof_mf": 100.0}}
+    )
+    assert mf_only["tof"] == 100.0 and mf_only["kinetics_method"] == "mf"
+    assert "tof_kmc" not in mf_only and "correlation_effect" not in mf_only
+    chain = _kinetics_scalars({"kinetics": {"tof": 1.0}})
+    assert chain["kinetics_method"] == "chain"
+
+
+class _MetaStore:
+    """The two store calls the job makes, over one in-memory pathway ref
+    (the persist path itself is covered through the real store above)."""
+
+    def __init__(self, meta: dict[str, Any]):
+        from types import SimpleNamespace
+
+        self.ref = SimpleNamespace(id=4242, meta=meta)
+
+    def get_ref(self, *, kind: str, id: int) -> Any:
+        return self.ref if (kind, id) == ("pathway", self.ref.id) else None
+
+    def stamp_ref_meta(self, ref_id: int, meta: dict[str, Any]) -> None:
+        assert ref_id == self.ref.id
+        self.ref.meta = meta
+
+
+def test_kinetics_job_reports_kmc_points(monkeypatch):
+    """The job's event log names how many kmc_points ran the lattice KMC,
+    and its meta stamp carries n_kmc_points and the sweep lift."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore(
+        {
+            "results": {
+                "nodes": {"A": -1.0},
+                "edges": [{"a": "A", "b": "A"}],
+                "kinetics": {"tof": 1.0},  # the aggregate's v1 block
+            }
+        }
+    )
+    ref = store.ref
+    payload = _kmc_payload()
+
+    def _fake_sweep(config, res, *, timeout=None):
+        res["kinetics_sweep"] = payload
+
+    # a stand-in runner module: the job imports it lazily, and the real one
+    # pulls the catalyst engine (absent on a torch-free host)
+    import sys
+    from types import SimpleNamespace
+
+    import precis_pathway
+
+    fake_runner = SimpleNamespace(run_kinetics_sweep_subprocess=_fake_sweep)
+    monkeypatch.setitem(sys.modules, "precis_pathway.runner", fake_runner)
+    monkeypatch.setattr(precis_pathway, "runner", fake_runner, raising=False)
+    ctx = MagicMock()
+    ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {}}}
+    ctx.store = store
+    kinetics_job._dispatch(ctx, kinetics_job.SPEC)
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    n = len(payload["kmc_points"])
+    assert f"autocatpath_kinetics: lattice KMC at {n} of {n} kmc_points" in events
+    stamped = ctx.set_meta.call_args.args[0]
+    assert stamped["n_kmc_points"] == n
+    assert (
+        stamped["optimum_T"] == payload["optimum"]["T"]
+    )  # the sweep lift reaches the stamp
+    opt = next(p for p in payload["kmc_points"] if p["label"] == "optimum")
+    assert stamped["optimum_correlation_effect"] == opt["correlation_effect"]
+    got = store.get_ref(kind="pathway", id=ref.id)
+    assert len(got.meta["results"]["kinetics_sweep"]["kmc_points"]) == n

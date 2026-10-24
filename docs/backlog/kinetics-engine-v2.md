@@ -802,7 +802,7 @@ class TpdComparison:                # one per adsorbate, D11
 | `tof_span_limit` | energetic-span TOF, zero-coverage limit | s⁻¹ site⁻¹ | today's `kinetics.solve` span | never |
 | `tof_chain` | single-site linear chain TOF | s⁻¹ site⁻¹ | `_linear_steady` | never |
 | `tof_mf` | mean-field site-balance TOF of the target | s⁻¹ site⁻¹ | D7 Newton steady state | never (a non-converged solve raises) |
-| `tof_kmc` | lattice KMC TOF with CI | s⁻¹ site⁻¹ | replica block averages, `median`/`p5`/`p95`; `n_events` total, `accelerator` id | KMC not run at this point |
+| `tof_kmc` | lattice KMC TOF with CI | s⁻¹ site⁻¹ | field names kept, meanings exact: `median` = the MEAN of the per-replica production-window TOFs; `p5`/`p95` = lower/upper bound of the two-sided 90 % Student-t confidence interval of that mean (batch means of one replica's blocks when there is one) — interval bounds, not percentiles; `n_events` total, `accelerator` id | KMC not run at this point |
 | `selectivity` | share of the net gas-phase production per product | fraction | MF net production rates, normalised; KMC values when run (stated in `warnings`) | never |
 | `coverages` | θ per site class per species, `*` = vacancy | ML of that site class | MF (KMC when run) | never |
 | `drc` | degree of rate control per step (Campbell pa51354) | — | MF finite difference, forward and reverse scaled together | never (MF always runs) |
@@ -1152,6 +1152,33 @@ where the paper gives them and records `theta0` otherwise.
    `correlation_effect` reported only at `kmc_points`; the `zacros`
    backend round-trips validation case C into Zacros input files and
    parses a stored Zacros output fixture into the same `TofKmc`.
+   shipped: catpath 3c726c5 (v0.36.0), precis: the commit adding this
+   line (pin move + `kmc_points` glue: `_kinetics_scalars` ranks
+   `tof_kmc.median` over `tof_mf` with `kinetics_method`, the sweep view
+   renders the KMC rows). Found: numba 0.68 supports numpy 2.5, so it is a
+   base dependency (imported lazily; the numpy fallback is the same kernel
+   source run un-jitted, trajectory-identical). The lattice is one
+   triangular sublattice per site class with z = 6 per class pair — the
+   MF's coordination, so KMC and MF are like-for-like — not the
+   `discover_sites` geometry, which plugs into the same `Lattice` type. No
+   lateral interactions means additive per-species energies: a pair state's
+   interaction (`G(A+B) + kT ln z ≠ ε_A + ε_B`) is dropped onto its
+   channels' rates with ω = 0.5 and named; the catalytic driving force
+   (reservoir terms in `dG`) is kept as per-channel work, which the loop
+   check takes out. The spec's lattice equilibrium-flux bar (ε = 10⁻² at
+   10⁴ firings) sits below the binomial noise floor (2/√n = 0.02); the
+   check is a per-channel binomial test (3.29 σ) plus every gas's net
+   production inside its 90 % interval of zero, with the achieved ε
+   reported (case-C equilibrium fixture: 9·10⁻³ at ~10⁵ firings). Without
+   diffusion a vacancy-starved surface mixes O only through O₂
+   adsorption/desorption, slower than any test budget — the Langmuir
+   acceptance runs at θ_* ≥ 0.18 and the rest is the slice-6 regime.
+   Case C's KMC tier is a tabulated LH parameterisation in the case file
+   (numbers only); MARI, poison and controlling step hold on 99 %
+   intervals, and its TOF vs MF is reported (correlation_effect ≈ 0 there:
+   fast CO exchange keeps the adlayer well mixed). The Zacros pressure
+   factor and symmetric-event counting follow the manual, unverified
+   against a binary until the licence lands.
 6. **MCAMC + accelerator harness + channel-scaling fallback.** Acceptance:
    the D6 pitfall tests (reflecting-walk stationary distribution; `Q·1 +
    B·1 = 0`; ramp under `s = 2`; 18-decade conditioning; Novotny's Ising
