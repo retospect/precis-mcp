@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: pcb intent API for workspace code — objectives, constraints, regions, geometry refs
 pillar: 3d-design
 prio: high
@@ -80,9 +80,9 @@ length targets soft.
 
 ```python
 obj = pcb.objective(
-    ratsnest=0.8,              # crossings + ratsnest length (cost.py terms)
+    ratsnest=0.8,              # total ratsnest length (cost.py term)
     wirelength=0.2,            # routing_area
-    # also: vias, area (outline bbox), layers, measures, plane_affinity
+    # also: crossings (separate term), vias, area (outline bbox), layers, measures, plane_affinity
     ref="seed",                # or ref=<run> for cross-run comparability
 )
 pcb.place(b, objective=obj, seed=1, iters=2000, budget=pcb.budget(seconds=300))
@@ -99,8 +99,8 @@ pcb.route(b, placement=pl, objective=pcb.objective(vias=0.3, wirelength=0.7),
 | layer allow/deny | `b.route_rule(region, nets=cls_or_nets, layers=[...], hard=True)` |
 | net class | `b.net_class(name, width_mm=, clearance_mm=, pair_rules=, priority=)` (exists, plus `priority`) |
 | net priority | `net.priority(1..10)` — route order and rip-up protection |
-| diff pair | `b.diff_pair(p, n, gap_mm=, width_mm=, max_skew_mm=)` |
-| length match | `b.length_group(nets, tol_mm=, target_mm=None, hard=False)` |
+| diff pair | deferred (Q5) — `b.diff_pair(...)` |
+| length match | deferred (Q5) — `b.length_group(...)` |
 | near/apart/align | `b.near`, `b.apart`, `b.align`, `b.measure(..., hard=, w=)` (exist; `weight=` → `w=` share) |
 
 **Geometry references** are lazy expressions resolved at place/route
@@ -115,9 +115,9 @@ pcb.between(u1["SW"].center, l15.center).buffer(1.0)    # a corridor
 
 Resolution rules:
 - A ref to a **fixed** part (or coordinates) resolves once per run.
-- A ref to a **movable** part resolves per evaluation for soft terms and
-  at each anneal-stage boundary for hard placement constraints (a room
-  that moves every move makes legality non-monotone). Router rules
+- A ref to a **movable** part is re-resolved every iteration, for soft terms
+  and hard placement constraints alike (Decision 4). Legality is checked
+  against the current poses each iteration. Router rules
   resolve once, after placement, when every pose is known.
 - An expression that cannot resolve (unknown refdes, empty
   intersection) fails `b.check()` offline, with the script line.
@@ -203,24 +203,50 @@ print(rt.summary())
 | 6 | router rules: per-region layer allow/deny (hard edge filter in `vroute`), direction as soft edge cost | M | Opus (vroute cost model) |
 | 7 | net priority → realize order + rip-up protection in `anneal_route_loop` | S | Sonnet |
 | 8 | in-script DB-free `pcb.route` (Board → batch → IR without `pcb_apply`), gr513867 | M | Opus |
-| 9 | diff pairs + length groups (coupled routing, skew DRC, serpentine) | L | Opus; own spec |
+| 9 | ~~diff pairs + length groups~~ — deferred (Q5), see §Deferred signal-integrity classes | L | Opus; own spec |
 
-1–3 can land in one wave; 4 needs 1–3; 6 and 9 wait on the rulings below.
+1–3 can land in one wave; 4 needs 1–3; 6 waits on the rulings below.
 
-## Questions for Reto
+## Decisions
 
-1. **Direction rules vs Decision 2 (2026-10-18).** You ruled out
-   per-layer preferred direction; your example is "L3 horizontal only".
-   Is that hard (filter edges off-axis in the region) or soft (cost)?
-   Recommend soft by default, `hard=True` allowed per region.
-2. **Shares or raw weights.** Recommend shares at the reference (80/20
-   means 80/20 at the seed). Alternative: weights multiply the house USD
-   prices (w=1 = house). Shares make weights comparable across boards;
-   USD keeps the single-currency path. Which?
-3. **Placement objective "ratsnest".** Read as crossings + ratsnest
-   length, with "shortest wires" = `routing_area`. Correct?
-4. **Movable-part refs in hard placement constraints** — allow (re-resolved
-   at stage boundaries) or refuse (only fixed parts/coordinates)?
-   Recommend allow, stage-boundary resolution.
-5. Diff pairs / length match: in scope for the nano/EWOD boards now, or
-   park as slice 9 until a board needs them?
+Reto answered the open questions 2026-10-24 ("as recommended" for Q1–Q4).
+
+1. **Layer direction is soft by default.** Direction rules (`route_rule`
+   `direction=`) are a strong soft cost. `hard=True` is opt-in, usually
+   region-scoped. There is no global per-layer default: the 2026-10-18
+   ruling (no per-layer preferred direction) stands. Example "L3
+   horizontal only" = region-scoped `route_rule` on L3, soft unless
+   `hard=True`.
+2. **Weights are shares at the seed reference.** Weights are normalised to
+   sum to 1 and measured at `x_ref` (see §Weights over normalised terms).
+   USD prices keep feeding their own terms (`via_usd`, `board_area_usd_per_mm2`,
+   `risk_to_money`, `routing_area` priced as area); they are not re-weighted
+   into the share scheme.
+3. **`ratsnest` is total ratsnest length.** `crossings` is a separate term,
+   not folded into `ratsnest`. "Shortest wires" = `wirelength`
+   (`routing_area`). The example `pcb.objective(ratsnest=0.8, wirelength=0.2)`
+   means ratsnest length 80 %, wire length 20 %.
+4. **Hard placement constraints may reference moving parts.** Lazy refs
+   are re-evaluated every iteration, so legality is checked against the
+   current poses each iteration, not once per anneal stage.
+5. **Diff pairs / length match: deferred.** Answered by Reto 2026-10-24,
+   verbatim: "There are differential pairs and also high impedance (guard)
+   and high frequency (shield, low cap) things. YAGNI for now, the lot."
+   See §Deferred signal-integrity classes.
+
+## Deferred signal-integrity classes
+
+Nothing in this section is built this round. Deferred (Reto Q5):
+
+- **Differential pairs**, including length matching within and across pairs
+  (reserved call names: `b.diff_pair`, `b.length_group`).
+- **Guard rings for high-impedance nets** (guarded routing around sensitive
+  high-Z nodes).
+- **Shielding and low-capacitance constraints for high-frequency nets**
+  (shield copper, capacitance budget per net).
+
+The API leaves room for these. They would be added as further constraint
+calls on nets and net classes, with the reserved names above, and do not
+change objective or region semantics: no new objective terms, no new region
+kinds, and the `hard=` / `w=` rules in §Hard constraints vs soft preferences
+apply unchanged.
