@@ -113,6 +113,23 @@ Under the header one line reads `N open · M older than 3d · oldest grX
 (D days) · K more past this page (page=N)`. `sort='recency'` gives the
 newest-touched order instead.
 
+Need every id in a filtered set — a triage pass, a batch `get`?
+`view='ids'` renders one handle per line and nothing else, so a full
+page never mid-elides behind a `more()` cursor:
+
+```python
+search(kind="gripe", tags=["STATUS:open"], view="ids")  # gr… one per line
+search(kind="gripe", q="chase", view="ids")  # ranked search too
+```
+
+`args={'id_min': N}` / `args={'id_max': M}` bound any search to a
+ref-id range — a lone bound is legal — so "open gripes filed since
+gr514000" is `args={'id_min': 514000}`. The range applies on the
+listing views, `view='count'`, and ranked `q=` searches; a range
+covering more than 20k live ids refuses on the ranked path (enumerate
+it with `view='ids'` instead). It does not narrow a `link=` listing —
+that combination is refused.
+
 ## Find gripes that are ready for a fix attempt
 
 ```python
@@ -137,14 +154,16 @@ search(kind="gripe", tags=["STATUS:wontfix"])
 
 ```python
 get(kind="gripe", id=42)
-# → title card: header + tags + title + comment count
-get(kind="gripe", id=42, view="body")  # the body
+# → title card + body: header + tags + title + comment count, then the
+#   body (a long one is head+tail-clipped; the cut marker names view='body')
+get(kind="gripe", id=42, view="body")  # the body, uncapped
 get(kind="gripe", id=42, view="comments")  # every comment, oldest first
 get(kind="gripe", id=42, view="full")  # body + every comment, uncapped
 ```
 
-A bare `get` is the title card only — the body and timeline stay behind
-explicit views (gr499040). The selectors work inside `view='comments'`
+A bare `get` shows the body (clipped at ~1500 chars when long); the
+comment timeline stays behind `view='comments'` (gr514351). The
+selectors work inside `view='comments'`
 or `view='full'`: `args={'comments': K}` is the newest K, `args={'comment': K}`
 is one comment uncapped (a long comment in the window is cut mid-text and
 names that call). Plain `view='full'` is the complete read — body + every
@@ -154,7 +173,8 @@ Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —
 `get(kind='gripe', id=[42, 43], view='comments')` (or `'body'`, `'full'`,
-`'links'`, `'log'`).
+`'links'`, `'log'`). Batch `view='body'` is one title+body section per
+id — the comment timeline is not included.
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
 `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in

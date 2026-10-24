@@ -2850,6 +2850,8 @@ class RefsMixin:
         has_schedule: bool | None = None,
         owner_login: str | None = None,
         unowned: bool = False,
+        id_min: int | None = None,
+        id_max: int | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -2904,6 +2906,12 @@ class RefsMixin:
             clauses.append(
                 "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
             )
+        if id_min is not None:
+            params.append(id_min)
+            clauses.append("r.ref_id >= %s")
+        if id_max is not None:
+            params.append(id_max)
+            clauses.append("r.ref_id <= %s")
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
@@ -3508,6 +3516,8 @@ class RefsMixin:
         tags: list[str] | None = None,
         exclude_tags: list[str] | None = None,
         created_before: datetime | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> int:
         """Count active (not soft-deleted) refs, optionally filtered.
 
@@ -3532,6 +3542,12 @@ class RefsMixin:
         if created_before is not None:
             params.append(created_before)
             clauses.append("r.created_at < %s")
+        if id_min is not None:
+            params.append(id_min)
+            clauses.append("r.ref_id >= %s")
+        if id_max is not None:
+            params.append(id_max)
+            clauses.append("r.ref_id <= %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
@@ -3563,6 +3579,8 @@ class RefsMixin:
         since: Any = None,
         until: Any = None,
         meta_eq: tuple[str, str] | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> tuple[int, list[tuple[tuple[str | None, ...], int]]]:
         """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
 
@@ -3616,6 +3634,8 @@ class RefsMixin:
             since=since,
             until=until,
             meta_eq=meta_eq,
+            id_min=id_min,
+            id_max=id_max,
         )
         where = " AND ".join(clauses)
 
@@ -3690,6 +3710,8 @@ def filtered_ref_clauses(
     since: Any = None,
     until: Any = None,
     meta_eq: tuple[str, str] | None = None,
+    id_min: int | None = None,
+    id_max: int | None = None,
 ) -> tuple[list[str], list[Any]]:
     """The ``WHERE`` clause list (+ ordered params) shared by the
     ``view='count'`` SQL and any per-kind drill into the *same* filtered
@@ -3751,6 +3773,12 @@ def filtered_ref_clauses(
     if meta_eq is not None:
         clauses.append("r.meta ->> %s = %s")
         params.extend(meta_eq)
+    if id_min is not None:
+        clauses.append("r.ref_id >= %s")
+        params.append(id_min)
+    if id_max is not None:
+        clauses.append("r.ref_id <= %s")
+        params.append(id_max)
     return clauses, params
 
 

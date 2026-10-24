@@ -87,7 +87,7 @@ def test_view_tags_reads_as_the_title_card(hub: Hub) -> None:
     assert "interpreted: view='tags' read as the default view" in body
     assert "title: hint fixture body" in body
     assert "comments: 3" in body
-    assert "second body line" not in body
+    assert "second body line" in body  # the default read carries the body
 
 
 def test_unknown_view_leads_with_the_nearest(hub: Hub) -> None:

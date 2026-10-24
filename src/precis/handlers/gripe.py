@@ -14,16 +14,18 @@ Surface (see ``precis-gripe-help``):
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
   ``tags=``/``untags=`` ride along in the same transaction, so
   comment-then-close is one call.
-- ``get(kind='gripe', id=N)`` is the title card (gr499040, Reto ruling
-  2026-10-19): header + tags + ``title:`` + a comment-count line pointing
-  at the deep reads — ``view='body'`` for the body,
-  ``view='comments'`` for the timeline. The timeline selectors
-  ``args={'comments': K}`` (the newest K) and ``args={'comment': K}``
-  (one comment uncapped) work inside ``view='comments'`` and
-  ``view='full'`` — a long one in a window is cut mid-text at
-  :data:`_comment_timeline.COMMENT_VIEW_CHARS` and names that read.
-  ``view='full'`` without a selector is the complete read (body +
-  every comment, uncapped);
+- ``get(kind='gripe', id=N)`` is the title card plus the body
+  (gr499040's card, gr514351's body): header + tags + ``title:`` +
+  a comment-count line + the newest-comment gist, then the body —
+  head+tail-clipped at :data:`_BODY_HEAD_CHARS`, the marker naming
+  ``view='body'`` for the uncapped read. The ruling's measured cost
+  was the *timeline* (no pagination then), which stays behind
+  ``view='comments'``; the selectors ``args={'comments': K}`` (the
+  newest K) and ``args={'comment': K}`` (one comment uncapped) work
+  inside ``view='comments'`` and ``view='full'`` — a long one in a
+  window is cut mid-text at :data:`_comment_timeline.COMMENT_VIEW_CHARS`
+  and names that read. ``view='full'`` without a selector is the
+  complete read (body + every comment, uncapped);
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -97,6 +99,13 @@ _VIEW_ALIASES: dict[str, str | None] = {
 #: gripe filed with a long first line can't re-inflate the small read.
 _TITLE_CARD_CHARS = 240
 
+#: Bare-get body budget (gr514351): the body belongs to the default
+#: read — a gripe's point is its text, and fetching it cost a second
+#: call on every single get. Past the budget the head and tail render
+#: around a cut marker naming ``view='body'`` (the uncapped read), so a
+#: pasted-log body can't re-inflate the card either.
+_BODY_HEAD_CHARS = 1500
+
 #: Open-view age cut: a gripe filed before this is "older than 3d" in the
 #: list summary (2026-10-18 audit: the newest-20 page hid the 44 oldest).
 _STALE_AFTER = timedelta(days=3)
@@ -114,6 +123,8 @@ def age_summary(
     *,
     exclude_tags: list[str] | None = None,
     total: int | None = None,
+    id_min: int | None = None,
+    id_max: int | None = None,
 ) -> str:
     """``N open · M older than 3d · oldest grX (D days)`` over a gripe filter.
 
@@ -126,6 +137,10 @@ def age_summary(
     from precis.utils.handle_registry import format_handle
 
     filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
+    if id_min is not None:
+        filters["id_min"] = id_min
+    if id_max is not None:
+        filters["id_max"] = id_max
     if total is None:
         total = store.count_refs(kind="gripe", tags=tags, **filters)
     statuses = [t.split(":", 1)[1] for t in tags if t.startswith("STATUS:")]
@@ -254,9 +269,18 @@ class GripeHandler(NumericRefHandler):
         exclude_tags: list[str] | None,
         total: int,
         past_page: int,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> str:
         """``N open · M older than 3d · oldest grX (D days) · K more past this page``."""
-        line = age_summary(self.store, tags, exclude_tags=exclude_tags, total=total)
+        line = age_summary(
+            self.store,
+            tags,
+            exclude_tags=exclude_tags,
+            total=total,
+            id_min=id_min,
+            id_max=id_max,
+        )
         if past_page > 0:
             line += f" · {past_page} more past this page (page=N)"
         return line
@@ -681,6 +705,7 @@ class GripeHandler(NumericRefHandler):
         # rare read-only one. Any caller-supplied ``tags=``/``link=``
         # beyond the default are still applied in the same transaction,
         # same as before.
+        from precis.handlers._gripe_title import first_line
         from precis.utils.link_tag_ops import (
             guard_taxon_hierarchy,
             validate_relation,
@@ -753,6 +778,7 @@ class GripeHandler(NumericRefHandler):
                 ref_id,
                 has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
                 short_title=short,
+                title_src_len=len(first_line(text)) if short is not None else None,
             ),
             readings,
         )
@@ -993,14 +1019,17 @@ class GripeHandler(NumericRefHandler):
         return interpreted(resp, readings)
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
-        """The bare get's title card (gr499040): header + tags + title +
-        comment count — the body and timeline stay behind ``view='body'``
-        / ``view='comments'``."""
-        comments = [
-            b
-            for b in self.store.chunks.list_chunks_for_ref(ref.id)
-            if b.chunk_kind == _COMMENT_KIND
-        ]
+        """The bare get: title card plus the body (gr514351).
+
+        Card = header + tags + ``title:`` + comment count + newest gist;
+        the body follows, head+tail-clipped at :data:`_BODY_HEAD_CHARS`
+        (the marker names ``view='body'``, the uncapped read). The
+        comment timeline stays behind ``view='comments'`` — the
+        unbounded timeline was gr499040's measured cost, not the body.
+        """
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        comments = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
+        body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
         # ``refs.title`` is the whole body text when the first line already
         # fits (:mod:`._gripe_title` only derives a short title for a long
         # one) — the card shows the first line, never the stored blob.
@@ -1029,6 +1058,14 @@ class GripeHandler(NumericRefHandler):
         if newest is not None:
             gist = " ".join(newest.text.split())[:60]
             lines.append(f"newest: comment {newest.ord} · {tl._stamp(newest)} · {gist}")
+        lines += [
+            "",
+            tl.clip_middle(
+                body,
+                _BODY_HEAD_CHARS,
+                f"get(kind='gripe', id={ref.id}, view='body')",
+            ),
+        ]
         return "\n".join(lines)
 
     def _header_lines(self, ref: Ref, tags: list[Tag]) -> list[str]:
@@ -1149,6 +1186,7 @@ class GripeHandler(NumericRefHandler):
         *,
         has_thread: bool = False,
         short_title: str | None = None,
+        title_src_len: int | None = None,
     ) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
         # uppercase STATUS axis + TOON Next: trailer. Previous inline-
@@ -1169,9 +1207,13 @@ class GripeHandler(NumericRefHandler):
             ]
         )
         if short_title is not None:
+            # Name the cut (gr514360): a truncation the filer can't see is
+            # a fragment they can't fix — the size of the lost tail says
+            # how much was dropped. The body keeps the full text either way.
             body += (
-                f'\ntitle shortened to "{short_title}" (the body keeps the full '
-                f"text); edit(kind={self.kind!r}, id={ref_id}, "
+                f'\ntitle shortened to "{short_title}" '
+                f"({title_src_len}→{len(short_title)} chars; the body keeps "
+                f"the full text); edit(kind={self.kind!r}, id={ref_id}, "
                 "args={'title': '<new title>'}) to change it."
             )
         body += render_next_section(

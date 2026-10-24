@@ -12,7 +12,10 @@ the prefix; the rest is cut to its first clause (at a dash, semicolon,
 sentence end, parenthesis, comma or "because" — but never inside
 ``(…)`` or quotes: a comma in ``f(a, b)`` or ``'a, b'`` belongs to the
 expression, and cutting there leaves the title mid-call, gr500645); the
-result is cut at the last word boundary that fits.
+result is cut at the last word boundary that fits, and a mid-phrase cut
+drops trailing function words so the title ends on a content word
+(``…returns stale source on`` read as a fragment, gr514360). The create
+ack reports the cut size, so the shortening is never silent.
 """
 
 from __future__ import annotations
@@ -29,20 +32,192 @@ _AREA_RE = re.compile(r"^([\w./\- ]{2,24}):\s+(.*)$")
 _TRIM = ".,;:—–- "
 
 
+#: Words a truncated title must not end on — connectors and auxiliaries
+#: that read as a cut fragment (``…stale source on``, ``…repro for the``,
+#: gr514360). The word-boundary cut drops them from the tail until a
+#: content word ends the title.
+_TRAILING_FUNCTION_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "every",
+        "each",
+        "any",
+        "some",
+        "no",
+        "all",
+        "both",
+        "either",
+        "neither",
+        "such",
+        "same",
+        "own",
+        "other",
+        "another",
+        "much",
+        "many",
+        "more",
+        "most",
+        "few",
+        "less",
+        "several",
+        "enough",
+        "there",
+        "here",
+        "and",
+        "or",
+        "but",
+        "nor",
+        "so",
+        "yet",
+        "for",
+        "if",
+        "than",
+        "then",
+        "when",
+        "while",
+        "as",
+        "because",
+        "since",
+        "until",
+        "till",
+        "though",
+        "although",
+        "whereas",
+        "unless",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "done",
+        "have",
+        "has",
+        "had",
+        "having",
+        "can",
+        "could",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "must",
+        "ought",
+        "i",
+        "it",
+        "its",
+        "he",
+        "her",
+        "his",
+        "she",
+        "they",
+        "their",
+        "them",
+        "we",
+        "our",
+        "us",
+        "me",
+        "him",
+        "you",
+        "your",
+        "my",
+        "who",
+        "whom",
+        "whose",
+        "which",
+        "what",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "with",
+        "by",
+        "from",
+        "into",
+        "over",
+        "per",
+        "via",
+        "onto",
+        "upon",
+        "under",
+        "between",
+        "among",
+        "about",
+        "above",
+        "across",
+        "after",
+        "against",
+        "along",
+        "around",
+        "before",
+        "behind",
+        "below",
+        "beneath",
+        "beside",
+        "besides",
+        "beyond",
+        "during",
+        "except",
+        "inside",
+        "near",
+        "off",
+        "out",
+        "outside",
+        "past",
+        "round",
+        "through",
+        "throughout",
+        "toward",
+        "towards",
+        "underneath",
+        "unlike",
+        "up",
+        "within",
+        "without",
+        "down",
+        "back",
+    }
+)
+
+
 def first_line(text: str) -> str:
     """The first non-blank line of ``text``, stripped."""
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
 
 def _cut(text: str, limit: int) -> str:
-    """``text`` cut at the last word boundary within ``limit`` chars."""
+    """``text`` cut at the last word boundary within ``limit`` chars.
+
+    A word-boundary cut additionally drops trailing function words —
+    ``"…returns stale source on"`` ends mid-phrase where
+    ``"…returns stale source"`` reads complete.
+    """
     text = text.strip().rstrip(_TRIM)
     if len(text) <= limit:
         return text
     head = text[: limit + 1]
     space = head.rfind(" ")
-    cut = head[:space] if space >= limit // 2 else text[:limit]
-    return cut.rstrip(_TRIM)
+    if space < limit // 2:
+        return text[:limit].rstrip(_TRIM)
+    words = head[:space].split()
+    while len(words) > 1 and words[-1].lower().strip(_TRIM) in (
+        _TRAILING_FUNCTION_WORDS
+    ):
+        words.pop()
+    return " ".join(words).rstrip(_TRIM)
 
 
 def _protected(text: str) -> list[bool]:

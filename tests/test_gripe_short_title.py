@@ -63,9 +63,7 @@ def test_a_first_line_that_fits_is_kept() -> None:
 
 
 def test_area_prefix_kept_and_cut_to_the_first_clause() -> None:
-    assert (
-        short_title(LONG) == "pcb router: copper pours vanish after a reroute when the"
-    )
+    assert short_title(LONG) == "pcb router: copper pours vanish after a reroute"
     title = short_title(
         "ship: the gate is red - every shard times out on the slow runner pool"
     )
@@ -78,6 +76,37 @@ def test_no_boundary_cuts_at_a_word_and_never_exceeds_the_cap() -> None:
     assert title is not None and len(title) <= TITLE_MAX
     assert words.startswith(title) and not title.endswith(" ")
     assert len(short_title("x" * 200) or "") == TITLE_MAX
+
+
+def test_a_mid_phrase_cut_ends_on_a_content_word(gripe: GripeHandler) -> None:
+    """gr514360: a word-boundary cut drops trailing connectors, so a
+    derived title never ends on 'the'/'on'/'for'. The create ack names
+    the cut size so the shortening is not silent."""
+    for first, want_tail in (
+        (
+            "Tracer._site linecache.getline returns stale source on same-size rewrites",
+            "stale source",
+        ),
+        (
+            "trace-frame-structural-keys spec: no exact repro for the "
+            "_sync same-parent same-qual collision",
+            "no exact repro",
+        ),
+        (
+            "the queue stalls while the worker holds a lock and every "
+            "follow-on job waits for it",
+            "a lock",
+        ),
+    ):
+        title = short_title(first)
+        assert title is not None and title.endswith(want_tail)
+        assert title.split()[-1].lower() not in _gripe_title._TRAILING_FUNCTION_WORDS
+    first = "Tracer._site linecache.getline returns stale source on same-size rewrites"
+    body = gripe.put(text=first).body
+    gid = _latest(gripe)
+    stored = _title(gripe, gid)
+    assert stored.endswith("stale source")
+    assert f"({len(first)}\u2192{len(stored)} chars" in body
 
 
 def test_a_clause_boundary_inside_parens_or_quotes_is_not_a_cut() -> None:

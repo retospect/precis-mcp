@@ -1,8 +1,9 @@
-"""Gripe get is the title card (gr499040); body/timeline behind views.
+"""Gripe get is the title card plus the body (gr499040, gr514351).
 
-Reto ruling 2026-10-19: a bare ``get(kind='gripe', id=N)`` shows the
-title, tags, status and the comment count — body via ``view='body'``,
-the timeline via ``view='comments'``, which is selectable
+A bare ``get(kind='gripe', id=N)`` shows the title, tags, status, the
+comment count and the body — head+tail-clipped at a budget with the
+cut marker naming ``view='body'``, the uncapped read. The timeline
+stays behind ``view='comments'``, which is selectable
 (``args={'comments': K}`` / ``args={'comment': K}``) and caps long
 comment bodies. ``view='full'`` stays the uncapped complete read.
 """
@@ -56,7 +57,7 @@ def test_comment_timeline_default_and_full(hub: Hub, count: int) -> None:
     assert "fixture-comment-" not in handler.get(id=rid, view="log").body
 
 
-def test_bare_get_is_title_tags_count_only(hub: Hub) -> None:
+def test_bare_get_is_card_plus_body(hub: Hub) -> None:
     handler = GripeHandler(hub=hub)
     handler.put(text="the whole gripe body\nsecond body line")
     rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
@@ -67,13 +68,24 @@ def test_bare_get_is_title_tags_count_only(hub: Hub) -> None:
     assert "title: the whole gripe body" in body
     assert "comments: 1" in body
     assert "newest: comment 1 · " in body and "a comment" in body
-    assert "second body line" not in body
-    # pointers to the explicit reads
-    assert "view='body'" in body and "view='comments'" in body
+    # gr514351: the body is part of the default read — no second call
+    assert "second body line" in body
+    # the timeline stays behind its own read
+    assert "## comment" not in body
     assert (
         "the whole gripe body\nsecond body line"
         in handler.get(id=rid, view="body").body
     )
+
+
+def test_bare_get_clips_a_long_body_naming_the_escape(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    handler.put(text="pad " * 1000 + "the tail ask")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    body = handler.get(id=rid).body
+    assert f"get(kind='gripe', id={rid}, view='body')" in body
+    assert "the tail ask" in body  # tail survives the middle cut
+    assert "chars cut" in body
 
 
 def test_comments_view_window_and_single(hub: Hub) -> None:

@@ -131,6 +131,42 @@ _COUNT_GROUP_LIMIT = 200
 #: tombstone read follows (gr503546).
 _HANDLE_TOKEN = re.compile(r"\b([a-z]{2}\d+)\b")
 
+#: An ``args={'id_min'/'id_max'}`` range materialized into the ranked
+#: paths' ``include_ref_ids`` channel is capped: an ANY() array this
+#: size still executes, but past it the caller wants the listing anyway
+#: (gr514477).
+_ID_RANGE_HITS_CAP = 20_000
+
+
+def _parse_id_range(
+    id_min: Any, id_max: Any, *, kind: str
+) -> tuple[int | None, int | None]:
+    """Validate an ``id_min``/``id_max`` bound pair → ints.
+
+    Each bound is optional on its own (a lone ``id_min`` is the
+    "since-id" the gripe asked for, gr514477); both must be integers,
+    and a present pair must not be inverted.
+    """
+
+    def _bound(value: Any, name: str) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"{name}= must be an integer id, got {value!r}",
+                next=(f"search(kind={kind!r}, args={{{name}: <id>}})"),
+            ) from None
+
+    lo, hi = _bound(id_min, "id_min"), _bound(id_max, "id_max")
+    if lo is not None and hi is not None and lo > hi:
+        raise BadInput(
+            f"id_min={lo} is greater than id_max={hi}",
+            next=f"search(kind={kind!r}, args={{'id_min': {hi}, 'id_max': {lo}}})",
+        )
+    return lo, hi
+
 
 def _parse_window_bound(value: Any, field: str) -> datetime | None:
     """Parse a ``since=``/``until=`` bound into a tz-aware datetime.
@@ -831,9 +867,24 @@ class NumericRefHandler(Handler):
         # Pre-validated by the kind (memory: 'title' | 'body'); see
         # :meth:`_best_body_hits`.
         chunk_scope: str | None = None,
+        # ``args={'id_min': N}`` / ``args={'id_max': M}`` — bound the
+        # result set to a ref-id range (gr514477: enumerate open gripes
+        # "since id N"). Applies on every path: SQL on the listing and
+        # count views, materialized into ``include_ref_ids`` on the
+        # ranked paths. A lone bound is legal on either side.
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``view='ids'`` renders the same filtered set as one handle per
+        # line — compact enough that a full page never mid-elides behind
+        # a more() cursor (gr514477). Intercepted before
+        # ``plain_listing_view`` folds the spelling away.
+        ids_only = view == "ids"
+        if ids_only:
+            view = None
         view = plain_listing_view(view, self._search_view_names())
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         if sort is not None:
             sort = sort.strip().lower()
             if (
@@ -909,6 +960,8 @@ class NumericRefHandler(Handler):
                 include_ref_ids=include_ref_ids,
                 since=since,
                 until=until,
+                id_min=id_lo,
+                id_max=id_hi,
             )
         if since is not None or until is not None:
             # Reached only on a direct handler call — dispatch routes
@@ -932,7 +985,24 @@ class NumericRefHandler(Handler):
         # degrade to a recency-ordered list, which is what the user
         # wanted in the first place.
         if q is None or not q.strip():
-            if normalized_tags or sort is not None or browse or excluded:
+            if (
+                link is not None
+                and str(link).strip()
+                and (id_lo is not None or id_hi is not None)
+            ):
+                raise BadInput(
+                    "id_min=/id_max= do not narrow a link= listing — "
+                    "the edge query has no ref-id filter",
+                    next=f"search(kind={self.kind!r}, link={link!r})",
+                )
+            if (
+                normalized_tags
+                or sort is not None
+                or browse
+                or excluded
+                or id_lo is not None
+                or id_hi is not None
+            ):
                 return self._list_by_tags(
                     normalized_tags or [],
                     page_size=page_size,
@@ -941,6 +1011,9 @@ class NumericRefHandler(Handler):
                     page=page,
                     sort=sort or self.browse_default_sort,
                     exclude_tags=excluded,
+                    ids_only=ids_only,
+                    id_min=id_lo,
+                    id_max=id_hi,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -958,6 +1031,7 @@ class NumericRefHandler(Handler):
                     offset=offset,
                     page=page,
                     exclude_tags=excluded,
+                    ids_only=ids_only,
                 )
             raise BadInput(
                 "search requires q= or tags= or link=",
@@ -966,6 +1040,15 @@ class NumericRefHandler(Handler):
                     f"search(kind={self.kind!r}, tags=['<tag>']) or "
                     f"search(kind={self.kind!r}, link='<kind>:<id>')"
                 ),
+            )
+
+        # A ref-id range bounds the ranked paths through the same
+        # ``include_ref_ids`` channel ``cited=``/``under=`` use —
+        # materialized as the live ids inside [id_lo, id_hi] so a sparse
+        # range never becomes a giant ANY() literal (gr514477).
+        if id_lo is not None or id_hi is not None:
+            include_ref_ids = self._include_ids_in_range(
+                include_ref_ids, id_lo=id_lo, id_hi=id_hi
             )
 
         # Kinds whose prose lives in chunks (memory, gripe) search the
@@ -982,6 +1065,7 @@ class NumericRefHandler(Handler):
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 chunk_scope=chunk_scope,
+                ids_only=ids_only,
             )
 
         # Title lexical fused with a hybrid block leg (see
@@ -1069,7 +1153,9 @@ class NumericRefHandler(Handler):
             noun=f"{self._sense()} match",
             query=q,
         )
-        table = self._render_hits_table(hit_refs)
+        table = (
+            self._id_lines(hit_refs) if ids_only else self._render_hits_table(hit_refs)
+        )
         trunc = self._tag_truncation_note(normalized_tags, matched_total=total, q=q)
         parts = [header]
         if status_note:
@@ -1259,6 +1345,8 @@ class NumericRefHandler(Handler):
         since: str | None = None,
         until: str | None = None,
         meta_eq: tuple[str, str] | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """``search(kind=K, view='count')`` — filtered total + facet counts.
 
@@ -1305,6 +1393,8 @@ class NumericRefHandler(Handler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            id_min=id_min,
+            id_max=id_max,
             meta_eq=meta_eq,
         )
 
@@ -1410,6 +1500,57 @@ class NumericRefHandler(Handler):
         """
         return ""
 
+    def _include_ids_in_range(
+        self,
+        include_ref_ids: list[int] | None,
+        *,
+        id_lo: int | None,
+        id_hi: int | None,
+    ) -> list[int]:
+        """Fold an ``id_min``/``id_max`` bound into ``include_ref_ids``.
+
+        The ranked paths filter on the explicit id-list channel
+        (``cited=``/``uncited=``/``under=`` arrive the same way), so the
+        range materializes as the live ids inside it — intersected with
+        any restriction a caller or earlier facet already set.
+        """
+        count = self.store.count_refs(kind=self.kind, id_min=id_lo, id_max=id_hi)
+        if count > _ID_RANGE_HITS_CAP:
+            raise BadInput(
+                f"the id range covers {count} {self._sense()} entries — "
+                "too many to bound a ranked search",
+                next=(
+                    f"narrow the range, or enumerate it: "
+                    f"search(kind={self.kind!r}, view='ids', "
+                    "args={'id_min': …, 'id_max': …})"
+                ),
+            )
+        in_range = (
+            {
+                r.id
+                for r in self.store.list_refs(
+                    kind=self.kind, id_min=id_lo, id_max=id_hi, limit=count or 1
+                )
+            }
+            if count
+            else set()
+        )
+        merged = (
+            in_range if include_ref_ids is None else in_range & set(include_ref_ids)
+        )
+        return sorted(merged)
+
+    def _id_lines(self, refs: list[Ref]) -> str:
+        """``view='ids'`` body: one handle per ref, nothing else.
+
+        Compact on purpose (gr514477): a full page of these never
+        mid-elides behind a ``more()`` cursor, so the filtered set is
+        enumerable verbatim — e.g. every open gripe's id.
+        """
+        return "\n".join(
+            handle_registry.try_format(self.kind, r.id) or str(r.id) for r in refs
+        )
+
     def _list_by_tags(
         self,
         tags: list[str],
@@ -1421,6 +1562,9 @@ class NumericRefHandler(Handler):
         sort: str = "recency",
         exclude_tags: list[str] | None = None,
         more_call: str = "",
+        ids_only: bool = False,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -1444,13 +1588,17 @@ class NumericRefHandler(Handler):
             limit=page_size,
             offset=offset,
             order_by=self.prio_order_by if sort == "prio" else "updated_desc",
+            id_min=id_min,
+            id_max=id_max,
             **filters,
         )
         # Total tagged population (list_refs caps at page_size) so the
         # header can flag pagination the same way the ranked path does,
         # and so a beyond-the-end page can say "still N total" rather
         # than misreporting an empty tag set.
-        total = self.store.count_refs(kind=self.kind, tags=tags, **filters)
+        total = self.store.count_refs(
+            kind=self.kind, tags=tags, id_min=id_min, id_max=id_max, **filters
+        )
         if exclude_tags and set(exclude_tags) <= set(
             _BROWSE_TERMINALS.get(self.kind, ())
         ):
@@ -1510,11 +1658,15 @@ class NumericRefHandler(Handler):
             exclude_tags=exclude_tags,
             total=total,
             past_page=total - offset - shown,
+            id_min=id_min,
+            id_max=id_max,
         ):
             parts.append(summary)
         if note:
             parts.append(note)
-        parts.append(self._render_hits_table(refs))
+        parts.append(
+            self._id_lines(refs) if ids_only else self._render_hits_table(refs)
+        )
         if pages > 1:
             # Name the total and the page count so a short page can't be
             # mistaken for the end of the list (gr497175).
@@ -1535,6 +1687,8 @@ class NumericRefHandler(Handler):
         exclude_tags: list[str] | None,
         total: int,
         past_page: int,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> str:
         """Optional per-kind line under a queryless list's header.
 
@@ -1553,6 +1707,7 @@ class NumericRefHandler(Handler):
         offset: int = 0,
         page: int = 1,
         exclude_tags: list[str] | None = None,
+        ids_only: bool = False,
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
@@ -1631,7 +1786,11 @@ class NumericRefHandler(Handler):
         parts = [header]
         if note:
             parts.append(note)
-        parts.append(self._render_hits_table(page_rows))
+        parts.append(
+            self._id_lines(page_rows)
+            if ids_only
+            else self._render_hits_table(page_rows)
+        )
         return Response(body="\n".join(parts), result_count=len(page_rows))
 
     def _axis_in_use(self, prefix: str) -> bool:
@@ -1834,6 +1993,7 @@ class NumericRefHandler(Handler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
+        ids_only: bool = False,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(
@@ -1896,8 +2056,11 @@ class NumericRefHandler(Handler):
         trunc = self._tag_truncation_note(tags, matched_total=total, q=q)
         if trunc:
             lines.append(trunc)
-        for block, ref, rank in hits:
-            lines.append(self._render_body_search_hit(ref, block, rank))
+        if ids_only:
+            lines.extend(self._id_lines([ref for _, ref, _ in hits]).splitlines())
+        else:
+            for block, ref, rank in hits:
+                lines.append(self._render_body_search_hit(ref, block, rank))
         return Response(body="\n".join(lines), result_count=len(hits))
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
