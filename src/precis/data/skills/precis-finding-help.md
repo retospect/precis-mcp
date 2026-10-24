@@ -9,6 +9,7 @@ answers:
   - how do I search for claim hubs before minting a new one?
   - how do I resolve a finding with multiple candidate sources?
   - how do I use a finding's handle in my draft?
+  - what writer annotation does a machine-written finding or edge need (meta.model/prompt_version/run_id/why)?
 applies-to: put / get / search (kind='finding')
 tags: external-sources, workflow, troubleshooting
 kinds: finding
@@ -516,6 +517,22 @@ todo/finding needed. Nothing to register from the agent side; read
 `view='links'` on the cited paper for the paper-level edges, or a
 citing chunk directly for its "Cites (verified):" sidecar. See
 `precis-paper-help`.
+
+## Annotate a machine-written finding — the writer annotation
+## meta={model, prompt_version, run_id, why} on a finding
+## Who wrote this finding — a person or a pass?
+
+A machine writer (a gardener/mesher/scout pass, any run under a
+`generated`/`computed` trust origin) annotates what it mints with
+**who produced it**: `meta={'model': '<model id>',
+'prompt_version': '<prompt>', 'run_id': '<run>', 'why': '<reason>'}`
+on `put(kind='finding')` merges into the new ref's meta. On a
+dedup converge no row is minted, so the annotation drops — same rule
+as every mint-time meta. The same annotation gates machine-written
+*edges* (`link` calls under a writer context): evidence pins in
+`meta.evidence` plus `meta.{model,prompt_version,run_id,why}` — the
+admission rules and which rels are human-only are in
+[[precis-link-help]] §Machine-written edges.
 
 ## See also
 

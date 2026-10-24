@@ -2,13 +2,11 @@
 id: precis-agentlog-help
 family: work
 title: precis — the agentlog kind (run attribution + touch graph)
-summary: kind='agentlog' — one record per agentic run; carries the assembled prompt and `touched` links to every chunk it wrote; walk a suspicious chunk back to the run that produced it
+summary: kind='agentlog' — one record per agentic run; the assembled prompt plus `touched` links to every chunk it wrote; walk a suspicious chunk back to its run
 answers:
-  - how do I find out which agent run wrote or touched a specific chunk?
-  - what does an agentlog record actually carry?
-  - can I create an agentlog myself, or is it machine-only?
-  - how long do agentlog records stick around?
-applies-to: kind='agentlog'; precis.agentlog.open_log / touch_from_env / finalize_log / gc_stale_logs; PRECIS_CURRENT_AGENTLOG; /agentlogs web tab
+  - which agent run wrote or touched this chunk?
+  - what does an agentlog record carry, and how long is it kept?
+applies-to: kind='agentlog'; PRECIS_CURRENT_AGENTLOG; /agentlogs web tab
 status: active
 tags: [troubleshooting]
 kinds: [agentlog]
@@ -18,22 +16,18 @@ kinds: [agentlog]
 
 An **agentlog** is a *run-attribution record*: one row per agentic run
 (a `plan_tick` coroutine, an operator-requested change, a chat
-follow-up) that touched the corpus. It answers the question **"this
-chunk looks wrong — who wrote it, and what were they told to do?"** by
-storing:
-
-* the full **assembled prompt** the run was handed (`meta.prompt`) —
-  system + user, verbatim;
-* the **model + source** (`meta.model`, `meta.source`) and the owning
-  `todo` / `job` (`meta.parent_ref_id` / `meta.job_ref_id`);
-* a **`touched` link to every chunk the run wrote or moved**, so the
-  draft reader's Connections surface shows "written by run N".
+follow-up) that touched the corpus. It answers **"this chunk looks
+wrong — who wrote it, and what were they told to do?"** by storing the
+full assembled prompt (`meta.prompt`, system + user verbatim), the
+model + source + owning `todo`/`job` (`meta.model`, `meta.source`,
+`meta.parent_ref_id`, `meta.job_ref_id`), and a **`touched` link to
+every chunk the run wrote or moved** — the draft reader's Connections
+surface shows "written by run N".
 
 It is the structural twin of `alert`: numeric-id, machine-produced,
-**not embedded** (body in `title` + `meta`, no `card_combined`), so it
-never reaches semantic search. Where an alert is a *condition*, an
-agentlog is a *run*. Many runs may touch one chunk over its life — the
-link graph carries the many-to-many.
+**not embedded** (body in `title` + `meta`), so it never reaches
+semantic search. Where an alert is a *condition*, an agentlog is a
+*run*; the link graph carries the many-to-many.
 
 ## Shape
 
@@ -44,37 +38,28 @@ meta.source='plan_tick' | 'operator' | 'chat'
 meta.model='opus' | 'sonnet' | ...
 meta.prompt='<full assembled system+user prompt>'
 meta.parent_ref_id=<owning todo>     meta.job_ref_id=<the tick's job>
-meta.started_at / meta.ended_at / meta.status
+meta.started_at / ended_at / status
 tags=[agentlog-source:<source>]
-links: agentlog --touched--> <draft chunk>   (one per chunk written/moved)
+links: agentlog --touched--> <draft chunk>
 ```
 
-`touched` is registered **symmetric, no inverse** (like `related-to`):
-one row per (run, chunk) edge, surfaced from either end. The bulky LLM
-*transcript* stays on the owning `kind='job'` ref — the agentlog keeps
-only the prompt, one hop from the transcript via `meta.job_ref_id`.
+`touched` is **symmetric, no inverse** (like `related-to`): surfaced
+from either end. The bulky LLM *transcript* stays on the owning job —
+the agentlog is one hop from it via `meta.job_ref_id`.
 
 ## Producer side (machinery only)
 
-Runs write agentlogs through `precis.agentlog`:
-
-* `open_log(store, source=, title=, model=, prompt=, parent_ref_id=,
-  job_ref_id=)` — opens the record at run start, returns its id.
-* Thread that id to the run's subprocess via **`PRECIS_CURRENT_AGENTLOG`**
-  (same env back-door as `PRECIS_CURRENT_TODO`). The MCP server inside
-  the run reads it and attributes every draft write/move to the run.
-* `touch_from_env(store, draft_ref_id=, ords=)` — called by the draft
-  handler after each write; a no-op when the env var is unset (operator
-  console edits, tests), best-effort (never fails the edit).
-* `finalize_log(store, log_id=, status=)` — stamps run-end state.
-
-`plan_tick` already does all of this. New agentic write paths get
-attribution for free by opening a log and setting the env var.
+Runs write agentlogs through `precis.agentlog`: `open_log` at run
+start, **`PRECIS_CURRENT_AGENTLOG`** threads the id to the run's
+subprocess (the MCP server inside reads it and attributes every draft
+write/move), `finalize_log` stamps run-end state. `plan_tick` already
+does all of this — a new agentic write path gets attribution by
+opening a log and setting the env var.
 
 ## Reading (agent side)
 
 ```
-get(kind='agentlog', id=42)         # one run: prompt + model/source + tags
+get(kind='agentlog', id=42)         # one run
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
 search(kind='agentlog', q='...')    # lexical over run titles
 tag / link / delete                 # classify / relate / prune
@@ -85,19 +70,16 @@ hand-authored.
 
 ## Lifecycle / GC
 
-The **sweeper** reaps agentlogs past `PRECIS_AGENTLOG_RETENTION_DAYS`
-(default 30) via `gc_stale_logs`: it deletes the run's `touched` links
-(pure attribution, worthless once the run is gone) but **never the
-chunks** they point at — body chunks are append-only and survive. The
-agentlog ref is soft-deleted, kept for forensics.
+The sweeper (`gc_stale_logs`) reaps agentlogs past
+`PRECIS_AGENTLOG_RETENTION_DAYS` (default 30): `touched` links go —
+they're pure attribution — but **never the chunks** (append-only).
+The ref is soft-deleted, kept for forensics.
 
 ## Web
 
-* `/agentlogs` — recent runs, grouped by source.
-* `/agentlogs/{id}` — one run's assembled prompt + touched chunks + a
-  link to the full transcript on its job.
-* On the draft reader, a touched chunk shows an `agentlog:N` Connections
-  chip → the run that wrote it.
+`/agentlogs` lists recent runs by source; `/agentlogs/{id}` shows one
+run's prompt + touched chunks + the transcript link. A touched chunk
+shows an `agentlog:N` Connections chip on the draft reader.
 
 ## See also
 

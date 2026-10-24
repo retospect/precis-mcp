@@ -524,7 +524,9 @@ Figure 3. Schematic representation of the structure of NU-1000…
 
 Cite as "Figure 3 of `pa40`" and quote the legend. The
 `![](...)` marker in the body is a relative path nothing serves —
-don't invent URLs.
+don't invent URLs. (A figure *inside a paper* is this; the `figure`
+kind is a different thing — a drawable SVG canvas, see
+[[precis-figure-help]].)
 
 ## Tag a paper or cross-link it
 ## Annotate a paper with topic tags or relationships

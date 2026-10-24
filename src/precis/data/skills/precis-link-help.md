@@ -158,6 +158,10 @@ plain agent `link` call) is gated at the link admission itself:
 - `explains` is claim hub → claim hub only and routes through
   `taproot.hub.link_claims`; it carries no evidence pins itself.
 
+The same annotation rides `put(kind='finding', meta=…)` when a writer
+mints the claim itself — [[precis-finding-help]] §the writer
+annotation.
+
 ## See also
 
 - [[precis-relations]] — relation vocabulary, per-kind constraints

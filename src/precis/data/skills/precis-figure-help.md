@@ -38,6 +38,15 @@ instruction, kept in the prompt/`precis-figure-svg` skill, never stored as
 content); the model fills them as it draws. Chat turns persist as
 `figure_turn` chunks, so a session is resumable and searchable.
 
+## A figure in a paper or a draft?
+## Not the SVG canvas — a paper's figure / a draft's image
+
+The name collides with two neighbours. `figure` here is the **drawable
+SVG canvas kind**. A figure *inside a held paper* is a caption + legend
+block (`get(id='pc…')`, no image binary served) — see
+[[precis-paper-help]]. A figure or image inside a *draft* — placement,
+provenance, data tables — is [[precis-draft-rich-content-help]].
+
 ## Call sequences
 
 Create a figure (optionally under a project todo, optionally seeded):
@@ -113,3 +122,10 @@ source, the lints, the vocabulary, and your message, and rewrites the whole
 SVG (a broken reply auto-heals once, else the good source is kept). That loop
 is a web affordance, not an MCP verb — from MCP you drive the same data with
 `put`/`edit`. See `precis-figure-svg` for how to author clean SVG.
+
+## See also
+
+- [[precis-figure-svg]] — authoring clean SVG for the canvas
+- [[precis-figure-animate]] — animated figures
+- [[precis-paper-help]] — a figure inside a held paper (caption + legend)
+- [[precis-draft-rich-content-help]] — figures, images and data tables in a draft

@@ -705,7 +705,15 @@ class SkillHandler(Handler):
         if text is None:
             raise NotFound(
                 f"skill {slug!r} not found",
-                next="search(kind='skill', q='<what you want to do>')",
+                next=[
+                    "search(kind='skill', q='<what you want to do>')",
+                    (
+                        "skills ship with the server build — a slug merged "
+                        "on main but not yet deployed raises this same "
+                        "error; get(kind='skill', id='precis-status') shows "
+                        "the running build"
+                    ),
+                ],
             )
         body = SimpleNamespace(
             id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
@@ -730,6 +738,7 @@ class SkillHandler(Handler):
         kinds: str | None = None,
         family: str | None = None,
         by: str | None = None,
+        category: str | None = None,
         have: str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -812,7 +821,13 @@ class SkillHandler(Handler):
             # precis-status) render fixed content with no axis to filter.
             if target == "precis-toc":
                 return Response(
-                    body=renderer(tag=tag, kinds=kinds, family=family, by=by)
+                    body=renderer(
+                        tag=tag,
+                        kinds=kinds,
+                        family=family,
+                        by=by,
+                        category=category,
+                    )
                 )
             return Response(body=renderer())
 
@@ -846,12 +861,20 @@ class SkillHandler(Handler):
             raise NotFound(
                 f"skill {slug!r} not found",
                 options=close or None,
-                next=(
-                    "search(kind='skill', q='<what you want to do>') — "
-                    "it ranks on each skill's summary and its 'answers' "
-                    "list, so describe the goal rather than guessing a "
-                    "slug; get(kind='skill', id='toc') lists every skill"
-                ),
+                next=[
+                    (
+                        "search(kind='skill', q='<what you want to do>') — "
+                        "it ranks on each skill's summary and its 'answers' "
+                        "list, so describe the goal rather than guessing a "
+                        "slug; get(kind='skill', id='toc') lists every skill"
+                    ),
+                    (
+                        "skills ship with the server build — a slug merged "
+                        "on main but not yet deployed raises this same "
+                        "error; get(kind='skill', id='precis-status') shows "
+                        "the running build"
+                    ),
+                ],
             )
         # Client-held rev tag (gr477798): every whole-skill serve ends
         # with ``skill rev <sha8>``; the stub is returned only when the
@@ -1930,6 +1953,7 @@ class SkillHandler(Handler):
         kinds: str | None = None,
         family: str | None = None,
         by: str | None = None,
+        category: str | None = None,
     ) -> str:
         """Render the synthesised ``precis-toc`` (alias: ``toc``) skill.
 
@@ -1941,7 +1965,10 @@ class SkillHandler(Handler):
         sees the live set first. ``tag=``/``kinds=`` further narrow the
         listing to one ``tags:``/``kinds:`` frontmatter axis value
         (docs/backlog/skill-graph.md slice 1) — HONORED here, not
-        swallowed.
+        swallowed. ``category=`` (gr514221) drills to a single group's
+        table; the unfiltered render opens with the Categories menu
+        advertising it so the first page is the whole decision
+        surface.
 
         This is the embedding-search-poor-cousin: substring match
         on titles + summaries gets close enough for a 25-skill
@@ -1981,12 +2008,51 @@ class SkillHandler(Handler):
             uncategorised = []
         else:
             groups, uncategorised = _categorise_skills(active, tags_for=_skill_tags)
+
+        # gr514221: ``args={'category': '<name>'}`` drills to one group's
+        # table — the unfiltered toc is ~34 KB, so its first page (or a
+        # folded head) never reached the rows an agent was after. The
+        # unfiltered render below opens with a compact Categories menu
+        # naming this arg per group, so the decision surface lands
+        # inside the first page. Match is case-insensitive substring
+        # and must resolve to exactly one rendered group.
+        if category is not None:
+            names = [name for name, _ in groups]
+            if uncategorised:
+                names.append("Other")
+            needle = category.strip().lower()
+            hits = [n for n in names if needle in n.lower()]
+            if len(hits) != 1:
+                raise BadInput(
+                    f"unknown toc category {category!r}",
+                    options=names,
+                    next=(
+                        f"get(kind='skill', id='toc', "
+                        f"args={{'category': {names[0] if names else 'orientation'}}})"
+                    ),
+                )
+            chosen = hits[0]
+            if chosen == "Other":
+                groups, uncategorised = [], uncategorised
+            else:
+                groups = [(n, s) for n, s in groups if n == chosen]
+                uncategorised = []
+
         total_active = sum(len(members) for _, members in groups) + len(uncategorised)
 
-        lines = [
-            f"# precis-toc — {total_active} skills grouped by purpose",
-            "",
-        ]
+        if category is not None:
+            lines = [
+                f"# precis-toc — {chosen} ({total_active} "
+                f"{'skill' if total_active == 1 else 'skills'})",
+                "",
+                "all categories: get(kind='skill', id='toc')",
+                "",
+            ]
+        else:
+            lines = [
+                f"# precis-toc — {total_active} skills grouped by purpose",
+                "",
+            ]
         if wanted is not None:
             parts = [
                 p
@@ -2005,6 +2071,34 @@ class SkillHandler(Handler):
         toc_schema = ["slug", "title", "synopsis"] + (
             ["read"] if usage is not None else []
         )
+
+        if category is None:
+            # The compact menu first — the per-category tables below
+            # overflow the first page, so this is the part that must
+            # land inside it (gr514221). Each row's ``open`` value is a
+            # paste-ready drill that re-serves only that group's table.
+            menu_rows = [
+                {
+                    "category": name,
+                    "skills": str(len(slugs)),
+                    "open": f"args={{'category': {name.split(' ', 1)[0].lower()!r}}}",
+                }
+                for name, slugs in groups
+            ]
+            if uncategorised:
+                menu_rows.append(
+                    {
+                        "category": "Other",
+                        "skills": str(len(uncategorised)),
+                        "open": "args={'category': 'other'}",
+                    }
+                )
+            lines.append("## Categories")
+            lines.append("")
+            lines.append(
+                render_agent_table(menu_rows, schema=["category", "skills", "open"])
+            )
+            lines.append("")
 
         fam_n = Counter(_skill_family_of(s) for s in active)
         big = [f"{f} {n}" for f, n in fam_n.most_common() if n >= 2]

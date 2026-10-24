@@ -81,6 +81,23 @@ A wide `~A..B` range can still overflow the MCP frame budget and
 return a `more(cursor='...')` footer — pagination mechanics:
 [[precis-toon]].
 
+## Browse the skill catalogue — id='toc'
+
+`get(kind='skill', id='toc')` lists every skill grouped by purpose.
+It opens with a **Categories** menu — each row's `open` column is a
+paste-ready drill that re-serves only that group's table, so you
+never drain the whole listing to reach one group:
+
+```python
+get(kind="skill", id="toc", args={"category": "drafting"})  # one group only
+```
+
+Case-insensitive substring, unique match required — the error names
+the real category list. `args={'tag': '<t>'}` / `args={'kinds': '<k>'}`
+/`args={'family': '<f>'}` filter the whole listing instead;
+`args={'by': 'family'}` regroups it. `search(kind='skill', q=…)` is
+the fuzzy alternative when no category name fits.
+
 ## See also
 
 - [[precis-paper-help]] — paper-specific TOC + drill-in

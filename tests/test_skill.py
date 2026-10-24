@@ -138,6 +138,25 @@ def test_get_missing_raises_with_options(skill: SkillHandler) -> None:
     assert any("search(kind='skill'" in h for h in hints)
 
 
+def test_missing_skill_notfound_names_deploy_gap(skill: SkillHandler) -> None:
+    """gr514411 — a slug merged on main but not yet deployed raised a
+    bare NotFound with no hint that the running build simply pre-dates
+    it. The error now names the deploy gap and points at the
+    ``precis-status`` build report so the agent can check."""
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="nonexistent-skill")
+    hints = excinfo.value.next
+    hints = hints if isinstance(hints, list) else [hints or ""]
+    assert any("not yet deployed" in h for h in hints)
+    assert any("precis-status" in h for h in hints)
+    # The find-in-ref path (q= on a concrete slug) carries the same hint.
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="nonexistent-skill", q="anything")
+    hints = excinfo.value.next
+    hints = hints if isinstance(hints, list) else [hints or ""]
+    assert any("not yet deployed" in h for h in hints)
+
+
 def test_invalid_slug_raises(skill: SkillHandler) -> None:
     # The id parser is the first gate (regex-tight); the slug
     # validator the second. Both routes produce BadInput — that's
@@ -481,7 +500,11 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
     from precis.handlers.skill import _list_skills
 
     skills = _list_skills()
-    assert 5 <= len(skills) <= 210  # +precis-workspace-help
+    # gr514416: the ceiling is loose headroom (~2x the corpus at the
+    # time of writing), not a per-addition ratchet — adding a skill
+    # must not require a test edit; the bound still catches a
+    # discovery walk gone wrong (empty corpus or a runaway glob).
+    assert 5 <= len(skills) <= 400
 
 
 # ── subdirectory discovery + include expansion ───────────────────────
@@ -811,6 +834,58 @@ def test_toc_listed_in_bare_index_hint(skill: SkillHandler) -> None:
     TOC immediately rather than scrolling the raw slug list."""
     out = skill.get()
     assert "id='toc'" in out.body
+
+
+def test_toc_opens_with_categories_menu(skill: SkillHandler) -> None:
+    """gr514221 — the unfiltered toc is ~34 KB, so a folded/paginated
+    first page never reached the rows an agent wanted. The body now
+    opens with a compact Categories menu naming each group and its
+    drill arg, so page 1 alone carries the whole decision surface."""
+    body = skill.get(id="toc").body
+    head = body[:3000]
+    assert "## Categories" in head
+    for name in ("Orientation", "Core verbs", "Drafting & figures"):
+        assert name in head
+    assert "args={'category': 'drafting'}" in head
+
+
+def test_toc_category_drill_serves_one_group(skill: SkillHandler) -> None:
+    """``args={'category': …}`` (flattened to the ``category=`` kwarg
+    by dispatch) re-serves only that group's table — the targeted
+    read the compact menu advertises."""
+    body = skill.get(id="toc", category="drafting").body
+    assert "## Drafting & figures" in body
+    assert "precis-draft-help" in body
+    # Other groups' sections are not rendered.
+    assert "## Orientation" not in body
+
+
+def test_toc_category_unknown_lists_options(skill: SkillHandler) -> None:
+    """An unmatched category raises BadInput naming the real category
+    list — the agent learns the enum from one round-trip."""
+    with pytest.raises(BadInput) as excinfo:
+        skill.get(id="toc", category="zzz-no-such")
+    assert excinfo.value.options is not None
+    assert "Orientation" in excinfo.value.options
+
+
+def test_toc_category_ambiguous_is_refused(skill: SkillHandler) -> None:
+    """A substring matching several categories refuses rather than
+    guessing — 'e' appears inside most category names."""
+    with pytest.raises(BadInput):
+        skill.get(id="toc", category="e")
+
+
+def test_toc_category_names_cover_every_skill(skill: SkillHandler) -> None:
+    """Ratchet: the union of every category's drilled table still
+    lists every available skill — the Categories menu must not strand
+    a slug on no page."""
+    from precis.handlers.skill import _list_skills
+
+    body = skill.get(id="toc").body
+    assert "## Categories" in body
+    for slug in _list_skills():
+        assert slug in body, f"{slug} missing from the toc"
 
 
 # ── semantic search via FileCorpusIndex ──────────────────────────────
