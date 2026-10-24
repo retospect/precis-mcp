@@ -72,6 +72,11 @@ nightly — the diff-cover verdict is still open.
 
 ## Do next
 
+0. **[`test-loop-speed.md`](../test-loop-speed.md)** (draft, Reto
+   2026-10-24: the top friction theme goes first) — single-file
+   `scripts/test` measured 17.9 s no-DB / 40.6 s DB; the cost is xdist
+   `-n6`, a ~6 s preflight and ~4.5 s per-process DB setup, not Docker.
+   7 slices; four questions for Reto at its end.
 0. **[`release-train.md`](../release-train.md)** (draft, Reto 2026-10-23
    ruling) — qland everything, harness-only `--remote`, one 10-shard
    release gate fixed in place, next cut at deploy start. 7 slices; two
