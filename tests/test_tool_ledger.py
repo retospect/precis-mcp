@@ -254,11 +254,18 @@ class TestSessionKey:
     def test_bound_session_mints_id_and_counts(self) -> None:
         from precis import serve_ledger
 
+        # 56ca460e1: current_session_key PEEKS the next row's seq; the
+        # ledger's writer (_mint_session_key) consumes it.
         with serve_ledger.session_scope(_FakeSession()):
-            sid1, seq1 = tool_ledger.current_session_key()
-            sid2, seq2 = tool_ledger.current_session_key()
+            peek1 = tool_ledger.current_session_key()
+            peek2 = tool_ledger.current_session_key()
+            sid1, seq1 = tool_ledger._mint_session_key()
+            sid2, seq2 = tool_ledger._mint_session_key()
+            after = tool_ledger.current_session_key()
         assert sid1 == sid2 is not None
+        assert peek1 == peek2 == (sid1, seq1)
         assert seq2 == (seq1 or 0) + 1
+        assert after == (sid2, (seq2 or 0) + 1)
 
     def test_distinct_sessions_get_distinct_ids(self) -> None:
         from precis import serve_ledger
