@@ -2843,8 +2843,9 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
 
     ``{"digest": results.network_digest | None, "template": <resolved>,
     "version": meta.autocatpath_version | None, "environment_basis": <sha256
-    | None>}`` (``template`` per :func:`_resolved_template`, the environment
-    basis per :func:`_environment_basis`). ``None`` when ``pw_meta`` isn't a
+    | None>, "tpd_basis": <sha256 | "none">}`` (``template`` per
+    :func:`_resolved_template`, the environment basis per
+    :func:`_environment_basis`, the TPD basis per :func:`_tpd_basis`). ``None`` when ``pw_meta`` isn't a
     dict or carries no ``config`` (nothing to resolve a network from — leave
     the candidate unstamped rather than guess).
     """
@@ -2861,7 +2862,20 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
         "template": _resolved_template(config),
         "version": str(version) if version else None,
         "environment_basis": _environment_basis(config),
+        "tpd_basis": _tpd_basis(results),
     }
+
+
+def _tpd_basis(results: Mapping[str, Any]) -> str:
+    """Kinetics v2 D11: the applied ``tpd_corrected`` offsets a result was
+    priced with — the TPD check's ``tpd_set_sha256`` (reference set plus
+    every applied offset), ``"none"`` when no offset was applied or the
+    check never ran.  Applying or changing an offset changes it, so a
+    margin measured with an offset never ranks against one without
+    (:func:`precis.quest.frontier.same_network_basis`)."""
+    tpd = results.get("kinetics_tpd")
+    tag = tpd.get("tpd_set_sha256") if isinstance(tpd, Mapping) else None
+    return str(tag) if tag else "none"
 
 
 def _environment_basis(config: Mapping[str, Any]) -> str | None:

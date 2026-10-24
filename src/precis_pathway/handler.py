@@ -214,6 +214,7 @@ class PathwayHandler(Handler):
             "steps",
             "kinetics",
             "kinetics-sweep",
+            "tpd",
             "manifest",
             "trust",
             "warnings",
@@ -658,7 +659,15 @@ class PathwayHandler(Handler):
         computed = bool(meta.get("graph"))
         if (
             v
-            in ("analysis", "steps", "kinetics", "kinetics-sweep", "trust", "warnings")
+            in (
+                "analysis",
+                "steps",
+                "kinetics",
+                "kinetics-sweep",
+                "tpd",
+                "trust",
+                "warnings",
+            )
             and not computed
         ):
             return Response(
@@ -700,6 +709,10 @@ class PathwayHandler(Handler):
             from .toon_views import kinetics_sweep_text
 
             return Response(body=kinetics_sweep_text(meta))
+        if v == "tpd":
+            from .toon_views import tpd_text
+
+            return Response(body=tpd_text(meta))
         if v == "trust":
             from .toon_views import trust_toon
 

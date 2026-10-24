@@ -694,6 +694,36 @@
         "nu_range": {"value": "10^14-10^17", "unit": "s-1", "dimension": "first_order", "printed": "10 14 to 10 17 s –1", "chunk": "pc4480624"},
         "nu_empirical_ref": {"value": "10^13", "unit": "s-1", "dimension": "first_order", "printed": "10 13 s –1", "chunk": "pc4480624"}
       }
+    },
+    {
+      "id": "co-pd111-pa498702",
+      "adsorbate": "CO",
+      "surface": "Pd(111)",
+      "paper": "pa498702",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Single TPD peak at 530 K, beta 0.5 K/s; 2 L gives 60% of the saturation yield, ~0.36 ML. First-order Redhead energy with an assumed prefactor 1e13-1e15 s-1. Full text ingested after the 2026-10-23 extraction. The only measured CO/Pd(111) T_p in the set (kinetics v2 slice 9 held-out point).",
+      "values": {
+        "t_p_K": {"value": 530, "unit": "K", "printed": "530 K", "chunk": "pc5179008"},
+        "beta_K_s": {"value": 0.5, "unit": "K/s", "printed": "0.5 K s-1", "chunk": "pc5178995"},
+        "theta0_ML": {"value": 0.36, "unit": "ML", "printed": "0.36 ML", "chunk": "pc5179008"},
+        "e_des_redhead": {"value": "147-167", "unit": "kJ/mol", "printed": "147 – 167 kJ mol-1", "chunk": "pc5179008"}
+      }
+    },
+    {
+      "id": "no-pd111-pa498702",
+      "adsorbate": "NO",
+      "surface": "Pd(111)",
+      "paper": "pa498702",
+      "source_role": "primary",
+      "method": "redhead",
+      "note": "Single NO desorption peak at 560 K (three-fold hollow), beta 0.5 K/s; saturation 0.5 ML at 10 L. Redhead energy with an assumed prefactor 1e13-1e15 s-1.",
+      "values": {
+        "t_p_K": {"value": 560, "unit": "K", "printed": "560 K", "chunk": "pc5179016"},
+        "beta_K_s": {"value": 0.5, "unit": "K/s", "printed": "0.5 K s-1", "chunk": "pc5178995"},
+        "theta_sat_ML": {"value": 0.5, "unit": "ML", "printed": "0.5 ML", "chunk": "pc5179016"},
+        "e_des_redhead": {"value": "155-177", "unit": "kJ/mol", "printed": "155-177 kJ mol-1", "chunk": "pc5179016"}
+      }
     }
   ]
 }

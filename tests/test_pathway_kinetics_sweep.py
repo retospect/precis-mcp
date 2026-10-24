@@ -64,6 +64,7 @@ def test_kinetics_job_dispatch_runs_grid_and_persists(store, monkeypatch):
     import precis_pathway.runner as runner_mod
 
     monkeypatch.setattr(runner_mod, "run_kinetics_sweep_subprocess", _fake_sweep)
+    monkeypatch.setattr(runner_mod, "has_tpd", lambda: False)  # the sweep path only
     ctx = MagicMock()
     ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {}}}
     ctx.store = store
@@ -99,6 +100,7 @@ def test_kinetics_job_records_failure_on_sweep_error(store, monkeypatch):
     import precis_pathway.runner as runner_mod
 
     monkeypatch.setattr(runner_mod, "run_kinetics_sweep_subprocess", _fail_sweep)
+    monkeypatch.setattr(runner_mod, "has_tpd", lambda: False)  # the sweep path only
     ctx = MagicMock()
     ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {}}}
     ctx.store = store

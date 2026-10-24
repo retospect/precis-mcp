@@ -1772,11 +1772,20 @@ def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
     deploy would demote every un-restamped margin). A key that is present
     must be non-null on both sides that carry it and equal when both do —
     a ``None`` basis (config not projectable) never compares, not even with
-    ``None``."""
+    ``None``.
+
+    Kinetics v2 D11: ``tpd_basis`` names the applied ``tpd_corrected``
+    offsets (``"none"`` without one); two stamps that both carry it compare
+    only when equal, so a margin measured with an offset and one without
+    never rank together.  A stamp without the key predates slice 9 and is
+    compatible (the same legacy rule as ``environment_basis``)."""
     if a.get("version") != b.get("version"):
         return False
     keyed = [s["environment_basis"] for s in (a, b) if "environment_basis" in s]
     if any(e is None for e in keyed) or len(set(keyed)) > 1:
+        return False
+    tpd = [s["tpd_basis"] for s in (a, b) if "tpd_basis" in s]
+    if len(set(tpd)) > 1:
         return False
     da, db = a.get("digest"), b.get("digest")
     if da and db:

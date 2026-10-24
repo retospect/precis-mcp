@@ -328,9 +328,12 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    accelerator seam, channel-scaling fallback, `kmc.compare`; the
    `Acceleration` record gates KMC trust in `_kinetics_scalars`) is
    catpath v0.37.0; slice 10 (validation manifest, `autocatpath_revalidate`,
-   `view='manifest'`) is catpath v0.38.0 (cc81fb1, tagged locally, not
-   pushed pending review; the precis pin moves after the push); slice 9
-   (TPD validation) is next.
+   `view='manifest'`) is catpath v0.38.0; slice 9 (TPD validation,
+   `tpd_corrected` offsets, `view='tpd'`, the TPD revalidation leg) is
+   catpath v0.39.0. Its CO/Pd(111) beta = 2 and 5 K/s rows are derived
+   (provisional, Reto to confirm — spec §Decisions); pa186444's
+   heating-rate series is plotted only, so it cannot replace them.
+   Slices 7 (waits on a ruling) and 8 remain.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing

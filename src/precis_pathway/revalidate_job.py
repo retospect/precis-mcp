@@ -8,9 +8,10 @@ in ``pyproject.toml``. Input: a pathway handle and the ``manifest_id`` its
    cannot satisfy the manifest's lock hash or engine version/commit
    (``autocatpath.manifest.unsatisfied``), or when the id does not match
    the stored record;
-2. re-runs the CPU legs from the stored inputs and seeds: the chain/MF
-   kinetics solve and, when the result carries one, the (T, p_total) sweep
-   with its seeded lattice KMC at ``kmc_points``.  The MC sensitivity band is
+2. re-runs the CPU legs from the stored inputs and seeds: the TPD check
+   (slice 9; first, because its applied offsets feed the others), the
+   chain/MF kinetics solve and, when the result carries one, the (T,
+   p_total) sweep with its seeded lattice KMC at ``kmc_points``.  The MC sensitivity band is
    not an observable and is skipped (``n_samples = 0``: its draw count is
    wall-clock calibrated, so it could never be a reproducible input);
 3. judges every observable against the manifest's own tolerance table —
@@ -20,9 +21,10 @@ in ``pyproject.toml``. Input: a pathway handle and the ``manifest_id`` its
    ``meta.revalidation[<manifest_id>]`` on the pathway ref.
 
 Not re-run here: the min-energy-path leg (relax/NEB/refine needs the GPU
-seed lane) and TPD (slice 9). They land in ``not_run``, so the verdict is at
-most ``reproduced_partial(energies,tpd)`` with ``complete: false`` — a
-result is validated only when ``complete`` is true. An engine without a
+seed lane), and the TPD leg of a result stored without a TPD record. They
+land in ``not_run``, so the verdict is at most ``reproduced_partial(energies)``
+with ``complete: false`` — a result is validated only when ``complete`` is
+true. An engine without a
 stamped commit (either side) adds a caveat with the same effect.
 
 Only an explicit request mints this job (``put(kind='pathway', id=<handle>,
@@ -104,12 +106,21 @@ def rerun_cpu_legs(
     }
     now["network_digest"] = then.get("network_digest")
     failed: list[str] = []
+    tpd: dict[str, Any] | None = None
+    if "tpd" in legs:
+        runner.run_kinetics_tpd_subprocess(cfg, now)
+        if "kinetics_tpd_error" in now:
+            failed.append("tpd")
+        else:
+            tpd = now["kinetics_tpd"]
+    offsets = tpd if isinstance(tpd, dict) and tpd.get("offsets") else None
     if "kinetics" in legs:
         # run_kinetics_subprocess reads and writes only results_json
         artifact = cast("PathwayArtifact", {"results_json": now})
-        runner.run_kinetics_subprocess(cfg, artifact)
+        runner.run_kinetics_subprocess(cfg, artifact, tpd=offsets)
         if "kinetics_error" in now:
             failed.append("kinetics")
+    runner.fold_tpd(now)
     if "sweep" in legs and then.get("kinetics_sweep"):
         runner.run_kinetics_sweep_subprocess(cfg, now)
         if "kinetics_sweep_error" in now:
@@ -168,11 +179,24 @@ def revalidate(
 
     then = dict(meta.get("results") or {})
     then_obs = m.observables(then)
-    now, failed = rerun(dict(meta.get("config") or {}), then, legs)
+    # a result stored without a TPD record has nothing the TPD leg could be
+    # judged against: not run (named), never a silent pass
+    stored_tpd = then.get("kinetics_tpd")
+    no_tpd = "tpd" in legs and not (
+        isinstance(stored_tpd, dict) and stored_tpd.get("tpd")
+    )
+    run_legs = tuple(leg for leg in legs if not (leg == "tpd" and no_tpd))
+    now, failed = rerun(dict(meta.get("config") or {}), then, run_legs)
     now_obs = m.observables(now)
     platform_now = platform_now or m.capture_platform()
     column = m.column_for(manifest.platform, platform_now)
-    not_run = {leg: why for leg, why in vm.NOT_RUN_LEGS.items() if leg not in legs}
+    not_run = {
+        leg: vm.NOT_RUN_LEGS.get(leg, "not requested")
+        for leg in (*vm.NOT_RUN_LEGS, *vm.CPU_LEGS)
+        if leg not in legs
+    }
+    if no_tpd:
+        not_run["tpd"] = vm.NO_TPD_RECORD
     report = m.compare(
         then_obs,
         now_obs,

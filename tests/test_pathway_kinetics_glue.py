@@ -329,7 +329,10 @@ def test_kinetics_job_reports_kmc_points(monkeypatch):
 
     import precis_pathway
 
-    fake_runner = SimpleNamespace(run_kinetics_sweep_subprocess=_fake_sweep)
+    # an engine without the slice-9 TPD check: the job goes straight to the sweep
+    fake_runner = SimpleNamespace(
+        run_kinetics_sweep_subprocess=_fake_sweep, has_tpd=lambda: False
+    )
     monkeypatch.setitem(sys.modules, "precis_pathway.runner", fake_runner)
     monkeypatch.setattr(precis_pathway, "runner", fake_runner, raising=False)
     ctx = MagicMock()

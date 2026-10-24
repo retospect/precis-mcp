@@ -141,17 +141,31 @@ put(kind="pathway", id="no-nh3-pd", mode="revalidate",
 
 The `autocatpath_revalidate` job refuses, naming the field, when the host's
 lock hash or engine version/commit differs. Otherwise it re-runs the
-kinetics and sweep legs and reports `reproduced`, `reproduced_partial(...)`,
+TPD, kinetics and sweep legs and reports `reproduced`, `reproduced_partial(...)`,
 `drifted(<observables>)` or `failed(<leg>)`. It uses the same-platform
 tolerance column when arch, OS and accelerator match, else the
 cross-platform column.
 
 **A result is validated only when a re-validation says `complete: true`.**
-Today the relax/NEB leg and TPD are not re-run, so every re-validation is
+Today the relax/NEB leg is not re-run (nor TPD on a result stored without
+a TPD record), so every re-validation is `reproduced_partial(energies)` or
 `reproduced_partial(energies,tpd)` with `complete: false`: the kinetics
 reproduce, but the result is NOT validated. An engine without a stamped
 commit gives `reproduced_partial(engine-unstamped-…)`, also not validated.
 `view='manifest'` prints `validated: NO` until a complete run exists.
+
+## TPD check (experiment anchor)
+
+The `autocatpath_kinetics` job (engine >= 0.39) ramps every adsorbate the
+network desorbs in UHV and compares the simulated peak with literature TPD
+for the surface family `kinetics.tpd.family` (e.g. `"Pd(111)"`; absent =
+every reference null). `view='tpd'` shows per adsorbate the reference
+paper, simulated vs reference T_p and the status: `matched` (within
+15 K), `corrected` (a `tpd_corrected` offset was fitted and every rate
+uses it; offset, sigma and base provenance are listed), `refused`
+(dissociation, reservoir, order not reproduced or |offset| > 0.5 eV —
+the reason is printed) or `no_reference`. A refused or uncorrected
+mismatch makes the TOF untrusted.
 
 ## The potential lever (CHE electrochemistry)
 

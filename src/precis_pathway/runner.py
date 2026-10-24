@@ -1631,6 +1631,7 @@ def run_kinetics(
     artifact: PathwayArtifact,
     *,
     budget_s: int | None = None,
+    tpd: dict[str, Any] | None = None,
 ) -> None:
     """Run catpath's post-hoc microkinetics over a just-aggregated pathway,
     in-process, folding the result onto ``artifact["results_json"]`` (mutated
@@ -1655,6 +1656,11 @@ def run_kinetics(
     predating the ``kinetics`` module, or any exception the solve raises,
     lands as ``results_json["kinetics_error"]`` instead — the aggregate
     itself still succeeds and persists either way.
+
+    ``tpd`` (kinetics v2 slice 9, engine >= 0.39) is the ``kinetics_tpd``
+    payload of :func:`run_kinetics_tpd_subprocess`: its applied offsets put
+    the solve on the ``tpd_corrected`` states (provider ``vacuum+tpd``) and
+    its comparisons land on the v2 record.
     """
     results_json = artifact["results_json"]
     kinetics = _import_kinetics()
@@ -1691,8 +1697,17 @@ def run_kinetics(
             return
         configured = cfg.kinetics.n_samples
         cfg.kinetics.n_samples = n_samples
+        extra = {"tpd": tpd} if tpd is not None else {}
         out = kinetics.solve(
-            cfg, nodes, edges, net, refs, span=span, mari=None, log=lambda *a, **k: None
+            cfg,
+            nodes,
+            edges,
+            net,
+            refs,
+            span=span,
+            mari=None,
+            log=lambda *a, **k: None,
+            **extra,
         )
         # engine >= 0.33 returns (v1, kinetics_v2); older engines return the
         # v1 dict alone. The v2 record sits BESIDE the v1 block (D8).
@@ -1747,6 +1762,7 @@ def run_kinetics_subprocess(
     artifact: PathwayArtifact,
     *,
     timeout: int | None = None,
+    tpd: dict[str, Any] | None = None,
 ) -> None:
     """:func:`run_kinetics` under a wall-clock ceiling, in a killable child.
 
@@ -1785,7 +1801,9 @@ def run_kinetics_subprocess(
     results_json = artifact["results_json"]
     budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
     if budget == 0:
-        run_kinetics(config, artifact, budget_s=0)
+        run_kinetics(
+            config, artifact, budget_s=0, **({"tpd": tpd} if tpd is not None else {})
+        )
         return
 
     import subprocess
@@ -1804,6 +1822,7 @@ def run_kinetics_subprocess(
         "nodes": results_json.get("nodes"),
         "edges": results_json.get("edges"),
         "score": results_json.get("score"),
+        "tpd": tpd,
     }
     with tempfile.TemporaryDirectory(prefix="autocatpath-kinetics-") as td:
         req_path = os.path.join(td, "request.json")
@@ -1887,6 +1906,7 @@ def run_kinetics_sweep_subprocess(
         "edges": results_json.get("edges"),
         "score": results_json.get("score"),
         "thermo": results_json.get("thermo"),
+        "kinetics_tpd": results_json.get("kinetics_tpd"),
     }
     with tempfile.TemporaryDirectory(prefix="autocatpath-kinsweep-") as td:
         req_path = os.path.join(td, "request.json")
@@ -1956,6 +1976,7 @@ def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) ->
             or config.get("target")
             or "NH3"
         )
+        tpd = results_json.get("kinetics_tpd")
         payload = _kin.sweep(
             cfg,
             nodes,
@@ -1967,6 +1988,8 @@ def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) ->
             target=target,
             thermo_record=results_json.get("thermo"),
             log=lambda *a, **k: None,
+            # slice 9: the sweep prices the tpd_corrected states too
+            **({"tpd": tpd} if isinstance(tpd, dict) and tpd.get("offsets") else {}),
         )
         results_json["kinetics_sweep"] = payload
         if isinstance(payload.get("kinetics_v2"), dict):
@@ -1987,6 +2010,7 @@ def _kinetics_sweep_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) 
         "edges": req.get("edges"),
         "score": req.get("score"),
         "thermo": req.get("thermo"),
+        "kinetics_tpd": req.get("kinetics_tpd"),
     }
     try:
         _run_kinetics_sweep(req["config"], results_json)
@@ -2012,6 +2036,163 @@ def _kinetics_sweep_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) 
     return 0
 
 
+def has_tpd() -> bool:
+    """Whether the installed engine carries the slice-9 TPD check (>= 0.39)."""
+    kinetics = _import_kinetics()
+    return kinetics is not None and hasattr(kinetics, "tpd_check")
+
+
+def run_kinetics_tpd_subprocess(
+    config: dict[str, Any],
+    results_json: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> None:
+    """The D11 TPD check under a wall-clock ceiling, killable (kinetics v2
+    slice 9).
+
+    Mutates ``results_json``: ``kinetics_tpd`` (the engine's
+    ``kinetics.tpd_check`` payload — per-adsorbate comparisons, applied
+    offsets, the corrections stamp) on success, ``kinetics_tpd_error``
+    otherwise; never raises.  Same child machinery as
+    :func:`run_kinetics_sweep_subprocess`.
+    """
+    budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
+    if budget == 0:
+        _run_kinetics_tpd(config, results_json)
+        return
+
+    import subprocess
+    import tempfile
+
+    request = {
+        "mode": "kinetics_tpd",
+        "config": config,
+        "nodes": results_json.get("nodes"),
+        "edges": results_json.get("edges"),
+        "score": results_json.get("score"),
+        "thermo": results_json.get("thermo"),
+    }
+    with tempfile.TemporaryDirectory(prefix="autocatpath-kintpd-") as td:
+        req_path = os.path.join(td, "request.json")
+        out_path = os.path.join(td, "result.json")
+        with open(req_path, "w", encoding="utf-8") as fh:
+            json.dump(request, fh)
+        try:
+            proc = subprocess.run(
+                _child_cmd(req_path, out_path),
+                timeout=budget,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            results_json["kinetics_tpd_error"] = (
+                f"TPD check timed out after {budget}s and was killed"
+            )
+            return
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            tail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            results_json["kinetics_tpd_error"] = (
+                f"TPD child exited {proc.returncode} without a result"
+                + (f": {tail}" if tail else "")
+            )
+            return
+    if isinstance(payload.get("kinetics_tpd"), dict):
+        results_json["kinetics_tpd"] = payload["kinetics_tpd"]
+    else:
+        results_json["kinetics_tpd_error"] = payload.get(
+            "kinetics_tpd_error", "TPD child returned no result"
+        )
+
+
+def _run_kinetics_tpd(config: dict[str, Any], results_json: dict[str, Any]) -> None:
+    """In-process half of :func:`run_kinetics_tpd_subprocess`; never raises."""
+    try:
+        from autocatpath import kinetics as _kin
+
+        if not hasattr(_kin, "tpd_check"):
+            results_json["kinetics_tpd_error"] = (
+                f"engine {__version__} lacks the TPD check (< 0.39)"
+            )
+            return
+        from autocatpath.ledger import compute_ledgers
+        from autocatpath.pipeline import _build_net, ledger_refs
+        from autocatpath.thermo import build_table
+
+        cfg = _prep(config, None)
+        nodes = results_json["nodes"]
+        net = _build_net(cfg)
+        ledgers, _warns = compute_ledgers(net)
+        refs = ledger_refs(cfg, net, ledgers, log=lambda *a, **k: None)
+        table = build_table(cfg)
+        if table and refs:
+            refs = table.corrected_refs(refs)
+        g = {
+            str(k): float(v.get("mean", v) if isinstance(v, dict) else v)
+            for k, v in nodes.items()
+        }
+        target = str(
+            (results_json.get("score") or {}).get("target")
+            or config.get("target")
+            or "NH3"
+        )
+        results_json["kinetics_tpd"] = _kin.tpd_check(
+            cfg,
+            nodes,
+            results_json["edges"],
+            net,
+            ledgers,
+            refs,
+            g=g,
+            target=target,
+            thermo_record=results_json.get("thermo"),
+            log=lambda *a, **k: None,
+        )
+    except Exception as exc:
+        log.warning("autocatpath TPD check failed", exc_info=True)
+        results_json["kinetics_tpd_error"] = (
+            _mem_error_text(_mem_limit_bytes())
+            if isinstance(exc, MemoryError) and _mem_limit_bytes()
+            else str(exc)
+        )
+
+
+def _kinetics_tpd_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int:
+    """Child half of :func:`run_kinetics_tpd_subprocess`."""
+    results_json: dict[str, Any] = {
+        k: req.get(k) for k in ("nodes", "edges", "score", "thermo")
+    }
+    _run_kinetics_tpd(req["config"], results_json)
+    payload = (
+        {"kinetics_tpd": results_json["kinetics_tpd"]}
+        if "kinetics_tpd" in results_json
+        else {"kinetics_tpd_error": results_json.get("kinetics_tpd_error", "no result")}
+    )
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    os.replace(tmp_path, out_path)
+    return 0
+
+
+def fold_tpd(results_json: dict[str, Any]) -> None:
+    """Fold an UNCORRECTED TPD check (no applied offset) onto the stored v2
+    record: its comparisons become ``kinetics_v2.tpd``; every other field
+    stays the aggregate's (the provider did not change).  A check that
+    applied offsets is not folded — the kinetics solve re-runs on the
+    corrected states instead (:func:`run_kinetics_subprocess` with
+    ``tpd=``)."""
+    tpd = results_json.get("kinetics_tpd")
+    v2 = results_json.get("kinetics_v2")
+    if isinstance(tpd, dict) and not tpd.get("offsets") and isinstance(v2, dict):
+        v2["tpd"] = tpd.get("tpd") or None
+
+
 def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int:
     """Child half of :func:`run_kinetics_subprocess`.
 
@@ -2032,6 +2213,7 @@ def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int
             req["config"],
             cast("PathwayArtifact", artifact),
             budget_s=req.get("budget_s"),
+            **({"tpd": req["tpd"]} if req.get("tpd") is not None else {}),
         )
         rj = artifact["results_json"]
         payload = (
@@ -2094,6 +2276,8 @@ def _subprocess_main(argv: list[str]) -> int:
         return _kinetics_child(req, out_path, mem_cap)
     if req.get("mode") == "kinetics_sweep":
         return _kinetics_sweep_child(req, out_path, mem_cap)
+    if req.get("mode") == "kinetics_tpd":
+        return _kinetics_tpd_child(req, out_path, mem_cap)
     try:
         result: dict[str, Any]
         if req.get("mode") == "aggregate":

@@ -541,6 +541,28 @@
    "printeds": [
     "first order desorption"
    ]
+  },
+  "pc5178995": {
+   "sha256": "f2728ebb68b29c36c528deb29038a6281c28ad2fdf27c866d8efa36dc2a98ae0",
+   "printeds": [
+    "0.5 K s-1"
+   ]
+  },
+  "pc5179008": {
+   "sha256": "c6a75dfeffab60a4ea66da3833cde42cd9bb348b08647a0a4b34f97b38d76261",
+   "printeds": [
+    "530 K",
+    "0.36 ML",
+    "147 – 167 kJ mol-1"
+   ]
+  },
+  "pc5179016": {
+   "sha256": "7ff4130e701a840fed59ef0e7f41013b6c5ddf654fc441500f62cdedecc98b43",
+   "printeds": [
+    "560 K",
+    "0.5 ML",
+    "155-177 kJ mol-1"
+   ]
   }
  }
 }

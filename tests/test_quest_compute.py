@@ -2611,6 +2611,7 @@ class TestNetworkBasis:
             "template": "parked",
             "version": "0.22.0",
             "environment_basis": compute_mod._environment_basis(config),
+            "tpd_basis": "none",
         }
 
     def test_pre_field_stamp_is_compatible_with_a_keyed_stamp(self) -> None:
@@ -5341,6 +5342,7 @@ class TestTierLadderHarvest:
             "template": "coadsorbed",
             "version": "0.22.0",
             "environment_basis": _LEGACY_ENV_BASIS,
+            "tpd_basis": "none",
         }
         assert meta["network_basis"] == basis
         # stamped per network-dependent measure actually present
@@ -5393,7 +5395,7 @@ class TestTierLadderHarvest:
         )
         compute_mod.harvest_measures(store, qid)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        env = {"environment_basis": _LEGACY_ENV_BASIS}
+        env = {"environment_basis": _LEGACY_ENV_BASIS, "tpd_basis": "none"}
         old = {"digest": None, "template": "parked", "version": "0.21.0", **env}
         new = {"digest": None, "template": "coadsorbed", "version": "0.22.0", **env}
         assert meta["network_basis"] == new  # latest harvest
@@ -5498,12 +5500,14 @@ class TestTierLadderHarvest:
                 "template": "parked",
                 "version": "0.21.0",
                 "environment_basis": _LEGACY_ENV_BASIS,
+                "tpd_basis": "none",
             },
             "barrier": {
                 "digest": None,
                 "template": "coadsorbed",
                 "version": "0.22.0",
                 "environment_basis": _LEGACY_ENV_BASIS,
+                "tpd_basis": "none",
             },
         }
         again = compute_mod.backfill_network_basis(store, qid)

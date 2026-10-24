@@ -75,8 +75,10 @@ coverage-dependent forms), `nu_prefactor` (or `nu_theta_lo`,
 ## Units and conventions
 
 - Values stay in the units printed in the paper: kcal/mol and kJ/mol
-  coexist (1 kcal/mol = 4.184 kJ/mol ≈ 0.04336 eV); slice 9 converts when
-  it builds `tests/validation/tpd/<surface>/<adsorbate>.yaml`.
+  coexist (1 kcal/mol = 4.184 kJ/mol ≈ 0.04336 eV); slice 9 converted
+  the rows it uses into the engine's reference set, catpath
+  `autocatpath/data/tpd/<family>/<adsorbate>.yaml` (package data, hashed
+  into the validation manifest).
 - `θ` is in ML as printed (per surface atom, or per the paper's MLE
   calibration where stated).
 - OCR artifacts in `printed` are deliberate: they are what the chunk
@@ -98,9 +100,17 @@ coverage-dependent forms), `nu_prefactor` (or `nu_theta_lo`,
 - `pa498692`, `pa498694`, `pa498697`, `pa498698` — methods/prefactor
   papers; abstracts carry no measurement rows (pa498692's
   S_ad = 0.70·S_gas − 3.3R prefactor correlation is noted here).
-- `pa498702`, `pa498710`, `pa498713`, `pa498716`, `pa498805`,
-  `pa186444` — abstract-only cards with no extractable numbers
-  (qualitative statements only).
+- `pa498710`, `pa498713`, `pa498716`, `pa498805`, `pa186444` —
+  abstract-only cards with no extractable numbers (qualitative
+  statements only). `pa498702` was in this list until its full text
+  landed (2026-10-24); its CO and NO rows are now in the table.
+  `pa186444` is Yu, Zhang, Wei, Liu & Chen, Faraday Discuss. 267 (2026),
+  10.1039/D5FD00122F; `perplexity-research:498670` (and from it the
+  spec's D11 table) named its first author "Turaczy", which Crossref
+  does not support. Its full text landed 2026-10-24: the CO/Pd(111)
+  heating-rate series (0.5, 1, 2, 4 K/s) is plotted only (Fig. 1), so
+  no T_p row is extractable; it prints the linearized-Redhead
+  E_d = 161.7 kJ/mol.
 - `pa498696` — DFT+MC study of CO/Pt(111) desorption; comparison to
   calorimetry/TPD is its subject, but no reference numbers in held text
   beyond the abstract claim.

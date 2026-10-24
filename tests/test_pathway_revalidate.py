@@ -144,6 +144,38 @@ def _rerun(solve, scale: float = 1.0):
     return rerun
 
 
+TPD_FIXTURE = Path(__file__).parent / "fixtures" / "kinetics_tpd.json"
+
+
+@pytest.fixture
+def stored_tpd(stored) -> dict[str, Any]:
+    """``stored`` with a slice-9 TPD record on it (the real catpath 0.39
+    ``tpd.run`` payload of ``tests/fixtures/kinetics_tpd.json``)."""
+    with TPD_FIXTURE.open(encoding="utf-8") as fh:
+        tpd = json.load(fh)
+    out = copy.deepcopy(stored)
+    out["results"]["kinetics_tpd"] = tpd
+    out["results"]["kinetics_v2"]["tpd"] = tpd["tpd"]
+    return out
+
+
+def _rerun_tpd(solve, asked: list[tuple[str, ...]] | None = None):
+    """A re-run that also re-runs the TPD leg (reproducing the stored
+    record) when it is asked to — and appends the legs it was asked to
+    ``asked``."""
+    asked = [] if asked is None else asked
+
+    def rerun(config, then, legs):
+        asked.append(tuple(legs))
+        now = solve(config)
+        if "tpd" in legs:
+            now["kinetics_tpd"] = copy.deepcopy(then["kinetics_tpd"])
+            now["kinetics_v2"]["tpd"] = copy.deepcopy(then["kinetics_tpd"]["tpd"])
+        return now, ()
+
+    return rerun
+
+
 def _other_platform() -> Any:
     p = engine_manifest.capture_platform()
     arch = "x86_64" if p.arch == "arm64" else "arm64"
@@ -215,27 +247,67 @@ def test_same_platform_revalidation_reproduces_every_observable(
     assert entry["caveats"] == []
 
 
-def test_only_a_run_of_every_leg_is_complete(stored, solve, lock) -> None:
-    every = ("kinetics", "kmc", "sweep", "energies", "tpd")
+def test_only_a_run_of_every_leg_is_complete(stored_tpd, solve, lock) -> None:
+    every = ("tpd", "kinetics", "kmc", "sweep", "energies")
     entry = revalidate(
-        stored, stored["manifest_id"], rerun=_rerun(solve), lock=lock, legs=every
+        stored_tpd,
+        stored_tpd["manifest_id"],
+        rerun=_rerun_tpd(solve),
+        lock=lock,
+        legs=every,
     )
     assert entry["verdict"] == "reproduced" and entry["complete"] is True
     assert "energies" in {o["observable"] for o in entry["observables"]}
 
 
-def test_an_unstamped_engine_is_never_complete(stored, solve, lock) -> None:
-    every = ("kinetics", "kmc", "sweep", "energies", "tpd")
+def test_an_unstamped_engine_is_never_complete(stored_tpd, solve, lock) -> None:
+    every = ("tpd", "kinetics", "kmc", "sweep", "energies")
     entry = revalidate(
-        stored,
-        stored["manifest_id"],
-        rerun=_rerun(solve),
+        stored_tpd,
+        stored_tpd["manifest_id"],
+        rerun=_rerun_tpd(solve),
         lock=lock,
         legs=every,
         engine=("0.38.0", None),
     )
     assert entry["verdict"] == "reproduced_partial(engine-unstamped-now)"
     assert entry["complete"] is False
+
+
+def test_tpd_leg_is_rerun_and_the_not_run_list_shrinks(stored_tpd, solve, lock) -> None:
+    """Slice 9: TPD is CPU-only, so a result carrying a TPD record re-runs
+    the leg by default — the TPD peaks are compared and only the GPU leg is
+    left in ``not_run``."""
+    asked: list[tuple[str, ...]] = []
+    entry = revalidate(
+        stored_tpd, stored_tpd["manifest_id"], rerun=_rerun_tpd(solve, asked), lock=lock
+    )
+    assert asked == [vm.CPU_LEGS] and "tpd" in asked[0]
+    assert entry["not_run"] == ["energies"]
+    assert entry["verdict"] == "reproduced_partial(energies)"
+    tp = next(o for o in entry["observables"] if o["observable"] == "tp_sim_K")
+    assert tp["ok"] is True
+
+
+def test_a_result_without_a_tpd_record_names_the_tpd_leg_not_run(
+    stored, solve, lock
+) -> None:
+    asked: list[tuple[str, ...]] = []
+    entry = revalidate(
+        stored, stored["manifest_id"], rerun=_rerun_tpd(solve, asked), lock=lock
+    )
+    assert "tpd" not in asked[0]  # never asked to re-run what has no record
+    assert entry["not_run"] == ["energies", "tpd"]
+    assert entry["not_run_why"]["tpd"] == vm.NO_TPD_RECORD
+    # a stored check with no comparison at all (nothing desorbs from a bare
+    # state) has no tp_sim_K observable: also not run, named
+    empty = copy.deepcopy(stored)
+    empty["results"]["kinetics_tpd"] = {"tpd": {}, "offsets": {}}
+    asked.clear()
+    entry = revalidate(
+        empty, empty["manifest_id"], rerun=_rerun_tpd(solve, asked), lock=lock
+    )
+    assert "tpd" not in asked[0] and entry["not_run"] == ["energies", "tpd"]
 
 
 def test_an_empty_comparison_is_never_reproduced(stored, solve, lock) -> None:

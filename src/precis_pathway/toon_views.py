@@ -576,6 +576,88 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     return "\n".join(lines)
 
 
+def tpd_text(meta: dict[str, Any]) -> str:
+    """The D11 TPD comparison table (kinetics v2 slice 9, ``view='tpd'``):
+    per adsorbate the compared reference (paper handle; ``null`` when the
+    set holds none), beta, theta0, simulated vs reference T_p and FWHM,
+    the status (matched | corrected | refused | mismatch | no_reference)
+    with its reason, and every applied ``tpd_corrected`` offset with its
+    sigma and base provenance — read off ``meta.results.kinetics_tpd``
+    (the ``autocatpath_kinetics`` job's persist), never re-simulated."""
+    results = meta.get("results") or {}
+    tpd = results.get("kinetics_tpd")
+    if not isinstance(tpd, dict):
+        err = results.get("kinetics_tpd_error")
+        return (
+            f"TPD check failed: {err}"
+            if isinstance(err, str) and err
+            else "No TPD record on this pathway — the autocatpath_kinetics job "
+            "(engine >= 0.39) runs the D11 check; this view renders its result."
+        )
+    records = tpd.get("tpd") or {}
+
+    def _k(x: Any) -> str:
+        """A temperature (K) to 0.1 K, a dash when absent."""
+        return f"{x:.1f}" if isinstance(x, (int, float)) and math.isfinite(x) else "—"
+
+    rows = [
+        {
+            "adsorbate": ads,
+            "reference": rec.get("reference") or "null",
+            "beta_K_s": rec.get("beta_K_s"),
+            "theta0": rec.get("theta0"),
+            "tp_sim_K": _k(rec.get("tp_sim_K")),
+            "tp_ref_K": _k(rec.get("tp_ref_K")),
+            "dT_p_K": _k(
+                rec["tp_sim_K"] - rec["tp_ref_K"]
+                if isinstance(rec.get("tp_sim_K"), (int, float))
+                and isinstance(rec.get("tp_ref_K"), (int, float))
+                else None
+            ),
+            "tp_corrected_K": _k(rec.get("tp_sim_corrected_K")),
+            "fwhm_sim_K": _k(rec.get("fwhm_sim_K")),
+            "fwhm_ref_K": _k(rec.get("fwhm_ref_K")),
+            "status": rec.get("status"),
+        }
+        for ads, rec in sorted(records.items())
+        if isinstance(rec, dict)
+    ]
+    schema = [
+        "adsorbate",
+        "reference",
+        "beta_K_s",
+        "theta0",
+        "tp_sim_K",
+        "tp_ref_K",
+        "dT_p_K",
+        "tp_corrected_K",
+        "fwhm_sim_K",
+        "fwhm_ref_K",
+        "status",
+    ]
+    lines = [
+        f"TPD check (D11) — reference family {tpd.get('family') or 'none (every reference null)'};"
+        f" provider {tpd.get('provider')}; corrections {tpd.get('corrections_version')}",
+        "",
+        toon.dump(rows, schema=schema)
+        if rows
+        else "(no adsorbate desorbs from a bare state)",
+        "",
+    ]
+    for ads, rec in sorted(records.items()):
+        if isinstance(rec, dict) and rec.get("reason"):
+            lines.append(f"{ads}: {rec.get('status')} — {rec['reason']}")
+    for ads, off in sorted((tpd.get("offsets") or {}).items()):
+        lines.append(
+            f"{ads}: offset {off.get('offset_eV'):+.3f} ± {off.get('offset_sigma_eV'):.3f} eV "
+            f"({off.get('provenance')} over {off.get('base_provenance')}; reference "
+            f"{off.get('reference')}, fit rows {', '.join(off.get('fit_rows') or [])})"
+        )
+    for w in tpd.get("warnings") or []:
+        lines.append(f"warning: {w}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def kinetics_sweep_text(meta: dict[str, Any]) -> str:
     """The (T, p_total) mean-field sweep digest for a computed pathway
     (kinetics v2 D8, ``view='kinetics-sweep'``): the per-point TOF grid,

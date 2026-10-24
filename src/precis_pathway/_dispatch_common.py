@@ -364,7 +364,41 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(pt_acc, dict):
                     reasons = _acceleration_lift(pt_acc, out, "optimum_")
                     out["optimum_kmc_trusted"] = not reasons
+    # slice 9 (D11/D8): the TPD check gates trust — a check that failed and
+    # was NOT corrected (refused: dissociation, reservoir, order, |offset|
+    # > 0.5 eV; or a mismatch with correction off) keeps the solve off the
+    # ranked measures; tpd_max_offset_eV lifts the largest applied offset
+    tpd = v2.get("tpd")
+    if isinstance(tpd, dict) and tpd:
+        applied = [
+            abs(off)
+            for rec in tpd.values()
+            if isinstance(rec, dict)
+            and rec.get("applied")
+            and (off := _finite_num(rec.get("offset_eV"))) is not None
+        ]
+        if applied:
+            out["tpd_max_offset_eV"] = max(applied)
+        failed = sorted(
+            f"{ads} {rec.get('status')}"
+            for ads, rec in tpd.items()
+            if isinstance(rec, dict)
+            and not rec.get("applied")
+            and rec.get("status") in _TPD_FAILED
+        )
+        if failed and out.get("kinetics_trusted"):
+            out["kinetics_trusted"] = False
+            out["kinetics_note"] = "tpd check failed, not corrected: " + ", ".join(
+                failed
+            )
+            for key in ("log_tof", "log_tof_p5", "log_tof_p95"):
+                out.pop(key, None)
     return out
+
+
+#: kinetics v2 slice 9 (D11): TPD statuses that mean "failed and not
+#: corrected" (matched, corrected and no_reference pass the gate)
+_TPD_FAILED = frozenset({"refused", "mismatch"})
 
 
 #: kinetics v2 slice 6 (D6): the KMC trust thresholds — channel scaling's

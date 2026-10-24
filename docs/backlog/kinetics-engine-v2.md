@@ -994,8 +994,9 @@ Output per adsorbate: `T_p`, FWHM, the peak family over `θ₀ ∈ {0.05, 0.1,
 5} K s⁻¹`.
 
 **Compare with literature.** The reference set is a fixture file
-(`tests/validation/tpd/<surface>/<adsorbate>.yaml`, hashed into the
-manifest) holding, per spectrum: paper handle, `β`, `θ₀`, `T_p`, FWHM
+(catpath package data `autocatpath/data/tpd/<family>/<adsorbate>.yaml`,
+so the CPU job and the re-validation read it; hashed into the manifest
+as `tpd_reference_set_sha256`) holding, per spectrum: paper handle, `β`, `θ₀`, `T_p`, FWHM
 where published, the published `E_des` and `ν` with the method used, and
 the complications the paper names. Starting set (`perplexity-research:
 498670`; every value to be re-read from the paper before the fixture is
@@ -1003,8 +1004,8 @@ sealed):
 
 | Adsorbate / surface | Reference | β (K s⁻¹) | `T_p` (K) | Published E_des, ν | Complication |
 |---|---|---|---|---|---|
-| CO / Pd(111) | Conrad–Ertl–Koch–Latta pa498699; Butorac pa498702; Peter calorimetry pa498703; Turaczy pa186444 | 0.5 (pa498702); 0.5–4 (pa186444) | ≈ 530 at 2–4 L (pa498702); atop < 300, bridge ≈ 400, hollow > 450 | 1.39–1.55 eV low-θ (pa498699, pa498703: 149 ± 4 kJ mol⁻¹ initial falling to 75 ± 9 at θ ≈ 0.5); ν ≈ 10¹⁴·⁴ (pa498800 reports ν₀ = 10¹³·⁵ with E–ν compensation, T_c = 519 K, fi498888 — resolve before sealing) | strong θ dependence and site conversion; no dissociation |
-| H / Pd(111) | Conrad–Ertl–Latta pa498700; Gdowski pa498701; Turaczy pa186444; Schwarzer (isothermal) pa498704 | 2 (pa186444) | β-state 300–320; subsurface α ≈ 170 (cryogenic dosing); bulk ≈ 800 | 0.87–0.90 eV per H₂ surface (pa498700, pa186444); 1.02 ± 0.03 eV per H₂ dissociative adsorption energy (pa498704) | subsurface/bulk H reservoirs; second order |
+| CO / Pd(111) | Conrad–Ertl–Koch–Latta pa498699; Butorac pa498702; Peter calorimetry pa498703; Yu–Zhang–Wei–Liu–Chen pa186444 (Perplexity named it "Turaczy"; Crossref: Yu et al.) | 0.5 (pa498702); 0.5–4 (pa186444) | ≈ 530 at 2–4 L (pa498702); atop < 300, bridge ≈ 400, hollow > 450 | 1.39–1.55 eV low-θ (pa498699, pa498703: 149 ± 4 kJ mol⁻¹ initial falling to 75 ± 9 at θ ≈ 0.5); ν ≈ 10¹⁴·⁴ (pa498800 reports ν₀ = 10¹³·⁵ with E–ν compensation, T_c = 519 K, fi498888 — resolve before sealing) | strong θ dependence and site conversion; no dissociation |
+| H / Pd(111) | Conrad–Ertl–Latta pa498700; Gdowski pa498701; Yu et al. pa186444; Schwarzer (isothermal) pa498704 | 2 (pa186444) | β-state 300–320; subsurface α ≈ 170 (cryogenic dosing); bulk ≈ 800 | 0.87–0.90 eV per H₂ surface (pa498700, pa186444); 1.02 ± 0.03 eV per H₂ dissociative adsorption energy (pa498704) | subsurface/bulk H reservoirs; second order |
 | NO / Pd(111) | Ramsier pa498706; Wickham–Banse–Koel pa498707; Schmick–Wassmuth pa498708; Butorac pa498702; Borodin (isothermal) pa498705 | 0.5 (pa498702) | 500–560 molecular | 1.5–1.9 eV, ν 10¹⁴–10¹⁸ (E–ν compensation, pa498706); cleanest: 1.766 ± 0.024 eV, ν = 10¹⁵·⁶⁵ (pa498705) | dissociation at defects → N₂, N₂O; E–ν compensation |
 | N → N₂ / Pd(111) | none found | — | — | — | no standalone recombinative-N₂ TPD located (`perplexity-research:498670`); N₂ appears only as an NO-TPD product; **no fixture; `tpd.N.reference = null`** |
 | NH₃ / Pd(111) | Al-Masoudi pa498709 | not stated | α₁ 279, α₂ 164, α₃ 127 | none extracted | molecular desorption on clean Pd(111), no decomposition |
@@ -1256,6 +1257,45 @@ where the paper gives them and records `theta0` otherwise.
    (dissociation) and the refusal reason is recorded; `tpd.N.reference =
    null`; applying an offset bumps `corrections.VERSION` and two margins
    across it do not compare.
+   shipped: catpath v0.39.0 (`autocatpath.tpd`: the UHV ramp over the
+   network's own transitions — rate builder at 1 bar references,
+   adsorption switched off, rates rebuilt every 1 K — on the MF site
+   balance and on the lattice; the reference set as package data;
+   `check`/`fit_offset`/`run`; `provider.TPDCorrectedProvider`;
+   `kinetics.tpd_check`, `solve(tpd=)`, `sweep(tpd=)`), precis: the
+   commit adding this line (`autocatpath_kinetics` runs the TPD check
+   first and re-solves on the corrected states when an offset applies;
+   `view='tpd'`; `_kinetics_scalars` lifts `tpd_max_offset_eV` and trips
+   trust on a refused or uncorrected-mismatch check; the network basis
+   gains `tpd_basis`; TPD is a re-runnable CPU leg of
+   `autocatpath_revalidate`, so the default `not_run` is `energies`
+   alone, and a result stored without a TPD record names `tpd` not run).
+   Found: `TpdComparison` grew `status` (`matched | corrected | refused |
+   mismatch | no_reference`), `reason`, `tp_sim_corrected_K` and the
+   per-row `family`, and its `*_ref` fields are nullable (`tpd.N` is a
+   record with `reference = null`, not an absent key); a refusal is
+   recorded on the record, not only as a missing offset. A fitted offset
+   is applied only when every fit row AND every held-out row lands
+   within 15 K after correction; otherwise the check is `mismatch`
+   (offset recorded, not applied, trust gate trips). The fixture H model
+   is one: its theta0 shift (~22 K) is smaller than pa498701's 60 K, so
+   the best single offset (-0.09 eV) leaves both rows ~17 K out — H is
+   `mismatch`, not corrected. A NEB TS moved by an offset keeps its rate
+   source (`provenance`, BEP flux share and draw class follow the base);
+   the move is a note. The corrections stamp's TPD tag is the sha256 of the reference set plus
+   every APPLIED offset, so changing an offset also moves it. The
+   re-T rule rebuilt references from the ledger alone, which dropped
+   gases priced only for a cycle closure (the target): the TPD ramp
+   keeps them (`kinetics._closure_refs_reT`); the sweep's re-T has the
+   same gap and is not fixed here. No diffusion (D5) means isolated
+   fragments of a recombinative peak never meet on the lattice: the
+   KMC ramp of H at low coverage leaves adsorbate behind and says so;
+   the MF ramp is the comparison model. The `sigma_tpd,X z_X` term of
+   the D4 draw and alloy reference families (PdAu, PdAg, PdCu, PdZn
+   rows carry no beta) are not built. No surface family is derived
+   from the slab (quest candidates run on injected slabs the TPD path
+   cannot see): `kinetics.tpd.family` names it, absent = every
+   reference null.
 10. **Validation manifest + re-validate.** `manifest.py`, the stamps on
     job and result meta, `autocatpath_revalidate`, `view='manifest'`.
     Acceptance: a pw455722-class candidate re-validated on the same
@@ -1335,7 +1375,7 @@ readers), `pyproject.toml` (numba), `corrections.py` (`VERSION` derived,
 TPD set), new
 `environment.py` / `provider.py` / `mkm.py` / `kmc.py` / `amc.py` /
 `consistency.py` / `tpd.py` / `records.py` / `manifest.py`,
-`tests/validation/` case C and `tests/validation/tpd/`; precis
+`tests/validation/` case C and `autocatpath/data/tpd/`; precis
 `precis_pathway/runner.py` (`_prep`, `run_kinetics`, `content_key` folded
 into the manifest), `types.py`, `_dispatch_common._kinetics_scalars`,
 `aggregate_job.py` kinetics tail, `precis/quest/frontier.py`
@@ -1379,6 +1419,37 @@ outputs are stored as test fixtures and cited (Stamatakis & Vlachos 2011;
 Nielsen et al. 2013). No redistribution of the binary." Unknowns the
 portal did not show: whether an academic licence requires an institutional
 affiliation beyond the work e-mail, and the exact licence term text.
+
+### Decisions (slice 9, coordinator 2026-10-24)
+
+- **CO/Pd(111) reference family — provisional (coordinator 2026-10-24),
+  Reto to confirm.** The corpus holds one measured CO/Pd(111) T_p
+  (pa498702: 530 K at 0.5 K/s, ~0.36 ML). Option A (applied): the
+  beta = 2 and 5 K/s rows are derived from pa498800's zero-coverage
+  first-order parameters (E_d = 35.5 kcal/mol, nu0 = 10^13.5 s^-1)
+  through Polanyi–Wigner (538.4 and 552.8 K), labelled `source_role:
+  derived` with formula and inputs; the measured 530 K point is the
+  held-out check. Option B: derive all three from pa498800 and keep
+  530 K as a cross-check only (the held-out point is then consistent
+  with the fit by construction). Option C: pa186444's measured series
+  (0.5, 1, 2, 4 K/s). Its full text (Reto's PDF) was read on 2026-10-24:
+  the per-beta T_p are only plotted (Fig. 1), never printed, after a
+  10 L saturation dose, and the paper prints only the linearized-Redhead
+  E_d = 161.7 kJ/mol — inside pa498702's Redhead range for 530 K
+  (147–167 kJ/mol). Not a clean replacement, so option A stays; the
+  "upper 400s K at 2 K/s" figure in `perplexity-research:498670` is not
+  in the held text. A digitised Fig. 1 (or another measured series)
+  replaces the derived rows in the YAML without a code change.
+  For Reto: the held-out miss (-12 K on the fixture CO model) is
+  structural — the fit reproduces pa498800's derived rows almost
+  exactly, so the held-out check effectively tests pa498702 (530 K)
+  against pa498800's (E_d, nu0) (518 K at 0.5 K/s), not the model.
+- **sigma_ref** where a paper prints none: the midpoint of the D11 range
+  for its analysis class (0.055 eV complete/leading-edge, 0.10 eV
+  Redhead with an assumed prefactor), combined in quadrature with the
+  prefactor term over the paper's nu range, else one decade; recorded
+  per row.
+- **Fixture location:** catpath package data, not `tests/validation/`.
 
 ### Decisions (Reto 2026-10-21)
 

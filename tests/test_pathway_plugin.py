@@ -1338,17 +1338,17 @@ def test_get_unknown_view_raises_bad_input_naming_accepted_set(
 
 
 def test_all_declared_views_dispatch(pathway_store: Store) -> None:
-    """Every one of the 15 views the KindSpec declares must still pass
+    """Every one of the 16 views the KindSpec declares must still pass
     through `get` (not itself get rejected as 'unknown') once the view=
     validation lands. kinetics-sweep (slice 4) was routed but undeclared,
-    so get rejected it; manifest is kinetics v2 slice 10."""
+    so get rejected it; manifest is kinetics v2 slice 10, tpd slice 9."""
     h = _handler(pathway_store)
     slug = "views-smoke"
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 15
-    assert {"kinetics-sweep", "manifest"} <= set(declared)
+    assert len(declared) == 16
+    assert {"kinetics-sweep", "manifest", "tpd"} <= set(declared)
     for view in declared:
         resp = h.get(id=slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"

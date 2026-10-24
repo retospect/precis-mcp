@@ -11,7 +11,11 @@ corners, centre and optimum, each with ``tof_kmc`` and
 ``correlation_effect``) and the refreshed ``meta.kinetics_v2`` onto the
 pathway ref. From engine 0.38 (slice 10, D10) it also restamps
 ``meta.validation_manifest``/``meta.manifest_id`` on the ref and
-``manifest_id`` on its own meta and the D8 record.
+``manifest_id`` on its own meta and the D8 record.  From engine 0.39
+(slice 9, D11) it first runs the TPD check (``meta.kinetics_tpd``): an
+uncorrected check folds its comparisons onto ``kinetics_v2.tpd``; a check
+that applied ``tpd_corrected`` offsets re-runs the kinetics solve on the
+corrected states (provider ``vacuum+tpd``), and the sweep prices them too.
 Minted by ``autocatpath_aggregate``'s dispatch on every verify-tier
 pathway — never user-facing.
 """
@@ -77,6 +81,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
+    if runner.has_tpd():
+        _tpd_leg(ctx, runner, config, results)
     ctx.append_chunk(
         "job_event",
         f"autocatpath_kinetics: sweeping (T, p_total) for "
@@ -141,7 +147,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         res_meta.update(
             {
                 k: results[k]
-                for k in ("kinetics_sweep", "kinetics_v2", "kinetics_sweep_error")
+                for k in (
+                    "kinetics_sweep",
+                    "kinetics_v2",
+                    "kinetics_sweep_error",
+                    "kinetics",
+                    "kinetics_error",
+                    "kinetics_tpd",
+                    "kinetics_tpd_error",
+                )
                 if k in results
             }
         )
@@ -180,6 +194,41 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.set_meta(stamp)
     except Exception:
         log.warning("autocatpath_kinetics: scalar stamp failed", exc_info=True)
+
+
+def _tpd_leg(
+    ctx: Any, runner: Any, config: dict[str, Any], results: dict[str, Any]
+) -> None:
+    """The D11 TPD check, then — when it applied offsets — the kinetics
+    solve again on the corrected states.  A failure is a job note, never a
+    pathway-fatal (the sweep still runs on the uncorrected states)."""
+    ctx.append_chunk("job_event", "autocatpath_kinetics: TPD check")
+    runner.run_kinetics_tpd_subprocess(config, results)
+    if "kinetics_tpd_error" in results:
+        ctx.append_chunk(
+            "job_event", f"autocatpath_kinetics: TPD {results['kinetics_tpd_error']}"
+        )
+        return
+    tpd = results["kinetics_tpd"]
+    parts = [
+        f"{ads} {rec.get('status')}"
+        for ads, rec in sorted((tpd.get("tpd") or {}).items())
+    ]
+    ctx.append_chunk(
+        "job_event",
+        f"autocatpath_kinetics: TPD ({tpd.get('family') or 'no family'}): "
+        + (", ".join(parts) or "no desorbing adsorbate"),
+    )
+    if not tpd.get("offsets"):
+        runner.fold_tpd(results)
+        return
+    artifact = {"results_json": results}
+    runner.run_kinetics_subprocess(config, artifact, tpd=tpd)
+    if "kinetics_error" in results:
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_kinetics: corrected re-solve failed: {results['kinetics_error']}",
+        )
 
 
 SPEC = JobTypeSpec(

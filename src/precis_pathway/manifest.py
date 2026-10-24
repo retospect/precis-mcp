@@ -32,14 +32,21 @@ LOCK_ENV = "PRECIS_UV_LOCK"
 #: pip-from-git venv, which has no uv.lock of its own.
 HOST_CONSTRAINTS = "/opt/precis/constraints.txt"
 
-#: Legs this slice re-runs on a CPU worker.  ``energies`` (relax/NEB/refine)
-#: needs the GPU seed lane and ``tpd`` needs slice 9; both are reported as
-#: not run, never as passed.
-CPU_LEGS = ("kinetics", "kmc", "sweep")
+#: Legs re-run on a CPU worker.  ``tpd`` (slice 9) is CPU-only — the MF ramp
+#: over the stored nodes/edges — and runs first, because its applied offsets
+#: are an input of the kinetics and sweep legs.  ``energies`` (relax/NEB/
+#: refine) needs the GPU seed lane and is reported as not run, never as
+#: passed.
+CPU_LEGS = ("tpd", "kinetics", "kmc", "sweep")
 NOT_RUN_LEGS = {
     "energies": "the min-energy-path leg runs on the GPU seed lane; not re-run by this job",
-    "tpd": "no TPD record before kinetics v2 slice 9",
 }
+#: why a requested ``tpd`` leg is still not run: the stored result has no
+#: TPD comparison to judge against (aggregated before slice 9, its TPD
+#: check failed, or the network desorbs nothing from a bare state)
+NO_TPD_RECORD = (
+    "the stored result carries no TPD comparison (meta.results.kinetics_tpd.tpd)"
+)
 
 
 def engine_manifest() -> Any | None:
@@ -141,7 +148,6 @@ def build(
     if m is None:
         return None
     import autocatpath
-    from autocatpath import corrections
 
     env = config.get("environment")
     v2 = results.get("kinetics_v2") or {}
@@ -169,11 +175,23 @@ def build(
             },
             config_snapshot_sha256=m.sha256_text(config_snapshot_yaml),
             # the policy tuple (pathway-correction-basis.md) is a projection
-            # of the config, which config_snapshot_sha256 already pins
-            corrections={"version": getattr(corrections, "VERSION", None)},
+            # of the config, which config_snapshot_sha256 already pins; the
+            # version is the aggregate's derived stamp (an input — the TPD
+            # offsets the kinetics job derives from it are outputs)
+            corrections={"version": (results.get("corrections") or {}).get("version")},
+            # D11: the reference set the TPD check judges by (engine >= 0.39)
+            tpd_reference_set_sha256=_tpd_set_sha256(),
         ),
     )
     return dict(rec.to_json())
+
+
+def _tpd_set_sha256() -> str | None:
+    try:
+        from autocatpath import tpd
+    except ImportError:
+        return None
+    return str(tpd.reference_set_sha256())
 
 
 def stamp_results(
@@ -313,6 +331,7 @@ def manifest_text(meta: dict[str, Any]) -> str:
 __all__ = [
     "CPU_LEGS",
     "NOT_RUN_LEGS",
+    "NO_TPD_RECORD",
     "build",
     "build_safely",
     "engine_manifest",

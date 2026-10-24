@@ -68,7 +68,9 @@ def _entry(verdict: str, *, complete: bool, not_run: list[str]) -> dict[str, Any
         "platform_now": plat,
         "observables": [],
         "not_run": not_run,
-        "not_run_why": {leg: vm.NOT_RUN_LEGS[leg] for leg in not_run},
+        "not_run_why": {
+            leg: vm.NOT_RUN_LEGS.get(leg, vm.NO_TPD_RECORD) for leg in not_run
+        },
         "caveats": [],
     }
 
@@ -183,8 +185,8 @@ def test_views_and_modes_are_declared() -> None:
     spec = PathwayHandler.spec
     assert spec.modes == ("preview", "revalidate")
     # kinetics-sweep (slice 4) was routed but undeclared, so get refused it
-    assert {"kinetics-sweep", "manifest"} <= set(spec.views)
-    assert len(spec.views) == 15
+    assert {"kinetics-sweep", "manifest", "tpd"} <= set(spec.views)
+    assert len(spec.views) == 16
 
 
 def test_executors_exclude_every_llm_executor() -> None:
