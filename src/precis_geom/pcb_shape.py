@@ -373,13 +373,26 @@ class FitFinding:
 @dataclass(frozen=True)
 class FitResult:
     """The verdict of :meth:`BoardShape.fits`: ``ok`` (no error-tier
-    findings), the finding list, and a one-line ``summary()``."""
+    findings — True only when every part that has a prism was checked),
+    the finding list, a one-line ``summary()``, and the
+    ``checked_parts``/``unchecked_parts`` counts behind it."""
 
     ok: bool
     findings: list[FitFinding]
+    checked_parts: int = 0
+    unchecked_parts: int = 0
 
     def summary(self) -> str:
-        head = f"fit {'OK' if self.ok else 'FAIL'} ({len(self.findings)} finding(s))"
+        if self.unchecked_parts:
+            head = (
+                f"fit NOT CHECKED: {self.checked_parts} of "
+                f"{self.checked_parts + self.unchecked_parts} parts checked "
+                f"({len(self.findings)} finding(s))"
+            )
+        else:
+            head = (
+                f"fit {'OK' if self.ok else 'FAIL'} ({len(self.findings)} finding(s))"
+            )
         if not self.findings:
             return head
         return (
@@ -506,15 +519,36 @@ class BoardShape:
         'm'`` converts at this declared seam). ``role='enclosure'`` asks
         "does the whole board fit inside this interior cavity";
         ``role='part'`` (default) asks "does this solid stay clear of the
-        board's solids". Keepout and hole coverage are warn-tier
-        findings, never errors — recorded-not-enforced and the carried
-        subtraction question respectively. A malformed spec raises
-        ``PcbBuilderError`` naming the problem."""
+        board's solids". Parts with no pose (``self.unplaced``) have no
+        prism and were never checked — an error-tier
+        ``fit.parts_unplaced`` finding names them and fails ``ok``, so a
+        bare-slab pass can never read as "fits". Keepout and hole
+        coverage are warn-tier findings, never errors —
+        recorded-not-enforced and the carried subtraction question
+        respectively. A malformed spec raises ``PcbBuilderError`` naming
+        the problem."""
         solids = [_as_box(o) for o in _as_specs(other)]
         findings: list[FitFinding] = []
         if self.why_not is not None:
             findings.append(FitFinding("error", "fit.no_shape", "board", self.why_not))
             return FitResult(ok=False, findings=findings)
+        if self.unplaced:
+            shown = ", ".join(self.unplaced[:8])
+            more = len(self.unplaced) - 8
+            if more > 0:
+                shown += f", +{more} more"
+            findings.append(
+                FitFinding(
+                    "error",
+                    "fit.parts_unplaced",
+                    "board",
+                    f"{len(self.unplaced)} of "
+                    f"{len(self.prisms) + len(self.unplaced)} parts have no "
+                    f"pose and were NOT checked: {shown} — next: place parts "
+                    "with part.at(...) or run pcb.local.place / the place "
+                    "service, then re-run fits()",
+                )
+            )
         for spec in solids:
             if spec["role"] == "enclosure":
                 _check_containment(self, spec, clearance_mm, findings)
@@ -523,6 +557,8 @@ class BoardShape:
         return FitResult(
             ok=not any(f.severity == "error" for f in findings),
             findings=findings,
+            checked_parts=len(self.prisms),
+            unchecked_parts=len(self.unplaced),
         )
 
     def to_dict(self) -> dict[str, Any]:

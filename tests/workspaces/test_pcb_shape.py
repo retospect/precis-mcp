@@ -45,6 +45,10 @@ def _sanity() -> Board:
     return _load(BOARDS / "sanity" / "main.py", "example_sanity").build()
 
 
+def _nano() -> Board:
+    return _load(BOARDS / "nano_usb_pd" / "main.py", "example_nano_usb_pd").build()
+
+
 def _profile_of(b: Board) -> dict[str, Any]:
     """What the trusted side derives for the same board: the batch's
     components as ``pcb_load`` rows + the batch's features through
@@ -215,6 +219,48 @@ def test_fit_enclosure_containment() -> None:
     assert res.findings[0].subject == "U1"
     # the declared units seam: the same cavity in metres.
     assert shape.fits(pcb.enclosure(0.05, 0.04, 0.004, units="m")).ok
+
+
+def test_fit_unplaced_parts_fail_the_check() -> None:
+    """gr513665: nano_usb_pd authors 86 parts and places none — the old
+    code returned ``ok=True`` with zero findings off the bare slab. The
+    verdict must say the parts were never checked."""
+    shape = _nano().shape()
+    assert len(shape.unplaced) == 86 and shape.prisms == []
+    res = shape.fits(pcb.enclosure(110, 90, 20))
+    assert res.ok is False
+    assert res.checked_parts == 0 and res.unchecked_parts == 86
+    finding = next(f for f in res.findings if f.code == "fit.parts_unplaced")
+    assert finding.severity == "error" and finding.subject == "board"
+    assert "86 of 86 parts have no pose and were NOT checked" in finding.detail
+    # first 8 refdes named, the rest counted
+    assert "+78 more" in finding.detail
+    assert "part.at" in finding.detail and "re-run fits()" in finding.detail
+    assert "0 of 86 parts checked" in res.summary()
+
+
+def test_fit_fully_placed_board_gets_no_unplaced_finding() -> None:
+    b = _sanity()
+    shape = b.shape()
+    res = shape.fits(pcb.enclosure(100, 100, 20))
+    assert res.ok
+    assert not any(f.code == "fit.parts_unplaced" for f in res.findings)
+    assert res.checked_parts == len(shape.prisms) == 4
+    assert res.unchecked_parts == 0
+    assert res.summary().startswith("fit OK")
+
+
+def test_fit_partly_placed_board_splits_the_counts() -> None:
+    b = Board("sparse", outline=rect(20, 10))
+    b.part("U1", footprint="SOIC-8").at(10, 5)
+    b.part("R1", footprint="R0402")
+    res = b.shape().fits(pcb.enclosure(20, 10, 10))
+    assert res.ok is False
+    assert res.checked_parts == 1 and res.unchecked_parts == 1
+    finding = next(f for f in res.findings if f.code == "fit.parts_unplaced")
+    assert "1 of 2 parts have no pose and were NOT checked: R1" in finding.detail
+    assert "+0 more" not in finding.detail
+    assert "1 of 2 parts checked" in res.summary()
 
 
 def test_fit_part_interference_and_clearance() -> None:
