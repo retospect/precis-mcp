@@ -21,11 +21,9 @@ and stays out of scope.
 _Grouped 2026-09-26; was `spark-dockerhub-egress`._
 
 TLS handshake to Docker Hub/ECR (AWS-hosted) stalls from spark; ghcr.io
-works. Also `tts_base_image` (python:3.11) ≠ the Dockerfile FROM (3.12), so
-the pull-if-missing guard checks the wrong image. Unblock path (not
-executed): pre-seed python:3.12-slim-bookworm from melchior
-(`docker save | ssh | docker load`), then 45-tts.yml. Only the 1.5 s
-inter-article pause needs this; blocked, polish.
+works. Unblock path (not executed): pre-seed python:3.12-slim-bookworm from
+melchior (`docker save | ssh | docker load`), then 45-tts.yml. Only the
+1.5 s inter-article pause needs this; blocked, polish.
 
 ## Scheduled OS and driver updates for the three Sparks
 
@@ -59,5 +57,5 @@ Traps: the bench role must not enter inventory (no service group, no capability 
 
 ## Open questions / decisions log
 
-- Proposed (needs ruling): section 1 (TTS base image) is stale: `deploy/roles/tts/tasks/main.yml` already derives the base from the Dockerfile `FROM` and `tts_base_image` is gone. Proposal: delete the `tts_base_image` sentence, keep only the host-side pre-seed note.
-- Proposed (needs ruling): section 2's host list is stale. castor is retired as a compute node (serves gpt-oss-120b via SGLang), pollux has one GB10, spark runs the compute and sandbox lanes. Proposal: restate the host list from the live inventory overlay before anyone builds the play.
+- Resolved 2026-10-24: section 1's TTS base image sentence was stale (`deploy/roles/tts/tasks/main.yml` already derives the base from the Dockerfile `FROM`; `deploy/roles/tts/defaults/main.yml` confirms there is no `tts_base_image` var). Deleted; only the host-side pre-seed note remains.
+- Proposed (needs ruling): section 2's host list is stale. castor is retired as a compute node (serves gpt-oss-120b via SGLang), pollux has one GB10, spark runs the compute and sandbox lanes. Proposal: restate the host list from the live inventory overlay before anyone builds the play. (Not actioned here — the live inventory overlay is gitignored and not present in this worktree; needs cluster-admin access.)
