@@ -25,16 +25,27 @@ approval quote for the tier, with its UTC time).
    `ready` agent judges a backlog item.
 2. **Write the brief.** One file per builder: the task, numbered slices
    (one commit each), what to verify before changing, how to test. Name
-   the files and anchors you already know. When a slice mints a
-   migration, run `scripts/migration-check --taken` and put its claimed
-   numbers + next free number in the brief (gr514201). The footer is
-   appended at launch; do not restate its rules. When the tier grants
-   precis writes
+   the files and anchors you already know. Briefs point builders at the
+   session MCP for gripe reads — `get(kind='gripe', id=N, view='body')`,
+   `view='comments'` for later rulings; when one does give
+   `scripts/prod-psql` SQL, `ref_id` is a bare bigint (`513753`, not
+   `'gr513753'`) (gr513776). When a task pairs a length
+   target with a per-item content rule ("a shorter summary" plus "one
+   line per group with reason+fix"), give a character budget or say
+   which wins — a literal reading of both can be unsatisfiable, and the
+   builder resolves it by measuring instead of building (gr513765).
+   The footer is appended at launch; do not restate its rules. When the tier grants precis writes
    (W), include one line in the brief: the write verbs are deferred
    tools — before the first `mcp__precis__put`/`edit`/`tag`/`link`, load
    them with ToolSearch `select:mcp__precis__put,mcp__precis__edit,
    mcp__precis__tag,mcp__precis__link`; an unselected write dies with
-   `No such tool available` (gr504489).
+   `No such tool available` (gr504489). A rebase instruction names
+   `git rebase --autostash origin/main` — a bare `git rebase` refuses on
+   the dirty mid-slice tree, so every builder works around it with a
+   stash/rebase/pop of its own (gr513770). Never brief the heredoc commit
+   recipe `git commit -m "$(cat <<'EOF' …)"` — it trips the shell rules
+   and breaks on apostrophes and backticks in the message; the footer
+   already prescribes `git commit -F <file>` (gr513763).
 3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (default; alias
    `readonly`): builders commit, nothing lands; the release owner lands.
    `W` (alias `qland`): builders land their own slice with

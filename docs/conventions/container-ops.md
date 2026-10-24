@@ -142,6 +142,7 @@ the plain shape is the one that never surprises.
 | `rtk git …`, i.e. the rtk hook's rewrite of `git …` (34) | `RTK_DISABLED=1 git …` or `/usr/bin/git …`; see `rtk.md` Known gaps |
 | `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
 | `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
+| `git commit -m "$(cat <<'EOF' … EOF)"` — a refused shape, and an apostrophe or backtick in the message breaks the quoting anyway (gr513763) | Write the message to a file, then `git commit -F <file>`; two `-m` flags for a short subject+body |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
 | `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
 | `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
@@ -150,12 +151,10 @@ the plain shape is the one that never surprises.
 is a harness built-in; the upstream asks are tracked in
 `docs/backlog/worktree-path-guard-false-positives.md`.
 
-Quote globs that belong to the TOOL, not the shell —
-`grep -rn --include='*.sql'`, `rg -g '*.py'`, `find . -name '*.tex'`. The
-hook shell is zsh: an unquoted `*.sql` is expanded against the cwd *before*
-the command runs, and a non-match aborts the whole line with
-`zsh: no matches found`, so the grep never ran (gr514326;
-bash-reflex-nudge rule E nudges the same fix).
+The refusals are a Claude-side hook: under a Devin or codex builder
+nothing refuses these shapes, but the rule still binds — unprovable git
+targeting and message-eating quoting fail the same way in every runtime
+(gr514124).
 
 A log audit found ~60% of Bash calls carried a redundant
 `cd` prefix — the single largest source of wasted tokens across the fleet,

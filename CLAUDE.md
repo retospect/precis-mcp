@@ -98,7 +98,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   pytest/pip/mypy. → `docs/conventions/invariants.md`
 - **Commit messages: `type(scope): what changed`** (≤72 chars;
   feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
-  short why as body, then the required Co-Authored-By/session footer.
+  short why as body, then the required Co-Authored-By/session footer. Write
+  the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
+  …)"` recipe trips the shell rules and breaks on apostrophes (gr513763).
   `scripts/ship` reuses your branch's single commit message or takes `-m`; it
   refuses `ship(...)`/`wip(...)` placeholders and unprefixed subjects.
 

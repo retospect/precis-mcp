@@ -23,6 +23,10 @@ design or narrative.
   `src/precis/data/skills/` only when the change alters that agent-facing surface.
 
 ## How to work
+0. **Tool names are Claude Code's.** If a listed tool answers `No such
+   tool available` in your runtime (a Devin subagent has no `Grep` or
+   `Glob`), use the shell equivalent — `rg`/`grep`, `find`/`ls`,
+   `sed -n` — rather than stopping (gr514382).
 1. **Verify against the code first.** Use the precis python kind
    (`search(kind='python', mode='pattern', q=…)`, `get(kind='python',
    id='main::<qualname>')` — your own tree is `wt-<tree name>::`; Grep is truth
