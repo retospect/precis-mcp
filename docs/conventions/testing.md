@@ -3,7 +3,9 @@
 **Always run tests through `scripts/test`, never a bare `pytest`/`uv run
 pytest`/`scripts/dev pytest`.** It's the only invocation that reproduces the
 gate `scripts/ship` runs before a squash-merge, so it's the canonical inner
-loop.
+loop. There is no host pytest (the host venv is torch-free): every
+test, including POSIX-only script tests, runs in the container via
+`scripts/test`.
 
 ## Why not a bare invocation
 

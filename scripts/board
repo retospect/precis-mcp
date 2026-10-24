@@ -23,8 +23,8 @@ interleave a line.
 A status line's text is `<state> <sha?> <gripe ids?> <short note>`, state
 one of landed|red|green|done|waiting|blocked|wedged — `post --state`
 validates and puts it first. Without --state the text is free-form (old
-lines read fine). A posted line over 120 chars is refused: shorten it and
-put the detail in a handoff or gripe.
+lines read fine). A note over 120 chars (text only, not timestamp or window) is refused:
+shorten it and put the detail in a handoff or gripe.
 
 `read --new --as <reader>` prints only lines after that reader's cursor
 in .claude/fleet/board.cursor.<reader> (a byte offset, gitignored) and
@@ -112,9 +112,9 @@ def cmd_post(a: argparse.Namespace) -> int:
         print("scripts/board: post needs a non-empty line", file=sys.stderr)
         return 2
     line = f"{_now()}\t{_tsv(a.window)}\t{text}\n"
-    if len(line) - 1 > MAX_LINE:
+    if len(text) > MAX_LINE:
         print(
-            f"scripts/board: post line is {len(line) - 1} chars (max {MAX_LINE}) "
+            f"scripts/board: post note is {len(text)} chars (max {MAX_LINE}) "
             "— shorten it; put the detail in a handoff or gripe",
             file=sys.stderr,
         )
