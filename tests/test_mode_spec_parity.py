@@ -90,6 +90,8 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("todo", "edit"): ("replace", "find-replace", "insert", "delete"),
     ("memory", "edit"): ("replace", "find-replace", "insert", "append", "delete"),
     ("quest", "edit"): ("replace",),
+    # finding body edits: whole-body replace or find-replace (gr509620)
+    ("finding", "edit"): ("replace", "find-replace"),
     # checklist's edit() selector is op=, a distinct kwarg from mode=
     # (edit() has no mode= parameter at all) — no entry here, expect
     # None (gr343755: a stray edit_modes=_EDIT_OPS previously conflated
