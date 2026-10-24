@@ -37,6 +37,15 @@ under `--for-hook`, green only without it. A red there is not a red main —
 it is a viewer control that stopped changing the picture; the run's
 screenshots are the evidence (`gh run download <id>`).
 
+And the scheduled full-matrix check.yml run (the nightly) on a third line:
+RED, cancelled and gone-quiet print even under `--for-hook`, green only
+without it. Unlike the push lane, a `cancelled` scheduled run IS a verdict
+— nothing supersedes a nightly, and a job hitting its timeout-minutes
+reads as cancelled (coverage-db did, every night). The nightly ran red 8+
+nights before anyone noticed because nothing watched it (gr512769); this
+line is that watcher — the smallest surface that reaches a human, pending
+the deferred alert-row design in the gripe.
+
 Advisory: always exits 0. Offline or without `gh` auth it prints nothing under
 `--for-hook` and a one-line "unavailable" otherwise.
 """
@@ -305,8 +314,85 @@ def viewer_check_report() -> None:
         print(f"viewer-check: ✓ green ({sha}, run {rid}, {when})")
 
 
+NIGHTLY_QUIET_AFTER_MIN = 30 * 60
+
+
+def latest_nightly_run() -> tuple[dict | None, dict | None]:
+    """(newest completed scheduled check run, newest still-running one) on
+    main. Cancelled runs are kept — see the module docstring."""
+    out = _gh(
+        "run",
+        "list",
+        "--branch",
+        "main",
+        "--workflow",
+        "check",
+        "--event",
+        "schedule",
+        "--limit",
+        "10",
+        "--json",
+        "databaseId,headSha,conclusion,status,createdAt",
+    )
+    if not out:
+        return None, None
+    runs = sorted(json.loads(out), key=lambda r: r.get("createdAt", ""), reverse=True)
+    verdict = next((r for r in runs if r["status"] == "completed"), None)
+    running = next((r for r in runs if r["status"] != "completed"), None)
+    return verdict, running
+
+
+def unfinished_jobs(run_id: int) -> list[str]:
+    """Names of a run's failed or cancelled jobs — a nightly timeout reads
+    as cancelled, and which job timed out is the first thing triage needs."""
+    out = _gh("run", "view", str(run_id), "--json", "jobs")
+    if not out:
+        return []
+    return [
+        f"{j['name']} ({j['conclusion']})"
+        for j in json.loads(out).get("jobs", [])
+        if j.get("conclusion") in ("failure", "cancelled")
+    ]
+
+
+def nightly_check_report() -> None:
+    """One line on the scheduled full-matrix run, or none (gr512769)."""
+    for_hook = "--for-hook" in sys.argv[1:]
+    verdict, running = latest_nightly_run()
+    if verdict is None:
+        if not for_hook:
+            print("nightly-check: no completed scheduled run yet (or gh unavailable)")
+        return
+    rid, sha, when = (
+        verdict["databaseId"],
+        verdict["headSha"][:8],
+        age(verdict["createdAt"]),
+    )
+    if verdict["conclusion"] != "success":
+        jobs = ", ".join(unfinished_jobs(rid)) or "(job detail unavailable)"
+        print(
+            f"🔴 nightly-check {verdict['conclusion']}: run {rid} on {sha} ({when}) — "
+            f"jobs: {jobs}. Failing tests: gh run view {rid} --log-failed"
+            + (
+                f"; a newer run is {running['status']} on {running['headSha'][:8]}"
+                if running
+                else ""
+            )
+        )
+        return
+    if age_minutes(verdict["createdAt"]) > NIGHTLY_QUIET_AFTER_MIN and running is None:
+        print(
+            f"nightly-check: last scheduled run {when} (run {rid}, green) — the nightly "
+            "has gone quiet; check the workflow is still scheduled"
+        )
+        return
+    if not for_hook:
+        print(f"nightly-check: ✓ green ({sha}, run {rid}, {when})")
+
+
 if __name__ == "__main__":
     os.chdir(ROOT)
     rc = main()
     viewer_check_report()
+    nightly_check_report()
     sys.exit(rc)

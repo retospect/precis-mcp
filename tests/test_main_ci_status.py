@@ -319,3 +319,123 @@ def test_viewer_check_skips_cancelled_runs(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([cancelled, GREEN_RUN]))
     run = mod.latest_viewer_run()
     assert run is not None and run["databaseId"] == 2
+
+
+def _nightly_gh(runs: list[dict], jobs: list[dict] | None = None):
+    """A `_gh` stub that answers both the run list and the `run view` jobs call."""
+
+    def stub(*a: str) -> str:
+        if "view" in a:
+            return json.dumps({"jobs": jobs or []})
+        return json.dumps(runs)
+
+    return stub
+
+
+def test_nightly_check_red_prints_even_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr512769: the scheduled run was red 8+ nights with nobody watching.
+    A red nightly must reach the next session's SessionStart hook — that
+    hook is how it reaches anyone at all."""
+    mod = _load()
+    red = {**RED_RUN, "databaseId": 51, "createdAt": _iso_minutes_ago(60)}
+    jobs = [
+        {"name": "test-other (macos-latest, 3.13)", "conclusion": "failure"},
+        {"name": "lint", "conclusion": "success"},
+    ]
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([red], jobs))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    out = capsys.readouterr().out
+    assert "nightly-check failure: run 51 on 8b881979" in out
+    assert "test-other (macos-latest, 3.13) (failure)" in out
+    assert "lint" not in out, "successful jobs are not interesting on a red run"
+    assert "gh run view 51 --log-failed" in out
+
+
+def test_nightly_check_cancelled_is_a_verdict_not_skipped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On the push lane a cancelled run is superseded noise; on the nightly
+    it IS the verdict — coverage-db's timeout read as cancelled every
+    night. Skipping it re-opens the hole this line exists to close."""
+    mod = _load()
+    cancelled = {
+        **RED_RUN,
+        "databaseId": 52,
+        "conclusion": "cancelled",
+        "createdAt": _iso_minutes_ago(60),
+    }
+    jobs = [{"name": "coverage-db", "conclusion": "cancelled"}]
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([cancelled, GREEN_RUN], jobs))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    out = capsys.readouterr().out
+    assert "nightly-check cancelled: run 52" in out
+    assert "coverage-db (cancelled)" in out
+
+
+def test_nightly_check_names_a_newer_run_still_in_progress(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    red = {**RED_RUN, "databaseId": 53, "createdAt": _iso_minutes_ago(60)}
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([PENDING_RUN, red], []))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    assert "a newer run is in_progress on 840b178f" in capsys.readouterr().out
+
+
+def test_nightly_check_green_is_silent_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    green = {**GREEN_RUN, "createdAt": _iso_minutes_ago(60)}
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([green]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    assert capsys.readouterr().out == ""
+    monkeypatch.setattr(sys, "argv", ["main-ci-status"])
+    mod.nightly_check_report()
+    assert "nightly-check: ✓ green (8b881979, run 2" in capsys.readouterr().out
+
+
+def test_nightly_check_gone_quiet_is_not_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A nightly that stopped running looks exactly like a green one unless
+    its age is read; silence is the failure mode this line exists for."""
+    mod = _load()
+    old = {**GREEN_RUN, "createdAt": _iso_minutes_ago(3 * 24 * 60)}
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([old]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    assert "gone quiet" in capsys.readouterr().out
+
+
+def test_nightly_check_quiet_suppressed_while_a_run_is_in_progress(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An old green plus tonight's run still going is a healthy nightly,
+    not a quiet one."""
+    mod = _load()
+    old = {**GREEN_RUN, "createdAt": _iso_minutes_ago(3 * 24 * 60)}
+    running = {**PENDING_RUN, "createdAt": _iso_minutes_ago(60)}
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([running, old]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    assert capsys.readouterr().out == ""
+
+
+def test_nightly_check_no_runs_is_silent_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    monkeypatch.setattr(mod, "_gh", _nightly_gh([]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.nightly_check_report()
+    assert capsys.readouterr().out == ""
+    monkeypatch.setattr(sys, "argv", ["main-ci-status"])
+    mod.nightly_check_report()
+    assert "no completed scheduled run" in capsys.readouterr().out
