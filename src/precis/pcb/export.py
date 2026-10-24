@@ -34,9 +34,14 @@ import re
 from typing import Any
 
 from precis.utils.text import esc_quoted
+from precis_geom import pcb_shape as _pcb_shape
 
-# Default fab/board constants (JLCPCB 4-layer default).
-DEFAULT_THICKNESS_MM = 1.6
+# Default fab/board constants (JLCPCB 4-layer default). The derivation
+# (and this constant) live in ``precis_geom.pcb_shape`` — the one
+# derivation the workspace container also runs (pcb-workspace-code 0b);
+# re-exported so existing ``export.DEFAULT_THICKNESS_MM`` readers are
+# untouched.
+DEFAULT_THICKNESS_MM = _pcb_shape.DEFAULT_THICKNESS_MM
 DEFAULT_TRACK_UM = 250  # 0.25 mm — JLCPCB economical minimum is 0.127
 DEFAULT_CLEARANCE_UM = 200  # 0.2 mm
 DEFAULT_VIA_UM = 600  # 0.6 mm pad / 0.3 mm drill
@@ -299,16 +304,7 @@ def board_bbox(
 ) -> tuple[float, float, float, float]:
     """Bounding box (x0, y0, x1, y1) of the placed parts + a margin — the
     fallback board boundary when no explicit outline feature exists."""
-    xs = [float(i["x"]) for i in model["instances"] if i.get("x") is not None]
-    ys = [float(i["y"]) for i in model["instances"] if i.get("y") is not None]
-    if not xs or not ys:
-        return (0.0, 0.0, 50.0, 50.0)
-    return (
-        min(xs) - margin_mm,
-        min(ys) - margin_mm,
-        max(xs) + margin_mm,
-        max(ys) + margin_mm,
-    )
+    return _pcb_shape.placed_bbox(model["instances"], margin_mm=margin_mm)
 
 
 def _pin_map_name(entry: Any, fallback: str) -> str:
@@ -497,55 +493,16 @@ def mechanical_profile(
     thickness_mm: float = DEFAULT_THICKNESS_MM,
     holes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Board outline + mounting holes + component height-blocks as a 2.5D
-    profile a ``cad`` enclosure references (the 0041 bridge).
-
-    Outline: an explicit ``outline`` feature's ``geom.path`` if present, else
-    the placed-parts bounding box. Holes: ``mounting_hole`` features with a
-    ``geom.diameter`` — or, when ``holes`` is given (``{x, y, diameter}``
-    rows, e.g. the IR's mounting holes, which also carry every part's
-    footprint holes at its current pose), exactly those. Blocks: each placed instance's courtyard (best-effort)
-    × ``height_mm`` — a coarse keep-out volume for the lid."""
-    feature_holes = []
-    outline_path: list[list[float]] | None = None
-    for f in features:
-        ft = str(f.get("ftype") or "")
-        geom = f.get("geom") or {}
-        if ft == "outline" and isinstance(geom.get("path"), list):
-            outline_path = [[float(p[0]), float(p[1])] for p in geom["path"]]
-        elif ft == "mounting_hole":
-            feature_holes.append(
-                {
-                    "x": f.get("x"),
-                    "y": f.get("y"),
-                    "diameter": geom.get("diameter"),
-                }
-            )
-    if holes is None:
-        holes = feature_holes
-    if outline_path is None:
-        x0, y0, x1, y1 = board_bbox(model, margin_mm=2.0)
-        outline_path = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-    blocks = []
-    for i in model["instances"]:
-        if i.get("x") is None or i.get("y") is None:
-            continue
-        blocks.append(
-            {
-                "refdes": i["refdes"],
-                "x": float(i["x"]),
-                "y": float(i["y"]),
-                "layer": i.get("layer") or "top",
-                "height_mm": i.get("height_mm"),
-            }
-        )
-    return {
-        "units": "mm",
-        "thickness_mm": thickness_mm,
-        "outline": outline_path,
-        "holes": holes,
-        "blocks": blocks,
-    }
+    """Board outline + mounting holes + keepouts + component
+    height-blocks as a 2.5D profile a ``cad`` enclosure references (the
+    0041 bridge). The derivation is :func:`precis_geom.pcb_shape.
+    mechanical_profile` — the one implementation, shared with the
+    workspace container; ``model`` is the ``export_model`` dict and only
+    its ``instances`` list is read. Blocks are each placed instance's
+    position × ``height_mm`` — a coarse keep-out volume for the lid."""
+    return _pcb_shape.mechanical_profile(
+        model["instances"], features, thickness_mm=thickness_mm, holes=holes
+    )
 
 
 __all__ = [

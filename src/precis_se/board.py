@@ -2,9 +2,35 @@
 at read time from ``mechanical_profile`` — the consumer half of the 0041
 bridge (``docs/backlog/pcb-se-binding.md`` §Rough box v0).
 
-**Everything here is pure.** Inputs are the plain dicts
-:func:`precis.pcb.export.mechanical_profile` returns plus the instance
-rows the caller already fetched — this module never touches a store.
+**Everything here is pure**, and since pcb-workspace-code slice 0b the
+*derivation itself* is not here: :func:`precis_geom.pcb_shape.
+derive_shape` produces the itemised shape (slab, per-part prisms with
+the ``origin: proposed`` honesty pair, holes, keepouts) in mm in the
+board frame — the one derivation the workspace container also runs. This
+module does the two se-side mappings on top, exactly once:
+
+- **Units cross once.** pcb is a mm enclave; se is metres. Every number
+  converts through :func:`precis_se.catalog.to_metres` and the cad DSL's
+  own unit tokens (``require_units=True`` parses ``w100mm`` into SI) —
+  there is no scale literal anywhere in this module, deliberately: the
+  "2000 mm tube becomes a 2000 m one" failure class is what the
+  spec pins a source-scan test on.
+- **The frame.** x/y are recentred on the outline bounding box (the cad
+  ``box`` primitive's x/y-centre anchor); z is shifted so z = 0 sits at
+  the **lowest extent of the derived stack**: the bottom copper face
+  when nothing is mounted on the bottom side — a ``box`` primitive is
+  base-at-z=0 and cannot express a base below the block origin, so the
+  one conservative box that must enclose every prism has to start at the
+  stack's underside. Ports carry their own ``pose``, so this choice
+  never moves an attachment point.
+
+**Heights are honest** — inside the shared derivation: an instance's own
+``height_mm`` wins (``origin: user``); absent, its footprint is looked
+up in the package-class table (``origin: proposed``, source noted), with
+the table's largest value as the fallback. Every proposed height is
+enumerated by the ``pcb_height_proposed`` DRC finding — a guessed
+keep-out is a warning, never a silent fact.
+
 The *pattern* is :mod:`precis_se.catalog`'s (honest ``why_not``, a
 narrow unit bridge, derived-never-stored), but the return type is its
 own: a board is inherently multi-item — one slab, N per-instance
@@ -13,33 +39,6 @@ envelope + one ports dict is the wrong cardinality. :class:`BoardDerived`
 still exposes the two attributes ``ops.effective_envelope``/
 ``effective_ports`` duck-type on, so every clearance/DRC/datum reader
 consumes a bound board unchanged.
-
-**Units cross exactly once.** pcb is a mm enclave; se is metres. Numbers
-convert through :func:`precis_se.catalog.to_metres` and the cad DSL's
-own unit tokens (``require_units=True`` parses ``w100mm`` into SI) —
-there is no scale literal anywhere in this module, deliberately: the
-"2000 mm tube becomes a 2000 m one" failure class is what the
-spec pins a source-scan test on.
-
-**The frame.** x/y are pcb board coordinates (mm → metres, the same
-y-convention the netlist IR uses — EasyEDA's flipped axis is already
-un-flipped at ingest) shifted by a fixed in-frame offset so the outline
-bounding box is centred, matching the cad ``box`` primitive's x/y-centre
-anchor. z = 0 sits at the **lowest extent of the derived stack**: the
-bottom copper face when nothing is mounted on the bottom side — a
-``box`` primitive is base-at-z=0 and cannot express a base below the
-block origin, so the one conservative box that must enclose every prism
-has to start at the stack's underside. The bottom copper face therefore
-sits at ``z = <tallest bottom-side prism>``; top-side prisms rise above
-``z = bottom + thickness``. Ports carry their own ``pose``, so this
-choice never moves an attachment point.
-
-**Heights are honest.** An instance's own ``height_mm`` wins
-(``origin: user``); absent, its footprint is looked up in
-:mod:`precis.pcb.package_heights` (``origin: proposed``, source noted),
-with the table's largest value as the fallback. Every proposed height is
-enumerated by the ``pcb_height_proposed`` DRC finding — a guessed
-keep-out is a warning, never a silent fact.
 
 v0 always emits exactly ONE segment — a rigid board is the one-segment
 special case — but the list shape is load-bearing for flexboards
@@ -53,7 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.cad import dsl as cad_dsl
-from precis.pcb import package_heights
+from precis_geom import pcb_shape
 from precis_se import catalog
 from precis_se.ops import PortSpec
 
@@ -65,7 +64,7 @@ class BoardDerived:
     reason. ``envelope``/``ports``/``why_not`` duck-type
     :class:`precis_se.catalog.Derived` so ``effective_envelope``/
     ``effective_ports`` treat it unchanged; ``segments`` is the richer
-    per-item list (slab, prisms, holes) in metres, block frame."""
+    per-item list (slab, prisms, holes, keepouts) in metres, block frame."""
 
     envelope: str | None = None
     ports: dict[str, PortSpec] | None = None
@@ -85,10 +84,6 @@ def _m(value_mm: Any) -> float:
     metres = catalog.to_metres(float(value_mm), "mm")
     assert metres is not None  # 'mm' is always in the table
     return metres
-
-
-def _is_bottom(layer: Any) -> bool:
-    return str(layer or "top").lower() in ("bottom", "bot", "b")
 
 
 def _envelope_box(w_mm: float, d_mm: float, h_mm: float) -> str:
@@ -115,109 +110,83 @@ def derive_board(
     reports ``why_not`` instead of inventing a board. The caller
     (``persist.attach_boards``) owns the store failure modes — an
     unknown slug arrives as a ``why_not`` it minted itself."""
-    outline = profile.get("outline") or []
-    if not outline:
-        return BoardDerived(why_not="board has no outline and no placed parts")
-    xs = [float(p[0]) for p in outline]
-    ys = [float(p[1]) for p in outline]
-    x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-    w_mm, d_mm = x1 - x0, y1 - y0
-    t_mm = float(profile.get("thickness_mm") or 0.0)
-    if w_mm <= 0.0 or d_mm <= 0.0 or t_mm <= 0.0:
-        return BoardDerived(
-            why_not="board outline or thickness is degenerate "
-            f"(w={w_mm:g} mm, d={d_mm:g} mm, t={t_mm:g} mm)"
-        )
+    details = {
+        str(i.get("refdes")): {"footprint": i.get("footprint")} for i in instances or []
+    }
+    shape = pcb_shape.derive_shape(profile, details=details)
+    if shape.why_not is not None:
+        return BoardDerived(why_not=shape.why_not)
 
-    footprints = {str(i.get("refdes")): i.get("footprint") for i in instances or []}
+    cx_mm, cy_mm = shape.centre_mm
+    # pcb board frame has z = 0 at the bottom copper face; the block
+    # frame puts z = 0 at the lowest extent (see the module docstring's
+    # frame note), i.e. shifted down by the tallest bottom-side prism.
+    z_shift_mm = shape.bottom_extent_mm
 
-    # Heights: own height_mm → the package-class table → the table's
-    # largest value. Every table/fallback height is origin=proposed and
-    # carries its source so pcb_height_proposed can name it.
     prisms: list[dict[str, Any]] = []
-    top_max_mm = 0.0
-    bottom_max_mm = 0.0
-    for block in profile.get("blocks") or []:
-        refdes = str(block.get("refdes"))
-        bottom = _is_bottom(block.get("layer"))
-        own = block.get("height_mm")
-        if own is not None:
-            height_mm, origin, source = float(own), "user", None
-        else:
-            height_mm, source = package_heights.height_mm(footprints.get(refdes))
-            origin = "proposed"
-        if bottom:
-            bottom_max_mm = max(bottom_max_mm, height_mm)
-        else:
-            top_max_mm = max(top_max_mm, height_mm)
+    for p in shape.prisms:
         prisms.append(
             {
-                "refdes": refdes,
-                "x_m": _m(float(block["x"]) - cx),
-                "y_m": _m(float(block["y"]) - cy),
-                "layer": "bottom" if bottom else "top",
-                "height_m": _m(height_mm),
-                "origin": origin,
-                "source": source,
+                "refdes": p.refdes,
+                "x_m": _m(p.x_mm - cx_mm),
+                "y_m": _m(p.y_mm - cy_mm),
+                "layer": p.side,
+                "height_m": _m(p.height_mm),
+                "origin": p.origin,
+                "source": p.source,
+                "z_m": [_m(z + z_shift_mm) for z in p.z_mm],
             }
-        )
-
-    thickness_m = _m(t_mm)
-    bottom_m = _m(bottom_max_mm)
-    # z=0 = the lowest extent (see the module docstring's frame note):
-    # bottom copper face at z=bottom_m, slab above it, top prisms on top.
-    slab_z = [bottom_m, bottom_m + thickness_m]
-    for prism in prisms:
-        h = prism["height_m"]
-        prism["z_m"] = (
-            [slab_z[1], slab_z[1] + h]
-            if prism["layer"] == "top"
-            else [bottom_m - h, bottom_m]
         )
 
     holes: list[dict[str, Any]] = []
     ports: dict[str, PortSpec] = {}
-    for n, hole in enumerate(profile.get("holes") or [], start=1):
-        if hole.get("x") is None or hole.get("y") is None:
-            continue
-        name = f"H{n}"
-        hx, hy = _m(float(hole["x"]) - cx), _m(float(hole["y"]) - cy)
-        diameter_m = _m(hole.get("diameter") or 0.0)
+    for hole in shape.holes:
+        hx, hy = _m(hole.x_mm - cx_mm), _m(hole.y_mm - cy_mm)
+        diameter_m = _m(hole.diameter_mm)
         holes.append(
             {
-                "name": name,
+                "name": hole.name,
                 "x_m": hx,
                 "y_m": hy,
                 "diameter_m": diameter_m,
-                "through_m": thickness_m,
+                "through_m": _m(hole.through_mm),
             }
         )
-        ports[name] = PortSpec(
-            name=name,
+        ports[hole.name] = PortSpec(
+            name=hole.name,
             roles=["bore"],
             direction=[0.0, 0.0, 1.0],
-            pose=[hx, hy, bottom_m],
+            pose=[hx, hy, _m(z_shift_mm)],
             pose_source="bound",
-            annotations={"diameter_m": diameter_m, "through_m": thickness_m},
+            annotations={"diameter_m": diameter_m, "through_m": _m(hole.through_mm)},
         )
 
+    keepouts = [
+        {
+            "poly": [[_m(px), _m(py)] for px, py in k.poly],
+            "layers": list(k.layers),
+            "reason": k.reason,
+        }
+        for k in shape.keepouts
+    ]
+
+    env = shape.envelope_mm()
     segments = [
         {
             "slab": {
                 # pcb frame (outline-origin), not the centred block frame:
                 # the slab polygon is the board's own geometry.
-                "outline": [[_m(px), _m(py)] for px, py in outline],
-                "thickness_m": thickness_m,
-                "z_m": slab_z,
+                "outline": [[_m(px), _m(py)] for px, py in shape.outline],
+                "thickness_m": _m(shape.thickness_mm),
+                "z_m": [_m(z_shift_mm), _m(shape.thickness_mm + z_shift_mm)],
             },
             "prisms": prisms,
             "holes": holes,
+            "keepouts": keepouts,
         }
     ]
     return BoardDerived(
-        envelope=_envelope_box(w_mm, d_mm, bottom_max_mm + t_mm + top_max_mm),
+        envelope=_envelope_box(env["w"], env["d"], env["h"]),
         ports=ports or None,
         segments=segments,
     )

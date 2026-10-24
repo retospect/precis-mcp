@@ -51,7 +51,7 @@ design-review: yes
 3. **structure-workspaces 2e, 2r** — atom fisheye and observation rays; after 2t/2p.
 4. **se-native-fields slices 2, 3** — thermoelastic via scikit-fem with the bracket example (fits a part to existing blocks' ports; needs structure 2r's macro rays and the `context.json` staging), then advection coupling with the flow kernel; after fields slice 1 (slice 3 also after se-multiphysics slice 1).
    - **se-flow-kernel slice 4c** — incremental evaluation under the step keys (`evaluate(warm=)`, the cut-cell grid re-cuts only cells the changed steps touched); after 4b and fields slice 1.
-5. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 0b, 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration; slice 0b ("Board 3-D shape in the container", moved from pcb-se-binding's Follow-up v2, Reto 2026-10-23) needs only slice 0.
+5. **structure-workspaces slices 6, 7** and **pcb-workspace-code slices 3, 4, 5** — agent modules + skill, CI goldens, placed-module cache + hierarchical routing, offline kernel, dogfood migration; slice 0b ("Board 3-D shape in the container", moved from pcb-se-binding's Follow-up v2, Reto 2026-10-23) landed 2026-10-23 (pcb-ws0b).
 
 ## Parked
 

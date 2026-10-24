@@ -105,6 +105,11 @@ machinery expected for the motor (reuses `cad-machine-spec.md`).
   board may own both its copper and its cartridge overlay) — undecided,
   depends on how `gr451662`'s generator work shapes the cartridge's own
   data model.
+- How a bound board's mounting holes subtract (derived child blocks vs a
+  compound envelope) is the carried question in
+  [pcb-workspace-code](pcb-workspace-code.md) §Carried question — hole
+  subtraction (0b): shared, undecided; this assembly's fit checks inherit
+  whichever it lands.
 
 Closest existing items: `pcb-se-binding.md` (hard blocker — this item is
 the widened N-object case), `cad-machine-spec.md` (motor joint vocabulary),

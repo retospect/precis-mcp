@@ -35,12 +35,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis_geom import pcb_shape as _shape
 from precis_geom import trace as _trace
+from precis_geom.pcb_shape import BoardShape, FitResult
 from precis_geom.trace import traced
 
 #: ``Net.domain`` vocabulary: the store routes electrical nets only
@@ -951,6 +953,85 @@ class Board:
         ]
         return CheckResult(findings=findings, not_checked=not_checked)
 
+    # -- the 3-D shape (slice 0b) -------------------------------------------
+
+    def _local_extent_mm(self, part: Part) -> tuple[float, float, float, float] | None:
+        """The part's footprint-local ``[x0, y0, x1, y1]`` from its
+        registered :class:`Footprint` — the authored ``courtyard.bbox``
+        first, else the pad bbox (the store's own normalization order,
+        ``_pcb_ops``). ``None`` for a catalog/named footprint the script
+        never authored — an honest point column, not a guess."""
+        fp = self._footprints.get(str(part.footprint or ""))
+        if fp is None:
+            return None
+        courtyard = fp.courtyard
+        if isinstance(courtyard, dict):
+            bbox = courtyard.get("bbox")
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                return (
+                    float(bbox[0]),
+                    float(bbox[1]),
+                    float(bbox[2]),
+                    float(bbox[3]),
+                )
+        xs: list[float] = []
+        ys: list[float] = []
+        for p_ in fp.pads:
+            if p_.get("poly"):
+                xs += [float(v[0]) for v in p_["poly"]]
+                ys += [float(v[1]) for v in p_["poly"]]
+            else:
+                w = float(p_.get("w") or 0.0)
+                h = float(p_.get("h") or 0.0)
+                xs += [float(p_["x"]) - w / 2.0, float(p_["x"]) + w / 2.0]
+                ys += [float(p_["y"]) - h / 2.0, float(p_["y"]) + h / 2.0]
+        if not xs:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def shape(self, *, thickness_mm: float | None = None) -> BoardShape:
+        """The board's 3-D mechanical shape (slice 0b) as data: the
+        outline polygon, one :class:`~precis_geom.pcb_shape.Prism` per
+        placed part (resolved ``height_mm`` + the ``origin`` honesty
+        flag), mounting-hole centres/diameters, keepouts — mm, board
+        frame, z = 0 at the bottom copper face. The derivation is
+        :func:`precis_geom.pcb_shape.derive_shape` over the same
+        :func:`~precis_geom.pcb_shape.mechanical_profile` the trusted
+        side serves — there is no second derivation. ``shape.fits(…)``
+        is the callable half. Parts with no pose get no prism and are
+        named in ``shape.unplaced``; ``thickness_mm`` overrides the
+        default 1.6 until board thickness is real data (pass A)."""
+        parts = [self._parts[r] for r in self._part_order]
+        instances = [
+            {
+                "refdes": p.refdes,
+                "x": p.x,
+                "y": p.y,
+                "layer": p.side,
+                "height_mm": p.height_mm,
+            }
+            for p in parts
+        ]
+        profile = _shape.mechanical_profile(
+            instances,
+            self._features,
+            thickness_mm=(
+                thickness_mm
+                if thickness_mm is not None
+                else _shape.DEFAULT_THICKNESS_MM
+            ),
+        )
+        details = {
+            p.refdes: {
+                "footprint": p.footprint,
+                "extent_mm": self._local_extent_mm(p),
+                "rot_deg": p.rot,
+            }
+            for p in parts
+        }
+        unplaced = [p.refdes for p in parts if p.x is None or p.y is None]
+        return _shape.derive_shape(profile, details=details, unplaced=unplaced)
+
     def to_batch(self) -> dict[str, Any]:
         """The ``pcb_apply``-shaped batch dict (see that method's
         docstring for the per-key field contract). Optional sections are
@@ -991,6 +1072,24 @@ class Board:
         }
 
 
+def fit(
+    shape: BoardShape,
+    other: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+    *,
+    clearance_mm: float = 0.0,
+) -> FitResult:
+    """``b.shape().fits(other)`` spelled as a module call — the multi-solid
+    fit check (slice 0b); see :func:`precis_geom.pcb_shape.fit`."""
+    return _shape.fit(shape, other, clearance_mm=clearance_mm)
+
+
+#: Counterparty box-spec constructors for ``fit``/``BoardShape.fits`` —
+#: ``box(...)`` is an se part to keep clear of, ``enclosure(...)`` is the
+#: interior cavity the whole board must fit inside.
+box = _shape.box
+enclosure = _shape.enclosure
+
+
 def canonical_json(batch: dict[str, Any]) -> str:
     """The byte form the goldens hash and the request key is built from."""
     return json.dumps(batch, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -1026,18 +1125,23 @@ def write_manifest(
 __all__ = [
     "MANIFEST_SCHEMA",
     "Board",
+    "BoardShape",
     "CatalogPart",
     "CheckFinding",
     "CheckResult",
+    "FitResult",
     "Footprint",
     "Net",
     "Part",
     "PcbBuilderError",
     "Pin",
     "Role",
+    "box",
     "canonical_json",
     "catalog",
     "content_hash",
+    "enclosure",
+    "fit",
     "module",
     "pad",
     "rect",
