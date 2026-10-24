@@ -49,7 +49,7 @@ CONVERTED = {
     "nano_usb_pd_r2": "nano_usb_pd_testboard_r2.py:build_design",
     "esp32c3": "esp32c3_reference.json",
 }
-EXAMPLES = (*CONVERTED, "sanity")
+EXAMPLES = (*CONVERTED, "sanity", "blinky_led")
 
 
 def _load(path: Path, name: str) -> ModuleType:

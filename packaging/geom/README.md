@@ -1,0 +1,143 @@
+# precis-geom — run a workspace script locally
+
+The construction core the structure workspaces run: `precis_geom.pcb`
+(the board builder), `precis_geom.trace` (the construction trace) and
+`precis_geom.out` (a run's `out/` in the importer's layout). This is the
+recipe for the dev loop: load a `main.py`, build, check, fit, trace.
+Every python block below was run at the repo root under `uv run python`;
+the output shown is the output it produced.
+
+## Install
+
+In a repo checkout there is nothing to install — the dev env already
+imports `precis_geom` (`uv run python -c "import precis_geom.pcb"`).
+The wheel the sandbox runs is built with `scripts/ws-promote geom`, or
+directly:
+
+```text
+$ uv build --wheel packaging/geom
+Building wheel...
+Successfully built packaging/geom/dist/precis_geom-0.1.0-py3-none-any.whl
+```
+
+## Load and build
+
+A board `main.py` is a plain script — `importlib` loads it, `build()`
+returns the `Board` (the same `_load` pattern
+`tests/workspaces/test_pcb_board.py` uses):
+
+```python
+import importlib.util
+spec = importlib.util.spec_from_file_location("board", "examples/boards/blinky_led/main.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+b = mod.build()
+```
+
+`b.to_batch()` is then the `pcb_apply`-shaped dict; `b.manifest()` /
+`pcb.write_manifest(b, "out/")` serialise it.
+
+## Check and fit
+
+`b.check()` is the offline L0 pass — NOT-CHECKED names parts with
+neither a catalog part nor a registered footprint; findings cover
+unconnected nets and unknown footprints:
+
+```python
+print(b.check().summary())
+```
+
+```text
+0 finding(s), 0 NOT-CHECKED (no catalog part, no footprint)
+```
+
+`b.shape()` derives the board's 3-D mechanical shape (outline, slab,
+one prism per placed part); `.fits(...)` checks it against
+counterparty boxes — `pcb_shape.enclosure(w, d, h)` asks whether the
+whole board fits inside a w×d×h mm cavity:
+
+```python
+from precis_geom import pcb_shape
+fit = b.shape().fits(pcb_shape.enclosure(30, 25, 15))
+print(fit.summary())
+```
+
+```text
+fit OK (0 finding(s))
+```
+
+A too-shallow cavity fails per part, naming the overflow:
+
+```python
+fit = b.shape().fits(pcb_shape.enclosure(30, 25, 5))
+print(fit.summary())
+```
+
+```text
+fit FAIL (2 finding(s)):
+  error fit.outside_enclosure R1: R1 exceeds enclosure 'enclosure' by 8.1 mm (cavity 30×25×5 mm)
+  error fit.outside_enclosure D1: D1 exceeds enclosure 'enclosure' by 8.1 mm (cavity 30×25×5 mm)
+```
+
+(8.1 mm because `CHIP-0603` matches no row of the package-height table
+and takes the 11.5 mm fallback — pass `height_mm=` on `b.part(...)` for
+an authored number. See `precis_geom.pcb_shape.height_mm`.)
+
+Unplaced parts are reported, not guessed: a part with no `.at(...)`
+gets no prism and is named in `b.shape().unplaced`.
+
+## Trace and out
+
+`trace.run(work_root=...)` records the construction — `work_root` is
+the dir that counts as user code (calls under it mint `user` frames);
+`tr.dump()` is the trace document:
+
+```python
+from precis_geom import trace
+with trace.run(work_root="examples/boards") as tr:
+    mod.build()
+doc = tr.dump()
+print(len(doc["frames"]), [f["qual"] for f in doc["frames"]])
+```
+
+```text
+11 ['', 'main.build', 'pcb.Board.outline', 'pcb.Board.footprint', 'pcb.Board.net', 'pcb.Board.part', 'pcb.Board.footprint', 'pcb.Board.part', 'pcb.Board.footprint', 'pcb.Board.wire', 'pcb.Board.net']
+```
+
+`out.run(name)` wraps a run in the importer's layout — a bare name lands
+under `scratch/out/<name>/` (an explicit path is used as-is), and exit
+writes `manifest.json` plus `trace.json` of everything traced inside
+(`o.block(...)`/`o.instance(...)`/`o.connect(...)` calls would also
+land `blocks/` geometry files):
+
+```python
+from precis_geom import out
+with out.run("blinky") as o:
+    mod.build()
+print(o.root)
+print(sorted(p.name for p in o.root.iterdir()))
+```
+
+```text
+scratch/out/blinky
+['manifest.json', 'trace.json']
+```
+
+## Which line made U1
+
+On an authored board the question is grep-able — `b.part("D1", ...)` is
+line 33 of `examples/boards/blinky_led/main.py`. On the generated
+boards it is not: `examples/boards/nano_usb_pd/main.py` is ~33 KB of
+`scripts/pcb-batch-to-board` output, so the answer there is a line in
+a generated pad list. The trace answers it mechanically either way —
+every `pcb.Board.part` frame records the user call site's `file`/`line`
+and the call's arguments:
+
+```python
+[(f["file"], f["line"], f["args"]["refdes"])
+ for f in doc["frames"] if f["qual"] == "pcb.Board.part"]
+```
+
+```text
+[('blinky_led/main.py', 32, 'R1'), ('blinky_led/main.py', 33, 'D1')]
+```

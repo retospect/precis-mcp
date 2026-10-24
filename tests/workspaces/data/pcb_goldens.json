@@ -1,4 +1,12 @@
 {
+ "blinky_led": {
+  "connections": 3,
+  "findings": [],
+  "nets": 2,
+  "not_checked": [],
+  "parts": 2,
+  "sha256": "3e17da233552b8f8f95c72c094317d659e6b80a1aea6e236d7389f8d3c366707"
+ },
  "esp32c3": {
   "connections": 81,
   "findings": [],
