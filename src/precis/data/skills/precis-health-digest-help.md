@@ -93,6 +93,7 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `tool_latency` | `infra` | every verb/kind with ≥10 calls in the last hour has its `tool_calls` p95 under budget (15 s; slower for put/edit draft, perplexity, web, websearch, semanticscholar, youtube); red needs two calls over, not one cold call |
 | `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (≥1 s) more than doubled against the trailing week (info) |
 | `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
+| `post_migration_steps` | `deploy` | a migration's out-of-transaction step still pending: NOT VALID constraints and missing per-kind ANN indexes, named with the command that clears each (`precis post-migration-check` is the same probe; gr514955) |
 
 ## Derived-group check names
 

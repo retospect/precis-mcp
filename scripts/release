@@ -529,6 +529,50 @@ def pending_sha(rel: dict[str, Any], default: str) -> str:
     return str(dep.get("sha") or default)
 
 
+#: The post-migration probe shells out to scripts/prod-precis (git fetch +
+#: uv run + one prod query); cap the whole call well above that.
+POST_MIGRATION_CHECK_TIMEOUT_S = 180.0
+
+
+def warn_post_migration() -> None:
+    """Name pending post-migration steps after the deploy's migrate play.
+
+    The assert itself is `precis post-migration-check` — read-only, listing
+    NOT VALID constraints and missing per-kind ANN indexes with the command
+    that clears each — run against prod through scripts/prod-precis. The
+    health-digest ``post_migration_steps`` row reports the same probe
+    continuously (gr514955; prod ran weeks on the global-index fallback
+    before anyone noticed, gr513663). Best-effort: a missing wrapper or an
+    unreadable prod never fails a deploy.
+    """
+    wrapper = ROOT / "scripts" / "prod-precis"
+    if not wrapper.exists():
+        say("post-migration check skipped: scripts/prod-precis not in this checkout")
+        return
+    try:
+        cp = subprocess.run(
+            [str(wrapper), "post-migration-check"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=POST_MIGRATION_CHECK_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f"post-migration check skipped: {type(e).__name__}")
+        return
+    if cp.returncode == 0:
+        for line in cp.stdout.strip().splitlines():
+            say(line)
+        return
+    tail = (cp.stderr or "").strip().splitlines()
+    say(
+        f"post-migration check unreadable (rc {cp.returncode}): "
+        f"{tail[-1][:200] if tail else 'no output'}"
+    )
+
+
 def wait_ci(branch: str, args: argparse.Namespace) -> int:
     """0 = release head is green; else the exit code to return."""
     deadline = time.monotonic() + args.ci_timeout * 60
@@ -587,6 +631,10 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
     label = release_label(round_state() or {})
     prev = rev("origin/prod")
     rc = rnd("deploy", stream=True).returncode
+    if rc in (0, 3):
+        # The rollout ran, so its migrate play did too — name whatever
+        # post-migration steps it left pending (gr514955). Best-effort.
+        warn_post_migration()
     if rc == 3:
         # The release owner's path: rollout done, runtime confirmed later by
         # `scripts/round deploy --confirm-runtime`. The deploy note posts

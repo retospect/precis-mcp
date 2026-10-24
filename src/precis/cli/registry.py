@@ -89,6 +89,12 @@ COMMANDS: tuple[Command, ...] = (
     ),
     _c("migrate", "migrate", "Apply pending DB migrations."),
     _c(
+        "post-migration-check",
+        "post_migration_check",
+        "List pending post-migration steps (NOT VALID constraints, "
+        "missing partial ANN indexes).",
+    ),
+    _c(
         "doctor",
         "doctor",
         "Verify a precis install (read-only; non-zero exit on failure).",

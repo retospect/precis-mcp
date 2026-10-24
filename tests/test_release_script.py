@@ -545,3 +545,43 @@ def test_stale_verdict_without_a_runnable_workflow_keeps_the_refusal(
     assert "old" in out.stderr  # the round deploy age refusal survives verbatim
     assert not (rig.gh_dir / "reran").exists()
     assert rig.deploy_log() == []
+
+
+def _prod_precis_stub(rig: Rig, body: str) -> None:
+    """Plant a fake `scripts/prod-precis` in the rig checkout (the release
+    script resolves the wrapper under PRECIS_ROUND_ROOT, not its own dir)."""
+    p = rig.root / "scripts" / "prod-precis"
+    p.write_text(body, encoding="utf-8")
+    p.chmod(0o755)
+
+
+def test_deploy_warns_pending_post_migration_steps(rig: Rig) -> None:
+    """gr514955: after the deploy's migrate play, release names whatever
+    post-migration steps prod still has pending."""
+    _prod_precis_stub(
+        rig,
+        "#!/usr/bin/env bash\n"
+        "echo 'post-migration check: 1 pending post-migration step(s):'\n"
+        "echo '  - chunk_embeddings_ref_kind_filled on chunk_embeddings "
+        "(from precis/0226_chunk_embeddings_kind_ann) — run: "
+        "precis backfill-embedding-kinds --apply'\n",
+    )
+    out = _release(rig, *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "post-migration check: 1 pending" in out.stdout
+    assert "precis backfill-embedding-kinds --apply" in out.stdout
+
+
+def test_deploy_warn_survives_an_unreadable_probe(rig: Rig) -> None:
+    """The probe is best-effort: a failing prod-precis warns, never fails."""
+    _prod_precis_stub(rig, "#!/usr/bin/env bash\nexit 1\n")
+    out = _release(rig, *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "post-migration check unreadable (rc 1)" in out.stdout
+
+
+def test_deploy_warn_skips_without_the_wrapper(rig: Rig) -> None:
+    """No prod-precis in the checkout -> skip note, deploy unaffected."""
+    out = _release(rig, *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "post-migration check skipped" in out.stdout

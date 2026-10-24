@@ -104,7 +104,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from precis.workers.doctor_report import DoctorReport
 
-from precis import health_checks
+from precis import health_checks, migration_postchecks
 from precis.alerts import (
     ACKED_SQL,
     STATE_OPEN,
@@ -1737,6 +1737,51 @@ def _check_doctor_report_fresh(conn: Any) -> CheckResult:
     )
 
 
+def _check_post_migration_steps(conn: Any) -> CheckResult:
+    """Migrations whose out-of-transaction follow-up has not run, by name.
+
+    The probe and the registry of finishing commands live in
+    :mod:`precis.migration_postchecks` — the same source the
+    ``precis post-migration-check`` assert runs after the deploy's migrate
+    play (gr514955). Prod ran weeks without 0226's per-kind ANN indexes or
+    its NOT VALID constraints validated (gr513663); this row is the
+    always-on half of that net. A pending step is ``warn``: the schema
+    works, degraded — nothing here pages.
+    """
+    try:
+        items = migration_postchecks.pending_post_steps(conn)
+    except Exception:
+        log.exception("health_digest: post-migration probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after post-migration probe failed")
+        return CheckResult(
+            "deploy",
+            "post_migration_steps",
+            "unknown",
+            "post-migration steps: probe failed",
+            _WARN,
+        )
+    if not items:
+        return CheckResult(
+            "deploy",
+            "post_migration_steps",
+            "ok",
+            "post-migration steps: none pending",
+            _WARN,
+        )
+    named = "; ".join(f"{i.name} on {i.table} -> {i.fix}" for i in items[:8])
+    more = f"; +{len(items) - 8} more" if len(items) > 8 else ""
+    return CheckResult(
+        "deploy",
+        "post_migration_steps",
+        "stale",
+        f"post-migration steps pending: {named}{more}",
+        _WARN,
+    )
+
+
 def _layer1_checks(store: Store) -> list[CheckResult]:
     """All curated Layer-1 outcome checks, one connection, best-effort."""
     with store.pool.connection() as conn:
@@ -1752,6 +1797,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_doctor_report_fresh(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))
+        out.append(_check_post_migration_steps(conn))
         out += _tool_latency_checks(conn)
     if not _classify_gate_enabled(store):
         out = [

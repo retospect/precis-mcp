@@ -18,7 +18,8 @@
 # descendant of origin/prod runs old logic (e.g. without the live-node guard)
 # against production (gr496163). Fetch, then: read subcommands warn, write
 # subcommands refuse. Reads = `tools get|search`, `quest status`, `logs`,
-# `stats`, `resolve`, `schema-doc`, `secret check`, anything with --dry-run or -h/--help;
+# `stats`, `resolve`, `schema-doc`, `secret check`, `post-migration-check`,
+# anything with --dry-run or -h/--help;
 # every other subcommand counts as a write. Emergency override (silent, skips
 # the fetch): PRECIS_ALLOW_STALE_PROD_TREE=1. Fix instead: rebase onto
 # origin/prod (`git rebase origin/prod`), or run from a tree that is.
@@ -31,7 +32,7 @@ is_read_only() {
         case "$a" in --dry-run | -h | --help) return 0 ;; esac
     done
     case "${1:-}" in
-        logs | stats | resolve | schema-doc) return 0 ;;
+        logs | stats | resolve | schema-doc | post-migration-check) return 0 ;;
         tools) [[ "${2:-}" == get || "${2:-}" == search ]] && return 0 ;;
         quest) [[ "${2:-}" == status ]] && return 0 ;;
         secret) [[ "${2:-}" == check ]] && return 0 ;;
