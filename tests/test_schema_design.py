@@ -107,6 +107,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "claude_quota_snapshot.data",
         "cluster_cells.words",
         "cluster_runs.params",
+        # 0235: a grounding's ordered list of pinned dependencies (handle +
+        # kind per pin, variable length); read whole into the certificate
+        # sha, never queried by key.
+        "groundings.pins",
         # 0158: the se_notes shape verbatim (that table is plugin-exempt via
         # PLUGIN_TABLE_PREFIXES; checklist_notes is core so it needs its own
         # entry) — about anchors an open set of sub-objects of the target
