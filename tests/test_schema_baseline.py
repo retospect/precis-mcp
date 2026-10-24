@@ -17,6 +17,7 @@ Two tiers, matching the guarantee split:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import uuid
@@ -209,6 +210,36 @@ def _dump_schema(pg_dump_bin: str, dsn: str) -> str:
     return "\n".join(keep)
 
 
+def _dump_privileges(pg_dump_bin: str, dsn: str) -> list[str]:
+    """Sorted GRANT/REVOKE lines a schema dump of ``dsn`` emits.
+
+    Unlike :func:`_dump_schema` this dumps *with* privileges so the
+    privilege layout itself can be compared; pg_dump expresses ACLs only
+    as GRANT/REVOKE statements, so keeping those lines is comparing the
+    catalog ACLs modulo pg_dump's canonicalisation.
+    """
+    out = subprocess.run(
+        [
+            pg_dump_bin,
+            "--schema=public",
+            "--schema=vault",
+            "--schema-only",
+            "--no-owner",
+            "-d",
+            dsn,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    return sorted(
+        s
+        for line in out.splitlines()
+        if (s := line.strip()).startswith(("GRANT ", "REVOKE "))
+    )
+
+
 def _applied_ledger(dsn: str) -> set[tuple[str, str]]:
     with psycopg.connect(dsn) as conn:
         rows = conn.execute("SELECT plugin, version FROM public._migrations").fetchall()
@@ -319,6 +350,52 @@ def test_schema_convergence(
 
     assert ledger_a == ledger_b, "ledger diverges between replay and snapshot"
     assert schema_a == schema_b, "schema diverges between replay and snapshot"
+
+
+@pytest.mark.db
+def test_baseline_preserves_privileges(
+    fresh_db: str, drop_public_objects: Callable[[str], None]
+) -> None:
+    """A snapshot-built install has the migrated DB's privilege layout (gr505335).
+
+    The baseline used to be dumped ``--no-privileges``, so a fresh install
+    got *default* ACLs: ``vault`` had no PUBLIC USAGE grant (its verbs
+    unreachable) and ``vault._key``/``vault._hint`` kept the default PUBLIC
+    EXECUTE 0059 revokes. Now privileges ride along in the dump, and this
+    pins the end state: load-baseline + tail emits the same GRANT/REVOKE
+    set as a from-scratch replay.
+    """
+    if not BASELINE.exists():
+        pytest.skip("no baseline snapshot committed yet")
+    pg_dump_bin = _pg_dump_bin()
+    if pg_dump_bin is None:
+        pytest.skip("pg_dump not available")
+
+    # Portability gate: the snapshot's ACL statements may name PUBLIC only —
+    # a GRANT/REVOKE to a real role would error on any install lacking it
+    # (prod roles are provisioned out-of-tree; the chain never names one).
+    non_public = [
+        line
+        for line in BASELINE.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith(("GRANT ", "REVOKE "))
+        and not re.search(r"\b(?:TO|FROM) PUBLIC\b", line)
+    ]
+    assert not non_public, f"baseline ACL names a non-PUBLIC role: {non_public}"
+
+    dsn = fresh_db  # schema already stripped; teardown re-applies
+
+    Migrator(dsn, MIGRATIONS_DIR).apply_all()
+    privs_a = _dump_privileges(pg_dump_bin, dsn)
+
+    drop_public_objects(dsn)
+    _drop_schema(dsn, "vault")
+    Migrator(dsn, MIGRATIONS_DIR, baseline=BASELINE).apply_all()
+    privs_b = _dump_privileges(pg_dump_bin, dsn)
+
+    assert privs_a == privs_b, (
+        "privileges diverge between replay and snapshot:\n"
+        + "\n".join(f"  {line}" for line in set(privs_a) ^ set(privs_b))
+    )
 
 
 def test_baseline_at_head_when_present() -> None:

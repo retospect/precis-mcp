@@ -3,8 +3,8 @@
 
 ``vaulted_store`` builds a second :class:`Store` pointed at the *same*
 (already-truncated, per-test-isolated) database as the shared ``store``
-fixture, but with ``app.secret_key`` baked into every pooled connection's
-startup options — the same trick :mod:`tests.test_secrets_vault` uses —
+fixture, after provisioning the vault passphrase into ``vault._key``
+(0239's owner-only row — the trick :mod:`tests.test_secrets_vault` uses) —
 so ``set_secret``/``get_secret`` exercise the real pgcrypto round trip
 instead of falling through to "vault unavailable".
 """
@@ -15,7 +15,6 @@ from collections.abc import Iterator
 
 import psycopg
 import pytest
-from psycopg.conninfo import make_conninfo
 
 from precis.anki.creds import (
     anki_logins,
@@ -28,6 +27,7 @@ from precis.anki.creds import (
 )
 from precis.store import Store
 from precis.users import hash_password
+from tests.conftest import _provision_vault_key
 
 _TEST_KEY = "test-anki-creds-vault-key-0123456789"
 
@@ -41,8 +41,8 @@ def vaulted_store(store: Store) -> Iterator[Store]:
             admin.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
         except psycopg.errors.InsufficientPrivilege:
             pytest.skip("pgcrypto not installed and not creatable as the test role")
-    keyed_dsn = make_conninfo(dsn, options=f"-c app.secret_key={_TEST_KEY}")
-    vstore = Store.connect(keyed_dsn)
+    _provision_vault_key(dsn, _TEST_KEY)
+    vstore = Store.connect(dsn)
     try:
         yield vstore
     finally:

@@ -268,12 +268,70 @@
   check_mode: false  # autocommit is incompatible with check mode
 
 # Secrets-vault passphrase (precis ADR 0055): the pgcrypto pgp_sym key that
-# vault.reveal/set use. Set via ALTER SYSTEM (→ postgresql.auto.conf) + reload —
-# a SIGHUP-level GUC, so NO restart (no factory downtime). Held in server config,
-# never in a table, so a logical pg_dump stays shareable. Skipped until
-# vault_pg_app_secret_key is defined in inventory/group_vars/all/vault.yml.
-- name: Set secrets-vault app.secret_key (ALTER SYSTEM)
+# vault.reveal/set use. Since migration 0239 (gr505334) it lives in the
+# single-row vault._key table — reachable only by the owning role — because
+# a GUC can't be ACL'd: ALTER SYSTEM exposed it to every role through
+# current_setting(), and ALTER ROLE … SET would still leak through the
+# world-readable pg_db_role_setting catalog. This task therefore writes the
+# row (as superuser; named_args keeps the value out of the SQL text) and
+# removes the legacy GUC so the key stops being cluster config at all. The
+# to_regclass probe keeps the play correct on a cluster that hasn't applied
+# 0239 yet: no table → keep provisioning the old GUC as before. A restored
+# DB has an empty vault._key (the backup excludes its data), and this task
+# is what re-arms it. Skipped until vault_pg_app_secret_key is defined in
+# inventory/group_vars/all/vault.yml.
+- name: Check for the vault._key table (migration 0239)
   when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: "SELECT to_regclass('vault._key') IS NOT NULL AS present"
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  register: vault_key_table
+
+- name: Provision the secrets-vault passphrase into vault._key
+  when: >
+    vault_pg_app_secret_key is defined
+    and (vault_pg_app_secret_key | length > 0)
+    and vault_key_table.query_result[0].present
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: >-
+      INSERT INTO vault._key (one, k) VALUES (true, %(key)s)
+      ON CONFLICT (one) DO UPDATE SET k = EXCLUDED.k
+    named_args:
+      key: "{{ vault_pg_app_secret_key }}"
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  no_log: true
+
+- name: Remove the legacy app.secret_key GUC (key now lives in vault._key)
+  when: >
+    vault_pg_app_secret_key is defined
+    and (vault_pg_app_secret_key | length > 0)
+    and vault_key_table.query_result[0].present
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: "ALTER SYSTEM RESET app.secret_key"
+    autocommit: true
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  check_mode: false  # autocommit (required for ALTER SYSTEM) is incompatible with check mode
+
+- name: Set secrets-vault app.secret_key (legacy GUC path, pre-0239 only)
+  when: >
+    vault_pg_app_secret_key is defined
+    and (vault_pg_app_secret_key | length > 0)
+    and not vault_key_table.query_result[0].present
   community.postgresql.postgresql_query:
     db: precis_prod
     query: "ALTER SYSTEM SET app.secret_key = '{{ vault_pg_app_secret_key }}'"
@@ -286,7 +344,7 @@
   no_log: true
   check_mode: false  # autocommit (required for ALTER SYSTEM) is incompatible with check mode
 
-- name: Reload PostgreSQL config to apply app.secret_key
+- name: Reload PostgreSQL config to apply the vault key change
   when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
   community.postgresql.postgresql_query:
     db: precis_prod

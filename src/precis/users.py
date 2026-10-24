@@ -208,7 +208,7 @@ def resolve_pepper(*, store: Store | None = None) -> str | None:
     """Return the pepper, or ``None`` when none is configured.
 
     Best-effort by design — :func:`precis.secrets.get_secret` already
-    degrades (no vault schema, unset ``app.secret_key``, DB down) to the
+    degrades (no vault schema, empty ``vault._key``, DB down) to the
     file/env layers, and a deployment that never set one is a legitimate
     ``scrypt-v1`` deployment.
     """

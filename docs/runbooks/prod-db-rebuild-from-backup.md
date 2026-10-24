@@ -82,8 +82,9 @@ Raise `maintenance_work_mem` for the session (the HNSW build dominates the
 time). Afterwards re-grant ownership/privileges to `agent_rw` and the other
 roles (**unverified**: the exact GRANT set; compare with `\dp` on the restored
 throwaway container versus the role tasks), set the statement timeouts and
-`app.secret_key` the role sets with ALTER (the role tasks at the end of
-`main.yml`; re-run the play and read which tasks went green), `VACUUM ANALYZE`.
+re-provision `vault._key` (0239 — the vault passphrase row the backup dumps
+as DDL-only; the role tasks at the end of `main.yml` write it — re-run the
+play and read which tasks went green), `VACUUM ANALYZE`.
 
 ## 5. Pgbouncer and direct checks
 

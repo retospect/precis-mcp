@@ -262,8 +262,8 @@ def _check_migrations(dsn: str) -> Check:
 
 
 def _check_vault(store: Store) -> Check:
-    """``vault.list()`` succeeding proves ``app.secret_key`` is set and the
-    vault is readable. Prints only the count — never names or hints."""
+    """``vault.list()`` succeeding proves the vault schema is migrated and
+    readable. Prints only the count — never names or hints."""
     from precis import secrets as vault
 
     try:
@@ -272,7 +272,7 @@ def _check_vault(store: Store) -> Check:
         return Check(
             "vault",
             FAIL,
-            f"vault.list() failed: {type(exc).__name__} — app.secret_key unset?",
+            f"vault.list() failed: {type(exc).__name__} — vault._key provisioned?",
             next="precis setup",
         )
     return Check(

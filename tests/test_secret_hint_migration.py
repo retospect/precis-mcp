@@ -16,7 +16,12 @@ from psycopg.conninfo import make_conninfo
 from precis.cli import migrate as migrate_cli
 from precis.store import Migrator
 from precis.store.migrate import MigrationSource
-from tests.conftest import _active_dsn, _dsn_with_db, _pg_available
+from tests.conftest import (
+    _active_dsn,
+    _dsn_with_db,
+    _pg_available,
+    _provision_vault_key,
+)
 
 ROOT = Path(__file__).parents[1]
 MIGRATIONS = ROOT / "src/precis/migrations"
@@ -177,9 +182,11 @@ def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
         assert (("precis", TAIL) in applied) == (not baked)
         assert runner.pending() == []
         assert runner.apply_all() == []
-        keyed = make_conninfo(dsn, options="-c app.secret_key=synthetic-bootstrap-key")
+        # 0239+: the passphrase is the vault._key row, not a session GUC —
+        # provision it the way the deploy play does.
+        _provision_vault_key(dsn, "synthetic-bootstrap-key")
         value = "synthetic😀\r\n\r\nend\r"
-        with psycopg.connect(keyed) as conn:
+        with psycopg.connect(dsn) as conn:
             assert conn.execute(
                 "SELECT extname FROM pg_extension WHERE extname='pgcrypto'"
             ).fetchone() == ("pgcrypto",)

@@ -149,6 +149,25 @@ def _dsn_with_db(dsn: str, dbname: str) -> str:
     return make_conninfo(dsn, dbname=dbname)
 
 
+def _provision_vault_key(dsn: str, key: str) -> None:
+    """Write the vault passphrase into ``vault._key`` (0239's singleton row).
+
+    The passphrase stopped being a session-readable GUC at 0239 — it is now
+    a table row only the owning role can read, provisioned here the same
+    way the deploy play does it. Per-worker DB isolation makes the upsert
+    race-free. Skips when the table is absent (an un-migrated test DB).
+    """
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        present = conn.execute("SELECT to_regclass('vault._key')").fetchone()
+        if present is None or present[0] is None:
+            pytest.skip("vault._key absent — migration 0239 not applied")
+        conn.execute(
+            "INSERT INTO vault._key (one, k) VALUES (true, %s) "
+            "ON CONFLICT (one) DO UPDATE SET k = EXCLUDED.k",
+            (key,),
+        )
+
+
 # --- design-core seed watch (opt-in; PRECIS_WATCH_SEED) --------------------
 # gr408184 tripwire. The bug: a test that rebuilds the schema via the
 # *baseline* path leaves a schema-only snapshot plus a FULL ``_migrations``

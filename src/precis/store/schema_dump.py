@@ -31,6 +31,10 @@ Schema DDL keeps pg_dump's empty search path. Seed COPY needs a local
 public helpers; the loader resets the session path after the transaction.
 All extension prerequisites, including the vault's pgcrypto, are emitted
 explicitly because a schema-filtered dump omits their creation.
+GRANT/REVOKE statements stay in the dump (``--no-owner`` only): the
+migration chain's privilege layout names PUBLIC exclusively, so the
+snapshot reproduces it verbatim — a baseline-built install gets the same
+ACLs a replayed one does (gr505335; the convergence test asserts it).
 
 This is a dual-track scheme (Rails ``schema.rb`` / Ecto
 ``structure.sql``), **not** a third greenfield: the numbered migrations
@@ -213,8 +217,16 @@ def parse_baseline_ledger(sql_text: str) -> list[tuple[str, str]]:
 
 
 def _run_pg_dump(pg_dump_bin: str, scratch_dsn: str, extra: list[str]) -> str:
-    """Invoke ``pg_dump`` against ``scratch_dsn``; return its stdout."""
-    cmd = [pg_dump_bin, "--no-owner", "--no-privileges", *extra, "-d", scratch_dsn]
+    """Invoke ``pg_dump`` against ``scratch_dsn``; return its stdout.
+
+    ``--no-owner`` keeps the snapshot role-free (a fresh install's loader
+    owns what it creates) but privileges ride along (gr505335): every ACL
+    the chain emits names PUBLIC only — migrations never grant to prod
+    roles, which are provisioned out-of-tree — so the GRANT/REVOKE lines
+    are portable, and dropping them is what used to leave baseline-built
+    installs without the vault's lockdown layout (0059).
+    """
+    cmd = [pg_dump_bin, "--no-owner", *extra, "-d", scratch_dsn]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8", check=False
     )

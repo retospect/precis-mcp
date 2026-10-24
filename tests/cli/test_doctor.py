@@ -154,7 +154,7 @@ def test_roster_empty_fails_then_ok(store: Any) -> None:
 
 
 def test_vault_check(store: Any) -> None:
-    # Whether the test DB has app.secret_key set is environment-dependent;
+    # Whether the test DB has vault._key provisioned is environment-dependent;
     # pin only that the check answers and never leaks.
     c = doctor._check_vault(store)
     assert c.level in (doctor.OK, doctor.FAIL)

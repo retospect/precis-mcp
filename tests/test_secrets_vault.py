@@ -1,33 +1,38 @@
 """DB round-trip tests for the secrets vault (0059) and saved hint counts (0189).
 
-Self-provisions ``pgcrypto`` + a session ``app.secret_key`` at the database
-level; skips cleanly where pgcrypto can't be created (non-superuser test DB
-without it pre-installed).
+Self-provisions ``pgcrypto`` + the vault passphrase in ``vault._key`` at the
+database level; skips cleanly where pgcrypto can't be created (non-superuser
+test DB without it pre-installed).
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Iterator
 
 import psycopg
 import pytest
-from psycopg.conninfo import make_conninfo
 
 from precis import secrets as vault
 from precis.store import Store
-from tests.conftest import PG_TEST_DSN, _active_dsn, _pg_available
+from tests.conftest import (
+    PG_TEST_DSN,
+    _active_dsn,
+    _pg_available,
+    _provision_vault_key,
+)
 
 _TEST_KEY = "test-vault-key-0123456789"
 
 
 @pytest.fixture
 def vault_store() -> Iterator[Store]:
-    """A Store whose connections carry app.secret_key as a session-local
-    startup option (no shared-DB mutation — safe under xdist). Skips when
-    no postgres is reachable (e.g. the macOS/Windows CI legs), matching the
-    shared ``store``/``hub`` fixtures, and again if pgcrypto is unavailable
-    and uncreatable here."""
+    """A Store on the shared test DB with the vault passphrase provisioned
+    in ``vault._key`` (0239 — a DB row only the owner reads, replacing the
+    session GUC trick). Skips when no postgres is reachable (e.g. the
+    macOS/Windows CI legs), matching the shared ``store``/``hub`` fixtures,
+    and again if pgcrypto is unavailable and uncreatable here."""
     if not _pg_available():
         pytest.skip(
             f"postgres unreachable at {PG_TEST_DSN}; set PRECIS_TEST_PG_URL "
@@ -39,11 +44,8 @@ def vault_store() -> Iterator[Store]:
             admin.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
         except psycopg.errors.InsufficientPrivilege:
             pytest.skip("pgcrypto not installed and not creatable as the test role")
-    # `-c app.secret_key=...` sets the GUC at session start for every pool
-    # connection — allowed for any role (custom placeholder), and isolated to
-    # this pool so parallel workers on the shared DB are unaffected.
-    keyed_dsn = make_conninfo(dsn, options=f"-c app.secret_key={_TEST_KEY}")
-    store = Store.connect(keyed_dsn)
+    _provision_vault_key(dsn, _TEST_KEY)
+    store = Store.connect(dsn)
     try:
         with store.pool.connection() as conn:
             conn.execute("DELETE FROM vault.secrets")
@@ -52,6 +54,34 @@ def vault_store() -> Iterator[Store]:
         yield store
     finally:
         store.close()
+
+
+@pytest.mark.db
+def test_key_table_and_helper_unreadable_by_non_owner() -> None:
+    """gr505334: only the owning role can reach the passphrase.
+
+    A NOLOGIN probe is denied on ``vault._key`` and on ``vault._key()``
+    itself — the SECURITY DEFINER verbs are the sole path in — and PUBLIC
+    holds no EXECUTE grant on the helper, so a leaked grant can't reopen it.
+    """
+    if not _pg_available():
+        pytest.skip("postgres unreachable")
+    role = "probe_vault_" + uuid.uuid4().hex[:8]
+    with psycopg.connect(_active_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE ROLE "{role}" NOLOGIN')
+        try:
+            conn.execute(f'SET ROLE "{role}"')
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute("SELECT k FROM vault._key")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute("SELECT vault._key()")
+            conn.execute("RESET ROLE")
+            assert conn.execute(
+                "SELECT has_function_privilege('public', 'vault._key()', 'EXECUTE')"
+            ).fetchone() == (False,)
+        finally:
+            conn.execute("RESET ROLE")
+            conn.execute(f'DROP ROLE "{role}"')
 
 
 @pytest.fixture(autouse=True)

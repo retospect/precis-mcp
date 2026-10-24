@@ -11,12 +11,16 @@ Postgres is the authority: values are pgcrypto-encrypted in
 ``vault.secrets`` and reached only through the ``vault.*`` SECURITY DEFINER
 functions (list / mask / reveal / set_secret / delete_secret — reveal is the
 sole decrypt path and always writes an audit row; there is deliberately no
-bulk-plaintext function). The passphrase lives in server config
-(``ALTER SYSTEM SET app.secret_key`` → ``postgresql.auto.conf``), a file
-``pg_dump`` structurally never emits — so a **logical** dump is safe to
-share (ciphertext + function source that only *names* the key). Physical
-backups (``pg_basebackup`` / WAL) copy the key file; the guarantee is
-logical-dump-only. Trust model v1 (migration 0059): the functions are
+bulk-plaintext function). The passphrase lives in the single-row
+``vault._key`` table (0239): reachable only by the owning role, read on its
+behalf by the SECURITY DEFINER verbs — a GUC can't be ACL'd, and the old
+``ALTER SYSTEM SET app.secret_key`` leaked it to every role via
+``current_setting()``. The nightly ``pg_dump`` excludes the row
+(``--exclude-table-data=vault._key``) so a **logical** dump stays safe to
+share (ciphertext + DDL, never the key); the deploy play re-provisions it
+on a rebuild. Physical
+backups (``pg_basebackup`` / WAL) copy the key row with everything else;
+the guarantee is logical-dump-only. Trust model v1 (migration 0059): the functions are
 granted to PUBLIC — holding a DSN *is* the boundary; the per-role split +
 per-name ACL (a ``vault.acl`` table) are designed and deferrable
 one-liners. The
@@ -43,7 +47,7 @@ vault only, no env/file/cache override, redacted error details. SSH credentials
 need origin proof; transition-friendly API consumers keep ``get_secret``.
 
 Everything below the env layer is best-effort: a missing vault schema, an
-unset ``app.secret_key``, or an unreachable DB all fall through to the file /
+empty ``vault._key``, or an unreachable DB all fall through to the file /
 default rather than raise, so the vault can ship dark and be populated
 incrementally.
 """
@@ -465,7 +469,7 @@ def _reveal(store: Store, name: str, *, redact_errors: bool = False) -> str | No
             f"reveal:{type(exc).__name__}",
             f"secrets: vault reveal unavailable ({type(exc).__name__}: {exc}); "
             "falling back to file/default. Is the migration applied and "
-            "app.secret_key set?",
+            "vault._key provisioned?",
         )
         return None
     if row is None or row[0] is None:
