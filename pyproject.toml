@@ -990,6 +990,11 @@ module = [
     "gpaw",
     "gpaw.*",
     "habanero",
+    # jinja2 is a [web]-extra dep: absent from a bare host `uv sync`, so
+    # tests/test_deploy_monitoring_alerting.py's `import jinja2` resolves
+    # only in the container. Typed upstream — real types where installed.
+    "jinja2",
+    "jinja2.*",
     "manifold3d",
     "marker.*",
     "mendeleev",
