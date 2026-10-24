@@ -64,6 +64,20 @@ MAX_HITS = 40
 _MOVE_EPS_A = 1e-3
 
 
+# The Å<->m crossing lives in atomic.validate (the seam allowlist); that
+# module imports ``precis_se.ops``, which imports this one, so bind lazily.
+def _m_to_A(x: Any) -> Any:
+    from precis_se.atomic.validate import m_to_A
+
+    return m_to_A(x)
+
+
+def _A_to_m(x: Any) -> Any:
+    from precis_se.atomic.validate import A_to_m
+
+    return A_to_m(x)
+
+
 @dataclass
 class RaySpec:
     """One ray's stored definition (module docstring) plus its digests.
@@ -414,7 +428,7 @@ def _region_tests(tree: Any, name: str, node: Any, scene: Any) -> list[tuple[str
             return None
 
         def inside(pts_a: np.ndarray) -> np.ndarray:
-            return np.asarray(component_sdf_np(design, expr, pts_a * 1e-10)) <= 0.0
+            return np.asarray(component_sdf_np(design, expr, _A_to_m(pts_a))) <= 0.0
 
         return inside
 
@@ -511,7 +525,7 @@ def observe(
         bound_slug = str(owner.bound)
         versions[bound_slug] = None if override is not None else meta.get("version")
         inv = _placement(node).inverse()
-        o_l = np.asarray(inv.apply(as_vec3(o_w)), dtype=float) * 1e10
+        o_l = _m_to_A(np.asarray(inv.apply(as_vec3(o_w)), dtype=float))
         d_l = np.asarray(inv.apply_dir(as_vec3(d_w)), dtype=float)
         pi_data: dict[str, Any] | None
         if override is not None:
@@ -546,7 +560,7 @@ def observe(
             scene,
             o_l,
             d_l,
-            length=length * 1e10,
+            length=_m_to_A(length),
             fields=spec.fields,
             step=spec.step,
             reach=spec.reach,
@@ -559,7 +573,7 @@ def observe(
         )
         fields.update(trace.fields)
         if trace.end is not None:
-            ends.append(trace.end * 1e-10)
+            ends.append(_A_to_m(trace.end))
         for h in trace.hits:
             nums: dict[str, float] = {}
             if h.field == "pass":
@@ -580,7 +594,7 @@ def observe(
                     pi_crossed.append(sel)
             hits.append(
                 SeHit(
-                    s=h.s * 1e-10,
+                    s=_A_to_m(h.s),
                     block=name,
                     field=h.field,
                     event=h.event,
@@ -698,7 +712,7 @@ def _canonical(obs: Observation) -> list[list[Any]]:
     return [
         [
             *h.key,
-            round(h.s * 1e10, 3),
+            round(_m_to_A(h.s), 3),
             # atomic numbers are Å/e/V already; macro ones are metres — µm
             *(round(h.nums[k] * (1.0 if h.atomic else 1e6), 3) for k in sorted(h.nums)),
         ]
@@ -727,7 +741,7 @@ def digest(
         "key": {
             "hits": len(obs.hits),
             "first": f"{first.block} {first.text}" if first is not None else None,
-            "end_A": round(obs.end * 1e10, 3) if obs.end is not None else None,
+            "end_A": round(_m_to_A(obs.end), 3) if obs.end is not None else None,
         },
     }
     if service is not None:
@@ -787,7 +801,7 @@ def diff_lines(old: Observation, new: Observation) -> list[str]:
         prev = before.get(key)
         if prev is None:
             continue
-        mf, mu = (1e10, "Å") if h.atomic else _macro_unit(L)
+        mf, mu = (_m_to_A(1.0), "Å") if h.atomic else _macro_unit(L)
         ds = (h.s - prev.s) * mf
         parts = []
         if abs(ds) > (_MOVE_EPS_A if h.atomic else 1e-6):
@@ -841,7 +855,7 @@ def _fmt_s(s_m: float, atomic: bool, scale: float = 1e-3) -> str:
     """``s`` in Å (atomic) or the ray's macro unit (``scale`` = the ray
     length the unit is picked from)."""
     if atomic:
-        return f"{s_m * 1e10:6.1f} Å"
+        return f"{_m_to_A(s_m):6.1f} Å"
     f, u = _macro_unit(scale)
     return f"{s_m * f:6.1f} {u}"
 

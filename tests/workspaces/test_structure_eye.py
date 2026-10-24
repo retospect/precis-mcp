@@ -164,7 +164,8 @@ def test_pi_key_bond_order_change() -> None:
     [
         ("kwd", 25),
         ("summary", 60),
-        ("verbatim", 150),
+        # 175: Reto approved 2026-10-24 -- CI renders ~155 (longer DB ids in a fresh CI db)
+        ("verbatim", 175),
         ("fisheye", 400),
         ("fisheye+1hop", 600),
         ("fisheye+2hop", 650),

@@ -170,6 +170,18 @@ _EXEMPT_SITES = frozenset(
         # predicate or a cull, so there is no governing length to derive it
         # from (2a89ad14b).
         "precis_se/rays.py::_MOVE_EPS_A",
+        # `precis_se/rays_macro.py`'s coincident-surface adjacency floor: two
+        # ray spans (or a span end and the next block's entry) closer than
+        # 1 nm along the ray are the same boundary seen twice -- float noise
+        # from the SDF bisection, not a feature. It merges abutting runs and
+        # suppresses a zero-width ``gap``, so it does touch geometry, but it
+        # is a numerical-noise floor on ray parameters (metres, bounded by
+        # float64 resolution at macro scale), not a tolerance on a part
+        # dimension: the callers (`gap_events`, the bolt stack) hold only
+        # event lists and a display unit, with no ray length or bbox in
+        # scope to be relative to. Deriving it would change merge results at
+        # every ray length != 1 m.
+        "precis_se/rays_macro.py::_RUN_EPS_M",
     }
 )
 

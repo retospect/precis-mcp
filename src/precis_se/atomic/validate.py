@@ -378,15 +378,16 @@ def bound_port_origin(scene: StructScene, atom_label: str) -> list[float] | None
     return [float(c) * _A_TO_M for c in cart_A]
 
 
-def m_to_A(value_m: float) -> float:
+def m_to_A(value_m: Any) -> Any:
     """A design-space length said in the atomistic scale's own unit, for a
     *message*. The factor lives in this module by the seam allowlist
     (``tests/test_se_atomic_angstrom_seam.py``), so a caller that needs to
-    report Å borrows this rather than spelling ``1e10`` somewhere new."""
+    report Å borrows this rather than spelling ``1e10`` somewhere new.
+    Takes a float or a numpy array (``precis_se.rays``'s ray frames)."""
     return value_m * _M_TO_A
 
 
-def A_to_m(value_A: float) -> float:
+def A_to_m(value_A: Any) -> Any:
     """An atomistic-scale length (Å) said in design-space metres — the
     inverse of :func:`m_to_A`, for the same reason: a generator that
     turns its Å-native parameters into se measures (``atomic/generate.py``'s
