@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: pcb
+pillar: 3d-design
 ---
 
 # pcb placer: `risk()` is a max, so cheap terms outvote violations

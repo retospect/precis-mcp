@@ -7,7 +7,13 @@ against fixture rows so the artifact shape can't regress.
 
 from __future__ import annotations
 
-from precis.cli.schema_doc import _safe_type, parse_tsv, render_mermaid
+from precis.cli.schema_doc import (
+    _fetch_via_dsn,
+    _safe_type,
+    parse_tsv,
+    render_mermaid,
+)
+from precis.store import Store
 
 # A tiny two-table fixture in the same tab-separated shape the
 # introspection query emits: 'col' rows then an 'fk' row.
@@ -98,3 +104,49 @@ def test_self_reference_edge_is_marked() -> None:
     )
     out = render_mermaid(*parse_tsv(tsv))
     assert 'todos ||--o{ todos : "parent (self)"' in out
+
+
+def test_render_emits_searchable_column_listing() -> None:
+    """gr513884: a per-table column table (name, type, key, comment) under
+    the diagram — the greppable form the mermaid block cannot be."""
+    tsv = "\n".join(
+        [
+            "col\tlinks\t1\tlink_id\tbigint\tPK\t",
+            "col\tlinks\t2\ttrust_set\tinteger\t\t\ttrust origin (migration 0214)",
+            "col\tlinks\t3\tnote\ttext\t\t\tfree | text",
+        ]
+    )
+    out = render_mermaid(*parse_tsv(tsv))
+    assert "## Columns" in out
+    assert "### `links`" in out
+    assert "| `link_id` | bigint | PK |" in out
+    assert "trust origin (migration 0214)" in out
+    # A pipe inside a comment is escaped so the table stays well-formed.
+    assert "free \\| text" in out
+
+
+def test_column_comment_field_is_optional_in_tsv() -> None:
+    """Older TSV streams (no 8th field) still parse and render."""
+    cols, _ = parse_tsv("col\tt\t1\ta\ttext\t\t\n")
+    assert cols[0][:7] == ["col", "t", "1", "a", "text", "", ""]
+    out = render_mermaid(cols, [])
+    assert "| `a` | text | — |" in out
+
+
+def test_introspect_sql_runs_and_renders(store: Store) -> None:
+    """The introspection query is exercised on the migrated test DB — a
+    UNION column-count or join typo fails here, not at the prod
+    ``scripts/gen-schema`` run (the miss gr513884's own run hit)."""
+    import psycopg.conninfo
+
+    assert store.dsn is not None
+    # The constraint views go through _pg_expandarray — slow enough that
+    # scripts/gen-schema sets statement_timeout=600000; same here.
+    dsn = psycopg.conninfo.make_conninfo(
+        store.dsn, options="-c statement_timeout=600000"
+    )
+    cols, fks = parse_tsv(_fetch_via_dsn(dsn))
+    assert cols and fks
+    out = render_mermaid(cols, fks, snapshot="testdb")
+    assert "## Columns" in out
+    assert "### `refs`" in out

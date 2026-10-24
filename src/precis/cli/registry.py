@@ -22,7 +22,10 @@ through the ``precis.cli`` entry-point group; each entry point resolves
 to a sequence of :class:`Command`. A core name always wins a collision.
 
 Adding a core subcommand: one :class:`Command` row here, plus the
-module's ``add_parser(sub)`` and ``run(args)``.
+module's ``add_parser(sub)`` and ``run(args)``. The row's ``help`` string
+must equal that module's ``help=`` BYTE-IDENTICALLY —
+``tests/test_cli_lazy.py::test_registry_help_matches_owning_module``
+diffs the two (gr514197: the failure only surfaces at the pytest gate).
 """
 
 from __future__ import annotations
@@ -61,6 +64,8 @@ class Command:
 
 
 def _c(name: str, module: str, help: str | None, **kw: str) -> Command:
+    """One row; ``help`` must byte-match the owning module's ``help=``
+    (test_registry_help_matches_owning_module)."""
     return Command(name, f"precis.cli.{module}", help, **kw)
 
 

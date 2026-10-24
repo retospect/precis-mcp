@@ -594,6 +594,18 @@ def ensure_database(dsn: str) -> None:
             conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
 
 
+def prepare_database(dsn: str) -> None:
+    """Create the DSN's database when missing and apply packaged migrations.
+
+    The dev-DB bootstrap shared by ``load`` (before a slice lands) and the
+    ``ensure`` subcommand behind ``scripts/dev db-up`` — idempotent, so
+    ``db-up`` re-runs it on every call (gr513761)."""
+    from precis.store.migrate import packaged_migrator
+
+    ensure_database(dsn)
+    packaged_migrator(dsn).apply_all()
+
+
 _DEV_FKS_SQL = """
 SELECT cl.relname, rc.relname,
   (SELECT array_agg(a.attname ORDER BY k.o) FROM unnest(co.conkey) WITH ORDINALITY k(n, o)
@@ -616,10 +628,7 @@ def load_slice(dsn: str, path: Path, *, migrate: bool = True) -> dict[str, int]:
     from psycopg.types.json import Jsonb
 
     if migrate:
-        from precis.store.migrate import packaged_migrator
-
-        ensure_database(dsn)
-        packaged_migrator(dsn).apply_all()
+        prepare_database(dsn)
 
     meta, rows = read_slice(path)
     with psycopg.connect(dsn) as conn, conn.transaction():
@@ -861,11 +870,20 @@ def main(argv: list[str] | None = None) -> int:
     ld = sub.add_parser("load", help="slice -> dev DB, replacing the previous slice")
     ld.add_argument("--slice", type=Path, default=DEFAULT_OUT)
     ld.add_argument("--dsn", required=True)
+    en = sub.add_parser(
+        "ensure",
+        help="create the DB if missing and apply migrations "
+        "(the empty-DB bootstrap behind `scripts/dev db-up`)",
+    )
+    en.add_argument("--dsn", required=True)
     args = ap.parse_args(argv)
     if args.cmd == "extract":
         _print_counts(
             f"extract -> {args.out}", extract(args.out, per_kind=args.per_kind)
         )
+    elif args.cmd == "ensure":
+        prepare_database(args.dsn)
+        print(f"ensure -> {args.dsn}: database exists, schema current")
     else:
         _print_counts(f"load -> {args.dsn}", load_slice(args.dsn, args.slice))
     return 0

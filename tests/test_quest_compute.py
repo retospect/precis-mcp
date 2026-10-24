@@ -5821,6 +5821,16 @@ class TestAutocatpathContentKey:
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "deadbeef")
         assert compute_mod._autocatpath_engine_token() == "deadbeef"
 
+    def test_env_override_is_reread_past_the_pin_cache(self, monkeypatch: Any) -> None:
+        """gr513858: the env override is re-read on every call — it is NOT
+        folded into the ``functools.cache`` on the dist pin, so
+        ``monkeypatch.setenv`` is the safe seam (no ``cache_clear``)."""
+        compute_mod._autocatpath_pinned_version()  # warm the pin cache
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "9.9.9")
+        assert compute_mod._autocatpath_engine_token() == "9.9.9"
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "9.9.10")
+        assert compute_mod._autocatpath_engine_token() == "9.9.10"
+
     def test_key_stable_for_same_engine(self, monkeypatch: Any) -> None:
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         k1 = compute_mod._autocatpath_content_key(self._RX, self._SLAB)

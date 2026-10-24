@@ -464,3 +464,11 @@ def test_read_slice_refuses_an_unknown_version(
     p.write_text(json.dumps({"_meta": bad}) + "\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         seed.read_slice(p)
+
+
+def test_ensure_subcommand_is_idempotent(store: Store) -> None:
+    """`ensure` (the `scripts/dev db-up` bootstrap, gr513761) creates and
+    migrates the DSN's database when missing, and is a no-op on an already
+    migrated one — db-up re-runs it on every call."""
+    assert seed.main(["ensure", "--dsn", store.dsn]) == 0
+    assert seed.main(["ensure", "--dsn", store.dsn]) == 0

@@ -37,6 +37,13 @@ Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
 
+Figure alt text and captions are authored inside the dependency stack,
+not in this package: marker-pdf's surya-ocr VLM emits them from its
+bundled prompt set (``PROMPT_MAPPING`` inside the ``surya-ocr``
+distribution). ``marker`` only parses whatever alt/caption text the
+returned markdown carries, so a caption-prompt change is a dependency
+bump, not an edit here (gr514334).
+
 Multi-article page spreads (gr463414): before Marker blocks become chunks,
 :mod:`precis.ingest.article_spread` splits a spread into articles on
 end/start evidence and keeps the one matching the target title or DOI. The

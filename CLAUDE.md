@@ -7,7 +7,8 @@
 Lean router: ship workflow, conventions that bite, pointers. The doc system
 (where truth lives, how to keep it true) is defined once in `docs/README.md`.
 Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
-`docs/glossary.md` → `docs/backlog/INDEX.md`. Conventions/workflow/DoD:
+`docs/glossary.md` → `docs/backlog/INDEX.md` (generated, gitignored —
+run `scripts/docs-index` if absent). Conventions/workflow/DoD:
 `AGENTS.md`. Prose style: `docs/conventions/llm-facing-prose.md`.
 
 Repo-dev recall, durable writes and outage behavior:

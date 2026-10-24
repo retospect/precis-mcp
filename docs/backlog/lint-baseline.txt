@@ -1,0 +1,11 @@
+# scripts/backlog-lint crowded-prefix baseline.
+# `prefix count` — a prefix family warns only when it first crosses 8 files
+# or grows past the count recorded here, so new crowding is never lost in
+# standing noise. Bump a count when the family is reviewed and kept as-is,
+# or after it shrinks.
+draft 11
+hexfold 15
+pcb 44
+quest 10
+se 27
+taproot 10

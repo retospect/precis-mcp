@@ -1259,7 +1259,15 @@ def _autocatpath_pinned_version() -> str | None:
     listed in metadata regardless of which extras a venv installed, so this
     works on dispatch hosts that never install the engine itself (compute
     keeps its no-``autocatpath``-import rule). ``None`` when precis isn't
-    installed as a dist or carries no ``>=`` pin."""
+    installed as a dist or carries no ``>=`` pin.
+
+    Cached for the process lifetime — dist metadata cannot change under a
+    running process; a test that fakes metadata calls ``cache_clear()``
+    (the fixture in ``TestAutocatpathContentKey`` does). Resolution order
+    lives in :func:`_autocatpath_engine_token`: the
+    ``PRECIS_AUTOCATPATH_VERSION`` env override is re-read on EVERY call
+    there, deliberately outside this cache — ``monkeypatch.setenv`` is the
+    sanctioned test seam and needs no ``cache_clear``."""
     try:
         reqs = importlib.metadata.requires("precis-mcp") or []
     except importlib.metadata.PackageNotFoundError:
@@ -1295,7 +1303,12 @@ def _autocatpath_engine_token() -> str:
     """Engine-version component of the idem key: ``PRECIS_AUTOCATPATH_VERSION``
     env override if set, else the pin-derived version, else the code-constant
     fallback. A change in this value re-keys every (config, slab) pair, so a
-    new engine build re-evaluates candidates instead of reusing stale results."""
+    new engine build re-evaluates candidates instead of reusing stale results.
+
+    Resolution is deliberately non-uniform: the env read happens on every
+    call (ops escape hatch and the ``monkeypatch.setenv`` test seam), while
+    the dist-pin lookup is ``functools.cache``d for the process lifetime —
+    see :func:`_autocatpath_pinned_version`."""
     return (
         os.environ.get(_AUTOCATPATH_VERSION_ENV)
         or _autocatpath_pinned_version()

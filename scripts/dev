@@ -10,6 +10,7 @@
 #   scripts/dev pytest tests/           # run a single tool
 #   scripts/dev uv run ruff check .     # uv-driven invocation
 #   scripts/dev bash -lc 'ruff && mypy && pytest'   # compound check
+#   scripts/dev db-up                   # start precis-test-db, create+migrate precis_dev
 #   scripts/dev seed-prod-shaped        # anonymized prod slice -> precis_dev
 #
 # The container bind-mounts this repo at /app, so file edits on the host
@@ -34,6 +35,22 @@ fi
 # scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+
+# scripts/dev db-up — start this worktree's dev Postgres (`precis-test-db`),
+# create `precis_dev` when missing and bring it to the packaged schema.
+# Idempotent and prod-free — the empty-DB path for write-path testing;
+# `seed-prod-shaped` fills the same DSN when a bug needs real data shapes
+# (gr513761).
+if [[ "${1:-}" == "db-up" ]]; then
+    DEV_DSN="postgresql://postgres@precis-test-db:5432/precis_dev"
+    docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
+        up -d --wait precis-test-db >/dev/null
+    docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
+        run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
+        uv run --no-sync python scripts/_seed_prod_shaped.py ensure --dsn "$DEV_DSN"
+    echo "dev DB ready: scripts/dev env PRECIS_DATABASE_URL=${DEV_DSN} uv run --no-sync precis …"
+    exit 0
+fi
 
 # scripts/dev seed-prod-shaped [--per-kind N] — fill the dev DB (`precis_dev`
 # on this worktree's precis-test-db) with an anonymized prod slice. The

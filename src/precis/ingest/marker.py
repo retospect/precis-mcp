@@ -7,6 +7,12 @@ Marker v1.x returns MarkdownOutput with:
 
 We parse the markdown into structured blocks, classify each, and attach
 images from the .images dict.
+
+Figure alt text and captions are not generated here: marker-pdf's
+surya-ocr VLM writes them from its bundled prompt set (PROMPT_MAPPING
+inside the surya-ocr dependency). This module only parses what the
+markdown carries — a caption-prompt change is a dependency bump, not an
+edit in this package (gr514334).
 """
 
 from __future__ import annotations

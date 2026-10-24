@@ -61,6 +61,15 @@ self-migrates. Alternatives to the manual `precis migrate` step:
   running services. (`PRECIS_SCHEMA_GATE=off` is the same skip spelled
   as a mode.)
 
+### The dev DB
+
+`scripts/dev db-up` starts this worktree's `precis-test-db` container,
+creates `precis_dev` when missing and applies the packaged migrations —
+idempotent, and needs no prod access. It prints the DSN for
+`scripts/dev env PRECIS_DATABASE_URL=… uv run --no-sync precis …`. Use it
+when a write-path test only needs an empty schema; `scripts/dev` alone
+carries no test-DB URL and does not start the DB container.
+
 ### Prod-shaped dev data (repo dev, cluster access)
 
 A freshly migrated DB is empty, so bugs that need real data shapes (a

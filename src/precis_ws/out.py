@@ -174,6 +174,16 @@ def instance(
     polar: dict[str, Any] | None = None,
     frame: int | None = None,
 ) -> None:
+    """Register one placement of a declared block.
+
+    Blocks and instances share one namespace — an instance named like its
+    own template (``instance("wheel", template="wheel")``) surfaces later
+    as a generic "duplicate block name". The convention: a block that
+    exists only to be instanced is named ``t_<part>`` (``t_spoke``) and
+    placements take the plain names (``spoke``, ``spoke2``) — the
+    ``precis-workspace-help`` skill's "``t_`` rule" is the long form;
+    ``template=True`` on :func:`block` (gr514241) is the planned typed
+    marker."""
     from precis_geom import assembly as _pga
     from precis_geom.out import _symbolic_fields
 

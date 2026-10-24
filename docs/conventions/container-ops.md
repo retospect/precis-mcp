@@ -151,10 +151,12 @@ the plain shape is the one that never surprises.
 is a harness built-in; the upstream asks are tracked in
 `docs/backlog/worktree-path-guard-false-positives.md`.
 
-The refusals are a Claude-side hook: under a Devin or codex builder
-nothing refuses these shapes, but the rule still binds — unprovable git
-targeting and message-eating quoting fail the same way in every runtime
-(gr514124).
+Package availability / licence checks are one plain command each — the
+refusal is the loop/`cd` wrapper, never the check (gr514219):
+`scripts/dev uv pip install --dry-run <pkg>` resolves the candidate
+inside the container (the `Would install` line is the availability
+answer), and licence metadata comes from the PyPI JSON API
+(`curl -s https://pypi.org/pypi/<pkg>/json`), one call per package.
 
 A log audit found ~60% of Bash calls carried a redundant
 `cd` prefix — the single largest source of wasted tokens across the fleet,

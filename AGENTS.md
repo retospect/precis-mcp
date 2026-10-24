@@ -7,7 +7,8 @@ This file holds Codex guidance and the shared repo-dev graph-memory policy.
 
 `docs/README.md` (the doc-system contract) → `docs/codebase.md` (shape,
 lifecycle, seams) → the owning package's `__init__.py` docstring →
-`docs/glossary.md` → `docs/backlog/INDEX.md`. Runtime kinds and verbs:
+`docs/glossary.md` → `docs/backlog/INDEX.md` (generated, gitignored —
+run `scripts/docs-index` if absent). Runtime kinds and verbs:
 `get(kind='skill', id='precis-overview')`.
 
 ## Rules by pointer

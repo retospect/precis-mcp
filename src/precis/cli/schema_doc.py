@@ -1,8 +1,12 @@
 """``precis schema-doc`` — generate a Mermaid ER diagram of the DB.
 
 Introspects ``information_schema`` for base-table columns + foreign
-keys and renders a Markdown file (default ``docs/reference/schema.md``)
-carrying a Mermaid ``erDiagram``. A *generated* artifact — checked in
+keys (plus ``pg_catalog.col_description`` comments) and renders a
+Markdown file (default ``docs/reference/schema.md``) carrying a Mermaid
+``erDiagram``, a compact table listing, and a searchable per-table
+column list (name, type, key, ``COMMENT ON COLUMN`` text — gr513884:
+the diagram alone is not greppable for a column's meaning). A
+*generated* artifact — checked in
 so GitHub renders it inline, and regenerated rather than hand-edited
 so it cannot drift from the live schema (which the hand-drawn
 ``schema-v2.puml`` did).
@@ -33,11 +37,19 @@ INTROSPECT_SQL = """
 SELECT 'col' AS rec, c.table_name, c.ordinal_position::text, c.column_name,
        c.data_type,
        CASE WHEN pk.column_name IS NOT NULL THEN 'PK' ELSE '' END,
-       CASE WHEN fk.column_name IS NOT NULL THEN 'FK' ELSE '' END
+       CASE WHEN fk.column_name IS NOT NULL THEN 'FK' ELSE '' END,
+       coalesce(regexp_replace(
+                  pg_catalog.col_description(a.attrelid, a.attnum),
+                  '\\s+', ' ', 'g'),
+                '')
   FROM information_schema.columns c
   JOIN information_schema.tables t
     ON t.table_name = c.table_name AND t.table_schema = c.table_schema
    AND t.table_type = 'BASE TABLE'
+  LEFT JOIN pg_catalog.pg_attribute a
+    ON a.attrelid = pg_catalog.to_regclass(
+         quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))
+   AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
   LEFT JOIN (
     SELECT kcu.table_name, kcu.column_name
       FROM information_schema.table_constraints tc
@@ -56,7 +68,8 @@ SELECT 'col' AS rec, c.table_name, c.ordinal_position::text, c.column_name,
   ) fk ON fk.table_name = c.table_name AND fk.column_name = c.column_name
  WHERE c.table_schema = 'public'
 UNION ALL
-SELECT 'fk', tc.table_name, '0', kcu.column_name, ccu.table_name, ccu.column_name, ''
+SELECT 'fk', tc.table_name, '0', kcu.column_name, ccu.table_name, ccu.column_name,
+       '', ''
   FROM information_schema.table_constraints tc
   JOIN information_schema.key_column_usage kcu
     ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
@@ -81,7 +94,8 @@ def parse_tsv(text: str) -> tuple[list[list[str]], list[list[str]]]:
     """Split the introspection stream into (column rows, fk rows).
 
     Each line is ``rec\\t...`` — ``col`` rows carry
-    ``[rec, table, ord, column, type, pk, fk]`` and ``fk`` rows carry
+    ``[rec, table, ord, column, type, pk, fk, comment?]`` (the comment is
+    optional so older TSV streams still parse) and ``fk`` rows carry
     ``[rec, from_table, _, from_col, to_table, to_col, _]``. Short or
     blank lines are skipped defensively.
     """
@@ -174,6 +188,22 @@ def render_mermaid(
         pk_cols = ", ".join(r[3] for r in rows if r[5] == "PK") or "—"
         lines.append(f"| `{table}` | {len(rows)} | {pk_cols} |")
     lines.append("")
+    # Searchable per-table column list — the greppable form the mermaid
+    # block cannot be (gr513884). Comment is the column's COMMENT ON COLUMN
+    # text when the schema carries one.
+    lines.append("## Columns")
+    lines.append("")
+    for table in tables:
+        lines.append(f"### `{table}`")
+        lines.append("")
+        lines.append("| Column | Type | Key | Comment |")
+        lines.append("|---|---|---|---|")
+        for row in by_table[table]:
+            _, _, _, col, dtype, pk, fk = row[:7]
+            key = "PK" if pk == "PK" else ("FK" if fk == "FK" else "—")
+            comment = (row[7] if len(row) > 7 else "").replace("|", "\\|")
+            lines.append(f"| `{col}` | {dtype} | {key} | {comment} |")
+        lines.append("")
     return "\n".join(lines)
 
 
