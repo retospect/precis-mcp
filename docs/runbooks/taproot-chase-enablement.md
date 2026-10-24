@@ -96,3 +96,19 @@ own floor) — leave it unless the slice shows it under-marking.
   ledger / Option-B, 182230).
 - Categorize `finding`/claim kinds so the multi-signal candidate union
   (topic co-membership) lights up (gripe 182078).
+
+## Inbound citer chase (td489406)
+
+Flipped 2026-10-24, review after 3 days (2026-10-27). Two gates: the DB row
+(`precis service prio <host> inbound_chase <N>`, single host like the passes above)
+and the live env var `PRECIS_INBOUND_CHASE_ENABLED=1`. The deploy renders the var
+from `precis_inbound_chase` (default true, `deploy/group_vars/all.yml`) via
+`precis_identity_env` into every worker unit and precis-web; the shared session
+MCP container gets it from `deploy/mcp-http/precis-mcp-http-ensure.sh`
+(first ensure after this lands recreates the backend once).
+
+Caps: `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER` (25), `PRECIS_INBOUND_CHASE_DAILY_LIMIT` (200/day).
+
+Kill switch (any one): set `precis_inbound_chase: false` and redeploy (var drops out);
+or set the var to `0`; or `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER=0`;
+or `precis service prio <host> inbound_chase 0`.

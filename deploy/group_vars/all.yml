@@ -12,6 +12,13 @@ precis_identity_env_raw:
   SEMANTIC_SCHOLAR_API_KEY: "{{ vault_semantic_scholar_api_key | default('') }}"
   # AnkiWeb credentials are per web user now (precis.anki.creds, set on
   # /account) — no deployment-wide login belongs here.
+  # Inbound citer chase (td489406; flipped 2026-10-24). A live env gate read
+  # by inbound_chase_enabled() in the chase pass AND in PaperHandler (every
+  # MCP/web process), so it rides this dict: every consumer (collapsed worker,
+  # split/drain/agent units, precis-web) already merges it. Kill switch:
+  # `precis_inbound_chase: false` (value drops out) or the var set to 0.
+  # The DB row (`precis service prio inbound_chase N`) is the second gate.
+  PRECIS_INBOUND_CHASE_ENABLED: "{{ '1' if (precis_inbound_chase | default(true)) else '' }}"
 precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"
 
 # Fleet-wide trailing-24h LLM spend ceiling (PRECIS_DAILY_COST_CEILING).

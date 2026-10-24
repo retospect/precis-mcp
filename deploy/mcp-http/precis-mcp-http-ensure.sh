@@ -490,6 +490,10 @@ ENVS=(
     -e PRECIS_PYTHON_GITDIR_MAP="${MAIN_CHECKOUT}:/main"
     -e PRECIS_MD_ROOTS=repo:/app,main:/main
     -e PRECIS_EMBEDDER=remote
+    # Inbound citer chase (td489406): PaperHandler marks read papers
+    # INBOUND:pending only when this is on. A constant, so the spec hash is
+    # stable across runs (one recreate when first added). Kill: set to 0.
+    -e PRECIS_INBOUND_CHASE_ENABLED=1
     -e PRECIS_EMBEDDER_URL=http://host.docker.internal:8181
     -e PRECIS_MCP_TOOL_CONCURRENCY="${TOOL_CONCURRENCY}"
     -e PRECIS_DB_POOL_MIN_SIZE="${POOL_MIN}"
