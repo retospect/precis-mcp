@@ -84,7 +84,7 @@ class AgentLogHandler(NumericRefHandler):
         body = super()._render_one(ref, tags)
         meta = ref.meta or {}
         lines: list[str] = []
-        for key in ("status", "model", "error"):
+        for key in ("status", "model", "model_actual", "models_used", "error"):
             val = meta.get(key)
             if val:
                 lines.append(f"{key}: {val}")

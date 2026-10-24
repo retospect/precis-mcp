@@ -2958,6 +2958,10 @@ class _TickRun:
             # status="failed" row is undiagnosable.
             if outcome.status != "succeeded" and outcome.note:
                 meta_extra["error"] = outcome.note
+            # gr514232: the resolved model(s) the run dispatched — meta.model
+            # at open time is only the requested tier alias.
+            if res is not None:
+                meta_extra.update(agentlog.run_result_meta(res))
             try:
                 agentlog.finalize_log(
                     self.store,

@@ -9,6 +9,9 @@ this lookup does not need):
 - a lone record handle (``pa5``, ``td12``, ``gr462129`` …, any prefix the
   :mod:`~precis.utils.handle_registry` knows) resolves to its live ref,
   following a merge/supersede tombstone;
+- a lone cite_key (``jaroenram19`` — a slug-kind ref's own identifier
+  row, the handle the operator actually cites by) resolves to its ref
+  (gr514062);
 - a DOI, whole or a prefix (``10.1021/acscatal.3c0196``), resolves to the
   paper — exact match first, else a *unique* live prefix match.
 
@@ -36,6 +39,12 @@ _PREFIX_LIMIT = 5
 #: A pasted doi.org URL unwraps to its DOI (gr484947 — the paste path for
 #: papers is a URL, not the bare ``10.…`` form).
 _DOI_URL_RE = re.compile(r"^https?://(?:dx\.)?doi\.org/(.+)$", re.IGNORECASE)
+
+#: Cite-key-shaped probe: one whitespace-free token containing a digit.
+#: Minted keys are ``<surname><yy>[<suffix>]`` (``jaroenram19``,
+#: ``miller23a``), so the digit gate keeps ordinary word queries —
+#: and slugs that are plain words — from hijacking a text search.
+_CITE_KEYISH_RE = re.compile(r"^\S*\d\S*$")
 
 
 @dataclass
@@ -74,6 +83,16 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
         except NotFound:
             return QueryIdentifierMatch()
         return QueryIdentifierMatch(ref=ref)
+
+    # cite_key probe: the ``(id_kind, id_value)`` pair is unique, so a hit
+    # is a single ref — never an ambiguity report. Slugs carry no ``/``;
+    # the gate skips multi-word queries and DOI forms (handled below).
+    if "/" not in text and _CITE_KEYISH_RE.match(text) is not None:
+        ref_id = store.find_ref_by_identifier("cite_key", text)
+        if ref_id is not None:
+            key_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+            if key_ref is not None:
+                return QueryIdentifierMatch(ref=key_ref)
 
     if _DOI_RE.match(text) is None:
         return QueryIdentifierMatch()

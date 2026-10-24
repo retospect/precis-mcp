@@ -300,3 +300,67 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
         # focused at the chunk by its base58 handle (the classic /drafts reader
         # was retired; focus_index resolves the base58 form)
         assert f"/smartdraft/smoke?focus={chunk.handle}" in r2.text
+
+
+# ── run-result model attribution (gr514232) ─────────────────────────
+
+
+def test_stream_models_used_reads_model_usage_keys() -> None:
+    """The stream-json result event's modelUsage keys are the exact
+    versioned model ids the run billed against."""
+    from precis.utils.claude_agent import stream_models_used
+
+    line = (
+        '{"type":"result","result":"ok","modelUsage":'
+        '{"claude-sonnet-4-5-20250929":{"inputTokens":1},'
+        '"claude-haiku-4-5-20251001":{"inputTokens":2}}}'
+    )
+    assert stream_models_used(line) == [
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-5-20250929",
+    ]
+    assert stream_models_used("") == []
+    assert stream_models_used('{"type":"result"}') == []
+    assert stream_models_used("not json") == []
+
+
+def test_run_result_meta_carries_actual_and_used() -> None:
+    """model_actual = the dispatched id; models_used = the modelUsage
+    ids when a raw stream is attached."""
+    from types import SimpleNamespace
+
+    raw = '{"type":"result","modelUsage":{"claude-x-1":{}}}'
+    res = SimpleNamespace(model="claude-sonnet-5", raw_text=raw)
+    assert agentlog.run_result_meta(res) == {
+        "model_actual": "claude-sonnet-5",
+        "models_used": ["claude-x-1"],
+    }
+    # No stream → model_actual only; no model at all → empty patch.
+    assert agentlog.run_result_meta(SimpleNamespace(model="m1", raw_text=None)) == {
+        "model_actual": "m1"
+    }
+    assert agentlog.run_result_meta(SimpleNamespace(model=None)) == {}
+
+
+def test_stamp_result_meta_writes_and_never_raises(hub: Hub) -> None:
+    from types import SimpleNamespace
+
+    log_id = agentlog.open_log(
+        hub.live_store, source="plan_tick", title="t", model="sonnet"
+    )
+    agentlog.stamp_result_meta(
+        hub.live_store,
+        log_id=log_id,
+        res=SimpleNamespace(model="claude-sonnet-5", raw_text=None),
+    )
+    ref = hub.live_store.get_ref(kind="agentlog", id=log_id)
+    assert ref is not None
+    assert ref.meta["model"] == "sonnet"  # requested name untouched
+    assert ref.meta["model_actual"] == "claude-sonnet-5"
+    # log_id=None and a dead id are both quiet no-ops.
+    agentlog.stamp_result_meta(
+        hub.live_store, log_id=None, res=SimpleNamespace(model="m")
+    )
+    agentlog.stamp_result_meta(
+        hub.live_store, log_id=999999999, res=SimpleNamespace(model="m")
+    )

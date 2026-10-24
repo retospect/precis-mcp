@@ -1712,6 +1712,63 @@ def test_reap_worktrees_grace_period_still_reaps_when_nothing_changes(
     assert str(b) not in wt_list
 
 
+def test_subagent_hook_logs_raw_payload(guard_repo: dict[str, Path]) -> None:
+    """gr513893: every SubagentStart payload lands raw in
+    precis-agent-tasks/payloads.jsonl — the empirical evidence channel for
+    what `cwd` a worktree-isolated agent actually carries."""
+    primary = guard_repo["primary"]
+    _subagent_event(primary, "start", "payloadagent1", cwd=primary)
+    lines = (
+        (_task_state_dir(primary) / "payloads.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    rec = json.loads(lines[-1])
+    assert rec["action"] == "start"
+    assert rec["payload"]["agent_id"] == "payloadagent1"
+    assert rec["payload"]["cwd"] == str(primary)
+    assert rec["at"].endswith("Z")
+
+
+def test_reap_worktrees_archives_gitignored_scratch(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr514254: a dogfood tree's gitignored scratch/ (repro fixtures) used
+    to die with the worktree. The reaper must archive it to
+    PRECIS_REAPED_SCRATCH_DIR/<tree> before ``git worktree remove``."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    archive_root = tmp_path / "reaped-scratch"
+    # scratch/ must be ignored WITHOUT dirtying B (an ignored-file check is
+    # against B's own checkout, and an uncommitted .gitignore would itself
+    # make it dirty). The shared .git/info/exclude covers every worktree —
+    # same effect as the real repo's committed .gitignore.
+    exclude = primary / ".git" / "info" / "exclude"
+    exclude.write_text(
+        exclude.read_text(encoding="utf-8") + "scratch/\n", encoding="utf-8"
+    )
+    payload = b / "scratch" / "unicycle"
+    payload.mkdir(parents=True)
+    (payload / "main.py").write_text("# the fixture\n", encoding="utf-8")
+
+    reap = primary / "scripts" / "reap-worktrees"
+    result = subprocess.run(
+        ["bash", str(reap)],
+        cwd=str(primary),
+        env=_reap_env(
+            PRECIS_REAP_GRACE_SECONDS="1",
+            PRECIS_REAPED_SCRATCH_DIR=str(archive_root),
+        ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert not b.exists()
+    saved = archive_root / "B" / "unicycle" / "main.py"
+    assert saved.read_text(encoding="utf-8") == "# the fixture\n"
+    assert "archived B/scratch" in result.stdout
+
+
 def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:
     """The lib function is inert unless ``scripts/ship`` actually calls it, and
     a shell script draws no coverage signal from the gate — so pin the wiring

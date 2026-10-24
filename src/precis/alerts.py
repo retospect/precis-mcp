@@ -108,6 +108,56 @@ def _norm_severity(sev: str) -> str:
     return sev if sev in SEVERITIES else "warn"
 
 
+def _ensure_subject_link(
+    store: Store, conn: Any, alert_ref_id: int, subject_ref_id: int
+) -> None:
+    """Best-effort ``related-to`` edge alert → its subject ref (gr514321).
+
+    The alert's ``meta.subject_ref_id`` alone left readers doing code
+    archaeology to find the flagged todo; a real edge makes the subject
+    followable from ``get``'s links section in either direction. The edge
+    outlives the alert (resolve keeps the row + links), which is the point
+    — the audit trail stays navigable.
+
+    Never fails the raise: a stale/gone subject id, or any other link-layer
+    refusal, is logged and skipped rather than sinking a production alert.
+    """
+    # Savepoint: a link-layer failure (FK, admission refusal) would
+    # otherwise poison the caller's transaction and roll back the alert's
+    # own dedup write with it.
+    conn.execute("SAVEPOINT precis_alert_subject_link")
+    try:
+        subject = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (subject_ref_id,),
+        ).fetchone()
+        if subject is None:
+            return
+        have = conn.execute(
+            "SELECT 1 FROM links WHERE relation = 'related-to' "
+            "AND ((src_ref_id = %s AND dst_ref_id = %s) "
+            "     OR (src_ref_id = %s AND dst_ref_id = %s))",
+            (alert_ref_id, subject_ref_id, subject_ref_id, alert_ref_id),
+        ).fetchone()
+        if have is not None:
+            return
+        store.add_link(
+            src_ref_id=alert_ref_id,
+            dst_ref_id=subject_ref_id,
+            relation="related-to",
+            set_by="system",
+            conn=conn,
+        )
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT precis_alert_subject_link")
+        log.warning(
+            "raise_alert: subject link %s -> %s failed",
+            alert_ref_id,
+            subject_ref_id,
+            exc_info=True,
+        )
+
+
 def raise_alert(
     store: Store,
     *,
@@ -265,6 +315,10 @@ def raise_alert(
                     # Severity can change between sightings (a loop that gets
                     # worse); keep exactly one severity: tag.
                     _set_severity_tag(store, ref_id, severity, conn=conn)
+                if subject_ref_id is not None:
+                    # Backfill too: an alert minted before subject links
+                    # existed picks its edge up on the next sighting.
+                    _ensure_subject_link(store, conn, ref_id, int(subject_ref_id))
                 return ref_id, False
 
             meta: dict[str, Any] = {
@@ -297,6 +351,8 @@ def raise_alert(
                 Tag.open(f"severity:{severity}"),
             ):
                 store.add_tag(ref.id, tag, set_by="system", conn=conn)
+            if subject_ref_id is not None:
+                _ensure_subject_link(store, conn, int(ref.id), int(subject_ref_id))
             return int(ref.id), True
 
     return retry_locked(_do, label=f"raise_alert source={source}")

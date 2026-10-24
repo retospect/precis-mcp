@@ -14,6 +14,12 @@ tree. The record resolves the agent's own tree from the worktree the
 harness locked for its agent id ("claude agent <id> (pid <N>)"), then the
 payload's `cwd`, then the project dir (right for a non-isolated task,
 which shares the parent's tree).
+
+Payload-cwd semantics are NOT yet verified against a real isolated run
+(gr513893): every SubagentStart/Stop payload is appended raw to
+<git-common-dir>/precis-agent-tasks/payloads.jsonl (one line per event,
+self-trimming). Compare a logged payload's `cwd` against the agent's
+locked tree to confirm or fix the fallback order above.
 """
 
 from __future__ import annotations
@@ -153,6 +159,42 @@ def _task_cwd(task_id: str, root: Path, payload: dict) -> str:
     return str(root.resolve())
 
 
+#: payloads.jsonl trim point — past this, the log is halved (keeps its
+#: newest lines). The file is the gr513893 evidence channel, not a record.
+_PAYLOAD_LOG_MAX = 256 * 1024
+
+
+def _log_payload(state: Path, action: str, payload: dict) -> None:
+    """Append the raw hook payload to <state>/payloads.jsonl (gr513893).
+
+    One JSON line per event: {"at", "action", "payload"}. The empirical
+    answer to "what does the harness put in cwd for a worktree-isolated
+    agent" lives here — the marker's resolved cwd is already recorded; the
+    raw payload is what the resolver could not see. Never fails the hook.
+    """
+    try:
+        line = json.dumps(
+            {
+                "at": datetime.now(UTC)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
+                "action": action,
+                "payload": payload,
+            }
+        )
+        log = state / "payloads.jsonl"
+        if log.exists() and log.stat().st_size > _PAYLOAD_LOG_MAX:
+            log.write_text(
+                "\n".join(log.read_text(encoding="utf-8").splitlines()[-500:]) + "\n",
+                encoding="utf-8",
+            )
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        log.chmod(0o600)
+    except OSError:
+        pass
+
+
 def _record(action: str, root: Path) -> int:
     payload = _payload()
     task_id = payload.get("agent_id", "")
@@ -164,6 +206,8 @@ def _record(action: str, root: Path) -> int:
     ):
         return 0
     state = common / _STATE_DIR
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _log_payload(state, action, payload)
     marker = state / f"{task_id}.json"
     if action == "stop":
         marker.unlink(missing_ok=True)

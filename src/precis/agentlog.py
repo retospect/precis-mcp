@@ -170,6 +170,53 @@ def touch_from_env(store: Store, *, chunk_ids: Iterable[int]) -> None:
         )
 
 
+def run_result_meta(res: Any) -> dict[str, Any]:
+    """The resolved-model attribution ``finalize_log(meta_extra=…)`` stamps.
+
+    ``meta.model`` at open time carries the *requested* name — a tier alias
+    (``sonnet``, ``opus``) or pin — which is all an AI-contributions read
+    used to get (gr514232). This adds what the run actually dispatched:
+
+    * ``model_actual`` — ``LlmResult.model``, the id the router dispatched
+      (the tier's resolved model or the rung's pin / served OSS name).
+    * ``models_used`` — for a ``claude_agent`` stream-json run, the exact
+      versioned ids off the result event's ``modelUsage``
+      (:func:`precis.utils.claude_agent.stream_models_used`); absent when
+      the transport reports none.
+    """
+    out: dict[str, Any] = {}
+    model = getattr(res, "model", None)
+    if model:
+        out["model_actual"] = model
+    raw = getattr(res, "raw_text", None)
+    if raw:
+        from precis.utils.claude_agent import stream_models_used
+
+        used = stream_models_used(raw)
+        if used:
+            out["models_used"] = used
+    return out
+
+
+def stamp_result_meta(store: Store, *, log_id: int | None, res: Any) -> None:
+    """Best-effort stamp of :func:`run_result_meta` onto an open agentlog.
+
+    For producers whose result leaves scope before finalize runs
+    (``plan_tick`` folds ``LlmResult`` into ``PlanTickOutcome``). No-op on
+    ``log_id=None`` or an empty patch; a write failure is logged, never
+    raised — attribution must not sink the run it records.
+    """
+    if log_id is None:
+        return
+    patch = run_result_meta(res)
+    if not patch:
+        return
+    try:
+        _patch_meta(store, log_id, patch)
+    except Exception:
+        log.warning("agentlog: result-meta stamp failed for %s", log_id, exc_info=True)
+
+
 def _patch_meta(store: Store, log_id: int, patch: dict[str, Any]) -> None:
     """Merge ``patch`` into an agentlog's ``meta`` (jsonb ``||``)."""
     with store.tx() as conn:
@@ -381,6 +428,8 @@ __all__ = [
     "list_recent",
     "open_log",
     "read_checkpoint",
+    "run_result_meta",
+    "stamp_result_meta",
     "stash_checkpoint",
     "touch_from_env",
 ]

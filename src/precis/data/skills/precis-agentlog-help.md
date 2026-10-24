@@ -35,7 +35,10 @@ semantic search. Where an alert is a *condition*, an agentlog is a
 kind='agentlog'                  # numeric id, NOT embedded
 title='plan_tick #<todo> (<model>)'
 meta.source='plan_tick' | 'operator' | 'chat'
-meta.model='opus' | 'sonnet' | ...
+meta.model='opus' | 'sonnet' | ...   # the REQUESTED name (tier/pin)
+meta.model_actual='claude-sonnet-5' | ...   # the id the router dispatched
+meta.models_used=['claude-sonnet-4-5-20250929', ...]  # exact versioned ids
+        # (claude_agent runs only, from the stream result's modelUsage)
 meta.prompt='<full assembled system+user prompt>'
 meta.parent_ref_id=<owning todo>     meta.job_ref_id=<the tick's job>
 meta.started_at / ended_at / status
@@ -54,7 +57,10 @@ start, **`PRECIS_CURRENT_AGENTLOG`** threads the id to the run's
 subprocess (the MCP server inside reads it and attributes every draft
 write/move), `finalize_log` stamps run-end state. `plan_tick` already
 does all of this — a new agentic write path gets attribution by
-opening a log and setting the env var.
+opening a log and setting the env var. `stamp_result_meta(store,
+log_id=, res=)` writes the resolved-model ids (`meta.model_actual`,
+`meta.models_used`) from the run's `LlmResult`; `meta.model` is only the
+requested tier/pin.
 
 ## Reading (agent side)
 

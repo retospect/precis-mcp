@@ -486,6 +486,9 @@ def _run_oss_tick(
             duration_s=duration,
         )
     duration = time.monotonic() - started
+    from precis import agentlog as _agentlog
+
+    _agentlog.stamp_result_meta(store, log_id=agentlog_id, res=result)
     exit_code, resume_reason = _oss_exit_from_result(result)
     return PlanTickOutcome(
         exit_code=exit_code,
@@ -641,6 +644,9 @@ def _run_claude_tick(
         )
     )
     duration = time.monotonic() - started
+    from precis import agentlog as _agentlog
+
+    _agentlog.stamp_result_meta(store, log_id=agentlog_id, res=result)
     exit_code, resume_reason = _claude_exit(result)
     return PlanTickOutcome(
         exit_code=exit_code,

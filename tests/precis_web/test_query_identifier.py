@@ -81,3 +81,25 @@ def test_resolver_handles(store):
 @pytest.mark.parametrize("q", ["10.", "10.1021", "pa", "pa1 pa2"])
 def test_resolver_rejects_non_identifiers(store, q):
     assert resolve_query_identifier(store, q).ref is None
+
+
+def test_resolver_cite_key(store):
+    """gr514062: a bare cite_key — the slug the paper is cited by —
+    resolves through its ref_identifiers row, like a handle or DOI."""
+    a = _paper(store, "jaroenram19", "10.1021/jaroenram.1")
+    assert _ref_id(store, "jaroenram19") == a.id
+    assert _ref_id(store, "  Jaroenram19 ") == a.id  # case-normalised
+    # A digit-bearing token that is nobody's key falls through to search.
+    assert resolve_query_identifier(store, "jaroenram20").ref is None
+    # A retired ref's key does not resolve.
+    store.retire_ref(a.id)
+    assert resolve_query_identifier(store, "jaroenram19").ref is None
+
+
+def test_resolver_cite_key_gate(store):
+    """Digit-free words and multi-word queries never probe cite_key —
+    'growth9x' resolves; 'growth' searches text."""
+    _paper(store, "growth9x", "10.1021/growth.1")
+    assert _ref_id(store, "growth9x") is not None
+    assert resolve_query_identifier(store, "growth").ref is None
+    assert resolve_query_identifier(store, "growth9x extra").ref is None

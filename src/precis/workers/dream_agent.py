@@ -301,7 +301,10 @@ def run_dream_pass(store: Store) -> BatchResult:
 def _result_meta(res: LlmResult) -> dict[str, Any]:
     """The tick-end telemetry stamped onto the agentlog at finalize —
     ``LlmResult``'s cost / turn / token counters, so a dream tick's
-    provenance node carries the same numbers the log line does today."""
+    provenance node carries the same numbers the log line does today.
+    ``agentlog.run_result_meta`` adds the resolved model ids (gr514232)."""
+    from precis import agentlog
+
     return {
         "cost_usd": res.cost_usd,
         "turns": res.turns_used,
@@ -311,6 +314,7 @@ def _result_meta(res: LlmResult) -> dict[str, Any]:
         "cache_read_tokens": res.cache_read_tokens,
         "cache_creation_tokens": res.cache_creation_tokens,
         "terminal_reason": res.terminal_reason,
+        **agentlog.run_result_meta(res),
     }
 
 

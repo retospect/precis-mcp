@@ -517,6 +517,22 @@ class AlertHandler(NumericRefHandler):
             )
         return super().get(id=id, view=view, q=q, **_kw)
 
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
+        """Bare get = title + the alert's detail line + tags (gr514321).
+
+        ``raise_alert`` keeps the actionable sentence — e.g. a long-wait's
+        ``waiting-for`` reason — in ``meta.detail``. A bare get that showed
+        only title + tags forced the reader into code archaeology to find
+        the flagged subject, so the detail rides the default view too.
+        """
+        out = [f"# {self._sense()} {ref.id}", "", ref.title]
+        detail = (ref.meta or {}).get("detail")
+        if detail:
+            out += ["", str(detail)]
+        if tags:
+            out += ["", "tags: " + " ".join(str(t) for t in tags)]
+        return "\n".join(out)
+
     # ── get view='context' — alert + worker_logs window ─────────
 
     def _render_context_view(

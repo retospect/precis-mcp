@@ -222,6 +222,84 @@ def test_raise_alert_extra_meta_merges_on_update(store: Store) -> None:
     assert row[0]["total"] == 62
 
 
+def test_raise_alert_links_subject_ref(store: Store) -> None:
+    """gr514321: an alert raised with ``subject_ref_id`` carries a real
+    ``related-to`` edge to its subject, so a bare get's links section
+    names the flagged ref instead of leaving the reader to grep."""
+    todo = store.insert_ref(kind="todo", slug=None, title="the waiting todo")
+    aid, _ = raise_alert(
+        store,
+        source="nursery:long-wait",
+        fingerprint="long-wait:1",
+        title="[long-wait] the waiting todo",
+        detail="waiting 9d on quota-window",
+        severity="info",
+        subject_ref_id=todo.id,
+    )
+    edges = [(l.dst_ref_id, l.relation) for l in store.links_for(aid, direction="out")]
+    assert edges == [(todo.id, "related-to")]
+    # The edge is visible from the subject side too.
+    inbound = store.links_for(todo.id, direction="in")
+    assert [(l.src_ref_id, l.relation) for l in inbound] == [(aid, "related-to")]
+
+
+def test_raise_alert_repeat_sighting_does_not_duplicate_subject_link(
+    store: Store,
+) -> None:
+    """Nursery re-raises every still-open finding each pass — the edge
+    must stay singular across sightings."""
+    todo = store.insert_ref(kind="todo", slug=None, title="t")
+    aid, _ = raise_alert(
+        store,
+        source="s",
+        fingerprint="fp:dup-edge",
+        title="a",
+        subject_ref_id=todo.id,
+    )
+    for _ in range(3):
+        raise_alert(
+            store,
+            source="s",
+            fingerprint="fp:dup-edge",
+            title="a",
+            subject_ref_id=todo.id,
+        )
+    assert len(store.links_for(aid, direction="out")) == 1
+
+
+def test_raise_alert_backfills_subject_link_on_existing_open_alert(
+    store: Store,
+) -> None:
+    """An alert minted before subject links existed (or without one)
+    picks the edge up on a later sighting, not just on fresh INSERTs."""
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:backfill", title="a")
+    todo = store.insert_ref(kind="todo", slug=None, title="t")
+    aid2, is_new = raise_alert(
+        store,
+        source="s",
+        fingerprint="fp:backfill",
+        title="a",
+        subject_ref_id=todo.id,
+    )
+    assert aid2 == aid and not is_new
+    edges = [l.dst_ref_id for l in store.links_for(aid, direction="out")]
+    assert edges == [todo.id]
+
+
+def test_raise_alert_missing_subject_still_raises(store: Store) -> None:
+    """A subject id that names no live ref must not sink the raise — the
+    alert lands without the edge rather than failing the nursery pass."""
+    aid, is_new = raise_alert(
+        store,
+        source="s",
+        fingerprint="fp:gone",
+        title="t",
+        subject_ref_id=999_999_999,
+    )
+    assert is_new
+    assert store.links_for(aid, direction="out") == []
+
+
 # ── producer: dedup-write throttle (fix #2) ────────────────────────
 
 
@@ -573,6 +651,27 @@ def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     aid, _ = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")
     resp = handler.get(id=aid)
     assert "readable alert" in resp.body
+
+
+def test_handler_bare_get_shows_detail_and_subject_link(hub: Hub, store: Store) -> None:
+    """gr514321: a bare get used to render title + tags only — the
+    waiting-for reason and the subject link were invisible without
+    ``view='detail'``. Both ride the default view now."""
+    handler = AlertHandler(hub=hub)
+    todo = store.insert_ref(kind="todo", slug=None, title="Set prod override")
+    aid, _ = raise_alert(
+        store,
+        source="nursery:long-wait",
+        fingerprint="long-wait:5",
+        title="[long-wait] Set prod override",
+        detail="waiting 9d on quota-window; check whether the dependency is still alive",
+        severity="info",
+        subject_ref_id=todo.id,
+    )
+    body = handler.get(id=aid).body
+    assert "waiting 9d on quota-window" in body
+    assert "Links:" in body
+    assert "Set prod override" in body
 
 
 # ── handler: view='detail' / 'full' (gr259632) ─────────────────────

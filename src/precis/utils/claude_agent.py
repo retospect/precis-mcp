@@ -1641,6 +1641,23 @@ def _stream_usage(stdout: str) -> dict[str, int | None]:
     }
 
 
+def stream_models_used(stdout: str) -> list[str]:
+    """Exact model ids a ``claude_agent`` run billed against (gr514232).
+
+    The trailing stream-json ``result`` event carries ``modelUsage`` keyed
+    by the concrete versioned model id (``claude-sonnet-4-5-20250929``) —
+    the resolution of the ``--model`` alias ``LlmResult.model`` keeps
+    verbatim. Sorted keys; ``[]`` when no result event/modelUsage exists.
+    """
+    ev = _last_result_event(stdout or "")
+    if ev is None:
+        return []
+    usage = ev.get("modelUsage")
+    if not isinstance(usage, dict):
+        return []
+    return sorted(str(k) for k in usage if isinstance(k, str) and k)
+
+
 def _cost_from_stdout_result(stdout: str) -> float | None:
     """Pull ``total_cost_usd`` from the trailing stream-json result event."""
     ev = _last_result_event(stdout)
@@ -1678,5 +1695,6 @@ __all__ = [
     "call_claude_agent_async",
     "compact_stream_transcript",
     "stream_final_text",
+    "stream_models_used",
     "stream_terminal_reason",
 ]

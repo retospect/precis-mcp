@@ -320,6 +320,21 @@ else
             continue
         fi
 
+        # gr514254: a gitignored scratch/ dies with the tree — unrecoverable
+        # dogfood fixtures have been lost this way. Archive it to
+        # PRECIS_REAPED_SCRATCH_DIR (default ~/.claude/reaped-scratch/<tree>)
+        # before removal; if the archive can't complete, keep the tree — the
+        # artifact is the whole point.
+        if [ -d "$path/scratch" ]; then
+            scratch_dest="${PRECIS_REAPED_SCRATCH_DIR:-$HOME/.claude/reaped-scratch}/$name"
+            if mkdir -p "$scratch_dest" 2>/dev/null \
+                && cp -Rp "$path/scratch/." "$scratch_dest/" 2>/dev/null; then
+                echo "reap-worktrees: archived $name/scratch -> $scratch_dest"
+            else
+                echo "reap-worktrees: $name: scratch archive to $scratch_dest failed — NOT removing the tree"
+                continue
+            fi
+        fi
         # `safe_remove` includes the dead-lock case (a session that crashed
         # without a clean SessionEnd never released its SessionStart lock) —
         # `git worktree remove` unconditionally refuses a locked worktree, so
