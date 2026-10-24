@@ -39,6 +39,10 @@ Each result:
  "reference": "<electrode reference etc., or null>",
  "normalization": "<what the number is normalized by, or null>",
  "value_form": "categorical | null",
+ "bound": "upper | lower | null",
+ "sign": -1,
+ "range": "<the bracketed spread printed by the value, verbatim, or null>",
+ "conditions": {"<name>": "<value as printed>"},
  "inputs": [ ... ]
 }
 
@@ -48,6 +52,17 @@ tier: measured = their experiment, computed = their model/DFT,
 asserted = stated without established origin. null when unsure.
 value_form "categorical" only for a non-numeric literal (a product
 name, a substrate, a phase).
+bound: the literal is a one-sided bound, not a point — "upper" when the
+sentence caps it ('at most', 'less than', 'no more than'), "lower" when
+it floors it ('at least', 'exceeding', 'more than').
+sign: -1 only when the sentence frames the printed literal as a
+decrease ('cools by', 'reduces', 'X% below the baseline'); the literal
+still copies the printed digits.
+range: a bracketed model spread or interval printed with the value —
+'0.96 [-0.17 to -1.21]' -> literal '0.96', range '[-0.17 to -1.21]'.
+conditions: what the number is relative to — baseline or scenario,
+period, model or ensemble, region — as name: printed-value pairs, when
+no measurand in the list names them (else use an input).
 
 Each input is a condition of THIS result:
 {"condition": "<condition name, e.g. product, applied-potential,
@@ -57,6 +72,24 @@ the chunk>", "role": "context|preparation|model", "value_text": "<for a
 categorical condition, e.g. 'NH3'>"}
 
 Rules:
+- a result is a number THESE authors produced for the paper's own
+  subject — its intervention, experiment, model or synthesis. A value
+  belonging to another work or a named comparator — a cited threshold
+  or target, another technology's cost or performance, a scenario's
+  baseline level, a bound on the difference between two models — is
+  context, not a result: attach it as an input with role "context" and
+  attribution "cited_work" of the result it conditions, or omit it.
+  attribution "cited_work" on a result is dropped;
+- a bound keeps its direction: 'at most 0.2' -> literal '0.2' with
+  "bound": "upper", 'exceeding 100,000' -> "bound": "lower". Never
+  write a bounded value as a bare point;
+- a change the sentence frames as a decrease is negative: 'cools by
+  0.9' -> literal '0.9' with "sign": -1; 'emits 15% below the
+  baseline' -> literal '15', "sign": -1, "conditions":
+  {"baseline": "<the baseline as printed>"};
+- a bracketed spread goes verbatim to "range";
+- in a table row, a cell holding only '-' signs the number in the next
+  cell — the literal carries it ('-1.93' for '| - | 1.93 |');
 - the literal must be copied EXACTLY as printed, sign and dashes included;
 - anchor to the sentence that prints the literal, nothing wider;
 - do not invent numbers, units or measurands — emit [] rather than guess;
@@ -79,8 +112,10 @@ def reader_prompt(
     lines = [
         "You are reading one chunk of a survey paper for a numeric-extraction",
         "pass. Extract every numeric or categorical result the chunk states",
-        "about a catalyst, material, electrode or reaction system — each with",
-        "the sentence it is printed in and the conditions it was taken under.",
+        "about the paper's own catalyst, material, electrode, reaction",
+        "system or finding — each with the sentence it is printed in and",
+        "the conditions it was taken under. Context numbers (cited values,",
+        "comparators, scenario baselines, thresholds) are not results.",
     ]
     if paper_title:
         lines.append(f"Paper: {paper_title}")

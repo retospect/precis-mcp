@@ -25,7 +25,7 @@ import re
 from collections.abc import Iterable
 
 NUMBER_V3 = re.compile(
-    r"(?<![\w.])[-+−]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:[eE][+−-]?\d+)?(?!\d|\.\d)"
+    r"(?<![\w.])(?:[-+−](?:\s*\|\s*)?)?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:[eE][+−-]?\d+)?(?!\d|\.\d)"
 )
 SCIENTIFIC_NUMBER = re.compile(
     r"(?<![\w.])(?:[-+−]?\d+(?:\.\d+)?\s*(?:\\times|\\cdot|×|·)\s*)?"
@@ -38,8 +38,119 @@ _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzµΩ"
 
 def literal_normalize(value: str) -> str:
     """The matching form of a literal or span: whitespace squashed, the
-    Unicode minus/dash variants folded to ASCII ``-``."""
-    return re.sub(r"\s+", " ", value.replace("−", "-").replace("–", "-")).strip()
+    Unicode minus/dash variants folded to ASCII ``-``, and a table cell
+    holding only a sign merged onto the next number — ``'− | 1.93'`` in a
+    PDF-split table reads ``'-1.93'`` (gr511461)."""
+    text = value.replace("−", "-").replace("–", "-")
+    text = re.sub(r"([-+])\s*\|\s*(?=\d)", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+#: The phrasings a sentence uses where a ``<``/``>`` would sit: the bound
+#: cue must end the text right before the literal it caps. ``not exceed``
+#: is an UPPER bound on the value — it is listed before the plain
+#: ``exceed`` family so the longer phrase wins.
+_BOUND_UPPER_CUES = re.compile(
+    r"(?:at most|no more than|not exceed\w*|never exceed\w*|up to|"
+    r"no greater than|less than|fewer than|under|below|within|"
+    r"maximum of|at maximum)\s*$",
+    re.IGNORECASE,
+)
+_BOUND_LOWER_CUES = re.compile(
+    r"(?:at least|no less than|no fewer than|more than|greater than|"
+    r"above|over|exceed\w*|surpass\w*|minimum of|at minimum|"
+    r"longer than|older than)\s*$",
+    re.IGNORECASE,
+)
+
+
+def bound_hint(prefix_text: str) -> str | None:
+    """``'upper'`` / ``'lower'`` when ``prefix_text`` (the normalised span
+    up to the literal's position) ends in a bound cue — ``'at most '``
+    caps the next number, ``'exceeding '`` floors it. ``None`` when no
+    cue precedes. The upper list is checked first so a ``not exceed``
+    phrase never reads as a lower bound."""
+    tail = literal_normalize(prefix_text)
+    if _BOUND_UPPER_CUES.search(tail):
+        return "upper"
+    if _BOUND_LOWER_CUES.search(tail):
+        return "lower"
+    return None
+
+
+def literal_positions(literal: str, span_text: str) -> list[int]:
+    """Start index of every occurrence of the normalised literal in the
+    normalised span — the positions a bound/sign cue check looks
+    behind."""
+    norm = literal_normalize(span_text)
+    lit = literal_normalize(literal)
+    if not lit:
+        return []
+    out = []
+    at = norm.find(lit)
+    while at >= 0:
+        out.append(at)
+        at = norm.find(lit, at + 1)
+    return out
+
+
+#: The phrasings that make an unsigned printed literal a NEGATIVE
+#: change: 'cools the surface by 0.9' stores -0.9. The cue ends the text
+#: right before the literal, like a bound cue (gr511461).
+_DECREASE_CUES = re.compile(
+    r"\b(?:cool\w*|cold\w*|reduc\w*|decreas\w*|declin\w*|drop\w*|"
+    r"falls?|fell|lower\w*|diminish\w*|shrink\w*|drawdown|"
+    r"loss(?:es)?|below|offset\w*|removal|suppress\w*|"
+    r"attenuat\w*|depress\w*)\b",
+    re.IGNORECASE,
+)
+#: The same cue behind the number instead — '15% below the baseline'
+#: prints the sign's reason after the literal.
+_DECREASE_AFTER = re.compile(
+    r"^\s*%?\s*(?:[a-z]+\s+){0,3}?(?:below|beneath|under|lower than)\b",
+    re.IGNORECASE,
+)
+
+
+def sign_hint(prefix_text: str) -> int | None:
+    """``-1`` when the last 64 normalised chars of ``prefix_text`` (the
+    span up to the literal's position) carry a decrease cue — 'cools the
+    surface by 0.9' stores -0.9. ``None`` otherwise."""
+    if _DECREASE_CUES.search(literal_normalize(prefix_text)[-64:]):
+        return -1
+    return None
+
+
+def sign_hint_after(suffix_text: str) -> int | None:
+    """``-1`` when the text just after the literal opens with a decrease
+    cue — 'below the baseline', 'under the 1990 level'."""
+    if _DECREASE_AFTER.match(literal_normalize(suffix_text)):
+        return -1
+    return None
+
+
+_SPREAD_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_SPREAD_RES = (
+    re.compile(rf"^({_SPREAD_NUM})\s+to\s+({_SPREAD_NUM})$", re.IGNORECASE),
+    re.compile(rf"^({_SPREAD_NUM})\s*[,;]\s*({_SPREAD_NUM})$"),
+    re.compile(rf"^({_SPREAD_NUM})\s*[–—~]\s*({_SPREAD_NUM})$"),
+    # a '-' between two digits is a range dash, not a sign
+    re.compile(rf"^({_SPREAD_NUM})(?<=\d)\s*-\s*(?=\d)({_SPREAD_NUM})$"),
+)
+
+
+def parse_spread(text: str) -> tuple[float, float] | None:
+    """``(low, high)`` for a bracketed spread — ``'[-0.2 to -1.3]'``,
+    ``'(0.5, 2)'``, ``'[1-9]'`` — or ``None`` when the text does not hold
+    exactly two numbers. Brackets and the separator are syntax; the
+    values come out sorted like an interval literal's."""
+    inner = literal_normalize(text).strip("[](){} ")
+    for pattern in _SPREAD_RES:
+        match = pattern.match(inner)
+        if match is not None:
+            a, b = float(match.group(1)), float(match.group(2))
+            return (min(a, b), max(a, b))
+    return None
 
 
 def numeric_regions(text: str) -> list[tuple[int, int, str]]:

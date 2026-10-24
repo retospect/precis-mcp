@@ -22,6 +22,9 @@ re-pointed. Scheme history:
   their conditions (never shipped in precis, pilot-only).
 * 2 — :data:`_ABBREVIATIONS` skips a candidate break whose last token is
   a listed abbreviation's period.
+* 3 — ``numeric_regions`` merges a table cell holding only a sign with
+  the next cell's number (``'− | 1.93'`` reads as one signed region,
+  gr511461); atom numbering over split-sign tables shifts.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-ANCHOR_SCHEME = 2
+ANCHOR_SCHEME = 3
 
 #  SENTENCE_BREAK is the CANDIDATE break set; _ends_in_abbreviation vetoes
 #  a candidate whose last token is a listed abbreviation.

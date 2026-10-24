@@ -402,6 +402,10 @@ def _fresh_stats() -> dict[str, int]:
         "drop:unknown_measurand": 0,
         "drop:unresolvable_anchor": 0,
         "drop:no_fitting_measurand": 0,
+        "drop:cited_context": 0,
+        "drop:unsupported_bound": 0,
+        "drop:bound_direction_mismatch": 0,
+        "drop:unsupported_sign": 0,
         "unparseable_reply": 0,
         "truncated": 0,
         "write_refused": 0,
@@ -971,7 +975,7 @@ def _batch_rows(store: Store, paper: int, run_token: str) -> list[dict[str, Any]
         rows = conn.execute(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
             "       m.subject, m.span, m.anchor_scheme, m.run_key, "
-            "       l.src_chunk_id, t.meta->>'slug' "
+            "       m.conditions, l.src_chunk_id, t.meta->>'slug' "
             "  FROM measures m "
             "  JOIN links l ON l.link_id = m.primary_link_id "
             "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
@@ -990,8 +994,9 @@ def _batch_rows(store: Store, paper: int, run_token: str) -> list[dict[str, Any]
             "span": r[5],
             "anchor_scheme": r[6],
             "run_key": r[7],
-            "chunk_id": r[8],
-            "measurand": r[9] or str(r[1]),
+            "conditions": r[8],
+            "chunk_id": r[9],
+            "measurand": r[10] or str(r[1]),
         }
         for r in rows
     ]
@@ -1029,14 +1034,23 @@ def _span_text(store: Store, row: dict[str, Any]) -> str | None:
     return text
 
 
-def _row_conditions(store: Store, run_key: str) -> list[str]:
+def _row_conditions(
+    store: Store, run_key: str, output_conditions: Any = None
+) -> list[str]:
+    """The run's conditions for the sampler: the output row's named
+    context dict (baseline, period, model — gr511461) plus its input
+    rows."""
+    out = [
+        f"{k} = {v}" for k, v in (output_conditions or {}).items() if isinstance(v, str)
+    ]
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT meta->>'condition', literal FROM measures "
             "WHERE run_key = %s AND direction = 'input' ORDER BY id",
             (run_key,),
         ).fetchall()
-    return [f"{cond or '?'} = {lit}" for cond, lit in rows if isinstance(lit, str)]
+    out += [f"{cond or '?'} = {lit}" for cond, lit in rows if isinstance(lit, str)]
+    return out
 
 
 _VERDICT_TO_REVIEW = {
@@ -1128,7 +1142,9 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                     subject_label=measure["subject"],
                     span_text=span,
                     conditions=_row_conditions(
-                        ctx.store, str(measure["run_key"] or "")
+                        ctx.store,
+                        str(measure["run_key"] or ""),
+                        measure.get("conditions"),
                     ),
                 ),
                 source="measure_accept",

@@ -16,9 +16,16 @@ from precis.extract.proposals import (
     READER_PROMPT_VERSION,
     build_runs,
     resolve_measurand,
+    vocab_entry,
 )
 from precis.store import Store
-from tests.extract_helpers import CHUNK1, fe_reply, survey_world
+from tests.extract_helpers import (
+    CHUNK1,
+    fe_reply,
+    make_taxon,
+    ref_meta,
+    survey_world,
+)
 
 
 @pytest.fixture
@@ -61,7 +68,8 @@ class TestAnchors:
             anchors.resolve_anchor(index, "7.99")
 
     def test_anchor_scheme_is_versioned(self) -> None:
-        assert anchors.ANCHOR_SCHEME == 2
+        # 3: a lone-sign table cell merges onto the next number (gr511461)
+        assert anchors.ANCHOR_SCHEME == 3
 
 
 # ── verify ───────────────────────────────────────────────────────────
@@ -128,9 +136,12 @@ class TestProposals:
         assert spec.anchor.span[0] == cid
         assert "95%" in CHUNK1[spec.anchor.span[1] : spec.anchor.span[2]]
 
-    def test_cited_work_downgrades_to_asserted(self, world: dict) -> None:
+    def test_cited_work_result_drops_as_context(self, world: dict) -> None:
+        """gr511459: a result the model itself attributes to another work
+        is context, not a measure — the review door rejected those rows
+        whatever their tier, so they never land."""
         out = build_runs(
-            fe_reply(attribution="cited_work", tier="measured"),
+            fe_reply(attribution="cited_work"),
             chunk_id=world["c1"],
             chunk_text=CHUNK1,
             paper_ref_id=world["paper"],
@@ -138,8 +149,33 @@ class TestProposals:
             extraction_run="t",
             model=None,
         )
-        assert out.proposals[0].output.tier == "asserted"
-        assert out.proposals[0].output.source_attribution == "cited_work"
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "cited_context"
+
+    def test_cited_work_still_lands_as_an_input(self, world: dict) -> None:
+        """The drop is on results only: a cited number that conditions the
+        paper's own result stays an input row with attribution kept."""
+        reply = fe_reply()
+        reply["results"][0]["inputs"].append(
+            {
+                "condition": "cited-baseline",
+                "measurand": "applied-electrode-potential",
+                "literal": "-0.5",
+                "unit": "V",
+                "attribution": "cited_work",
+            }
+        )
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=CHUNK1,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.inputs[-1].source_attribution == "cited_work"
 
     def test_unknown_measurand_drops_the_result(self, world: dict) -> None:
         out = build_runs(
@@ -220,6 +256,398 @@ class TestProposals:
         assert resolve_measurand("Faradaic Efficiency", world["vocab"]) is not None
         assert resolve_measurand("faradaic-efficiency", world["vocab"]) is not None
         assert resolve_measurand("nonsense", world["vocab"]) is None
+
+    def test_bound_claim_lands_as_a_bound_not_a_point(self, world: dict) -> None:
+        """gr511459: 'at most 0.2' stores upper_bound 0.2, not a point
+        reading — the cue before the literal backs the claim."""
+        text = "The activation barrier stayed at most 0.2 eV in every run."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.2",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                    "bound": "upper",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_form == "upper_bound"
+        assert prop.output.value_num == 0.2
+
+    def test_lower_bound_with_a_comma_literal(self, world: dict) -> None:
+        text = "The stored charge kept exceeding 100,000 counts."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "100,000",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "bound": "lower",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_form == "lower_bound"
+        assert prop.output.value_num == 100000.0
+
+    def test_bound_claim_without_a_cue_drops(self, world: dict) -> None:
+        text = "The activation barrier was 0.2 eV."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.2",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "bound": "upper",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "unsupported_bound"
+
+    def test_bound_against_the_opposite_cue_drops(self, world: dict) -> None:
+        text = "The barrier was at least 0.2 eV in each trial."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.2",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "bound": "upper",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "bound_direction_mismatch"
+
+    def test_an_unclaimed_bound_cue_flags_the_point(self, world: dict) -> None:
+        """The worded bound stays a flag, not silent: a point literal on
+        'at most 0.2' lands but the sampler sees bound_cue_ignored."""
+        text = "The activation barrier stayed at most 0.2 eV in every run."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.2",
+                    "unit": "eV",
+                    "anchor": "0",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_form is None
+        assert "bound_cue_ignored" in prop.flags
+
+    def test_lone_sign_cell_signs_the_next_cell(self, world: dict) -> None:
+        """gr511461: a PDF table that puts '-' in its own cell signs the
+        number after it — '-1.93' verifies against '| - | 1.93 |'."""
+        text = "| Model | dT |\n| mod-a | − | 1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "-1.93",
+                    "unit": "eV",
+                    "anchor": "1",
+                    "attribution": "own_work",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.literal == "-1.93"
+
+    def test_unsigned_literal_on_a_signed_cell_drops(self, world: dict) -> None:
+        """The merge also arms the region check: '1.93' claimed against
+        '| - | 1.93 |' is no longer a complete numeric region."""
+        text = "| Model | dT |\n| mod-a | − | 1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "1.93",
+                    "unit": "eV",
+                    "anchor": "1",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "literal_not_in_span"
+
+    def test_decrease_cue_signs_the_value(self, world: dict) -> None:
+        text = "Run B cools the cell by 0.9 eV relative to the base case."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.9",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "sign": -1,
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_num == -0.9
+
+    def test_sign_claim_without_a_cue_drops(self, world: dict) -> None:
+        text = "Run B shifted the cell by 0.9 eV."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.9",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "sign": -1,
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "unsupported_sign"
+
+    def test_bracketed_range_lands_and_fixes_the_sign(self, world: dict) -> None:
+        """The bracket is verbatim evidence: a point that cannot sit
+        inside it has its sign corrected by the range, flagged."""
+        text = "Run C cools the bath with a median of 0.96 [-0.2 to -1.3] eV."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.96",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "range": "[-0.2 to -1.3]",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_num == -0.96
+        assert prop.output.value_low == -1.3
+        assert prop.output.value_high == -0.2
+        assert "sign_from_range" in prop.flags
+
+    def test_range_with_consistent_sign_stays_quiet(self, world: dict) -> None:
+        text = "Run C cools the bath with a median of 0.96 [-0.2 to -1.3] eV."
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "0.96",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "sign": -1,
+                    "range": "[-0.2 to -1.3]",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_num == -0.96
+        assert (prop.output.value_low, prop.output.value_high) == (-1.3, -0.2)
+        assert "sign_from_range" not in prop.flags
+
+    def test_below_baseline_is_negative_with_conditions(self, world: dict) -> None:
+        """'15% below the base-2 level' stores -15 and keeps the baseline
+        on the row's conditions."""
+        text = "Cell D emits 15% below the base-2 level in the 2030 window."
+        reply = {
+            "results": [
+                {
+                    "measurand": "faradaic-efficiency",
+                    "literal": "15",
+                    "unit": "%",
+                    "anchor": "0",
+                    "sign": -1,
+                    "conditions": {"baseline": "base-2", "period": "2030"},
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.value_num == -15.0
+        assert prop.output.conditions == {"baseline": "base-2", "period": "2030"}
+
+    def test_condition_not_printed_is_flagged_off(self, world: dict) -> None:
+        text = "Cell D emits 15% below the base-2 level."
+        reply = {
+            "results": [
+                {
+                    "measurand": "faradaic-efficiency",
+                    "literal": "15",
+                    "unit": "%",
+                    "anchor": "0",
+                    "sign": -1,
+                    "conditions": {"baseline": "base-9"},
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.conditions is None
+        assert "condition_not_in_chunk" in prop.flags
+
+    def test_output_conditions_count_as_required(
+        self, world: dict, store: Store
+    ) -> None:
+        """A required condition answered via the conditions dict is not
+        escalated as missing at insert."""
+        tid = make_taxon(
+            world["store"],
+            "cooling-power",
+            unit="%",
+            required=["baseline"],
+            parent=world["root"],
+        )
+        text = "Cell D emits 15% below the base-2 level."
+        reply = {
+            "results": [
+                {
+                    "measurand": "cooling-power",
+                    "literal": "15",
+                    "unit": "%",
+                    "anchor": "0",
+                    "sign": -1,
+                    "conditions": {"baseline": "base-2"},
+                }
+            ]
+        }
+        vocab = dict(world["vocab"])
+        vocab[tid] = vocab_entry(tid, ref_meta(world["store"], tid))
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=vocab,
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        run = world["store"].insert_measure(prop.output, prop.inputs, actor="t")
+        rows = world["store"].measures_for(world["paper"], include_superseded=True)
+        row = next(r for r in rows if r["id"] == run.output_id)
+        esc = row["meta"].get("escalation") or []
+        assert not [e for e in esc if e["rule"] == "required_condition_missing"]
 
     def test_categorical_result_builds(self, world: dict) -> None:
         text = "Sample A produced NH3 at -0.4 V."

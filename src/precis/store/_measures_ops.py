@@ -487,8 +487,11 @@ def _check_enum(name: str, value: str | None, allowed: Sequence[str]) -> None:
 
 def _squash(text: str) -> str:
     """Whitespace-collapsed, minus-folded, case-folded form for the
-    literal-in-span test."""
+    literal-in-span test. A table cell holding only a sign merges onto
+    the next number ('− | 1.93' reads '-1.93'), matching
+    ``verify.literal_normalize`` (gr511461)."""
     t = text.translate(MINUS_FOLD).replace(" ", " ").replace(" ", " ")
+    t = re.sub(r"([-+])\s*\|\s*(?=\d)", r"\1", t)
     return " ".join(t.split()).casefold()
 
 
@@ -724,6 +727,9 @@ class MeasuresMixin:
             )
             required = self._required_conditions(c, output.measurand_ref_id)
             have: set[str] = set()
+            for key in output.conditions or {}:
+                if isinstance(key, str) and key.strip():
+                    have.add(slugify(key))
             for spec in inputs:
                 if (spec.role or "context") == "context":
                     have |= self._condition_names(spec, taxa[spec.measurand_ref_id])

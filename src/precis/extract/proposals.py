@@ -22,7 +22,30 @@ Per result the deterministic checks are the pilot's, ported:
   a ``null`` measurand is the reader's "no listed measurand fits" answer
   and drops as ``no_fitting_measurand`` (gr511568 — a forced nearest
   slug filled 'fraction attributable to climate change' with unrelated
-  shares).
+  shares);
+* ``attribution: cited_work`` on a result drops it (``cited_context``):
+  only the paper's own findings become measures — a cited threshold,
+  another technology's number or a scenario baseline is context, and the
+  review door rejects these rows whatever their tier (gr511459). Cited
+  values still land as *inputs* of a result they condition;
+* an emitted ``bound`` is checked against the span's bound cue: ``at
+  most 0.2`` supports ``upper``, ``exceeding 100,000`` supports
+  ``lower``. A claim with no cue drops (``unsupported_bound``), a claim
+  against the opposite cue drops (``bound_direction_mismatch``), and a
+  printed cue the model did not claim flags the point
+  (``bound_cue_ignored``) — the bound stays worded, never a silent point;
+* ``sign: -1`` is the decrease channel ('cools by 0.9' stores -0.9):
+  a decrease cue must precede the literal or the claim drops
+  (``unsupported_sign``); ``range`` carries a verbatim bracketed spread
+  into ``value_low``/``value_high``, and a point that cannot sit inside
+  its own bracket has its sign corrected by it (``sign_from_range``);
+  ``conditions`` is a name → printed-value map (baseline, period,
+  model, region) stored on the row's ``conditions`` column — every
+  value must occur in the chunk (``condition_not_in_chunk`` flags and
+  drops one entry);
+* a PDF-split table's lone sign cell merges onto the next number for
+  the checks: ``'− | 1.93'`` signs as ``'-1.93'``, and an unsigned
+  ``'1.93'`` literal then fails the region check outright (gr511461).
 
 Every written run's ``meta.extraction.prompt`` carries
 :data:`READER_PROMPT_VERSION`, bumped whenever the reader contract in
@@ -43,6 +66,7 @@ from typing import Any
 from precis.extract import anchors as _anchors
 from precis.extract import verify as _verify
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.taxonomy.measure_units import parse_literal
 from precis.utils.text import slugify
 
 _ATTRIBUTIONS = {"own_work", "cited_work", "not_established"}
@@ -50,10 +74,11 @@ _TIERS = {"measured", "computed", "derived", "asserted"}
 _ROLES = {"context", "preparation", "model"}
 _MEASURAND_STATUSES = {"explicit", "interpreted", "ambiguous"}
 _DIRECTIONS = {"input", "covariate"}
+_BOUNDS = {"upper", "lower"}
 
 #: The reader-contract generation stamped on every written run's
 #: ``meta.extraction.prompt`` (r1 = the unversioned castor contract).
-READER_PROMPT_VERSION = "r2"
+READER_PROMPT_VERSION = "r3"
 
 _RESULT_FIELDS = {
     "subject",
@@ -68,6 +93,10 @@ _RESULT_FIELDS = {
     "reference",
     "normalization",
     "value_form",
+    "bound",
+    "sign",
+    "range",
+    "conditions",
     "inputs",
 }
 _INPUT_FIELDS = {
@@ -266,6 +295,19 @@ def build_runs(
                 }
             )
             continue
+        if raw.get("attribution") == "cited_work":
+            out.dropped.append(
+                {
+                    "location": location,
+                    "reason": "cited_context",
+                    "detail": (
+                        f"{literal!r} restates another work — a cited or "
+                        "comparator value is context, not a result "
+                        "(gr511459)"
+                    ),
+                }
+            )
+            continue
         entry = resolve_measurand(raw.get("measurand"), vocab)
         if entry is None:
             out.dropped.append(
@@ -309,6 +351,148 @@ def build_runs(
         if not _verify.unit_has_text_support(unit, chunk_text):
             flags.append("unit_without_text_support")
 
+        # The numeric channels — bound, sign, range — all check their
+        # claim against what the span prints just before the literal. An
+        # uncued claim is a guess (dropped), an opposite cue a misread
+        # (dropped); a printed cue the model ignored stays a flag for the
+        # sampler (gr511459, gr511461).
+        parsed = parse_literal(literal)
+        num, low, high = parsed.num, parsed.low, parsed.high
+        value_form = "categorical" if raw.get("value_form") == "categorical" else None
+        explicit = False
+        norm_span = _verify.literal_normalize(span_text)
+        positions = _verify.literal_positions(literal, span_text)
+        hints = {_verify.bound_hint(norm_span[:pos]) for pos in positions}
+
+        bound_raw = raw.get("bound")
+        bound = bound_raw if bound_raw in _BOUNDS else None
+        if bound_raw is not None and bound is None:
+            flags.append("bad_shape")
+        if bound is not None:
+            if bound not in hints:
+                reason = (
+                    "bound_direction_mismatch"
+                    if hints - {None}
+                    else "unsupported_bound"
+                )
+                out.dropped.append(
+                    {
+                        "location": location,
+                        "reason": reason,
+                        "detail": (f"bound={bound!r} vs span {span_text[:120]!r}"),
+                    }
+                )
+                continue
+            if num is None:
+                try:
+                    num = float(_verify.literal_normalize(literal).replace(",", ""))
+                except ValueError:
+                    num = None
+            if num is None:
+                out.dropped.append(
+                    {
+                        "location": location,
+                        "reason": "bad_shape",
+                        "detail": f"bound on a non-numeric literal {literal!r}",
+                    }
+                )
+                continue
+            value_form = f"{bound}_bound"
+            explicit = True
+        elif hints - {None}:
+            flags.append("bound_cue_ignored")
+
+        # A decrease cue ('cools by', 'below the baseline') makes an
+        # unsigned printed literal a negative change; a literal already
+        # printed negative needs no cue (gr511461).
+        sign_raw = raw.get("sign")
+        sign_neg = sign_raw in (-1, "-1")
+        if sign_raw is not None and sign_raw not in (-1, "-1", 1, "1"):
+            flags.append("bad_shape")
+        if sign_neg:
+            readings = [v for v in (num, low, high) if v is not None]
+            if not readings:
+                flags.append("bad_shape")
+            elif max(readings) > 0:
+                lit_norm = _verify.literal_normalize(literal)
+                if not any(
+                    _verify.sign_hint(norm_span[:pos]) == -1
+                    or _verify.sign_hint_after(norm_span[pos + len(lit_norm) :]) == -1
+                    for pos in positions
+                ):
+                    out.dropped.append(
+                        {
+                            "location": location,
+                            "reason": "unsupported_sign",
+                            "detail": f"sign=-1 without a decrease cue: "
+                            f"{span_text[:120]!r}",
+                        }
+                    )
+                    continue
+                num = -abs(num) if num is not None else None
+                if low is not None or high is not None:
+                    low, high = (
+                        -abs(high) if high is not None else None,
+                        -abs(low) if low is not None else None,
+                    )
+                explicit = True
+
+        # A bracketed spread ('0.96 [-0.2 to -1.3]') carries the model
+        # range into value_low/value_high. When the point cannot sit
+        # inside it but its negation can, the bracket — verbatim — fixes
+        # the sign the wording left off.
+        range_raw = raw.get("range")
+        spread = None
+        if isinstance(range_raw, str) and range_raw.strip():
+            if _verify.literal_normalize(range_raw) not in norm_span:
+                flags.append("range_not_in_span")
+            else:
+                spread = _verify.parse_spread(range_raw)
+                if spread is None:
+                    flags.append("range_unparseable")
+        elif range_raw is not None:
+            flags.append("bad_shape")
+        if spread is not None:
+            if low is not None or high is not None:
+                flags.append("bad_shape")
+            else:
+                low, high = spread
+                explicit = True
+        if num is not None and low is not None and high is not None:
+            if low <= num <= high:
+                pass
+            elif low <= -num <= high:
+                num = -num
+                flags.append("sign_from_range")
+            else:
+                flags.append("point_outside_range")
+
+        # Named context the inputs mechanism cannot carry (no measurand):
+        # baseline/scenario, period, model, region. Each value must print
+        # in the chunk; the dict lands on the row's conditions column.
+        conditions: dict[str, str] = {}
+        raw_conditions = raw.get("conditions")
+        if raw_conditions is not None and not isinstance(raw_conditions, dict):
+            flags.append("bad_shape")
+        elif isinstance(raw_conditions, dict):
+            norm_chunk = _verify.literal_normalize(chunk_text)
+            for key, val in raw_conditions.items():
+                if len(conditions) >= 16:
+                    flags.append("bad_shape")
+                    break
+                if (
+                    not isinstance(key, str)
+                    or not key.strip()
+                    or not isinstance(val, str)
+                    or not val.strip()
+                ):
+                    flags.append("bad_shape")
+                    continue
+                if _verify.literal_normalize(val) not in norm_chunk:
+                    flags.append("condition_not_in_chunk")
+                    continue
+                conditions[key.strip()] = val.strip()
+
         attribution = (
             raw["attribution"]
             if raw.get("attribution") in _ATTRIBUTIONS
@@ -325,8 +509,8 @@ def build_runs(
         # wrong reader "point" overrode parse_literal's own read of
         # "<1"). Only "categorical" survives — it names a non-numeric
         # literal parse_literal can't infer; every numeric form is left
-        # None so the literal itself decides (gr508162).
-        value_form = "categorical" if raw.get("value_form") == "categorical" else None
+        # None so the literal itself decides (gr508162). "bound" is the
+        # separate, cue-checked channel for the two bound forms.
         inputs: list[MeasureSpec] = []
         raw_inputs = raw.get("inputs")
         if raw_inputs is not None and not isinstance(raw_inputs, list):
@@ -424,6 +608,9 @@ def build_runs(
             literal=literal,
             subject_ref_id=paper_ref_id,
             reported_unit=unit if isinstance(unit, str) else None,
+            value_num=num if explicit else None,
+            value_low=low if explicit else None,
+            value_high=high if explicit else None,
             subject=raw["subject"] if isinstance(raw.get("subject"), str) else None,
             subject_group=(raw["group"] if isinstance(raw.get("group"), str) else None),
             value_form=value_form,
@@ -444,6 +631,7 @@ def build_runs(
             anchor=MeasureAnchor(
                 paper_ref_id, chunk_id, "offsets", [chunk_id, start, end]
             ),
+            conditions=conditions or None,
             meta=meta,
         )
         out.proposals.append(
