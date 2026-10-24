@@ -17,15 +17,18 @@
 #                         and must not call it full either (gr493188).
 #                         PRECIS_DOCKER_DISK_CHECK=0 skips the check.
 #
-# Probe (measured on the colima host, 2026-10-03): `docker run --rm
-# --pull=never --entrypoint df <local image> -Pk /` ~0.3 s. A container's
-# overlay root is backed by the docker root fs, so `/` there reports exactly
-# the disk that fills; no pull and no bind mount, so it works against any
-# daemon (colima, Docker Desktop, remote context). Fallback when no local
-# image answers: `colima ssh -- df -Pk /var/lib/docker` (~0.35 s). Each attempt
-# is bounded (PRECIS_DOCKER_DISK_TIMEOUT, default 10 s) and the whole probe by
-# PRECIS_DOCKER_DISK_TOTAL_TIMEOUT (default 25 s), so a wedged daemon can never
-# hang the caller. macOS bash 3.2 compatible.
+# Probe order, cheapest first. Leg 1 (gr508691): `docker exec <running cid>
+# df -Pk /` — no container create, so a loaded or create-wedged daemon (the
+# gripe's host: ~215 containers, `docker run` stalled past its bound while
+# exec/info answered instantly) still answers, and a container's overlay `/`
+# is backed by the same docker root fs the run-probe reads. Leg 2, for a host
+# with nothing running: `docker run --rm --pull=never --entrypoint df
+# <local image> -Pk /` (~0.3 s when the daemon is healthy). Fallback when no
+# local image answers: `colima ssh -- df -Pk /var/lib/docker` (~0.35 s).
+# Each attempt is bounded (PRECIS_DOCKER_DISK_TIMEOUT, default 30 s) and the
+# whole probe by PRECIS_DOCKER_DISK_TOTAL_TIMEOUT (default 45 s), so a wedged
+# daemon can never hang the caller. 30 s is the loaded-daemon bound, not the
+# healthy one. macOS bash 3.2 compatible.
 
 # _docker_disk_bounded <seconds> <cmd...> — run in its own process group under
 # a perl deadline (macOS ships no `timeout`). On expiry the whole group is
@@ -70,14 +73,46 @@ _docker_df_avail_gb() {
 }
 
 docker_free_gb() {
-    local out gb img rc per per_try total deadline left why=""
-    per="${PRECIS_DOCKER_DISK_TIMEOUT:-10}"
-    total="${PRECIS_DOCKER_DISK_TOTAL_TIMEOUT:-25}"
+    local out gb img cid cids rc per per_try total deadline left why=""
+    per="${PRECIS_DOCKER_DISK_TIMEOUT:-30}"
+    total="${PRECIS_DOCKER_DISK_TOTAL_TIMEOUT:-45}"
     # 0 would mean "no alarm" to perl, i.e. no bound: treat it as unset.
-    case "$per" in '' | 0 | *[!0-9]*) per=10 ;; esac
-    case "$total" in '' | 0 | *[!0-9]*) total=25 ;; esac
+    case "$per" in '' | 0 | *[!0-9]*) per=30 ;; esac
+    case "$total" in '' | 0 | *[!0-9]*) total=45 ;; esac
     deadline=$(($(_docker_disk_now) + total))
     if command -v docker >/dev/null 2>&1; then
+        # Cheap leg (see header): df inside an already-running container. A
+        # hanging exec means a deeper wedge — `docker run` won't answer
+        # either, so a 142 here skips the create leg entirely.
+        rc=0
+        cids="$(_docker_disk_bounded "$per" docker ps -q </dev/null 2>/dev/null \
+            | head -3)" || rc=$?
+        for cid in $cids; do
+            left=$((deadline - $(_docker_disk_now)))
+            if [ "$left" -le 0 ]; then
+                why="${why:+$why; }overall ${total}s probe bound hit"
+                break
+            fi
+            per_try="$per"
+            [ "$left" -lt "$per" ] && per_try="$left"
+            rc=0
+            out="$(_docker_disk_bounded "$per_try" docker exec "$cid" \
+                df -Pk / </dev/null 2>/dev/null)" || rc=$?
+            if [ "$rc" = 142 ]; then
+                why="${why:+$why; }docker exec timed out after ${per_try}s"
+                break
+            fi
+            [ "$rc" != 0 ] && continue
+            gb="$(printf '%s\n' "$out" | _docker_df_avail_gb)"
+            if [ -n "$gb" ]; then
+                printf '%s\n' "$gb"
+                return 0
+            fi
+            # No df row (a distroless/scratch container) — try the next cid.
+        done
+        # An exec timeout (rc 142) means the daemon can't even serve exec —
+        # container create won't answer either, so skip the run leg.
+        if [ "${rc:-0}" != "142" ]; then
         for img in "${PRECIS_DOCKER_DISK_IMAGE:-}" precis-dev:latest alpine:latest \
             debian:bookworm-slim; do
             [ -n "$img" ] || continue
@@ -113,6 +148,7 @@ docker_free_gb() {
             fi
             why="${why:+$why; }docker run $img gave no df row"
         done
+        fi
     else
         why="docker not on PATH"
     fi

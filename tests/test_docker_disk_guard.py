@@ -36,12 +36,19 @@ _GB_KB = 1024 * 1024
 
 _FAKE_DOCKER = r"""#!/usr/bin/env bash
 # Synthetic docker; never touches a daemon. Appends to $FAKE_DOCKER_LOG:
-#   df|<args>        a plain `docker run` (the free-disk probe)
+#   df|<args>        a plain `docker run` (the create-path disk probe)
+#   execdf|<args>    `docker exec <cid> df` (the cheap, no-create probe leg)
 #   up|run|down|...  compose verbs
 #   prune|<args>     `docker builder prune -f <flag> <size>`
 # Knobs:
-#   FAKE_DF_MODE      ok (default) | fail | usage | slowfail | hang
-#                     -- the df probe's behaviour (usage = docker's flag error)
+#   FAKE_DF_MODE      ok (default) | fail | usage | slowfail | delay | hang
+#                     -- the `docker run` df probe's behaviour (usage =
+#                     docker's flag error; delay answers after FAKE_DF_DELAY
+#                     seconds, default 12)
+#   FAKE_PS_IDS       space-separated ids `docker ps -q` prints ('' = none
+#                     running → the probe falls to the create leg)
+#   FAKE_EXEC_MODE    ok (default) | fail | nodf | hang — the `docker exec
+#                     df` leg's behaviour (nodf = a distroless container)
 #   FAKE_DF_FREE_KB   Available column the probe reports
 #   FAKE_PRUNE_FLAG   the keep-flag `builder prune --help` advertises ('' = none)
 # PRECIS_DOCKER_DISK_CLOCK is docker-disk.sh's injected clock file; slowfail
@@ -50,6 +57,21 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 set -u
 args=("$@")
 case "${args[0]:-}" in
+  ps)
+    [ -n "${FAKE_PS_IDS:-}" ] && printf '%s\n' $FAKE_PS_IDS
+    exit 0
+    ;;
+  exec)
+    echo "execdf|${args[*]:1}" >> "$FAKE_DOCKER_LOG"
+    case "${FAKE_EXEC_MODE:-ok}" in
+      fail) exit 1 ;;
+      nodf) exit 0 ;;
+      hang) exec sleep 30 ;;
+    esac
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'overlay 209715200 1048576 %s 1%% /\n' "${FAKE_DF_FREE_KB:-104857600}"
+    exit 0
+    ;;
   run)
     echo "df|${args[*]}" >> "$FAKE_DOCKER_LOG"
     case "${FAKE_DF_MODE:-ok}" in
@@ -73,6 +95,7 @@ case "${args[0]:-}" in
         sleep 2
         exit 1
         ;;
+      delay) sleep "${FAKE_DF_DELAY:-12}" ;;
       hang) exec sleep 30 ;;
     esac
     printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
@@ -253,6 +276,78 @@ def test_real_zero_gb_still_blocks_as_a_disk_full(tmp_path: Path) -> None:
     assert "probe failed" not in proc.stderr
 
 
+def test_loaded_daemon_answering_past_10s_is_a_successful_probe(
+    tmp_path: Path,
+) -> None:
+    """gr508691: with ~215 containers up, a `docker run` probe exceeds the old
+    10 s bound on a HEALTHY-but-loaded daemon — the per-attempt bound is 30 s."""
+    t0 = time.monotonic()
+    proc = _run_test(tmp_path, FAKE_DF_MODE="delay", FAKE_DF_DELAY="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "disk probe failed" not in proc.stderr
+    assert time.monotonic() - t0 < 30
+
+
+def test_create_wedged_daemon_still_answers_via_exec(tmp_path: Path) -> None:
+    """gr508691: the gripe's failure mode — `docker run` (container create)
+    hangs on a loaded daemon while `docker exec` answers instantly, and an
+    already-running container's overlay `/` reports the same docker root fs."""
+    t0 = time.monotonic()
+    proc = _run_test(
+        tmp_path, FAKE_PS_IDS="c1", FAKE_DF_MODE="hang", FAKE_DF_FREE_KB=str(9 * _GB_KB)
+    )
+    assert proc.returncode == 3
+    assert "docker VM disk has 9 GB free" in proc.stderr
+    # The hanging create leg was never touched — the exec leg answered at once.
+    assert time.monotonic() - t0 < 10
+    log = _log(tmp_path)
+    assert [ln for ln in log if ln.startswith("execdf|")]
+    assert [ln for ln in log if ln.startswith("df|")] == []
+
+
+def test_exec_leg_falls_back_to_run_when_no_container_answers(
+    tmp_path: Path,
+) -> None:
+    proc = _run_test(tmp_path, FAKE_PS_IDS="c1 c2", FAKE_EXEC_MODE="fail")
+    assert proc.returncode == 0, proc.stderr
+    log = _log(tmp_path)
+    assert [ln for ln in log if ln.startswith("execdf|")] == [
+        "execdf|c1 df -Pk /",
+        "execdf|c2 df -Pk /",
+    ]
+    assert [ln for ln in log if ln.startswith("df|")] != []
+
+
+def test_exec_leg_falls_through_to_run_when_containers_lack_df(
+    tmp_path: Path,
+) -> None:
+    """A container answering with no df row (distroless/scratch) doesn't end
+    the probe — the remaining cids, then the create leg, still get a turn."""
+    proc = _run_test(tmp_path, FAKE_PS_IDS="c1 c2", FAKE_EXEC_MODE="nodf")
+    assert proc.returncode == 0, proc.stderr
+    log = _log(tmp_path)
+    assert [ln for ln in log if ln.startswith("execdf|")] == [
+        "execdf|c1 df -Pk /",
+        "execdf|c2 df -Pk /",
+    ]
+    assert [ln for ln in log if ln.startswith("df|")] != []
+
+
+def test_exec_wedge_skips_the_create_leg(tmp_path: Path) -> None:
+    """An exec that hits the bound means the daemon can't serve even that —
+    spending the budget on `docker run` next would only wait to fail."""
+    proc = _run_test(
+        tmp_path,
+        FAKE_PS_IDS="c1",
+        FAKE_EXEC_MODE="hang",
+        PRECIS_DOCKER_DISK_TIMEOUT="1",
+        timeout=30,
+    )
+    assert proc.returncode == 3, proc.stderr
+    assert "docker exec timed out after 1s" in proc.stderr
+    assert [ln for ln in _log(tmp_path) if ln.startswith("df|")] == []
+
+
 def test_hung_probe_is_bounded_then_blocks_as_failed(tmp_path: Path) -> None:
     t0 = time.monotonic()
     proc = _run_test(
@@ -267,9 +362,15 @@ def test_hung_probe_is_bounded_then_blocks_as_failed(tmp_path: Path) -> None:
 
 
 def test_zero_timeout_is_not_an_unbounded_probe(tmp_path: Path) -> None:
+    # TIMEOUT=0 falls back to the 30 s default (gr508691 raised it from 10 s);
+    # the small TOTAL bound keeps this scenario's wall clock where it was.
     t0 = time.monotonic()
     proc = _run_test(
-        tmp_path, FAKE_DF_MODE="hang", PRECIS_DOCKER_DISK_TIMEOUT="0", timeout=40
+        tmp_path,
+        FAKE_DF_MODE="hang",
+        PRECIS_DOCKER_DISK_TIMEOUT="0",
+        PRECIS_DOCKER_DISK_TOTAL_TIMEOUT="12",
+        timeout=40,
     )
     assert proc.returncode == 3, proc.stderr
     assert "timed out" in proc.stderr

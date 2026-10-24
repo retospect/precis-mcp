@@ -18,6 +18,11 @@
 # ids in isolation (see the block below), so a recorded RED means a real,
 # reproducible failure, not concurrency noise.
 #
+# A non-zero exit is also not automatically RED: when scripts/test refuses
+# before pytest runs (disk preflight, missing compose file, stale baked
+# image) the named wrapper refusal records as ⚠ environment failure — the
+# suite's fitness signal stays about the code, not the host (gr508691).
+#
 # Modes:
 #   scripts/nightly            run the full suite now, append the result, print it.
 #                              /whatneedsdoing delegates THIS to a background
@@ -101,6 +106,25 @@ load_suspects() { suspects=(); local l
     while IFS= read -r l; do [[ -n "$l" ]] && suspects+=("$l"); done < <(parse_ids "$1"); }
 summary_override=""
 persistent=""
+
+# Environment refusal ≠ test result (gr508691): when scripts/test refuses
+# BEFORE pytest runs — the disk preflight's exit 3, a missing compose file,
+# the in-container stale-image checks — its named refusal is in the log and
+# no tests ran at all. Recording that as RED reads as suite breakage when the
+# host was merely unfit (a loaded daemon timing the probe out). Only the
+# WRAPPER's named refusals classify: pytest's own exit 3 (internal error) and
+# collection errors still record RED — upstream-drift breakage is exactly
+# what the nightly exists to catch. The non-fatal "WARNING: stale precis-dev
+# image" line stays unmatched because it is not line-start-anchored.
+if [[ "$result" == "✗ RED" ]]; then
+    env_refusal="$(grep -m1 -E '^(scripts/test: |ERR: |(ERROR: )?stale precis-dev image)' "$run_log" || true)"
+    if [[ -n "$env_refusal" ]]; then
+        result="⚠ environment failure"
+        summary_override="suite not run — ${env_refusal#scripts/test: }"
+        summary_override="${summary_override#ERR: }"
+    fi
+fi
+
 if [[ "$result" == "✗ RED" ]]; then
     load_suspects "$run_log"
     n0=${#suspects[@]}
