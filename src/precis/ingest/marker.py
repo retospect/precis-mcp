@@ -994,18 +994,25 @@ def _merge_small_blocks(
 _HEADING_PATTERN = re.compile(r"^(\d+[\.\s]\s*\S|[A-Z][A-Z\s]{2,}$)", re.MULTILINE)
 
 
-def _fitz_fallback(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
-    """Fallback: extract and chunk text via fitz + recursive splitter.
+def _fitz_page_texts(
+    pdf: Path | bytes,
+) -> tuple[list[tuple[int, str]], int, str | None]:
+    """The fitz front half: open, per-page clean text, running-line strip.
 
-    1. Extract full page text via ``page.get_text()``
-    2. Strip repeating headers/footers across pages
-    3. Chunk each page's text with ``precis.ingest.text_chunker``
-    4. Classify chunks (heading detection)
+    ``pdf`` is a file path or raw bytes — the ``web`` kind's PDF branch
+    (gr510701) hands in response bytes, the ingest fallback a path.
+    Returns ``(page_texts, total_pages, doc_title)``; ``doc_title`` is the
+    PDF metadata title or ``None``. No OCR — an image-only page yields
+    no entry.
     """
     import fitz
 
-    doc = fitz.open(str(pdf_path))
+    if isinstance(pdf, bytes):
+        doc = fitz.open(stream=pdf, filetype="pdf")
+    else:
+        doc = fitz.open(str(pdf))
     total_pages = doc.page_count
+    doc_title = ((doc.metadata or {}).get("title") or "").strip() or None
 
     # Collect raw page texts
     page_texts: list[tuple[int, str]] = []
@@ -1015,8 +1022,32 @@ def _fitz_fallback(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
             page_texts.append((page_num, text))
     doc.close()
 
-    # Strip repeating headers/footers before chunking
+    # Strip repeating headers/footers
     page_texts = _strip_running_lines(page_texts, total_pages)
+    return page_texts, total_pages, doc_title
+
+
+def extract_pdf_text(pdf: Path | bytes) -> tuple[str, str | None]:
+    """Plain-text extraction via the fitz path — no Marker, no chunking.
+
+    Shared door for callers that want a PDF's text, not paper blocks
+    (gr510701: the ``web`` kind's ``application/pdf`` branch). Returns
+    ``(text, title)`` — ``title`` from the PDF's own metadata, ``None``
+    when absent. ``text`` is "" for an image-only (scanned) PDF.
+    """
+    page_texts, _pages, doc_title = _fitz_page_texts(pdf)
+    return "\n\n".join(text for _n, text in page_texts), doc_title
+
+
+def _fitz_fallback(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
+    """Fallback: extract and chunk text via fitz + recursive splitter.
+
+    1. Extract full page text via ``page.get_text()``
+    2. Strip repeating headers/footers across pages
+    3. Chunk each page's text with ``precis.ingest.text_chunker``
+    4. Classify chunks (heading detection)
+    """
+    page_texts, total_pages, _doc_title = _fitz_page_texts(pdf_path)
 
     # Chunk each page and build blocks
     blocks: list[dict[str, Any]] = []

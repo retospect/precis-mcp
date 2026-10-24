@@ -2,9 +2,13 @@
 
 Phase 4 ships **page-fetch mode only**: ``get(kind='web', id=URL)``
 fetches the URL, extracts the main content with `trafilatura`, and
-caches the markdown text. Bookmark mode (durable, user-curated refs)
-and Wayback-archive integration are deferred to phase 4b — they
-need `put` support (phase 5+) and a richer ref schema.
+caches the markdown text. An ``application/pdf`` response (or a body
+with ``%PDF`` magic) takes the fitz text path the ingest pipeline's
+fallback uses instead (gr510701) — reports published as PDFs land
+their text rather than the "no readable content" stub. Bookmark mode
+(durable, user-curated refs) and Wayback-archive integration are
+deferred to phase 4b — they need `put` support (phase 5+) and a richer
+ref schema.
 
 Cache key: the canonical URL. Different URL forms of the same page
 (scheme case, default ports, tracking params, trailing slashes,
@@ -37,7 +41,8 @@ log = logging.getLogger(__name__)
 
 _WEB_BASE_ATTRIBUTION = (
     "Source: web page; content © its publisher. Fetched and extracted "
-    "with trafilatura. Verify quotes against the original; quote sparingly."
+    "with trafilatura (HTML) or PyMuPDF (PDF). Verify quotes against "
+    "the original; quote sparingly."
 )
 
 
@@ -117,12 +122,6 @@ class WebHandler(CacheBackedHandler):
 
     def _fetch(self, key: str) -> FetchResult:
         httpx = require_httpx()
-        # A missing ``trafilatura`` is a "feature unavailable on this
-        # deployment" condition, not a network/upstream failure — raise
-        # ``Unsupported`` (not ``Upstream``) so the rendered error is
-        # correctly typed while still carrying an actionable reinstall
-        # hint. (gripe #39241; core dep since the 2026-08-16 promotion.)
-        trafilatura = require_optional("trafilatura", error_cls=Unsupported)
 
         import os
 
@@ -164,7 +163,6 @@ class WebHandler(CacheBackedHandler):
                 next="check the URL or wait for the site to recover",
             )
 
-        html = resp.text
         # What is pinned: the sha256 of the RAW response bytes the server
         # sent (``resp.content``, after transport decoding of gzip/deflate
         # but before charset decoding or trafilatura extraction) — not of
@@ -172,6 +170,18 @@ class WebHandler(CacheBackedHandler):
         # (``urn:sha256:<this>``) therefore identifies the page as served;
         # a rewritten extractor does not fake drift, a changed page does.
         content_sha256 = hashlib.sha256(resp.content).hexdigest()
+        if _looks_like_pdf(resp):
+            return self._fetch_pdf(key, resp, content_sha256=content_sha256)
+
+        html = resp.text
+        # A missing ``trafilatura`` is a "feature unavailable on this
+        # deployment" condition, not a network/upstream failure — raise
+        # ``Unsupported`` (not ``Upstream``) so the rendered error is
+        # correctly typed while still carrying an actionable reinstall
+        # hint. (gripe #39241; core dep since the 2026-08-16 promotion.)
+        # Gated here, after the PDF branch, so a trafilatura-less
+        # deployment can still extract PDFs.
+        trafilatura = require_optional("trafilatura", error_cls=Unsupported)
         # Trafilatura's `extract` returns markdown when configured; we
         # prefer markdown so blocks read naturally and link-grep works.
         extracted = trafilatura.extract(
@@ -218,6 +228,56 @@ class WebHandler(CacheBackedHandler):
             },
         )
 
+    def _fetch_pdf(self, key: str, resp, *, content_sha256: str) -> FetchResult:
+        """PDF branch — extract text via the ingest pipeline's fitz path.
+
+        Reached only after :func:`_looks_like_pdf` matched, so ``resp``
+        is a 2xx whose body is a PDF. A scanned/image-only PDF yields no
+        text (the fitz path doesn't OCR): cache an annotated stub naming
+        the OCR-capable paper-ingest door rather than re-downloading the
+        same bytes on every call inside the TTL.
+        """
+        # ``fitz`` (PyMuPDF) ships in the ``paper`` extra, so gate like
+        # trafilatura above: missing dep → ``Unsupported`` with an
+        # install hint, not a bare ImportError.
+        require_optional("fitz", extra="paper", error_cls=Unsupported)
+        from precis.ingest.marker import extract_pdf_text
+
+        try:
+            body_text, pdf_title = extract_pdf_text(resp.content)
+        except Exception as exc:
+            raise Upstream(
+                f"could not extract text from the PDF at {key}",
+                next=(
+                    "mint a stub then queue the pull: put(kind='paper', "
+                    "title='<title>') then put(kind='paper', id='<slug>', "
+                    f"args={{'pdf_url': '{key}'}})"
+                ),
+            ) from exc
+
+        if not body_text:
+            body_text = (
+                f"(scanned/image-only PDF at {key} — no extractable text "
+                "layer; for the OCR-capable ingest door: put(kind='paper', "
+                "title='<title>') then put(kind='paper', id='<slug>', "
+                f"args={{'pdf_url': '{key}'}}))"
+            )
+
+        return FetchResult(
+            title=pdf_title or slug_from_url(key) or host_of(key) or key,
+            body_blocks=self._blocks_from_report(body_text),
+            cost_usd=None,  # bandwidth only
+            content_sha256=content_sha256,
+            meta={
+                "url": key,
+                "host": host_of(key),
+                "status_code": resp.status_code,
+                "content_type": resp.headers.get("content-type", ""),
+                "extractor": "pymupdf",
+                "extracted_chars": len(body_text),
+            },
+        )
+
     # ── render: append source URL + fetched-at line ───────────────────
 
     def _render(self, ref, cache, *, hit):
@@ -239,6 +299,21 @@ class WebHandler(CacheBackedHandler):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+#: ``%PDF`` may follow a few bytes of junk; the spec allows 1024 (same
+#: window ``datasheet_pull`` uses for its magic check).
+_PDF_MAGIC_WINDOW = 1024
+
+
+def _looks_like_pdf(resp) -> bool:
+    """``True`` when the response is a PDF: ``application/pdf`` content
+    type, or ``%PDF`` magic in the first bytes (servers that answer
+    ``application/octet-stream`` or a wrong ``text/*``)."""
+    ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip()
+    if ctype.lower() == "application/pdf":
+        return True
+    return b"%PDF" in resp.content[:_PDF_MAGIC_WINDOW]
 
 
 def _extract_title(html: str) -> str | None:

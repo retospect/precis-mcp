@@ -23,12 +23,15 @@ class _StubResp:
         self,
         *,
         text: str = "",
+        content: bytes | None = None,
         status_code: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
         self.text = text
         # Raw response bytes — what the fetcher hashes for content_sha256.
-        self.content = text.encode("utf-8")
+        # ``content`` overrides so PDF tests can hand in real binary
+        # (``text`` stays the meaningless decode a binary body yields).
+        self.content = content if content is not None else text.encode("utf-8")
         self.status_code = status_code
         self.headers = headers or {"content-type": "text/html"}
 
@@ -344,6 +347,128 @@ def test_extracts_title_from_html() -> None:
 
 def test_no_title_returns_none() -> None:
     assert _extract_title("<html><body>no title</body></html>") is None
+
+
+# ── PDF branch (gr510701) ────────────────────────────────────────────
+#
+# A PDF URL used to cache the "no readable content" stub — trafilatura
+# has no PDF path. The handler now detects ``application/pdf`` / ``%PDF``
+# magic and extracts with the same fitz path the ingest fallback uses.
+
+
+def _make_pdf(pages: list[str], *, title: str | None = None) -> bytes:
+    """A real text PDF, one string per page (fitz reads it back)."""
+    fitz = pytest.importorskip("fitz")  # paper extra — absent on a slim venv
+
+    doc = fitz.open()
+    for text in pages:
+        doc.new_page().insert_text((72, 72), text)
+    if title:
+        doc.set_metadata({"title": title})
+    data = bytes(doc.tobytes())
+    doc.close()
+    return data
+
+
+def _scanned_pdf() -> bytes:
+    """A valid PDF whose pages carry no text layer (image-only shape)."""
+    fitz = pytest.importorskip("fitz")
+
+    doc = fitz.open()
+    doc.new_page()
+    data = bytes(doc.tobytes())
+    doc.close()
+    return data
+
+
+def test_pdf_url_extracts_text(handler: WebHandler) -> None:
+    pdf = _make_pdf(
+        [
+            "Insured losses reached EUR 11.4 bn in 2025.",
+            "Second page of the catastrophe report.",
+        ],
+        title="Natural Catastrophe Report 2025",
+    )
+    _StubClient.response = _StubResp(
+        content=pdf, headers={"content-type": "application/pdf"}
+    )
+    resp = handler.get(id="https://example.com/natcat-2025.pdf")
+    assert "Insured losses reached EUR 11.4 bn" in resp.body
+    assert "no readable content" not in resp.body
+    # Title comes from the PDF's own metadata.
+    assert "Natural Catastrophe Report 2025" in resp.body
+
+    _ref, cache = _cache_row(handler, "https://example.com/natcat-2025.pdf")
+    assert cache.meta["extractor"] == "pymupdf"
+    # The sha pin is still over the raw bytes served.
+    import hashlib
+
+    assert cache.content_sha256 == hashlib.sha256(pdf).hexdigest()
+    # Text lands as embedded blocks, so search(kind='web') can hit it.
+    blocks = handler.store.chunks.list_chunks_for_ref(_ref.id)
+    assert any("11.4 bn" in b.text for b in blocks)
+
+
+def test_pdf_detected_by_magic_when_content_type_lies(
+    handler: WebHandler,
+) -> None:
+    """Servers answering ``application/octet-stream`` (or a wrong text/*)
+    for a PDF still get the fitz path via the ``%PDF`` magic check."""
+    pdf = _make_pdf(["Magic-detected report body."])
+    _StubClient.response = _StubResp(
+        content=pdf, headers={"content-type": "application/octet-stream"}
+    )
+    resp = handler.get(id="https://example.com/download?id=42")
+    assert "Magic-detected report body" in resp.body
+
+
+def test_scanned_pdf_caches_annotated_stub(handler: WebHandler) -> None:
+    """A PDF with no text layer can't yield text (the fitz path doesn't
+    OCR). We cache a stub naming the OCR-capable paper-ingest door so a
+    repeat get inside the TTL doesn't re-download the same bytes."""
+    _StubClient.response = _StubResp(
+        content=_scanned_pdf(), headers={"content-type": "application/pdf"}
+    )
+    resp = handler.get(id="https://example.com/scanned.pdf")
+    assert "no extractable text" in resp.body
+    assert "put(kind='paper'" in resp.body
+
+
+def test_corrupt_pdf_raises_upstream(handler: WebHandler) -> None:
+    """``%PDF`` magic over unparseable bytes: refuse with the ingest-door
+    hint rather than caching a stub for a file that may be truncated."""
+    _StubClient.response = _StubResp(
+        content=b"%PDF-1.4 not a real pdf at all",
+        headers={"content-type": "application/pdf"},
+    )
+    with pytest.raises(Upstream, match="could not extract text") as exc:
+        handler.get(id="https://example.com/broken.pdf")
+    assert "put(kind='paper'" in (exc.value.next or "")
+
+
+def test_missing_fitz_is_unsupported(
+    handler: WebHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pymupdf is a ``paper`` extra; missing → Unsupported with the
+    ``pip install 'precis-mcp[paper]'`` hint, like the trafilatura gate."""
+    import importlib as _il
+
+    real_import = _il.import_module
+
+    def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "fitz" or name.startswith("fitz."):
+            raise ImportError("simulated: fitz not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "precis.utils.optional_deps.importlib.import_module", _fake_import
+    )
+    _StubClient.response = _StubResp(
+        content=_make_pdf(["some text"]), headers={"content-type": "application/pdf"}
+    )
+    with pytest.raises(Unsupported) as exc_info:
+        handler.get(id="https://example.com/needs-fitz.pdf")
+    assert exc_info.value.next == "pip install 'precis-mcp[paper]'"
 
 
 # ── cache key sanity ─────────────────────────────────────────────────

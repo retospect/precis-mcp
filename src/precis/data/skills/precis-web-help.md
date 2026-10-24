@@ -44,6 +44,32 @@ If extraction yields nothing the body is a stub
 (`(no readable content extracted from URL — page may require JS,
 login, or have non-article shape)`); the cache row is still written.
 
+## The URL is a PDF, not a page
+## Fetch a report published as a PDF
+
+```python
+get(kind="web", id="https://example.org/reports/natcat-2025.pdf")
+```
+
+When the response is `application/pdf` — or the bytes carry `%PDF`
+magic despite a lying content-type — the text is extracted with
+PyMuPDF (the same path paper ingest falls back to) instead of
+trafilatura, and cached like a page. The title comes from the PDF's
+own metadata.
+
+Two PDF cases stay stubs/refusals:
+
+- **Scanned / image-only PDF** (no text layer): the body caches a
+  `(scanned/image-only PDF …)` note naming the OCR-capable ingest
+  door — `put(kind='paper', title='…')` then
+  `put(kind='paper', id='<slug>', args={'pdf_url': '<url>'})`.
+- **Unparseable bytes**: the call refuses with `Upstream` and the
+  same ingest-door `next:`.
+
+PyMuPDF is a `paper` extra; on a deployment without it the call
+fails `[error:Unsupported]` with a
+`pip install 'precis-mcp[paper]'` next.
+
 ## What does a web id look like?
 ## URL canonicalisation rules
 ## How are URLs normalised before caching?
