@@ -1,0 +1,28 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/wt-mcp — a per-worktree precis MCP server (dev-loop-scratch D1).
+
+    scripts/wt-mcp up        start precis-wt-<tree> on a port from 8801-8809
+    scripts/wt-mcp claude    up + src/ watcher + `claude --strict-mcp-config`
+                             with this server as the session's only `precis`
+    scripts/wt-mcp status    probe, watcher pid, ensure --status
+    scripts/wt-mcp restart   respawn the server child in place (port held)
+    scripts/wt-mcp watch     the watcher, in the foreground
+    scripts/wt-mcp down      remove containers, network, volume and state
+
+The tree is the one this script lives in (so `reap-worktrees` can run
+`<tree>/scripts/wt-mcp down` from anywhere). Read-write on prod, no
+workers, refuses a tree carrying a migration prod has not applied. Never
+touches the shared precis-mcp-http server. Library: scripts/wt_mcp.py.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from wt_mcp import main
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], Path(__file__).resolve().parents[1]))

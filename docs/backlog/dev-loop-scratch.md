@@ -64,41 +64,39 @@ parallel. D2 needs D0's layout and is easiest to dogfood with D1.
   tested. It is never chosen by default and only exists when asked for by
   name.
 
-### D1 — per-worktree MCP server, read-write
+### D1 — per-worktree MCP server, read-write (built; review-ready)
 
 Reto 2026-10-23: the worktree server is read-write and **replaces** the
 normal precis server in that session ("then we just need the one and there
-is no confusion… I am happy enough with that risk").
+is no confusion… I am happy enough with that risk"). Built as
+`scripts/wt-mcp` (`up|down|status|restart|watch|claude`, library
+`scripts/wt_mcp.py`, tests `tests/test_wt_mcp.py`); operator doc:
+`deploy/mcp-http/README.md` §Worktree servers. Measured on dl-d1
+(2026-10-23, host docker under ~90 gate containers): first `up` 1337 s
+(proxy + backend create/start waited minutes on docker; the backend's
+prepare step itself was copy 77 s + dependency sync 50 s + metadata 8 s);
+edit a skill file → the worktree server serves the new text 28.8 s after
+the edit (2 s debounce, then a child respawn behind the held port of
+21–25 s, most of it the `/src`→`/app` copy on the loaded host); a session
+re-initialises on its next call, no `/mcp` reconnect. The instructions
+open with `worktree server dl-d1 @ ea1eae8958d2` (sha resolved through
+`PRECIS_PYTHON_GITDIR_MAP`).
 
-- `scripts/wt-mcp up|down|status|restart|claude` in this repo. `up` starts
-  a proxy plus backend through the existing ensure script with
-  `PRECIS_MCP_HTTP_NAME=precis-wt-<tree>`, a port from 8801–8809 (state
-  file under the worktree's `.claude/`, gitignored), and
-  `PRECIS_MCP_SRC=<worktree path>`. The DB is prod with the same read-write
-  role as the session server. If the ensure script needs changes, make them
-  there behind those env overrides; the default path stays byte-identical.
-- **Same server name.** `scripts/wt-mcp claude` launches the session with
-  an MCP config that names the server `precis` but points at the worktree
-  port (`claude --mcp-config <generated file> --strict-mcp-config`). Tool
-  names stay `mcp__precis__*`, skills come from the worktree's own
-  `src/precis/data/skills/`, and the session has exactly one precis. The
-  generated config holds the bearer token. It is written by the script,
-  mode 600, gitignored, and never printed.
-- **Auto-restart:** a watcher on the worktree's `src/` (debounced ~2 s)
-  calls the ensure script's `--restart`, a blue/green swap with the port
-  held. Measure edit → served time and record it in this spec.
-- **Provenance:** the server instructions open with `worktree server
-  <tree> @ <sha>`. Writes it makes carry the tree name in their audit
-  metadata (a gripe filed from a worktree server says so) so a bad write
-  can be traced to the code that made it.
-- **Guards:**
-  - Refuse to start when the worktree carries a migration prod has not
-    applied (the schema gate already knows); the message names
-    `scripts/dev` for that case.
-  - The server runs no workers. Jobs it mints run on prod workers and
-    prod code; the server instructions say so.
-  - A cap of 9 live servers.
-  - `reap-worktrees` calls `scripts/wt-mcp down` before removing a tree.
+Security review round 2 (2026-10-23) closed: the ensure script must carry
+worktree mode (an older copy is refused, never the main checkout served by
+accident); the migration guard fails closed (committed, staged and
+untracked files vs `origin/prod`, any git error refuses, checked before
+every watcher restart and recovery, `PRECIS_AUTO_MIGRATE=0` pinned); the
+reaper tears a tree's server down by name from its own checkout, bounded,
+and keeps the tree when teardown fails.
+
+Left for Reto: the installed ensure script (the infrastructure checkout's
+copy) was NOT touched (the permission gate refused the copy; a `.pre-d1`
+backup exists, identical to the installed file). The repo copy
+`deploy/mcp-http/precis-mcp-http-ensure.sh` carries the worktree mode;
+`scripts/mcp-http-install --apply` installs it (default-path container
+spec verified hash-identical). Until then `scripts/wt-mcp` uses the tree's
+own repo copy by default and refuses a script without worktree mode.
 
 ### D2 — file-backed trace views (atoms, then PCB, then macro)
 

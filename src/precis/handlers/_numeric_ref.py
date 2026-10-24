@@ -51,6 +51,7 @@ from typing import Any, ClassVar
 
 from psycopg import Connection
 
+from precis import worktree_server
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
@@ -2508,6 +2509,10 @@ class NumericRefHandler(Handler):
         initial_meta = self._initial_meta(text, all_tag_strs)
         if put_meta:
             initial_meta = self._merge_put_meta(text, initial_meta, put_meta)
+        # A per-worktree server stamps every ref it creates with its tree
+        # (``meta.worktree``) so a bad write traces to the code that made
+        # it; identity on the shared server (precis.worktree_server).
+        initial_meta = worktree_server.stamp_meta(initial_meta) or initial_meta
         if target is not None:
             # Taxon hierarchy rules (endpoint kinds, cycle, contract) run
             # before the insert: the new node has no ref row yet, so a

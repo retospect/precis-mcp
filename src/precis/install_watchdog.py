@@ -449,6 +449,41 @@ def resolved_drain_timeout_s() -> float:
     return value
 
 
+def resolve_git_dir(root: Path) -> Path | None:
+    """The git directory of the checkout at ``root``, following a worktree pointer.
+
+    ``.git`` is a directory for a primary checkout and a ``gitdir: <path>``
+    file for a linked worktree or submodule. The pointer is a *host* path;
+    inside the session-server container the main checkout is mounted
+    elsewhere, so a pointer that does not exist is translated through
+    ``PRECIS_PYTHON_GITDIR_MAP`` (``hostprefix:containerprefix``, the same
+    map the python kind's worktree discovery uses). ``None`` when there is
+    no readable ``.git`` or the pointer resolves nowhere.
+    """
+    try:
+        git_path = root / ".git"
+        if not git_path.is_file():
+            return git_path if git_path.is_dir() else None
+        pointer = git_path.read_text(encoding="utf-8").strip()
+        if not pointer.startswith("gitdir:"):
+            return None
+        git_dir = Path(pointer.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (root / git_dir).resolve()
+        if git_dir.is_dir():
+            return git_dir
+        raw = (os.environ.get("PRECIS_PYTHON_GITDIR_MAP") or "").strip()
+        host, _, ctr = raw.partition(":")
+        host, ctr = host.rstrip("/"), ctr.rstrip("/")
+        if host and ctr and str(git_dir).startswith(host + "/"):
+            mapped = Path(ctr + str(git_dir)[len(host) :])
+            if mapped.is_dir():
+                return mapped
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _resolve_head_sha(root: Path) -> str | None:
     """Resolved HEAD commit of the checkout at ``root``, or ``None``.
 
@@ -460,16 +495,9 @@ def _resolve_head_sha(root: Path) -> str | None:
     bounces the server for no reason. Three files at most, no subprocess.
     """
     try:
-        git_path = root / ".git"
-        if git_path.is_file():  # worktree / submodule: "gitdir: <path>"
-            pointer = git_path.read_text(encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            git_dir = Path(pointer.split(":", 1)[1].strip())
-            if not git_dir.is_absolute():
-                git_dir = (root / git_dir).resolve()
-        else:
-            git_dir = git_path
+        git_dir = resolve_git_dir(root)
+        if git_dir is None:
+            return None
         head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
         if not head.startswith("ref:"):
             return head or None  # detached HEAD is already a sha

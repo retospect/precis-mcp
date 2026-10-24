@@ -2582,16 +2582,11 @@ def _head_ref_branch(root: Path) -> str | None:
     has no branch to report, which is the honest answer there.
     """
     try:
-        git_path = root / ".git"
-        if git_path.is_file():
-            pointer = git_path.read_text(encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            git_dir = Path(pointer.split(":", 1)[1].strip())
-            if not git_dir.is_absolute():
-                git_dir = (root / git_dir).resolve()
-        else:
-            git_dir = git_path
+        from precis.install_watchdog import resolve_git_dir
+
+        git_dir = resolve_git_dir(root)
+        if git_dir is None:
+            return None
         head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
         if not head.startswith("ref:"):
             return None

@@ -93,6 +93,16 @@ git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # process-table check below is skipped and the lock-based buckets decide.
 [ -f scripts/lib/session-lock.sh ] && source scripts/lib/session-lock.sh
 
+# `timeout` is not on a stock macOS; use it when present (coreutils, or
+# gtimeout via brew). The +expansion form keeps an empty array a no-op under
+# `set -u` on bash 3.2. Bounds the per-tree wt-mcp teardown below.
+TIMEOUT_RUNNER=()
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_RUNNER=(timeout 240)
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_RUNNER=(gtimeout 240)
+fi
+
 # Defense in depth: never remove the PRIMARY working tree, whatever bucket it
 # lands in (inflight already buckets it `base`, but a destructive op earns its
 # own guard — git refuses anyway, we just don't rely on that).
@@ -315,6 +325,17 @@ else
         # `git worktree remove` unconditionally refuses a locked worktree, so
         # unlock first. Harmless no-op (swallowed) if it was never locked.
         git worktree unlock "$path" >/dev/null 2>&1 || true
+        # A per-worktree MCP server (scripts/wt-mcp, dev-loop-scratch D1) is
+        # a prod read-write container outside the tree. Tear it down by
+        # name from THIS checkout's script (never the tree's own), bounded
+        # by a timeout, and if that fails keep the tree: an orphaned server
+        # must never outlive the tree that can still find it. `--if-present`
+        # makes a tree that never ran a server a quick no-op.
+        if [ -x scripts/wt-mcp ] && ! "${TIMEOUT_RUNNER[@]+"${TIMEOUT_RUNNER[@]}"}" \
+                scripts/wt-mcp down --root "$path" --if-present >/dev/null 2>&1; then
+            echo "reap-worktrees: $name: wt-mcp down --root failed or timed out — NOT removing the tree (a precis-wt-${name} server may still be up; run scripts/wt-mcp down --root $path)"
+            continue
+        fi
         if git worktree remove "$path" 2>/dev/null; then
             # safe_remove already means the bucket vetted mergedness (either a
             # true ancestor merge or squash-absorbed); -D deletes both, -d would

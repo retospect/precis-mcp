@@ -23,6 +23,16 @@
 #   precis-mcp-http-ensure.sh --migrate         # one-time cutover from the single-container layout
 #   precis-mcp-http-ensure.sh --recreate-proxy  # replace the proxy container (a port gap: name a window)
 #
+# WORKTREE MODE (dev-loop-scratch D1; driven by scripts/wt-mcp, never by hand):
+# PRECIS_MCP_HTTP_NAME=precis-wt-<tree> PRECIS_MCP_HTTP_PORT=880N
+# PRECIS_MCP_HTTP_STATE=<own state dir> PRECIS_MCP_SRC=<worktree path>
+# PRECIS_MCP_REPO=<main checkout> PRECIS_MCP_WORKTREE=<tree>. The same layout
+# (proxy + blue-green backends) on its own name, port and state dir, serving a
+# git worktree instead of the prod clone: the worktree's `.git` is a file, the
+# served tree is never moved to origin/prod, the schema gate refuses instead
+# of warning, and the container learns its tree name. With PRECIS_MCP_WORKTREE
+# unset nothing below this line behaves differently from before.
+#
 # LAYOUT (organizer-mcp-1). A Caddy container ${NAME}-proxy owns 127.0.0.1:${PORT}
 # and is never recreated by an ordinary run. It reverse-proxies over a private
 # docker network (${NAME}-net) to the live backend, ${NAME}-a or ${NAME}-b, which
@@ -80,7 +90,8 @@ REPO="${REPO:-${HOME}/work/projects/code/precis-mcp}"
 # follow_prod below everywhere. REPO stays the build context for the image.
 # No clone -> serve the main checkout, as before.
 SRC_REPO="${PRECIS_MCP_SRC:-${REPO}-prod}"
-if [ ! -f "${SRC_REPO}/.git/HEAD" ]; then
+# A linked worktree's `.git` is a `gitdir:` pointer file, not a directory.
+if [ ! -f "${SRC_REPO}/.git/HEAD" ] && [ ! -f "${SRC_REPO}/.git" ]; then
     SRC_REPO="$REPO"
 fi
 SECRETS="${HOME}/.secrets/pw"
@@ -134,7 +145,7 @@ esac
 if [ "$NAME" = precis-mcp-http ] && [ "${PRECIS_MCP_LIVE:-0}" != 1 ] && [ "$MODE" != status ]; then
     for var in PRECIS_MCP_HTTP_PORT PRECIS_MCP_HTTP_STATE PRECIS_MCP_IMAGE PRECIS_MCP_SRC \
                PRECIS_MCP_RUN_CMD PRECIS_MCP_ENTRYPOINT PRECIS_MCP_CADDY_IMAGE \
-               PRECIS_MCP_CADDY_EXTRA PRECIS_MCP_DB_IP; do
+               PRECIS_MCP_CADDY_EXTRA PRECIS_MCP_DB_IP PRECIS_MCP_WORKTREE; do
         if [ -n "${!var:-}" ]; then
             echo "precis-mcp: refusing to touch the live ${NAME} with ${var} set;" \
                 "a rig needs its own PRECIS_MCP_HTTP_NAME (PRECIS_MCP_LIVE=1 overrides)" >&2
@@ -276,6 +287,9 @@ fi
 # fetch a minute: twelve sessions starting together must not fetch twelve times.
 follow_prod() {
     [ "$SRC_REPO" != "$REPO" ] || return 0
+    # A worktree server serves the tree as it is; moving it would detach the
+    # developer's branch (worktree mode, header).
+    [ -z "${PRECIS_MCP_WORKTREE:-}" ] || return 0
     local stamp="${STATE_DIR}/.prod-fetched" want have
     mkdir -p "$STATE_DIR"
     if [ -n "$(find "$stamp" -mmin -1 2>/dev/null)" ]; then
@@ -456,6 +470,18 @@ if [ -f "${REPO}/scripts/lib/cluster-topology.sh" ]; then
     done < <(topology_surface_env 2>/dev/null || true)
 fi
 
+# Worktree mode (header): the container learns its tree name, and the schema
+# gate refuses rather than warns. Both arrays stay empty/unchanged otherwise,
+# so the shared server's container spec (and its recreate hash) is untouched.
+SCHEMA_GATE=warn
+WT_ENVS=()
+if [ -n "${PRECIS_MCP_WORKTREE:-}" ]; then
+    SCHEMA_GATE=refuse
+    # Pinned off: settings.auto_migrate beats a `refuse` gate, and a tree's
+    # own migrate.py must never be able to migrate prod from a laptop.
+    WT_ENVS+=(-e "PRECIS_MCP_WORKTREE=${PRECIS_MCP_WORKTREE}" -e PRECIS_AUTO_MIGRATE=0)
+fi
+
 ENVS=(
     -e PRECIS_SECRETS_FILE_DIR=/run/precis-secrets
     -e PRECIS_ROOT=/data/notes
@@ -474,12 +500,15 @@ ENVS=(
     # cluster rollout runs `precis migrate`, so a backend restart in that
     # window (or after a failed rollout) would refuse to boot and leave every
     # session without the MCP. warn keeps it serving read-mostly anyway;
-    # precis-status reports the pending count as schema_state.
-    -e PRECIS_SCHEMA_GATE=warn
+    # precis-status reports the pending count as schema_state. A worktree
+    # server refuses instead: a tree carrying a migration prod has not
+    # applied must not serve (scripts/dev is the lane for that).
+    -e PRECIS_SCHEMA_GATE="${SCHEMA_GATE}"
     # Bounce the server when the source checkout's HEAD moves (ship/sync/qland).
     # Keyed on the resolved sha, NOT mtimes — a git checkout touches every
     # mtime, which is exactly why the install-watchdog arm refuses source trees.
     -e PRECIS_CHECKOUT_WATCHDOG=/src
+    ${WT_ENVS[@]+"${WT_ENVS[@]}"}
     ${TOPO_ENVS[@]+"${TOPO_ENVS[@]}"}
 )
 

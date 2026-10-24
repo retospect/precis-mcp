@@ -91,6 +91,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from precis import worktree_server
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -250,14 +252,17 @@ def _session_id() -> str | None:
         except TypeError:
             sid = None
         if sid is None:
-            sid = f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:10]}"
+            # ``wt-<tree>-`` leads on a per-worktree server so its rows
+            # sort apart from the shared server's (precis.worktree_server).
+            head = f"{worktree_server.session_prefix()}{socket.gethostname()}"
+            sid = f"{head}-{os.getpid()}-{uuid4().hex[:10]}"
             try:
                 _SESSION_IDS[session] = sid
             except TypeError:
                 # Unweakrefable session object — fall back to identity,
                 # namespaced by pid so a recycled id can't alias a dead
                 # session of another process.
-                sid = f"{socket.gethostname()}-{os.getpid()}-{id(session):x}"
+                sid = f"{head}-{os.getpid()}-{id(session):x}"
         return sid
 
 

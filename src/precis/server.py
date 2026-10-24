@@ -546,6 +546,10 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     listing isn't supported today, so the banner teaches the shape
     that actually runs.
     """
+    # A per-worktree server (dev-loop-scratch D1) names itself FIRST, above
+    # the sandbox preamble: ``worktree server <tree> @ <sha>``. Zero bytes
+    # everywhere else.
+    head = _worktree_banner()
     core = _INSTRUCTIONS
     kinds_line = _kinds_loaded_line(runtime)
     unavailable_line = _kinds_unavailable_line(runtime)
@@ -557,11 +561,11 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
         tail += f"\n{startup}"
     root = getattr(runtime.config, "root", None)
     if not root:
-        return core + tail
+        return head + core + tail
     registered_kinds = runtime.hub.kinds
     file_kinds = [k for k in _FILE_KIND_EXTS if k in registered_kinds]
     if not file_kinds:
-        return core + tail
+        return head + core + tail
     counts, truncated = _file_kind_counts(root, file_kinds)
     total = sum(counts.values())
     # A root that doesn't exist yet is *not* read-only — it'll be
@@ -599,7 +603,25 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
             f"Sandbox PRECIS_ROOT ({summary}){ro_note}: get(kind={kinds_str}). "
             "tags=['workspace'] scopes.\n"
         )
-    return preamble + core + tail
+    return head + preamble + core + tail
+
+
+def _worktree_banner() -> str:
+    """``worktree server <tree> @ <sha>`` line, or ``""`` off a worktree server.
+
+    The sha is the watched ``/src`` checkout's HEAD — the same reader
+    ``precis-status`` uses — so a session can tell which commit its
+    worktree server booted from.
+    """
+    from precis import worktree_server
+
+    if worktree_server.worktree_name() is None:
+        return ""
+    from precis.install_watchdog import checkout_fingerprint, watched_checkout_root
+
+    root = watched_checkout_root()
+    sha = checkout_fingerprint(root) if root is not None else None
+    return worktree_server.banner(sha)
 
 
 _runtime: PrecisRuntime | None = None
