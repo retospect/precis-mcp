@@ -120,6 +120,13 @@ NOT_VOCAB: dict[str, str] = {
         "no-op.', 0102's docstring). Ordinary tag rows are created "
         "on-demand at write time (get-or-create), not seeded."
     ),
+    "_key": (
+        "0239_vault_key_table.sql: carries the cluster's existing "
+        "app.secret_key GUC into vault._key, guarded by 'WHERE "
+        "nullif(current_setting(...), '') IS NOT NULL' (a no-op on a "
+        "fresh DB) — a secret, never reference vocabulary; the deploy "
+        "postgres role provisions it."
+    ),
 }
 
 #: Design-core presets (0162_design_core.sql) that must survive loading
