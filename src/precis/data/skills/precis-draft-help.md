@@ -144,6 +144,14 @@ put(
 
 put(
     kind="draft",
+    id="dc12",
+    chunk_kind="item",
+    text="a new item",
+)  # id=<chunk> writes into its draft, placed at={"after": that chunk}
+  # (an explicit at= still wins placement; the anchor then names the draft)
+
+put(
+    kind="draft",
     copy_of="nanotrans",
     project="Nanotrans review pass",
     id="nanotrans-r2",

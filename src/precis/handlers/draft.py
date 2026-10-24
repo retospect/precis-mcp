@@ -13,8 +13,9 @@ re-derive instead of going stale. The handler wraps the
 behind the existing seven verbs — **no new verbs**:
 
 - ``put``   — create a draft (`project=`, born with a title heading) or
-  add a chunk (`chunk_kind=`, `text=`, placed by `at=`); `terms=[...]`
-  batches many `chunk_kind='term'` leaves in one transaction.
+  add a chunk (`chunk_kind=`, `text=`, placed by `at=`; `id=` may be a
+  `dc<id>` anchor — insert after that chunk); `terms=[...]` batches
+  many `chunk_kind='term'` leaves in one transaction.
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`) or move it (`move=`).
@@ -352,7 +353,7 @@ class DraftHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"limit"}),
+        "get": ArgsSpec({"limit", "offset", "rel", "of_kind"}),
         "edit": ArgsSpec({"char_target"}),
     }
 
@@ -366,7 +367,8 @@ class DraftHandler(Handler):
             "chunks + hierarchy + links into a new draft, source untouched; "
             "project= an int/todo:N binds an existing project, any other "
             "string mints a fresh one titled that), or adds a chunk "
-            "(chunk_kind=, text=, at={first|last|into|before|after}); get "
+            "(chunk_kind=, text=, at={first|last|into|before|after}; "
+            "id='dc<chunk>' inserts after that chunk); get "
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
             "(q=, mode=lexical|semantic|hybrid|regex, scope=slug|dc<id>, "
             "headings_only=) over prose — mode=regex is a literal grep; edit "
@@ -631,7 +633,7 @@ class DraftHandler(Handler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         targets: list[str] | None = None,
@@ -639,6 +641,8 @@ class DraftHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return self._get_batch(id, view=view, q=q)
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find, never silently dropped. Eye views keep their own ``q``.
         if q is not None and not is_eye_view(view):
@@ -717,9 +721,23 @@ class DraftHandler(Handler):
             # Graph-completeness audit item 1 — draft was link-blind like
             # paper (OPEN-ITEMS.md 🕸️). Ref-level only; draft's own
             # chunk-scoped edges (if any land later) aren't rendered here.
+            # args={'rel':…,'of_kind':…} narrow a hot ref's graph — the
+            # unfiltered view runs to hundreds of KB (gr514335).
             from precis.handlers._links_render import render_links_view
+            from precis.utils.relations import validate_relation
 
-            return render_links_view(self.store, ref, sense="draft")
+            a = args or {}
+            rel = a.get("rel")
+            if rel is not None:
+                rel = validate_relation(str(rel), store=self.store)
+            of_kind = a.get("of_kind")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="draft",
+                rel=rel,
+                of_kind=str(of_kind) if of_kind is not None else None,
+            )
         if view == "integration":
             # Paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md
             # §"The integration ledger") — a topic
@@ -774,7 +792,56 @@ class DraftHandler(Handler):
                     "outline"
                 ),
             )
-        return self._render_outline(s, ref)
+        return self._render_outline(s, ref, args)
+
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, q: str | None
+    ) -> Response:
+        """``get(id=[...])`` — a batch read, one block per id.
+
+        Every element takes whatever the single-id path takes (``dc<id>``
+        with or without a relative suffix, ``¶<base58>``, slug, ``dr<N>``,
+        bare ref id — gr514406: a list of ``dc`` ids used to be
+        stringified and resolved as one draft slug → NotFound). Runs the
+        kind's own ``get`` once per element, in the order given; a
+        missing/deleted element degrades to a one-line block rather than
+        failing the whole call (the ``NumericRefHandler._get_batch``
+        convention — N ids, N answers). Sized by :data:`BATCH_ID_CAP`.
+        """
+        if q is not None:
+            raise BadInput(
+                "q= (find-in-ref) takes one draft id, not an id list",
+                next="get(kind='draft', id='<slug|dc<id>>', q='…')",
+            )
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next="get(kind='draft', id=['dc<id>', …])",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        blocks: list[str] = []
+        for pos, elem in enumerate(ids):
+            if not isinstance(elem, (str, int)) or isinstance(elem, bool):
+                raise BadInput(
+                    f"id[{pos}] must be a draft slug, dr<N> or dc<id> "
+                    f"handle, got {type(elem).__name__}",
+                    next="get(kind='draft', id=['dc<id>', …])",
+                )
+            try:
+                blocks.append(self.get(id=elem, view=view).body)
+            except NotFound:
+                blocks.append(f"{elem}  not found")
+        head = f"# {len(ids)} draft read(s) (batch)"
+        if view is not None:
+            head += f", view={view!r}"
+        return Response(
+            body=head + "\n\n" + "\n\n".join(blocks),
+            result_count=len(ids),
+        )
 
     # ── search: lexical / semantic over draft chunks ─────────────────
 
@@ -1187,8 +1254,21 @@ class DraftHandler(Handler):
         voice: str | None = None,
         lang: str | None = None,
         copy_of: str | int | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``mode='create'`` (the file-kind put idiom) is a no-op here —
+        # the call IS a create (of a draft, or of a chunk in it), so the
+        # habit transfers harmlessly (gr514408). Anything else is
+        # refused with the working insert form, not a bare kwarg
+        # rejection that leaves the agent guessing at ``at=``.
+        if mode not in (None, "create"):
+            raise BadInput(
+                f"put(kind='draft') has no modes, got mode={mode!r}",
+                next="add a chunk: put(kind='draft', id='<slug|dc<anchor>>', "
+                "chunk_kind='item', text='…'[, at={'after': 'dc<id>'}]) "
+                "— no mode= needed",
+            )
         if copy_of is not None:
             if terms is not None:
                 raise BadInput(
@@ -1220,6 +1300,37 @@ class DraftHandler(Handler):
                 "separator or be a '.'/'..' segment",
                 next="use a plain slug, e.g. put(kind='draft', id='nanotrans', …)",
             )
+
+        if _CHUNK_HANDLE.match(slug):
+            # ``id='dc<chunk_id>'`` (or the legacy ``¶<base58>``): write
+            # into that chunk's draft — the scaffold-edit idiom
+            # (``id`` = any chunk inside the draft). Placement defaults
+            # to just after the anchor chunk, the call's intuitive
+            # meaning (gr514408: a dc id used to fall through to the
+            # create-draft path and die on ``project=``). An explicit
+            # ``at=`` still wins placement; the anchor then only names
+            # the draft.
+            anchor_handle = slug
+            chunk = self.store.drafts.get_draft_chunk(slug)
+            if chunk is not None:
+                ref = self.store.get_ref(kind="draft", id=chunk.ref_id)
+                if ref is None:
+                    raise NotFound(
+                        f"draft chunk {slug!r} belongs to a retired draft",
+                        next="get(kind='draft') lists live drafts",
+                    )
+                slug = str(ref.slug or ref.id)
+                if at is None:
+                    at = {"after": anchor_handle}
+            elif self.store.get_ref(kind="draft", id=slug) is None:
+                # A pathological draft slugged ``dc<digits>`` still
+                # resolves by slug below; a miss both ways means the
+                # handle was the intent.
+                raise NotFound(
+                    f"draft chunk {slug!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles",
+                )
 
         if terms is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
@@ -3645,7 +3756,18 @@ class DraftHandler(Handler):
             empty_body="no drafts yet — put(kind='draft', id='…', project=<todo>)",
         )
 
-    def _render_outline(self, slug: str, ref: Any) -> Response:
+    #: Default row cap on the default outline (``_render_outline``). The
+    #: outline's job is shape; past a few hundred chunk rows it stops
+    #: being a map and becomes noise — dr42995's 9.7k-chunk outline ran
+    #: to ~842 KB, too big to scan for sections (gr514404). Overflow
+    #: rows stay reachable via ``args={'limit':…,'offset':…}`` paging,
+    #: ``view='toc'`` for the heading skeleton, or a ``dc<heading>``
+    #: subtree read.
+    _OUTLINE_ROW_CAP: ClassVar[int] = 500
+
+    def _render_outline(
+        self, slug: str, ref: Any, args: dict[str, Any] | None = None
+    ) -> Response:
         chunks = self.store.drafts.reading_order(ref.id)
         # Per-block gloss preference: the llm-v1 summary, else the keyword
         # set, else the truncated first line. Lets the outline read as
@@ -3661,6 +3783,7 @@ class DraftHandler(Handler):
         # renders the items in full.
         collapsed = 0
         skip_below: int | None = None
+        rows: list[str] = []
         for c in chunks:
             if skip_below is not None:
                 if c.depth > skip_below:
@@ -3678,7 +3801,46 @@ class DraftHandler(Handler):
             # spaces, tabs, \n, \r — so a multi-line gloss stays on a single
             # outline row. No length cap: show the full gloss.
             gloss = " ".join(gloss.split())
-            lines.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
+            rows.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
+
+        a = args or {}
+        limit_raw, offset_raw = a.get("limit"), a.get("offset")
+        try:
+            limit = None if limit_raw is None else int(limit_raw)
+            offset = 0 if offset_raw is None else int(offset_raw)
+        except (TypeError, ValueError):
+            raise BadInput(
+                "args limit/offset must be integers",
+                next="get(kind='draft', id='<slug>', args={'limit': 200})",
+            ) from None
+        if limit is not None and limit < 1:
+            raise BadInput(
+                f"args limit must be ≥ 1, got {limit}",
+                next="get(kind='draft', id='<slug>', args={'limit': 200})",
+            )
+        if offset < 0:
+            raise BadInput(
+                f"args offset must be ≥ 0, got {offset}",
+                next="get(kind='draft', id='<slug>', args={'limit': 200})",
+            )
+        cap = limit if limit is not None else self._OUTLINE_ROW_CAP
+        shown = rows[offset : offset + cap]
+        lines.extend(shown)
+        withheld = len(rows) - offset - len(shown)
+        if not shown and rows:
+            lines.append(f"(no outline rows at offset {offset} — {len(rows)} total)")
+        elif offset or withheld:
+            span = f"rows {offset + 1}–{offset + len(shown)} of {len(rows)}"
+            nxt = ""
+            if withheld:
+                nxt = (
+                    f" — next: get(kind='draft', id={slug!r}, "
+                    f"args={{'limit': {cap}, 'offset': {offset + len(shown)}}})"
+                )
+            lines.append(
+                f"\n({span}{nxt} · view='toc' for the heading skeleton · "
+                "id='dc<heading>' reads one section)"
+            )
         if collapsed:
             lines.append(
                 f"\n({collapsed} list{'' if collapsed == 1 else 's'} collapsed — "
@@ -4265,9 +4427,8 @@ class DraftHandler(Handler):
 
     def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
-        # (sibling step), ``-lo..hi`` (signed sibling span — the reading
-        # window). Resolved against the draft tree; supersedes the legacy
-        # ``-B+A`` reading-order window.
+        # (sibling step), ``-lo..hi`` (signed span — the reading-order
+        # window around the anchor). Resolved against the draft tree.
         rel = self.store.drafts.draft_relative_chunk_ids(handle)
         if rel is not None:
             if not rel:

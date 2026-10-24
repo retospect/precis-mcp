@@ -911,12 +911,14 @@ class DraftStore(_AbbrevMixin):
 
         ``dc<id>^N`` walks ``N`` ancestors (``parent_chunk_id``);
         ``dc<id>+N``/``-N`` steps ``N`` siblings (ordered by ``pos`` under
-        the same parent); ``dc<id>-lo..hi`` is the signed sibling span
-        (reading-context window). Returns target ids (one for a
-        step/ancestor, the contiguous run for a span), **empty list** when
-        out of range/past the root, or ``None`` when ``handle`` isn't a
-        relative handle of ``kind`` (caller then tries the absolute path).
-        ``kind='plan'`` resolves ``pe<id>`` handles."""
+        the same parent); ``dc<id>-lo..hi`` is the signed span — the
+        reading-context window: ``lo``/``hi`` chunks before/after the
+        anchor in DFS reading order (crossing tree boundaries, the same
+        window ``pc<id>-lo..hi`` gives flat ``ord`` kinds). Returns target
+        ids (one for a step/ancestor, the contiguous run for a span),
+        **empty list** when out of range/past the root, or ``None`` when
+        ``handle`` isn't a relative handle of ``kind`` (caller then tries
+        the absolute path). ``kind='plan'`` resolves ``pe<id>`` handles."""
         parsed = handle_registry.parse_relative(handle)
         if parsed is None:
             return None
@@ -929,6 +931,26 @@ class DraftStore(_AbbrevMixin):
         if base is None:
             return []
         op_kind, *rest = op
+        if op_kind == "span":
+            # Reading-order window, not a sibling run: the sibling-only
+            # slice showed the anchor's row but dropped its own subtree
+            # and every neighbour's contents — a window around a ulist
+            # rendered the empty container and the next heading with none
+            # of the items in between (gr514337), and a span on a heading
+            # listed bare sibling headings (gr514405).
+            lo_off, hi_off = rest
+            ordered = self.reading_order(base.ref_id, kind=kind)
+            idx = next(
+                (i for i, c in enumerate(ordered) if c.chunk_id == base.chunk_id),
+                None,
+            )
+            if idx is None:
+                return []  # anchor retired or otherwise outside the live tree
+            lo = max(0, idx + lo_off)
+            hi = min(len(ordered) - 1, idx + hi_off)
+            if lo > hi:
+                return []
+            return [c.chunk_id for c in ordered[lo : hi + 1]]
         with self.pool.connection() as conn:
             if op_kind == "ancestor":
                 (n,) = rest
@@ -952,13 +974,7 @@ class DraftStore(_AbbrevMixin):
             (n,) = rest
             target = idx + n
             return [siblings[target].chunk_id] if 0 <= target < len(siblings) else []
-        # span: signed offsets around the anchor, clamped to the sibling run.
-        lo_off, hi_off = rest
-        lo = max(0, idx + lo_off)
-        hi = min(len(siblings) - 1, idx + hi_off)
-        if lo > hi:
-            return []
-        return [siblings[i].chunk_id for i in range(lo, hi + 1)]
+        return []  # unreachable: parse_relative emits only the three ops above
 
     def _children(
         self,

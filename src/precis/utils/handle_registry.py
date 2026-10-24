@@ -438,7 +438,7 @@ _REL_RE = re.compile(r"^([a-z]{2})(\d+)(.+)$")
 #: A parsed relative operator. One of:
 #:   ("step", n)         sibling step (signed n, e.g. +1 / -3)
 #:   ("ancestor", n)     n levels up (n >= 1)
-#:   ("span", lo, hi)    signed sibling span, anchor at 0 (e.g. -2..3)
+#:   ("span", lo, hi)    signed span, anchor at 0 (e.g. -2..3)
 RelOp = tuple
 
 

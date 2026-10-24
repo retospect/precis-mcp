@@ -705,6 +705,201 @@ def test_relative_navigation_sibling_ancestor_span(
         draft.get(id=f"{_dc_of(hub, 'T')}^")  # root has no enclosing heading
 
 
+def test_span_is_a_reading_order_window(draft: DraftHandler, hub: Hub) -> None:
+    """gr514405 + gr514337: ``dc<id>-lo..hi`` resolves to a contiguous
+    DFS reading-order slice, not a sibling run — the anchor's own subtree
+    and the neighbours' contents come along. A sibling-only slice showed
+    a ulist's empty container with none of its items, and a span on a
+    heading listed bare sibling headings with no prose."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    draft.put(id="nt", chunk_kind="paragraph", text="lead", at={"into": intro})
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- item one\n- item two",
+        at={"into": intro, "last": True},
+    )
+    draft.put(id="nt", chunk_kind="heading", text="Methods", at={"after": intro})
+
+    lead = _dc_of(hub, "lead")
+    ulist = next(c for c in _order(hub, "nt") if c.chunk_kind == "ulist")
+
+    # Window around the ulist renders its item children (was: the empty
+    # container + the next sibling heading only).
+    body = draft.get(id=f"{ulist.dc}-0..3").body
+    assert "item one" in body and "item two" in body
+
+    # A span on a heading reads through its section and crosses into the
+    # next sibling's content — not a headings-only sibling run.
+    body = draft.get(id=f"{intro}-0..5").body
+    assert "lead" in body and "item one" in body and "Methods" in body
+
+    # Before-context crosses tree boundaries too: 'lead' is Intro's first
+    # child, so -1..1 reads [Intro, lead, ulist].
+    body = draft.get(id=f"{lead}-1..1").body
+    assert "Intro" in body and "lead" in body
+
+
+def test_put_via_chunk_anchor_inserts_after(draft: DraftHandler, hub: Hub) -> None:
+    """gr514408: ``put(kind='draft', id='dc<X>', …)`` writes into the
+    anchor's draft, placed just after it — the dc id used to fall through
+    to the create-draft path and die on ``project=``. ``mode='create'``
+    is a harmless no-op; any other mode is refused with the working
+    insert form."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="paragraph", text="first", at={"after": "¶" + th})
+    a = _dc_of(hub, "first")
+
+    # Anchor-form insert: the dc id names the draft AND the position.
+    draft.put(id=a, chunk_kind="paragraph", text="second")
+    texts = [c.text for c in _order(hub, "nt")]
+    assert texts.index("first") < texts.index("second")
+
+    # mode='create' rides along as a no-op; other modes refuse, naming
+    # the working form instead of a bare kwarg rejection.
+    draft.put(id=a, chunk_kind="paragraph", text="created", mode="create")
+    with pytest.raises(BadInput) as ei:
+        draft.put(id=a, chunk_kind="paragraph", text="x", mode="import")
+    assert "no modes" in str(ei.value)
+    assert "at={'after': 'dc<id>'}" in (ei.value.next or "")
+
+    # An explicit at= still wins placement; the anchor then only names
+    # the draft.
+    draft.put(id=a, chunk_kind="paragraph", text="at-end", at={"after": "¶" + th})
+    texts = [c.text for c in _order(hub, "nt")]
+    assert texts.index("at-end") == 1  # right after the title heading
+
+    # An unknown anchor → NotFound, not a slug lookup.
+    with pytest.raises(NotFound):
+        draft.put(id="dc99999999", chunk_kind="paragraph", text="x")
+
+
+def test_batch_get_of_dc_handles(draft: DraftHandler, hub: Hub) -> None:
+    """gr514406: ``get(kind='draft', id=[list of dc ids])`` used to
+    stringify the list and resolve it as one draft slug → NotFound.
+    Each element now reads through the single-id path."""
+    from precis.handlers._numeric_ref import BATCH_ID_CAP
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="paragraph", text="alpha", at={"after": "¶" + th})
+    draft.put(id="nt", chunk_kind="paragraph", text="beta", at={"after": "¶" + th})
+    a, b = _dc_of(hub, "alpha"), _dc_of(hub, "beta")
+
+    body = draft.get(id=[a, b]).body
+    assert "alpha" in body and "beta" in body
+
+    # A missing element degrades to a one-line block, not a batch-killer.
+    body = draft.get(id=[a, "dc99999999", b]).body
+    assert "alpha" in body and "dc99999999  not found" in body
+
+    # Mixed address forms: slug → outline, dc handle → verbatim chunk.
+    body = draft.get(id=["nt", b]).body
+    assert "[heading]" in body and "beta" in body
+
+    # BadInput cases: empty, over-cap, non-scalar elements, q on a list.
+    with pytest.raises(BadInput):
+        draft.get(id=[])
+    with pytest.raises(BadInput):
+        draft.get(id=[a] * (BATCH_ID_CAP + 1))
+    with pytest.raises(BadInput):
+        nested: Any = [[a]]
+        draft.get(id=nested)
+    with pytest.raises(BadInput):
+        draft.get(id=[a], q="alpha")
+
+
+def test_outline_pages_and_caps(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr514404: the default outline is row-capped with an overflow
+    pointer at toc/subtree reads, and args={'limit','offset'} pages it —
+    an uncapped outline ran to ~842 KB on dr42995, unusable for finding
+    sections."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    for i in range(6):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"para{i}",
+            at={"after": "¶" + th},
+        )
+
+    # Under the cap: every row renders, no pager footer.
+    body = draft.get(id="nt").body
+    assert "para0" in body and "para5" in body
+    assert "rows " not in body
+
+    monkeypatch.setattr(DraftHandler, "_OUTLINE_ROW_CAP", 3)
+    body = draft.get(id="nt").body
+    assert "para4" in body and "para5" in body and "para0" not in body
+    assert "of 7" in body and "view='toc'" in body
+
+    # Explicit paging: limit+offset walks the row space (insert-after-
+    # title order: T, para5, para4, para3, para2, para1, para0).
+    body = draft.get(id="nt", args={"limit": 2, "offset": 0}).body
+    assert "para5" in body and "para4" not in body and "para3" not in body
+    body = draft.get(id="nt", args={"limit": 2, "offset": 2}).body
+    assert "para4" in body and "para3" in body and "para5" not in body
+    body = draft.get(id="nt", args={"offset": 6}).body
+    assert "para0" in body
+
+    with pytest.raises(BadInput):
+        draft.get(id="nt", args={"limit": 0})
+    with pytest.raises(BadInput):
+        draft.get(id="nt", args={"offset": -1})
+
+
+def test_links_view_rel_and_of_kind_filters(draft: DraftHandler, hub: Hub) -> None:
+    """gr514335/514336: view='links' accepts args={'rel':…,'of_kind':…}
+    so an agent doesn't have to page a hot draft's whole graph to find
+    one relation — the unfiltered view ran to ~200 KB on dr42995."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="owner")
+    log1 = hub.live_store.insert_ref(kind="agentlog", slug=None, title="run 1")
+    hub.live_store.add_link(src_ref_id=ref.id, dst_ref_id=todo.id, relation="draft-of")
+    hub.live_store.add_link(src_ref_id=log1.id, dst_ref_id=ref.id, relation="touched")
+
+    full = draft.get(id="nt", view="links").body
+    assert "touched" in full and "draft-of" in full
+
+    # rel= matches the stored relation in BOTH directions: the inbound
+    # touched edge survives, the outbound draft-of edge drops out.
+    body = draft.get(id="nt", view="links", args={"rel": "touched"}).body
+    assert "touched" in body and "draft-of" not in body
+
+    # of_kind= keeps only links whose other endpoint is that kind.
+    body = draft.get(id="nt", view="links", args={"of_kind": "todo"}).body
+    assert "draft-of" in body and "touched" not in body
+
+    # Both compose; a filter that empties a non-empty graph says so.
+    body = draft.get(
+        id="nt",
+        view="links",
+        args={"rel": "touched", "of_kind": "agentlog"},
+    ).body
+    assert "touched" in body
+    body = draft.get(id="nt", view="links", args={"rel": "cites"}).body
+    assert "no links matching" in body and "drop the filter" in body
+
+    # A typo'd relation is a BadInput naming the vocabulary, not a
+    # silent empty graph.
+    with pytest.raises(BadInput):
+        draft.get(id="nt", view="links", args={"rel": "tuchd"})
+
+
 def test_toc_view_headings_only_numbered_and_subtree(
     draft: DraftHandler, hub: Hub
 ) -> None:

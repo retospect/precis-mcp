@@ -108,6 +108,8 @@ def render_links_section(
     *,
     limit: int | None = None,
     priority: bool = False,
+    rel: str | None = None,
+    of_kind: str | None = None,
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
@@ -140,6 +142,16 @@ def render_links_section(
             surface first under a hard cap. ``False`` (default)
             preserves the original link-id ordering — unchanged
             behaviour.
+        rel: When set, keep only edges whose stored relation equals it
+            (matched on the raw ``links.relation`` in *both* directions —
+            ``rel='touched'`` keeps outbound AND inbound touched edges,
+            so "edges of this relation touching me" is one call). The
+            filter exists because a heavily-linked ref's full view can
+            run to hundreds of KB (gr514335).
+        of_kind: When set, keep only links whose *other* endpoint is a
+            ref of that kind — the same other-endpoint filter
+            ``NumericRefHandler._render_links_view`` already exposes as
+            ``args={'of_kind': …}`` (gr472990).
 
     Both kwargs default to a no-op so every existing callsite (the
     numeric-ref per-``get()`` append, ``render_links_view``) renders
@@ -163,6 +175,23 @@ def render_links_section(
         in_links = [lk for lk in in_links if lk.src_ref_id not in hidden]
         if not out_links and not in_links:
             return ""
+
+    if rel is not None:
+        out_links = [lk for lk in out_links if lk.relation == rel]
+        in_links = [lk for lk in in_links if lk.relation == rel]
+    if of_kind is not None:
+        out_links = [
+            lk
+            for lk in out_links
+            if getattr(endpoints.get(lk.dst_ref_id), "kind", None) == of_kind
+        ]
+        in_links = [
+            lk
+            for lk in in_links
+            if getattr(endpoints.get(lk.src_ref_id), "kind", None) == of_kind
+        ]
+    if not out_links and not in_links:
+        return ""
 
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
 
@@ -218,7 +247,14 @@ def render_links_section(
     )
 
 
-def render_links_view(store: Store, ref: Ref, *, sense: str | None = None) -> Response:
+def render_links_view(
+    store: Store,
+    ref: Ref,
+    *,
+    sense: str | None = None,
+    rel: str | None = None,
+    of_kind: str | None = None,
+) -> Response:
     """``view='links'`` for a ``Handler``-direct kind (paper, draft, …).
 
     Wraps :func:`render_links_section`'s compact table with a header so
@@ -227,10 +263,35 @@ def render_links_view(store: Store, ref: Ref, *, sense: str | None = None) -> Re
     kinds don't need this: they get the section appended to every
     ``get()`` automatically (see ``NumericRefHandler.get``) plus their
     own richer ``view='links'`` (:meth:`NumericRefHandler._render_links_view`).
+
+    ``rel`` / ``of_kind`` narrow the view (a hot ref's unfiltered graph
+    can run to hundreds of KB — gr514335); the header echoes the active
+    filter so a partial graph never reads as the whole graph.
     """
     noun = sense or ref.kind
-    section = render_links_section(store, ref)
+    filt = ""
+    if rel is not None:
+        filt += f" rel={rel!r}"
+    if of_kind is not None:
+        filt += f" kind={of_kind!r}"
+    if filt:
+        filt = f" ({filt.strip()})"
+    section = render_links_section(store, ref, rel=rel, of_kind=of_kind)
     if not section:
+        if filt and (
+            store.links_for(ref.id, direction="out")
+            or store.links_for(ref.id, direction="in")
+        ):
+            # The ref HAS edges — the filter hid them all; say so or
+            # "(no links)" reads as an empty graph.
+            return Response(
+                body=(
+                    f"# {noun} {ref.id} - links{filt}\n\n"
+                    f"(no links matching{filt})\n\n"
+                    f"drop the filter: get(kind={ref.kind!r}, id={ref.id}, "
+                    "view='links')"
+                )
+            )
         return Response(
             body=(
                 f"# {noun} {ref.id} - links\n\n(no links)\n\n"
@@ -238,7 +299,7 @@ def render_links_view(store: Store, ref: Ref, *, sense: str | None = None) -> Re
                 "target='kind:identifier', rel='related-to')"
             )
         )
-    return Response(body=f"# {noun} {ref.id} - links" + section)
+    return Response(body=f"# {noun} {ref.id} - links{filt}" + section)
 
 
 def _format_outbound_rel(relation: str) -> str:
