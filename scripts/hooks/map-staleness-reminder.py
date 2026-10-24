@@ -59,6 +59,13 @@ def _git_tracked(path: str) -> bool | None:
         return None
 
 
+# Bound for the migration-number advisory subprocess. A fleet-sized scan
+# used to run ~90 s, so the timeout swallowed exactly the warning this hook
+# exists to print — surface it as a run-it-by-hand nudge instead. Override
+# with PRECIS_MIGRATION_CHECK_TIMEOUT (float seconds; tests use <1).
+MIGRATION_CHECK_TIMEOUT = float(os.environ.get("PRECIS_MIGRATION_CHECK_TIMEOUT", "15"))
+
+
 def _migration_collision(path: str) -> str:
     """If a new migration was written, return a collision warning (else '')."""
     if "src/precis/migrations/" not in path.replace("\\", "/"):
@@ -75,10 +82,15 @@ def _migration_collision(path: str) -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=15,
+            timeout=MIGRATION_CHECK_TIMEOUT,
         )
         if r.returncode != 0 and r.stdout.strip():
             return " ⚠ " + " ".join(r.stdout.split())
+    except subprocess.TimeoutExpired:
+        return (
+            f" ⚠ migration-check timed out (>{MIGRATION_CHECK_TIMEOUT:g}s)"
+            " — run `scripts/migration-check` by hand."
+        )
     except Exception:
         pass
     return ""

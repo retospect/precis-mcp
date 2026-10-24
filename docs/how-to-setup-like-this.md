@@ -81,7 +81,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/db` | psql to the LOCAL dev DB | container-first |
 | `scripts/prod-psql "SELECT …"` | read prod through a bastion hop | prefer read-only; local `db` never reaches prod |
 | `scripts/docs-index` | regenerate the gitignored backlog/runbook indexes + codebase package map | SessionStart hook, per-worktree; never committed |
-| `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
+| `scripts/migration-check` | flag duplicate migration **numbers** across main (worktree + `refs/heads/main` + `origin/main`) + all worktrees and branchless branches; `--taken` lists claimed numbers and the next free | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing`; `--taken` for builder briefs |
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal; `--currency` audits each memory claim against git/fs anchors (kept repo-local by decision, 2026-09-30) | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in `docs/backlog/` | advisory in ship when the diff touches it; `/whatneedsdoing` |
 | `scripts/token-review` | 7-day cadence nudge for a session-tightness / token-waste review pass (reads `docs/runbooks/token-review.md` `## Log`) | advisory cadence-check only (tier-1 script); the review it triggers is a judgment session; `/whatneedsdoing` |

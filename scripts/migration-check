@@ -6,32 +6,77 @@
 # worktrees each mint the next number off the same `main`, so two of them
 # routinely grab the SAME number for DIFFERENT migrations — the collision only
 # surfaces when the second one ships (duplicate number, ledger confusion). This
-# scans the working tree of `main` (the primary checkout) and every sibling
-# worktree and flags any number that maps to 2+ distinct slugs.
+# scans `main` and every sibling worktree and flags any number that maps to
+# 2+ distinct slugs. "main" is read three ways and unioned: the primary
+# checkout's working tree, its checked-out branch ref, and
+# refs/remotes/origin/main — a ship's update-ref fallback can move
+# refs/heads/main past a dirty checkout, and either can lag the last fetch,
+# so a number already landed upstream must still count as taken (gr514201).
 #
 # Exit 1 on collision (usable as a ship gate); 0 when clean. `--quiet` prints
-# only on collision (for soft/advisory wiring).
+# only on collision (for soft/advisory wiring). `--taken` prints which
+# numbers are claimed — main's highest, unshipped sibling claims, and the
+# next free number — for writing into builder briefs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 QUIET=0
-[[ "${1:-}" == "--quiet" ]] && QUIET=1
+TAKEN=0
+for arg in "$@"; do
+    case "$arg" in
+        --quiet) QUIET=1 ;;
+        --taken) TAKEN=1 ;;
+        *) echo "usage: scripts/migration-check [--quiet] [--taken]" >&2; exit 2 ;;
+    esac
+done
 
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 MIGDIR="src/precis/migrations"
+MAIN_BRANCH="$(git -C "$MAIN_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
 
 rows="$(mktemp)"
 trap 'rm -f "$rows"' EXIT
 
+# ONE `git worktree list --porcelain` call yields every registered worktree's
+# path AND its checked-out branch — wherever the tree lives on disk, not just
+# under .claude/worktrees/. The old shape globbed that one directory and ran
+# `git -C symbolic-ref` per tree plus `basename|grep` per migration FILE:
+# ~30k process spawns at 65 trees (~90 s), far past the write-time hook's
+# 15 s timeout. The first porcelain record is always the main worktree
+# (same convention scripts/inflight relies on).
+MAIN_WT_PATH=""
+WT_PATHS=()
+LIVE_BRANCHES=$'\n'"$MAIN_BRANCH"$'\n'
+while IFS= read -r wt_line; do
+    case "$wt_line" in
+        "worktree "*)
+            [[ -z "$MAIN_WT_PATH" ]] && MAIN_WT_PATH="${wt_line#worktree }"
+            WT_PATHS+=("${wt_line#worktree }")
+            ;;
+        "branch refs/heads/"*)
+            LIVE_BRANCHES="${LIVE_BRANCHES}${wt_line#branch refs/heads/}"$'\n'
+            ;;
+    esac
+done < <(git -C "$MAIN_ROOT" worktree list --porcelain 2>/dev/null)
+
+# Disk walk: every registered tree plus the .claude/worktrees glob (a stale
+# dir git no longer lists still counts). Paths may appear twice (glob vs
+# porcelain, symlinked vs canonical); SEEN_WTS dedupes for the tree count,
+# and a repeat scan is harmless anyway — rows key on (number, slug).
+# Filenames are split by parameter expansion, not basename|grep subprocesses.
 n_trees=0
-for wt in "$MAIN_ROOT" "$MAIN_ROOT"/.claude/worktrees/*; do
+SEEN_WTS=$'\n'
+for wt in "$MAIN_ROOT" ${WT_PATHS[@]+"${WT_PATHS[@]}"} "$MAIN_ROOT"/.claude/worktrees/*; do
     [[ -d "$wt/$MIGDIR" ]] || continue
-    name="$(basename "$wt")"; [[ "$wt" == "$MAIN_ROOT" ]] && name="main"
+    case "$SEEN_WTS" in *$'\n'"$wt"$'\n'*) continue ;; esac
+    SEEN_WTS="${SEEN_WTS}${wt}"$'\n'
+    name="${wt##*/}"
+    [[ "$wt" == "$MAIN_ROOT" || "$wt" == "$MAIN_WT_PATH" ]] && name="main"
     n_trees=$((n_trees + 1))
     for f in "$wt/$MIGDIR"/[0-9][0-9][0-9][0-9]_*.sql; do
         [[ -e "$f" ]] || continue
-        num="$(basename "$f" | grep -oE '^[0-9]{4}')"
-        printf '%s\t%s\t%s\n' "$num" "$name" "$(basename "$f")"
+        base="${f##*/}"
+        printf '%s\t%s\t%s\n' "${base%%_*}" "$name" "$base"
     done
 done >> "$rows"
 
@@ -41,14 +86,7 @@ done >> "$rows"
 # own git tree, read via `git show`/`ls-tree`, never a working directory.
 # Same skip list as scripts/inflight: main itself, `ci/*` (scripts/ship
 # --remote's throwaway gate pushes), and any branch a live worktree is
-# actually sitting on.
-MAIN_BRANCH="$(git -C "$MAIN_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
-LIVE_BRANCHES=$'\n'"$MAIN_BRANCH"$'\n'
-for wt in "$MAIN_ROOT" "$MAIN_ROOT"/.claude/worktrees/*; do
-    [[ -d "$wt" ]] || continue
-    b="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" || continue
-    LIVE_BRANCHES="${LIVE_BRANCHES}${b}"$'\n'
-done
+# actually sitting on (LIVE_BRANCHES came free in the porcelain call above).
 
 n_branches=0
 while IFS= read -r branch; do
@@ -58,7 +96,7 @@ while IFS= read -r branch; do
     have_any=0
     while IFS= read -r rel; do
         [[ -z "$rel" ]] && continue
-        base="$(basename "$rel")"
+        base="${rel##*/}"
         # Top-level only, like the filesystem walk: archive/ and baseline/
         # carry retired numbers that every branch has and main does not list.
         [[ "$rel" == "$MIGDIR/$base" ]] || continue
@@ -69,6 +107,22 @@ while IFS= read -r branch; do
     done < <(git -C "$MAIN_ROOT" ls-tree -r --name-only "$branch" -- "$MIGDIR" 2>/dev/null)
     [[ "$have_any" == 1 ]] && n_branches=$((n_branches + 1))
 done < <(git -C "$MAIN_ROOT" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null) >> "$rows"
+
+# Committed "main" beyond the working tree: the primary checkout's files can
+# lag its own branch ref (ship's update-ref fallback moves the ref without
+# touching a dirty checkout) and both can lag the last fetch of origin/main —
+# a number already landed upstream would then be invisible here (gr514201:
+# 0239 minted by a builder while dbvault already held it on origin/main).
+for ref in "refs/heads/$MAIN_BRANCH" "refs/remotes/origin/main"; do
+    git -C "$MAIN_ROOT" rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
+    while IFS= read -r rel; do
+        [[ -z "$rel" ]] && continue
+        base="${rel##*/}"
+        [[ "$rel" == "$MIGDIR/$base" ]] || continue
+        [[ "$base" =~ ^[0-9]{4}_ ]] || continue
+        printf '%s\t%s\t%s\n' "${base:0:4}" "main" "$base"
+    done < <(git -C "$MAIN_ROOT" ls-tree -r --name-only "$ref" -- "$MIGDIR" 2>/dev/null)
+done >> "$rows"
 
 # A collision worth flagging = a worktree introduces a slug at a number BEYOND
 # what main already carries. Main's own historical duplicate numbers (e.g. two
@@ -101,6 +155,25 @@ collisions="$(awk -F'\t' '
             }
         }
     }' "$rows")"
+
+if [[ "$TAKEN" == 1 ]]; then
+    hi="$(awk -F'\t' '$2 == "main" && $1+0 > m { m = $1+0 } END { printf "%04d", m }' "$rows")"
+    nxt="$(awk -F'\t' '$1+0 > m { m = $1+0 } END { printf "%04d", m + 1 }' "$rows")"
+    echo "highest number on main: $hi"
+    echo "next free number: $nxt"
+    claims="$(awk -F'\t' -v hi="$hi" '
+        $2 != "main" { k = $1 SUBSEP $3; w[k] = w[k] " " $2 }
+        END {
+            for (k in w) {
+                split(k, a, SUBSEP)
+                if (a[1]+0 > hi+0) printf "%s  %s  (in%s )\n", a[1], a[2], w[k]
+            }
+        }' "$rows" | sort)"
+    if [[ -n "$claims" ]]; then
+        echo "claimed beyond main (unshipped sibling numbers):"
+        printf '%s\n' "$claims"
+    fi
+fi
 
 if [[ -n "$collisions" ]]; then
     echo "✖ migration NUMBER collision (same number, different slug across trees):"

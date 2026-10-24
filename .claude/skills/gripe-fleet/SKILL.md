@@ -25,8 +25,11 @@ approval quote for the tier, with its UTC time).
    `ready` agent judges a backlog item.
 2. **Write the brief.** One file per builder: the task, numbered slices
    (one commit each), what to verify before changing, how to test. Name
-   the files and anchors you already know. The footer is appended at
-   launch; do not restate its rules. When the tier grants precis writes
+   the files and anchors you already know. When a slice mints a
+   migration, run `scripts/migration-check --taken` and put its claimed
+   numbers + next free number in the brief (gr514201). The footer is
+   appended at launch; do not restate its rules. When the tier grants
+   precis writes
    (W), include one line in the brief: the write verbs are deferred
    tools — before the first `mcp__precis__put`/`edit`/`tag`/`link`, load
    them with ToolSearch `select:mcp__precis__put,mcp__precis__edit,
