@@ -473,6 +473,43 @@ surviving design input is in this file or in code).
   `[dr…]` cites point at retired dossier drafts; they render as retired
   refs, which is the existing behaviour.
 
+## Decisions (Reto 2026-10-24, chat-99)
+
+Rulings on the open questions below. The spec body above predates them, so
+a revision pass must fold them in before the spec goes `ready`. That pass is
+not yet commissioned (wind-down). "Knowledge graph" here means the refs and
+their typed links: papers, findings, measures, todos, quests, memories.
+
+- **Q1–Q3:** as recommended (one write-once synthesis entry per tick; map
+  onto existing todo `STATUS`; migrate many-root quests mechanically).
+- **Q4 narratives:** archive as recommended, **and** analyse each narrative
+  for its key insights and mint them as graph nodes (findings or hypotheses,
+  cited where the narrative cites), linked to the quest's directions. The
+  archive keeps the prose; the graph gets the content.
+- **Q5 export draft:** not ruled; Reto disagrees with the persisted
+  generated draft. His view: the graph is optimised for reasoning, fact
+  representation and discovery, while exports are specific formats covering
+  specific subsets in specific forms (a paper, an executive report, …), so a
+  whole-quest export render is hard and of little use. The chat desk agrees
+  and proposes: drop `build_export_draft` and the quest-page Paper button
+  from this spec. Nothing exports the dossier today (`grep -n dossier
+  src/precis/export` is empty), so retirement needs no export path. An
+  export becomes a writer step (draft-authoring / paper-writing pipeline):
+  a writer picks the subset from the quest's graph and writes a normal
+  draft that `serves` the quest, exported by the existing draft export.
+  `quest-artifacts-in-dossier.md` retargets there. Confirm with Reto.
+- **Q6 dossier drafts:** soft-retire, **after** extracting their key ideas
+  into the graph (same pass as Q4). The quest may have ended; the
+  information stays relevant.
+- **Q7 dormant quests:** migrate all, and migrate their key ideas into the
+  graph with links (same pass as Q4/Q6).
+- **Q8 weave:** weave writes into the knowledge graph now that the dossier
+  is retired. If an existing path already places papers and findings into
+  the graph that way, delete weave instead (git keeps it).
+- **Q9 unplaced evidence:** no new strands from clusters, as recommended,
+  but keep looking for ways the graph can absorb it (re-home re-runs, the
+  gardener, the castor finding reader).
+
 ## Open questions for Reto
 
 1. **Does the tick still write prose?** Rec: yes, one synthesis entry per

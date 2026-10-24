@@ -40,6 +40,14 @@ keeps the pass in dry-run so the first lit fires show the retire plan in
 ``worker_logs`` before any write is armed — two deliberate operator
 steps before 9k+ memories can retire.
 
+**Not to be lit (Reto 2026-10-24).** Dreams cost nothing to keep; their
+purpose is to build and improve useful linkages in the knowledge graph,
+which discovery work depends on. Wholesale retirement by recall age works
+against that. Any future dream work is slow review, refactor and compaction
+(merging near-duplicates, deleting clearly useless ones), not this sweep.
+Do not add the ``service_config`` row or disarm ``dry_run`` without a new
+ruling from Reto.
+
 ``dry_run=True`` plans only; each candidate retire runs in its own
 transaction so one poisoned row can't strand the rest, and the pass is
 idempotent: retired members leave the candidate query.
