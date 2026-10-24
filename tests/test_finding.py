@@ -2266,8 +2266,8 @@ class TestPickCandidateSelf:
         # The chain-snapshot pass stamped the primary cite key.
         assert meta["primary_cite_key"] == "heldpaper"
         assert meta["via_cite_keys"] == []
-        # The dead-chain marker stays as history.
-        assert meta["dead_reason"] == "no_resolvable_cite"
+        # chase._clear_dead_reason drops the stale marker on the live transition.
+        assert "dead_reason" not in meta
 
         # Terminal derived-from edge to the held paper.
         derived = [

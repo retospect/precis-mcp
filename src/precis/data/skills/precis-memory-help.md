@@ -37,6 +37,10 @@ q='<topic>')` first, then use the integer id from the hit.
 
 ## Keep a memory in its space, index and file
 
+The `dream_consolidate` service retires stale dreams under `supersedes`
+summaries; it is dark until `service_config` lights it, then dry-run until
+`dream_consolidate.dry_run` is disarmed.
+
 **Space.** Every memory carries one `SPACE:` tag. `put` stamps
 `SPACE:research` unless you pass your own (`tags=['SPACE:repo-dev']`
 replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
