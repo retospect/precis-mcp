@@ -23,7 +23,7 @@ from precis.store import Store
 from precis_geom.trace_schema import MAX_FRAMES as TRACE_MAX_FRAMES
 from precis_geom.trace_schema import frame_key
 from precis_se import persist
-from precis_se.workspace_import import import_workspace_run
+from precis_se.workspace_import import MAX_WS_BLOCKS, import_workspace_run
 
 DATA = Path(__file__).resolve().parent / "data"
 FIXTURE = DATA / "two_blocks" / "out"
@@ -130,6 +130,34 @@ def test_unknown_key_refuses_naming_it(store: Store, tmp_path: Path) -> None:
     (bad / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
     with pytest.raises(BadInput, match="bogus"):
         _import(store, bad)
+
+
+def test_manifest_top_level_unknown_key_refuses(store: Store, tmp_path: Path) -> None:
+    _design(store)
+    bad = tmp_path / "out"
+    shutil.copytree(FIXTURE, bad)
+    m = json.loads((bad / "manifest.json").read_text(encoding="utf-8"))
+    m["bogus"] = 1
+    (bad / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(BadInput, match="bogus"):
+        _import(store, bad)
+
+
+def test_block_cap_refuses_before_any_write(store: Store, tmp_path: Path) -> None:
+    _design(store)
+    big = tmp_path / "out"
+    shutil.copytree(FIXTURE, big)
+    m = json.loads((big / "manifest.json").read_text(encoding="utf-8"))
+    m["blocks"] = [
+        {"name": f"b{i}", "file": "blocks/p.extxyz", "scale": "atomic"}
+        for i in range(MAX_WS_BLOCKS + 1)
+    ]
+    (big / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(BadInput, match="blocks-per-run cap"):
+        _import(store, big)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
 
 
 def test_trace_truncated(store: Store, tmp_path: Path) -> None:
