@@ -181,11 +181,12 @@ are correct and must not change.
   - the `user:<owner>` tag the web/planner stamps when a todo asks
     "the owner" specifically,
   - any "this is the human" default.
-- **Default value.** Recommend `owner` (matches the existing
-  `web:owner` source convention and reads correctly on a fresh
-  install). Reto's instance sets `PRECIS_OWNER=elmsfeuer` (or whatever
-  canonical handle he wants — see open questions) so it lines up with
-  the 44 existing `user:elmsfeuer` rows.
+- **Default value.** `reto` (gr508499 ruling 2026-10-23 — supersedes
+  the earlier `owner` recommendation, which left owner-routed work
+  filed to a placeholder login nobody claimed). Reto's instance may
+  still set `PRECIS_OWNER=elmsfeuer` (or whatever canonical handle he
+  wants — see open questions) to line up with the 44 existing
+  `user:elmsfeuer` rows.
 - This keeps the single-user case zero-config while making the
   identity *named and overridable* — the prerequisite for multi-user.
 
@@ -235,7 +236,7 @@ Should `user:<username>` validate against a registry?
 - **Bare `reto` tag (1 row):** a tiny forward migration renames it to
   `user:elmsfeuer` (or just drops it). This is the only DB write the
   whole change needs.
-- **`config.owner`** is a new env var; absent → default `owner`. No
+- **`config.owner`** is a new env var; absent → default `reto`. No
   schema change.
 
 ### 6. Implementation steps
@@ -259,7 +260,7 @@ Should `user:<username>` validate against a registry?
 ### 7. Definition of done
 
 Standard per AGENTS.md (ruff / mypy / pytest, CHANGELOG, version bump).
-Plus: a fresh install with no `PRECIS_OWNER` works (`owner` default);
+Plus: a fresh install with no `PRECIS_OWNER` works (`reto` default);
 no `\breto\b` left in `src/` except author attribution; `view='asking-reto'`
 gone with a CHANGELOG deprecation line.
 
@@ -267,8 +268,9 @@ gone with a CHANGELOG deprecation line.
 
 1. **Canonical handle.** ✅ **DECIDED (2026-06-19): `elmsfeuer`** —
    matches the 44 live `user:elmsfeuer` rows, so **no data migration**.
-   `PRECIS_OWNER` defaults to `owner` on a fresh install; Reto's
-   instance sets `PRECIS_OWNER=elmsfeuer`. The bare `reto` tag (1 row)
+   `PRECIS_OWNER` defaults to `reto` on a fresh install (changed from
+   `owner` under the gr508499 ruling); Reto's instance may set
+   `PRECIS_OWNER=elmsfeuer`. The bare `reto` tag (1 row)
    normalizes to `user:elmsfeuer`.
 2. **`ANSWERER`/bot identity** — leave `asa` hard-coded (it is stable
    and consistent), or move to config for symmetry?

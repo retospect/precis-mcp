@@ -6505,8 +6505,8 @@ def test_ask_followup_records_question_links_and_answer(
     assert first_put["id"] == "followup/memory/20"
     assert first_put["text"] == "What does this imply?"
     # De-hardcoded: the asker is WebConfig.owner (PRECIS_OWNER), which
-    # defaults to "owner" — no longer the literal "reto".
-    assert first_put["author"] == "owner"
+    # defaults to "reto" (gr508499).
+    assert first_put["author"] == "reto"
     assert first_put["ref_meta"]["followup_source"] == "memory:20"
 
     # The link points the conv back at the source as derived-from.
@@ -6726,7 +6726,7 @@ def test_ask_followup_quota_failure_defers_instead_of_storing_a_turn(
     puts = [a for v, a in runtime.calls if v == "put"]
     conv_puts = [a for a in puts if a["kind"] == "conv"]
     assert len(conv_puts) == 1  # the question only — no system/asa turn
-    assert conv_puts[0]["author"] == "owner"
+    assert conv_puts[0]["author"] == "reto"
 
     todo_puts = [a for a in puts if a["kind"] == "todo"]
     assert len(todo_puts) == 1

@@ -90,9 +90,10 @@ def test_unset_env_var_leaves_field_at_default(
     assert cfg.database_url is None
     assert cfg.root is None
     assert cfg.python_roots is None
-    # Owner has a generic non-None default so a fresh install reads
-    # correctly without PRECIS_OWNER set (de-hardcoded from "reto").
-    assert cfg.owner == "owner"
+    # Owner defaults to "reto" without PRECIS_OWNER set (gr508499):
+    # "owner" was a placeholder login nobody claimed, so owner-routed
+    # work (waiting-for:<login> todos) went unclaimed.
+    assert cfg.owner == "reto"
 
 
 def test_double_prefixed_form_is_not_honoured(

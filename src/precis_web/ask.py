@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 #: Fallback author slug for the human question turn. The route stamps
 #: the configured ``WebConfig.owner`` (``PRECIS_OWNER``) instead; this
 #: generic default applies only if a caller has no config in hand.
-ASKER = "owner"
+ASKER = "reto"
 #: Author slug stamped on the generated answer turn (asa's voice — the
 #: SOUL.md the dream pass injects belongs to asa).
 ANSWERER = "asa"

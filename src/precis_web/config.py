@@ -68,9 +68,9 @@ class WebConfig:
     #: author stamped on a web "ask a follow-up" question and the
     #: addressee (``user:<owner>``) of an ``ask-user`` pause. Mirrors
     #: ``precis.config.PrecisConfig.owner``; both read ``PRECIS_OWNER``.
-    #: Defaults to ``"owner"`` (generalises the formerly hard-coded
-    #: ``"reto"``). See ``docs/backlog/identity-and-access.md``.
-    owner: str = "owner"
+    #: Defaults to ``"reto"`` (gr508499) — ``"owner"`` was a placeholder
+    #: nobody claimed. See ``docs/backlog/identity-and-access.md``.
+    owner: str = "reto"
     #: Install the HTTP Basic gate (:mod:`precis_web.auth`) in front of
     #: every route and mount. See the module docstring for why this is
     #: False here and True out of :meth:`from_env`.
@@ -135,7 +135,7 @@ class WebConfig:
             extra_corpus_dirs=extra,
             precis_root=precis_root,
             source=os.environ.get("PRECIS_SOURCE", DEFAULT_SOURCE),
-            owner=os.environ.get("PRECIS_OWNER", "owner"),
+            owner=os.environ.get("PRECIS_OWNER", "reto"),
             auth_required=_auth_required_from_env(),
             podcast_dir=(
                 Path(pd).expanduser()

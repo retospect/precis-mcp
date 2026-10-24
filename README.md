@@ -298,7 +298,7 @@ escape hatch) without building the multi-flag `precis tools <verb>
 | Var                           | Purpose                                          |
 |-------------------------------|--------------------------------------------------|
 | `PRECIS_DATABASE_URL`         | Postgres DSN (required for all ref kinds).       |
-| `PRECIS_OWNER`                | Canonical username for the human running this instance — the author stamped on a web "ask a follow-up" and the `user:<owner>` addressee of an `ask-user` pause. Defaults to `owner`. |
+| `PRECIS_OWNER`                | Canonical username for the human running this instance — the author stamped on a web "ask a follow-up" and the `user:<owner>` addressee of an `ask-user` pause. Defaults to `reto`. |
 | `PRECIS_EMBEDDER`             | `"mock"` (dev/tests), `"bge-m3"` (in-process), or `"remote"` (HTTP client to `precis serve-embeddings`). |
 | `PRECIS_EMBEDDER_URL`         | Required for `remote`: ordered, comma-separated base URL(s), e.g. `http://127.0.0.1:8181`. First healthy endpoint wins; rest are fallback. |
 | `PRECIS_ROOT`                 | Single root dir for `markdown` / `plaintext` / `tex` kinds. The trio is hidden when unset; every read/write is normalised against this path (`Path.resolve()` + `relative_to`). |

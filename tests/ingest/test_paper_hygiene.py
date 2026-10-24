@@ -1219,7 +1219,10 @@ class TestRaiseJunkTitlePapers:
         assert "anon24d" in todo[1] and "'__'" in todo[1]
         rendered = {str(t) for t in store.tags_for(todo[0])}
         assert any("paper-title-fix" in r for r in rendered), rendered
-        assert any("waiting-for:" in r for r in rendered), rendered
+        # gr508499: owner_login NULL → the deployment-owner default
+        # (``load_config().owner``, ``"reto"``), not the old "owner"
+        # placeholder nobody claimed.
+        assert "waiting-for:reto" in rendered, rendered
         assert any("open" in r for r in rendered), rendered
 
     def test_not_refiled_while_open(self, store: Store) -> None:

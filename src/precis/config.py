@@ -58,7 +58,7 @@ class PrecisConfig(BaseSettings):
     the first attempt).
     """
 
-    owner: str = "owner"
+    owner: str = "reto"
     """Canonical username for the human running this instance.
 
     The single human identity the system addresses when it needs a
@@ -69,10 +69,10 @@ class PrecisConfig(BaseSettings):
     ready: routing filters by ``user:<owner>`` rather than an implicit
     single user.
 
-    Defaults to ``"owner"`` so a fresh install reads correctly with no
-    config. Reto's instance sets ``PRECIS_OWNER=elmsfeuer`` to line up
-    with the existing ``user:elmsfeuer`` tags. See
-    ``docs/backlog/identity-and-access.md``.
+    Defaults to ``"reto"`` (Reto ruling on gr508499, 2026-10-23): the
+    earlier ``"owner"`` placeholder meant owner-routed work — e.g.
+    title-fix todos' ``waiting-for:<login>`` tag — filed to a login
+    nobody claims. See ``docs/backlog/identity-and-access.md``.
 
     Set via ``PRECIS_OWNER`` in the env.
     """
