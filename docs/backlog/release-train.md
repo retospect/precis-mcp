@@ -266,7 +266,7 @@ with only the session's fix and confirm steps by hand.
 | # | Slice | Depends | Acceptance |
 |---|---|---|---|
 | 1 | Harness classifier in `scripts/ship`; `--quick` for all non-harness; docs | — | §1 tests; shipping.md/CLAUDE.md agree |
-| 2 | Fixed 10 shards; drop the `12` table | — | §2 first acceptance |
+| 2 | Fixed 10 shards; drop the `12` table (Reto-only files still saying "6 shards" → 10: `.claude/commands/land.md:69`, `.claude/commands/go.md:78`) | — | §2 first acceptance |
 | 3 | Heavy-cluster diet + reweigh | 2 | no test > 240 s; release wall ≤ 22 min ×3 |
 | 4 | `failed-first` job, reader updates, per-branch release concurrency | — | §3 acceptance |
 | 5 | Round state as release list; cut at `deploying`; `ship --release` targets open release; no queueing | — | §5 tests except supersede |

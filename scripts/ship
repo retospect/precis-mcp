@@ -1725,8 +1725,8 @@ _release_after_landing() {
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
 # throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
-# gate shape (lint · mypy · 10 or 12 shards of Linux+db 3.13, picked by
-# scripts/ci-shard-plan from live load; a docs-only diff gets
+# gate shape (lint · mypy · 10 shards of Linux+db 3.13, fixed by
+# scripts/ci-shard-plan; a docs-only diff gets
 # the fast-set docs lane instead of the shards; 3.12 + macOS + Windows are
 # nightly-only) on exactly
 # the tree the CAS push below will make main. A force-push retry to the same
@@ -1794,7 +1794,7 @@ remote_gate_wait() {
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
     _remote_gate_admit "${PRECIS_REMOTE_GATE_SLOTS:-2}" "${PRECIS_REMOTE_GATE_WAIT_MIN:-60}" \
         || return 1
-    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 10–12 shards, ~90 min green; docs-only diffs ~5 min)"
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 10 shards, ~90 min green; docs-only diffs ~5 min)"
     git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do

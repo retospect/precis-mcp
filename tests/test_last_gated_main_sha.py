@@ -993,11 +993,11 @@ def test_help_prints_the_docstring(
 
 
 def test_gate_shard_counts_match_ci_shard_plan() -> None:
-    """GATE_SHARD_COUNTS covers every count scripts/ci-shard-plan can emit (plus 6, the
-    pre-gr492653 history),
-    and check.yml's matrix and `pytest --shard K/N` denominator both read the
-    plan job's output. Add a count there and this reddens until the constant
-    follows."""
+    """GATE_SHARD_COUNTS covers scripts/ci-shard-plan's fixed count (plus the
+    widths shas inside its window can still carry: 6 pre-gr492653, 12 pre the
+    2026-10-23 fixed-10 switch), and check.yml's matrix and
+    `pytest --shard K/N` denominator both read the plan job's output. A new
+    emitted count reddens this until the constant follows."""
     mod = _load()
     tmp = Path(tempfile.mkdtemp(prefix="ci_shard_plan_")) / "ci_shard_plan.py"
     shutil.copyfile(REPO / "scripts" / "ci-shard-plan", tmp)
@@ -1005,7 +1005,7 @@ def test_gate_shard_counts_match_ci_shard_plan() -> None:
     assert spec is not None and spec.loader is not None
     plan = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(plan)
-    assert {plan.LOADED, plan.IDLE} <= set(mod.GATE_SHARD_COUNTS)
+    assert plan.SHARDS in mod.GATE_SHARD_COUNTS
     wf = yaml.safe_load(
         (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
     )

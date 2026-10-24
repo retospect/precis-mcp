@@ -57,7 +57,7 @@ on:
         type: boolean
         default: false
       shards:
-        description: force the shard count (10 or 12) instead of picking from load; for measuring a mode
+        description: force a shard count for measuring another width (floor 10; the gate is fixed 10)
         type: string
         default: ''
 
@@ -102,15 +102,14 @@ permissions:
 # holds its ci/<branch> push until fewer than PRECIS_REMOTE_GATE_SLOTS (2)
 # gate runs are queued or in flight (gr495187) — a group-level cap is not
 # expressible here (a concurrency group keeps ONE pending run and cancels
-# the rest, which a ship would read as a red gate). The shard count is
-# picked per run by scripts/ci-shard-plan from the live
-# queued + in-progress check.yml run count (gr492653): 12 shards when at most
-# one other run is active, else 10. A 12-shard gate is 14 jobs (plan + lint +
-# 12), so two idle-mode gates fit (28); beside the nightly it can overshoot by
-# a job or two, which queues rather than fails. A 10-shard gate is 12 jobs, so
-# THREE gates fan out at once and a fourth queues. The nightly full shape is
-# 25 jobs (plan + lint + coverage-db + 2 test-other + 2 Pythons x 10 shards),
-# so nightly + one gate is 37 <= 40. Why not 6 or 8 under load: measured shards
+# the rest, which a ship would read as a red gate). Every shard run is
+# FIXED at 10 (Reto 2026-10-23: "10 is fine, we don't need 40. But no
+# fewer" — scripts/ci-shard-plan emits it; the load-based 12 of gr492653
+# is gone). A gate is 12 jobs (plan + lint + 10 shards), so three fan out
+# at once and a fourth queues: a release run (12) + two harness gates (24)
+# + a main-push lint run (2) = 38 <= 40. The nightly full shape is 25 jobs
+# (plan + lint + coverage-db + 2 test-other + 2 Pythons x 10 shards), so
+# nightly + one gate is 37 <= 40. Why not 6 or 8: measured shards
 # (2026-10-16) ran 32-40 min with 6 and 32-36 min with 8 against the 40 min
 # timeout-minutes (a timeout reads as 'cancelled'); identical shards differ by
 # ~30% with runner speed alone, so headroom has to be bought with shards. Why
@@ -153,7 +152,7 @@ jobs:
   #               .claude hooks are shell that tests exercise.
   #   lint_only — a push to main (gr495187): the shard matrix does not run.
   #               A docs-only delta still takes the docs lane.
-  # Anything else is the ship-gate shape: lint + 10 (or 12 when idle) shards
+  # Anything else is the ship-gate shape: lint + 10 shards
   # of 3.13 Linux (the `shards` step below).
   plan:
     runs-on: ubuntu-latest
@@ -163,8 +162,6 @@ jobs:
     permissions:
       contents: read
       checks: read
-      # actions: read for the live queued/in-progress run count (`shards`).
-      actions: read
     outputs:
       full: ${{ steps.shape.outputs.full }}
       docs_only: ${{ steps.shape.outputs.docs_only }}
@@ -248,14 +245,11 @@ jobs:
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
           echo "lint_only=$lint_only" >> "$GITHUB_OUTPUT"
-      # Shard count from live load (gr492653): 12 when this run is nearly
-      # alone on the account, else 6. See the job-budget note above.
+      # Shard count: fixed 10 (see the job-budget note above);
+      # FORCE_SHARDS overrides only for measuring another width, floor 10.
       - id: shards
         env:
-          FULL: ${{ steps.shape.outputs.full }}
           FORCE_SHARDS: ${{ inputs.shards }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: python3 scripts/ci-shard-plan >> "$GITHUB_OUTPUT"
 
   lint:
@@ -291,8 +285,8 @@ jobs:
   # (tests/conftest.py) hashes each test id into one of N buckets, so the
   # N shard jobs partition the suite exactly and run in parallel on
   # separate runners, each with its own postgres service. Wall-clock is
-  # one shard's worth (~8 min + setup). The shard count is spelled twice
-  # below (matrix list + `/6`) — keep them equal.
+  # one shard's worth (~8 min + setup). The count comes from the `plan`
+  # job's outputs (matrix list + the `--shard K/N` denominator below).
   #
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   test-linux:
@@ -306,7 +300,7 @@ jobs:
     strategy:
       fail-fast: false
       # Nightly: cap test-linux so nightly + one gate stays <= 40 (budget above).
-      max-parallel: ${{ needs.plan.outputs.full == 'true' && 20 || 12 }}
+      max-parallel: ${{ needs.plan.outputs.full == 'true' && 20 || 10 }}
       matrix:
         python-version: ${{ needs.plan.outputs.full == 'true' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.13"]') }}
         shard: ${{ fromJSON(needs.plan.outputs.shard_list) }}

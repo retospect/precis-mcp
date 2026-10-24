@@ -106,10 +106,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# check.yml's test-linux gate shape: scripts/ci-shard-plan picks 10 or 12 shards
-# per run (`pytest --shard K/N`). tests/test_last_gated_main_sha.py pins this
-# against scripts/ci-shard-plan.
-GATE_SHARD_COUNTS = (6, 10, 12)  # 6: shas gated before gr492653
+# check.yml's test-linux gate shape: fixed 10 shards since 2026-10-23
+# (scripts/ci-shard-plan; `pytest --shard K/N`). 12 stays so a sha inside the
+# window gated under gr492653's load pick still verifies; 6 for shas gated
+# before it. Drop a count once no sha in the window can carry it.
+# tests/test_last_gated_main_sha.py pins this against scripts/ci-shard-plan.
+GATE_SHARD_COUNTS = (6, 10, 12)
 GATE_SHARDS = min(GATE_SHARD_COUNTS)
 
 # How far back to look: by commit date, capped by commit count. Sized to the

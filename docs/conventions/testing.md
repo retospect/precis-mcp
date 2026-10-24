@@ -94,7 +94,7 @@ scripts/test --shard 2/10            # bucket 2 of a 10-way split (what CI runs 
 
 `--shard K/N` (tests/conftest.py) hashes every test id into one of N
 buckets (crc32, so every process agrees). The N shards partition the suite
-exactly; check.yml runs the Linux legs as 10 (12 when runners are idle; scripts/ci-shard-plan picks) parallel shard jobs so the gate's
+exactly; check.yml runs the Linux legs as 10 parallel shard jobs (fixed since 2026-10-23; scripts/ci-shard-plan emits the count) so the gate's
 wall-clock is one shard, not the suite. Locally it is only for reproducing a
 red CI shard — run the same `K/N` the failing job name shows.
 Slow tests (>=1 s) are pinned to shards by time in `tests/shard_weights.json`
@@ -109,9 +109,9 @@ gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min
 wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
 `scripts/ship --quick` lint takes ~3 min. Other docs link here instead of quoting
 numbers. The ship gate
-(`ci/**` and `release/**` pushes, PRs) is lint + mypy + 10 or 12 shards of
+(`ci/**` and `release/**` pushes, PRs) is lint + mypy + 10 shards of
 Linux+db on
-3.13 — 12–14 jobs (scripts/ci-shard-plan picks from live load). A **push to
+3.13 — 12 jobs. A **push to
 `main` runs the slim lane instead** (gr495187, Reto 2026-10-23 — "only
 release branch gets ci"): `plan` + `lint` only, no shard matrix. A main
 sha's shard verdict comes from the release cut made on it, the nightly, or

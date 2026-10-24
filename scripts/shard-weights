@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests" / "shard_weights.json"
-NS = (10, 12)  # scripts/ci-shard-plan's LOADED, IDLE
+NS = (10,)  # scripts/ci-shard-plan's fixed SHARDS
 HEAVY = 1.0
 RECORD = 60.0
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import tempfile
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 from tests.conftest import shard_index
 
@@ -30,15 +33,36 @@ def _plan() -> ModuleType:
 
 
 _PLAN = _plan()
-COUNTS = (_PLAN.LOADED, _PLAN.IDLE)
+COUNTS = (_PLAN.SHARDS,)
 
 
-def test_choose_shard_count() -> None:
-    assert _PLAN.choose(False, 0) == 12
-    assert _PLAN.choose(False, _PLAN.IDLE_MAX) == 12
-    assert _PLAN.choose(False, _PLAN.IDLE_MAX + 1) == 10
-    assert _PLAN.choose(False, None) == 10  # unreadable load -> safe default
-    assert _PLAN.choose(True, 0) == 10  # nightly budget assumes 10
+def test_shard_count_is_fixed_10() -> None:
+    """Fixed 10 for every shard run (Reto 2026-10-23: "no fewer" — the
+    release-train spec's job-budget arithmetic assumes it)."""
+    assert _PLAN.SHARDS == 10
+
+
+@pytest.mark.parametrize(
+    ("forced", "expected"),
+    [("", 10), ("6", 10), ("10", 10), ("12", 12), ("20", 20)],
+)
+def test_force_shards_floors_at_10(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    forced: str,
+    expected: int,
+) -> None:
+    """FORCE_SHARDS stays as a measurement lever but never goes below 10.
+    Widths above 10 run unpinned: shard_weights.json has only the 10 table,
+    so a forced N > 10 partitions by plain crc32 (conftest.shard_index)."""
+    monkeypatch.setenv("FORCE_SHARDS", forced)
+    capsys.readouterr()
+    assert _PLAN.main() == 0
+    out = capsys.readouterr().out
+    n_line = next(line for line in out.splitlines() if line.startswith("n="))
+    assert int(n_line.split("=", 1)[1]) == expected
+    list_line = next(line for line in out.splitlines() if line.startswith("list="))
+    assert len(json.loads(list_line.split("=", 1)[1])) == expected
 
 
 def test_workflow_follows_the_plan_output() -> None:
@@ -56,15 +80,23 @@ def test_shards_partition_every_test_exactly_once() -> None:
 
 
 def test_job_budget_fits_the_cap() -> None:
-    loaded, idle = COUNTS
+    # plan + lint + 10 shards = 12 jobs for every gate/release run.
+    gate = 2 + _PLAN.SHARDS
+    assert gate == 12
     # plan + lint + coverage-db + test-other (macOS x 2 Pythons; the Windows
-    # leg was dropped 2026-10-17) + test-linux (2 Pythons x `loaded` shards).
-    nightly = 1 + 1 + 1 + 2 + 2 * loaded
-    assert nightly + (2 + loaded) <= CAP  # nightly + one loaded gate
-    assert 3 * (2 + loaded) <= CAP  # three loaded gates
-    # Idle: this 12-shard gate beside IDLE_MAX other gate-shaped runs. Beside
-    # the nightly it can exceed the cap by a job or two; jobs queue, not fail.
-    assert (2 + idle) * (1 + _PLAN.IDLE_MAX) <= CAP
+    # leg was dropped 2026-10-17) + test-linux (2 Pythons x 10 shards) = 25.
+    nightly = 1 + 1 + 1 + 2 + 2 * _PLAN.SHARDS
+    assert nightly == 25
+    # A main push runs the lint_only lane = plan + lint only; grounded by
+    # test-linux's `if` skipping lint_only rather than a bare literal.
+    assert "needs.plan.outputs.lint_only != 'true'" in WORKFLOW
+    main_push = 2
+    # release (12) + two harness gates (24) + a main lint run (2) = 38.
+    assert gate + 2 * gate + main_push == 38 <= CAP
+    # nightly (25) + one gate (12) = 37.
+    assert nightly + gate == 37 <= CAP
+    # Three gates at once is the max; a fourth queues.
+    assert 3 * gate <= CAP < 4 * gate
 
 
 def test_pinned_weights_cover_every_shard_count() -> None:
@@ -92,7 +124,6 @@ MAX_TEST_SHARE = 0.3
 
 
 def test_no_single_test_eats_a_shard() -> None:
-    import json
     import re
 
     match = re.search(
