@@ -76,6 +76,7 @@ def _git(cwd: str, *args: str) -> str:
             text=True,
             encoding="utf-8",
             check=True,
+            timeout=10,
         )
         return out.stdout.strip()
     except Exception:
@@ -89,6 +90,7 @@ def _git_rc(cwd: str, *args: str) -> int:
             ["git", "-C", cwd, *args],
             capture_output=True,
             check=False,
+            timeout=10,
         ).returncode
     except Exception:
         return -1

@@ -65,7 +65,7 @@ import zlib
 from typing import Any
 from xml.sax.saxutils import escape
 
-from precis.pcb import argue
+from precis.pcb import handles
 from precis.utils.text import esc
 
 # ── geometry constants (px) ──────────────────────────────────────────
@@ -449,7 +449,7 @@ def render_schematic_svg(
                         else f"{part.refdes}.{pin} — no connect"
                     )
                     pin_attrs = (
-                        f'data-handle="{esc(argue.pad_handle(part.refdes, pin), quote=True)}"'
+                        f'data-handle="{esc(handles.pad_handle(part.refdes, pin), quote=True)}"'
                         f' data-pcb-part="{esc(part.refdes, quote=True)}"'
                         f' data-pcb-pad="{esc(pin, quote=True)}"'
                     )
@@ -478,7 +478,7 @@ def render_schematic_svg(
                             )
                         )
                         body.append(
-                            f'<g data-handle="{esc(argue.net_handle(net), quote=True)}"'
+                            f'<g data-handle="{esc(handles.net_handle(net), quote=True)}"'
                             f' data-pcb-net="{esc(net, quote=True)}"'
                             f' data-net-class="{esc(str(net_class_of.get(net) or ""), quote=True)}">'
                             + glyph

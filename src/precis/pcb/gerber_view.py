@@ -91,7 +91,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import argue
+from precis.pcb import handles
 from precis.utils.text import esc
 
 #: A drill is an absence of material, not a coloured feature — painting
@@ -696,8 +696,8 @@ def _object_handle(net: str | None, refdes: str | None, pin: str | None) -> str 
     # Same evidence rule as _flash_title: a pad handle only when the
     # gerber named the pin; a net-only object (a via, a pour) is the net's.
     if refdes and pin:
-        return argue.pad_handle(refdes, pin)
-    return argue.net_handle(net) if net else None
+        return handles.pad_handle(refdes, pin)
+    return handles.net_handle(net) if net else None
 
 
 def _flash_handle(flash: Flash) -> str | None:
@@ -705,7 +705,7 @@ def _flash_handle(flash: Flash) -> str | None:
 
 
 def _net_handle(net: str | None) -> str | None:
-    return argue.net_handle(net) if net else None
+    return handles.net_handle(net) if net else None
 
 
 def _flash_geometry(flash: Flash) -> tuple[str, str]:
