@@ -69,9 +69,12 @@ approval quote for the tier, with its UTC time).
    `scripts/fleet-wave stuck-watch` under the Monitor tool: one line per
    finish (`<tree> at <sha>` in `.claude/purpose`), per permission
    prompt, or per pane quiet for more than `--quiet-min` (default 20).
-   Builders post routine status to the board — read it each sweep with
-   `scripts/board read`. Wait on a gate only with `scripts/ship-wait`
-   in the background. Spot checks: `peek`, `ctx`, `prompts`.
+   Builders post routine status to the board — `--state` lines at done,
+   per landing (landed), red and blocked — read your unread lines each
+   sweep with `scripts/board read --new --as coordinator` (`watch` in a
+   tmux window for a live coloured view). Wait on a gate only with
+   `scripts/ship-wait` in the background. Spot checks: `peek`, `ctx`,
+   `prompts`.
 6. **Relay or round.** Read finish messages, pass landed shas to the
    release owner (or open a round, the `round` skill), and pass review
    answers back with `scripts/fleet-wave send-line WIN TEXT`. It refuses a
@@ -133,8 +136,9 @@ One parser per agent TUI (claude/devin/codex) lives in
   carrying everything for that recipient, and no one-line acks (gr499043).
   Routine status (landed, red, waiting, done) is not a message at all: it
   goes on the board — `scripts/board` writes the shared gitignored
-  `.claude/fleet/board.log`; read it each sweep. SendMessage is only for
-  things that need action now.
+  `.claude/fleet/board.log`; read it each sweep with
+  `read --new --as coordinator` (unread only, per-reader cursor).
+  SendMessage is only for things that need action now.
 - Every Monitor script and until-loop prints one line on a state change
   or a terminal state, and nothing else — no periodic "still running"
   lines (gr515152: wake-ups were 70% of coordinator calls at ~280k

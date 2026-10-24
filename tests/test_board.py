@@ -11,6 +11,8 @@ checkout's board.
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import os
 import re
 import subprocess
@@ -21,6 +23,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "board"
+
+_loader = importlib.machinery.SourceFileLoader("board_script", str(SCRIPT))
+_spec = importlib.util.spec_from_loader("board_script", _loader)
+assert _spec is not None and _spec.loader is not None
+board_script = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(board_script)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: flock + git worktrees"
@@ -147,3 +155,133 @@ def test_board_log_is_gitignored() -> None:
     because the gate container mounts the worktree without its .git."""
     lines = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert ".claude/fleet/board.log" in (ln.strip() for ln in lines)
+    assert ".claude/fleet/board.cursor.*" in (ln.strip() for ln in lines)
+
+
+def test_post_state_prepends_validated_keyword(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    env = _env(board)
+    cp = _board(["post", "w1", "--state", "done", "abc1234 all green"], env)
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith("\tw1\tdone abc1234 all green")
+
+
+def test_post_rejects_an_unknown_state(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    cp = _board(["post", "w1", "--state", "bogus", "x"], _env(board))
+    assert cp.returncode == 2
+    assert "invalid choice" in cp.stderr
+    assert not board.exists()
+
+
+def test_post_free_text_still_accepted(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    env = _env(board)
+    cp = _board(["post", "w1", "not a state just words"], env)
+    assert cp.returncode == 0
+    assert board.read_text(encoding="utf-8").endswith("\tw1\tnot a state just words\n")
+
+
+def test_post_refuses_a_line_over_120_chars(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    env = _env(board)
+    cp = _board(["post", "w1", "x" * 200], env)
+    assert cp.returncode == 2
+    assert "120" in cp.stderr and "handoff" in cp.stderr
+    assert not board.exists()
+
+
+def test_read_n_prints_only_the_last_n_lines(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    board.write_text(
+        "2026-10-24T10:00:00Z\tw1\tfirst\n"
+        "2026-10-24T10:01:00Z\tw2\tsecond\n"
+        "2026-10-24T10:02:00Z\tw3\tthird\n",
+        encoding="utf-8",
+    )
+    cp = _board(["read", "-n", "2"], _env(board))
+    assert cp.returncode == 0
+    assert "first" not in cp.stdout
+    assert "second" in cp.stdout and "third" in cp.stdout
+
+
+def test_read_new_prints_only_unread_lines_per_reader(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    board.write_text("2026-10-24T10:00:00Z\tw1\tone\n", encoding="utf-8")
+    env = _env(board)
+    cp = _board(["read", "--new", "--as", "alice"], env)
+    assert cp.returncode == 0
+    assert "one" in cp.stdout
+    cp = _board(["read", "--new", "--as", "alice"], env)
+    assert cp.returncode == 0 and cp.stdout == ""
+    cp = _board(["read", "--new", "--as", "bob"], env)
+    assert "one" in cp.stdout  # independent cursor
+    with board.open("a", encoding="utf-8") as fh:
+        fh.write("2026-10-24T10:01:00Z\tw2\ttwo\n")
+    cp = _board(["read", "--new", "--as", "alice"], env)
+    assert "two" in cp.stdout and "one" not in cp.stdout
+
+
+def test_read_new_needs_a_reader(tmp_path: Path) -> None:
+    cp = _board(["read", "--new"], _env(tmp_path / "board.log"))
+    assert cp.returncode == 2
+    assert "--as" in cp.stderr
+
+
+def test_read_new_resets_a_cursor_past_eof(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    env = _env(board)
+    board.write_text(
+        "2026-10-24T10:00:00Z\tw1\tone\n2026-10-24T10:01:00Z\tw1\ttwo\n",
+        encoding="utf-8",
+    )
+    assert _board(["read", "--new", "--as", "alice"], env).returncode == 0
+    board.write_text("2026-10-24T10:02:00Z\tw1\tnew\n", encoding="utf-8")
+    cp = _board(["read", "--new", "--as", "alice"], env)
+    assert cp.returncode == 0
+    assert "new" in cp.stdout  # rewound to the top of the truncated log
+    assert "reset" in cp.stderr.lower()
+
+
+def test_read_shows_old_format_lines_unchanged(tmp_path: Path) -> None:
+    """Lines posted before the state format (no leading keyword) still
+    read verbatim."""
+    board = tmp_path / "board.log"
+    board.write_text(
+        "2026-10-24T10:00:00Z\tw1\tlanded abc1234 on main\n"
+        "2026-10-24T10:01:00Z\tw2\twt-x at 3d528db: spec done\n",
+        encoding="utf-8",
+    )
+    cp = _board(["read"], _env(board))
+    assert cp.returncode == 0
+    assert cp.stdout.splitlines() == board.read_text(encoding="utf-8").splitlines()
+
+
+def test_watch_format_line_aligns_and_colours_by_state() -> None:
+    line = "2026-10-24T10:00:00Z\tw1\tlanded abc1234 note"
+    plain = board_script.format_line(line, color=False)
+    assert plain == "10:00:00  w1              landed   abc1234 note"
+    coloured = board_script.format_line(line, color=True)
+    assert coloured.startswith("\x1b[32m") and coloured.endswith("\x1b[0m")
+    for state, code in (
+        ("landed", "32"),
+        ("green", "32"),
+        ("red", "31"),
+        ("wedged", "31"),
+        ("blocked", "33"),
+        ("waiting", "33"),
+        ("done", "36"),
+    ):
+        out = board_script.format_line(
+            f"2026-10-24T10:00:00Z\tw\t{state} n", color=True
+        )
+        assert out.startswith(f"\x1b[{code}m"), state
+
+
+def test_watch_format_line_free_text_gets_no_state_column() -> None:
+    out = board_script.format_line(
+        "2026-10-24T10:00:00Z\tw1\told free text", color=True
+    )
+    assert "\x1b[" not in out
+    assert out.endswith("old free text")

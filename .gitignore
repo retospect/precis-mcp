@@ -86,6 +86,7 @@ board*.svg
 # worktrees through the main checkout — timestamps and window names, never
 # committed.
 .claude/fleet/board.log
+.claude/fleet/board.cursor.*
 
 # Fleet review queue + design/review notes (scripts/fleet; outside .claude so
 # file-tool writes raise no "sensitive file" prompt).
