@@ -55,10 +55,6 @@
     - compute
   become: false
   tasks:
-    # The three delegate_to: localhost tasks override ansible.cfg's
-    # remote_tmp (/tmp/.ansible/tmp): on the controller that path can be
-    # owned mode-700 by a different user (e.g. a prior run as `deploy`),
-    # which fails module staging. ~ keeps controller tmp per-user.
     - name: Allocate a controller-local scratch path for the export
       ansible.builtin.tempfile:
         state: file
@@ -66,8 +62,6 @@
       delegate_to: localhost
       run_once: true
       register: precis_constraints_tmp
-      vars:
-        ansible_remote_tmp: "~/.ansible/tmp"
 
     - name: Export uv.lock -> a hash-free constraints file (controller-local, once)
       # --frozen: never re-resolve/touch the lockfile, export exactly what's
@@ -93,8 +87,6 @@
       delegate_to: localhost
       run_once: true
       changed_when: false
-      vars:
-        ansible_remote_tmp: "~/.ansible/tmp"
 
     - name: Ensure /opt/precis exists (shared by every precis-mcp install role)
       ansible.builtin.file:
@@ -136,5 +128,3 @@
         state: absent
       delegate_to: localhost
       run_once: true
-      vars:
-        ansible_remote_tmp: "~/.ansible/tmp"

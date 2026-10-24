@@ -475,12 +475,6 @@
           # `_agent_image_ref`/the OCI label exactly.
           delegate_to: localhost
           become: false
-          vars:
-            # ansible.cfg's remote_tmp is a CLUSTER path owned by the remote
-            # user — on the controller it can be owned by a different local
-            # user, which makes a localhost-delegated task UNREACHABLE at
-            # tmpdir creation. Same override redeploy-precis.yml's 0b2 uses.
-            ansible_remote_tmp: "~/.ansible/tmp"
           ansible.builtin.command:
             cmd: "git archive --format=tar -o {{ _agent_archive_tar }} {{ _agent_image_ref }}"
             chdir: "{{ playbook_dir }}/../.."
@@ -681,8 +675,6 @@
         - name: Remove the controller-side tarball
           delegate_to: localhost
           become: false
-          vars:
-            ansible_remote_tmp: "~/.ansible/tmp"
           ansible.builtin.file:
             path: "{{ _agent_archive_tar }}"
             state: absent

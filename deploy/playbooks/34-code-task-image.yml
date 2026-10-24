@@ -66,12 +66,6 @@
       delegate_to: localhost
       become: false
       run_once: true
-      vars:
-        # ansible.cfg's remote_tmp is a CLUSTER path owned by the remote
-        # user — on the controller it can be owned by a different local
-        # user, which makes a localhost-delegated task UNREACHABLE at
-        # tmpdir creation. Same override 33-precis-agent-image.yml uses.
-        ansible_remote_tmp: "~/.ansible/tmp"
       register: _ct_sha_probe
       changed_when: false
 
@@ -121,9 +115,6 @@
       delegate_to: localhost
       become: false
       run_once: true
-      vars:
-        # Controller-side task — same remote_tmp override as above.
-        ansible_remote_tmp: "~/.ansible/tmp"
       register: _ct_digest_probe
       changed_when: false
 
@@ -133,9 +124,6 @@
       delegate_to: localhost
       become: false
       run_once: true
-      vars:
-        # Controller-side task — same remote_tmp override as above.
-        ansible_remote_tmp: "~/.ansible/tmp"
       register: _ct_df_hash
       changed_when: false
 
