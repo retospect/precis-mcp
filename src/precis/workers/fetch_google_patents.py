@@ -410,6 +410,11 @@ _OWN_COOLDOWN_MARKERS: tuple[str, ...] = (
 
 
 def _is_own_cooldown(exc: Exception) -> bool:
+    # The politeness core marks its own refusals (breaker open at entry,
+    # limiter-refused retry, worker draining) with ``cooldown=True``; the
+    # marker strings stay as the fallback for raises predating the flag.
+    if getattr(exc, "cooldown", False):
+        return True
     text = str(exc)
     return any(m in text for m in _OWN_COOLDOWN_MARKERS)
 

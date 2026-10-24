@@ -36,10 +36,17 @@ as ``chase``/``segment_toc``.
 
 Event vocabulary (shared across sources): ``fetch_ok`` (url+bytes+license
 payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
-``rate_limited``, ``api_error``, ``invalid_identifier``,
-``identifier_missing``, ``provider_wait`` (leg deferred — its provider's
-gate could not admit it before the leg's wall; not a provider miss, the
-leg is retried on the stub's next pass; see :class:`_ProviderGate`).
+``rate_limited`` (the shared limiter refused the leg — provider row
+spent/parked or a server 429; never a provider answer), ``circuit_open``
+(the leg's service breaker stood open at entry — a cooldown-class
+``VendorUnavailable``; not a provider answer either), ``api_error``,
+``invalid_identifier``, ``identifier_missing``, ``provider_wait`` (leg
+deferred — its provider's gate could not admit it before the leg's wall;
+not a provider miss, the leg is retried on the stub's next pass; see
+:class:`_ProviderGate`). A pass whose hour-bucket holds any of
+``rate_limited``/``circuit_open``/``provider_wait`` is excluded from the
+claim's ``attempts`` count — a pass we refused ourselves must not advance
+the fetch backoff (gr510430).
 ``precis stubs`` reads the latest event per stub
 for the backlog.
 
@@ -54,9 +61,11 @@ claims such a stub on its monthly backoff (embargoes lift, authors
 self-archive), it is only kept out of the pending counts and listed as
 the manual-retrieval set (``precis stubs --manual``, the ``/drive``
 "Manual retrieval" section) so a human can buy it. An explicit acquire's
-``Store.pin_stub_for_fetch`` re-stamps the backoff bypass only once the
-previous stamp is consumed and the newest attempt is over 24 h old, so
-re-acquiring a cited stub cannot re-arm it (gr453859).
+``Store.pin_stub_for_fetch`` re-stamps the backoff bypass on every explicit
+acquire (``put(kind='paper')`` — an agent ask earns one retry whatever the
+24 h re-stamp guard says); the guard still applies to auto-discovery
+re-requests (quest lit-fetch), so a periodic tick cannot re-arm a
+backed-off stub (gr453859, gr510430).
 
 **Fetch-time retraction gate** (:func:`_apply_retraction_gate`) — a cheap
 DOI-only Crossref check (``ingest.provenance.check_doi``) ahead of the
@@ -112,6 +121,7 @@ from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sideca
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.http import (
     Policy,
+    VendorUnavailable,
     call_with_backoff,
     http_client,
     polite_user_agent,
@@ -556,9 +566,10 @@ def _record_deferral(
     about the provider's answer was learned — and the claim query's
     ``attempts`` count ignores any pass that contains one, so the stub
     comes back on its base retry instead of backing off as if tried
-    (gr500153; the legacy ``circuit_open`` event is excluded from the
-    count the same way, which is what returns today's skipped stubs to
-    the next-day retry).
+    (gr500153; the ``circuit_open`` (breaker-open) and ``rate_limited``
+    (shared-limiter refusal) events are excluded from the count the same
+    way, which is what returns today's skipped/refused stubs to the
+    next-day retry — gr510430).
     """
     _timed_event(
         store,
@@ -827,9 +838,12 @@ def claim_stubs_to_fetch(
     last fetch attempt* (an operator re-queue or an explicit-acquire
     pin — ``Store.pin_stub_for_fetch``) bypasses the window for exactly
     one retry; the attempt it triggers dates the stamp, so backoff
-    resumes unless someone stamps again. The pin itself declines to
-    re-stamp while a stamp is unconsumed or the last attempt is under
-    24 h old, so repeated acquires of one cite do not chain bypasses.
+    resumes unless someone stamps again. An explicit ask always stamps
+    fresh; the pin declines to re-stamp an *unconsumed* stamp, and
+    auto-discovery callers (``restamp_min_hours`` kept at
+    ``ACQUIRE_RESTAMP_MIN_HOURS``) also skip the stamp when the last
+    attempt is under 24 h old, so a periodic re-acquire cannot chain
+    bypasses (gr453859).
 
     Ordering: **``prio`` ascending, NULLs last** — the ``stub_rank``
     pass writes ``refs.prio`` (1=hottest .. 10=coldest, ``NULL`` =
@@ -899,14 +913,16 @@ def claim_stubs_to_fetch(
                 -- backoff, a pass's own legs land within the same hour) recovers
                 -- the pass count so the first retry is next-day, not next-month.
                 --
-                -- A pass containing a deferral (``provider_wait``, and the
-                -- retired skip-breaker's ``circuit_open``) didn't finish trying
-                -- the stub — some provider's legs were parked, not answered —
-                -- so its bucket is excluded from ``attempts`` entirely
-                -- (gr500153): a stub whose providers couldn't be reached stays
-                -- on the base window instead of backing off as if tried. The
-                -- exclusion is retroactive through ref_events, which is what
-                -- returns today's circuit-skipped stubs to the next-day retry.
+                -- A pass containing a deferral (``provider_wait``, the
+                -- per-service breaker's ``circuit_open``, or a shared-limiter
+                -- ``rate_limited``) didn't finish trying the stub — some
+                -- provider's legs were refused or parked, not answered — so
+                -- its bucket is excluded from ``attempts`` entirely
+                -- (gr500153, gr510430): a stub whose providers couldn't be
+                -- reached stays on the base window instead of backing off as
+                -- if tried. The exclusion is retroactive through ref_events,
+                -- which is what returns today's circuit-skipped stubs to the
+                -- next-day retry.
                 -- ``last_ts`` still sees those events — the pass did happen —
                 -- so the window anchors at the most recent contact attempt.
                 SELECT count(*) FILTER (WHERE NOT b.deferred) AS attempts,
@@ -914,7 +930,8 @@ def claim_stubs_to_fetch(
                   FROM (
                         SELECT date_trunc('hour', e.ts) AS bucket,
                                bool_or(e.event IN
-                                       ('circuit_open', 'provider_wait'))
+                                       ('circuit_open', 'provider_wait',
+                                        'rate_limited'))
                                  AS deferred,
                                max(e.ts) AS last_ts
                           FROM ref_events e
@@ -1584,6 +1601,8 @@ def _try_publisher(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
+    saw_real_failure = False
+    refusal_event: str | None = None
     for i, url in enumerate(urls):
         if i and deadline is not None and time.perf_counter() >= deadline:
             errors.append("remaining candidates skipped: leg deadline reached")
@@ -1591,6 +1610,10 @@ def _try_publisher(
         try:
             size_bytes = _download_pdf(url, target, deadline=deadline)
         except Exception as exc:
+            if (ev := _own_refusal_event(exc)) is not None:
+                refusal_event = ev
+            else:
+                saw_real_failure = True
             errors.append(
                 f"{redact_url(url)}: {mask_secrets(str(exc)[:120], warn=False)}"
             )
@@ -1607,7 +1630,12 @@ def _try_publisher(
             duration_ms=_ms(t0),
         )
     return FetchOutcome(
-        event="fetch_failed",
+        # Same rule as ``_download_first``: all-transient refusals record the
+        # deferral-class event (the pass doesn't count); one real answer makes
+        # it a genuine fetch_failed.
+        event=refusal_event
+        if not saw_real_failure and refusal_event
+        else "fetch_failed",
         payload={"doi": stub.doi, "urls": urls, "error": "; ".join(errors)[:200]},
         duration_ms=_ms(t0),
     )
@@ -1673,7 +1701,7 @@ def _try_elsevier(
         from precis.ingest.markup import MarkupParseError
 
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={
                 "doi": stub.doi,
                 "url": url,
@@ -1760,7 +1788,7 @@ def _try_elsevier_markup(
 
         target.unlink(missing_ok=True)
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={
                 "doi": stub.doi,
                 "url": url,
@@ -1821,7 +1849,7 @@ def _try_wiley(
         )
     except Exception as exc:
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -1884,7 +1912,7 @@ def _try_unpaywall(
         )
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -1909,7 +1937,7 @@ def _try_unpaywall(
         size_bytes = _download_pdf(url, target, deadline=deadline)
     except Exception as exc:
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2036,7 +2064,7 @@ def _try_arxiv(
         )
     except Exception as exc:
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={"arxiv": arxiv_id, "url": url, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2087,7 +2115,7 @@ def _try_s2(
         oa_url = _query_s2_openaccess(paper_id_for_s2)
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"paper_id": paper_id_for_s2, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2106,7 +2134,7 @@ def _try_s2(
         size_bytes = _download_pdf(oa_url, target, deadline=deadline)
     except Exception as exc:
         return FetchOutcome(
-            event="fetch_failed",
+            event=_own_refusal_event(exc) or "fetch_failed",
             payload={
                 "paper_id": paper_id_for_s2,
                 "url": oa_url,
@@ -2181,7 +2209,7 @@ def _try_openalex_content(
         return _local_rate_limited(stub, t0, provider="openalex")
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2215,6 +2243,16 @@ def _try_openalex_content(
         # keyless one.
         err = str(exc)
         err = mask_secrets(err.replace(api_key, "***") if api_key else err, warn=False)
+        # An own-side refusal (shared limiter spent, the openalex-content
+        # breaker open) is a deferral, not a fetch failure — no provider
+        # answer was learned, so the pass must not count (gr510430).
+        refusal = _own_refusal_event(exc)
+        if refusal is not None:
+            return FetchOutcome(
+                event=refusal,
+                payload={"doi": stub.doi, "url": pdf_url, "error": err[:200]},
+                duration_ms=_ms(t0),
+            )
         signal = _payment_quota_signal(exc)
         if signal is not None and store is not None:
             # Reactive trigger (gr162141): the paid content download itself
@@ -2295,7 +2333,7 @@ def _try_crossref(
         return _local_rate_limited(stub, t0, provider="crossref")
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2338,7 +2376,7 @@ def _try_openalex(
         return _local_rate_limited(stub, t0, provider="openalex")
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2379,7 +2417,7 @@ def _try_europepmc(
         return _local_rate_limited(stub, t0, provider="europepmc")
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2428,7 +2466,7 @@ def _try_core(
         )
     except Exception as exc:
         return FetchOutcome(
-            event="api_error",
+            event=_own_refusal_event(exc) or "api_error",
             payload={"doi": stub.doi, "error": str(exc)[:200]},
             duration_ms=_ms(t0),
         )
@@ -2474,6 +2512,8 @@ def _download_first(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
+    saw_real_failure = False
+    refusal_event: str | None = None
     for i, url in enumerate(urls):
         if i and deadline is not None and time.perf_counter() >= deadline:
             errors.append("remaining candidates skipped: leg deadline reached")
@@ -2483,6 +2523,10 @@ def _download_first(
                 url, target, extra_headers=extra_headers, deadline=deadline
             )
         except Exception as exc:
+            if (ev := _own_refusal_event(exc)) is not None:
+                refusal_event = ev
+            else:
+                saw_real_failure = True
             errors.append(
                 f"{redact_url(url)}: {mask_secrets(str(exc)[:120], warn=False)}"
             )
@@ -2499,7 +2543,13 @@ def _download_first(
             duration_ms=_ms(t0),
         )
     return FetchOutcome(
-        event="fetch_failed",
+        # Every candidate refused on our side (limiter/breaker) means the leg
+        # never got a provider answer — record the deferral-class event, not
+        # fetch_failed, so the pass doesn't count toward backoff (gr510430).
+        # One real answer (a 403, a non-PDF body) makes it a genuine failure.
+        event=refusal_event
+        if not saw_real_failure and refusal_event
+        else "fetch_failed",
         payload={"doi": stub.doi, "urls": urls, "error": "; ".join(errors)[:200]},
         duration_ms=_ms(t0),
     )
@@ -3507,12 +3557,13 @@ def _run_markup_cascade(
                     exc,
                 )
                 leg_ms = _ms(t0)
-                gate.note_outcome(key, "fetch_failed", leg_ms)
+                ev = _own_refusal_event(exc) or "fetch_failed"
+                gate.note_outcome(key, ev, leg_ms)
                 _timed_event(
                     store,
                     stub.ref_id,
                     source=leg.source,
-                    event="fetch_failed",
+                    event=ev,
                     payload={"url": url, "error": str(exc)[:200]},
                     duration_ms=leg_ms,
                 )
@@ -3768,13 +3819,14 @@ def _run_cascade(
                             deadline - time.perf_counter()
                         ) * 1000
                 leg_ms = _ms(leg_t0)
-                gate.note_outcome(key, "api_error", leg_ms)
+                ev = _own_refusal_event(exc) or "api_error"
+                gate.note_outcome(key, ev, leg_ms)
                 _timed_event(
                     store,
                     stub.ref_id,
                     timing=timing,
                     source=source,
-                    event="api_error",
+                    event=ev,
                     payload={"error": str(exc)[:200]},
                     duration_ms=leg_ms,
                 )
@@ -4365,6 +4417,30 @@ def _local_rate_limited(stub: StubRef, t0: float, *, provider: str) -> FetchOutc
         payload={"doi": stub.doi, "provider": provider, "limiter": "shared"},
         duration_ms=_ms(t0),
     )
+
+
+def _own_refusal_event(exc: BaseException) -> str | None:
+    """The deferral-class event when ``exc`` is one of *our* refusals, else
+    ``None``.
+
+    A leg that ends on a shared-limiter refusal (``RateLimited`` — the
+    provider row is spent/parked) or a cooldown-class
+    ``VendorUnavailable`` (the service's circuit breaker already open at
+    entry, a limiter refusing a retry, the worker draining) never got an
+    answer from the provider — nothing about the stub's OA availability
+    was learned. Recorded as ``rate_limited`` / ``circuit_open`` instead
+    of ``fetch_failed``/``api_error`` so the claim query's ``attempts``
+    count drops the hour-bucket (transient refusals must not advance the
+    fetch backoff, gr510430). A ``VendorUnavailable`` without
+    ``cooldown`` (``"attempts exhausted"``, ``"circuit opened after"``)
+    *is* a real provider answer — the leg tried and failed — and stays a
+    counted failure.
+    """
+    if isinstance(exc, RateLimited):
+        return "rate_limited"
+    if isinstance(exc, VendorUnavailable) and exc.cooldown:
+        return "circuit_open"
+    return None
 
 
 def _ms(t0: float) -> int:

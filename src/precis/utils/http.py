@@ -348,7 +348,27 @@ class VendorError(Exception):
 
 
 class VendorUnavailable(VendorError):
-    """Retries exhausted, the breaker is open, or the worker is draining."""
+    """Retries exhausted, the breaker is open, or the worker is draining.
+
+    ``cooldown=True`` marks a refusal that is *ours*, not the vendor's:
+    the breaker already stood open at entry, a limiter refused a retry,
+    or the worker drained mid-call — no request got a provider answer.
+    Fetch workers map it to a deferral-class event (the pass doesn't
+    count as an attempt); the default ``False`` raises (``"N attempts
+    exhausted"``, ``"circuit opened after …"``) are real failures the
+    call observed and answered for.
+    """
+
+    def __init__(
+        self,
+        service: str,
+        detail: str,
+        *,
+        cooldown: bool = False,
+        **kw: Any,
+    ) -> None:
+        self.cooldown = cooldown
+        super().__init__(service, detail, **kw)
 
 
 @dataclass(frozen=True)
@@ -780,11 +800,13 @@ def _enter(
                     service,
                     f"{policy.label or service} refused, cooling down until "
                     f"{circuit.refused_until:%H:%M}Z",
+                    cooldown=True,
                 )
             raise VendorUnavailable(
                 service,
                 f"circuit open ({circuit.consecutive_failures} consecutive "
                 f"failures); retry in {circuit.cooldown - elapsed:.0f}s",
+                cooldown=True,
             )
         # Cooldown elapsed — half-open: let one call through to probe.
         circuit.opened_at = None
@@ -856,6 +878,7 @@ def with_backoff(
                 status=last_status,
                 body=last_body,
                 url=last_url,
+                cooldown=True,
             ) from last_exc
         try:
             _take_token(row, policy, seed, effective)
@@ -870,6 +893,7 @@ def with_backoff(
                 status=last_status,
                 body=last_body,
                 url=last_url,
+                cooldown=True,
             ) from refused
         try:
             resp = send()

@@ -857,7 +857,11 @@ class RefsMixin:
             return _do(c)
 
     def pin_stub_for_fetch(
-        self, ref_id: int, *, conn: Connection | None = None
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+        restamp_min_hours: int | None = ACQUIRE_RESTAMP_MIN_HOURS,
     ) -> bool:
         """Explicit-request fast lane: put one stub at the head of the
         fetch queue.
@@ -872,12 +876,20 @@ class RefsMixin:
         "retry immediately once", so a stub deep in backoff still fetches
         next pass. The stamp is skipped (prio still re-pinned) when the
         stub already holds an *unconsumed* stamp — no ``fetcher:%`` event
-        after it, so the bypass is still armed — or when its newest
-        fetcher event is under :data:`ACQUIRE_RESTAMP_MIN_HOURS` old (it
-        was just tried; stamping again would only re-run the same
-        cascade). A fresh mint has neither and always stamps. Together
-        this stops a draft that re-acquires its cites on every save from
-        re-arming a backed-off stub each time (gr453859).
+        after it, so the bypass is still armed. A fresh mint always
+        stamps.
+
+        ``restamp_min_hours`` is the re-stamp guard for
+        **auto-discovery** re-requests (quest lit-fetch's periodic
+        re-acquire): with the default, a stub whose newest fetcher event
+        is under 24 h old keeps its (consumed) stamp rather than re-arm
+        the bypass — a churn that would re-run the same cascade that
+        just answered (gr453859). Explicit asks
+        (``put(kind='paper')``/``acquire``) pass ``None``: an agent or
+        human re-requesting a tracked stub always stamps and earns one
+        retry on the next pass, whatever the last attempt's age
+        (gr510430 — the 24 h guard silently ate explicit re-requests,
+        leaving the stub parked while the reply claimed "pinned").
 
         Auto-discovered stubs (chase/watch/orcid/draft-import/
         finding-acquire) deliberately skip this, flowing through
@@ -892,7 +904,7 @@ class RefsMixin:
                    SET prio = 1,
                        meta = r.meta || jsonb_build_object('prio_by', 'acquire')
                            || CASE
-                                WHEN fe.last_ts > now() - make_interval(hours => %s)
+                                WHEN fe.last_ts > now() - make_interval(hours => %s::int)
                                 THEN '{}'::jsonb
                                 WHEN (r.meta #>> '{oa_requeued,at}')::timestamptz
                                      > COALESCE(fe.last_ts, '-infinity'::timestamptz)
@@ -908,7 +920,7 @@ class RefsMixin:
                  WHERE r.ref_id = %s AND r.kind = 'paper'
                    AND r.pdf_sha256 IS NULL AND r.retired_at IS NULL
                 """,
-                (ACQUIRE_RESTAMP_MIN_HOURS, ref_id, ref_id),
+                (restamp_min_hours, ref_id, ref_id),
             )
             return cur.rowcount == 1
 
@@ -942,8 +954,12 @@ class RefsMixin:
         ``requested_by`` (``meta.set_by`` — ``dream``/``chase``/
         ``system``/``tex-import``), ``attempts`` (distinct autofetch
         *passes* — one pass writes one ``fetcher:%`` event per cascade
-        leg, so events are collapsed to minute-buckets to recover pass
-        count). ``llm_label``/``llm_reason`` surface ``stub_rank``'s
+        leg, so events are collapsed to hour-buckets to recover pass
+        count, and a bucket holding a deferral-class event —
+        ``provider_wait``/``circuit_open``/``rate_limited``, our own
+        refusals rather than a provider answer — is not counted, matching
+        ``claim_stubs_to_fetch``'s backoff; gr510430).
+        ``llm_label``/``llm_reason`` surface ``stub_rank``'s
         Tier-2 LLM band judgment (``meta.llm_label``/``meta.llm_reason``),
         empty when the stub hasn't been through that step.
 
@@ -1045,10 +1061,20 @@ class RefsMixin:
                 -- count distinct hour-buckets to recover *passes*, not
                 -- leg-events — the same bucketing claim_stubs_to_fetch's
                 -- backoff uses, so "N passes" means one thing everywhere.
-                SELECT ref_id,
-                       count(DISTINCT date_trunc('hour', ts)) AS attempts
-                  FROM ref_events
-                 WHERE source LIKE 'fetcher:%%'
+                -- A pass holding a deferral-class event (our own refusal:
+                -- limiter/breaker/gate — never a provider answer) doesn't
+                -- count, same as the claim query's ``attempts``
+                -- (gr500153, gr510430).
+                SELECT ref_id, count(*) AS attempts
+                  FROM (
+                        SELECT ref_id, date_trunc('hour', ts) AS bucket,
+                               bool_or(event IN ('circuit_open', 'provider_wait',
+                                                 'rate_limited')) AS deferred
+                          FROM ref_events
+                         WHERE source LIKE 'fetcher:%%'
+                         GROUP BY 1, 2
+                       ) b
+                 WHERE NOT b.deferred
                  GROUP BY ref_id
             ),
             deprioritized AS (

@@ -111,9 +111,14 @@ A **DOI / arXiv / S2 id is strongly preferred** — the stub carries the
 id, and an explicit `put` jumps the fetch queue: the stub is pinned to
 the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
 re-requesting an already-wanted stub re-pins it, including one
-immediate retry for a stub deep in fetch backoff. (Auto-discovered
-stubs — citation chase, watched feeds — instead wait their ranked
-turn.) An identifier no resolver knows — S2, plus Crossref/DataCite for
+immediate retry for a stub deep in fetch backoff — an explicit ask
+always re-arms that retry, however recent the last attempt.
+(Auto-discovered stubs — citation chase, watched feeds, quest
+lit-fetch — instead wait their ranked turn, and their re-requests
+stay under the 24 h re-stamp guard.) A fetch pass whose legs were
+refused by our own limiter or a provider's breaker
+(`rate_limited`/`circuit_open`/`provider_wait`) doesn't count toward
+the fetch backoff — only real provider answers do. An identifier no resolver knows — S2, plus Crossref/DataCite for
 a DOI — is rejected up front (pass
 `verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no

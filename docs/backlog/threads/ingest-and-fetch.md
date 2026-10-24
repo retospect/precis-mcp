@@ -234,7 +234,10 @@ is verified done on prod.
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
    (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
-   acquire re-stamp guard (`ACQUIRE_REARM_DAYS`). Still open: the /drive
+   acquire re-stamp guard (`ACQUIRE_RESTAMP_MIN_HOURS`; gr510430 narrowed
+   it to auto-discovery paths — an explicit `put(kind='paper')` always
+   re-stamps and retries next pass, and rate_limited/circuit_open passes
+   no longer advance the fetch backoff). Still open: the /drive
    "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
    set in, and the stub-readout remainder.
 6. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose

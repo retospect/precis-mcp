@@ -57,12 +57,15 @@ MANUAL_DOWNLOAD_ID_KINDS: frozenset[str] = frozenset(("doi", "arxiv"))
 #: :func:`no_oa_bucket_sql`.
 NO_OA_MIN_PASSES: int = 3
 
-#: An explicit acquire re-stamps ``meta.oa_requeued`` (the backoff bypass)
-#: only when the stub's newest ``fetcher:%`` event is at least this old —
-#: the fetcher's base retry window. A re-acquire inside it, or one whose
-#: stamp the fetcher has not yet consumed, keeps the existing stamp, so a
-#: draft that re-acquires its cites on every save cannot re-arm the backoff
-#: (gr453859).
+#: The re-stamp guard for **auto-discovery** re-requests of a stub
+#: (quest lit-fetch's periodic re-acquire — the only guarded caller of
+#: ``pin_stub_for_fetch``): while the stub's newest ``fetcher:%`` event is
+#: under this many hours old the pin keeps the consumed stamp instead of
+#: re-arming the ``meta.oa_requeued`` bypass — a churn guard so a
+#: periodic re-acquire cannot re-run the cascade that just answered
+#: (gr453859). An *explicit* re-request (``put(kind='paper')`` /
+#: ``acquire``) passes ``restamp_min_hours=None`` and always stamps:
+#: the ask earns one retry whatever this says (gr510430).
 ACQUIRE_RESTAMP_MIN_HOURS: int = 24
 
 

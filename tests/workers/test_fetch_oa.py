@@ -42,6 +42,7 @@ from precis.workers.fetch_oa import (
     StubRef,
     _is_elsevier_doi,
     _is_wiley_doi,
+    _own_refusal_event,
     _publisher_pdf_urls,
     _try_arxiv,
     _try_core,
@@ -400,7 +401,7 @@ class TestClaimStubs:
         # 12 events but 1 pass → 24h window → 25h-old attempt re-qualifies.
         assert [s.ref_id for s in stubs] == [ref_id]
 
-    @pytest.mark.parametrize("ev", ["circuit_open", "provider_wait"])
+    @pytest.mark.parametrize("ev", ["circuit_open", "provider_wait", "rate_limited"])
     def test_backoff_ignores_deferral_passes(self, store: Store, ev: str) -> None:
         # gr500153 (retroactive over ref_events): a pass containing a
         # deferral — provider_wait now, circuit_open under the retired
@@ -429,6 +430,110 @@ class TestClaimStubs:
             conn.commit()
         with store.pool.connection() as conn:
             stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
+    def test_own_refusal_event_classifies_transients(self) -> None:
+        # gr510430: the legs' generic catches map our own refusals to
+        # deferral-class events so the pass doesn't count as an attempt;
+        # a real failure (breaker tripped BY this call, retries exhausted,
+        # an httpx error) is not a refusal and stays counted.
+        from precis.utils.http import VendorUnavailable
+
+        assert _own_refusal_event(RateLimited("openalex-content")) == "rate_limited"
+        assert (
+            _own_refusal_event(
+                VendorUnavailable(
+                    "openalex-content",
+                    "circuit open (14 consecutive failures); retry in 23s",
+                    cooldown=True,
+                )
+            )
+            == "circuit_open"
+        )
+        # "circuit opened after …" / "attempts exhausted" — real answers.
+        assert (
+            _own_refusal_event(VendorUnavailable("x", "circuit opened after HTTP 502"))
+            is None
+        )
+        assert _own_refusal_event(httpx.ReadTimeout("slow")) is None
+
+    def test_backoff_escalates_per_counted_pass(self, store: Store) -> None:
+        # The window doubles per *counted* pass — 24h, 48h, 96h — and a
+        # pass holding only our own refusals never counts, so transient
+        # storms can't jump a stub straight toward the 30-day cap
+        # (gr510430). s1: one real pass 25h ago → 24h window, eligible.
+        # s2: two real passes (last 30h) → 48h window, suppressed.
+        # s3: three real passes (last 30h) → 96h window, suppressed.
+        s1 = _seed_paper_stub(store, doi="10.1234/esc1")
+        s2 = _seed_paper_stub(store, doi="10.1234/esc2")
+        s3 = _seed_paper_stub(store, doi="10.1234/esc3")
+        with store.pool.connection() as conn:
+            for rid, ages in ((s1, (25,)), (s2, (60, 30)), (s3, (200, 120, 30))):
+                for age in ages:  # each event its own hour-bucket = one pass
+                    conn.execute(
+                        "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                        "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                        "now() - make_interval(hours => %s))",
+                        (rid, age),
+                    )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [s1]
+
+    def test_rate_limited_only_passes_never_count(self, store: Store) -> None:
+        # One real pass 100h ago (attempts=1 → 24h window), then three
+        # all-``rate_limited`` passes: refusals aren't provider answers,
+        # so attempts stays 1 and the stub re-qualifies on the base
+        # window (last event 40h > 24h). Counted, attempts would be 4 →
+        # a 192h window would suppress it (gr510430).
+        ref_id = _seed_paper_stub(store, doi="10.1234/rateonly")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                "now() - make_interval(hours => 100))",
+                (ref_id,),
+            )
+            for age in (80, 60, 40):
+                for src in ("unpaywall", "openalex_content"):
+                    conn.execute(
+                        "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                        "VALUES (%s, %s, 'rate_limited', '{}'::jsonb, "
+                        "now() - make_interval(hours => %s))",
+                        (ref_id, f"fetcher:{src}", age),
+                    )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
+    def test_max_backoff_stub_explicit_rerequest_retries(self, store: Store) -> None:
+        # gr510430: a stub parked at the 720h cap (7 counted passes, last
+        # attempt inside the window) is ineligible — until an explicit
+        # re-request (``restamp_min_hours=None``, the put(kind='paper')
+        # spelling) re-stamps ``oa_requeued``; the claim's bypass then
+        # picks it up on the next pass.
+        ref_id = _seed_paper_stub(store, doi="10.1234/maxbackoff")
+        with store.pool.connection() as conn:
+            for age in (1400, 1300, 1200, 1100, 1000, 900, 700):
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                    "now() - make_interval(hours => %s))",
+                    (ref_id, age),
+                )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert stubs == []
+        assert store.pin_stub_for_fetch(ref_id, restamp_min_hours=None) is True
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
 

@@ -210,19 +210,48 @@ def test_reacquire_keeps_unconsumed_stamp(handler: PaperHandler, store: Store) -
     assert _stamp_is_fresh(store, rid) is False
 
 
-def test_reacquire_skips_stamp_after_a_fresh_attempt(
+def test_reacquire_restamps_for_explicit_ask_inside_window(
     handler: PaperHandler, store: Store
 ) -> None:
-    # The stamp was consumed (a fetcher event postdates it) but that
-    # attempt is under ACQUIRE_RESTAMP_MIN_HOURS old: re-stamping would
-    # only re-run the cascade that just said no, so the stamp stays.
+    # gr510430: an explicit re-request (put(kind='paper')/acquire) always
+    # re-stamps oa_requeued — ACQUIRE_RESTAMP_MIN_HOURS guards
+    # auto-discovery churn only. The fresh stamp is newer than the last
+    # fetcher event, so claim_stubs_to_fetch's backoff bypass picks the
+    # stub up on the very next pass.
     rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2b").body)
     _age_pin(store, rid, stamp_age="3 days")
     _fetcher_event(store, rid, age="2 hours", event="no_oa_version")
-    handler.acquire(identifier="doi:10.1/pin2b")
+    second = handler.acquire(identifier="doi:10.1/pin2b")
+    assert _ref_id(second.body) == rid
+    assert "pinned to front of fetch queue" in second.body
+    prio, prio_by, _ = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
+    assert _stamp_is_fresh(store, rid) is True
+    from precis.workers.fetch_oa import claim_stubs_to_fetch
+
+    with store.pool.connection() as conn:
+        claimed = claim_stubs_to_fetch(conn, limit=10)
+        conn.commit()
+    assert [s.ref_id for s in claimed] == [rid]
+
+
+def test_reacquire_guarded_path_keeps_restamp_guard(
+    handler: PaperHandler, store: Store
+) -> None:
+    # The auto-discovery spelling (quest lit-fetch → acquire(explicit=False)
+    # → the pin's default restamp_min_hours) keeps the 24 h guard: a stub
+    # whose newest attempt is fresh keeps its consumed stamp instead of
+    # re-arming the bypass on every periodic re-request (gr453859). The
+    # SAME stub re-requested explicitly still re-stamps (gr510430).
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2e").body)
+    _age_pin(store, rid, stamp_age="3 days")
+    _fetcher_event(store, rid, age="2 hours", event="no_oa_version")
+    handler.acquire(identifier="doi:10.1/pin2e", explicit=False)
     prio, prio_by, _ = _fetch_pin(store, rid)
     assert (prio, prio_by) == (1, "acquire")
     assert _stamp_is_fresh(store, rid) is False
+    handler.acquire(identifier="doi:10.1/pin2e")
+    assert _stamp_is_fresh(store, rid) is True
 
 
 def test_reacquire_restamps_a_consumed_stamp_after_the_window(

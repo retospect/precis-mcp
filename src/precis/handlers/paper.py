@@ -63,6 +63,7 @@ from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.store._identifiers_ops import detect_identifier_scheme
+from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
 from precis.utils.authors import (
@@ -641,6 +642,7 @@ class PaperHandler(Handler):
         context_ref_id: int | str | None = None,
         verify: bool = True,
         tags: list[str] | None = None,
+        explicit: bool = True,
         **_kw: Any,
     ) -> Response:
         """Queue a missing paper for fetch — the shared stub-mint impl.
@@ -941,7 +943,15 @@ class PaperHandler(Handler):
             # of fetch backoff for one immediate retry). Auto-discovered
             # stubs instead earn their prio via stub_rank. No-op on a
             # collapse hit onto an already-held paper.
-            pinned = self.store.pin_stub_for_fetch(ref_id, conn=conn)
+            # ``explicit=False`` (auto-discovery callers — quest lit-fetch)
+            # keeps the 24 h re-stamp guard so a periodic re-request can't
+            # re-arm the bypass on a stub that was just tried (gr453859);
+            # an explicit ask always re-stamps (gr510430).
+            pinned = self.store.pin_stub_for_fetch(
+                ref_id,
+                conn=conn,
+                restamp_min_hours=(None if explicit else ACQUIRE_RESTAMP_MIN_HOURS),
+            )
 
         if tags:
             # gr492998: ``put(kind='paper', doi=…, tags=[…])`` is the

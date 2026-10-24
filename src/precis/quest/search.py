@@ -267,6 +267,7 @@ class AcquiringSearch:
                     identifier=f"doi:{doi}",
                     reason=f"quest lit-search: {query[:120]}",
                     verify=True,
+                    explicit=False,
                 )
             except Exception:
                 log.debug(
@@ -877,6 +878,7 @@ def apply_fetches(
                     title=(ref.title or None),
                     reason=f"quest lit-fetch: {why or 'tick-requested'}",
                     verify=True,
+                    explicit=False,
                 )
             else:
                 store.pin_stub_for_fetch(ref.id)
