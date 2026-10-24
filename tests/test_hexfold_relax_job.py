@@ -294,18 +294,22 @@ def test_cpu_fallback_lands_on_meta_as_a_warning(store: Any) -> None:
 # ── the same through the real ssh_node pass and a DB job row ─────────
 
 
-def _mk_job(store: Any, structure_ref_id: int, params: dict | None = None) -> int:
-    ref = store.insert_ref(
-        kind="job",
-        slug=None,
-        title="hexfold_relax",
-        meta={
-            "executor": "ssh_node",
-            "job_type": "hexfold_relax",
-            "params": params
-            or {"structure_ref_id": structure_ref_id, "fragment": "none"},
-        },
-    )
+def _mk_job(
+    store: Any,
+    structure_ref_id: int,
+    params: dict | None = None,
+    origin: str | None = None,
+) -> int:
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": "hexfold_relax",
+        "params": params or {"structure_ref_id": structure_ref_id, "fragment": "none"},
+    }
+    if origin:
+        # The claim order (lane_has_waiters) reads the class from the
+        # ROW's meta, not from the DispatchContext copy.
+        meta["origin"] = origin
+    ref = store.insert_ref(kind="job", slug=None, title="hexfold_relax", meta=meta)
     store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
     return int(ref.id)
 
@@ -455,9 +459,12 @@ def test_no_yield_when_waiter_loses_claim_order(store: Any, monkeypatch) -> None
     """A waiter the running job would beat anyway never costs it a
     slice: a human-class job does NOT yield to a background waiter —
     otherwise every slice pays a model reload for nothing."""
-    _slicing_on(monkeypatch, cap=1.0)
+    # Cap leaves room for the spawned child to import and write its
+    # first checkpoint: the yield decision runs on that event, so a cap
+    # shorter than the child's startup would pass without testing it.
+    _slicing_on(monkeypatch, cap=15.0)
     ref = _plain_structure(store)
-    rid = _mk_job(store, ref.id)
+    rid = _mk_job(store, ref.id, origin="human")
     set_status(store, rid, "running")
     _mk_waiter(store)  # background band
     ctx, events = _job_ctx(
@@ -477,6 +484,10 @@ def test_no_yield_when_waiter_loses_claim_order(store: Any, monkeypatch) -> None
     assert fails[0]["failure_class"] == "timeout"
     assert ("status", "yielded") not in events
     assert not meta.get("relax_slices")
+    # The child reached its checkpoint (where the yield is decided)
+    # before the cap: the test is not passing on a cap shorter than the
+    # child's startup.
+    assert "checkpoint saved" in fails[0]["reason"]
 
 
 def test_unverified_kill_fails_infra_not_yield(store: Any, monkeypatch) -> None:
