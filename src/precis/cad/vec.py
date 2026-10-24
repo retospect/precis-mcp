@@ -126,9 +126,10 @@ def _rot_z(rad: float) -> NDArray[np.float64]:
 class Transform:
     """A rigid transform: rotation ``R`` then translation ``t``.
 
-    ``world = R @ local + t``. Orthonormal ``R`` (``det = +1``) by
-    construction; never carries scale or shear, so the inverse is the
-    cheap ``R.T``-based map and distances are preserved exactly.
+    ``world = R @ local + t``. Orthonormal ``R`` — ``det = +1`` for
+    every pose path, ``-1`` only from :func:`reflection` (the improper
+    case); never carries scale or shear, so the inverse is the cheap
+    ``R.T``-based map and distances are preserved exactly either way.
     """
 
     R: NDArray[np.float64]
@@ -175,6 +176,20 @@ def rotation(rx: float, ry: float, rz: float) -> Transform:
     """A pure rotation from Euler angles in **radians** (``Rz @ Ry @ Rx``)."""
     R = _rot_z(float(rz)) @ _rot_y(float(ry)) @ _rot_x(float(rx))
     return Transform(R=R, t=vec3(0.0, 0.0, 0.0))
+
+
+def reflection(normal: Vec3, point: Vec3 | None = None) -> Transform:
+    """A reflection through the plane with unit ``normal`` at ``point``
+    (the origin when absent) — the one **improper** transform this
+    module mints: ``det(R) = -1``, handedness flips, distances stay
+    exact (``R`` is still orthogonal, so ``apply``/``inverse``/``compose``
+    are unchanged). Its ``R`` must never reach
+    :func:`euler_rad_from_matrix`, whose inverse map assumes a proper
+    rotation — keep reflections out of ``rot``/Euler pose fields."""
+    n = normalize(normal)
+    R = np.eye(3, dtype=np.float64) - 2.0 * np.outer(n, n)
+    p = as_vec3(point) if point is not None else vec3(0.0, 0.0, 0.0)
+    return Transform(R=R, t=p - R @ p)
 
 
 def pose(location: Vec3, rot: Vec3) -> Transform:

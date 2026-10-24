@@ -60,7 +60,11 @@ def _block_file(name: str, obj: Any) -> tuple[str, bytes, str]:
     become extxyz (``atomic`` scale).
     """
     from precis.cad.scene import SceneSpec
+    from precis_geom import assembly as _pga
+    from precis_geom import extxyz as _extxyz
 
+    if isinstance(obj, _pga.Geom):
+        obj = obj.flatten()
     if isinstance(obj, SceneSpec):
         doc: dict[str, Any] = {
             "schema": 1,
@@ -75,6 +79,12 @@ def _block_file(name: str, obj: Any) -> tuple[str, bytes, str]:
         )
     if isinstance(obj, str):
         return f"blocks/{name}.cad", obj.encode("utf-8"), "macro"
+    if hasattr(obj, "atoms") and hasattr(obj, "cell"):
+        return (
+            f"blocks/{name}.extxyz",
+            _extxyz.to_extxyz(obj).encode("utf-8"),
+            "atomic",
+        )
     scene_to_extxyz = getattr(obj, "to_extxyz", None)
     if callable(scene_to_extxyz):
         return f"blocks/{name}.extxyz", scene_to_extxyz().encode("utf-8"), "atomic"
@@ -110,8 +120,14 @@ def block(
     ``ports``/``relax`` are manifest rows verbatim (the importer vets
     them); ``bonds`` may be a JSON-able structure written to
     ``blocks/<name>.bonds.json`` or an already-staged relative path.
-    ``frame`` defaults to the calling trace frame.
-    """
+    ``frame`` defaults to the calling trace frame. A
+    :class:`precis_geom.assembly.Geom` flattens to geometry here and
+    carries its declared ports into the manifest entry."""
+    from precis_geom.out import _geom_parts
+
+    obj, gports = _geom_parts(obj)
+    if ports is None:
+        ports = gports
     fname, payload, inferred = _block_file(name, obj)
     entry: dict[str, Any] = {
         "name": name,
@@ -146,14 +162,29 @@ def block(
 def instance(
     name: str,
     *,
-    template: str,
+    template: Any,
     parent: str | None = None,
     pose: Any = None,
     rot: Any = None,
     pose_unit: str | None = None,
     rot_unit: str | None = None,
+    linear: dict[str, Any] | None = None,
+    polar: dict[str, Any] | None = None,
     frame: int | None = None,
 ) -> None:
+    from precis_geom import assembly as _pga
+    from precis_geom.out import _symbolic_fields
+
+    if isinstance(template, _pga.Geom):
+        fields = _symbolic_fields(template)
+        template = fields.pop("template")
+        linear = linear or fields.get("linear")
+        polar = polar or fields.get("polar")
+        if pose is None and rot is None:
+            pose = fields.get("pose")
+            rot = fields.get("rot")
+            pose_unit = pose_unit or fields.get("pose_unit")
+            rot_unit = rot_unit or fields.get("rot_unit")
     entry: dict[str, Any] = {"name": name, "template": template}
     for k, v in (
         ("parent", parent),
@@ -161,6 +192,8 @@ def instance(
         ("rot", rot),
         ("pose_unit", pose_unit),
         ("rot_unit", rot_unit),
+        ("linear", linear),
+        ("polar", polar),
     ):
         if v is not None:
             entry[k] = v

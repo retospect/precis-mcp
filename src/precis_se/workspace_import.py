@@ -95,7 +95,18 @@ _PORT_KEYS = frozenset(
     }
 )
 _INSTANCE_KEYS = frozenset(
-    {"name", "template", "parent", "pose", "rot", "pose_unit", "rot_unit", "frame"}
+    {
+        "name",
+        "template",
+        "parent",
+        "pose",
+        "rot",
+        "pose_unit",
+        "rot_unit",
+        "linear",
+        "polar",
+        "frame",
+    }
 )
 _CONNECT_KEYS = frozenset({"a", "b", "kind", "joint", "objectives", "frame"})
 _CAD_NODE_KEYS = frozenset(
@@ -822,12 +833,28 @@ def import_workspace_run(
             name = str(inst["name"]).strip()
             if name in tree.blocks and tree.blocks[name].template is not None:
                 del tree.blocks[name]  # re-created below (pose/template update)
+            # linear/polar make the row an array_block — the script-side
+            # ``pga.tile(block, n, pitch=…)`` packed form, replayed through
+            # the same op as a hand-authored array so the trees compare
+            # byte-for-byte (structure-workspaces 2a).
             op: dict[str, Any] = {
-                "op": "instance_block",
+                "op": (
+                    "array_block"
+                    if inst.get("linear") is not None or inst.get("polar") is not None
+                    else "instance_block"
+                ),
                 "name": name,
                 "template": inst["template"],
             }
-            for k in ("parent", "pose", "rot", "pose_unit", "rot_unit"):
+            for k in (
+                "parent",
+                "pose",
+                "rot",
+                "pose_unit",
+                "rot_unit",
+                "linear",
+                "polar",
+            ):
                 if inst.get(k) is not None:
                     op[k] = inst[k]
             _apply(tree, [op], what=f"instance {name!r}")

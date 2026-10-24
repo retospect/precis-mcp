@@ -67,6 +67,94 @@ def _vet_name(name: str, *, what: str = "block") -> str:
     return n
 
 
+def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None]:
+    """Unwrap a :class:`precis_geom.assembly.Geom` → ``(geometry,
+    manifest ports)``; anything else passes through with ``None`` ports.
+
+    A pga object flattens to its merged geometry (the ``out`` boundary
+    writes bytes, not the object graph); its declared ports become
+    manifest port rows verbatim — ``atom`` names a label of the
+    flattened scene (kept by flatten while unique), ``direction`` is
+    the block-frame direction vector."""
+    from precis_geom import assembly as _pga
+
+    if not isinstance(obj, _pga.Geom):
+        return obj, None
+    flat = obj.flatten()
+    ports: list[dict[str, Any]] = []
+    flat_labels = set(getattr(flat, "atoms", {}) or {})
+    for p in obj.ports.values():
+        row: dict[str, Any] = {"name": p.name}
+        if p.atom is not None:
+            if flat_labels and p.atom not in flat_labels:
+                raise ValueError(
+                    f"out.block: port {p.name!r} binds atom {p.atom!r}, which "
+                    "is not a label of the flattened scene"
+                )
+            row["atom"] = p.atom
+        if p.roles:
+            row["roles"] = list(p.roles)
+        if p.direction is not None:
+            row["direction"] = [float(v) for v in p.direction]
+        ports.append(row)
+    return flat, ports or None
+
+
+def _array_fields(spec: dict[str, Any]) -> dict[str, Any]:
+    """``Geom.array`` (canonical, ``kind``-keyed) → the op vocabulary the
+    importer replays: ``linear``/``polar`` minus ``kind`` — the same
+    fields ``ops_export`` writes back out."""
+    spec = dict(spec)
+    kind = spec.pop("kind", None)
+    if kind not in ("linear", "polar"):
+        raise ValueError(f"out.instance: bad array spec kind {kind!r}")
+    return {kind: spec}
+
+
+def _symbolic_fields(g: Any) -> dict[str, Any]:
+    """A symbolic pga ``Geom`` (``pga.tile``/``pga.instance`` on a
+    template *name*) → the manifest ``instances`` fields: ``template``,
+    ``linear``/``polar`` from the array spec, and ``pose``/``rot``/
+    ``pose_unit`` from ``g.pose``.
+
+    Refuses a non-symbolic Geom (geometry belongs in ``out.block``) and
+    an *improper* pose — Euler angles carry only proper rotations, so a
+    mirrored placement can never round-trip through pose/rot."""
+    import numpy as _np
+
+    from precis.cad import vec as _vec
+
+    if g.template is None:
+        raise ValueError(
+            "out.instance: a Geom template must be symbolic (a "
+            "pga.tile/pga.instance on a block name) — out.block writes "
+            "geometry"
+        )
+    out: dict[str, Any] = {"template": g.template}
+    if g.array is not None:
+        out.update(_array_fields(g.array))
+    if g.pose is not None:
+        if float(_np.linalg.det(_np.asarray(g.pose.R))) < 0:
+            raise ValueError(
+                "out.instance: the placement is a reflection (det −1) — "
+                "pose/rot cannot carry an improper transform "
+                "(next: mirror the geometry itself and out.block it, or "
+                "re-place without the reflection)"
+            )
+        units = g.meta.get("units")
+        if units is None:
+            raise ValueError(
+                "out.instance: the Geom carries no units — "
+                "(next: build it via pga (units are stamped) or pass "
+                "pose=/pose_unit= explicitly)"
+            )
+        out["pose"] = [float(v) for v in g.pose.t]
+        out["pose_unit"] = {"A": "Å"}.get(units, units)
+        out["rot"] = [float(v) for v in _vec.euler_rad_from_matrix(g.pose.R)]
+        out["rot_unit"] = "rad"  # euler_rad_from_matrix emits radians
+    return out
+
+
 def _block_kind(scene_like: Any, name: str, scale: str | None) -> str:
     """The manifest ``scale`` for one block's geometry object.
 
@@ -178,6 +266,9 @@ class Run:
         n = _vet_name(name)
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
+        geom, gports = _geom_parts(geom)
+        if ports is None:
+            ports = gports
         kind = _block_kind(geom, n, scale)
         (self.root / "blocks").mkdir(parents=True, exist_ok=True)
         if kind == "atomic":
@@ -207,16 +298,39 @@ class Run:
         self,
         name: str,
         *,
-        template: str,
+        template: Any,
         parent: str | None = None,
         pose: Any = None,
         rot: Any = None,
         pose_unit: str | None = None,
         rot_unit: str | None = None,
+        linear: dict[str, Any] | None = None,
+        polar: dict[str, Any] | None = None,
         frame: int | None = None,
     ) -> dict[str, Any]:
-        """One manifest ``instances`` entry — a template placement."""
+        """One manifest ``instances`` entry — a template placement.
+
+        ``template`` may be a symbolic :class:`precis_geom.assembly.Geom`
+        (``pga.tile("p", n, pitch=…)``): its template name and array
+        spec land as the ``linear``/``polar`` keys the importer replays
+        through ``array_block``."""
+        from precis_geom import assembly as _pga
+
         n = _vet_name(name, what="instance")
+        if isinstance(template, _pga.Geom):
+            fields = _symbolic_fields(template)
+            template = fields.pop("template")
+            if linear is None:
+                linear = fields.get("linear")
+            if polar is None:
+                polar = fields.get("polar")
+            if pose is None and rot is None:
+                # the caller's explicit pose/rot win as a pair — mixing
+                # caller rot with the Geom's pose is never meaningful
+                pose = fields.get("pose")
+                rot = fields.get("rot")
+                pose_unit = pose_unit or fields.get("pose_unit")
+                rot_unit = rot_unit or fields.get("rot_unit")
         entry: dict[str, Any] = {"name": n, "template": str(template)}
         if parent is not None:
             entry["parent"] = str(parent)
@@ -228,6 +342,10 @@ class Run:
             entry["pose_unit"] = str(pose_unit)
         if rot_unit is not None:
             entry["rot_unit"] = str(rot_unit)
+        if linear is not None:
+            entry["linear"] = dict(linear)
+        if polar is not None:
+            entry["polar"] = dict(polar)
         fr = frame if frame is not None else _trace.leaf_id()
         if fr is not None:
             entry["frame"] = int(fr)
