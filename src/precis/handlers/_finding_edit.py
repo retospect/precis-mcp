@@ -1,5 +1,5 @@
 """``edit(kind='finding', ...)`` — pick_candidate / title / meta={'scope'} /
-unacquirable_note.
+unacquirable_note / testable_by+motivation / the body edit.
 
 Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
 this state machine (~350 lines across the mutually-exclusive ops) only
@@ -11,18 +11,29 @@ string) explicitly. ``FindingHandler.edit`` calls :func:`edit` directly.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
+from precis.handlers.plaintext import _require_find_and_text
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
 from precis.store.types import Tag
 from precis.taproot import authoring, hub
 from precis.taproot.consumer_review import render_users
+from precis.taproot.seniority import is_claim_hub
 from precis.taproot.sentence_lint import lint_scope
+from precis.utils.edit_resolve import (
+    EditOp,
+    apply_edit,
+    format_unified_diff,
+    normalize_dry_run,
+    render_dry_run_full,
+    render_dry_run_header,
+)
 from precis.utils.secret_scan import mask_secrets
+from precis.workers.embed import nudge_fresh_embed
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -43,6 +54,14 @@ def edit(
     *,
     kind: str,
     id: int | str | None = None,
+    mode: str | None = None,
+    find: str | None = None,
+    text: str | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    where: str | None = None,
+    match: str | None = None,
+    nth: int | None = None,
     pick_candidate: str | int | None = None,
     title: str | None = None,
     unacquirable_note: str | None = None,
@@ -59,6 +78,22 @@ def edit(
     falsification terms. Mutually exclusive kwargs — pass exactly one
     (``testable_by=``/``motivation=`` are the one exception: they may be
     combined in a single call, since both sharpen the same conjecture).
+
+    **Body edit** — ``mode='find-replace'`` (``find=`` + ``text=``,
+    ``text=''`` deletes the span) or ``mode='replace'`` (``text=`` is the
+    whole new body) rewrites a plain finding's ``finding_body`` chunk
+    (gr509620): the claim prose an agent needs to correct without a
+    delete+re-put that would lose the id and every inbound link. The
+    shared anchored-edit vocabulary applies (``before=``/``after=``/
+    ``match=``/``nth=``; ``dry_run=`` previews the diff). The write is
+    delete+reinsert (never an in-place UPDATE — embeddings/keywords
+    re-derive), the old text lands in a ``body_replaced`` ``ref_events``
+    row with ``reason=``, and the recorded chunk citations in
+    ``meta.chain`` are re-validated in the same transaction — a dangling
+    one refuses the edit whole. A ``TAPROOT:claim`` hub is refused: its
+    body *is* the claim sentence, which is identity (``refs.title`` +
+    the content-derived ``pub_id``) — the ``title=`` door below is the
+    only in-sync rewrite.
 
     **Pick a candidate.** When the chase reaches a chunk citing
     multiple references (e.g. ``[12,13]``) and can't disambiguate
@@ -198,10 +233,35 @@ def edit(
     An unsigned review is reopened atomically because its grounding froze
     the old prose; signed/anchored/published content refuses correction here.
 
-    Only the ``meta={'scope': …}`` door supports ``dry_run`` (see above);
-    every other op rejects it.
+    Only the body edit and the ``meta={'scope': …}`` door support
+    ``dry_run`` (see above); every other op rejects it.
     """
     meta_scope = _scope_from_meta(meta) if meta is not None else None
+    if mode not in (None, "find-replace", "replace"):
+        # Dispatch's mode gate catches this for MCP callers (the wrapper
+        # default 'find-replace' is exempt — it arrives on every edit()
+        # whether or not the caller meant it); a direct in-process call
+        # still gets the loud version rather than a silent drop.
+        raise BadInput(
+            f"edit(kind='finding') only supports mode='find-replace' | "
+            f"'replace' (the body edit), got {mode!r} — every other op "
+            "takes no mode=",
+            options=["find-replace", "replace"],
+            next=(
+                "edit(kind='finding', id='fi<N>', mode='find-replace', "
+                "find='<exact span>', text='<replacement>')"
+            ),
+        )
+    anchors_given = any(
+        v is not None and v != "" for v in (find, before, after, where, nth)
+    ) or (match is not None and match != "unique")
+    # ``mode`` alone can't signal body-edit intent: 'find-replace' is the
+    # wrapper default that lands on every call. A body edit is mode=
+    # 'replace', or the default/omitted mode plus a body argument
+    # (find=/text= or an anchor).
+    body_edit = mode == "replace" or (
+        mode in (None, "find-replace") and (anchors_given or text is not None)
+    )
     given = [
         name
         for name, value in (
@@ -217,6 +277,8 @@ def edit(
     rescoping = meta_scope is not None
     if rescoping:
         given.append("meta['scope']")
+    if body_edit:
+        given.append("find=/text=")
     # ``title`` + ``meta['scope']`` is the one allowed pairing: both reword
     # the same hub through a single ``refine_claim_sentence`` call.
     exclusive = [g for g in given if not (rescoping and g == "title")]
@@ -224,26 +286,32 @@ def edit(
         raise BadInput(
             "edit(kind='finding') accepts exactly one of pick_candidate, "
             "title (optionally with meta={'scope': …}), unacquirable_note, "
-            f"or testable_by=/motivation= — got {', '.join(given)}",
+            "testable_by=/motivation=, or a body edit (find=/text= with "
+            f"mode='find-replace'|'replace') — got {', '.join(given)}",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
                 "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
                 "edit(kind='finding', id=<N>, unacquirable_note='<why>') / "
                 "edit(kind='finding', id='fi<N>', testable_by='<sharpened "
                 "experiment>') / "
-                "edit(kind='finding', id='fi<N>', meta={'scope': {...}})"
+                "edit(kind='finding', id='fi<N>', meta={'scope': {...}}) / "
+                "edit(kind='finding', id='fi<N>', mode='find-replace', "
+                "find='<span>', text='<replacement>')"
             ),
         )
     is_self_pick = (
         isinstance(pick_candidate, str) and pick_candidate.strip().lower() == "self"
     )
-    if reason is not None and not is_self_pick:
+    if reason is not None and not is_self_pick and not body_edit:
         raise BadInput(
-            "edit(kind='finding') reason= only applies to "
-            "pick_candidate='self' — the dead_chain close-out",
+            "edit(kind='finding') reason= applies to pick_candidate='self' "
+            "or to a body edit (it lands on the body_replaced ref_event) — "
+            "the other ops record no reason",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='self', "
-                "reason='<why the held paper settles it>')"
+                "reason='<why the held paper settles it>') or "
+                "edit(kind='finding', id='fi<N>', mode='find-replace', "
+                "find=…, text=…, reason='<why>')"
             ),
         )
     if is_self_pick and reason is not None and not reason.strip():
@@ -263,6 +331,22 @@ def edit(
                 "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
                 "unacquirable_mode='abstract')"
             ),
+        )
+    if body_edit:
+        return _edit_body(
+            store,
+            kind=kind,
+            raw_id=id,
+            mode="replace" if mode == "replace" else "find-replace",
+            find=find,
+            text=text,
+            before=before or "",
+            after=after or "",
+            where=where,
+            match=match or "unique",
+            nth=nth,
+            dry_run=dry_run,
+            reason=reason,
         )
     if rescoping:
         assert meta_scope is not None
@@ -753,8 +837,9 @@ def _set_unacquirable_override(
 def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> int:
     """Resolve ``id=`` to a finding ref_id.
 
-    Accepts a numeric ref_id, a numeric-string ref_id, or a ``pub_id``
-    (the agent-facing placeholder shape).
+    Accepts a numeric ref_id, a numeric-string ref_id, a ``fi<N>``
+    handle (the form output hands back), or a ``pub_id`` (the
+    agent-facing placeholder shape).
     """
     if isinstance(raw_id, int):
         ref = store.get_ref(kind=kind, id=raw_id)
@@ -768,6 +853,8 @@ def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> in
     s = str(raw_id).strip()
     if s.isdigit():
         return _resolve_finding_ref_id(store, kind=kind, raw_id=int(s))
+    if s[:2] == "fi" and s[2:].isdigit():
+        return _resolve_finding_ref_id(store, kind=kind, raw_id=int(s[2:]))
     # Treat as pub_id.
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -941,3 +1028,321 @@ def _match_candidate(
         f"no candidate matches pick_candidate={target_slug!r}",
         options=candidate_slugs,
     )
+
+
+# ── the body edit ──────────────────────────────────────────────────────────
+#
+# A plain finding's claim prose lives in the ``finding_body`` chunk (ord=0).
+# The gripe (gr509620): kin-evidence minted findings whose body carried a
+# clause it then needed to strike — no edit door existed, so the only fix
+# was delete+re-put, which loses the id, the links, and the chase state.
+# The door reuses the file kinds' anchored vocabulary (``find``/``text``/
+# ``before``/``after``/``match``/``nth``/``dry_run``) resolved by
+# :mod:`precis.utils.edit_resolve`, and the write goes through
+# :meth:`Store.chunks.replace_body_chunk` — DELETE+INSERT, never UPDATE —
+# which lands the old text in a ``body_replaced`` ``ref_events`` row.
+
+
+def _edit_body(
+    store: Store,
+    *,
+    kind: str,
+    raw_id: int | str | None,
+    mode: str,
+    find: str | None,
+    text: str | None,
+    before: str,
+    after: str,
+    where: str | None,
+    match: str,
+    nth: int | None,
+    dry_run: bool | str | None,
+    reason: str | None,
+) -> Response:
+    """``mode='find-replace' | 'replace'`` on a plain finding's body prose.
+
+    Refused on a ``TAPROOT:claim`` hub — there the body *is* the claim
+    sentence, and ``refs.title`` + the content-derived ``pub_id`` must move
+    with it, so the only in-sync rewrite is the ``title=`` door
+    (:func:`_retitle_hub`). For a plain finding the ``pub_id`` stays put:
+    it is a stored identifier, not a live hash — the dedup key only bites
+    at ``put`` (a re-put of the *original* body still converges onto this
+    finding's row).
+    """
+    if raw_id is None:
+        raise BadInput(
+            "edit(kind='finding', mode=…) requires id=<finding ref_id, "
+            "fi<N> handle, or pub_id>",
+            next=(
+                "edit(kind='finding', id='fi<N>', mode='find-replace', "
+                "find='<exact span>', text='<replacement>')"
+            ),
+        )
+    finding_ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=raw_id)
+    if is_claim_hub(store, finding_ref_id):
+        raise BadInput(
+            f"fi{finding_ref_id} is a TAPROOT:claim hub — its body is the "
+            "claim sentence, which is identity: refs.title, the "
+            "finding_body chunk and the content-derived pub_id stay in "
+            "lockstep only through the title= door",
+            next=(
+                f"edit(kind='finding', id='fi{finding_ref_id}', "
+                "title='<reworded claim sentence>')"
+            ),
+        )
+    with store.pool.connection() as conn:
+        body_rows = conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL "
+            "ORDER BY ord",
+            (finding_ref_id,),
+        ).fetchall()
+    if not body_rows:
+        raise BadInput(
+            f"finding id={finding_ref_id} has no live finding_body chunk — "
+            "nothing to edit",
+            next="get(kind='finding', id='fi<N>') to see the finding's state",
+        )
+    old_chunk_ids = [int(r[0]) for r in body_rows]
+    old_body = str(body_rows[0][1] or "")
+    label = f"finding fi{finding_ref_id}"
+    text = mask_secrets(text)
+    reason = mask_secrets(reason)
+    reason_clean = reason.strip() if reason and reason.strip() else None
+    dry_mode = normalize_dry_run(dry_run)
+    edited_spans: tuple[tuple[int, int], ...]
+    match_policy = "replace"
+    if mode == "replace":
+        stray = [
+            name
+            for name, value in (
+                ("find", find),
+                ("before", before or None),
+                ("after", after or None),
+                ("where", where),
+                ("nth", nth),
+                ("match", match if match != "unique" else None),
+            )
+            if value is not None
+        ]
+        if stray:
+            raise BadInput(
+                f"mode='replace' takes text= only ({'/'.join(stray)}= "
+                "given) — it rewrites the whole body",
+                next="edit(kind='finding', id='fi<N>', mode='replace', "
+                "text='<new body>')",
+            )
+        if not text or not text.strip():
+            raise BadInput(
+                "mode='replace' requires text= (the whole new body)",
+                next="edit(kind='finding', id='fi<N>', mode='replace', "
+                "text='<new body>')",
+            )
+        new_body = text.strip()
+        edited_spans = ((1, new_body.count("\n") + 1),)
+    else:
+        if not find and text is not None:
+            # text= alone on the default mode: refuse rather than guess a
+            # whole-body overwrite (memory's rule).
+            raise BadInput(
+                "mode='find-replace' requires find= (the exact text to "
+                "locate) — text= alone can't pick a span",
+                next=(
+                    "edit(kind='finding', id='fi<N>', mode='find-replace', "
+                    "find='<exact text>', text='<replacement>') — or, to "
+                    "rewrite the whole body, mode='replace' with text="
+                ),
+            )
+        _require_find_and_text(
+            op_kind="edit",
+            kind=kind,
+            slug=str(finding_ref_id),
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+        )
+        assert text is not None and find is not None
+        op = EditOp(
+            op="edit",
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=cast("Any", where),
+            match=cast("Any", match),
+            nth=nth,
+            region_label=label,
+        )
+        result = apply_edit(old_body, op)
+        new_body = result.new_buffer
+        edited_spans = result.edited_spans
+        match_policy = op.match
+    if not new_body.strip():
+        raise BadInput(
+            f"edit would leave {label} with an empty body",
+            next=(
+                f"delete(kind='finding', id={finding_ref_id}) to retire the "
+                "finding, or edit with replacement text"
+            ),
+        )
+    if dry_mode is not None:
+        header = render_dry_run_header(
+            region_label=label,
+            edited_spans=edited_spans,
+            match_policy=match_policy,
+        )
+        if dry_mode == "full":
+            preview = render_dry_run_full(
+                new_body, edited_spans=edited_spans, region_label=label
+            )
+        else:
+            diff = format_unified_diff(old_body, new_body, file_label=label)
+            preview = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+        return Response(body="\n".join([*header, "", preview]))
+
+    with store.tx() as conn:
+        locked = conn.execute(
+            "SELECT retired_at, meta FROM refs WHERE ref_id = %s AND kind = %s "
+            "FOR NO KEY UPDATE",
+            (finding_ref_id, kind),
+        ).fetchone()
+        if locked is None:
+            raise NotFound(
+                f"finding id={finding_ref_id} not found",
+                next="search(kind='finding', q='<claim keywords>') for a live id",
+            )
+        if locked[0] is not None:
+            raise Gone(
+                f"finding id={finding_ref_id} has been deleted",
+                next="search(kind='finding', q='<claim keywords>') for a live one",
+            )
+        # The rewrite re-mints the body chunk (delete+insert); a link
+        # pinned at the outgoing chunk_id would be silently severed by
+        # the ON DELETE CASCADE on links.{src,dst}_chunk_id — refuse
+        # rather than drop an edge nobody asked to lose.
+        pinned_row = conn.execute(
+            "SELECT COUNT(*) FROM links WHERE src_chunk_id = ANY(%s) "
+            "OR dst_chunk_id = ANY(%s)",
+            (old_chunk_ids, old_chunk_ids),
+        ).fetchone()
+        if pinned_row is not None and pinned_row[0]:
+            raise BadInput(
+                f"{label}'s body chunk is the endpoint of {pinned_row[0]} link(s) "
+                "— rewriting it (delete+insert) would sever them",
+                next=(
+                    "remove the chunk-pinned links on fi<N>~<ord> first, or "
+                    "supersede the finding"
+                ),
+            )
+        replaced = store.chunks.replace_body_chunk(
+            finding_ref_id,
+            new_body,
+            chunk_kind="finding_body",
+            source="agent",
+            reason=reason_clean,
+            conn=conn,
+        )
+        if (replaced or "") != old_body:
+            raise BadInput(
+                f"{label} changed during the edit; nothing written",
+                next=(
+                    f"get(kind='finding', id='fi{finding_ref_id}'), then "
+                    "retry the edit against the current body"
+                ),
+            )
+        _assert_chunk_citations(conn, finding_ref_id=finding_ref_id, meta=locked[1])
+        nudge_fresh_embed(store, conn=conn, reason="edit finding body")
+
+    verb = "replaced" if mode == "replace" else "edited"
+    spans = (
+        ""
+        if mode == "replace"
+        else f", {len(edited_spans)} span{'s' if len(edited_spans) != 1 else ''}"
+    )
+    return Response(
+        body=(
+            f"{verb} body of {label} ({len(old_body.split())} → "
+            f"{len(new_body.split())} words{spans}).\n"
+            "chunk citation re-validated: the chain still resolves. "
+            "old text kept as a body_replaced ref_event."
+        )
+    )
+
+
+def _assert_chunk_citations(
+    conn: Any, *, finding_ref_id: int, meta: dict[str, Any] | None
+) -> None:
+    """Re-validate the finding's recorded chunk citations after a body edit.
+
+    ``meta.chain`` hops carry ``{ref_id, chunk_id, ord}`` — ``chunk_id``
+    is a raw JSONB pointer with no FK, so a deleted or re-ingested source
+    chunk leaves it dangling (the ``links`` row that rode with it already
+    went away on the ``ON DELETE CASCADE``). A hop that pins a chunk —
+    by ``chunk_id``, or by ``(ref_id, ord)`` when the chase never
+    resolved an id — must still resolve to a live ``chunks`` row, or the
+    claim's grounding silently evaporated: refuse the edit whole (the
+    ``tx`` rolls back). A hop with neither (an unresolved frontier) pins
+    nothing and is skipped. An empty chain — an acquisition-mode finding
+    — cites through its provenance ``derived-from`` edge instead: that
+    edge is gone only if its chunk died, so require a live one.
+    """
+    chain = list((meta or {}).get("chain") or [])
+    dangling: list[str] = []
+    for i, hop in enumerate(chain):
+        if not isinstance(hop, dict):
+            continue
+        cid = hop.get("chunk_id")
+        ord_ = hop.get("ord")
+        hrid = hop.get("ref_id")
+        if cid is not None:
+            alive = (
+                conn.execute(
+                    "SELECT 1 FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                    (int(cid),),
+                ).fetchone()
+                is not None
+            )
+        elif ord_ is not None and hrid is not None:
+            alive = (
+                conn.execute(
+                    "SELECT 1 FROM chunks WHERE ref_id = %s AND ord = %s "
+                    "AND retired_at IS NULL",
+                    (int(hrid), int(ord_)),
+                ).fetchone()
+                is not None
+            )
+        else:
+            continue
+        if not alive:
+            dangling.append(f"hop {i} (ref_id={hrid}, chunk_id={cid}, ord={ord_})")
+    if dangling:
+        raise BadInput(
+            f"fi{finding_ref_id}'s chunk citation no longer resolves — "
+            f"{'; '.join(dangling)}",
+            next=(
+                "the chunk the claim was read in is gone (deleted or "
+                "re-ingested) — re-register it with a fresh "
+                "put(kind='finding', …, cited_in='<live handle>') or "
+                "delete(kind='finding', id=…) the stale one"
+            ),
+        )
+    if not chain:
+        edge = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s "
+            "AND relation = 'derived-from' LIMIT 1",
+            (finding_ref_id,),
+        ).fetchone()
+        if edge is None:
+            raise BadInput(
+                f"fi{finding_ref_id} has no live derived-from edge — its "
+                "citation is gone (the cited chunk died and the edge "
+                "cascaded with it)",
+                next=(
+                    "re-register the claim with a fresh put() or "
+                    "delete(kind='finding', id=…) the stale one"
+                ),
+            )

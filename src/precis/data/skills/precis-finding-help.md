@@ -427,7 +427,29 @@ edit(
 never filled is still a dead end) — if a fetch never ran, ask the user
 to run `precis worker --only fetch` first.
 
-**`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
+## Fix the claim prose — the body edit
+
+A plain finding's body (the `finding_body` chunk — claim + setup as
+flowing prose) rewrites in place, same anchored grammar as the file
+kinds:
+
+```python
+edit(kind="finding", id="fi42", find="overreaching clause", text="hedged clause")
+edit(kind="finding", id="fi42", mode="replace", text="…whole new body…",
+     reason="clause overstated the scope")
+```
+
+`find`/`text` plus `before=`/`after=`/`match=`/`nth=` anchors;
+`dry_run=True` previews the diff; `reason=` lands on the `body_replaced`
+event that keeps the old text. Same id, links and chase state stay put —
+no delete+re-put. The chunk citation is re-validated: if the chunk the
+claim was read in is gone, the edit refuses and nothing is written. A
+`TAPROOT:claim` hub is refused — its body IS the claim's identity, so
+reword it through `title=` (below), which keeps `refs.title`, the chunk
+and the `pub_id` in sync.
+
+**`edit(kind='finding', ...)` accepts exactly one of** a body edit
+(`find=`/`text=` with `mode='find-replace'|'replace'`) | `pick_candidate=`
 (above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` |
 `testable_by=`/`motivation=` — passing more than one errors
 (`testable_by=`/`motivation=` may combine with each other, and

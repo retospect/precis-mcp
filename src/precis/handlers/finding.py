@@ -74,8 +74,8 @@ sibling modules so this file stays legible:
 
 * :mod:`precis.handlers._finding_acquire` — the acquisition-mode
   (``wants=``) mint, ``put_acquiring()``.
-* :mod:`precis.handlers._finding_edit` — the ``edit()`` verb's three ops
-  (pick_candidate / title / unacquirable_note).
+* :mod:`precis.handlers._finding_edit` — the ``edit()`` verb's ops
+  (pick_candidate / title / unacquirable_note / sharpen / body edit).
 * :mod:`precis.handlers._finding_evidence` — ``get(view='evidence')``
   rendering + patent-family collapsing.
 * :mod:`precis.handlers._finding_judgments` — ``get(view='judgments')``
@@ -219,6 +219,7 @@ class FindingHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_edit=True,
+        edit_modes=("replace", "find-replace"),
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -1605,6 +1606,14 @@ class FindingHandler(NumericRefHandler):
         self,
         *,
         id: int | str | None = None,
+        mode: str | None = None,
+        find: str | None = None,
+        text: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        where: str | None = None,
+        match: str | None = None,
+        nth: int | None = None,
         pick_candidate: str | int | None = None,
         title: str | None = None,
         unacquirable_note: str | None = None,
@@ -1639,6 +1648,14 @@ class FindingHandler(NumericRefHandler):
         there since it only ever touches ``self.store``/``self.kind``, not
         any other handler state.
 
+        A body edit (``mode='find-replace'`` with ``find=`` + ``text=``, or
+        ``mode='replace'`` with ``text=``) rewrites a plain finding's
+        ``finding_body`` chunk — the correction door for a wrong or
+        overreaching clause (gr509620); delete+insert, old text kept in a
+        ``body_replaced`` ref_event, and the ``meta.chain`` chunk
+        citations re-validated in the same transaction. Refused on a
+        ``TAPROOT:claim`` hub (``title=`` is the in-sync rewrite there).
+
         ``refine='now'`` (hub only, exclusive with every other kwarg except
         ``dry_run``) runs the hub_refine pass over that one hub synchronously
         (:func:`precis.workers.hub_refine.refine_hub_now`) and reports the
@@ -1648,6 +1665,12 @@ class FindingHandler(NumericRefHandler):
             if any(
                 v is not None
                 for v in (
+                    find,
+                    text,
+                    before,
+                    after,
+                    where,
+                    nth,
                     pick_candidate,
                     title,
                     unacquirable_note,
@@ -1657,7 +1680,7 @@ class FindingHandler(NumericRefHandler):
                     reason,
                     meta,
                 )
-            ):
+            ) or (match is not None and match != "unique"):
                 raise BadInput(
                     "refine='now' is exclusive with the other edit kwargs",
                     next="edit(kind='finding', id='fi<N>', refine='now')  "
@@ -1668,6 +1691,14 @@ class FindingHandler(NumericRefHandler):
             self.store,
             kind=self.kind,
             id=id,
+            mode=mode,
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
             pick_candidate=pick_candidate,
             title=title,
             unacquirable_note=unacquirable_note,

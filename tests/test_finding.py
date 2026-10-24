@@ -2337,9 +2337,9 @@ class TestPickCandidateSelf:
     def test_reason_rejected_without_self_pick(self, store) -> None:
         fid, _ = self._seed_dead_chain(store)
         h = _make_handler(store)
-        with pytest.raises(BadInput, match="only applies to pick_candidate='self'"):
+        with pytest.raises(BadInput, match="reason= applies"):
             h.edit(id=fid, pick_candidate="miller23a", reason="x")
-        with pytest.raises(BadInput, match="only applies to pick_candidate='self'"):
+        with pytest.raises(BadInput, match="reason= applies"):
             h.edit(id=fid, reason="x")
 
     def test_blank_reason_rejected(self, store) -> None:
@@ -3075,3 +3075,216 @@ def test_edit_unknown_finding_names_the_search(store) -> None:
     with pytest.raises(BadInput, match="no finding with ref_id=999999") as ei:
         h.edit(id=999999, unacquirable_note="print-only")
     assert "search(kind='finding'" in str(ei.value.next)
+
+
+# ── edit(mode='find-replace'|'replace') — the body edit (gr509620) ────
+
+
+class TestEditBody:
+    """``edit(kind='finding', id=N, mode=…, find=…, text=…)`` rewrites a
+    plain finding's ``finding_body`` chunk — delete+insert, old text in a
+    ``body_replaced`` ref_event, and the recorded chunk citations
+    re-validated in the same transaction."""
+
+    def _put_finding(
+        self,
+        store,
+        *,
+        body: str = "Claim prose with an overreaching clause to strike.",
+        cited_in: str = "miller23a~0",
+    ) -> int:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="the claim", body=body, scope={}, cited_in=cited_in)
+        return int(_search(r"id=(\d+)", resp.body).group(1))
+
+    def _body(self, store, ref_id: int) -> str | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'finding_body' AND retired_at IS NULL "
+                "ORDER BY ord LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def test_find_replace_edits_the_span(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        out = h.edit(
+            id=fid,
+            mode="find-replace",
+            find="an overreaching clause",
+            text="a hedged clause",
+        )
+        assert "edited body of" in out.body
+        assert self._body(store, fid) == "Claim prose with a hedged clause to strike."
+
+    def test_find_replace_delete_span(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        h.edit(id=fid, find=" with an overreaching clause", text="")
+        assert self._body(store, fid) == "Claim prose to strike."
+
+    def test_replace_rewrites_whole_body(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        out = h.edit(id=fid, mode="replace", text="Entirely new claim prose.")
+        assert "replaced body of" in out.body
+        assert self._body(store, fid) == "Entirely new claim prose."
+
+    def test_missing_find_refused_with_next(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="not found") as ei:
+            h.edit(id=fid, find="no such span", text="x")
+        assert ei.value.next
+        assert self._body(store, fid) == (
+            "Claim prose with an overreaching clause to strike."
+        )
+
+    def test_text_alone_without_find_points_at_replace(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires find=") as ei:
+            h.edit(id=fid, text="new body")
+        assert "mode='replace'" in str(ei.value.next)
+
+    def test_replace_refuses_stray_anchors(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="takes text= only"):
+            h.edit(id=fid, mode="replace", text="x", find="y")
+
+    def test_citation_still_resolves_after_edit(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        out = h.edit(id=fid, find="overreaching", text="narrower")
+        assert "citation re-validated" in out.body
+        # The derived-from edge to the cited chunk is untouched.
+        links = store.links_for(fid, direction="out", relation="derived-from")
+        assert len(links) == 1
+        assert links[0].dst_ord == 0
+        with store.pool.connection() as conn:
+            alive = conn.execute(
+                "SELECT 1 FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                (links[0].dst_chunk_id,),
+            ).fetchone()
+        assert alive is not None
+
+    def test_dangling_chunk_citation_refuses_the_edit(self, store) -> None:
+        fid = self._put_finding(store)
+        # Delete the chunk the finding cites (re-ingest does exactly this):
+        # the derived-from edge cascades away and meta.chain[0].ord dangles.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = ("
+                "  SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+                "  AND relation = 'derived-from')",
+                (fid,),
+            )
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="no longer resolves"):
+            h.edit(id=fid, find="overreaching", text="narrower")
+        # Rolled back whole — the body is unchanged.
+        assert self._body(store, fid) == (
+            "Claim prose with an overreaching clause to strike."
+        )
+
+    def test_body_replaced_event_written_with_reason(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        h.edit(
+            id=fid,
+            find="an overreaching clause",
+            text="a hedged clause",
+            reason="clause overstated the scope",
+        )
+        events = store.events_for(fid, event="body_replaced")
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["old_text"] == (
+            "Claim prose with an overreaching clause to strike."
+        )
+        assert payload["new_text"] == "Claim prose with a hedged clause to strike."
+        assert payload["reason"] == "clause overstated the scope"
+
+    def test_reason_rejected_on_other_ops_but_allowed_here(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="reason= applies"):
+            h.edit(id=fid, unacquirable_note="print-only", reason="why")
+
+    def test_hub_body_edit_refused(self, store) -> None:
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="A claim sentence.", scope={}),
+        )
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="TAPROOT:claim hub") as ei:
+            h.edit(id=hub_id, find="claim", text="other")
+        assert "title=" in str(ei.value.next)
+
+    def test_edit_by_fi_handle_and_pub_id(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        out = h.edit(id=f"fi{fid}", find="overreaching", text="narrower")
+        assert "edited body" in out.body
+        with store.pool.connection() as conn:
+            pub_id = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'pub_id'",
+                (fid,),
+            ).fetchone()[0]
+        out = h.edit(id=pub_id, find="narrower", text="still narrower")
+        assert "edited body" in out.body
+        assert self._body(store, fid) == (
+            "Claim prose with an still narrower clause to strike."
+        )
+
+    def test_body_edit_exclusive_with_pick_candidate(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="exactly one"):
+            h.edit(id=fid, find="overreaching", text="x", pick_candidate="a")
+
+    def test_dry_run_previews_without_writing(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        out = h.edit(id=fid, find="overreaching", text="narrower", dry_run=True)
+        assert "narrower" in out.body  # the diff shows the replacement line
+        assert self._body(store, fid) == (
+            "Claim prose with an overreaching clause to strike."
+        )
+
+    def test_unknown_mode_refused(self, store) -> None:
+        fid = self._put_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="mode="):
+            h.edit(id=fid, mode="append", text="x")
+
+    def test_empty_result_refused(self, store) -> None:
+        fid = self._put_finding(store, body="only this")
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="empty body"):
+            h.edit(id=fid, find="only this", text="")
+
+    def test_chunk_pinned_edge_refuses(self, store) -> None:
+        """A link pinned at the body chunk would be severed by the
+        delete+insert — the edit refuses rather than drop it silently."""
+        fid = self._put_finding(store)
+        other = _seed_paper(store, cite_key="other17")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'finding_body'",
+                (fid,),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id, "
+                "relation, set_by) VALUES (%s, %s, %s, 'related-to', 'agent')",
+                (other, fid, chunk_id),
+            )
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="endpoint"):
+            h.edit(id=fid, find="overreaching", text="narrower")
