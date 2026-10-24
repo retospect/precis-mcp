@@ -210,6 +210,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
+    # D10: the seed lane's own weights stamps, keyed by model_index — each
+    # seed job hashed the checkpoint on ITS host, where the file actually
+    # exists. ``finish``/``manifest._mlips`` prefers these over a host that
+    # cannot locate it, and refuses when two stamps disagree. Seed metas
+    # predating the stamp carry no key and contribute nothing.
+    seed_weights: dict[int, set[str | None]] = {}
+    for m in seed_meta:
+        mi = m.get("model_index")
+        if isinstance(mi, int) and not isinstance(mi, bool) and "weights_sha256" in m:
+            seed_weights.setdefault(mi, set()).add(m.get("weights_sha256"))
+
     ctx.append_chunk(
         "job_event",
         f"autocatpath_aggregate: combining {len(seed_results)} seed "
@@ -282,6 +293,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "ran_on": params.get("target_node"),
             "n_seed_partials": len(seed_results),
         },
+        seed_weights=seed_weights,
     )
     if not ok:
         return

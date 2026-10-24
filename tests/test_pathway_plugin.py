@@ -2729,6 +2729,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "partial",
         "lattice",
         "structures",
+        "weights_sha256",
     }
     assert ctx.meta_updates["content_key"] == "deadbeef"
     assert ctx.meta_updates["seed"] == 1

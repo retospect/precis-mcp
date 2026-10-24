@@ -133,11 +133,23 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         from precis_pathway import manifest as vm
 
         if cur.get("config_snapshot_yaml"):
+            # The stored mlip weight pins ride along verbatim — they were
+            # stamped by the seed lane and this host cannot locate the
+            # checkpoints, so rebuilding without them would mint a
+            # DIFFERENT manifest_id and clobber the aggregate's record.
+            stored_mlip = (
+                (cur.get("validation_manifest") or {}).get("lock") or {}
+            ).get("mlip") or []
             manifest = vm.build_safely(
                 config=dict(cur.get("config") or config),
                 config_snapshot_yaml=str(cur["config_snapshot_yaml"]),
                 results={**(cur.get("results") or {}), **results},
                 autocatpath_version=str(cur.get("autocatpath_version") or ""),
+                seed_weights={
+                    i: {ml.get("weights_sha256")}
+                    for i, ml in enumerate(stored_mlip)
+                    if isinstance(ml, dict)
+                },
             )
             manifest_id = vm.stamp_results(results, manifest)
             if manifest is not None:

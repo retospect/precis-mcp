@@ -1401,14 +1401,14 @@ is switched or slice 9 applies an offset.
 | 2 | numba in the agent image? | **Yes.** | D5 selector and local update in numba; numpy fallback kept for tests only. |
 | 3 | DRC from the MF model, KMC for TOF and coverages? | **Yes.** | D7; no KMC-DRC. |
 | 5 | Default product pressures when a quest states none? | **No default; sweep pressure and T for the optimum.** | D1 `objective`, D7 sweep axes `T`, `p_total`; a quest stating nothing gets the sweep, never `far`. |
-| 7 | Zacros benchmark without Zacros? | **Use Zacros as the reference; get a licence.** | Licence facts in §Codes. Application is outward-facing: the prepared text and URL are below for Reto to submit; nothing was submitted. |
+| 7 | Zacros benchmark without Zacros? | **Use Zacros as the reference; get a licence.** | Licence facts in §Codes. Reto requested the licence on 2026-10-24 (prepared text and URL below); review of the Preview terms is pending. |
 | 8 | Lateral interactions now? | **After the first paper.** | Slice 7 last. |
 | D6 | Tier ladder | **Tier 2 (Novotny MCAMC) is right; preferred.** | D6 primary; channel scaling fallback; AMC comparison harness. |
 | D5 | Diffusion | **Adsorption and desorption only, no motion.** | D5; costs stated. |
 | D3 | Battery | **Half overkill; drop Wegscheider; run the rest if cheap; most steps quasi-equilibrated.** | D3 core/optional split; QE consequences stated. |
 | D7 | MF vs KMC comparison always | **Incorrect; may not be feasible.** | D7 optional diagnostic at `kmc_points`. |
 
-**Zacros licence — prepared for Reto to submit (not submitted).**
+**Zacros licence — requested by Reto (2026-10-24); review of Preview terms pending.**
 Steps (zacros.org/software/obtain-zacros, read 2026-10-19): (1) register
 at `https://xip.uclventures.com/register/` with a work e-mail and confirm
 the e-mail link; (2) open `https://xip.uclventures.com/product/Zacros-4`;

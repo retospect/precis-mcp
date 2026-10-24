@@ -471,7 +471,9 @@ def run_seed_partial(
     lowest-energy relaxed geometry this unit saw per state, serialised to
     extxyz so it survives the JSON job boundary; ``aggregate_seed_partials``
     keeps the min-energy geometry across seeds/models and hands it to the
-    native structure ingest, slice-1b).
+    native structure ingest, slice-1b), and ``weights_sha256`` (the sha256
+    of the checkpoint this unit loaded, D10 — ``None`` for EMT or when the
+    file could not be located; the seed lane is where the weights live).
     """
     from autocatpath.calculators import make_calculator, resolve_backend
     from autocatpath.pipeline import run_one_seed
@@ -530,6 +532,16 @@ def run_seed_partial(
         structures = cast(
             "dict[str, SeedStructureEntry]", narrow_structures(structures, partial)
         )
+    weights_sha: str | None = None
+    try:
+        from precis_pathway import manifest as _vm
+
+        # D10: hash the checkpoint where it actually is — this unit's host.
+        # The aggregate's CPU worker usually cannot locate the file, so the
+        # manifest's ``_mlips`` prefers this stamp over a host miss.
+        weights_sha = _vm.weights_sha256_for(backend, model)
+    except Exception:  # provenance only; never fails the unit
+        log(f"[{tag}] weights_sha256: could not hash the checkpoint")
     return {
         "seed": seed,
         "model": tag,
@@ -537,6 +549,7 @@ def run_seed_partial(
         "partial": partial,
         "lattice": lattice,
         "structures": structures,
+        "weights_sha256": weights_sha,
     }
 
 

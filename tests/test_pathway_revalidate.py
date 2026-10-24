@@ -13,6 +13,7 @@ post-deploy step (spec slice 10), not a test here.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,12 +25,12 @@ import pytest
 pytest.importorskip("autocatpath")
 pytest.importorskip("autocatpath.manifest")  # engine >= 0.38
 
-from autocatpath import kinetics
+from autocatpath import kinetics, pipeline
 from autocatpath import manifest as engine_manifest
 from autocatpath.config import Config
 
 from precis_pathway import manifest as vm
-from precis_pathway import revalidate_job
+from precis_pathway import revalidate_job, runner
 from precis_pathway.revalidate_job import Refused, revalidate
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pw455722_results.json"
@@ -423,6 +424,309 @@ def test_manifest_view_renders_a_real_entry(stored, solve, lock) -> None:
     assert "job 2: drifted(tof_chain) (complete: false) [same_platform]" in text
     assert "drift tof_chain:" in text
     assert "not run: energies — the min-energy-path leg" in text
+
+
+# --- seed-stamped weights_sha256 (D10 loose end b) -------------------------------------
+
+
+def _fake_run_one_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pipeline, "run_one_seed", lambda *a, **k: {"seed": 0, "states": {}}
+    )
+
+
+def _seed_config(fx: dict[str, Any]) -> dict[str, Any]:
+    """``fx["config"]`` minus the lattice relax (``relax_lattice`` with
+    ``a: null`` would build a real calculator — the fake checkpoint test
+    only wants the hash path, not a MACE load)."""
+    config = copy.deepcopy(fx["config"])
+    config["slab"]["relax_lattice"] = False
+    return config
+
+
+def test_seed_stamps_the_checkpoint_hash_where_it_lives(
+    fx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``run_seed_partial`` hashes the checkpoint on ITS host (the GPU
+    lane, where the file actually is) — the sha256 of its bytes."""
+    ckpt = tmp_path / "medium.model"
+    blob = b"fake MACE checkpoint"
+    ckpt.write_bytes(blob)
+    want = hashlib.sha256(blob).hexdigest()
+    monkeypatch.setattr(
+        engine_manifest, "resolve_weights_path", lambda _b, _m: str(ckpt)
+    )
+    _fake_run_one_seed(monkeypatch)
+    result = runner.run_seed_partial(_seed_config(fx), 0, 0)
+    assert result["weights_sha256"] == want
+    # the engine memoises per (path, size, mtime): a second hash call on
+    # the same file never re-reads it
+    calls: list[str] = []
+    real = engine_manifest.sha256_file
+
+    def _sha(p: Any) -> str:
+        calls.append(str(p))
+        return real(p)
+
+    monkeypatch.setattr(engine_manifest, "sha256_file", _sha)
+    assert vm.weights_sha256_for("mace", "medium") == want
+    assert calls == []
+
+
+def test_seed_stamp_is_none_for_emt_unlocatable_or_a_hash_fault(
+    fx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EMT has no weights; a checkpoint the host cannot locate stamps
+    ``None``; and a hashing fault degrades to ``None`` — provenance never
+    fails the unit."""
+    _fake_run_one_seed(monkeypatch)
+    config = _seed_config(fx)
+    config["mlip"] = {"backend": "emt"}
+    result = runner.run_seed_partial(config, 0, 0)
+    assert result["model"] == "emt"
+    assert result["weights_sha256"] is None
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", lambda _b, _m: None)
+    result = runner.run_seed_partial(config, 0, 0, force_backend="mace")
+    assert result["weights_sha256"] is None
+
+    def _boom(_b: str, _m: Any) -> str:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", _boom)
+    result = runner.run_seed_partial(config, 0, 0, force_backend="mace")
+    assert result["weights_sha256"] is None
+
+
+def _build(config: dict[str, Any], **kw: Any) -> dict[str, Any]:
+    rec = vm.build(
+        config=config,
+        config_snapshot_yaml=json.dumps(config, sort_keys=True),
+        results={},
+        autocatpath_version="0.38.0",
+        **kw,
+    )
+    assert rec is not None
+    return rec
+
+
+def test_manifest_prefers_the_seed_stamp_when_the_host_has_no_checkpoint(
+    fx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The aggregate's CPU worker cannot locate the MACE cache — the
+    seed's own stamp fills the field the host leaves empty."""
+    config = _seed_config(fx)
+    sha = "c" * 64
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", lambda _b, _m: None)
+    rec = _build(config, seed_weights={0: {sha, None}})  # None: a seed that missed
+    ml = rec["lock"]["mlip"][0]
+    assert (ml["backend"], ml["model"], ml["weights_sha256"]) == (
+        "mace",
+        "medium",
+        sha,
+    )
+
+
+def test_manifest_without_seed_stamps_behaves_as_before(
+    fx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy results carry no stamps (no key, or ``None``): the field
+    stays ``None`` and — critically — the manifest id does not move."""
+    config = _seed_config(fx)
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", lambda _b, _m: None)
+    rec = _build(config, seed_weights={0: {None}})
+    assert rec["lock"]["mlip"][0]["weights_sha256"] is None
+    legacy = _build(config)
+    assert legacy["lock"]["mlip"][0]["weights_sha256"] is None
+    assert rec["manifest_id"] == legacy["manifest_id"]
+
+
+def test_manifest_refuses_when_seeds_or_the_host_disagree(
+    fx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disagreement never picks a side: the build refuses and names
+    both values."""
+    config = _seed_config(fx)
+    blob = b"the host's checkpoint"
+    ckpt = tmp_path / "medium.model"
+    ckpt.write_bytes(blob)
+    host_sha = hashlib.sha256(blob).hexdigest()
+    monkeypatch.setattr(
+        engine_manifest, "resolve_weights_path", lambda _b, _m: str(ckpt)
+    )
+    # seeds and host agree -> the hash is stamped
+    rec = _build(config, seed_weights={0: {host_sha}})
+    assert rec["lock"]["mlip"][0]["weights_sha256"] == host_sha
+    # a seed hash the host contradicts -> refusal naming both
+    other = "d" * 64
+    with pytest.raises(
+        vm.WeightsMismatch,
+        match=rf"weights_sha256\[mace:medium\]: seed {other[:12]} != host {host_sha[:12]}",
+    ):
+        _build(config, seed_weights={0: {other}})
+    # two seeds disagree with each other -> refusal naming both
+    a, b = "a" * 64, "b" * 64
+    with pytest.raises(
+        vm.WeightsMismatch,
+        match=rf"seed jobs disagree \({a[:12]} vs {b[:12]}\)",
+    ):
+        _build(config, seed_weights={0: {a, b, None}})
+
+
+def _seed_todo_tree(
+    store: Any, slug: str, weights: list[tuple[int, str | None]]
+) -> tuple[Any, int]:
+    """A minimal (pathway ref + aggregate todo + N seed-todo -> seed-job)
+    tree for ``aggregate_job._dispatch`` — the seed job metas carry only
+    what ``_collect_seed_results`` plus the weights fold read."""
+    from precis.store import Tag
+    from precis.store.types import ChunkInsert
+
+    with store.tx() as c:
+        ref = store.insert_ref(
+            kind="pathway",
+            slug=slug,
+            title="t",
+            meta={"status": "computing"},
+            conn=c,
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text="x", meta={"chunk_kind": "pathway_body"})],
+            conn=c,
+        )
+        agg = store.insert_ref(kind="todo", slug=None, title="agg", meta={}, conn=c)
+        for n, (model_index, sha) in enumerate(weights):
+            st = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="s",
+                meta={},
+                parent_id=agg.id,
+                conn=c,
+            )
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="j",
+                meta={
+                    "job_type": "autocatpath_seed",
+                    "seed": n,
+                    "model_index": model_index,
+                    "model": "mace:medium",
+                    "partial": {"states": {}},
+                    "weights_sha256": sha,
+                },
+                parent_id=st.id,
+                conn=c,
+            )
+            store.add_tag(
+                job.id, Tag.closed("STATUS", "succeeded"), set_by="system", conn=c
+            )
+    return ref, int(agg.id)
+
+
+def _aggregate_dispatch(store: Any, ref: Any, agg_todo_id: int, config: dict) -> Any:
+    ctx = MagicMock()
+    ctx.store = store
+    ctx.meta = {
+        "params": {"pathway_ref_id": ref.id, "config": config},
+        "dispatched_from_todo": agg_todo_id,
+    }
+    from precis_pathway import aggregate_job
+
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+    return ctx
+
+
+def _artifact(config: dict[str, Any]) -> dict[str, Any]:
+    """The ``aggregate_seed_partials`` artifact shape ``finish`` persists,
+    faked — the fold under test is the seed-weight -> manifest plumbing,
+    not the numpy combine."""
+    return {
+        "content_key": "k" * 64,
+        "autocatpath_version": "0.38.0",
+        "config": config,
+        "config_snapshot_yaml": json.dumps(config, sort_keys=True),
+        "results_json": {
+            "nodes": {"*": {}},
+            "edges": [],
+            "n_samples": 0,
+            "substrate": "NO",
+            "target": "NO3",
+            "backend": "mace",
+        },
+        "graph_json": {"nodes": []},
+        "methods_md": "# Methods",
+        "structures_extxyz": {},
+        "warnings": [],
+    }
+
+
+@pytest.fixture
+def fake_combine(monkeypatch: pytest.MonkeyPatch, fx):
+    """The aggregate's compute halves stubbed out; the aggregate host has
+    no checkpoint, exactly like the CPU worker this whole change is for."""
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", lambda _b, _m: None)
+    monkeypatch.setattr(
+        runner,
+        "aggregate_seed_partials_subprocess",
+        lambda _config, _seeds, **_kw: _artifact(_seed_config(fx)),
+    )
+    monkeypatch.setattr(runner, "run_kinetics_subprocess", lambda *a, **k: None)
+
+
+def test_aggregate_folds_the_seed_stamps_into_the_manifest(
+    store: Any, fake_combine, fx
+) -> None:
+    sha = "e" * 64
+    ref, agg_todo_id = _seed_todo_tree(store, "agg-weights-ok", [(0, sha), (0, sha)])
+    ctx = _aggregate_dispatch(store, ref, agg_todo_id, _seed_config(fx))
+    ctx.record_failure.assert_not_called()
+    meta = store.get_ref(kind="pathway", id=ref.id).meta
+    ml = meta["validation_manifest"]["lock"]["mlip"][0]
+    assert ml["weights_sha256"] == sha
+    text = vm.manifest_text(meta)
+    assert sha in text and "not located when stamped" not in text
+
+
+def test_aggregate_records_a_weights_disagreement_instead_of_stamping(
+    store: Any, fake_combine, fx
+) -> None:
+    a, b = "a" * 64, "b" * 64
+    ref, agg_todo_id = _seed_todo_tree(store, "agg-weights-x", [(0, a), (0, b)])
+    ctx = _aggregate_dispatch(store, ref, agg_todo_id, _seed_config(fx))
+    ctx.record_failure.assert_not_called()
+    meta = store.get_ref(kind="pathway", id=ref.id).meta
+    assert "validation_manifest" not in meta
+    events = [
+        c.args[1] for c in ctx.append_chunk.call_args_list if c.args[0] == "job_event"
+    ]
+    assert any(
+        "manifest not stamped" in t and a[:12] in t and b[:12] in t for t in events
+    )
+
+
+def test_a_rebuild_with_the_stored_pins_keeps_the_same_manifest_id(
+    fx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``kinetics_job`` restamps the manifest from stored inputs — the
+    stored mlip pins ride along as ``seed_weights``, or the rebuild would
+    mint a different id and clobber the aggregate's record."""
+    config = _seed_config(fx)
+    sha = "c" * 64
+    monkeypatch.setattr(engine_manifest, "resolve_weights_path", lambda _b, _m: None)
+    rec = _build(config, seed_weights={0: {sha}})
+    # exactly what kinetics_job constructs from the stored record
+    stored_mlip = rec["lock"]["mlip"]
+    again = _build(
+        config,
+        seed_weights={
+            i: {ml.get("weights_sha256")}
+            for i, ml in enumerate(stored_mlip)
+            if isinstance(ml, dict)
+        },
+    )
+    assert again["manifest_id"] == rec["manifest_id"]
 
 
 # --- through the real store ----------------------------------------------------------

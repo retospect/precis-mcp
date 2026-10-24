@@ -126,6 +126,9 @@ class SeedPartialResult(TypedDict):
     partial: dict[str, Any]
     lattice: dict[str, float]
     structures: dict[str, SeedStructureEntry]
+    #: sha256 of the MLIP checkpoint this unit loaded (D10), ``None`` for
+    #: EMT or when the file could not be located on the seed's host.
+    weights_sha256: str | None
 
 
 class CoverageScanResult(TypedDict):

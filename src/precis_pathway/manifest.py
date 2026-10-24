@@ -20,10 +20,18 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+class WeightsMismatch(ValueError):
+    """Seed-stamped weights hashes disagree with each other or with the
+    checkpoint this host resolves. Raised rather than picking one: the
+    record refuses to carry a weights hash it cannot attest to."""
+
 
 #: Override for the lock file this host runs from (tests, odd layouts).
 LOCK_ENV = "PRECIS_UV_LOCK"
@@ -111,7 +119,32 @@ def lock_sha256() -> tuple[str | None, str | None]:
     return m.sha256_file(path), source
 
 
-def _mlips(config: dict[str, Any], m: Any) -> tuple[Any, ...]:
+def weights_sha256_for(backend: str, model: str | None) -> str | None:
+    """The sha256 of the checkpoint this host would load for ``(backend,
+    model)`` — ``None`` when there is none to find (EMT has no weights) or
+    it cannot be located here.  ``autocatpath.manifest`` memoises per
+    (path, size, mtime), so a checkpoint of hundreds of MB is hashed at
+    most once per process; the seed job calls this once per unit."""
+    m = engine_manifest()
+    if m is None:
+        return None
+    path = m.resolve_weights_path(backend, model)
+    return m.weights_sha256(path) if path else None
+
+
+def _mlips(
+    config: dict[str, Any],
+    m: Any,
+    seed_weights: Mapping[int, Iterable[str | None]] | None = None,
+) -> tuple[Any, ...]:
+    """One ``Mlip`` per ``(backend, model)`` spec, weights hash preferred
+    from the seed stamps (``seed_weights``: ``model_index`` -> the hashes
+    that unit's seeds observed — the GPU lane is where the checkpoint
+    exists) over this host's own resolution, which usually finds nothing
+    on the aggregate's CPU worker. A ``None`` stamp is "couldn't locate",
+    not "no weights": it never outvotes a real hash. Disagreement — two
+    different stamps, or a stamp vs a locatable host hash — raises
+    :class:`WeightsMismatch`; the manifest never picks one."""
     mlip = config.get("mlip") or {}
     try:
         from precis_pathway import runner
@@ -120,13 +153,26 @@ def _mlips(config: dict[str, Any], m: Any) -> tuple[Any, ...]:
     except Exception:  # config the engine cannot parse: record the block as given
         specs = [(str(mlip.get("backend") or "emt"), mlip.get("model"))]
     out = []
-    for backend, model in specs:
+    for i, (backend, model) in enumerate(specs):
+        tag = f"{backend}:{model}" if model else str(backend)
         path = m.resolve_weights_path(backend, model)
+        host = m.weights_sha256(path) if path else None
+        stamps = {h for h in (seed_weights or {}).get(i) or () if h}
+        if len(stamps) > 1:
+            raise WeightsMismatch(
+                f"weights_sha256[{tag}]: seed jobs disagree "
+                f"({' vs '.join(h[:12] for h in sorted(stamps))})"
+            )
+        seed = next(iter(stamps), None)
+        if seed and host and seed != host:
+            raise WeightsMismatch(
+                f"weights_sha256[{tag}]: seed {seed[:12]} != host {host[:12]}"
+            )
         out.append(
             m.Mlip(
                 backend=backend,
                 model=model,
-                weights_sha256=m.weights_sha256(path) if path else None,
+                weights_sha256=host or seed,
                 task=mlip.get("task"),
                 dtype=mlip.get("dtype"),
             )
@@ -141,9 +187,14 @@ def build(
     results: dict[str, Any],
     autocatpath_version: str,
     slab_extxyz: str | None = None,
+    seed_weights: Mapping[int, Iterable[str | None]] | None = None,
 ) -> dict[str, Any] | None:
     """The stored form (``to_json``) of the manifest for one pathway result,
-    or ``None`` when the engine predates the manifest (< 0.38)."""
+    or ``None`` when the engine predates the manifest (< 0.38).
+
+    ``seed_weights`` feeds :func:`_mlips` — the seed lane's own weights
+    stamps, keyed by ``model_index``; see it for the disagreement rule
+    (:class:`WeightsMismatch`)."""
     m = engine_manifest()
     if m is None:
         return None
@@ -158,7 +209,11 @@ def build(
             autocatpath_version=autocatpath_version,
             autocatpath_sha=getattr(autocatpath, "__git_sha__", None),
         ),
-        lock=m.Lock(uv_lock_sha256=uv_sha, lock_source=source, mlip=_mlips(config, m)),
+        lock=m.Lock(
+            uv_lock_sha256=uv_sha,
+            lock_source=source,
+            mlip=_mlips(config, m, seed_weights=seed_weights),
+        ),
         platform=m.capture_platform(),
         seeds=m.seeds_from_config(config),
         inputs=m.Inputs(
@@ -332,6 +387,7 @@ __all__ = [
     "CPU_LEGS",
     "NOT_RUN_LEGS",
     "NO_TPD_RECORD",
+    "WeightsMismatch",
     "build",
     "build_safely",
     "engine_manifest",
@@ -341,4 +397,5 @@ __all__ = [
     "observables_of",
     "precis_sha",
     "stamp_results",
+    "weights_sha256_for",
 ]

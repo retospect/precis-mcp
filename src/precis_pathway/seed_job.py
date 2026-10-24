@@ -250,6 +250,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         partial=partial,
         lattice=result.get("lattice") or {},
         structures=result.get("structures") or {},
+        weights_sha256=result.get("weights_sha256"),
         **_provenance_meta(params),
     )
     n_states = len(partial.get("states") or {})
@@ -414,6 +415,7 @@ def _poll(ctx: Any, handle: Any) -> bool:
         partial=partial,
         lattice=result.get("lattice") or {},
         structures=result.get("structures") or {},  # see _dispatch's note
+        weights_sha256=result.get("weights_sha256"),
         **_provenance_meta(params),
     )
     tail = (status.get("tail") or "")[-4000:]

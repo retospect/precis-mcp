@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -563,6 +564,7 @@ def finish(
     pathway_slug: str | None,
     produced_by: str,
     extra_meta: dict[str, Any] | None = None,
+    seed_weights: Mapping[int, Iterable[str | None]] | None = None,
 ) -> bool:
     """Persist ``artifact`` onto the pathway ref and stamp the scalar
     summary onto the CALLING job's own meta — the contract
@@ -578,18 +580,29 @@ def finish(
         # kinetics v2 slice 10 (D10): the validation manifest and its id ride
         # on the result ref, the D8 record and this job; None on an engine
         # < 0.38 or any build fault (provenance never fails a result).
+        # ``seed_weights`` carries the seed lane's own checkpoint hashes —
+        # a disagreement refuses to stamp rather than pick one, and the
+        # job_event names both values.
         from precis_pathway import manifest as vm
 
-        manifest = (
-            vm.build_safely(
-                config=artifact["config"],
-                config_snapshot_yaml=artifact["config_snapshot_yaml"],
-                results=artifact["results_json"],
-                autocatpath_version=artifact["autocatpath_version"],
-            )
-            if artifact.get("config_snapshot_yaml") and artifact.get("config")
-            else None
-        )
+        manifest = None
+        if artifact.get("config_snapshot_yaml") and artifact.get("config"):
+            try:
+                manifest = vm.build(
+                    config=artifact["config"],
+                    config_snapshot_yaml=artifact["config_snapshot_yaml"],
+                    results=artifact["results_json"],
+                    autocatpath_version=artifact["autocatpath_version"],
+                    seed_weights=seed_weights,
+                )
+            except vm.WeightsMismatch as exc:
+                log.warning("%s: %s", produced_by, exc)
+                ctx.append_chunk(
+                    "job_event",
+                    f"{produced_by}: validation manifest not stamped — {exc}",
+                )
+            except Exception:
+                log.warning("validation manifest: build failed", exc_info=True)
         manifest_id = vm.stamp_results(artifact["results_json"], manifest)
         if manifest is not None:
             pathway_extra["validation_manifest"] = manifest
