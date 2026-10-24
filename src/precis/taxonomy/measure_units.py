@@ -79,7 +79,9 @@ MINUS_FOLD: Final[dict[int, str]] = {ord(c): "-" for c in MINUS_CHARS}
 
 #: A leading dash of any print form, optionally followed by spaces
 #: (``– 1.0``, ``−0.5``, ``‒3``, ``— 5``), folded to a plain minus.
-_LEAD_MINUS_RE: Final[re.Pattern[str]] = re.compile(rf"^[{re.escape(MINUS_CHARS)}]+\s*")
+_LEAD_MINUS_RE: Final[re.Pattern[str]] = re.compile(
+    rf"^[-{re.escape(MINUS_CHARS)}]+\s*"
+)
 
 _NUM: Final[str] = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _POINT_RE: Final[re.Pattern[str]] = re.compile(rf"^({_NUM})$")

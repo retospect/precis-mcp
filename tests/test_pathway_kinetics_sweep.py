@@ -14,6 +14,11 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
+# precis_pathway imports autocatpath; CI's default env has no catalyst extra.
+pytest.importorskip("autocatpath")
+
 
 def _sweep_payload() -> dict[str, Any]:
     """A REAL ``kinetics.sweep`` payload, captured from

@@ -226,7 +226,11 @@ _TEX_WRAP_RE = re.compile(
     r"\s*\{([^{}]*)\}"
 )
 _TEX_FRAC_RE = re.compile(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
-_TEX_SPACE_RE = re.compile(r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|~")
+# ``~`` is a TeX tie only between two glued tokens (``12~eV``); a leading
+# or spaced ``~`` is the approximate-value prefix (``~12``) and survives.
+_TEX_SPACE_RE = re.compile(
+    r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|(?<=[\w}$])~(?=[\w\\$])"
+)
 _TEX_DROP_RE = re.compile(
     r"\\(?:left|right|bigg?|Bigg?|big[lr]|Big[lr]|rm|bf|it|sf|tt|cal|"
     r"tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|"
