@@ -24,3 +24,15 @@ backup_window_end_utc: "04:20"
 # Nightly B2 offsite sync. Off: the offsite copy is a full NAS-disk copy
 # (td461209, Reto 2026-10-11). Set true in the overlay to re-enable.
 b2_sync_enabled: false
+
+# Incremental leg (backup-incremental phase 1): uncompressed fixed-dir
+# pg_dump rsynced to the dbbackup share for the NAS restic leg. Nightly at
+# 21:45 UTC — outside the 03:00–04:20 window and clear of the optional
+# 03:00 reboot. pg_backup_dir_enabled=false removes the cron entry; the
+# script stays deployed either way.
+pg_backup_dir_enabled: true
+pg_backup_dir_cron_hour: "21"
+pg_backup_dir_cron_minute: "45"
+# The DB node's mount of the dbbackup share. Mirrors the nfs_client role's
+# default — an overlay override lands on both, keep the two in step.
+dbbackup_mount: /mnt/dbbackup

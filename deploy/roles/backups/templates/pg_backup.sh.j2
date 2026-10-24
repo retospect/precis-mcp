@@ -107,10 +107,17 @@ echo "[$(date -u)] Starting pg_dump (directory format, 4 parallel workers, zlib 
 # this nightly job intentionally covers precis_prod only. openclaw is not
 # dumped here (being retired) — revisit when openclaw is dealt with. (The
 # litellm DB was dropped in the 2026-08-06 litellm teardown.)
+# vault._key (migration 0239) holds the vault's pgcrypto passphrase — a
+# *logical* dump of that row would carry the decrypt key next to the
+# ciphertext it protects, so its DDL is dumped but its data is not. A
+# restored/rebuilt DB re-provisions it from the deploy play's vault key
+# task (the row is empty until then, same as postgresql.auto.conf never
+# being in a dump).
 pg_dump -U {{ pg_user }} -d precis_prod \
   --format=directory \
   --jobs=4 \
   --compress=6 \
+  --exclude-table-data=vault._key \
   --file="${LOCAL_DUMP_DIR}"
 DUMP_OK=1  # dump completed — the EXIT trap must NOT reclaim this dir now
 

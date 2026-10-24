@@ -77,6 +77,31 @@
     owner: "{{ pg_user }}"
   become: true
 
+# Incremental leg (backup-incremental phase 1): uncompressed fixed-dir
+# pg_dump rsynced to the dbbackup share, where the NAS restic leg snapshots
+# it. Runs alongside the legacy tar+zstd chain until the first restic
+# restore drill passes — do not remove pg_backup.sh here.
+- name: Deploy directory-dump backup script
+  ansible.builtin.template:
+    src: pg_backup_dir.sh.j2
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/pg_backup_dir.sh"
+    mode: "0750"
+    owner: "{{ pg_user }}"
+  become: true
+
+# The NAS is not Ansible-managed, so its restic leg renders to the DB
+# node's scripts dir as the install source: the release owner copies it to
+# /usr/local/sbin/restic-dbdump.sh on the NAS (0755, root), keeps secrets
+# in /etc/restic/env there, and schedules it hourly in the NAS task
+# scheduler — see the template's header.
+- name: Deploy NAS restic script for the manual NAS install
+  ansible.builtin.template:
+    src: restic-dbdump.sh.j2
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/restic-dbdump.sh"
+    mode: "0644"
+    owner: "{{ pg_user }}"
+  become: true
+
 - name: Deploy USB rsync backup script
   when: backup_usb_mount is defined
   ansible.builtin.template:
@@ -106,6 +131,24 @@
     minute: "{{ pg_backup_cron_minute }}"
     hour: "{{ pg_backup_cron_hour }}"
     job: "{{ host_local_root | default(shared_mount) }}/scripts/pg_backup.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-pg.log 2>&1"
+    user: "{{ pg_user }}"
+  become: true
+
+# 21:45 UTC, nightly: outside the 03:00–04:20 backup window AND clear of the
+# optional 03:00 reboot, ~6 h off the legacy dump so the two chains give
+# distinct restore points rather than back-to-back copies. Runtime ~60–90
+# min (measured: the -Z6 dump is 62 min; -Z0 drops the zlib CPU and the
+# checksum rsync moves only diffs). The script holds its own mkdir lock, so
+# a slow night can't overlap the next tick. The window guard in
+# scripts/lib/backup-window.sh does NOT cover this slot — flagged to the
+# coordinator for a harness-side decision.
+- name: Schedule nightly dir dump to dbbackup
+  ansible.builtin.cron:
+    name: "pg_dump dir backup to dbbackup"
+    state: "{{ 'present' if pg_backup_dir_enabled | bool else 'absent' }}"
+    minute: "{{ pg_backup_dir_cron_minute }}"
+    hour: "{{ pg_backup_dir_cron_hour }}"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/pg_backup_dir.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-pg-dir.log 2>&1"
     user: "{{ pg_user }}"
   become: true
 

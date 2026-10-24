@@ -1,0 +1,100 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# NAS-side restic leg for the incremental DB backup (phase 1,
+# docs/backlog/backup-incremental.md). The NAS is NOT Ansible-managed, so
+# this template ships for a manual install by the release owner:
+#   1. render or hand-copy this file to /usr/local/sbin/restic-dbdump.sh
+#      on the NAS, mode 0755, owner root;
+#   2. keep secrets in /etc/restic/env on the NAS (mode 0600) — never in
+#      the repo;
+#   3. schedule it hourly in the NAS task scheduler. Hourly is deliberate:
+#      the script is a ~2 s stat-check whenever the DB-node leg has not
+#      produced a fresh sync-ok stamp, so the snapshot follows the rsync
+#      by minutes whatever the dump's actual finish time is.
+#
+# What it does on a fresh, quiescent dump:
+#   restic backup <fixed dir> → local repo (the 90-day history, dedup'd)
+#   restic forget --prune      → local repo, spec retention
+#   restic copy                → local → B2 repo (offsite, diffs only)
+#   restic forget --prune      → B2 repo, same retention
+#   touch the last-ok stamps the monitoring heartbeat reads
+#
+# /etc/restic/env must provide: RESTIC_PASSWORD or RESTIC_PASSWORD_FILE
+# (shared by both repos; if they differ, RESTIC_FROM_PASSWORD_FILE covers
+# the local source repo for `restic copy`) and the b2: backend keys
+# (B2_ACCOUNT_ID / B2_ACCOUNT_KEY).
+set -eu
+
+ENV_FILE=/etc/restic/env
+if [ -f "${ENV_FILE}" ]; then
+    . "${ENV_FILE}"
+fi
+
+# The dbbackup share's path ON the NAS (nas_dbbackup_export in the overlay
+# is the same string — the export path is the NAS-local path).
+DBBACKUP_ROOT="{{ nas_dbbackup_export | default('/Volume1/dbbackup') }}"
+SRC="${DBBACKUP_ROOT}/precis_prod_current"
+SYNC_OK="${DBBACKUP_ROOT}/precis_prod_current.sync-ok"
+LOCAL_REPO="{{ nas_restic_local_repo | default('/Volume1/restic/dbdump') }}"
+B2_REPO="{{ nas_restic_b2_repo | default('b2:precis-backup:dbdump') }}"
+# The heartbeat file the monitoring node reads through the botshome share
+# (monitoring_restic_heartbeat_file = nas_root/backups/restic-last-ok —
+# keep in step). The second stamp is leg-specific for the phase-3 monitor.
+STAMP_DIR="{{ nas_nfs_export | default('/Volume1/botshome') }}/backups"
+STATE_DIR=/var/lib/restic-dbdump
+LOCK_DIR="${STATE_DIR}/lock"
+
+RETENTION="--keep-daily 14 --keep-weekly 8 --keep-monthly 12"
+
+mkdir -p "${STATE_DIR}"
+
+# Same mkdir-lock pattern as the DB-node script: no self-overlap, stale
+# locks (>20 h) reclaimed.
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+    LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
+    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -1200 2>/dev/null)" ] \
+        && [ -n "${LOCK_PID}" ] && kill -0 "${LOCK_PID}" 2>/dev/null; then
+        exit 0
+    fi
+    rm -rf "${LOCK_DIR}"
+    mkdir "${LOCK_DIR}" 2>/dev/null || exit 0
+fi
+echo $$ > "${LOCK_DIR}/pid"
+release_lock() {
+    if [ "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" = "$$" ]; then
+        rm -rf "${LOCK_DIR}"
+    fi
+}
+trap release_lock EXIT
+trap 'release_lock; exit 1' INT TERM
+
+# Nothing new or a sync still in flight: the DB-node leg writes
+# precis_prod_current.sync-ok only after its rsync finishes, and rsync -t
+# keeps every data file older than the stamp — so a file newer than the
+# stamp means a rsync is mid-flight. Snapshotting then would freeze a
+# mixed old/new dir.
+if [ ! -f "${SYNC_OK}" ]; then
+    echo "restic-dbdump: no sync-ok stamp at ${SYNC_OK} yet; nothing to do"
+    exit 0
+fi
+if find "${SRC}" -newer "${SYNC_OK}" -print -quit 2>/dev/null | grep -q .; then
+    echo "restic-dbdump: rsync in flight (files newer than sync-ok); trying next run"
+    exit 0
+fi
+STAMP_ID=$(cat "${SYNC_OK}")
+if [ -f "${STATE_DIR}/last-stamp" ] && [ "$(cat "${STATE_DIR}/last-stamp")" = "${STAMP_ID}" ]; then
+    exit 0  # already snapshotted this sync
+fi
+
+[ -f "${LOCAL_REPO}/config" ] || restic -r "${LOCAL_REPO}" init
+restic -r "${B2_REPO}" cat config >/dev/null 2>&1 || restic -r "${B2_REPO}" init
+
+restic -r "${LOCAL_REPO}" backup "${SRC}" --tag precis-dbdump
+# forget+prune BEFORE copy: snapshots the retention drops never cross to B2.
+restic -r "${LOCAL_REPO}" forget ${RETENTION} --prune
+restic -r "${B2_REPO}" copy --from-repo "${LOCAL_REPO}"
+restic -r "${B2_REPO}" forget ${RETENTION} --prune
+
+echo "${STAMP_ID}" > "${STATE_DIR}/last-stamp"
+touch "${STAMP_DIR}/restic-last-ok" "${STAMP_DIR}/restic-dbdump-last-ok"
+echo "restic-dbdump: backup ${STAMP_ID} done"

@@ -1,0 +1,143 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Nightly uncompressed directory dump → dbbackup share (backup-incremental
+# phase 1, docs/backlog/backup-incremental.md). Feeds the NAS restic leg,
+# which snapshots the SAME fixed path each run so restic chunk dedup turns
+# every snapshot into a diff — the property the dated tar.zst archives of
+# the legacy chain never had.
+#
+#   1. pg_dump -Fd -Z0 -j4 into a LOCAL staging dir — no NFS in the dump
+#      path (the lockd hang warning in tasks/main.yml applies). -Z0 because
+#      zlib buys nothing here: restic compresses and dedups on the NAS, and
+#      the legacy -Z6 pass costs ~62 min of mostly-CPU nightly.
+#   2. rsync -rt --delete --inplace --checksum onto the dbbackup share as
+#      the FIXED dir precis_prod_current/. --checksum is what makes only
+#      diffs travel: pg_dump rewrites every file each run (fresh mtimes),
+#      so an mtime compare would re-send ~47 GB nightly; checksums send
+#      only changed blocks of changed tables. --inplace skips the temp-
+#      rename dance — the NAS leg refuses mid-sync snapshots anyway.
+#   3. Write the sibling stamp precis_prod_current.sync-ok AFTER the rsync.
+#      rsync -t lands NAS files with their dump-time mtimes, so the stamp
+#      is always the newest thing under the share; the NAS leg snapshots
+#      only when nothing under the dir is newer than the stamp (quiescent)
+#      and the stamp is one it has not snapshotted yet.
+#   4. Delete the local staging dir (cluster-fileserver-move 4a: no
+#      retained backups on the DB node). A run that dies before the stamp
+#      leaves the NAS dir mixed old/new — unsnapshotable by construction.
+#
+# The legacy 03:30 tar+zstd chain (pg_backup.sh) still runs in parallel
+# until the first restic restore drill passes — nothing here retires it.
+set -euo pipefail
+
+# Same cron-PATH pin as pg_backup.sh: /usr/bin:/bin lacks the Homebrew pg17
+# client bins.
+{% if os_family == 'darwin' %}
+export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
+{% endif %}
+
+LOCAL_BACKUP_DIR="{{ host_local_root | default(shared_mount) }}/backups/postgres"
+DBBACKUP_MOUNT="{{ dbbackup_mount | default('/mnt/dbbackup') }}"
+LOCAL_DUMP_DIR="${LOCAL_BACKUP_DIR}/precis_prod_current"
+NAS_DUMP_DIR="${DBBACKUP_MOUNT}/precis_prod_current"
+SYNC_OK="${DBBACKUP_MOUNT}/precis_prod_current.sync-ok"
+LOCK_DIR="${LOCAL_BACKUP_DIR}/pg_backup_dir.lock"
+# The -Z0 dir runs ~50 GB (prod heap+toast measured 47 GB, 2026-10-24) —
+# keep a wider margin than pg_backup.sh's 25 GB, same gripe-191008 logic.
+MIN_FREE_GB=70
+
+mkdir -p "${LOCAL_BACKUP_DIR}"
+
+DUMP_OK=0
+LOCKED=0
+on_exit() {
+    # Only the lock WE took — an early exit on a held lock must not break
+    # the holder's mutual exclusion, and a wedged run that outlived its
+    # reclaimed lock must not steal the next run's.
+    if [ "${LOCKED}" -eq 1 ] && [ "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" = "$$" ]; then
+        rm -rf "${LOCK_DIR}" 2>/dev/null || true
+    fi
+    # A failed/killed pg_dump leaves a partial dir that can't be resumed;
+    # reclaim it now rather than let it eat the MIN_FREE_GB guard all day.
+    if [ "${DUMP_OK}" -eq 0 ] && [ -d "${LOCAL_DUMP_DIR}" ]; then
+        echo "[$(date -u)] Reclaiming partial/aborted dump dir ${LOCAL_DUMP_DIR}"
+        rm -rf "${LOCAL_DUMP_DIR}" 2>/dev/null || true
+    fi
+}
+trap on_exit EXIT
+
+# ── No self-overlap ──
+# mkdir is the atomic primitive available everywhere (macOS ships no
+# flock(1)). A second tick while a run is in flight exits quietly; a lock
+# older than 20 h is a wedged or dead run — reclaim it so one bad night
+# can't stall the chain forever.
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+    LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
+    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -1200 2>/dev/null)" ] \
+        && [ -n "${LOCK_PID}" ] && kill -0 "${LOCK_PID}" 2>/dev/null; then
+        echo "[$(date -u)] another pg_backup_dir run holds ${LOCK_DIR} (pid ${LOCK_PID}); exiting"
+        exit 0
+    fi
+    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -2 2>/dev/null)" ] && [ -z "${LOCK_PID}" ]; then
+        # Holder is between mkdir and writing its pid — leave it to them.
+        echo "[$(date -u)] fresh lock without pid; leaving it to the holder"
+        exit 0
+    fi
+    echo "[$(date -u)] breaking stale/dead lock ${LOCK_DIR}"
+    rm -rf "${LOCK_DIR}"
+    mkdir "${LOCK_DIR}" 2>/dev/null || { echo "[$(date -u)] lost the lock race; exiting"; exit 0; }
+fi
+LOCKED=1
+echo $$ > "${LOCK_DIR}/pid"
+
+# ── Pre-flight: the dbbackup share must actually be mounted ──
+# Without this, rsync would happily write into the empty mount-point dir on
+# the root disk — a silent "backup" that never leaves the node. The mount
+# is provisioned by the nfs_client dbbackup play once the overlay defines
+# nas_dbbackup_export / nas_lan_name / nas_lan_ip.
+if ! mount | grep -q " on ${DBBACKUP_MOUNT} "; then
+    echo "[$(date -u)] [ERROR] ${DBBACKUP_MOUNT} is not mounted — run the 01-nfs dbbackup play (overlay: nas_dbbackup_export + nas_lan_*)" >&2
+    exit 1
+fi
+
+# ── Pre-flight free-space guard (gripe 191008) ──
+AVAIL_GB=$(df -Pk "${LOCAL_BACKUP_DIR}" | awk 'NR==2 {print int($4/1024/1024)}')
+if [ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB}" ]; then
+    echo "[$(date -u)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${MIN_FREE_GB}GB) — SKIPPING dump to avoid DiskFull"
+    logger -t pg-backup-dir "ABORT: ${AVAIL_GB}GB free < ${MIN_FREE_GB}GB threshold; skipped dir pg_dump"
+    exit 1
+fi
+
+# Clear any leftover staging dir — complete or partial — so pg_dump gets a
+# clean target. An rsync-failed run's complete copy dies here; the next
+# pg_dump supersedes it anyway.
+rm -rf "${LOCAL_DUMP_DIR}"
+
+echo "[$(date -u)] Starting pg_dump (directory format, 4 parallel workers, uncompressed)..."
+# precis_prod only, same coverage decision as pg_backup.sh.
+# vault._key (migration 0239) holds the vault's pgcrypto passphrase — a
+# *logical* dump of that row would carry the decrypt key next to the
+# ciphertext it protects, so its DDL is dumped but its data is not. A
+# restored/rebuilt DB re-provisions it from the deploy play's vault key
+# task (the row is empty until then, same as postgresql.auto.conf never
+# being in a dump).
+pg_dump -U {{ pg_user }} -d precis_prod \
+  --format=directory \
+  --jobs=4 \
+  --compress=0 \
+  --exclude-table-data=vault._key \
+  --file="${LOCAL_DUMP_DIR}"
+DUMP_OK=1  # complete — the EXIT trap must NOT reclaim this dir
+
+LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
+echo "[$(date -u)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
+
+echo "[$(date -u)] Syncing to ${NAS_DUMP_DIR} (checksum diff, in-place)..."
+mkdir -p "${NAS_DUMP_DIR}"
+rsync -rt --delete --inplace --checksum "${LOCAL_DUMP_DIR}/" "${NAS_DUMP_DIR}/"
+
+# Stamp LAST: it must be the newest write under the share (see header).
+date -u +%Y-%m-%dT%H:%M:%SZ > "${SYNC_OK}"
+
+rm -rf "${LOCAL_DUMP_DIR}"
+echo "[$(date -u)] rsync verified by exit status; local staging dir removed"
+echo "[$(date -u)] Dir backup done."

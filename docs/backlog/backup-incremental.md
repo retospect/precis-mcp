@@ -1,5 +1,6 @@
 ---
-status: draft
+status: ready
+claimed-by: gf-backup1
 title: Incremental DB backups — pgBackRest primary, uncompressed dump via restic second
 pillar: platform
 prio: high
@@ -133,4 +134,29 @@ never printed.
 - Reto 2026-10-23: pgBackRest runs straight on the macOS DB node (no
   container); the logical dump stays nightly; B2 cost is fine for now;
   A + B replace the current backup chain (section D).
-- Uncompressed dump size on NAS (estimate 50–80 GB) — measured in slice 1.
+- Reto 2026-10-24 (superseded same day): the logical dump runs every few
+  hours, not nightly. Later that day Reto ruled phase 1 runs **nightly**
+  ("nightly is fine. It never went down yet"), scheduled outside the
+  03:00–04:20 UTC window with a no-overlap lock; the every-few-hours idea
+  is parked. The tar+zstd chain keeps running in parallel until the first
+  restic restore drill passes (skill backup-restore-drill); nothing of
+  the old chain is removed in slice 1, so section D's retire stays a
+  slice-3 item.
+- Reto 2026-10-24 (overlap, gr505334): the dump excludes
+  `vault._key` table data whether or not the gf-dbvault branch has
+  landed — a logical dump must never carry the vault passphrase next to
+  the ciphertext it protects.
+- Slice 1 shipped 2026-10-24 (gf-backup1): `pg_backup_dir.sh` on the DB
+  node (nightly 21:45 UTC, mkdir lock, `-Fd -Z0 -j4`, fixed dir +
+  `rsync -rt --delete --inplace --checksum` → `dbbackup`, local copy
+  deleted) and `restic-dbdump.sh` as the NAS-side template (hourly;
+  quiescence check, local repo + `restic copy` to B2 + `forget` on both,
+  last-ok stamps). The NAS is not Ansible-managed — the release owner
+  copies the rendered script from the DB node's scripts dir to
+  `/usr/local/sbin/` on the NAS and schedules it. Uncompressed dump size:
+  heap+toast measured **47 GB** on prod 2026-10-24 (`pg_database_size` is
+  89 GB incl. indexes); `-Z6` nightly runs 62 min, `-Z0` should run less.
+  Open for the deploy: `dbbackup` was not yet mounted on the DB node at
+  ship time (`/mnt/dbbackup` absent — the nfs_client dbbackup play needs
+  `nas_dbbackup_export` + `nas_lan_*` in the overlay), and the
+  backup-window deploy guard does not cover the 21:45 slot.
