@@ -56,7 +56,7 @@ CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 CEILINGS = {
     "template palette classes": 0,
     "template hex and rgb() literals": 65,
-    "css hex and rgb() literals": 14,
+    "css hex and rgb() literals": 27,  # c5d5d033a bt3d strain box plots; loosening ratified (Reto, me508497)
     "python and static js palette classes": 0,
 }
 
