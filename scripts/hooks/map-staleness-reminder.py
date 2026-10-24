@@ -38,6 +38,26 @@ TRIGGERS = {
     ),
 }
 
+#: Triggers that fire only on an EDIT to an existing item — a freshly
+#: written (still git-untracked) file gets no reminder (gr514353).
+_CREATE_SILENT = {"docs/backlog/"}
+
+
+def _git_tracked(path: str) -> bool | None:
+    """True: tracked; False: untracked (a new file); None: can't tell."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", os.path.basename(path)],
+            cwd=os.path.dirname(path) or None,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
+        return None
+
 
 def _migration_collision(path: str) -> str:
     """If a new migration was written, return a collision warning (else '')."""
@@ -75,6 +95,8 @@ def main() -> int:
 
     for fragment, note in TRIGGERS.items():
         if fragment in path.replace("\\", "/"):
+            if fragment in _CREATE_SILENT and _git_tracked(path) is False:
+                return 0  # a brand-new item: the delete-on-ship note doesn't apply yet
             note += _migration_collision(path)
             print(
                 json.dumps(

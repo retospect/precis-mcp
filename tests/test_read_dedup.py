@@ -397,6 +397,22 @@ def test_cd_segment_rebases_relative_paths(tmp_path: Path) -> None:
     assert out is not None and out["permissionDecision"] == "deny"
 
 
+def test_subagent_serves_never_reach_the_ledger(tmp_path: Path) -> None:
+    """gr514450: a payload carrying ``agent_id`` is a subagent call — its
+    serve lands in the subagent's context, so it must neither be denied nor
+    recorded. Otherwise the parent's first read of the file is refused with
+    a phantom "still in your context"."""
+    f = tmp_path / "check.py"
+    _write(f, "x = 1\n")
+    for tool_call in (_bash(f"cat {f}"), _read(f), _bash(f"cat {f}")):
+        tool_call["agent_id"] = "a-sub"
+        assert _run(tmp_path, tool_call) is None
+    # nothing was recorded: the parent's real first read serves, not denies
+    assert _run(tmp_path, _read(f)) is None
+    out = _run(tmp_path, _read(f))
+    assert out is not None and out["permissionDecision"] == "deny"
+
+
 def test_same_bash_call_twice_on_tool_use_id_is_allowed(tmp_path: Path) -> None:
     """Registered twice (global + project / nudge-delegate + direct), the
     second fire of the same Bash call must pass."""

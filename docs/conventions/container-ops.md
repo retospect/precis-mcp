@@ -128,6 +128,13 @@ then run it as one plain command (this does not launder a refused
 operation — see the routing-around paragraph above). Independent commands
 go out as parallel Bash calls.
 
+The guard's contract is narrower than the rule: it refuses only what it
+cannot statically prove keeps git in this worktree, so
+`git add … && git status` and a git-free `python3 - <<EOF` heredoc both
+RUN (gr514330, gr514423). The one-command shape stays the
+fleet rule because anything the guard cannot fully parse is refused —
+the plain shape is the one that never surprises.
+
 | Refused | Accepted |
 |---|---|
 | `git` inside a loop, pipeline, subshell, `$(...)` or `&&`/`;` chain with variable assignments (68 "git in a construct") | One plain `git …` per Bash call; independent commands as parallel calls |
@@ -142,6 +149,13 @@ go out as parallel Bash calls.
 `github`, `git_sha` and similar word-boundary near-misses pass. The guard
 is a harness built-in; the upstream asks are tracked in
 `docs/backlog/worktree-path-guard-false-positives.md`.
+
+Quote globs that belong to the TOOL, not the shell —
+`grep -rn --include='*.sql'`, `rg -g '*.py'`, `find . -name '*.tex'`. The
+hook shell is zsh: an unquoted `*.sql` is expanded against the cwd *before*
+the command runs, and a non-match aborts the whole line with
+`zsh: no matches found`, so the grep never ran (gr514326;
+bash-reflex-nudge rule E nudges the same fix).
 
 A log audit found ~60% of Bash calls carried a redundant
 `cd` prefix — the single largest source of wasted tokens across the fleet,

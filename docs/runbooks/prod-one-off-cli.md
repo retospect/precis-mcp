@@ -87,9 +87,10 @@ rewrite, `doi_edit_metadata_risk` event), unlike a bare
 
 Two traps that cost the most time:
 
-- A worktree-isolated session's Bash guard refuses heredocs and any "too
-  complex" compound command — `ssh host 'python -' <<'PY'` and even a local
-  `cat > /tmp/x <<'PY'` are rejected. Use the Write tool to create the script,
+- A worktree-isolated session's Bash guard fails closed on what it can't
+  statically prove keeps git in this tree: `ssh host 'python -' <<'PY'` and
+  any "too complex" compound command are rejected, while a git-free local
+  heredoc may run (gr514330). Use the Write tool to create the script,
   then `cat /tmp/x | ssh melchior 'cat > /tmp/x-claude.py'` (two plain
   commands), and run it in a third.
 - ssh to melchior lands as user `deploy`, so a `/tmp` file owned by `reto`

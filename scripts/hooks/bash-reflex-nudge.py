@@ -32,6 +32,12 @@ ambiguous, both rules stay silent rather than guess.
   compression/nudge path. Nudges toward ``Read``. Silent on pipelines (sed
   filtering another command's output) and on stdin reads.
 
+- **Rule E (unquoted glob).** A glob passed to a glob-valued flag
+  (``--include=``, ``--exclude=``, ``-g``/``--glob``, ``-name``/``-iname``)
+  without quotes is expanded by ZSH against the cwd BEFORE the command
+  runs — a non-match aborts the whole line with ``no matches found``, so
+  the grep never executed (gr514326). Nudges toward the quoted form.
+
 - **Dedup delegate.** Before its own rules run, this hook hands the
   payload to ``read-dedup.py``'s ``hook_output`` — the same script the
   Read matcher runs. That is how whole-file Bash serves (``cat``,
@@ -55,7 +61,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _symbol_heuristic import is_symbol_candidate
+from _symbol_heuristic import is_symbol_candidate, path_arg_is_pythonish
 
 
 def _load_read_dedup():
@@ -130,7 +136,7 @@ def _grep_pattern(rest: str) -> str | None:
     return None
 
 
-def _rule_a(command: str) -> str | None:
+def _rule_a(command: str, cwd: str = "") -> str | None:
     body = _CD_PREFIX.sub("", command, count=1)
     m = _GREP_CMD.match(body)
     if not m:
@@ -141,6 +147,20 @@ def _rule_a(command: str) -> str | None:
     pattern = _grep_pattern(rest)
     if pattern is None:
         return None
+    try:
+        positional = [
+            t
+            for t in shlex.split(rest)
+            if t not in _SHELL_BREAK and not t.startswith("-")
+        ]
+    except ValueError:
+        positional = []
+    # Every positional after the pattern is a search TARGET; one that is
+    # clearly non-Python (a ``.sql`` file, a migrations dir of pure SQL)
+    # silences the nudge — coderef only answers over Python (gr514328).
+    for arg in positional[1:]:
+        if path_arg_is_pythonish(arg, cwd) is False:
+            return None
     tok = pattern.strip("\"'")
     if not is_symbol_candidate(tok):
         return None
@@ -170,6 +190,31 @@ def _rule_b(command: str) -> str | None:
             "[cluster-ops] `scripts/prod-psql` inline pulls raw prod rows into "
             "the main-loop context. The `cluster-ops` agent (haiku) runs the "
             "same read-only query and returns a short digest instead."
+        )
+    return None
+
+
+# Glob-valued flags whose argument must reach the TOOL, not zsh. An
+# unquoted ``*.sql`` here is expanded against the cwd first; a non-match
+# aborts the line with ``no matches found`` (gr514326).
+_GLOB_FLAG_ARG = re.compile(
+    r"(?<![-\w])(?P<flag>--(?:include|exclude|glob|iglob)|-[g]|--?i?name)"
+    r"(?P<sep>=|\s+)(?P<q>['\"]?)(?P<val>[^\s'\"|&;]*[*?\[][^\s'\"|&;]*)"
+)
+
+
+def _rule_e(command: str) -> str | None:
+    """Nudge an UNQUOTED glob flag-arg toward the quoted form."""
+    for m in _GLOB_FLAG_ARG.finditer(command):
+        if m.group("q"):
+            continue  # quoted — the tool gets the glob as intended
+        flag, sep, val = m.group("flag"), m.group("sep"), m.group("val")
+        quoted = f"{flag}='{val}'" if sep == "=" else f"{flag} '{val}'"
+        return (
+            f"[zsh] `{flag}{sep}{val}` is an unquoted glob — zsh expands it "
+            "against the cwd BEFORE the command runs, and a non-match aborts "
+            "the whole line with `no matches found` (the grep never ran). "
+            f"Quote it: `{quoted}`."
         )
     return None
 
@@ -246,7 +291,8 @@ def main() -> int:
             out = None
     if out is None:
         note = (
-            _rule_a(command)
+            _rule_e(command)
+            or _rule_a(command, cwd)
             or _rule_b(command)
             or _rule_c(command, cwd)
             or _rule_d(command)

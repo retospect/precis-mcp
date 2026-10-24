@@ -113,6 +113,48 @@ def test_piped_grep_with_no_leading_pattern_stays_silent() -> None:
     assert _rule_a("grep -r | wc -l") is None
 
 
+# ── Rule A target check: clearly non-Python search targets stay silent ──────
+
+
+def test_non_python_path_args_do_not_fire(tmp_path) -> None:
+    """gr514328: grepping a symbol through .sql files or a SQL-only dir is a
+    text search coderef can't answer — the nudge must not fire."""
+    assert _rule_a("grep -rn TIER migrations/0007_x.sql", str(tmp_path)) is None
+    assert _rule_a("rg Foo notes.md", str(tmp_path)) is None
+    sql_dir = tmp_path / "migrations"
+    sql_dir.mkdir()
+    (sql_dir / "0001_a.sql").write_text("select 1;\n", encoding="utf-8")
+    (sql_dir / "0002_b.sql").write_text("select 2;\n", encoding="utf-8")
+    assert _rule_a("grep -rn TIER migrations", str(tmp_path)) is None
+
+
+def test_python_and_unknown_targets_still_fire(tmp_path) -> None:
+    py_dir = tmp_path / "pkg"
+    py_dir.mkdir()
+    (py_dir / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (py_dir / "mod.sql").write_text("select 1;\n", encoding="utf-8")
+    assert _rule_a("grep Foo pkg", str(tmp_path)) is not None
+    # a missing/dir-with-subdirs arg can't be classified -> code-ish default
+    assert _rule_a("grep Foo gone/", str(tmp_path)) is not None
+    assert _rule_a("grep Foo src/", str(tmp_path)) is not None
+
+
+def test_coderef_nudge_silent_on_sql_path(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "tool_input": {"pattern": "TIER", "path": str(tmp_path / "x.sql")},
+                    "cwd": str(tmp_path),
+                }
+            )
+        ),
+    )
+    assert _coderef_mod.main() == 0
+    assert capsys.readouterr().out == ""
+
+
 # ── Rule B: ssh cluster hosts / prod-psql -> cluster-ops ────────────────────
 
 
@@ -281,6 +323,58 @@ def test_coderef_nudge_still_silent_on_stop_word(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert out == ""
+
+
+# ── Rule E: unquoted glob flag-arg -> zsh no-matches trap ───────────────────
+
+_rule_e = _mod._rule_e
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "grep -rn --include=*.sql TIER src/",
+        "grep -rn --include *.sql TIER src/",
+        "rg -g *.py Foo src/",
+        "rg --glob=*.sql TIER .",
+        "find . -name *.tex",
+        "find . -iname *.PDF",
+        "tar --exclude=*.log -cf a.tar d/",
+    ],
+)
+def test_unquoted_glob_arg_fires_rule_e(cmd: str) -> None:
+    note = _rule_e(cmd)
+    assert note is not None
+    assert "no matches found" in note
+    assert "'" in note  # names the quoted fix
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "grep -rn --include='*.sql' TIER src/",
+        'grep -rn --include="*.sql" TIER src/',
+        "rg -g '*.py' Foo src/",
+        "find . -name '*.tex'",
+        "grep -rn TIER src/",  # no glob anywhere
+        "grep -rn --include=x.sql TIER src/",  # flag arg with no glob chars
+        "ls *.md",  # a bare file glob is expansion on purpose
+        "git status",
+    ],
+)
+def test_rule_e_silent_shapes(cmd: str) -> None:
+    assert _rule_e(cmd) is None
+
+
+def test_main_emits_rule_e(monkeypatch, capsys) -> None:
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "grep -rn --include=*.sql TIER src/"},
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is not None
+    assert "[zsh]" in out["hookSpecificOutput"]["additionalContext"]
 
 
 # ── Rule D: sed -n slice -> Read ────────────────────────────────────────────

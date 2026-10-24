@@ -22,10 +22,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _symbol_heuristic import is_symbol_candidate
+from _symbol_heuristic import is_symbol_candidate, path_arg_is_pythonish
 
 
-def _python_target(ti: dict) -> bool:
+def _python_target(ti: dict, cwd: str = "") -> bool:
     """True unless the search is clearly scoped away from Python code."""
     glob = str(ti.get("glob") or "").lower()
     typ = str(ti.get("type") or "").lower()
@@ -33,6 +33,11 @@ def _python_target(ti: dict) -> bool:
         return "py" in glob
     if typ:
         return typ in ("py", "python")
+    path = str(ti.get("path") or "")
+    if path:
+        verdict = path_arg_is_pythonish(path, cwd)
+        if verdict is not None:
+            return verdict
     return True  # unscoped → treat as code-ish
 
 
@@ -48,7 +53,7 @@ def main() -> int:
     tok = pattern.strip()
     if not is_symbol_candidate(tok):
         return 0
-    if not _python_target(ti):
+    if not _python_target(ti, str(payload.get("cwd") or "")):
         return 0
 
     note = (

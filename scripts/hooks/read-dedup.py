@@ -11,7 +11,9 @@ The 2026-10-22 12 h surface review found the dodge: ~5 MB/12 h of whole-file
 Read-matcher hook can see (~2.5M tokens/day).
 
 What this does, per session (state: one JSON file under the temp dir keyed by
-``session_id`` — ``PRECIS_READ_DEDUP_DIR`` overrides the dir, tests use that):
+``session_id`` — ``PRECIS_READ_DEDUP_DIR`` overrides the dir, tests use that;
+a call carrying ``agent_id`` is skipped outright — a subagent's serves land
+in its own context, never the parent's transcript):
 
 * A repeat Read of the same file with the same ``offset``/``limit`` whose
   mtime+size are unchanged since the recorded read is DENIED with a one-line
@@ -576,6 +578,12 @@ def hook_output(payload: dict) -> dict | None:
     if os.environ.get("PRECIS_READ_DEDUP_OFF"):
         return None
     if not isinstance(payload, dict):
+        return None
+    if payload.get("agent_id"):
+        # A subagent's serves land in the SUBAGENT's context — recording them
+        # under the session ledger then denies the parent's first read with a
+        # phantom "still in your context" (gr514450). Skip tracking and
+        # dedup alike: the main-loop ledger only describes the main context.
         return None
     session = payload.get("session_id") or os.environ.get("CLAUDE_SESSION_ID")
     if not session:
