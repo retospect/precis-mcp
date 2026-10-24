@@ -1857,6 +1857,161 @@ def run_kinetics_subprocess(
         )
 
 
+def run_kinetics_sweep_subprocess(
+    config: dict[str, Any],
+    results_json: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> None:
+    """The (T, p_total) MF sweep under a wall-clock ceiling, killable.
+
+    Mutates ``results_json`` in place: ``kinetics_sweep`` on success,
+    ``kinetics_sweep_error`` on any failure — never raises (the
+    ``autocatpath_kinetics`` job turns the error into a job note, never a
+    pathway-fatal).  Same child machinery as
+    :func:`run_kinetics_subprocess`.
+    """
+    budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
+    if budget == 0:
+        _run_kinetics_sweep(config, results_json)
+        return
+
+    import subprocess
+    import tempfile
+
+    request = {
+        "mode": "kinetics_sweep",
+        "config": config,
+        "budget_s": budget,
+        "nodes": results_json.get("nodes"),
+        "edges": results_json.get("edges"),
+        "score": results_json.get("score"),
+        "thermo": results_json.get("thermo"),
+    }
+    with tempfile.TemporaryDirectory(prefix="autocatpath-kinsweep-") as td:
+        req_path = os.path.join(td, "request.json")
+        out_path = os.path.join(td, "result.json")
+        with open(req_path, "w", encoding="utf-8") as fh:
+            json.dump(request, fh)
+        try:
+            proc = subprocess.run(
+                _child_cmd(req_path, out_path),
+                timeout=budget,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            results_json["kinetics_sweep_error"] = (
+                f"kinetics sweep timed out after {budget}s and was killed"
+            )
+            return
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            tail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            results_json["kinetics_sweep_error"] = (
+                f"kinetics sweep child exited {proc.returncode} without a result"
+                + (f": {tail}" if tail else "")
+            )
+            return
+    if "kinetics_sweep" in payload:
+        results_json["kinetics_sweep"] = payload["kinetics_sweep"]
+        if isinstance(payload.get("kinetics_v2"), dict):
+            results_json["kinetics_v2"] = payload["kinetics_v2"]
+    else:
+        results_json["kinetics_sweep_error"] = payload.get(
+            "kinetics_sweep_error", "kinetics sweep child returned no result"
+        )
+
+
+def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) -> None:
+    """In-process half of :func:`run_kinetics_sweep_subprocess` — also the
+    ``kinetics_sweep`` child's workhorse.  Builds cfg/net/ledgers/refs like
+    :func:`run_kinetics`, then calls ``kinetics.sweep`` (the MF (T,
+    p_total) grid + optimum + competing map).  Never raises."""
+    try:
+        from autocatpath import kinetics as _kin
+        from autocatpath.ledger import compute_ledgers
+        from autocatpath.pipeline import _build_net, ledger_refs
+        from autocatpath.thermo import build_table
+
+        cfg = _prep(config, None)
+        nodes = results_json["nodes"]
+        edges = results_json["edges"]
+        net = _build_net(cfg)
+        ledgers, _warns = compute_ledgers(net)
+        refs = ledger_refs(cfg, net, ledgers, log=lambda *a, **k: None)
+        table = build_table(cfg)
+        if table and refs:
+            refs = table.corrected_refs(refs)
+        g = {
+            str(k): float(v.get("mean", v) if isinstance(v, dict) else v)
+            for k, v in nodes.items()
+        }
+        target = str(
+            (results_json.get("score") or {}).get("target")
+            or config.get("target")
+            or "NH3"
+        )
+        payload = _kin.sweep(
+            cfg,
+            nodes,
+            edges,
+            net,
+            ledgers,
+            refs,
+            g=g,
+            target=target,
+            thermo_record=results_json.get("thermo"),
+            log=lambda *a, **k: None,
+        )
+        results_json["kinetics_sweep"] = payload
+        if isinstance(payload.get("kinetics_v2"), dict):
+            results_json["kinetics_v2"] = payload["kinetics_v2"]
+    except Exception as exc:
+        log.warning("autocatpath kinetics sweep failed", exc_info=True)
+        results_json["kinetics_sweep_error"] = (
+            _mem_error_text(_mem_limit_bytes())
+            if isinstance(exc, MemoryError) and _mem_limit_bytes()
+            else str(exc)
+        )
+
+
+def _kinetics_sweep_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int:
+    """Child half of :func:`run_kinetics_sweep_subprocess`."""
+    results_json: dict[str, Any] = {
+        "nodes": req.get("nodes"),
+        "edges": req.get("edges"),
+        "score": req.get("score"),
+        "thermo": req.get("thermo"),
+    }
+    try:
+        _run_kinetics_sweep(req["config"], results_json)
+        payload = (
+            {
+                k: results_json[k]
+                for k in ("kinetics_sweep", "kinetics_v2")
+                if k in results_json
+            }
+            if "kinetics_sweep" in results_json
+            else {
+                "kinetics_sweep_error": results_json.get(
+                    "kinetics_sweep_error", "no result"
+                )
+            }
+        )
+    except Exception as exc:  # pragma: no cover - _run never raises
+        payload = {"kinetics_sweep_error": f"{type(exc).__name__}: {exc}"}
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    os.replace(tmp_path, out_path)
+    return 0
+
+
 def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int:
     """Child half of :func:`run_kinetics_subprocess`.
 
@@ -1937,6 +2092,8 @@ def _subprocess_main(argv: list[str]) -> int:
     # parses after this key was introduced.
     if req.get("mode") == "kinetics":
         return _kinetics_child(req, out_path, mem_cap)
+    if req.get("mode") == "kinetics_sweep":
+        return _kinetics_sweep_child(req, out_path, mem_cap)
     try:
         result: dict[str, Any]
         if req.get("mode") == "aggregate":

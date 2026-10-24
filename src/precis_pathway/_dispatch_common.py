@@ -278,6 +278,36 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         finite_x_rc = {k: v for k, v in x_rc.items() if _finite_num(v) is not None}
         if finite_x_rc:
             out["drc_top"] = max(finite_x_rc, key=lambda k: abs(finite_x_rc[k]))
+
+    # kinetics v2 slice 4 (D8): the MF record lifts the headline scalars —
+    # tof_mf from the site-balance solve, apparent orders per gas, the
+    # sweep optimum.  ``v2.drc`` is FLAT (step -> X_RC, records.py), and
+    # the kinetics_sweep optimum carries ``value`` + ``objective``.
+    tof_mf = _finite_num(v2.get("tof_mf"))
+    if tof_mf is not None:
+        out["tof"] = tof_mf  # D8: the MF TOF is the ranked one
+        out["tof_mf"] = tof_mf
+    drc_mf = v2.get("drc")
+    if isinstance(drc_mf, dict):
+        finite_mf = {k: v for k, v in drc_mf.items() if _finite_num(v) is not None}
+        if finite_mf:
+            out["drc_top"] = max(finite_mf, key=lambda k: abs(finite_mf[k]))
+    orders = v2.get("orders")
+    if isinstance(orders, dict):
+        for gas, val in orders.items():
+            o = _finite_num(val)
+            if o is not None:
+                out[f"order_{gas}"] = o
+    sweep = results.get("kinetics_sweep")
+    if isinstance(sweep, dict):
+        opt = sweep.get("optimum")
+        if isinstance(opt, dict):
+            t_opt = _finite_num(opt.get("T"))
+            p_opt = _finite_num(opt.get("p_total"))
+            if t_opt is not None:
+                out["optimum_T"] = t_opt
+            if p_opt is not None:
+                out["optimum_p_total"] = p_opt
     return out
 
 

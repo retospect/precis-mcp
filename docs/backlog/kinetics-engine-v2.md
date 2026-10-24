@@ -702,7 +702,9 @@ free self-check of the chain.
   composition: fixed | free}`. `T` and `p_total` are first-class axes
   (Reto: optimise by adjusting temperature and total pressure). With
   `composition: fixed` the partial-pressure axes are mole fractions and
-  `p_total` scales them; with `free` they are independent. Grid for ≤ 2
+  `p_total` scales them; with `free` they are absolute partials and the
+  sampled `p_i` is the budget for the non-axis reactive gases plus the
+  inerts — the realised point total is `p_i` + (axis partials). Grid for ≤ 2
   axes, Latin hypercube (seeded from the manifest) above. Per point: MF
   solve (< 1 s) with orders, DRC, Q/K, coverages; KMC on the `kmc_points`
   subset (default: the corners, the centre and the MF optimum, 4 replicas).

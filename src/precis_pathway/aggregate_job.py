@@ -270,6 +270,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     if not ok:
         return
+    # Verify-tier aggregates mint the kinetics sweep job (D9: the
+    # autocatpath_kinetics lane runs the MF (T, p_total) grid on a CPU
+    # worker). Isolated so a mint fault can never fail a finished
+    # aggregate — the job is a diagnostic bonus, not the verdict.
+    try:
+        _mint_kinetics_job(ctx, params, pathway_ref_id)
+    except Exception:
+        log.warning("autocatpath_aggregate: kinetics mint failed", exc_info=True)
+        ctx.append_chunk(
+            "job_event",
+            "autocatpath_aggregate: kinetics mint failed (see worker log); "
+            "the trust verdict above stands",
+        )
     # The persisted verdict stands as-is; a retry only ever ADDS a seed job.
     # Isolated so a retry-planning fault can never fail a finished aggregate.
     try:
@@ -306,6 +319,41 @@ def _mint_seed_job_via_handler(
         idem_key=idem_key,
         requires={"gpu": 1},
         params=params,
+    )
+    return int(resp.ref_id) if resp.ref_id is not None else None
+
+
+def _mint_kinetics_job(
+    ctx: Any, params: dict[str, Any], pathway_ref_id: int
+) -> int | None:
+    """Mint the ``autocatpath_kinetics`` job for a just-aggregated
+    verify-tier pathway (D9: every verify-tier aggregate feeds the MF
+    (T, p_total) sweep). Non-verify tiers don't mint; the call is a no-op
+    otherwise so an aggregate can never fail on the mint."""
+    from precis.dispatch import Hub
+    from precis.handlers.job import JobHandler
+
+    pathway = ctx.store.get_ref(kind="pathway", id=pathway_ref_id)
+    if pathway is None:
+        return None
+    meta = dict(pathway.meta or {})
+    if meta.get("tier") != "verify":
+        return None
+    resp = JobHandler(hub=Hub(store=ctx.store)).put(
+        job_type="autocatpath_kinetics",
+        executor="ssh_node",
+        parent_id=pathway_ref_id,
+        idem_key=f"autocatpath_kinetics:{pathway_ref_id}",
+        requires={},  # no CPU-lane mechanism exists (kin-s4 needs ruling)
+        params={
+            "pathway_ref_id": pathway_ref_id,
+            "pathway_slug": params.get("pathway_slug"),
+            "config": params.get("config") or {},
+            "content_key": params.get("content_key"),
+            # no target_node: D9 says the sweep never lands on the GPU
+            # seed lane the parent aggregate ran on — ssh_node's
+            # target_node claim would pin it there.
+        },
     )
     return int(resp.ref_id) if resp.ref_id is not None else None
 

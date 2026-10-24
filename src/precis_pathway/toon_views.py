@@ -576,6 +576,81 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     return "\n".join(lines)
 
 
+def kinetics_sweep_text(meta: dict[str, Any]) -> str:
+    """The (T, p_total) mean-field sweep digest for a computed pathway
+    (kinetics v2 D8, ``view='kinetics-sweep'``): the per-point TOF grid,
+    the named optimum, and the competitive coverage map of
+    ``objective.competing`` — read straight off
+    ``meta.results.kinetics_sweep`` (the ``autocatpath_kinetics`` job's
+    persist), never re-solved here."""
+    results = meta.get("results") or {}
+    sweep = results.get("kinetics_sweep")
+    if not isinstance(sweep, dict) or not sweep.get("points"):
+        return "No kinetics_sweep record on this pathway — the verify-tier aggregate mints the autocatpath_kinetics job; this view renders its result."
+    points = sweep.get("points") or []
+    optimum = sweep.get("optimum") or {}
+    target = sweep.get("target") or "product"
+
+    def _star(coverages: Any) -> Any:
+        """The min per-class vacancy of a point's ``coverages`` record."""
+        if not isinstance(coverages, dict):
+            return None
+        stars = [v.get("*") for v in coverages.values() if isinstance(v, dict)]
+        vals: list[float] = [x for x in stars if isinstance(x, (int, float))]
+        return min(vals) if vals else None
+
+    rows = [
+        {
+            "T_K": p.get("T"),
+            "p_total": _num_str(p.get("p_total")),
+            "tof_mf_/s": _num_str(p.get("tof_mf")),
+            "min_star": _num_str(_star(p.get("coverages"))),
+        }
+        for p in points
+        if isinstance(p, dict)
+    ]
+    lines = [
+        f"(T, p_total) mean-field sweep — TOF({target}) per site per second",
+        "",
+        toon.dump(rows, schema=["T_K", "p_total", "tof_mf_/s", "min_star"]),
+        "",
+    ]
+    if optimum:
+        lines.append(
+            f"Optimum: T = {_num_str(optimum.get('T'))} K, "
+            f"p_total = {_num_str(optimum.get('p_total'))} bar "
+            f"({optimum.get('objective', 'objective')} = "
+            f"{_num_str(optimum.get('value'))})"
+            + (f"; drc_top {optimum['drc_top']}" if optimum.get("drc_top") else "")
+        )
+    comp = sweep.get("competing") or {}
+    comp_points = comp.get("points") or []
+    pair = comp.get("pair") or []
+    if comp_points:
+        c_rows = [
+            {
+                "T_K": c.get("T"),
+                "p_total": _num_str(c.get("p_total")),
+                **{t: _num_str(c.get(t)) for t in pair},
+                "star": _num_str(c.get("star")),
+            }
+            for c in comp_points
+            if isinstance(c, dict)
+        ]
+        lines += [
+            "",
+            f"Competitive coverage ({' vs '.join(map(str, pair))}):",
+            toon.dump(c_rows),
+        ]
+    inhibitors = sweep.get("inhibitors") or []
+    if inhibitors:
+        lines += ["", "Inhibitors: " + ", ".join(map(str, inhibitors))]
+    warnings = sweep.get("warnings") or []
+    if warnings:
+        lines += ["", "Warnings:"] + [f"- {w}" for w in warnings]
+    return "\n".join(lines)
+
+
 def _num_str(x: Any) -> str:
     """``x`` as ``1.23e-04``, or an em dash when it is not a finite number."""
     if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):

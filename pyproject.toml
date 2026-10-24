@@ -352,7 +352,7 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # export excludes autocatpath (--no-emit-package, deploy/playbooks/
 # 03-precis-constraints.yml) and the catalyst installs resolve it from the
 # host wheelhouse (deploy/roles/autocatpath, --find-links).
-catalyst = ["autocatpath>=0.34.0"]
+catalyst = ["autocatpath>=0.35.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -536,6 +536,7 @@ fold = "precis_bio.jobs:FOLD_SPEC"
 autocatpath_explore = "precis_pathway.job:SPEC"
 autocatpath_seed = "precis_pathway.seed_job:SPEC"
 autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
+autocatpath_kinetics = "precis_pathway.kinetics_job:SPEC"
 # surface_coverage_scan: one MLIP model's coverage anchors on a slab + the
 # inner CHE sweep (docs/backlog/surface-pourbaix-staircase-optimizer.md,
 # slice 1). Same ssh_node/target_node seam as autocatpath_seed.
@@ -656,7 +657,7 @@ dev = [
 override-dependencies = ["pillow>=12.3.0"]
 
 [tool.uv.sources]
-autocatpath = { git = "https://github.com/retospect/catpath", rev = "a79263a3e01d78883d6d2d9b9e3e967e14de8424" }  # v0.34.0 (kinetics v2 slice 3)
+autocatpath = { git = "https://github.com/retospect/catpath", rev = "8dee1aa13a5dc506c636c1f5c38a96b25b939f4b" }  # v0.35.0 (kinetics v2 slice 4)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow", "src/precis_geom", "src/precis_ws"]

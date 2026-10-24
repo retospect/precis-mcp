@@ -593,7 +593,11 @@ class PathwayHandler(Handler):
             )
 
         computed = bool(meta.get("graph"))
-        if v in ("analysis", "steps", "kinetics", "trust", "warnings") and not computed:
+        if (
+            v
+            in ("analysis", "steps", "kinetics", "kinetics-sweep", "trust", "warnings")
+            and not computed
+        ):
             return Response(
                 body=f"pathway '{id}' not computed yet (status "
                 f"{meta.get('status', '?')}). Run it (put without mode='preview') "
@@ -629,6 +633,10 @@ class PathwayHandler(Handler):
             from .toon_views import kinetics_text
 
             return Response(body=kinetics_text(meta))
+        if v == "kinetics-sweep":
+            from .toon_views import kinetics_sweep_text
+
+            return Response(body=kinetics_sweep_text(meta))
         if v == "trust":
             from .toon_views import trust_toon
 
