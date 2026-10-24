@@ -149,6 +149,8 @@ _REACTION_CONFIG_KEYS: frozenset[str] = frozenset(
         # kinetics v2 D1 (engine >= 0.32)
         "environment",
         "objective",
+        # kinetics v2 D3 (engine >= 0.33)
+        "consistency",
     }
 )
 
