@@ -13,10 +13,8 @@ shape moves, the bound-board envelope/ports move identically.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -28,25 +26,20 @@ from precis.pcb import export as pcb_export
 from precis.pcb import package_heights
 from precis_geom.pcb import Board, Footprint, pad, rect
 from precis_geom.pcb_shape import derive_shape
+from tests.workspaces._script import load_module
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARDS = ROOT / "examples" / "boards"
 
 
-def _load(path: Path, name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _sanity() -> Board:
-    return _load(BOARDS / "sanity" / "main.py", "example_sanity").build()
+    return load_module(BOARDS / "sanity" / "main.py", "example_sanity").build()
 
 
 def _nano() -> Board:
-    return _load(BOARDS / "nano_usb_pd" / "main.py", "example_nano_usb_pd").build()
+    return load_module(
+        BOARDS / "nano_usb_pd" / "main.py", "example_nano_usb_pd"
+    ).build()
 
 
 def _profile_of(b: Board) -> dict[str, Any]:

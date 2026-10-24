@@ -1,5 +1,13 @@
 """``out`` — the run's output lane: manifest + trace.
 
+Two modules are named ``out``. This is the sandbox lane: staged inside
+``/work`` for workspace scripts, holding module-level state and writing
+at :func:`finish` or interpreter exit. :mod:`precis_geom.out` is the
+canonical module — the host dev-loop writer (``with out.run(...)``) and
+the home of the shared helpers this file imports
+(``_geom_parts``/``_symbolic_fields``/``_ray_entry``). Both write the
+same ``manifest.json`` + ``trace.json`` contract the importer reads.
+
 ``out.block(name, obj, …)`` registers one block: the geometry file
 (``blocks/<name>.cad.json`` for a :class:`precis.cad.scene.SceneSpec`,
 ``<name>.cad`` for a DSL string, ``<name>.extxyz`` for an ASE ``Atoms``
@@ -40,6 +48,10 @@ _connects: list[dict[str, Any]] = []
 _rays: list[dict[str, Any]] = []
 _notes: str | None = None
 _payloads: dict[str, tuple[bytes, str]] = {}  # file name → (bytes, encoding)
+#: Once :func:`board` declares the run's product a pcb Board, ``finish``
+#: writes its ``kind='pcb'`` manifest — the se rows refuse to mix.
+_board: Any = None
+_board_requests: list[dict[str, Any]] = []
 
 
 def _out_dir() -> Path:
@@ -125,8 +137,15 @@ def block(
     ``frame`` defaults to the calling trace frame. A
     :class:`precis_geom.assembly.Geom` flattens to geometry here and
     carries its declared ports into the manifest entry."""
+    from precis_geom import pcb as _pcb
     from precis_geom.out import _geom_parts
 
+    if isinstance(obj, _pcb.Board):
+        raise ValueError(
+            f"out.block {name!r}: a pcb Board is a whole run's manifest "
+            "(kind='pcb'), not a block — use out.board(b)"
+        )
+    _vet_not_board("block")
     obj, gports = _geom_parts(obj)
     if ports is None:
         ports = gports
@@ -160,6 +179,41 @@ def block(
     _trace.record(made={"blocks": 1})
 
 
+def _vet_not_board(what: str) -> None:
+    """The se-manifest calls refuse once the run's product is a pcb
+    Board — a ``kind='pcb'`` manifest has no rows for them."""
+    if _board is not None:
+        raise ValueError(
+            f"out.{what}: this run's product is a pcb Board — a "
+            "kind='pcb' manifest carries no se manifest rows"
+        )
+
+
+@traced
+def board(b: Any, *, requests: Any = ()) -> None:
+    """Register this run's product as a :class:`precis_geom.pcb.Board` —
+    ``finish()`` writes its ``kind='pcb'`` manifest
+    (:meth:`Board.manifest`, ``requests`` pass through) instead of the
+    se blocks/instances document. A board run takes no
+    ``block``/``instance``/``connect``/``ray`` rows."""
+    global _board, _board_requests
+    from precis_geom import pcb as _pcb
+
+    if not isinstance(b, _pcb.Board):
+        raise ValueError(
+            f"out.board: want a precis_geom.pcb Board, got {type(b).__name__}"
+        )
+    _vet_not_board("board")
+    if _blocks or _instances or _connects or _rays:
+        raise ValueError(
+            "out.board: a pcb run is the whole manifest — it cannot mix "
+            "with out.block/instance/connect/ray"
+        )
+    _board = b
+    _board_requests = [dict(r) for r in requests]
+    _trace.record(made={"boards": 1})
+
+
 @traced
 def instance(
     name: str,
@@ -187,6 +241,7 @@ def instance(
     from precis_geom import assembly as _pga
     from precis_geom.out import _symbolic_fields
 
+    _vet_not_board("instance")
     if isinstance(template, _pga.Geom):
         fields = _symbolic_fields(template)
         template = fields.pop("template")
@@ -226,6 +281,7 @@ def connect(
     objectives: Any = None,
     frame: int | None = None,
 ) -> None:
+    _vet_not_board("connect")
     entry: dict[str, Any] = {"a": a, "b": b}
     for k, v in (("kind", kind), ("joint", joint), ("objectives", objectives)):
         if v is not None:
@@ -248,6 +304,7 @@ def ray(
     or ``pga.ray`` arguments) on a declared block."""
     from precis_geom.out import _ray_entry
 
+    _vet_not_board("ray")
     entry = _ray_entry(r_or_name, args, kw, block=block, frame=frame)
     if entry["block"] not in {b["name"] for b in _blocks}:
         raise ValueError(f"out.ray: block {entry['block']!r} is not declared")
@@ -279,14 +336,17 @@ def finish() -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(payload)
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest: dict[str, Any] = {
-        "schema": _SCHEMA,
-        "blocks": _blocks,
-        "instances": _instances,
-        "connects": _connects,
-    }
-    if _rays:
-        manifest["rays"] = _rays
+    if _board is not None:
+        manifest = _board.manifest(_board_requests)
+    else:
+        manifest = {
+            "schema": _SCHEMA,
+            "blocks": _blocks,
+            "instances": _instances,
+            "connects": _connects,
+        }
+        if _rays:
+            manifest["rays"] = _rays
     if _notes:
         manifest["notes"] = _notes
     (out_dir / "manifest.json").write_text(
@@ -314,9 +374,11 @@ atexit.register(_finish_quiet)
 
 def _reset() -> None:
     """Test hook: a second logical run in one process."""
-    global _finished, _notes
+    global _finished, _notes, _board
     _finished = False
     _notes = None
+    _board = None
+    _board_requests.clear()
     _blocks.clear()
     _instances.clear()
     _connects.clear()
@@ -324,4 +386,4 @@ def _reset() -> None:
     _payloads.clear()
 
 
-__all__ = ["block", "connect", "finish", "instance", "note", "ray"]
+__all__ = ["block", "board", "connect", "finish", "instance", "note", "ray"]

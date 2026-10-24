@@ -14,7 +14,6 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import json
-import sys
 import time
 from pathlib import Path
 from types import ModuleType
@@ -24,6 +23,7 @@ import pytest
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis_geom import trace, trace_schema
 from precis_ws import out
+from tests.workspaces._script import load_script
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -43,25 +43,6 @@ _SCRIPT = (
     "def sheet(rows, periods):\n"
     "    strip(rows=rows, periods=periods)\n"
 )
-
-
-def _load_script(tmp_path: Path, text: str = _SCRIPT) -> ModuleType:
-    """Write ``main.py`` under ``tmp_path`` and exec it as a module — the
-    sandbox's script shape, with this test file playing the driver."""
-    script = tmp_path / "main.py"
-    script.write_text(text, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("main", script)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    # Same-size rewrites inside one second would otherwise load the stale
-    # .pyc (mtime+size cache key) — the swap=True script is the same size.
-    old = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        sys.dont_write_bytecode = old
-    return mod
 
 
 #: A script whose second ``strip`` call raises on a bad ``edge``.
@@ -162,7 +143,7 @@ def _stability_script(
 
 
 def _run_script(tmp_path: Path, text: str, call: str = "build") -> dict:
-    mod = _load_script(tmp_path, text)
+    mod = load_script(tmp_path, text)
     with trace.run(work_root=tmp_path) as tr:
         getattr(mod, call)(3)
         return tr.dump()
@@ -399,7 +380,7 @@ def test_root_user_frame_anchors_in_script(tmp_path: Path) -> None:
     ``def`` line, not the driver's call site outside ``work_root``
     (its caller is this test file); nested user frames keep the
     call-site rule and keys stay stable across runs."""
-    mod = _load_script(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     docs = []
     for _ in range(2):
         with trace.run(work_root=tmp_path) as tr:
@@ -423,7 +404,7 @@ def test_root_user_frame_anchors_in_script(tmp_path: Path) -> None:
 def test_error_marks_the_raising_frame(tmp_path: Path) -> None:
     """gr513669 — a traced call that raised leaves ``error=<ExcType>``
     on its frame; the good sibling and every other frame stay clean."""
-    mod = _load_script(tmp_path, _FAILING_SCRIPT)
+    mod = load_script(tmp_path, _FAILING_SCRIPT)
     with trace.run(work_root=tmp_path) as tr:
         with pytest.raises(ValueError, match="edge"):
             mod.build()
@@ -452,7 +433,7 @@ def test_error_marks_only_the_innermost_frame() -> None:
 def test_success_dump_has_no_error_keys(tmp_path: Path) -> None:
     """``error`` is omitted when ``None`` — a clean run serialises
     exactly as before the field existed."""
-    mod = _load_script(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     with trace.run(work_root=tmp_path) as tr:
         mod.build(8, 4)
         text = trace_schema.dumps(tr.dump())
@@ -532,6 +513,32 @@ def test_out_writes_manifest_and_trace(tmp_path: Path, monkeypatch) -> None:
     assert any(q.endswith("block") for q in quals)
     assert any(q.endswith("instance") for q in quals)
     assert any(q.endswith("connect") for q in quals)
+    out._reset()
+
+
+def test_out_board_writes_pcb_manifest(tmp_path: Path, monkeypatch) -> None:
+    """gr513754 — the sandbox lane's ``out.board(b)`` writes the
+    ``kind='pcb'`` manifest at ``finish``; a Board handed to
+    ``out.block`` refuses naming it, and se rows refuse once a board
+    is declared."""
+    import precis_geom.pcb as pcb
+
+    monkeypatch.setenv("PRECIS_WS_OUT_DIR", str(tmp_path / "out"))
+    out._reset()
+    b = pcb.Board("t")
+    gnd = b.net("GND")
+    gnd.tie(b.part("J1")["1"])
+    with trace.run(work_root=_WORK_ROOT):
+        with pytest.raises(ValueError, match="out.board"):
+            out.block("board", b)
+        out.board(b)
+        with pytest.raises(ValueError, match="kind='pcb'"):
+            out.block("p", "box:w1")
+        od = out.finish()
+    manifest = json.loads((od / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["kind"] == "pcb"
+    assert manifest["board"]["components"][0]["refdes"] == "J1"
+    assert manifest["board"]["nets"][0]["name"] == "GND"
     out._reset()
 
 

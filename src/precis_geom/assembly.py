@@ -48,6 +48,8 @@ arguments accept a bare 3-vector (native) or a unit string the shared
 from __future__ import annotations
 
 import math
+import sys
+import types
 import warnings
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -358,6 +360,23 @@ def _is_net(obj: Any) -> bool:
     return hasattr(obj, "atoms") and hasattr(obj, "seed3")
 
 
+def _caller_stacklevel() -> int:
+    """The ``warnings.warn`` level that lands on the caller outside the
+    wrapper chain — ``translate``/``mirror``/``tile``/``place`` reach
+    ``geom()`` internally (some through a ``@traced`` wrapper, whose
+    frame is ``precis_geom.trace`` plumbing), so a fixed ``stacklevel``
+    attributes the warning to a library line (gr514206)."""
+    level = 1
+    f: types.FrameType | None = sys._getframe(1)
+    while f is not None and f.f_globals.get("__name__") in {
+        __name__,
+        _trace.__name__,
+    }:
+        level += 1
+        f = f.f_back
+    return level
+
+
 def geom(
     obj: Any,
     *,
@@ -444,7 +463,7 @@ def geom(
                         f"coordinates (seed_kind={seed_kind!r}) — "
                         "relax first: pga.geom(net, coords=stick(net))",
                         UserWarning,
-                        stacklevel=2,
+                        stacklevel=_caller_stacklevel(),
                     )
                 xyz = np.asarray(obj.seed3, dtype=np.float64)
     if elements is not None and xyz is not None:

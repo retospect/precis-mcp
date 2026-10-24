@@ -1,5 +1,13 @@
 """``precis_geom.out`` — write a run's ``out/`` in the importer's layout.
 
+Two modules are named ``out`` — this is the canonical one: the host
+dev-loop writer (``with out.run(...) as o:``) and the home of the shared
+helpers (``_geom_parts``/``_symbolic_fields``/``_ray_entry``).
+:mod:`precis_ws.out` is the sandbox lane staged inside ``/work`` —
+module-level state, ``finish()`` at interpreter exit — and imports them
+from here. Both write the same ``manifest.json`` + ``trace.json``
+contract the importer reads.
+
 The dev-loop side of the workspace ``out/`` contract
 (:mod:`precis_se.workspace_import`, the structure-workspaces spec
 §Import boundary): a scratch script on the host builds with the core
@@ -302,6 +310,10 @@ class Run:
         self._ray_names: set[str] = set()
         self._names: set[str] = set()
         self._finished = False
+        #: ``(Board, requests)`` once :meth:`board` declares the run's
+        #: product a pcb design — ``manifest()``/``finish()`` write the
+        #: ``kind='pcb'`` document, not the se blocks/instances one.
+        self._board: tuple[Any, list[dict[str, Any]]] | None = None
         self.diff: dict[str, Any] | None = None
 
     # -- manifest calls ---------------------------------------------------
@@ -330,6 +342,14 @@ class Run:
         n = _vet_name(name)
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
+        from precis_geom import pcb as _pcb
+
+        if isinstance(geom, _pcb.Board):
+            raise ValueError(
+                f"out.block {n!r}: a pcb Board is a whole run's manifest "
+                "(kind='pcb'), not a block — use o.board(b)"
+            )
+        self._vet_not_board("block")
         geom, gports = _geom_parts(geom)
         if ports is None:
             ports = gports
@@ -357,6 +377,39 @@ class Run:
         _trace.record(made=made)
         return entry
 
+    def _vet_not_board(self, what: str) -> None:
+        """The se-manifest calls refuse once the run's product is a pcb
+        Board — a ``kind='pcb'`` manifest has no rows for them."""
+        if self._board is not None:
+            raise ValueError(
+                f"out.{what}: this run's product is a pcb Board — a "
+                "kind='pcb' manifest carries no se manifest rows"
+            )
+
+    @_trace.traced(kind="core", name="out.board")
+    def board(self, b: Any, *, requests: Any = ()) -> dict[str, Any]:
+        """Declare this run's product a :class:`precis_geom.pcb.Board`.
+
+        ``finish()`` then writes the ``kind='pcb'`` manifest
+        (:meth:`precis_geom.pcb.Board.manifest`, ``requests`` pass
+        through) instead of the se blocks/instances document — a board
+        run takes no ``block``/``instance``/``connect``/``ray`` rows."""
+        from precis_geom import pcb as _pcb
+
+        if not isinstance(b, _pcb.Board):
+            raise ValueError(
+                f"out.board: want a precis_geom.pcb Board, got {type(b).__name__}"
+            )
+        self._vet_not_board("board")
+        if self._blocks or self._instances or self._connects or self._rays:
+            raise ValueError(
+                "out.board: a pcb run is the whole manifest — it cannot "
+                "mix with out.block/instance/connect/ray"
+            )
+        self._board = (b, [dict(r) for r in requests])
+        _trace.record(made={"boards": 1})
+        return b.manifest(self._board[1])
+
     @_trace.traced(kind="core", name="out.instance")
     def instance(
         self,
@@ -381,6 +434,7 @@ class Run:
         from precis_geom import assembly as _pga
 
         n = _vet_name(name, what="instance")
+        self._vet_not_board("instance")
         if isinstance(template, _pga.Geom):
             fields = _symbolic_fields(template)
             template = fields.pop("template")
@@ -430,6 +484,7 @@ class Run:
     ) -> dict[str, Any]:
         """One manifest ``connects`` entry — an intent edge
         ``blk.port`` ↔ ``blk.port``."""
+        self._vet_not_board("connect")
         entry: dict[str, Any] = {"a": str(a), "b": str(b)}
         if kind is not None:
             entry["kind"] = str(kind)
@@ -457,6 +512,7 @@ class Run:
         or builds one via ``pga.ray(name, *args, **kw)``; ``frame`` is
         the manifest trace-frame id (the Ray's reference frame lives on
         the Ray itself)."""
+        self._vet_not_board("ray")
         entry = _ray_entry(r_or_name, args, kw, block=block, frame=frame)
         if entry["block"] not in self._names:
             raise ValueError(
@@ -472,6 +528,9 @@ class Run:
     # -- serialisation ------------------------------------------------------
 
     def manifest(self) -> dict[str, Any]:
+        if self._board is not None:
+            b, requests = self._board
+            return b.manifest(requests)
         doc: dict[str, Any] = {"schema": 1, "blocks": list(self._blocks)}
         if self._instances:
             doc["instances"] = list(self._instances)
@@ -550,12 +609,11 @@ class Run:
         self._finished = True
         self.root.mkdir(parents=True, exist_ok=True)
         tr = _trace.current()
-        if tr is not None and exc not in tr._raised and tr.stack[-1].kind != "root":
+        if tr is not None:
             # The raise left user code without crossing a traced call
             # (a bare ``raise`` in the script): mark the innermost live
             # frame so the dump still names a culprit.
-            tr.stack[-1].error = type(exc).__name__
-            tr._raised.add(exc)
+            tr.mark_raise(exc)
         trace_doc = (
             tr.dump({**(run_meta or {}), "status": "failed"})
             if tr is not None
@@ -647,36 +705,33 @@ def _failure_at(
     anchor: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """``{file, line, qual?}`` of the failure's user-code anchor — the
-    trace's nearest ``kind=user`` frame (``anchor``) names it, and the
-    traceback's innermost frame under ``work_root`` (``Tracer._in_work``,
-    the same predicate the user-frame walk mints with) pins the exact
-    line; the dump's frame or the raise site are the fallbacks."""
-    user = deepest = None
-    tb = exc.__traceback__
-    while tb is not None:
-        deepest = tb
-        if tr is not None and tr._in_work(tb.tb_frame):
-            user = tb
-        tb = tb.tb_next
-    if user is not None and tr is not None:
-        f = user.tb_frame
-        at: dict[str, Any] = {"file": tr._file_of(f), "line": user.tb_lineno}
+    traceback's innermost frame under ``work_root``
+    (:meth:`Tracer.user_anchor`) pins the exact line and the trace's
+    nearest ``kind=user`` frame (``anchor``) names the ``qual``; the
+    dump's frame or the traceback's deepest site are the fallbacks."""
+    if tr is not None:
+        site, deepest = tr.user_anchor(exc.__traceback__)
+    else:
+        site = None
+        tb = exc.__traceback__
+        while tb is not None and tb.tb_next is not None:
+            tb = tb.tb_next
+        deepest = (
+            {"file": tb.tb_frame.f_code.co_filename, "line": tb.tb_lineno}
+            if tb is not None
+            else None
+        )
+    if site is not None:
         if anchor is not None:
-            at["qual"] = anchor["qual"]
-        elif f.f_code.co_name != "<module>":
-            at["qual"] = _trace._user_qual(f)
-        return at
+            site["qual"] = anchor["qual"]
+        return site
     if anchor is not None:
         return {
             "file": anchor["file"],
             "line": anchor["line"],
             "qual": anchor["qual"],
         }
-    if deepest is None:
-        return None
-    f = deepest.tb_frame
-    file = tr._file_of(f) if tr is not None else f.f_code.co_filename
-    return {"file": file, "line": deepest.tb_lineno}
+    return deepest
 
 
 def _prev_trace(root: Path) -> tuple[dict[str, Any] | None, Path | None]:

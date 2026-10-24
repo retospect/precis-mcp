@@ -481,6 +481,27 @@ def test_manifest_top_level_unknown_key_refuses(store: Store, tmp_path: Path) ->
         _import(store, bad)
 
 
+def test_failed_run_manifest_refuses_naming_the_failure(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514210 — a ``status="failed"`` manifest (``Run.fail``'s record
+    shape) is refused as a failed run, not as an "unknown key" — and
+    writes nothing."""
+    _design(store)
+    bad = tmp_path / "out"
+    shutil.copytree(FIXTURE, bad)
+    m = json.loads((bad / "manifest.json").read_text(encoding="utf-8"))
+    m["status"] = "failed"
+    m["error"] = {"type": "ValueError", "message": "rows must be >= 1"}
+    (bad / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(BadInput, match="run failed") as exc:
+        _import(store, bad)
+    assert "ValueError" in str(exc.value)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
 def test_block_cap_refuses_before_any_write(store: Store, tmp_path: Path) -> None:
     _design(store)
     big = tmp_path / "out"

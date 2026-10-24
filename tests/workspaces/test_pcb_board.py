@@ -26,17 +26,16 @@ Regenerate the goldens after an intended change (then read the diff)::
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
 import precis_geom.pcb as pcb
 from precis_geom.pcb import Board, Footprint, PcbBuilderError, module, pad, rect
+from tests.workspaces._script import load_module
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARDS = ROOT / "examples" / "boards"
@@ -52,23 +51,15 @@ CONVERTED = {
 EXAMPLES = (*CONVERTED, "sanity", "blinky_led", "usbc_attiny")
 
 
-def _load(path: Path, name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _example(name: str) -> Board:
-    return _load(BOARDS / name / "main.py", f"example_{name}").build()
+    return load_module(BOARDS / name / "main.py", f"example_{name}").build()
 
 
 def _fixture(spec: str) -> dict[str, Any]:
     if spec.endswith(".json"):
         return json.loads((FIXTURES / spec).read_text(encoding="utf-8"))
     file, _, func = spec.partition(":")
-    return getattr(_load(FIXTURES / file, f"fixture_{file[:-3]}"), func)()
+    return getattr(load_module(FIXTURES / file, f"fixture_{file[:-3]}"), func)()
 
 
 def _golden_row(b: Board) -> dict[str, Any]:

@@ -211,6 +211,34 @@ def test_geom_net_seed_export_warns() -> None:
         pga.geom(replace(net, seed_kind="relaxed"))
 
 
+def test_seed_warning_points_at_the_script_line() -> None:
+    """gr514206 — through ``pga.translate``/``pga.mirror`` (and a live
+    tracer, whose ``@traced`` wrapper is another library frame) the
+    unrelaxed-seed warning attributes to the caller's own line, not
+    the ``geom(obj)`` line inside ``assembly.py``."""
+    from hexfold.prism import prism_tube
+
+    net, _ = prism_tube(4, 4, 2, "++++++")
+    for call in (
+        lambda: pga.geom(net),
+        lambda: pga.translate(net, [0.0, 0.0, 1.0]),
+        lambda: pga.mirror(net, "yz"),
+    ):
+        site = call.__code__.co_firstlineno  # the one-line lambda's own line
+        for traced in (False, True):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                if traced:
+                    with _trace.run():
+                        call()
+                else:
+                    call()
+            hits = [w for w in caught if "unrelaxed seed3" in str(w.message)]
+            assert len(hits) == 1
+            assert hits[0].filename == __file__
+            assert hits[0].lineno == site
+
+
 def test_net_with_stick_marks_coords_relaxed() -> None:
     """``net.with_stick()`` re-seats ``seed3`` on the relaxed geometry
     and marks it, so ``pga.geom`` exports it without the seed warning."""

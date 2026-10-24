@@ -298,6 +298,48 @@ class Tracer:
             py=wrapper_frame,
         )
 
+    # -- failure anchoring ----------------------------------------------------
+
+    def mark_raise(self, exc: BaseException) -> None:
+        """Mark the innermost live frame ``error`` for an ``exc`` that
+        left user code without crossing a ``@traced`` call (a bare
+        ``raise`` in the script), so the dump still names a culprit.
+        No-op when ``exc`` already marked the traced frame it left, or
+        only the synthetic root is live."""
+        if exc in self._raised or self.stack[-1].kind == "root":
+            return
+        self.stack[-1].error = type(exc).__name__
+        self._raised.add(exc)
+
+    def user_anchor(
+        self, tb: types.TracebackType | None
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """``(innermost in-work site, deepest site)`` of a traceback —
+        the failure's user-code anchor candidates, minted with the same
+        ``_in_work`` predicate the user-frame walk uses. A site is
+        ``{file, line}`` (``file`` work_root-relative, or the module/
+        basename outside it); the in-work site adds ``qual``
+        (``<stem>.<qualname>``) unless the frame is ``<module>``. Either
+        side is ``None`` when absent."""
+        user = deepest = None
+        while tb is not None:
+            deepest = tb
+            if self._in_work(tb.tb_frame):
+                user = tb
+            tb = tb.tb_next
+        u_at: dict[str, Any] | None = None
+        if user is not None:
+            f = user.tb_frame
+            u_at = {"file": self._file_of(f), "line": user.tb_lineno}
+            if f.f_code.co_name != "<module>":
+                u_at["qual"] = _user_qual(f)
+        d_at = (
+            {"file": self._file_of(deepest.tb_frame), "line": deepest.tb_lineno}
+            if deepest is not None
+            else None
+        )
+        return u_at, d_at
+
     # -- serialization ------------------------------------------------------
 
     def dump(self, run: dict[str, Any] | None = None) -> dict[str, Any]:

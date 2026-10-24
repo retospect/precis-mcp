@@ -5,15 +5,14 @@ carrying ``status="failed"``; a previous good ``trace.json`` moves to
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 from precis_geom import out as geom_out
 from precis_geom import trace, trace_schema
+from tests.workspaces._script import load_script
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -42,18 +41,6 @@ _RAISE_SCRIPT = (
 _TOP_SCRIPT = "from hexfold.sheetnet import strip\n\n\nstrip(rows=0, periods=3)\n"
 
 
-def _load(tmp_path: Path, text: str = _SCRIPT) -> ModuleType:
-    """Write ``main.py`` under ``tmp_path`` and exec it as a module —
-    the same script shape ``test_geom_trace._load_script`` poses."""
-    script = tmp_path / "main.py"
-    script.write_text(text, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("main", script)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _doc(out_dir: Path) -> dict:
     return trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
 
@@ -72,7 +59,7 @@ def test_failure_leaves_trace_and_failed_manifest(tmp_path: Path) -> None:
     """A raise inside ``out.run`` propagates unchanged and still writes
     ``trace.json`` (the error-marked frames) + a ``status="failed"``
     manifest."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with pytest.raises(ValueError, match="rows"):
         with geom_out.run(out_dir, work_root=tmp_path):
@@ -93,7 +80,7 @@ def test_failure_leaves_trace_and_failed_manifest(tmp_path: Path) -> None:
 def test_failure_preserves_the_previous_good_trace(tmp_path: Path) -> None:
     """The failed dump lands on ``trace.json`` only after a previous
     good one moves to ``trace.prev.json`` — never a silent clobber."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with geom_out.run(out_dir, work_root=tmp_path):
         mod.build(8)
@@ -109,7 +96,7 @@ def test_failure_preserves_the_previous_good_trace(tmp_path: Path) -> None:
 def test_consecutive_failures_keep_the_last_good(tmp_path: Path) -> None:
     """A second crash must not promote a failed dump into
     ``trace.prev.json`` — it stays the last *good* run's."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with geom_out.run(out_dir, work_root=tmp_path):
         mod.build(8)
@@ -125,7 +112,7 @@ def test_next_run_diffs_against_the_last_good(tmp_path: Path) -> None:
     """good → fail → good: the third run's diff compares against the
     first — ``was`` is the good run's ``made``, not the crashed run's
     truncated frame."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with geom_out.run(out_dir, work_root=tmp_path):
         mod.build(8)
@@ -145,7 +132,7 @@ def test_next_run_diffs_against_the_last_good(tmp_path: Path) -> None:
 def test_failure_inside_a_live_tracer(tmp_path: Path) -> None:
     """``out.run`` nested in an outer ``trace.run`` uses the live
     tracer — the failure record is written the same way."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with trace.run(work_root=tmp_path):
         with pytest.raises(ValueError):
@@ -159,7 +146,7 @@ def test_untraced_raise_marks_the_innermost_user_frame(tmp_path: Path) -> None:
     """A bare ``raise`` in the script never crossed a ``@traced``
     wrapper — ``fail()`` marks the innermost live (user) frame so the
     dump still names a culprit."""
-    mod = _load(tmp_path, _RAISE_SCRIPT)
+    mod = load_script(tmp_path, _RAISE_SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with pytest.raises(ValueError, match="boom"):
         with geom_out.run(out_dir, work_root=tmp_path):
@@ -178,7 +165,7 @@ def test_error_anchor_is_the_nearest_user_frame(tmp_path: Path) -> None:
     """gr513668's rendered-error rule for the host loop: the manifest
     anchors the failure at the user def's call site — never a library
     file — and lists the library frames collapsed below."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with pytest.raises(ValueError):
         with geom_out.run(out_dir, work_root=tmp_path):
@@ -199,7 +186,7 @@ def test_error_anchor_module_level_script(tmp_path: Path) -> None:
     out_dir = tmp_path / "out" / "x"
     with pytest.raises(ValueError):
         with geom_out.run(out_dir, work_root=tmp_path):
-            _load(tmp_path, _TOP_SCRIPT)
+            load_script(tmp_path, _TOP_SCRIPT)
     error = _manifest(out_dir)["error"]
     assert error["at"]["file"] == "main.py"
     assert error["at"]["line"] == 4
@@ -207,11 +194,42 @@ def test_error_anchor_module_level_script(tmp_path: Path) -> None:
     assert [f["qual"] for f in error["below"]] == ["sheetnet.strip"]
 
 
+def test_user_anchor_public_seam(tmp_path: Path) -> None:
+    """gr514209 — ``Tracer.user_anchor(tb)`` is the public form of the
+    frame walk ``Run.fail`` needs: the traceback's innermost frame
+    under ``work_root`` (``qual`` present on a named def, absent at
+    ``<module>``), plus the deepest frame's site as the last-resort
+    pointer."""
+    mod = load_script(tmp_path, _SCRIPT)
+    with trace.run(work_root=tmp_path) as tr:
+        try:
+            mod.build(0)
+        except ValueError as exc:
+            tb = exc.__traceback__
+        else:
+            raise AssertionError("build(0) did not raise")
+    site, deepest = tr.user_anchor(tb)
+    assert site == {"file": "main.py", "line": 5, "qual": "main.build"}
+    assert deepest is not None and deepest["file"] == "hexfold.sheetnet"
+    # A toplevel raise: the ``<module>`` frame is a legal site but
+    # carries no ``qual``.
+    with trace.run(work_root=tmp_path) as tr3:
+        try:
+            exec(compile(_TOP_SCRIPT, str(tmp_path / "main.py"), "exec"))
+        except ValueError as exc:
+            tb3 = exc.__traceback__
+        else:
+            raise AssertionError("the toplevel strip call did not raise")
+    site3, _ = tr3.user_anchor(tb3)
+    assert site3 == {"file": "main.py", "line": 4}
+    assert "qual" not in site3
+
+
 def test_failure_echoes_a_stderr_line(tmp_path: Path, capsys) -> None:
     """The failure surfaces where the script author looks — one
     stderr line naming the trace path, the error type and the
     user-code site."""
-    mod = _load(tmp_path)
+    mod = load_script(tmp_path, _SCRIPT)
     out_dir = tmp_path / "out" / "x"
     with pytest.raises(ValueError):
         with geom_out.run(out_dir, work_root=tmp_path):

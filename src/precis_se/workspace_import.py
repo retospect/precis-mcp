@@ -27,7 +27,8 @@ run's failure, refused naming the key)::
      "rays"?: [{"name", "block", "length", "origin"?, "direction"?,
                 "kind"?, "fields"?, "step"?, "reach"?, "in"?, "anchor"?,
                 "frame"?}],
-     "notes"?}
+     "notes"?,
+     "status"?="failed", "error"?}   ← a failed run's record; refused
 
 * ``rays`` (``out.ray``, structure-workspaces 2r): observation rays as
   block children (:mod:`precis_se.rays`) — ``frame`` is the maker's trace
@@ -99,7 +100,12 @@ MAX_WS_OUT_BYTES = 32_000_000
 MAX_WS_BLOCKS = 256
 MAX_WS_BLOCK_ATOMS = 100_000
 
-_TOP_KEYS = frozenset({"schema", "blocks", "instances", "connects", "rays", "notes"})
+#: ``status``/``error`` are a failed run's record keys (``Run.fail``) —
+#: legal top-level shape so the vet reaches the run-failed refusal
+#: instead of reporting them as unknown keys (gr514210).
+_TOP_KEYS = frozenset(
+    {"schema", "blocks", "instances", "connects", "rays", "notes", "status", "error"}
+)
 #: An ``out.ray`` entry (structure-workspaces 2r): ``frame`` is the
 #: maker's trace frame id, as on every manifest entry; ``in`` is the
 #: ray's own reference frame (omitted = the block, ``'world'``,
@@ -236,6 +242,18 @@ def _vet_manifest(
     if not isinstance(data, dict):
         raise BadInput("manifest.json must be a JSON object")
     _unknown_keys(data, _TOP_KEYS, "manifest.json")
+    if data.get("status") == "failed":
+        err = data.get("error") or {}
+        detail = (
+            f" — {err['type']}: {err.get('message', '')}"
+            if isinstance(err, dict) and err.get("type")
+            else ""
+        )
+        raise BadInput(
+            f"manifest.json: run failed{detail}",
+            next="fix the script and re-run — a failed run's out/ is a "
+            "record of where it stopped, not importable state",
+        )
     if data.get("schema") != 1:
         raise BadInput(f"manifest.json: schema must be 1, got {data.get('schema')!r}")
     blocks_raw = data.get("blocks")
