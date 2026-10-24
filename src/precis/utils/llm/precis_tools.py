@@ -114,7 +114,11 @@ def runtime_executor(
         from precis.tools.core import _get_runtime
 
         runtime = _get_runtime()
-        return runtime.dispatch
+        # fold=True: the loop's tool results land verbatim in the model's
+        # context — the agent-context budget the write-time fold exists
+        # for — even though this caller is in-process (dispatch defaults
+        # the fold off there; gr513762).
+        return lambda verb, args: runtime.dispatch(verb, args, fold=True)
 
     resolved = _resolve()
 
@@ -125,7 +129,9 @@ def runtime_executor(
             # response, held on this same process's runtime cache.
             from precis.tools.core import _get_runtime
 
-            body, _is_error = _get_runtime().fetch_more(str(args.get("cursor", "")))
+            body, _is_error = _get_runtime().fetch_more(
+                str(args.get("cursor", "")), fold=True
+            )
             return body
         return resolved(name, args)
 

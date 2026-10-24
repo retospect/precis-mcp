@@ -26,7 +26,7 @@ def captured_payload(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     this point."""
     captured: dict[str, Any] = {}
 
-    def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         captured["verb"] = verb
         captured.update(payload)
         return "ok"

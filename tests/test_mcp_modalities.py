@@ -109,7 +109,7 @@ def test_prompt_get_returns_skill_body(
     register_skill_prompts(server, runtime_with_store)
 
     expected = runtime_with_store.dispatch(
-        "get", {"kind": "skill", "id": "precis-overview"}
+        "get", {"kind": "skill", "id": "precis-overview"}, fold=True
     )
     result = asyncio.run(server.get_prompt("precis-overview", arguments={}))
     rendered = "".join(
@@ -242,7 +242,7 @@ def test_resource_read_dispatches_to_runtime(
     register_resources(server, runtime_with_store)
 
     expected = runtime_with_store.dispatch(
-        "get", {"kind": "skill", "id": "precis-overview"}
+        "get", {"kind": "skill", "id": "precis-overview"}, fold=True
     )
     contents = asyncio.run(server.read_resource("precis://skill/precis-overview"))
     bodies = "".join(

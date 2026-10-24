@@ -960,6 +960,37 @@ def test_recipe_cursor_drift_detected_not_silently_served(
     assert "[error:BadInput]" in body
 
 
+def test_in_process_dispatch_does_not_fold(runtime: PrecisRuntime, monkeypatch) -> None:
+    """gr513762: a direct ``runtime.dispatch*`` call is in-process — the
+    fold is a context budget, not a human one, so an over-4 KB body comes
+    back whole instead of head+marker+tail. The frame-cap pagination
+    (``PRECIS_MAX_BODY_BYTES``) still applies above its own limit."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is False
+    assert out == "x" * 5000  # whole body, no marker, no footer
+
+
+def test_dispatch_fold_opt_in_folds_and_names_the_lever(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    """An explicit ``fold=True`` (the agent-serving callers' flag) still
+    folds an in-process call — and the footer names the lever that cut,
+    not ``PRECIS_MAX_BODY_BYTES`` (gr513762's wrong-lever report)."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status(
+        "get", {"kind": "calc", "id": "2+3"}, fold=True
+    )
+    assert is_error is False
+    assert "⋯ [" in out  # the elision marker — the fold actually cut
+    assert "more(cursor='" in out
+    assert "PRECIS_TOOL_RESULT_FOLD_BYTES" in out
+    assert "PRECIS_MAX_BODY_BYTES" not in out
+
+
 def test_transient_live_response_never_caches_tail(runtime, monkeypatch):
     from precis.response import Response
 

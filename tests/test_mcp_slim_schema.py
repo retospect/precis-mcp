@@ -134,7 +134,7 @@ def test_legacy_top_level_json_string_list_is_parsed(
     top-level ``llm_models`` JSON string must still reach the handler as a list."""
     seen: dict[str, Any] = {}
 
-    def fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         seen.update(payload)
         return "ok"
 
@@ -186,7 +186,7 @@ def test_stringified_top_level_scalar_reaches_the_verb_as_int(
 
     seen: dict[str, Any] = {}
 
-    def fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         seen.update(payload)
         return "ok"
 

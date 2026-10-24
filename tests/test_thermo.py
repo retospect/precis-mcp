@@ -408,7 +408,11 @@ def test_public_temperature_range_diagnostic_preserves_rejected_value(
 
     from precis.tools import core
 
-    monkeypatch.setattr(core, "_dispatch", runtime_with_store.dispatch)
+    monkeypatch.setattr(
+        core,
+        "_dispatch",
+        lambda verb, payload, ctx=None: runtime_with_store.dispatch(verb, payload),
+    )
     server = FastMCP("thermo-temperature-precision-regression")
     server.add_tool(core.get)
     args: dict[str, float] = {"T": max_T}
@@ -438,7 +442,11 @@ def test_actual_public_get_and_fastmcp_schema(
 
     from precis.tools import core
 
-    monkeypatch.setattr(core, "_dispatch", runtime_with_store.dispatch)
+    monkeypatch.setattr(
+        core,
+        "_dispatch",
+        lambda verb, payload, ctx=None: runtime_with_store.dispatch(verb, payload),
+    )
     server = FastMCP("thermo-public-regression")
     server.add_tool(core.get)
     schema = asyncio.run(server.list_tools())[0].inputSchema["properties"]

@@ -946,9 +946,9 @@ class TestFold:
         head + middle + tail reconstructs the original body."""
         monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
         cache = PaginationCache()
-        # Sized so the elided middle fits one continuation page and pop()
-        # returns it verbatim.
-        body = _foldable_body(n_sections=9, lines_per=10)
+        # Sized so the elided middle fits under the fold cap itself and
+        # pop() returns it verbatim, un-refolded.
+        body = _foldable_body(n_sections=7, lines_per=10)
         assert len(body.encode("utf-8")) > int(_FOLD_CAP)
         out, cursor = cache.split(body)
         assert cursor is not None
@@ -1063,3 +1063,57 @@ class TestFold:
         assert "⋯ [" in out
         assert "no continuation cursor" in out
         assert len(cache) == 0
+
+    def test_fold_footer_names_the_lever_that_cut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr513762: a fold page's footer must name the cap that did the
+        cutting — ``PRECIS_TOOL_RESULT_FOLD_BYTES``, its real default, and
+        the ``more(cursor=...)`` drain — never the frame cap's lever."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        out, cursor = PaginationCache().split(_foldable_body())
+        assert cursor is not None
+        assert "PRECIS_TOOL_RESULT_FOLD_BYTES" in out
+        assert "4096" in out
+        assert f"more(cursor='{cursor}')" in out
+        assert "PRECIS_MAX_BODY_BYTES" not in out
+
+    def test_fold_short_lived_footer_names_the_lever_that_cut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cursor-incapable fold footer gets the same correction:
+        the fold lever + its real default, no phantom cursor, and no
+        ``PRECIS_MAX_BODY_BYTES`` misdirection (gr513762's exact case)."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        out, cursor = PaginationCache().split(_foldable_body(), cursor_capable=False)
+        assert cursor is None
+        assert "PRECIS_TOOL_RESULT_FOLD_BYTES" in out
+        assert "4096" in out
+        assert "more(cursor=" not in out
+        assert "PRECIS_MAX_BODY_BYTES" not in out
+
+    def test_fold_transient_note_names_the_lever_that_cut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        out, cursor = PaginationCache().split(_foldable_body(), transient=True)
+        assert cursor is None
+        assert "PRECIS_TOOL_RESULT_FOLD_BYTES" in out
+        assert "PRECIS_MAX_BODY_BYTES" not in out
+
+    def test_drain_follows_the_minting_page_fold_policy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cursor minted under ``fold=False`` (in-process caller) must
+        not start folding mid-drain: :meth:`PaginationCache.pop`'s
+        recursive re-split re-applies the mint's policy."""
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", _FOLD_CAP)
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "3000")
+        cache = PaginationCache()
+        body = _foldable_body(n_sections=30, lines_per=10)
+        head, cursor = cache.split(body, fold=False)
+        assert cursor is not None
+        assert "⋯ [" not in head  # unfolded first page — the mint policy
+        page = cache.pop(cursor)
+        assert page is not None
+        assert "⋯ [" not in page  # the drain honours it too

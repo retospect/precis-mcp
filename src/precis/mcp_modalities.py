@@ -140,7 +140,10 @@ def _make_skill_prompt_fn(runtime: PrecisRuntime, slug: str):
 
     def _fn() -> str:
         if slug in SkillHandler._SYNTHESIZED_SKILLS:
-            response = runtime.dispatch("get", {"kind": "skill", "id": slug})
+            # fold=True: this is an MCP prompt read — the body lands in
+            # an agent context, so the write-time fold still applies
+            # (dispatch defaults it off for in-process callers, gr513762).
+            response = runtime.dispatch("get", {"kind": "skill", "id": slug}, fold=True)
             return response
         text = _load_skill(slug)
         return text if text is not None else f"(skill {slug!r} not found)"
@@ -340,7 +343,9 @@ def _read_resource(runtime: PrecisRuntime, uri: str) -> str:
         except ValueError:
             # Non-int id on a numeric kind — let dispatch handle it.
             typed_id = ident
-    return runtime.dispatch("get", {"kind": kind, "id": typed_id})
+    # fold=True: resource reads are MCP-served — the body lands in an
+    # agent context, so the write-time fold still applies (gr513762).
+    return runtime.dispatch("get", {"kind": kind, "id": typed_id}, fold=True)
 
 
 def register_resources(mcp: FastMCP, runtime: PrecisRuntime) -> tuple[int, int]:

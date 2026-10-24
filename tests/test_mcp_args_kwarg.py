@@ -260,7 +260,7 @@ def test_delete_verb_forwards_base_sha(monkeypatch) -> None:
 
     seen: dict = {}
 
-    def fake_dispatch(verb, payload):
+    def fake_dispatch(verb, payload, ctx=None):
         seen["verb"], seen["payload"] = verb, payload
         return "ok"
 

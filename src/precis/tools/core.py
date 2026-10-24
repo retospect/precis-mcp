@@ -262,7 +262,9 @@ def _build_runtime_locked() -> None:
     atexit.register(_close_runtime)
 
 
-def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
+def _dispatch(
+    verb: str, payload: dict[str, Any], ctx: Context | None = None
+) -> _ToolReturn:
     """Dispatch one verb call and shape the result.
 
     On success, returns the rendered string.
@@ -270,12 +272,21 @@ def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
     MCP compatibility. CLI callers should run the result through
     :func:`precis.tools.cli_adapter._is_call_tool_result` to detect
     errors before treating the value as text.
+
+    ``ctx`` is the FastMCP-injected request context the verb functions
+    already accept. The write-time fold keys off it: a bound session
+    means the result is heading into an MCP client (an agent context —
+    fold on, gr499039); an absent or unbound ``ctx`` means an
+    in-process caller (``precis tools``/``eval``/``repl``, tests) whose
+    output goes to a terminal or pipe — fold off (gr513762).
     """
     runtime = _get_runtime()
     started = _monotonic()
     is_error = False
     try:
-        body, is_error = runtime.dispatch_with_status(verb, payload)
+        body, is_error = runtime.dispatch_with_status(
+            verb, payload, fold=_ctx_session(ctx) is not None
+        )
         if is_error:
             return CallToolResult(
                 content=[TextContent(type="text", text=body)],
@@ -564,7 +575,7 @@ def get(
         # ``CallToolResult`` through unchanged so the protocol
         # ``isError`` flag is preserved. CLI consumers unwrap via
         # :func:`precis.tools.cli_adapter.run_tool_from_cli`.
-        return _dispatch("get", payload)
+        return _dispatch("get", payload, ctx=ctx)
     finally:
         serve_ledger.unbind(token)
 
@@ -1080,7 +1091,7 @@ def search(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        return _dispatch("search", payload)
+        return _dispatch("search", payload, ctx=ctx)
     finally:
         serve_ledger.unbind(token)
 
@@ -1549,6 +1560,7 @@ def put(
                 "default": default,
                 "ops": ops,
             },
+            ctx=ctx,
         )
     finally:
         serve_ledger.unbind(token)
@@ -1891,7 +1903,7 @@ def edit(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        return _dispatch("edit", payload)
+        return _dispatch("edit", payload, ctx=ctx)
     finally:
         serve_ledger.unbind(token)
 
@@ -1948,7 +1960,7 @@ def delete(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        return _dispatch("delete", payload)
+        return _dispatch("delete", payload, ctx=ctx)
     finally:
         serve_ledger.unbind(token)
 
@@ -2022,6 +2034,7 @@ def tag(
                 "prio": prio,
                 "reason": reason,
             },
+            ctx=ctx,
         )
     finally:
         serve_ledger.unbind(token)
@@ -2073,12 +2086,13 @@ def link(
                 "element": element,
                 "meta": meta,
             },
+            ctx=ctx,
         )
     finally:
         serve_ledger.unbind(token)
 
 
-def more(cursor: str) -> _ToolReturn:
+def more(cursor: str, ctx: Context | None = None) -> _ToolReturn:
     """Fetch the next page of a chunked response.
 
     Pagination kicks in when a verb's rendered body exceeds the MCP
@@ -2098,7 +2112,11 @@ def more(cursor: str) -> _ToolReturn:
     started = _monotonic()
     is_error = False
     try:
-        body, is_error = runtime.fetch_more(cursor)
+        # ``ctx`` is FastMCP's injected Context (excluded from the wire
+        # schema, same as the verb functions) — it only steers the
+        # fold policy for a recipe-replay drain; a cached tail keeps
+        # the policy it was minted with either way (gr513762).
+        body, is_error = runtime.fetch_more(cursor, fold=_ctx_session(ctx) is not None)
         if is_error:
             return CallToolResult(
                 content=[TextContent(type="text", text=body)],

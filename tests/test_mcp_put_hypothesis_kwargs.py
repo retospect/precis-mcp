@@ -46,7 +46,7 @@ def test_put_forwards_the_hypothesis_kwargs_into_dispatch(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         captured["verb"] = verb
         captured["payload"] = payload
         return "ok"
@@ -85,7 +85,7 @@ def test_put_without_hypothesis_does_not_force_the_mode(
     indistinguishable from an explicit opt-out to any future caller."""
     captured: dict[str, Any] = {}
 
-    def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         captured["payload"] = payload
         return "ok"
 

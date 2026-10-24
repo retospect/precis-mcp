@@ -97,7 +97,8 @@ def test_runtime_executor_routes_more_to_fetch_more(
     import precis.tools.core as core
 
     class _FakeRuntime:
-        def fetch_more(self, cursor: str) -> tuple[str, bool]:
+        def fetch_more(self, cursor: str, *, fold: bool = True) -> tuple[str, bool]:
+            assert fold is True  # the loop stays on the agent-serving policy
             return f"page2-of:{cursor}", False
 
     monkeypatch.setattr(core, "_get_runtime", lambda: _FakeRuntime())

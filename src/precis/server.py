@@ -858,9 +858,10 @@ def precis(
 
     ``ctx`` is FastMCP's injected per-request Context (excluded from
     the wire schema, same mechanism as the typed profile's own
-    ``get``/``search`` — see ``tools.core``) — forwarded into ``get``/
-    ``search`` so session binding works under the ``command`` profile
-    too, not just typed.
+    ``get``/``search`` — see ``tools.core``) — forwarded into every verb
+    that declares it so session binding (and the fold policy it now
+    steers, gr513762) works under the ``command`` profile too, not just
+    typed.
     """
     from precis.errors import BadInput
     from precis.tools import TOOL_REGISTRY
@@ -876,11 +877,17 @@ def precis(
     except CommandParseError as e:
         return _bad_input(str(e), hint=f"call must look like {_COMMAND_EXAMPLE}")
 
-    if verb in ("get", "search"):
+    # ``ctx`` goes to every verb that declares it — not just get/search:
+    # the serve-ledger session binding and the write-time-fold detection
+    # (``_dispatch`` folds only for a session-bound call, gr513762) both
+    # key off it. ``more`` declares it too, so a command-profile drain
+    # follows the same agent-serving policy.
+    func = TOOL_REGISTRY[verb]["func"]
+    if "ctx" in TOOL_REGISTRY[verb]["signature"].parameters:
         kwargs["ctx"] = ctx
 
     try:
-        return TOOL_REGISTRY[verb]["func"](**kwargs)
+        return func(**kwargs)
     except TypeError as e:
         hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
         alias_hint = _kwarg_alias_hint(verb, e)

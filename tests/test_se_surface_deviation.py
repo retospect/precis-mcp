@@ -1044,7 +1044,7 @@ def public_get(monkeypatch: pytest.MonkeyPatch) -> Any:
         handler, "_render_list", lambda: Response(body="DEFAULT-DESIGN-LIST-SENTINEL")
     )
 
-    def dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         return runtime._invoke_handler(
             handler,
             verb,

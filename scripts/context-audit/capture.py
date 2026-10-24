@@ -81,6 +81,12 @@ class Ctx:
     store: Store
     runtime: PrecisRuntime
 
+    def dispatch(self, verb: str, args: dict[str, Any]) -> str:
+        """Dispatch with ``fold=True`` — these samples must render what an
+        agent sees over MCP, and the write-time fold stays on for that
+        path while in-process dispatch defaults it off (gr513762)."""
+        return self.runtime.dispatch(verb, args, fold=True)
+
 
 @dataclass(frozen=True, slots=True)
 class SampleResult:
@@ -137,34 +143,34 @@ def _require(rid: int | None, what: str) -> int:
 def sample_todo_tree(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "todo"), "todo refs")
     call = f"get(kind='todo', id={rid}, view='tree')"
-    text = ctx.runtime.dispatch("get", {"kind": "todo", "id": rid, "view": "tree"})
+    text = ctx.dispatch("get", {"kind": "todo", "id": rid, "view": "tree"})
     return SampleResult(text, call, ref_handle=f"todo:{rid}")
 
 
 def sample_todo_doable(ctx: Ctx) -> SampleResult:
     call = "search(kind='todo', view='doable')"
-    text = ctx.runtime.dispatch("search", {"kind": "todo", "view": "doable"})
+    text = ctx.dispatch("search", {"kind": "todo", "view": "doable"})
     return SampleResult(text, call)
 
 
 def sample_paper_read(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "paper"), "paper refs")
     call = f"get(kind='paper', id={rid})"
-    text = ctx.runtime.dispatch("get", {"kind": "paper", "id": rid})
+    text = ctx.dispatch("get", {"kind": "paper", "id": rid})
     return SampleResult(text, call, ref_handle=f"paper:{rid}")
 
 
 def sample_quest_tree(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "quest"), "quest refs")
     call = f"get(kind='quest', id={rid}, view='tree')"
-    text = ctx.runtime.dispatch("get", {"kind": "quest", "id": rid, "view": "tree"})
+    text = ctx.dispatch("get", {"kind": "quest", "id": rid, "view": "tree"})
     return SampleResult(text, call, ref_handle=f"quest:{rid}")
 
 
 def sample_draft_toc(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "draft"), "draft refs")
     call = f"get(kind='draft', id={rid}, view='toc')"
-    text = ctx.runtime.dispatch("get", {"kind": "draft", "id": rid, "view": "toc"})
+    text = ctx.dispatch("get", {"kind": "draft", "id": rid, "view": "toc"})
     return SampleResult(text, call, ref_handle=f"draft:{rid}")
 
 
@@ -172,7 +178,7 @@ def sample_gripe_open(ctx: Ctx) -> SampleResult:
     # The open-gripe list is a get list-view (``id='/open'``), not a search;
     # ``search(kind='gripe', status='open')`` is rejected (needs q=/tags=).
     call = "get(kind='gripe', id='/open')"
-    text = ctx.runtime.dispatch("get", {"kind": "gripe", "id": "/open"})
+    text = ctx.dispatch("get", {"kind": "gripe", "id": "/open"})
     return SampleResult(text, call)
 
 
@@ -181,13 +187,13 @@ def sample_cross_kind_search(ctx: Ctx) -> SampleResult:
     # cross-kind fan-out surface (`kind='*'`).
     q = "catalyst reaction pathway"
     call = f"search(kind='*', q={q!r})"
-    text = ctx.runtime.dispatch("search", {"kind": "*", "q": q})
+    text = ctx.dispatch("search", {"kind": "*", "q": q})
     return SampleResult(text, call)
 
 
 def sample_skill_toc(ctx: Ctx) -> SampleResult:
     call = "get(kind='skill', id='toc')"
-    text = ctx.runtime.dispatch("get", {"kind": "skill", "id": "toc"})
+    text = ctx.dispatch("get", {"kind": "skill", "id": "toc"})
     return SampleResult(text, call, ref_handle="skill:toc")
 
 
@@ -197,7 +203,7 @@ def sample_skill_overview(ctx: Ctx) -> SampleResult:
     # `precis-overview` is the master kinds table, always present.
     slug = "precis-overview"
     call = f"get(kind='skill', id={slug!r})"
-    text = ctx.runtime.dispatch("get", {"kind": "skill", "id": slug})
+    text = ctx.dispatch("get", {"kind": "skill", "id": slug})
     return SampleResult(text, call, ref_handle=f"skill:{slug}")
 
 
@@ -212,7 +218,7 @@ def _sample_todo_view(view: str) -> Callable[[Ctx], SampleResult]:
 
     def _sampler(ctx: Ctx) -> SampleResult:
         call = f"search(kind='todo', view={view!r})"
-        text = ctx.runtime.dispatch("search", {"kind": "todo", "view": view})
+        text = ctx.dispatch("search", {"kind": "todo", "view": view})
         return SampleResult(text, call)
 
     _sampler.__name__ = f"sample_todo_{view.replace('-', '_')}"
@@ -237,7 +243,7 @@ def _sample_quest_view(view: str) -> Callable[[Ctx], SampleResult]:
     def _sampler(ctx: Ctx) -> SampleResult:
         rid = _require(_recent_ref_id(ctx.store, "quest"), "quest refs")
         call = f"get(kind='quest', id={rid}, view={view!r})"
-        text = ctx.runtime.dispatch("get", {"kind": "quest", "id": rid, "view": view})
+        text = ctx.dispatch("get", {"kind": "quest", "id": rid, "view": view})
         return SampleResult(text, call, ref_handle=f"quest:{rid}")
 
     _sampler.__name__ = f"sample_quest_{view}"
@@ -252,9 +258,7 @@ sample_quest_dossier = _sample_quest_view("dossier")
 def sample_draft_wordcount(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "draft"), "draft refs")
     call = f"get(kind='draft', id={rid}, view='wordcount')"
-    text = ctx.runtime.dispatch(
-        "get", {"kind": "draft", "id": rid, "view": "wordcount"}
-    )
+    text = ctx.dispatch("get", {"kind": "draft", "id": rid, "view": "wordcount"})
     return SampleResult(text, call, ref_handle=f"draft:{rid}")
 
 
@@ -262,14 +266,14 @@ def sample_memory_sticky(ctx: Ctx) -> SampleResult:
     # The pinned set — a list view (`id='/sticky'`), not a search; mirrors
     # ``sample_gripe_open``'s `id='/<view>'` shape.
     call = "get(kind='memory', id='/sticky')"
-    text = ctx.runtime.dispatch("get", {"kind": "memory", "id": "/sticky"})
+    text = ctx.dispatch("get", {"kind": "memory", "id": "/sticky"})
     return SampleResult(text, call)
 
 
 def sample_memory_recent(ctx: Ctx) -> SampleResult:
     rid = _require(_recent_ref_id(ctx.store, "memory"), "memory refs")
     call = f"get(kind='memory', id={rid})"
-    text = ctx.runtime.dispatch("get", {"kind": "memory", "id": rid})
+    text = ctx.dispatch("get", {"kind": "memory", "id": rid})
     return SampleResult(text, call, ref_handle=f"memory:{rid}")
 
 
@@ -278,7 +282,7 @@ def sample_gripe_read(ctx: Ctx) -> SampleResult:
     # `id='/open'` list view.
     rid = _require(_recent_ref_id(ctx.store, "gripe"), "gripe refs")
     call = f"get(kind='gripe', id={rid})"
-    text = ctx.runtime.dispatch("get", {"kind": "gripe", "id": rid})
+    text = ctx.dispatch("get", {"kind": "gripe", "id": rid})
     return SampleResult(text, call, ref_handle=f"gripe:{rid}")
 
 
@@ -287,7 +291,7 @@ def sample_search_keywords(ctx: Ctx) -> SampleResult:
     # the corpus" for a query, no preview text.
     q = "catalyst reaction pathway"
     call = f"search(kind='*', view='keywords', q={q!r})"
-    text = ctx.runtime.dispatch("search", {"kind": "*", "view": "keywords", "q": q})
+    text = ctx.dispatch("search", {"kind": "*", "view": "keywords", "q": q})
     return SampleResult(text, call)
 
 
@@ -296,7 +300,7 @@ def sample_search_stubs(ctx: Ctx) -> SampleResult:
     # PaperHandler/marker/semanticscholar import, so this is host-safe
     # despite being paper-flavored.
     call = "search(view='stubs')"
-    text = ctx.runtime.dispatch("search", {"view": "stubs"})
+    text = ctx.dispatch("search", {"view": "stubs"})
     return SampleResult(text, call)
 
 
@@ -306,7 +310,7 @@ def sample_search_source_recency(ctx: Ctx) -> SampleResult:
     # list ordered by recency rather than relevance.
     q = "catalyst reaction pathway"
     call = f"search(kind='*', q={q!r}, sort='recency')"
-    text = ctx.runtime.dispatch("search", {"kind": "*", "q": q, "sort": "recency"})
+    text = ctx.dispatch("search", {"kind": "*", "q": q, "sort": "recency"})
     return SampleResult(text, call)
 
 
@@ -316,7 +320,7 @@ def sample_search_source_recency(ctx: Ctx) -> SampleResult:
 def sample_planner_tick(ctx: Ctx) -> SampleResult:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    doable = ctx.runtime.dispatch("search", {"kind": "todo", "view": "doable"})
+    doable = ctx.dispatch("search", {"kind": "todo", "view": "doable"})
     rid = _first_ref_id_in(doable)
     if rid is None:
         raise LookupError("no doable todo found to build a planner tick for")

@@ -38,7 +38,7 @@ def test_put_forwards_parent_id_into_dispatch_payload(
     dispatch payload verbatim (before the fix it was silently dropped)."""
     captured: dict[str, Any] = {}
 
-    def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         captured["verb"] = verb
         captured["payload"] = payload
         return "ok"
@@ -58,7 +58,7 @@ def test_put_parent_id_accepts_slug_ref_form(
     forwarded untouched — the handler does the int coercion, not the tool."""
     captured: dict[str, Any] = {}
 
-    def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         captured["payload"] = payload
         return "ok"
 

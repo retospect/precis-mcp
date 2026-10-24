@@ -41,7 +41,7 @@ def _fake_ctx(session: object | None) -> Context:
 def test_get_binds_ctx_session_around_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object | None] = {}
 
-    def fake_dispatch(verb: str, payload: dict) -> str:
+    def fake_dispatch(verb: str, payload: dict, ctx: object = None) -> str:
         captured["verb"] = verb
         captured["session"] = serve_ledger._current_session.get()
         return "ok"
@@ -63,7 +63,7 @@ def test_search_binds_ctx_session_around_dispatch(
 ) -> None:
     captured: dict[str, object | None] = {}
 
-    def fake_dispatch(verb: str, payload: dict) -> str:
+    def fake_dispatch(verb: str, payload: dict, ctx: object = None) -> str:
         captured["session"] = serve_ledger._current_session.get()
         return "ok"
 
@@ -80,7 +80,7 @@ def test_search_binds_ctx_session_around_dispatch(
 def test_get_without_ctx_binds_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object | None] = {}
 
-    def fake_dispatch(verb: str, payload: dict) -> str:
+    def fake_dispatch(verb: str, payload: dict, ctx: object = None) -> str:
         captured["session"] = serve_ledger._current_session.get()
         return "ok"
 
@@ -98,7 +98,7 @@ def test_write_verbs_bind_ctx_session_around_dispatch(
     on the write path (30% of the ledger was NULL-attributed)."""
     captured: dict[str, object | None] = {}
 
-    def fake_dispatch(v: str, payload: dict) -> str:
+    def fake_dispatch(v: str, payload: dict, ctx: object = None) -> str:
         captured["session"] = serve_ledger._current_session.get()
         return "ok"
 
@@ -123,6 +123,65 @@ def test_write_verbs_bind_ctx_session_around_dispatch(
 
 
 _ALL_CTX_VERBS = ("get", "search", "put", "edit", "delete", "tag", "link")
+
+
+def test_dispatch_folds_only_for_a_bound_mcp_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr513762: the write-time fold keys off the bound session — a
+    session-bound (agent-facing) call folds, an in-process call
+    (ctx=None or unbound) does not."""
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.fold: bool | None = None
+
+        def dispatch_with_status(
+            self, verb: str, payload: dict, *, fold: bool = False
+        ) -> tuple[str, bool]:
+            self.fold = fold
+            return "ok", False
+
+        def render_error(self, err: Exception) -> str:
+            return f"rendered: {err}"
+
+    rt = _Runtime()
+    monkeypatch.setattr(core, "_get_runtime", lambda: rt)
+    monkeypatch.setattr(core, "_log_tool_call", lambda **kw: None)
+
+    core.get(kind="skill", id="x")
+    assert rt.fold is False
+    core.get(kind="skill", id="x", ctx=_fake_ctx(_FakeSession()))
+    assert rt.fold is True
+    # A ctx that isn't bound to a live request counts as in-process too.
+    assert core._ctx_session(_fake_ctx(None)) is None
+    core.get(kind="skill", id="x", ctx=_fake_ctx(None))
+    assert rt.fold is False
+
+
+def test_more_uses_ctx_for_recipe_replay_fold_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``more`` forwards the same session-derived policy into
+    ``fetch_more`` — it only matters on a recipe-cursor replay, but the
+    drain's minted continuations follow it from there."""
+    seen: dict[str, bool] = {}
+
+    class _Runtime:
+        def fetch_more(self, cursor: str, *, fold: bool = True) -> tuple[str, bool]:
+            seen["fold"] = fold
+            return "page", False
+
+        def render_error(self, err: Exception) -> str:
+            return f"rendered: {err}"
+
+    monkeypatch.setattr(core, "_get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(core, "_log_tool_call", lambda **kw: None)
+
+    core.more("abc")
+    assert seen["fold"] is False
+    core.more("abc", ctx=_fake_ctx(_FakeSession()))
+    assert seen["fold"] is True
 
 
 def test_ctx_excluded_from_wire_schema() -> None:
@@ -157,7 +216,7 @@ def test_skill_search_rejects_plural_tags(monkeypatch: pytest.MonkeyPatch) -> No
         def render_error(self, err: Exception) -> str:
             return f"rendered: {err}"
 
-    def fail_dispatch(verb: str, payload: dict) -> str:
+    def fail_dispatch(verb: str, payload: dict, ctx: object = None) -> str:
         raise AssertionError("tags= on kind='skill' must not reach dispatch")
 
     monkeypatch.setattr(core, "_dispatch", fail_dispatch)
@@ -168,5 +227,5 @@ def test_skill_search_rejects_plural_tags(monkeypatch: pytest.MonkeyPatch) -> No
     assert "tag=" in result.content[0].text
 
     # Other kinds keep the plural filter untouched.
-    monkeypatch.setattr(core, "_dispatch", lambda verb, payload: "ok")
+    monkeypatch.setattr(core, "_dispatch", lambda verb, payload, ctx=None: "ok")
     assert core.search(kind="paper", q="x", tags=["STATUS:done"]) == "ok"

@@ -1008,18 +1008,22 @@ class DispatchMixin(RuntimeShape):
                 _retry_sleep(attempt)
                 attempt += 1
 
-    def dispatch(self, verb: str, args: dict[str, Any], *, fold: bool = True) -> str:
+    def dispatch(self, verb: str, args: dict[str, Any], *, fold: bool = False) -> str:
         """Run one verb call. Returns the rendered string for the agent.
 
         Errors are caught and rendered as text — they never propagate
         out (MCP expects a string return). Tests rely on this shape;
         callers that need the protocol-level error flag (e.g. the MCP
-        tool wrappers) should use :meth:`dispatch_with_status`."""
+        tool wrappers) should use :meth:`dispatch_with_status`.
+
+        ``fold`` opts into the write-time fold — see
+        :meth:`dispatch_with_status`.
+        """
         body, _is_error = self.dispatch_with_status(verb, args, fold=fold)
         return body
 
     def dispatch_with_status(
-        self, verb: str, args: dict[str, Any], *, fold: bool = True
+        self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.
 
@@ -1030,6 +1034,21 @@ class DispatchMixin(RuntimeShape):
         level ``isError`` flag while keeping a single source of truth
         for the rendering. (MCP critic MAJOR — errors silently masked
         as content because ``isError`` was never set.)
+
+        ``fold`` opts into the write-time fold
+        (:data:`precis._pagination.DEFAULT_FOLD_BODY_BYTES` —
+        ``PRECIS_TOOL_RESULT_FOLD_BYTES``): the ~4 KB head+marker+tail
+        shape that bounds what lands in an LLM context at write time.
+        It is **off by default here** — a direct ``runtime.dispatch*``
+        caller is in-process (``precis tools``/``eval``, a script, a
+        test), its result goes to a terminal or a pipe, and an elision
+        marker only hides data there (gr513762). Every agent-serving
+        surface passes ``fold=True`` explicitly:
+        ``precis.tools.core._dispatch`` (when a live MCP session is
+        bound), :mod:`precis.mcp_modalities` (MCP resources/prompts),
+        and ``precis.utils.llm.precis_tools.runtime_executor`` (the
+        in-process LLM loop). The ``PRECIS_MAX_BODY_BYTES`` frame
+        pagination applies either way.
         """
         started = time.monotonic()
         with self.hub.request_scope():
@@ -1065,6 +1084,11 @@ class DispatchMixin(RuntimeShape):
                 # built too, so the cursor is self-describing (survives
                 # TTL expiry entirely) rather than just an opaque cache
                 # key; see :mod:`precis._pagination`'s module docstring.
+                #
+                # ``fold`` rides through unchanged: agent-serving
+                # callers opt in explicitly (see the signature docs) —
+                # an in-process dispatch returns bodies whole up to the
+                # frame cap (gr513762).
                 recipe = (
                     None
                     if response.transient
@@ -1317,7 +1341,7 @@ class DispatchMixin(RuntimeShape):
             page=2,
         )
 
-    def fetch_more(self, cursor: str) -> tuple[str, bool]:
+    def fetch_more(self, cursor: str, *, fold: bool = True) -> tuple[str, bool]:
         """Return the next page for a pagination cursor.
 
         Mirrors :meth:`dispatch_with_status`'s ``(body, is_error)``
@@ -1331,6 +1355,13 @@ class DispatchMixin(RuntimeShape):
         Recursive cursors: if the popped tail is itself oversized,
         :class:`PaginationCache` re-splits and embeds the new
         cursor in the returned body's footer.
+
+        ``fold`` is the *caller's* fold policy — it only steers the
+        recipe-replay path below (a cache-missed cursor has no stored
+        policy). A cached tail drains under the policy it was minted
+        with, recorded on :class:`precis._pagination._CachedTail`, so a
+        ``more`` call can't retroactively fold (or un-fold) a chain.
+        Default ``True`` matches the agent-serving mint paths.
         """
         tail = self.pagination.pop(cursor)
         if tail is not None:
@@ -1340,7 +1371,7 @@ class DispatchMixin(RuntimeShape):
         # necessarily unrecoverable — if it decodes as a re-derivable
         # ``get()`` recipe, re-run the call and serve the requested
         # page transparently instead of erroring.
-        rederived = self._fetch_more_via_recipe(cursor)
+        rederived = self._fetch_more_via_recipe(cursor, fold=fold)
         if rederived is not None:
             return rederived
 
@@ -1379,7 +1410,9 @@ class DispatchMixin(RuntimeShape):
         )
         return self.render_error(err), True
 
-    def _fetch_more_via_recipe(self, cursor: str) -> tuple[str, bool] | None:
+    def _fetch_more_via_recipe(
+        self, cursor: str, *, fold: bool = True
+    ) -> tuple[str, bool] | None:
         """Transparent-retry fallback for a re-derivable cursor that's
         fallen out of the in-process cache (gr330197: TTL expiry under
         fleet load is the common case, but this also covers a
@@ -1446,6 +1479,7 @@ class DispatchMixin(RuntimeShape):
                 verb="get",
                 args=decoded.args,
                 body_hash=decoded.body_hash,
+                fold=fold,
             )
         return page_body, False
 

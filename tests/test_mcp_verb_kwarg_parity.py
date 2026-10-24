@@ -271,7 +271,7 @@ def test_args_only_kwargs_are_reachable_through_args(
     sentinel = object()
     seen: dict[str, Any] = {}
 
-    def fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+    def fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
         seen.clear()
         seen.update(payload)
         return "ok"

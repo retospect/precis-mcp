@@ -82,9 +82,17 @@ the run — folding it *later* would rewrite the cached prompt prefix and
 turn every subsequent call into a cache miss. So the fold happens here,
 at the single seam where the result text is first materialised
 (:meth:`PaginationCache.split`, reached from
-``DispatchMixin.dispatch_with_status`` by the MCP server, the
-in-process ``run_tool_loop`` executor, and the CLI alike): when a body
-exceeds ``PRECIS_TOOL_RESULT_FOLD_BYTES`` (default 4096, ``0``
+``DispatchMixin.dispatch_with_status``). The fold is a *context*
+budget, not a frame or human one: it applies only where the result is
+known to be agent-bound — the MCP tool wrappers (the verb funcs pass
+``fold=True`` when a live MCP session is bound; gr513762), the MCP
+resource/prompt modalities, and the in-process LLM tool executor
+(``precis.utils.llm.precis_tools.runtime_executor``). In-process
+callers — ``precis tools``/``eval``/``repl``, direct
+``runtime.dispatch*`` calls from scripts — default ``fold=False``:
+their output goes to a terminal or a file, where an elision marker
+only hides data (gr513762's motivating case). When a body exceeds
+``PRECIS_TOOL_RESULT_FOLD_BYTES`` (default 4096, ``0``
 disables), the served text is
 
     head (~¾ of the budget, structural cut) + an elision marker naming
@@ -204,8 +212,11 @@ _FOOTER_TEMPLATE = (
 #: Footer for a cursor-incapable (short-lived) caller — a one-shot
 #: process (``precis eval``) whose :class:`PaginationCache` dies with
 #: it before any ``more(cursor=...)`` retry could ever reach it. Points
-#: at ``PRECIS_MAX_BODY_BYTES`` (the one lever that actually helps in
-#: that situation) and a long-lived session instead of an instruction
+#: at ``PRECIS_MAX_BODY_BYTES`` — the lever that cut on this
+#: **frame-cap** path (the fold cut has its own siblings,
+#: :data:`_FOLD_FOOTER_TEMPLATE`/:data:`_FOLD_SHORT_LIVED_FOOTER_TEMPLATE`,
+#: naming ``PRECIS_TOOL_RESULT_FOLD_BYTES`` — gr513762) — and a
+#: long-lived session instead of an instruction
 #: that would just fail with "unknown cursor". Kept as its own
 #: template (not a branch inside :data:`_FOOTER_TEMPLATE`) so neither
 #: wording can drift onto the other's call site by accident.
@@ -273,6 +284,60 @@ _TRANSIENT_NOTE_TEMPLATE = (
     "PRECIS_MAX_BODY_BYTES and make a fresh live request.\n"
 )
 
+#: Footer for a **fold** cut with a live continuation cursor — the
+#: sibling of :data:`_FOOTER_TEMPLATE` used by
+#: :meth:`PaginationCache._fold`. The templates differ because the lever
+#: differs: a folded page was cut to fit the *context budget*
+#: (``PRECIS_TOOL_RESULT_FOLD_BYTES``), not the response frame — the
+#: generic footer's "cut to fit the response frame / raise
+#: ``PRECIS_MAX_BODY_BYTES``" guidance named a cap that did not do the
+#: cutting (gr513762). This one states the fold, names the lever that
+#: actually cut with its real default, and keeps the same
+#: ``more(cursor='...')`` drain instruction.
+_FOLD_FOOTER_TEMPLATE = (
+    "\n\n---\n"
+    "⚠️ **Truncated — this is NOT the complete result.** It was folded to "
+    "fit the tool-result context budget: about {remaining} was elided "
+    "from the middle (the head and tail shown are verbatim). Call "
+    "`more(cursor='{cursor}')` to fetch the elided part, then keep "
+    "following each page's cursor until no footer remains. To see more in "
+    "one page, raise `PRECIS_TOOL_RESULT_FOLD_BYTES` (default "
+    f"{DEFAULT_FOLD_BODY_BYTES}; `0` disables the fold). Do not "
+    "summarise, quote, or act on this page as if it were the complete "
+    "result — a partial excerpt is fine as long as you say it's "
+    "partial.\n"
+)
+
+#: The fold cut's cursor-incapable sibling — see
+#: :data:`_FOLD_FOOTER_TEMPLATE` for why a fold footer names
+#: ``PRECIS_TOOL_RESULT_FOLD_BYTES`` rather than
+#: ``PRECIS_MAX_BODY_BYTES`` (gr513762). No cursor is minted or offered.
+_FOLD_SHORT_LIVED_FOOTER_TEMPLATE = (
+    "\n\n---\n"
+    "⚠️ **Truncated — this is NOT the complete result.** It was folded to "
+    "fit the tool-result context budget: about {remaining} was elided "
+    "from the middle (the head and tail shown are verbatim) and there is "
+    "no way to retrieve it from here — this runtime cannot hand out a "
+    "continuation cursor (not a long-lived session, e.g. a one-shot "
+    "`precis eval` or an in-process call), so a cursor would die "
+    "unredeemed; none is offered. To see more in one page, re-run with a "
+    "higher `PRECIS_TOOL_RESULT_FOLD_BYTES` (default "
+    f"{DEFAULT_FOLD_BODY_BYTES}; `0` disables the fold); for cursor-"
+    "continuation paging use a long-lived session (the MCP server, or "
+    "`precis repl`).\n"
+)
+
+#: The fold cut's ``transient`` sibling of :data:`_TRANSIENT_NOTE_TEMPLATE`
+#: — same "fresh live request" recovery, but the lever named is the fold
+#: cap that actually cut (gr513762).
+_FOLD_TRANSIENT_NOTE_TEMPLATE = (
+    "\n\n---\nTruncated — NOT the complete result. "
+    "About {remaining} elided from the middle. Live supplier data is not "
+    "cached; no continuation cursor is available. Narrow the query or "
+    "increase PRECIS_TOOL_RESULT_FOLD_BYTES and make a fresh live "
+    "request.\n"
+)
+
 
 def _clamp_text(text: str | None, max_bytes: int) -> str | None:
     """Normalise/bound optional footer-sentence text to ``max_bytes``.
@@ -334,6 +399,33 @@ def _build_short_lived_footer(
     """Render the truncation footer for a cursor-incapable (short-lived)
     caller — see :data:`_SHORT_LIVED_FOOTER_TEMPLATE`."""
     footer = _SHORT_LIVED_FOOTER_TEMPLATE.format(remaining=remaining)
+    if alt_hint:
+        footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    if kind:
+        footer += _KIND_FALLBACK_SENTENCE_TEMPLATE.format(kind=kind)
+    return footer
+
+
+def _build_fold_footer(
+    *, cursor: str, remaining: str, alt_hint: str | None, kind: str | None = None
+) -> str:
+    """Render the fold cut's cursor-bearing footer — see
+    :data:`_FOLD_FOOTER_TEMPLATE`. Same optional-sentence contract as
+    :func:`_build_footer`."""
+    footer = _FOLD_FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
+    if alt_hint:
+        footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    if kind:
+        footer += _KIND_FALLBACK_SENTENCE_TEMPLATE.format(kind=kind)
+    return footer
+
+
+def _build_fold_short_lived_footer(
+    *, remaining: str, alt_hint: str | None, kind: str | None = None
+) -> str:
+    """Render the fold cut's cursor-incapable footer — see
+    :data:`_FOLD_SHORT_LIVED_FOOTER_TEMPLATE`."""
+    footer = _FOLD_SHORT_LIVED_FOOTER_TEMPLATE.format(remaining=remaining)
     if alt_hint:
         footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
     if kind:
@@ -536,6 +628,14 @@ class _CachedTail:
     #: re-derivable chain doesn't collapse into an opaque cursor the
     #: first time a page happens to be served from cache.
     recipe: RecipeSeed | None = None
+    #: The write-time-fold policy the *minting* page was produced under —
+    #: whether the dispatch that cached this tail allowed the
+    #: ``PRECIS_TOOL_RESULT_FOLD_BYTES`` display fold. Carried into
+    #: :meth:`PaginationCache.pop`'s recursive re-split so a drain page
+    #: follows the mint's policy: a cursor minted in-process (``precis
+    #: repl``, ``precis tools`` — fold off) drains unfolded, and an
+    #: agent-serving mint keeps re-folding its oversized continuations.
+    fold: bool = True
 
 
 class PaginationCache:
@@ -642,10 +742,12 @@ class PaginationCache:
         page from scratch. Falls back to an opaque cursor if encoding
         ``recipe`` fails (e.g. non-JSON-safe args) rather than raising.
 
-        ``fold=False`` skips the write-time fold entirely (the web UI
-        renders dispatch bodies into pages — an elision marker and a
-        ``more(cursor=...)`` footer are agent affordances, not human
-        ones). Ordinary pagination still applies.
+        ``fold=False`` skips the write-time fold entirely. The flag is the
+        *policy for the whole cursor chain*: it is stored on any minted
+        :class:`_CachedTail` and re-applied by :meth:`pop`'s recursive
+        re-split, so a drain page follows the mint's policy rather than
+        the draining caller's. Ordinary pagination still applies either
+        way.
         """
         # Licensed live responses retain frame limits but never retain a tail.
         if transient:
@@ -739,6 +841,7 @@ class PaginationCache:
                 alt_hint=alt_hint,
                 kind=kind,
                 recipe=stored_recipe,
+                fold=fold,
             )
         return head_with_footer, cursor
 
@@ -769,10 +872,23 @@ class PaginationCache:
         for an expired cursor.
 
         ``transient`` and ``cursor_capable=False`` bodies fold the same
-        way but cache nothing and get their usual footers.
+        way but cache nothing. Each branch gets its own footer naming
+        the lever that actually cut — ``PRECIS_TOOL_RESULT_FOLD_BYTES``,
+        never ``PRECIS_MAX_BODY_BYTES`` (gr513762: the generic footers
+        named the frame cap, which is not the budget a fold page was
+        cut to fit).
         """
         fold_cap = _fold_body_bytes()
-        reserve = _FOOTER_RESERVE_BYTES + _FOLD_MARKER_RESERVE_BYTES
+        footer_reserve = (
+            _FOLD_TRANSIENT_NOTE_RESERVE_BYTES
+            if transient
+            else (
+                _FOLD_FOOTER_RESERVE_BYTES
+                if cursor_capable
+                else _FOLD_SHORT_LIVED_FOOTER_RESERVE_BYTES
+            )
+        )
+        reserve = footer_reserve + _FOLD_MARKER_RESERVE_BYTES
         if alt_hint:
             reserve += _ALT_HINT_RESERVE_BYTES
         if kind:
@@ -807,17 +923,17 @@ class PaginationCache:
                 head
                 + marker
                 + tail
-                + _TRANSIENT_NOTE_TEMPLATE.format(remaining=remaining),
+                + _FOLD_TRANSIENT_NOTE_TEMPLATE.format(remaining=remaining),
                 None,
             )
         if not cursor_capable:
-            footer = _build_short_lived_footer(
+            footer = _build_fold_short_lived_footer(
                 remaining=remaining, alt_hint=alt_hint, kind=kind
             )
             return head + marker + tail + footer, None
 
         cursor = uuid.uuid4().hex
-        footer = _build_footer(
+        footer = _build_fold_footer(
             cursor=cursor, remaining=remaining, alt_hint=alt_hint, kind=kind
         )
         with self._lock:
@@ -829,6 +945,7 @@ class PaginationCache:
                 alt_hint=alt_hint,
                 kind=kind,
                 recipe=None,
+                fold=True,
             )
         return head + marker + tail + footer, cursor
 
@@ -854,10 +971,16 @@ class PaginationCache:
         if entry.expires_at <= self._now():
             return None
         # Recursive split: the tail may itself overflow. Reuse the
-        # original page's alt_hint/kind/recipe so none of them
-        # silently vanish after the first ``more()`` call.
+        # original page's alt_hint/kind/recipe/fold policy so none of
+        # them silently vanish after the first ``more()`` call — a
+        # tail minted unfolded (in-process caller) must not start
+        # folding mid-drain (gr513762).
         head, _maybe_next_cursor = self.split(
-            entry.body, alt_hint=entry.alt_hint, kind=entry.kind, recipe=entry.recipe
+            entry.body,
+            alt_hint=entry.alt_hint,
+            kind=entry.kind,
+            recipe=entry.recipe,
+            fold=entry.fold,
         )
         return head
 
@@ -871,6 +994,7 @@ class PaginationCache:
         verb: str,
         args: dict[str, Any],
         body_hash: str,
+        fold: bool = True,
     ) -> str:
         """Rebuild page ``page`` (1-based) of a freshly re-rendered ``body``.
 
@@ -887,6 +1011,13 @@ class PaginationCache:
         mints (and caches, for the fast same-process path on the *next*
         call) a further re-derivable cursor for ``page + 1``; if
         ``page`` is the last page, returns it bare (no footer).
+
+        ``fold`` is the draining caller's fold policy — the recipe
+        cursor itself doesn't record one. Rebuilt pages are never
+        folded (recipe replay cannot reproduce fold geometry, same
+        reason fold cursors are opaque); the flag only rides onto the
+        minted next-page cursor so the rest of the chain drains under
+        the caller's policy.
         """
         alt_hint = _clamp_alt_hint(alt_hint)
         kind = _clamp_kind(kind)
@@ -948,6 +1079,7 @@ class PaginationCache:
                 alt_hint=alt_hint,
                 kind=kind,
                 recipe=next_recipe,
+                fold=fold,
             )
         return head + footer
 
@@ -1029,6 +1161,23 @@ _FOLD_MARKER_RESERVE_BYTES = len(
     _FOLD_MARKER_TEMPLATE.format(
         elided="8888.8 MB", digest="0" * 16, total="8888.8 MB"
     ).encode("utf-8")
+)
+
+#: Reserves for the three fold footers — one per cut branch
+#: (:meth:`PaginationCache._fold` picks the matching one up front, same
+#: as :func:`_greedy_split` does for the ordinary footers). Derived
+#: from the templates so wording changes self-correct; fold cursors are
+#: always opaque ``uuid4().hex``, exactly :data:`_DEFAULT_CURSOR_BYTES`.
+_FOLD_FOOTER_RESERVE_BYTES = len(
+    _FOLD_FOOTER_TEMPLATE.format(
+        cursor="f" * _DEFAULT_CURSOR_BYTES, remaining="8888.8 MB"
+    ).encode("utf-8")
+)
+_FOLD_SHORT_LIVED_FOOTER_RESERVE_BYTES = len(
+    _FOLD_SHORT_LIVED_FOOTER_TEMPLATE.format(remaining="8888.8 MB").encode("utf-8")
+)
+_FOLD_TRANSIENT_NOTE_RESERVE_BYTES = len(
+    _FOLD_TRANSIENT_NOTE_TEMPLATE.format(remaining="8888.8 MB").encode("utf-8")
 )
 
 

@@ -554,7 +554,9 @@ class TestCoreParams:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        def _fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+        def _fake_dispatch(
+            verb: str, payload: dict[str, Any], ctx: object = None
+        ) -> str:
             captured["payload"] = payload
             return "ok"
 
