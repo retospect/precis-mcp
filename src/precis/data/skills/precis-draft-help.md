@@ -319,7 +319,9 @@ See [[precis-draft-rich-content-help]].
 get(kind="draft", id="nanotrans")  # outline: handle | §-path | gist
 get(kind="draft", id="nanotrans", q="amine")  # passages inside it (find-in-ref)
 get(id="dc12")  # one chunk, verbatim source
-get(id="dc12-5..3")  # that chunk + 5 before, 3 after
+get(id="dc12-5..3")  # reading-order window: 5 chunks before → 3 after,
+                     # crossing headings (not a sibling run); clamped at the ends
+get(id="dc12+1")  # next sibling under the same parent; dc12^ = enclosing heading
 get(id="dc12", view="fisheye")  # verbatim center + reading-order neighbors
 get(id="dc12", view="fisheye+1hop")  # fisheye + everything it points at
 ```

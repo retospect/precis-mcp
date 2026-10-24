@@ -410,6 +410,22 @@ needed cutting anyway. Keep each H2 section at or under 4000 characters: a
 skill is served chunked by H2 and an oversize section breaks the chunk
 budget.
 
+### File size vs the serve fold
+
+A whole-skill serve is folded at `PRECIS_TOOL_RESULT_FOLD_BYTES`
+(default 4096 bytes, `src/precis/_pagination.py`), measured on the
+**served** body — not the file. Serve prepends a `family:`/`tags:`
+header and appends a graph footer, the misled-by line and a
+`skill rev <sha8>` trailer: ~0.4–1.5 KB of overhead on a reference
+skill (personas skip the header/footer, ~0.2 KB), plus `[[wikilink]]`
+expansion (~40 B per link) and a concern banner when open gripes link
+the skill. A file under ~2.5–3.4 KB serves whole depending on that
+footer weight; past the fold the first fetch returns head + elision
+marker + tail, and the middle only comes back via `more(cursor=…)` or
+`id='<slug>~N'`. When sizing a skill to the fold, measure
+`get(kind='skill', id='<slug>').body`, not `wc -c` on the file
+(gr514726).
+
 ## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
 
 Three frontmatter/body axes, all gated at ingest (hard-fail):

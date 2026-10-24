@@ -742,6 +742,20 @@ class SkillHandler(Handler):
         have: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # A literal ``args=`` dict can only arrive by bypassing dispatch:
+        # the dispatcher flattens ``args={'k': v}`` into top-level kwargs
+        # upstream (or forwards it whole to a handler that declares an
+        # ``args`` param — this one doesn't). In ``**_kw`` it would drop
+        # silently, which is how a handler-level test calling
+        # ``skill.get(id='toc', args={'family': 'x'})`` exercised nothing
+        # (gr514727).
+        if "args" in _kw:
+            raise BadInput(
+                "skill.get takes no args= dict: dispatch flattens "
+                "args={'k': v} into kwargs before the handler runs",
+                next="pass the key as a kwarg — get(id='toc', family='x') "
+                "— or exercise the args= path through dispatch",
+            )
         # find-in-ref (gr486840): ``q`` on a concrete id is the shared
         # find; ``id=None`` keeps its older meaning below (delegate to
         # ``search``). Eye views keep their own ``q`` (ring expansion).

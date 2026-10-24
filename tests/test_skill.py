@@ -496,14 +496,15 @@ def test_skills_directory_has_overview(skill: SkillHandler) -> None:
 
 
 def test_skill_count_reasonable(skill: SkillHandler) -> None:
-    """Sanity check that we ship a handful of skills, not zero or 9000."""
+    """Sanity check that we ship a handful of skills, not zero or 9000.
+
+    The ceiling is deliberately loose (gr514416): a hard cap meant every
+    new skill needed a test edit, and sibling +1 bumps collided on rebase
+    (gr514731). 400 keeps the catastrophe check — the recursive walk
+    suddenly picking up a foreign tree — without per-add churn."""
     from precis.handlers.skill import _list_skills
 
     skills = _list_skills()
-    # gr514416: the ceiling is loose headroom (~2x the corpus at the
-    # time of writing), not a per-addition ratchet — adding a skill
-    # must not require a test edit; the bound still catches a
-    # discovery walk gone wrong (empty corpus or a runaway glob).
     assert 5 <= len(skills) <= 400
 
 
@@ -1999,6 +2000,23 @@ def test_toc_filter_by_kinds_actually_filters(
     out2 = skill.get(id="toc", kinds="patent")
     assert "zzq-patent" in out2.body
     assert "zzq-paper" not in out2.body
+
+
+def test_get_rejects_literal_args_dict(skill: SkillHandler) -> None:
+    """gr514727: dispatch flattens ``args={'k': v}`` into kwargs before
+    the handler runs, so a literal ``args=`` passed at handler level
+    lands in ``**_kw`` and silently does nothing. Refuse it and name the
+    kwarg spelling a handler-level test should use instead."""
+    with pytest.raises(BadInput, match="args="):
+        skill.get(id="toc", args={"family": "se"})
+
+
+def test_toc_filter_by_family_actually_filters(skill: SkillHandler) -> None:
+    """The kwarg spelling that exercises what ``args={'family': …}``
+    means: the toc narrows to one family (gr514727's intended test)."""
+    out = skill.get(id="toc", family="se")
+    assert "precis-se-help" in out.body
+    assert "precis-paper-help" not in out.body
 
 
 def test_toc_filter_rejects_unknown_tag(skill: SkillHandler) -> None:

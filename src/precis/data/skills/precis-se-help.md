@@ -2,7 +2,7 @@
 id: precis-se-help
 family: se
 title: precis — the se kind (structural/mechanical designs in metres)
-summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; discrete states + transitions and the derived kinematics — see precis-se-states-help; FRET links as a comm channel — see precis-se-fret-help; ATOMIC mode designs chemistry over the block tree — see precis-se-atomic-help; put is a full REPLACE, edit ops= is the incremental path
+summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; put is a full REPLACE, edit ops= is the incremental path
 answers:
   - how do I author an se structural design — blocks, connects, joints?
   - how do I model a cable / spoke / strut — a prestressed axial member?
