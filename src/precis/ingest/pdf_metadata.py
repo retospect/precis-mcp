@@ -305,19 +305,77 @@ def _validate_doi(doi: str) -> tuple[bool, dict[str, Any]]:
     return False, {}
 
 
+#: Years plausible on a paper's first pages (copyright, volume header,
+#: "Available online"). Bounded so ISSNs, page numbers and DOI strings
+#: can't masquerade as one.
+_PDF_TEXT_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+#: How far the registry year may sit from a year the PDF itself claims —
+#: online-first vs issue year routinely differ by one.
+_YEAR_SLACK = 1
+
+#: Title gates reuse :func:`precis.ingest.verify_metadata.verify_metadata`'s
+#: thresholds — the same "does this title describe this text" question.
+_TITLE_PARTIAL_MIN = 80
+_TITLE_OVERLAP_MIN = 60
+
+
+def _metadata_matches_pdf_text(metadata: dict[str, Any], first_pages_text: str) -> bool:
+    """The resolved record must describe THIS PDF, not merely exist (gr513878).
+
+    A DOI that resolves in Crossref is not yet proof of identity:
+    companion journals (MethodsX, Data in Brief) typeset a *related*
+    article's DOI on the front page, and the DOI cascade can hand it up
+    as a candidate. Require the registry title to fuzzy-match the PDF's
+    first pages and, when both sides carry a year, the registry year to
+    be within :data:`_YEAR_SLACK` of a year the text claims. Missing
+    evidence — no title back from the lookup, no year on either side, no
+    readable text — is not a mismatch.
+    """
+    if not first_pages_text:
+        return True
+    from precis.ingest.verify_metadata import (
+        _normalize,
+        _title_score,
+        _word_overlap_score,
+    )
+
+    title = str(metadata.get("title") or "")
+    if title:
+        norm_text = _normalize(first_pages_text)
+        norm_title = _normalize(title)
+        if (
+            _title_score(norm_title, norm_text) < _TITLE_PARTIAL_MIN
+            and _word_overlap_score(norm_title, norm_text) < _TITLE_OVERLAP_MIN
+        ):
+            return False
+    year = metadata.get("year")
+    if isinstance(year, int):
+        text_years = {int(y) for y in _PDF_TEXT_YEAR_RE.findall(first_pages_text)}
+        if text_years and not any(abs(y - year) <= _YEAR_SLACK for y in text_years):
+            return False
+    return True
+
+
 def _select_best_doi(
     candidates: list[DoiCandidate],
     use_pdf2doi: bool = False,
     pdf_path: Path | None = None,
     *,
     online: bool = True,
+    first_pages_text: str = "",
 ) -> DoiCandidate | None:
     """Select the best DOI from candidates.
 
     Priority:
     1. Already validated candidates (from acatome bundle/lookup)
-    2. Validate candidates and pick first that succeeds
+    2. Validate candidates and pick first that succeeds AND whose record
+       matches the PDF's own text (:func:`_metadata_matches_pdf_text`)
     3. If use_pdf2doi and pdf_path provided, try pdf2doi as last resort
+
+    A validated-but-mismatched candidate is rejected outright — it
+    resolves to a *different* paper, so it must not even win the
+    best-effort fallback (gr513878).
     """
     # First, check already-validated candidates
     for c in candidates:
@@ -340,28 +398,40 @@ def _select_best_doi(
         if c.provenance in by_provenance:
             by_provenance[c.provenance].append(c)
 
+    rejected: set[str] = set()
     for prov in provenance_order if online else ():
         for c in by_provenance[prov]:
             validated, metadata = _validate_doi(c.doi)
             if validated:
-                c.validated = True
-                c.metadata = metadata
-                return c
+                if _metadata_matches_pdf_text(metadata, first_pages_text):
+                    c.validated = True
+                    c.metadata = metadata
+                    return c
+                log.info(
+                    "pdf_metadata: DOI %s resolves but its title/year does "
+                    "not match the PDF text — trying the next candidate",
+                    c.doi,
+                )
+                rejected.add(c.doi)
 
     # Try pdf2doi as final fallback
     if online and use_pdf2doi and pdf_path:
         pdf2doi_candidate = _try_pdf2doi(pdf_path)
         if pdf2doi_candidate:
             validated, metadata = _validate_doi(pdf2doi_candidate.doi)
+            if validated and not _metadata_matches_pdf_text(metadata, first_pages_text):
+                return None
             if validated:
                 pdf2doi_candidate.validated = True
                 pdf2doi_candidate.metadata = metadata
             return pdf2doi_candidate
 
-    # Return first candidate even if not validated (best effort)
+    # Return first candidate even if not validated (best effort) — but
+    # never one whose resolved record actively mismatches the PDF.
     for prov in provenance_order:
-        if by_provenance[prov]:
-            return by_provenance[prov][0]
+        for c in by_provenance[prov]:
+            if c.doi not in rejected:
+                return c
 
     return None
 
@@ -440,7 +510,11 @@ def extract_metadata_from_sources(
 
     # Select best DOI
     best_doi = _select_best_doi(
-        candidates, use_pdf2doi=use_pdf2doi, pdf_path=pdf_path, online=online
+        candidates,
+        use_pdf2doi=use_pdf2doi,
+        pdf_path=pdf_path,
+        online=online,
+        first_pages_text=pdf_meta.get("first_pages_text", "") or "",
     )
     if best_doi:
         metadata.doi = best_doi.doi

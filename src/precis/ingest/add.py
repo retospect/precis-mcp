@@ -659,6 +659,14 @@ def _ingest_pdf(
                     _note_printable_doi_override(
                         store, fold_ref_id, input, paper, conn=conn
                     )
+            if existing is None and not input.printable_only:
+                # gr513878: a related-article DOI typeset ahead of the
+                # article's own can trip the conflict gate while the file
+                # still IS the stub's paper — arbitrate on the rendered
+                # text / cite_key stem before minting a duplicate.
+                existing = _fold_past_doi_conflict(
+                    store, fold_ref_id, input, paper, conn=conn
+                )
             if existing is not None and not input.printable_only:
                 # Identity (gr512169): a *no-DOI* fetched file passes the
                 # DOI-conflict gate on nothing, so a series sibling
@@ -1469,15 +1477,14 @@ def _raise_stub_identity_review(
         store.add_tag(todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn)
 
 
-def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
-    """Does the PDF look like the paper ``stub_id`` is? (gr479094 wrong fold.)
+def _stub_identity_verdict(
+    stub_id: int, pdf_path: Path, *, conn: Any
+) -> tuple[str, str | None]:
+    """``(verdict, detail)`` — does the PDF look like the paper ``stub_id`` is?
 
-    A ``pa<id>`` filename is a human claim, not proof: a PDF that merely
-    cites the stub's paper (Megaro 2017 vs Howell-Midha 1994) was folded into
-    it. Runs the pdf_url door's gate, ``paper_pull.check_pdf`` (stub DOI in
-    the first pages, or enough title words). Only an ``identity_mismatch``
-    refuses; unreadable / short files and stubs with nothing to compare
-    (``unchecked``) pass, since this gate is identity, not preview detection.
+    Runs the pdf_url door's gate, ``paper_pull.check_pdf`` (stub DOI in
+    the first pages, or enough title words). An unreadable file yields
+    ``("unchecked", None)`` — nothing to compare.
     """
     from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
 
@@ -1493,13 +1500,25 @@ def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
     ).fetchone()
     try:
         _, texts = read_leading_pages(pdf_path)
-    except Exception:  # unreadable: nothing to compare, don't block
-        return True
-    verdict, detail = identity_verdict(
+    except Exception:  # unreadable: nothing to compare
+        return "unchecked", None
+    return identity_verdict(
         texts,
         title=str(row[0]) if row else "",
         doi=str(doi_row[0]) if doi_row else None,
     )
+
+
+def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
+    """Does the PDF look like the paper ``stub_id`` is? (gr479094 wrong fold.)
+
+    A ``pa<id>`` filename is a human claim, not proof: a PDF that merely
+    cites the stub's paper (Megaro 2017 vs Howell-Midha 1994) was folded into
+    it. Only an ``identity_mismatch`` refuses; unreadable / short files and
+    stubs with nothing to compare (``unchecked``) pass, since this gate is
+    identity, not preview detection.
+    """
+    verdict, detail = _stub_identity_verdict(stub_id, pdf_path, conn=conn)
     if verdict == "mismatch":
         log.warning(
             "precis_add: %s is named for stub ref_id=%s but its text does "
@@ -1510,6 +1529,75 @@ def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
         )
         return False
     return True
+
+
+def _stem_matches_cite_key(stem: str, ref_id: int, *, conn: Any) -> bool:
+    """True when the filename stem equals ``ref_id``'s cite_key.
+
+    The OA fetcher names its downloads ``<cite_key>.pdf``
+    (:func:`precis.workers.fetch_oa._stub_filename`), so an equal stem is
+    the fetcher's own identity claim — gr513878's ``a26aqd.pdf`` was
+    fetched for the stub whose cite_key is ``a26aqd``.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM ref_identifiers WHERE ref_id = %s "
+        "AND id_kind = 'cite_key' AND lower(id_value) = %s LIMIT 1",
+        (ref_id, stem.strip().lower()),
+    ).fetchone()
+    return row is not None
+
+
+def _fold_past_doi_conflict(
+    store: Store,
+    fold_ref_id: int,
+    input: PdfInput,
+    paper: Any,
+    *,
+    conn: Any,
+) -> int | None:
+    """``fold_ref_id`` when a DOI-refused fold target is textually this paper.
+
+    gr513878: a related-article DOI typeset ahead of the article's own
+    (the MethodsX / Data in Brief companion shape) can win extraction, so
+    the embedded DOI conflicts with the fetch target's while the file
+    still IS that paper — refusing the fold then mints a duplicate ref
+    holding the foreign DOI's metadata. The stub must still be a valid
+    fold target and the conflict real; then the fold proceeds when the
+    target's DOI or title appears in the leading pages, or the filename
+    stem equals its cite_key — UNLESS the title actively disagrees (a
+    citing or misserved file), which keeps the refusal. A granted
+    arbitration journals ``attach_doi_overridden`` so the override stays
+    auditable.
+    """
+    valid = _valid_fold_stub(fold_ref_id, kind=paper.kind, conn=conn)
+    if valid is None:
+        return None
+    if _doi_conflicts(paper.doi, fold_ref_id, conn=conn) is None:
+        return None
+    verdict, detail = _stub_identity_verdict(fold_ref_id, input.pdf_path, conn=conn)
+    if verdict == "mismatch":
+        log.warning(
+            "precis_add: not arbitrating %s into stub ref_id=%s despite the "
+            "DOI conflict — the title disagrees too (%s)",
+            input.pdf_path.name,
+            fold_ref_id,
+            detail,
+        )
+        return None
+    stem_hit = _stem_matches_cite_key(input.pdf_path.stem, fold_ref_id, conn=conn)
+    if verdict == "unchecked" and not stem_hit:
+        return None
+    log.warning(
+        "precis_add: folding %s into stub ref_id=%s overriding extracted DOI "
+        "%s (verdict=%s, stem_cite_key=%s)",
+        input.pdf_path.name,
+        fold_ref_id,
+        normalize_doi(paper.doi),
+        verdict,
+        stem_hit,
+    )
+    _note_doi_overridden_fold(store, fold_ref_id, input, paper, conn=conn)
+    return valid
 
 
 def _printable_fold_target(
@@ -1578,6 +1666,44 @@ def _note_printable_doi_override(
             payload={
                 "file": input.pdf_path.name,
                 "pdf_sha256": paper.pdf_sha256,
+                **_printable_event_dois(paper, ref_id, conn=conn),
+            },
+            conn=conn,
+        )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not journal attach_doi_overridden for "
+            "ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
+def _note_doi_overridden_fold(
+    store: Store,
+    ref_id: int,
+    input: PdfInput,
+    paper: Any,
+    *,
+    conn: Any,
+) -> None:
+    """Journal a body fold that overrode an extracted-DOI conflict (gr513878).
+
+    The fetched file carried a related/companion article's DOI, but the
+    rendered text (or the cite_key filename) showed it IS the fold
+    target's paper. Shares the printable path's
+    ``attach_doi_overridden`` event — the row names which DOI lied.
+    Best-effort, like :func:`_note_pdf_no_body`.
+    """
+    try:
+        store.append_event(
+            int(ref_id),
+            source=PDF_NO_BODY_SOURCE,
+            event="attach_doi_overridden",
+            payload={
+                "file": input.pdf_path.name,
+                "pdf_sha256": paper.pdf_sha256,
+                "reason": "fold_conflict_arbitration",
                 **_printable_event_dois(paper, ref_id, conn=conn),
             },
             conn=conn,

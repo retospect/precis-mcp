@@ -32,6 +32,36 @@ _REFERENCES_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Companion-journal furniture labelling a DOI that cites ANOTHER article.
+# MethodsX / Data in Brief front pages carry a "Related research
+# article …" box (and the sibling labels "Companion to", "Co-submission",
+# "Data for", "Data in Brief") whose DOI is a citation to a different
+# paper — but it can precede this paper's own DOI in extraction order
+# (gr513878: the related J. Microbiol. Methods DOI was taken as the
+# fetched MethodsX paper's identity).
+_RELATED_ARTICLE_RE = re.compile(
+    r"related\s+research\s+article|companion\s+to|co-submission"
+    r"|\bdata\s+for\b|\bdata\s+in\s+brief\b",
+    re.IGNORECASE,
+)
+
+#: How far before a DOI match the related-article label may sit — the
+#: label opens the citation the DOI closes. The incident citation
+#: (``Related research article W. Jaroenram, … J. Microbiol. Methods
+#: 156 (2019). https://doi.org/10.1016/j.mimet.2018.11.020``) runs ~215
+#: chars label-to-DOI; a page-range suffix pushes it further, so the
+#: window is 250, not a round 200.
+_RELATED_CONTEXT_CHARS = 250
+
+#: Header furniture typeset next to the paper's OWN DOI on the first
+#: page (Elsevier's citation/footer block, the article-info column). A
+#: candidate near one of these is likelier the article's DOI than an
+#: earlier-positioned one, so it ranks first.
+_OWN_DOI_MARKER_RE = re.compile(r"journal\s+homepage|article\s+history", re.IGNORECASE)
+
+#: Window before a DOI match searched for the own-DOI furniture.
+_OWN_DOI_MARKER_CHARS = 500
+
 # Elsevier PII patterns — appear in title/subject fields of pre-2000 PDFs.
 # Formatted: S0009-2614(95)00905-J or 0009-2614(80)80221-1
 # The PII *is* the DOI suffix for Elsevier: DOI = 10.1016/{PII}
@@ -119,6 +149,59 @@ def extract_pdf_meta(path: str | Path) -> dict[str, Any]:
     }
 
 
+def doi_in_related_context(
+    text: str, pos: int, *, window: int = _RELATED_CONTEXT_CHARS
+) -> bool:
+    """True when position ``pos`` sits inside a related-article citation.
+
+    The label ("Related research article", "Companion to", "Data in
+    Brief", …) opens the citation its DOI closes, so up to ``window``
+    chars before ``pos`` are searched for it — but the label's reach ends
+    at the cited DOI itself: when another DOI match sits between the
+    label and ``pos``, ``pos`` lies beyond the box the label opened (in
+    the MethodsX incident the article's own DOI follows the cited one by
+    ~40 chars, so this bound is what keeps the own DOI clean). Shared
+    with :func:`precis.ingest.verify_metadata._doi_prefix_in_text`, which
+    must not let a related-article citation confirm a header DOI.
+    """
+    start = max(0, pos - window)
+    prev_end = 0
+    for m in DOI_REGEX.finditer(text, 0, pos):
+        prev_end = m.end()
+    if prev_end:
+        start = max(start, prev_end)
+    return bool(_RELATED_ARTICLE_RE.search(text[start:pos]))
+
+
+def body_doi_candidates(first_pages: str) -> list[str]:
+    """Prefixed DOIs in first-page text, best candidate first.
+
+    A prefixed DOI (``doi:X``, ``doi.org/X``) is the publisher's own
+    typeset marker — but companion journals typeset the *related*
+    article's DOI the same way, ahead of the article's own (gr513878).
+    Candidates inside a related-article context are dropped outright;
+    the rest are ranked with own-DOI furniture (``journal homepage`` /
+    ``article history``) inside the preceding
+    :data:`_OWN_DOI_MARKER_CHARS` chars first, then in extraction order.
+    """
+    ranked: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for m in _PREFIXED_DOI_RE.finditer(first_pages):
+        start = m.start(1)
+        if doi_in_related_context(first_pages, start):
+            continue
+        doi = _clean_doi(m.group(1))
+        if doi in seen:
+            continue
+        seen.add(doi)
+        near_marker = _OWN_DOI_MARKER_RE.search(
+            first_pages[max(0, start - _OWN_DOI_MARKER_CHARS) : start]
+        )
+        ranked.append((0 if near_marker else 1, start, doi))
+    ranked.sort()
+    return [doi for _, _, doi in ranked]
+
+
 def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None:
     """Extract DOI using a confidence-ordered cascade.
 
@@ -127,17 +210,20 @@ def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None
     1. Prefixed DOI (``doi:X``, ``doi.org/X``, ``DOI: X``) in body text —
        publisher's own typeset marker. Survives partial-page extracts and
        out-of-order page reads (e.g. nature01797 has its DOI on page 4).
+       Ranked by :func:`body_doi_candidates`: related-article citations
+       skipped, own-DOI furniture preferred.
     2. XMP XML metadata.
-    3. Bare DOI in body text *before* any References heading. Bare DOIs
-       after References are reference-list citations to other papers.
+    3. Bare DOI in body text *before* any References heading, likewise
+       skipping related-article citations. Bare DOIs after References
+       are reference-list citations to other papers.
     4. Info dict fields (``doi``, ``subject``, ``keywords``).
     5. Elsevier PII in title/subject, converted to DOI.
     """
     # 1. Prefixed DOI anywhere in body
     if first_pages:
-        match = _PREFIXED_DOI_RE.search(first_pages)
-        if match:
-            return _clean_doi(match.group(1))
+        candidates = body_doi_candidates(first_pages)
+        if candidates:
+            return candidates[0]
 
     # 2. XMP XML
     if xmp:
@@ -148,8 +234,9 @@ def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None
     # 3. Bare DOI in body text, but only before the References section
     if first_pages:
         pre_refs = _trim_at_references(first_pages)
-        match = DOI_REGEX.search(pre_refs)
-        if match:
+        for match in DOI_REGEX.finditer(pre_refs):
+            if doi_in_related_context(pre_refs, match.start()):
+                continue
             return _clean_doi(match.group())
 
     # 4. Info dict fields

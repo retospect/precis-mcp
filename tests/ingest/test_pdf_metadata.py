@@ -32,8 +32,10 @@ from precis.ingest.pdf_metadata import (
     PdfMetadata,
     _compute_file_hash,
     _is_valid_doi_format,
+    _metadata_matches_pdf_text,
     _normalize_doi,
     _read_sidecar_meta,
+    _select_best_doi,
     _strip_nul_bytes,
 )
 
@@ -169,6 +171,151 @@ class TestStripNulBytes:
         assert meta.title == "A paper"
         assert meta.authors == ["Smith, J."]
         assert meta.doi == "10.1000/abc"
+
+
+class TestSelectBestDoiPdfMatch:
+    """gr513878: a DOI that resolves is not proof of identity — the
+    resolved record must also match the PDF's own text.
+
+    The incident shape: a MethodsX PDF's "Related research article" box
+    typesets the 2019 J. Microbiol. Methods DOI; that DOI resolves in
+    Crossref fine, but its record describes a different paper.
+    """
+
+    MEX_TEXT = (
+        "Methods X 13 (2026) 104138\n"
+        "journal homepage: www.elsevier.com/locate/mex\n"
+        "A lyophilization-compatible colorimetric LAMP assay for cold "
+        "chain-free, extraction-free and rapid post-enrichment detection "
+        "of E. coli\n"
+        "Wansadaj Jaroenram et al.\n"
+        "2215-0161/© 2026 The Authors. Published by Elsevier B.V.\n"
+    )
+
+    @staticmethod
+    def _lookup(responses: dict[str, dict]):
+        def fake_lookup(doi: str, mailto: str = ""):
+            return responses.get(doi)
+
+        return fake_lookup
+
+    def test_related_article_doi_rejected_own_doi_wins(self):
+        from unittest.mock import patch
+
+        related = DoiCandidate(
+            doi="10.1016/j.mimet.2018.11.020",
+            provenance=DoiProvenance.INTERNAL_EXTRACTOR,
+        )
+        own = DoiCandidate(
+            doi="10.1016/j.mex.2026.104138",
+            provenance=DoiProvenance.EXISTING_PDF_METADATA,
+        )
+        responses = {
+            "10.1016/j.mimet.2018.11.020": {
+                "title": "Xylenol orange-based loop-mediated DNA isothermal "
+                "amplification for sensitive naked-eye detection of "
+                "Escherichia coli",
+                "year": 2019,
+            },
+            "10.1016/j.mex.2026.104138": {
+                "title": "A lyophilization-compatible colorimetric LAMP "
+                "assay for cold chain-free, extraction-free and rapid "
+                "post-enrichment detection of E. coli",
+                "year": 2026,
+            },
+        }
+        with patch(
+            "precis.ingest.pdf_metadata.lookup_doi",
+            side_effect=self._lookup(responses),
+        ):
+            best = _select_best_doi([related, own], first_pages_text=self.MEX_TEXT)
+        assert best is not None and best.doi == "10.1016/j.mex.2026.104138"
+        assert best.validated is True
+
+    def test_mismatched_candidate_never_wins_fallback(self):
+        """A validated-but-foreign DOI must not come back as best effort."""
+        from unittest.mock import patch
+
+        foreign = DoiCandidate(
+            doi="10.1016/j.mimet.2018.11.020",
+            provenance=DoiProvenance.INTERNAL_EXTRACTOR,
+        )
+        responses = {
+            "10.1016/j.mimet.2018.11.020": {
+                "title": "Xylenol orange-based loop-mediated DNA isothermal "
+                "amplification for sensitive naked-eye detection of "
+                "Escherichia coli",
+                "year": 2019,
+            },
+        }
+        with patch(
+            "precis.ingest.pdf_metadata.lookup_doi",
+            side_effect=self._lookup(responses),
+        ):
+            best = _select_best_doi([foreign], first_pages_text=self.MEX_TEXT)
+        assert best is None
+
+    def test_year_off_by_more_than_one_rejected(self):
+        from unittest.mock import patch
+
+        cand = DoiCandidate(
+            doi="10.1016/j.mex.2020.999999",
+            provenance=DoiProvenance.INTERNAL_EXTRACTOR,
+        )
+        responses = {
+            "10.1016/j.mex.2020.999999": {
+                # Title matches, but the registry year is 6 off the © 2026.
+                "title": "A lyophilization-compatible colorimetric LAMP "
+                "assay for cold chain-free detection",
+                "year": 2020,
+            },
+        }
+        with patch(
+            "precis.ingest.pdf_metadata.lookup_doi",
+            side_effect=self._lookup(responses),
+        ):
+            best = _select_best_doi([cand], first_pages_text=self.MEX_TEXT)
+        assert best is None
+
+    def test_year_within_one_accepted(self):
+        from unittest.mock import patch
+
+        cand = DoiCandidate(
+            doi="10.1016/j.mex.2025.104138",
+            provenance=DoiProvenance.INTERNAL_EXTRACTOR,
+        )
+        responses = {
+            "10.1016/j.mex.2025.104138": {
+                "title": "A lyophilization-compatible colorimetric LAMP "
+                "assay for cold chain-free detection",
+                "year": 2025,  # online-first year vs © 2026 issue year
+            },
+        }
+        with patch(
+            "precis.ingest.pdf_metadata.lookup_doi",
+            side_effect=self._lookup(responses),
+        ):
+            best = _select_best_doi([cand], first_pages_text=self.MEX_TEXT)
+        assert best is cand and best.validated is True
+
+    def test_no_text_means_no_gate(self):
+        # Extraction produced no text (scanned reprint): the check abstains.
+        assert (
+            _metadata_matches_pdf_text({"title": "Any title", "year": 2001}, "") is True
+        )
+
+    def test_missing_year_evidence_not_a_mismatch(self):
+        # No year back from the registry → title evidence alone decides.
+        assert (
+            _metadata_matches_pdf_text(
+                {
+                    "title": "A lyophilization-compatible colorimetric LAMP "
+                    "assay for cold chain-free detection"
+                },
+                self.MEX_TEXT,
+            )
+            is True
+        )
 
 
 class TestOfflineExtraction:

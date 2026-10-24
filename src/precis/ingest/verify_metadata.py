@@ -8,6 +8,7 @@ import unicodedata
 from rapidfuzz import fuzz
 
 from precis.ingest.literature import surname_from_name
+from precis.ingest.pdf_sidecar import doi_in_related_context
 from precis.utils.title_merge import _STOPWORDS, content_tokens
 
 # Unicode dashes / hyphens that should all be treated as ASCII hyphen-minus
@@ -150,7 +151,8 @@ def title_overlap(registry_title: str, chunk_text: str) -> int:
 
 
 def _doi_prefix_in_text(doi: str, text: str) -> bool:
-    """True if a prefixed form of *doi* appears in *text*.
+    """True if a prefixed form of *doi* appears in *text* outside a
+    related-article citation.
 
     A prefixed DOI (``doi:X``, ``https://doi.org/X``, ``DOI: X``) is the
     publisher's own typeset marker saying "this article's DOI is X". If it
@@ -158,6 +160,14 @@ def _doi_prefix_in_text(doi: str, text: str) -> bool:
     paper — stronger than title fuzzing, which fails on partial-page
     extracts, scanned reprints, or multi-column layouts pymupdf reads in
     the wrong order.
+
+    But the same marker also typesets a *related* article's DOI inside
+    companion-journal boxes ("Related research article …", "Data in
+    Brief", …) — gr513878: the MethodsX paper's related-article box
+    carries the 2019 J. Microbiol. Methods DOI, which must NOT confirm
+    a header naming that paper. A match inside
+    :func:`~precis.ingest.pdf_sidecar.doi_in_related_context` doesn't
+    count; a second occurrence outside it still does.
     """
     if not doi or not text:
         return False
@@ -166,7 +176,9 @@ def _doi_prefix_in_text(doi: str, text: str) -> bool:
         f"(?:{'|'.join(_DOI_PREFIX_TOKENS)}){doi_escaped}",
         re.IGNORECASE,
     )
-    return bool(pattern.search(text))
+    return any(
+        not doi_in_related_context(text, m.start()) for m in pattern.finditer(text)
+    )
 
 
 def verify_metadata(

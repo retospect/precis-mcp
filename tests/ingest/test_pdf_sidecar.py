@@ -12,7 +12,9 @@ from precis.ingest.pdf_sidecar import (
     _extract_doi,
     _pii_to_doi,
     _trim_at_references,
+    body_doi_candidates,
     candidate_title_from_text,
+    doi_in_related_context,
     extract_doi_from_filename,
     is_garbage_title,
     is_pii,
@@ -87,6 +89,118 @@ class TestDOIExtraction:
         assert _clean_doi("10.1038/s41567-024-1234-5.") == "10.1038/s41567-024-1234-5"
         assert _clean_doi("10.1038/s41567-024-1234-5,") == "10.1038/s41567-024-1234-5"
         assert _clean_doi("10.1038/s41567-024-1234-5") == "10.1038/s41567-024-1234-5"
+
+
+class TestRelatedArticleContext:
+    """gr513878: a companion journal's "Related research article" DOI is a
+    citation, never this paper's DOI — even typeset with the same
+    ``doi.org/`` marker and first in extraction order.
+
+    The text below mirrors the pa506039 incident's first pages: a 2026
+    MethodsX article whose "Related research article" box cites the 2019
+    J. Microbiol. Methods paper it extends, *before* the article's own
+    ``10.1016/j.mex.2026.104138`` appears.
+    """
+
+    # Text as pymupdf hands it over for the MethodsX paper (the incident's
+    # real chunk wording, markdown link syntax stripped).
+    METHODSX_TEXT = (
+        "Methods X 13 (2026) 104138\n"
+        "Contents lists available at ScienceDirect\n"
+        "Methods X\n"
+        "journal homepage: www.elsevier.com/locate/mex\n"
+        "A lyophilization-compatible colorimetric LAMP assay for cold "
+        "chain-free, extraction-free and rapid post-enrichment detection "
+        "of E. coli\n"
+        "Wansadaj Jaroenram, Yada Ongchanchai, Prachumporn Nounurai, "
+        "Supattana Janta, Wansika Kiatpathomchai\n"
+        "Article history: Received 15 September 2026; Accepted 3 October "
+        "2026; Available online 24 October 2026\n"
+        "2215-0161/© 2026 The Authors. Published by Elsevier B.V. This is "
+        "an open access article under the CC BY-NC license "
+        "(http://creativecommons.org/licenses/by-nc/4.0/).\n"
+        "Related research articleW. Jaroenram, P. Cecere, P.P. Pompa, "
+        "Xylenol orange-based loop-mediated DNA isothermal amplification "
+        "for sensitive naked-eye detection of Escherichia coli, "
+        "J. Microbiol. Methods 156 (2019). "
+        "https://doi.org/10.1016/j.mimet.2018.11.020\n"
+        "https://doi.org/10.1016/j.mex.2026.104138\n"
+    )
+
+    def test_methodsx_text_returns_own_doi_not_related(self):
+        # The incident: mimet's related-article DOI precedes the mex DOI.
+        assert _extract_doi("", self.METHODSX_TEXT, {}) == "10.1016/j.mex.2026.104138"
+
+    def test_related_doi_dropped_from_candidates(self):
+        cands = body_doi_candidates(self.METHODSX_TEXT)
+        assert "10.1016/j.mimet.2018.11.020" not in cands
+        assert cands == ["10.1016/j.mex.2026.104138"]
+
+    def test_related_only_body_doi_falls_to_xmp(self):
+        """No own DOI in the text at all: the cascade must reach XMP
+        rather than accept the related article's DOI."""
+        text = (
+            "Some journal 12 (2024)\n"
+            "Related research article J. Doe et al., 10.1016/j.related.doi\n"
+            "no other DOI on these pages\n"
+        )
+        xmp = "<dc:identifier>doi:10.1038/own-doi</dc:identifier>"
+        assert _extract_doi(xmp, text, {}) == "10.1038/own-doi"
+
+    def test_bare_related_doi_skipped_too(self):
+        """A bare (unprefixed) DOI in a related-article box is likewise a
+        citation; the next bare DOI wins."""
+        text = (
+            "Companion to https://doi.org/10.1016/j.other 12 (2024)\n"
+            "later, the article's own 10.1016/j.own-doi appears\n"
+        )
+        assert _extract_doi("", text, {}) == "10.1016/j.own-doi"
+
+    def test_marker_near_doi_preferred(self):
+        """A DOI near 'journal homepage' / 'article history' outranks an
+        earlier-positioned one with no furniture around it."""
+        text = (
+            "doi:10.1234/stray-first\n"
+            + "body text. " * 60
+            + "\njournal homepage: www.example.com/locate/x\n"
+            "https://doi.org/10.1234/own-later\n"
+        )
+        assert body_doi_candidates(text)[:1] == ["10.1234/own-later"]
+        assert _extract_doi("", text, {}) == "10.1234/own-later"
+
+    def test_order_preserved_without_markers(self):
+        text = "doi:10.1234/first\nmore text\ndoi:10.1234/second\n"
+        assert body_doi_candidates(text) == ["10.1234/first", "10.1234/second"]
+
+    def test_deduped_candidates(self):
+        text = "doi:10.1234/same\nmore text\nhttps://doi.org/10.1234/same\n"
+        assert body_doi_candidates(text) == ["10.1234/same"]
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "Related research article",
+            "Companion to",
+            "Co-submission",
+            "Data for this article",
+            "Data in Brief",
+        ],
+    )
+    def test_each_related_label_flags_context(self, label):
+        text = f"{label} J. Doe, Some Journal 1 (2020).\n"
+        pos = len(text)
+        text += "https://doi.org/10.1234/cited\n"
+        assert doi_in_related_context(text, pos) is True
+
+    def test_clean_context_not_flagged(self):
+        text = "Abstract body text with no citation labels.\ndoi:10.1234/own\n"
+        pos = text.index("doi:10.1234/own")
+        assert doi_in_related_context(text, pos) is False
+
+    def test_label_outside_window_not_flagged(self):
+        text = "Data in Brief\n" + "filler sentence. " * 30 + "\ndoi:10.1234/own\n"
+        pos = text.index("doi:10.1234/own")
+        assert doi_in_related_context(text, pos) is False
 
 
 class TestPII:

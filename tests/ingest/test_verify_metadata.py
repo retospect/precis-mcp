@@ -314,6 +314,39 @@ class TestDOIPrefixInText:
         assert _doi_prefix_in_text("", "doi:10.1038/nature02792") is False
         assert _doi_prefix_in_text("10.1038/nature02792", "") is False
 
+    def test_related_article_context_does_not_count(self):
+        """gr513878: a companion journal's "Related research article" box
+        typesets the cited DOI with the same doi.org/ marker — it cites
+        another paper and must not confirm the header."""
+        text = (
+            "2215-0161/© 2026 The Authors. Published by Elsevier B.V.\n"
+            "Related research articleW. Jaroenram, P. Cecere, P.P. Pompa, "
+            "Xylenol orange-based loop-mediated DNA isothermal amplification "
+            "for sensitive naked-eye detection of Escherichia coli, "
+            "J. Microbiol. Methods 156 (2019). "
+            "https://doi.org/10.1016/j.mimet.2018.11.020\n"
+        )
+        assert _doi_prefix_in_text("10.1016/j.mimet.2018.11.020", text) is False
+
+    def test_clean_occurrence_still_counts_beside_related(self):
+        """The same DOI appearing again in clean context still confirms —
+        only the cited occurrence is discounted."""
+        text = (
+            "Related research article doi:10.1038/cited-same\n"
+            "much later the paper's own text repeats doi:10.1038/cited-same\n"
+        )
+        assert _doi_prefix_in_text("10.1038/cited-same", text) is True
+
+    def test_distant_label_does_not_count(self):
+        """A 'Related research article' mention far upstream isn't the
+        DOI's citation context."""
+        text = (
+            "Earlier work: see the related research article section.\n"
+            + "body text. " * 40
+            + "\ndoi:10.1038/nature02792.\n"
+        )
+        assert _doi_prefix_in_text("10.1038/nature02792", text) is True
+
 
 class TestDOIConfirmsTitle:
     """When the publisher's typeset DOI appears in the body, we trust

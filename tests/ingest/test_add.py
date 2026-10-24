@@ -1403,6 +1403,211 @@ class TestSidecarFold:
         assert doi_owner is not None and doi_owner[0] == result.ref_id  # DOI migrated
 
 
+class TestFoldConflictArbitration:
+    """gr513878: a related-article DOI in the fetched file must not keep
+    the PDF from folding into the stub it was fetched FOR.
+
+    The incident: ``a26aqd.pdf`` (named for the stub's cite_key, sidecar
+    pointing at it) typeset the "Related research article" 2019
+    J. Microbiol. Methods DOI ahead of the article's own mex DOI.
+    Extraction trusted the foreign DOI, the conflict gate refused the
+    fold, and ingest minted a duplicate ref holding the wrong paper's
+    metadata. Arbitration now re-checks the rendered text / filename
+    stem before letting the refusal mint a twin.
+    """
+
+    MEX_TITLE = (
+        "A lyophilization-compatible colorimetric LAMP assay for cold "
+        "chain-free, extraction-free and rapid post-enrichment detection "
+        "of E. coli"
+    )
+    RELATED_TITLE = (
+        "Xylenol orange-based loop-mediated DNA isothermal amplification "
+        "for sensitive naked-eye detection of Escherichia coli"
+    )
+    # The MethodsX first-page shape: the related article's DOI precedes
+    # the article's own in extraction order.
+    RELATED_FIRST = (
+        "Methods X 13 (2026) 104138\n"
+        "journal homepage: www.elsevier.com/locate/mex\n"
+        "A lyophilization-compatible colorimetric LAMP assay for cold\n"
+        "chain-free, extraction-free and rapid post-enrichment detection "
+        "of E. coli\n"
+        "Wansadaj Jaroenram, Yada Ongchanchai, Prachumporn Nounurai\n"
+        "Related research article W. Jaroenram, P. Cecere, P.P. Pompa, "
+        "Xylenol\n"
+        "orange-based loop-mediated DNA isothermal amplification for "
+        "sensitive\n"
+        "naked-eye detection of Escherichia coli, J. Microbiol. Methods "
+        "156 (2019).\n"
+        "https://doi.org/10.1016/j.mimet.2018.11.020\n"
+        "https://doi.org/10.1016/j.mex.2026.104138\n"
+    )
+    # A citing paper: shares the related-article DOI but none of the
+    # stub's title words nor its DOI — the misserved-file case.
+    CITING = (
+        "A Computational Design Tool for Compliant Mechanisms.\n"
+        "References: Jaroenram et al., Xylenol orange-based LAMP "
+        "(doi https://doi.org/10.1016/j.mimet.2018.11.020).\n"
+    )
+
+    @staticmethod
+    def _real_pdf(path: Path, text: str) -> str:
+        import fitz
+
+        doc = fitz.open()
+        for _ in range(3):
+            page = doc.new_page()
+            page.insert_text((72, 72), text)
+        doc.save(str(path))
+        doc.close()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _mex_stub(self, store):
+        """The fetched-for stub: cite_key a26aqd, mex DOI, no PDF yet."""
+        stub = store.insert_ref(
+            kind="paper",
+            slug="a26aqd",
+            title=self.MEX_TITLE,
+            authors=[{"name": "Jaroenram, Wansadaj"}],
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.1016/j.mex.2026.104138', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+        return stub
+
+    def _foreign_paper(self, sha: str) -> Any:
+        """What the incident's extraction returned: the related article's
+        DOI and metadata (enrichment followed the foreign DOI)."""
+        return dataclasses.replace(
+            _fixture_paper(
+                paper_id="a26aqdpid",
+                doi="10.1016/j.mimet.2018.11.020",
+                pdf_sha256=sha,
+            ),
+            title=self.RELATED_TITLE,
+            authors=[{"name": "Jaroenram, W."}],
+        )
+
+    def test_related_doi_conflict_folds_into_stub(self, store, tmp_path: Path):
+        stub = self._mex_stub(store)
+        pdf = tmp_path / "a26aqd.pdf"
+        sha = self._real_pdf(pdf, self.RELATED_FIRST)
+        with patch(
+            "precis.ingest.pipeline.extract_paper",
+            return_value=self._foreign_paper(sha),
+        ):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
+            )
+
+        assert isinstance(result, IngestResult)
+        assert result.inserted is False  # folded, not a fresh mint
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256, title FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+            n_refs = conn.execute("SELECT count(*) FROM refs").fetchone()[0]
+            n_body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (stub.id,),
+            ).fetchone()[0]
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1016/j.mex.2026.104138'",
+            ).fetchone()
+            event = conn.execute(
+                "SELECT payload FROM ref_events WHERE ref_id=%s "
+                "AND event='attach_doi_overridden'",
+                (stub.id,),
+            ).fetchone()
+        assert row[0] == sha
+        assert row[1] == self.MEX_TITLE  # stub metadata kept
+        assert n_refs == 1  # no duplicate minted
+        assert n_body >= 1
+        assert doi_owner is not None and doi_owner[0] == stub.id
+        assert event is not None
+        payload = dict(event[0])
+        assert payload["extracted_doi"] == "10.1016/j.mimet.2018.11.020"
+        assert payload["target_doi"] == "10.1016/j.mex.2026.104138"
+
+    def test_citing_paper_still_refused(self, store, tmp_path: Path):
+        """Stem + sidecar alone don't fold a file whose title actively
+        disagrees — a misserved/citing PDF mints its own ref."""
+        stub = self._mex_stub(store)
+        pdf = tmp_path / "a26aqd.pdf"
+        sha = self._real_pdf(pdf, self.CITING)
+        paper = dataclasses.replace(
+            self._foreign_paper(sha),
+            title="A Computational Design Tool for Compliant Mechanisms",
+            authors=[{"name": "Megaro, Kenneth"}],
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
+            )
+
+        assert isinstance(result, IngestResult)
+        assert result.inserted is True
+        assert result.ref_id != stub.id
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at, pdf_sha256 FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            n_body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (stub.id,),
+            ).fetchone()[0]
+            event = conn.execute(
+                "SELECT 1 FROM ref_events WHERE ref_id=%s "
+                "AND event='attach_doi_overridden'",
+                (stub.id,),
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1016/j.mex.2026.104138'",
+            ).fetchone()
+        # Stub live, still bodiless, still owns its DOI — and no override
+        # was journalled.
+        assert stub_row[0] is None and stub_row[1] is None
+        assert n_body == 0
+        assert event is None
+        assert doi_owner is not None and doi_owner[0] == stub.id
+
+    def test_unreadable_pdf_folds_on_cite_key_stem(self, store, tmp_path: Path):
+        """No text to check: the fetcher's cite_key filename alone carries
+        the fold — extraction may still have produced the foreign DOI."""
+        stub = self._mex_stub(store)
+        pdf = tmp_path / "a26aqd.pdf"
+        pdf.write_bytes(b"%PDF-1.4 unreadable")
+        sha = hashlib.sha256(b"%PDF-1.4 unreadable").hexdigest()
+        with patch(
+            "precis.ingest.pipeline.extract_paper",
+            return_value=self._foreign_paper(sha),
+        ):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
+            )
+
+        assert isinstance(result, IngestResult)
+        assert result.inserted is False
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            event = conn.execute(
+                "SELECT payload->>'reason' FROM ref_events WHERE ref_id=%s "
+                "AND event='attach_doi_overridden'",
+                (stub.id,),
+            ).fetchone()
+        assert event is not None
+        assert event[0] == "fold_conflict_arbitration"
+
+
 class TestSidecarFoldBodilessWithSha:
     """gr465474: a bodiless ref that already holds a stored PDF sha is a
     valid fold target — a re-fetch of a *different* file must land on it,
