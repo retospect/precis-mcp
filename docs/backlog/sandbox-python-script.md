@@ -191,7 +191,7 @@ a new job.
    carries `--network none`. Real podman shows whether a rootless
    container can connect to the bind-mounted socket; the code is
    covered only by stubbed podman.
-5. **Skill.** `precis-job-compute-help` gains a `mode:script` section: the
+5. **Skill.** `precis-job-observe-help` gains a `mode:script` section: the
    params table, the network rule, how to get data in (`inputs`), how to
    read the result.
 

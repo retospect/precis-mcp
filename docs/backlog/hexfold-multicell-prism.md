@@ -420,7 +420,7 @@ stability; me503663 holds the GFN2 record.
 | `precis-hexfold-seams-help.md` | prism section: fold tokens table, H-side rule, new validator codes; `prism-k3-sp3-z` section; `cells-k3-sp3-z` section with example; one paragraph on strips, junctions and layouts; front-matter `summary`/`answers` gain the new types | 3, 4 |
 | `precis-hexfold-help.md` | the seams pointer names the new types; the H-termination section distinguishes `hydrogenated` from `terminated`; the stability-claim rule | 2, 3, 4 |
 | `precis-se-atomic-help.md` | the terminate bullet gains `topology.hydrogenated` and tag `hydrogenated:interior` | 2 |
-| `precis-structure-help.md`, `precis-job-compute-help.md` | xtb dispatch from the session host — owned by the dispatch work | 5 |
+| `precis-structure-help.md`, `precis-job-observe-help.md` | xtb dispatch from the session host — owned by the dispatch work | 5 |
 
 Slices 0 and 1 change no user-visible behaviour and edit no skill. No new
 skill: `precis-hexfold-seams-help` is about 1,700 words; split

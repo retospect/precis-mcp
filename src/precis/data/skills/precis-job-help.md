@@ -125,13 +125,13 @@ next section.
 | `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
 
-## Which job types run compute or code? — [[precis-job-compute-help]]
+## Which job types run compute or code? — [[precis-job-observe-help]]
 
 The compute-lane job types (`struct_relax`, `pourbaix_bulk`,
 `surface_coverage_scan`, `sandbox_run`, the pathway seed/aggregate
 fan-out, pcb/retrosynth lanes) — executors, params, the
 `surface_anchors` quest flag and the named-list scan recipe — live in
-[[precis-job-compute-help]].
+[[precis-job-observe-help]].
 
 ## Submit a job
 ## Enqueue an offline run
@@ -325,16 +325,10 @@ search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
 rejected — they belong to the unfiltered ranked path. This is the MCP
 answer for what used to need `refs.meta->>'job_type'` SQL.
 
-## When does a cadence fire next?
+## When does a cadence fire next? — [[precis-job-observe-help]]
 
-```python
-get(kind="job", id="/cadence/graph_garden")   # interval, next_fire_at, last fire+host
-get(kind="job", id="/cadence")                # every scheduler_leases row
-```
-
-Each recurring cadence holds a `scheduler_leases` row — the lease clock
-the decentralized scheduler claims. `next_fire_at` in the past means the
-cadence is due, not broken (any live worker may claim it).
+`get(kind='job', id='/cadence…')` lives in
+[[precis-job-observe-help]].
 
 ## Cancel a running job
 ## Stop a job that's taking too long
@@ -502,147 +496,18 @@ you've decided. This is the job-level sibling of the todo-level
 its own todo to yield the same way — see `precis-todo-tree-help`,
 `precis-decomposition-help` for that path.
 
-## Read raw worker logs
-## What is the cluster actually doing right now?
-## Confirm a pass ran / failed without Bash
+## What is the cluster actually doing right now? — [[precis-job-observe-help]]
 
-```python
-get(kind='job', id='/logs')
-# → last 24h, WARNING+, newest first — the default "what's wrong?" view
-
-get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
-# handler= takes the short pass name ('dispatch', 'embed', ...), the full
-# dotted logger ('precis.workers.dispatch'), or the pass named in the
-# runner's per-cycle `worker: <pass> claimed=N ok=N failed=N` INFO row
-# (payload.handler) — so level=INFO shows a quiet pass's heartbeat too
-
-get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
-# host=, q= (substring on message), since= (hours, max 168),
-# limit= (default 100, cap 200) all compose
-
-get(kind='job', id='/logs?job=jo123')
-# job= anchors on that job: its run window +-5 min on the host that claimed
-# it (host= overrides); since= is ignored. Errors if never claimed.
-
-get(kind='job', id='/logs?process=precis-worker-agentlane')
-# process= is an exact match on the PRECIS_PROCESS env the plist sets
-# (NULL unless set); a host with several worker units needs this —
-# host= alone can't tell them apart
-
-# top-level q= works too (id's query string wins on conflict)
-get(kind='job', id='/logs', q='timeout')
-# filters are also real kwargs; since= is hours
-get(kind='job', id='/logs', args={'handler': 'dispatch', 'level': 'INFO', 'since': 6})
-```
-
-Read-only view over the centralised `worker_logs` table (migration
-0015) — the same table an operator reads via `precis logs` on the
-CLI. Header line states the resolved filter + UTC cutoff; each row is
-`ts host handler LEVEL message`; the trailer says `N rows shown of M
-matching`; no other agent surface reads this table (no Bash, no raw SQL).
-
-## Is the external rate limiter pacing a provider?
-
-```python
-get(kind='job', id='/limits')
-# → per named provider (s2, openalex, crossref, jlcpcb, ...):
-#   `provider tokens=<avail>/<cap> refill=<n>/s
-#   day=<used_today>/<daily_cap|->`, then `effective:`, `slots`, `state:`.
-
-get(kind='job', id='/limits?provider=openalex')   # pin one row
-get(kind='job', id='/limits?hosts=1')             # include host:<netloc> rows
-```
-
-Read-only view over `external_rate_limits` (migration 0121,
-`precis.utils.rate_limit`) — the cross-host outbound limiter fetchers
-like `fetch_oa` go through. `tokens` is the burst balance *right now*
-(refill applied, clamped to capacity), so ~0 means the next call waits;
-`day` is `used_today / daily_cap` (`-` = no daily quota lane).
-`host:<netloc>` rows (per-host pacing, seeded by safe_fetch) hide
-unless `hosts=1` or `provider=host:<netloc>`; the trailer is host-row
-occupancy.
-
-`effective:` is the resolved `EffectivePolicy`
-(`precis.utils.outbound_policy`): `cls`, `rate` (`-` =
-rate-less class), `concurrency` (a `resource_slots` resource — `slots`
-shows `free/capacity`), `max_wait_s`, `connect_s`/`read_s`/`total_s`,
-`on_refuse` (wait/defer/fail), `retry`; `(layer)` names who set each
-field (class/code/db/inferred/deadline). `state:` = `parked` (live
-Retry-After/429 park), `last_used`, `refused_today`/`last_refused`.
-
-Overrides (operator, no deploy — never hand SQL):
-`precis limits set <row> --class|--max-wait|--connect|--read|--total|
---on-refuse|--concurrency RESOURCE|N [--clear FIELD] [--create]
-[--dry-run]`; a bare N edits the hold row's `resource_slots` capacity.
-A write audits to `worker_logs` and lands fleet-wide in ~60 s (30 s
-snapshot TTL).
-
-## What changed since the last doctor tick?
-
-```python
-get(kind='job', id='/delta')         # since the last succeeded doctor_tick
-get(kind='job', id='/delta?since=24')          # or a window in hours
-get(kind='job', id='/delta?since=2026-10-22T06:00:00Z')  # or an ISO cutoff
-```
-
-One read that answers "what moved since the last doctor_tick job ran":
-`NEW ALERTS` / `REPEAT SIGHTINGS` / `PERSISTENT OPEN` (still open,
-nothing new — the baseline-noise candidates) / `NEW GRIPES` /
-`GRIPE COMMENTS`, each row naming the ref to drill into. The cutoff
-comes from the last *succeeded* `doctor_tick` job's `meta.started_at`
-(falls back to the latest finished tick, then to 8h ago). This is the
-doctor's gather entry point — the static `/rules` catalogue and
-unchanged threads don't need re-reading.
-
-## Has a fix reached the fleet yet?
-
-```python
-get(kind='job', id='/builds')             # per host/process build, last 24h
-get(kind='job', id='/builds?since=168')   # widen to a week
-get(kind='job', id='/builds', args={'sha': '<fix commit>'})
-# ...and does each build CONTAIN that commit? adds contains_sha=yes|no|unknown
-```
-
-Every claim stamps the claiming worker's `version@sha` on the job
-(`meta.lease_code`), so the jobs table records what code actually ran
-where. Each row is
-`host process version@sha jobs=N last=<UTC>`.
-
-The stamp is taken at claim time — `/builds` shows what a process ran
-on its last claim, not what it runs now; an idle lane keeps its
-pre-restart build and `last=` still moves (polls update old jobs). An
-old build is "no claim since the restart", not "deploy did not land" —
-the deploy's post-bounce check (playbook 43) is the authority there.
-
-A fix is live on a process when that process's newest build sha is the fix
-or a descendant of it. Do not judge that by eye: pass the fix's commit as
-`args={'sha': ...}` (or `id='/builds?sha=...'`) and git answers per row —
-`contains_sha=yes` (the build is that commit or descends from it), `no`
-(it does not), or `unknown` when no checkout is reachable, a
-commit was never fetched, or the row has no build sha. `unknown` is
-"cannot tell", never evidence either way. Read per **process**, not per
-host (a host can run several units — the `process=` caution above);
-two builds in the window is a restart boundary — read the newest.
-`precis-status` answers a different question (your own process's build,
-which in a container is not the fleet's).
-
-## Is the fleet working or idle?
-
-```python
-get(kind='job', id='/throughput')            # last 24h per host/process
-get(kind='job', id='/throughput?since=168')  # widen to a week
-```
-
-Rows are `host process claimed=N succeeded=N failed=N running=N
-last_claim=<UTC>`, from the same lease stamps as `/builds`; hosts that
-heartbeat but claimed nothing show `claimed=0`. The trailer gives the queue
-depth now by executor. Read the two together: no claims beside an empty
-queue is a healthy idle; no claims beside queued work is the fault.
-Measurement only — no alert reads it; GPU busy fraction isn't measured.
+Fleet-introspection views `get(kind='job', id='/…')` — `/logs`
+(worker_logs, filterable by handler/host/process/job/since/level/q,
+also via `args=`), `/limits` (provider pacing), `/delta` (since the
+last doctor tick), `/builds` (per-process code + `contains_sha`),
+`/throughput` (claims + queue depth) — live in
+[[precis-job-observe-help]].
 
 ## See also
 
-- [[precis-job-compute-help]] — the compute-lane job types
+- [[precis-job-observe-help]] — compute-lane job types + the `/…` fleet views
 - [[precis-gripe-help]] — the bug tracker
 - [[precis-fix-gripe-help]] — fix_gripe recipe
 - [[precis-search-help]] — find jobs by link/status

@@ -183,7 +183,7 @@ shipped, what was filed.
   `view='full'` aliases `comments` and the unknown-view hint says what the
   plain get already shows (paper stub mints retried 5× with `tags=`;
   b4f8f4590 made paper put accept them, landed alongside);
-  `precis-job-compute-help` marks `sandbox_run` `target_node`/`resources`
+  `precis-job-observe-help` marks `sandbox_run` `target_node`/`resources`
   required with a minimal example (2 BadInput retries after reading it);
   `precis-se-help` states `view='block'` needs `args={'name':…}`. Evidence
   appended to `mcp-surface-economy.md` (#2 counts re-confirmed; schema.md
