@@ -113,6 +113,8 @@ One parser per agent TUI (claude/devin/codex) lives in
 - Never answer another session's permission prompt unless the user
   authorised that class of prompt. `prompts` shows them; relay the rest to
   the user.
+- Batch coordinator messages: one SendMessage per sweep per recipient,
+  carrying everything for that recipient, and no one-line acks (gr499043).
 - Never `pkill -f`. A pattern matches other sessions' processes too.
 - Prod SQL is read-only (`scripts/prod-psql --ro`), for builders and for
   you.

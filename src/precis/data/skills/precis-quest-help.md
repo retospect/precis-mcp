@@ -400,6 +400,9 @@ precis quest backfill-network-basis 7          # dry run: count stampable measur
 precis quest backfill-network-basis 7 --apply  # write the stamps
 ```
 
+A tick does not edit repo files. To land prose in a repo file (docs, a
+skill, a backlog spec), file a gripe carrying the text; a session applies it.
+
 `redispatch` re-runs each candidate at its **own highest completed rung**,
 not a blanket neb. So a verify-tier candidate costs a full verify pass
 (3+ seeds, about 2 h each on one GPU), and a quest with many verified

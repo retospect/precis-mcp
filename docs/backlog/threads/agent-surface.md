@@ -56,6 +56,9 @@ description budgets, then Drive.
 5. **backlog/drive-characteristic-scale.md** — a derived scale value for
    design refs as a sort key; blocked on a ruling (moved from
    multiscale-design-core 2026-10-17).
+6. **backlog/read-scope-skill-fencing.md** — read-scoped connections get
+   skills and `Next:` hints without write recipes (gr512233); specced
+   2026-10-24, slice 1 is a request-flag measurement on one read-only agent.
 
 ## Parked
 
