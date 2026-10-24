@@ -666,9 +666,9 @@ class TestCastorTrialPrep:
     def test_markup_chunks_write_and_glyph_refusal_escalates(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """gr511458: a LaTeX span lands (literal/unit checks fold markup)
-        and a glyph-damaged unit is refused into an escalation that
-        carries the raw literal and unit."""
+        """gr511458: a LaTeX span lands (literal/unit checks fold markup);
+        gr512368: a glyph-damaged unit ('W mK^2' — the superscript minus
+        read as K) is repaired and lands flagged, no longer refused."""
         store = world["store"]
         make_taxon(store, "radiative-forcing", unit="W/m^2", parent=world["root"])
         with store.pool.connection() as conn:
@@ -728,22 +728,656 @@ class TestCastorTrialPrep:
         done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
         assert done.success
         stats = done.summary_meta["stats"]
-        assert stats["written"] == 1
-        assert stats["write_refused"] == 1
+        assert stats["written"] == 2
+        assert stats["write_refused"] == 0
+        assert stats["flag:glyph_unit_repaired"] == 1
         esc = next(
-            e for e in done.summary_meta["escalations"] if e["kind"] == "write_refused"
+            e
+            for e in done.summary_meta["escalations"]
+            if e.get("flag") == "glyph_unit_repaired"
         )
-        assert esc["literal"] == "3.7"
-        assert esc["unit"] == "W mK^2"
-        assert esc["glyph_suspected"] is True
+        assert "W mK^2" in esc["detail"]
+        assert "W m-2" in esc["detail"]
         rows = [
             r
             for r in store.measures_for(world["paper"], include_superseded=True)
             if r["direction"] == "output"
         ]
+        latex = next(r for r in rows if r["literal"] == "-0.7 ± 0.1")
+        assert latex["extraction_status"] == "anchor_matched"
+        assert latex["meta"]["extraction"]["prompt"] == "r3"
+        repaired = next(r for r in rows if r["literal"] == "3.7")
+        assert repaired["reported_unit"] == "W m-2"
+        assert repaired["value_num"] == pytest.approx(3.7)
+        assert any(
+            e["rule"] == "glyph_suspected"
+            for e in (repaired["meta"].get("escalation") or [])
+        )
+
+
+class TestR92Units:
+    """The climate-orch r92 units-phase fixes (gr512365, gr512366,
+    gr512370): each regression is the gripe's own printed cell or
+    sentence as a fixture chunk."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def _taxon_meta(self, store: Store, ref_id: int, extra: dict[str, Any]) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (json.dumps(extra), ref_id),
+            )
+            conn.commit()
+
+    def test_below_baseline_measurand_stores_the_magnitude(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512365: tn511707's 'fraction below baseline' reads positive
+        however the claim is worded — '54 percent below baseline'
+        (sign=-1 channel) and a change table's '−54%' both store +54."""
+        store = world["store"]
+        reduction = make_taxon(
+            store,
+            "emission-reduction-potential-fraction-below-baseline",
+            unit="%",
+            parent=world["root"],
+        )
+        self._taxon_meta(store, reduction, {"sign_convention": "reduction"})
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text=(
+                "The potential is estimated at 54 percent below baseline "
+                "emissions of that year."
+            ),
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text="| Scenario | Emissions in 2050 |\n| Fossil | −54% |",
+            chunk_kind="table",
+        )
+        measurand = "emission-reduction-potential-fraction-below-baseline"
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": measurand,
+                                "literal": "54",
+                                "unit": "%",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                                "sign": -1,
+                            }
+                        ]
+                    }
+                ),
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": measurand,
+                                "literal": "−54",
+                                "unit": "%",
+                                "anchor": "1",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == reduction
+        ]
+        assert len(rows) == 2
+        assert {r["value_num"] for r in rows} == {54.0}
+
+    def test_difference_measurand_converts_degc_as_a_delta(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512366: mx1162's '0.5°C' warming reduction stored 273.65 K —
+        the °C -> K affine offset applied to a change. A ``difference``
+        measurand converts °C deltas like K deltas."""
+        store = world["store"]
+        dtemp = make_taxon(
+            store,
+            "surface-temperature-change",
+            unit="K",
+            parent=world["root"],
+        )
+        self._taxon_meta(store, dtemp, {"difference": True})
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="Net warming could be reduced by about 0.5°C.",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "surface-temperature-change",
+                                "literal": "0.5",
+                                "unit": "°C",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                                "sign": -1,
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == dtemp
+        ]
         (row,) = rows
-        assert row["extraction_status"] == "anchor_matched"
-        assert row["meta"]["extraction"]["prompt"] == "r3"
+        assert row["value_num"] == pytest.approx(-0.5)
+
+    def test_absolute_temperature_taxon_keeps_the_offset(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same '0.5 °C' on an absolute-temperature measurand still
+        converts with the offset — only ``difference`` taxa read deltas."""
+        store = world["store"]
+        tabs = make_taxon(store, "reaction-temperature", unit="K", parent=world["root"])
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="The bath was held at 0.5 °C throughout.",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "reaction-temperature",
+                                "literal": "0.5",
+                                "unit": "°C",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == tabs
+        ]
+        (row,) = rows
+        assert row["value_num"] == pytest.approx(273.65)
+
+    def test_short_table_row_flags_table_misaligned(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512370: Beerling 2020 Table 1 — five header cells, four row
+        cells; the reader took column 1 as National CDR. A row shorter
+        than its header lands flagged ``table_misaligned`` on the row's
+        escalation and the job counters."""
+        store = world["store"]
+        cdr = make_taxon(store, "national-cdr", unit="Gt yr-1", parent=world["root"])
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text=(
+                "| Country | Cropland area | National CDR (Gt CO2 yr-1) | "
+                "Silicate demand (Gt yr-1) | Cost (US$ t CO2-1) |\n"
+                "| China | 10 | 0.13 | 102.1 |"
+            ),
+            chunk_kind="table",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "national-cdr",
+                                "literal": "10",
+                                "unit": "Gt yr-1",
+                                "anchor": "1",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["flag:table_misaligned"] == 1
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == cdr
+        ]
+        (row,) = rows
+        assert row["value_num"] == 10.0
+        assert any(e["rule"] == "table_misaligned" for e in row["meta"]["escalation"])
+
+
+class TestR92Recall:
+    """The climate-orch r92 recall-phase fixes (gr512367, gr512368,
+    gr512369, gr512371): each regression is the gripe's own printed
+    cell or sentence as a fixture chunk."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def test_sibling_values_with_identical_conditions_are_flagged(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512367: ALL/SEP/NEP MCB cooling rows carry identical
+        conditions {CESM2, SSP2-4.5} — the region that told them apart
+        was never written. Colliding siblings land flagged
+        ``sibling_condition_collision``; a sibling with a distinct
+        condition does not."""
+        store = world["store"]
+        dtemp = make_taxon(
+            store, "surface-temperature-change", unit="K", parent=world["root"]
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text=(
+                "ALL MCB gives -1.05 K, SEP gives -0.77 K and NEP gives "
+                "-0.20 K under CESM2 SSP2-4.5. MRI-ESM2 gives -0.55 K."
+            ),
+        )
+
+        def _result(literal: str, conditions: dict[str, str]) -> dict[str, Any]:
+            return {
+                "measurand": "surface-temperature-change",
+                "literal": literal,
+                "unit": "K",
+                "anchor": "0",
+                "attribution": "own_work",
+                "conditions": conditions,
+            }
+
+        same = {"model": "CESM2", "scenario": "SSP2-4.5"}
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            _result("-1.05", same),
+                            _result("-0.77", same),
+                            _result("-0.20", same),
+                            {
+                                **_result("-0.55", {"model": "MRI-ESM2"}),
+                                "anchor": "1",
+                            },
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["flag:sibling_condition_collision"] == 3
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == dtemp
+        ]
+        assert len(rows) == 4
+        flagged = {
+            r["literal"]
+            for r in rows
+            if any(
+                e["rule"] == "sibling_condition_collision"
+                for e in (r["meta"].get("escalation") or [])
+            )
+        }
+        assert flagged == {"-1.05", "-0.77", "-0.20"}
+
+    def test_split_sign_cells_and_sup_minus_land(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512368 (1,2): a sign alone in a cell ('− | 2.48'), a
+        sign-spaced cell ('− 1.91 ( ± | 0.63)') and an HTML superscript
+        minus all reach the literal check as the signed number."""
+        store = world["store"]
+        rf = make_taxon(store, "radiative-forcing", unit="W m-2", parent=world["root"])
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="| CSIRO-Mk3L-1-2 | − | 2.48 |",
+            chunk_kind="table",
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text="| Model | ERF |\n| Ensemble median | − 1.91 ( ± | 0.63) |",
+            chunk_kind="table",
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=5,
+            text="The ensemble ERF is <sup>−</sup>1.91 W m-2 for this model.",
+        )
+        result = {
+            "measurand": "radiative-forcing",
+            "unit": "W m-2",
+            "attribution": "own_work",
+            "anchor": "0",
+        }
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps({"results": [{**result, "literal": "-2.48"}]}),
+                json.dumps(
+                    {"results": [{**result, "literal": "-1.91 ± 0.63", "anchor": "1"}]}
+                ),
+                json.dumps({"results": [{**result, "literal": "-1.91"}]}),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["written"] == 3
+        assert stats.get("drop:literal_not_in_span", 0) == 0
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == rf
+        ]
+        assert {r["value_num"] for r in rows} == {-2.48, -1.91}
+        median = next(r for r in rows if r["literal"] == "-1.91 ± 0.63")
+        assert median["value_err"] == pytest.approx(0.63)
+
+    def test_gas_qualified_units_strip_to_a_condition(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512368 (3): 'Gt CO₂ yr⁻¹' and 'USD/t CO2' — the gas qualifier
+        is not a unit pint can parse. It strips to the conditions dict as
+        ``gas`` and the cleaned unit converts."""
+        store = world["store"]
+        cdr = make_taxon(store, "national-cdr", unit="Gt yr-1", parent=world["root"])
+        cost = make_taxon(store, "mitigation-cost", unit="USD/t", parent=world["root"])
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="| China | 0.13 Gt CO₂ yr⁻¹ |",
+            chunk_kind="table",
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text="| Hydroxyl radical | $75-100 t-1 CO2 |",
+            chunk_kind="table",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "national-cdr",
+                                "literal": "0.13",
+                                "unit": "Gt CO₂ yr⁻¹",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "mitigation-cost",
+                                "literal": "75-100",
+                                "unit": "USD/t CO2",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["written"] == 2
+        rows = {
+            r["measurand_ref_id"]: r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        }
+        assert rows[cdr]["value_num"] == pytest.approx(0.13)
+        assert rows[cdr]["conditions"]["gas"] == "CO2"
+        assert rows[cost]["value_low"] == pytest.approx(75.0)
+        assert rows[cost]["value_high"] == pytest.approx(100.0)
+        assert rows[cost]["conditions"]["gas"] == "CO2"
+
+    def test_glyph_damaged_unit_is_repaired(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512368 (3): 'W mK^2' on a glyph-flagged paper is 'W m-2' with
+        the superscript minus read as K — the write is retried repaired
+        and flagged ``glyph_unit_repaired`` instead of refused."""
+        store = world["store"]
+        rf = make_taxon(store, "radiative-forcing", unit="W/m^2", parent=world["root"])
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                (json.dumps({"glyph_health": {"suspected": True}}), world["paper"]),
+            )
+            conn.commit()
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text="Reflection must rise by 3.7 W mK^2 globally over time.",
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "measurand": "radiative-forcing",
+                                "literal": "3.7",
+                                "unit": "W mK^2",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["written"] == 1
+        assert stats["write_refused"] == 0
+        assert stats["flag:glyph_unit_repaired"] == 1
+        esc = next(
+            e
+            for e in done.summary_meta["escalations"]
+            if e.get("flag") == "glyph_unit_repaired"
+        )
+        assert "W mK^2" in esc["detail"]
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == rf
+        ]
+        (row,) = rows
+        assert row["value_num"] == pytest.approx(3.7)
+        assert row["reported_unit"] == "W m-2"
+
+    def test_design_targets_and_comparators_drop(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512369: 'such that the MCB ERF is -1.8' is a design target,
+        'intended to produce' a protocol forcing — both drop as
+        cited_context; the achieved value still lands."""
+        store = world["store"]
+        rf = make_taxon(store, "radiative-forcing", unit="W m-2", parent=world["root"])
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=3,
+            text=(
+                "We specify the strength of the forcing such that the "
+                "MCB ERF is -1.8 W m-2."
+            ),
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=4,
+            text=(
+                "The G4sea-salt protocol is intended to produce a forcing "
+                "of -2.0 W m-2."
+            ),
+        )
+        _seed_body_chunk(
+            store,
+            world["paper"],
+            ord_=5,
+            text="The achieved MCB ERF was -1.8 W m-2 in the CESM2 run.",
+        )
+        result = {
+            "measurand": "radiative-forcing",
+            "unit": "W m-2",
+            "attribution": "own_work",
+            "anchor": "0",
+        }
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps({"results": [{**result, "literal": "-1.8"}]}),
+                json.dumps({"results": [{**result, "literal": "-2.0"}]}),
+                json.dumps({"results": [{**result, "literal": "-1.8"}]}),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["drop:cited_context"] == 2
+        assert stats["written"] == 1
+        rows = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output" and r["measurand_ref_id"] == rf
+        ]
+        (row,) = rows
+        assert row["value_num"] == -1.8
+
+    def test_empty_reader_reply_is_visible(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr512371: a parsed reply that yields no proposals and no
+        drops is named per chunk — the empty pc5155615 result that lost
+        five approved rows with no trace."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        stats = done.summary_meta["stats"]
+        assert stats["empty_result"] == 3
+        esc = done.summary_meta["escalations"]
+        assert {e["kind"] for e in esc} == {"empty_result"}
+        assert {e["chunk"] for e in esc} == {world["c1"], world["c2"], world["c3"]}
 
 
 class TestRungAwarePacing:

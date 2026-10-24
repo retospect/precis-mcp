@@ -981,12 +981,18 @@ class MeasuresMixin:
 
         # unit -> canonical
         meta: dict[str, Any] = dict(spec.meta)
-        escalation: list[dict[str, Any]] = list(flags)
+        # Caller-supplied ``meta.escalation`` entries (a checker upstream of
+        # the store flagging a misaligned table row, gr512370) merge into the
+        # run's own list rather than being clobbered by it.
+        escalation: list[dict[str, Any]] = list(flags) + [
+            e for e in (meta.pop("escalation", None) or []) if isinstance(e, dict)
+        ]
         normalization = spec.normalization
         normalization_status = spec.normalization_status
         reported_unit = spec.reported_unit
         canonical = taxon.get("canonical_unit")
         has_numbers = any(v is not None for v in (num, low, high))
+        conditions = dict(spec.conditions or {})
         if canonical and has_numbers and not (reported_unit and reported_unit.strip()):
             # Store SI: the number's unit is never guessed (a silent factor of
             # 1000, or of 100 for a fraction, is the failure this guards)
@@ -1018,7 +1024,9 @@ class MeasuresMixin:
             try:
                 conv = self._compat_conversion(
                     c, taxon, reported_unit, canonical
-                ) or make_converter(reported_unit, canonical)
+                ) or make_converter(
+                    reported_unit, canonical, delta=bool(taxon.get("difference"))
+                )
             except NeedsMolarMass as need:
                 conv = None
                 if has_numbers:
@@ -1059,6 +1067,10 @@ class MeasuresMixin:
                 if conv.label and normalization is None:
                     normalization = basis_normalization(conv.label)
                     normalization_status = normalization_status or "explicit"
+                if conv.gas:
+                    # 'Gt CO2 yr-1' is a rate per CO2 mass — the gas rides
+                    # the conditions dict, not the unit (gr512368).
+                    conditions.setdefault("gas", conv.gas)
         elif reported_unit and has_numbers and canonical is None:
             raise BadInput(
                 f"measure of {taxon.get('name') or 'this measurand'!r} reports a "
@@ -1067,6 +1079,17 @@ class MeasuresMixin:
                 next="set the taxon's canonical_unit first (meta canonical_unit), "
                 "or write the number without a reported_unit if it is unitless",
             )
+        if taxon.get("sign_convention") == "reduction" and has_numbers:
+            # A below-baseline measurand ("emission reduction potential,
+            # fraction below baseline") reads the magnitude: '54% below
+            # baseline' and a change table's '−54%' both mean a 54%
+            # reduction — wording never flips the sign (gr512365).
+            num = None if num is None else abs(num)
+            if low is not None and high is not None:
+                low, high = min(abs(low), abs(high)), max(abs(low), abs(high))
+            else:
+                low = None if low is None else abs(low)
+                high = None if high is None else abs(high)
         if direction == "output":
             escalation.extend(
                 self._sanity_escalations(c, spec, anchor, (num, low, high))
@@ -1177,7 +1200,7 @@ class MeasuresMixin:
                     actor,
                     model,
                     Jsonb(meta),
-                    Jsonb(spec.conditions) if spec.conditions is not None else None,
+                    Jsonb(conditions) if conditions else None,
                     spec.maturity,
                     spec.method,
                     spec.source_chunk,

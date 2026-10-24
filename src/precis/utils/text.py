@@ -309,6 +309,7 @@ def markup_surface(text: str) -> str:
     s = s.translate(_SUP_TRANS).translate(_SUB_TRANS)
     s = re.sub(r"[$^_{}]", "", s)
     s = re.sub(r"([-+])\s*\|\s*(?=\d)", r"\1", s)  # "- | 1.93" cell
+    s = re.sub(r"(\|\s*)([-+])\s+(?=\d)", r"\1\2", s)  # "| - 1.91" cell
     s = s.replace("|", " ")
     return re.sub(r"\s+", " ", s.replace("μ", "µ")).strip()
 

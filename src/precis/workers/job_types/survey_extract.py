@@ -60,6 +60,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
@@ -316,6 +317,17 @@ def _escalate(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
         bucket.append(entry)
 
 
+#: A glyph-lie repair for a refused unit: on a ``glyph_suspected`` paper a
+#: font can print a superscript minus as ``K`` — ``'W mK^2'`` is ``'W m-2'``
+#: (gr512368). Only ``K^<digits>`` is touched: a bare ``K`` or ``K-1`` is a
+#: real kelvin and stays.
+def _glyph_repair_unit(unit: object) -> str | None:
+    if not isinstance(unit, str):
+        return None
+    repaired = re.sub(r"K\^(\d+)", r"-\1", unit)
+    return repaired if repaired != unit else None
+
+
 def _wake_s(seconds: int = 1, why: str | None = None) -> WakeWhen:
     payload: dict[str, Any] = {"ts": int(time.time()) + seconds}
     if why:
@@ -419,6 +431,7 @@ def _fresh_stats() -> dict[str, int]:
         "drop:bound_direction_mismatch": 0,
         "drop:unsupported_sign": 0,
         "unparseable_reply": 0,
+        "empty_result": 0,
         "truncated": 0,
         "write_refused": 0,
         "value_form_inferred": 0,
@@ -576,6 +589,20 @@ def _process_chunk(
             },
         )
     raw_results = reply.get("results") or []
+    if not outcome.proposals and not outcome.dropped:
+        # A parsed reply that produced nothing — no proposals, no named
+        # drops — leaves no trace in the counters otherwise (gr512371:
+        # five approved b1 rows vanished behind a silent results=[]).
+        stats["empty_result"] += 1
+        _escalate(
+            escalations,
+            {
+                "kind": "empty_result",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "detail": f"reader reply yielded nothing ({len(raw_results)} results)",
+            },
+        )
     for proposal in outcome.proposals:
         stats["proposals"] += 1
         # gr503034: an emitted value_form that isn't a registered form is
@@ -607,25 +634,62 @@ def _process_chunk(
         except BadInput as exc:
             if "duplicate of measure" in str(exc):
                 stats["skipped_dup"] += 1
-            else:
-                stats["dropped"] += 1
-                stats["write_refused"] += 1
-                # The raw literal and unit ride along so a refusal a
-                # reviewer can repair by hand (a glyph-damaged unit like
-                # "W mK^2" that no normalisation recovers, gr511458)
-                # keeps the number it was refused on.
-                entry = {
-                    "kind": "write_refused",
-                    "chunk": chunk["chunk_id"],
-                    "chunk_kind": chunk["chunk_kind"],
-                    "location": proposal.location,
-                    "detail": str(exc)[:200],
-                    "literal": _result_field(raw_results, proposal.location, "literal"),
-                    "unit": _result_field(raw_results, proposal.location, "unit"),
-                }
-                if glyph_flagged:
-                    entry["glyph_suspected"] = True
-                _escalate(escalations, entry)
+                continue
+            repaired = (
+                _glyph_repair_unit(
+                    _result_field(raw_results, proposal.location, "unit")
+                )
+                if glyph_flagged and "unit" in str(exc)
+                else None
+            )
+            if repaired is not None:
+                try:
+                    repaired_run = ctx.store.insert_measure(
+                        replace(proposal.output, reported_unit=repaired),
+                        proposal.inputs,
+                        actor=_ACTOR,
+                        model=model_used,
+                    )
+                except BadInput:
+                    repaired_run = None
+                if repaired_run is not None:
+                    stats["written"] += 1
+                    stats["flag:glyph_unit_repaired"] = (
+                        stats.get("flag:glyph_unit_repaired", 0) + 1
+                    )
+                    _escalate(
+                        escalations,
+                        {
+                            "kind": "flag",
+                            "chunk": chunk["chunk_id"],
+                            "chunk_kind": chunk["chunk_kind"],
+                            "flag": "glyph_unit_repaired",
+                            "location": proposal.location,
+                            "measure": repaired_run.output_id,
+                            "detail": f"unit repaired "
+                            f"{_result_field(raw_results, proposal.location, 'unit')!r}"
+                            f" -> {repaired!r}",
+                        },
+                    )
+                    continue
+            stats["dropped"] += 1
+            stats["write_refused"] += 1
+            # The raw literal and unit ride along so a refusal a
+            # reviewer can repair by hand (a glyph-damaged unit like
+            # "W mK^2" that no normalisation recovers, gr511458)
+            # keeps the number it was refused on.
+            entry = {
+                "kind": "write_refused",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "location": proposal.location,
+                "detail": str(exc)[:200],
+                "literal": _result_field(raw_results, proposal.location, "literal"),
+                "unit": _result_field(raw_results, proposal.location, "unit"),
+            }
+            if glyph_flagged:
+                entry["glyph_suspected"] = True
+            _escalate(escalations, entry)
             continue
         stats["written"] += 1
         for flag in proposal.flags:

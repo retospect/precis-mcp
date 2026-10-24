@@ -35,6 +35,8 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "required_conditions",
         "includes",
         "excludes",
+        "sign_convention",
+        "difference",
     }
 )
 #: Boundary-example keys: shown on ``get``, kept out of the embedded card so
@@ -42,9 +44,18 @@ CALLER_KEYS: frozenset[str] = frozenset(
 BOUNDARY_KEYS: tuple[str, ...] = ("includes", "excludes")
 #: The descriptive keys ``edit(kind='taxon', meta=...)`` may change on an
 #: existing node (a writer sharpening a definition against its siblings);
-#: everything else on a node is set at mint or earned.
+#: everything else on a node is set at mint or earned. ``sign_convention``
+#: and ``difference`` ride along: they steer how *future* writes are read,
+#: never re-read stored rows, so they are safe to patch (gr512365, gr512366).
 EDITABLE_KEYS: frozenset[str] = frozenset(
-    {"definition", "aliases", "includes", "excludes"}
+    {
+        "definition",
+        "aliases",
+        "includes",
+        "excludes",
+        "sign_convention",
+        "difference",
+    }
 )
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
 HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug"})
@@ -60,6 +71,13 @@ DIMENSION_KINDS: tuple[str, ...] = (
 )
 STATUSES: tuple[str, ...] = ("proposed", "systematic")
 STATUS_PROPOSED = "proposed"
+
+#: Named sign conventions (taxonomy-bootstrap's closed ``convention`` list).
+#: ``reduction`` — the measurand is itself a below-baseline share ("emission
+#: reduction potential, fraction below baseline"): the stored value is the
+#: positive magnitude however the claim is worded — a decrease cue or a
+#: leading minus in a change table both mean "more reduction" (gr512365).
+SIGN_CONVENTIONS: tuple[str, ...] = ("reduction",)
 
 _SI_VECTOR_RE = re.compile(r"^-?\d+(,-?\d+){6}$")
 
@@ -189,6 +207,18 @@ def validate_taxon_meta(
 
     if "start" in out and not isinstance(out["start"], bool):
         raise BadInput("start must be a boolean", next="start=true on a root node")
+
+    conv = out.get("sign_convention")
+    if conv is not None and conv not in SIGN_CONVENTIONS:
+        raise BadInput(
+            f"sign_convention {conv!r} is not one of {', '.join(SIGN_CONVENTIONS)}",
+            next="sign_convention='reduction' on a below-baseline measurand",
+        )
+    if "difference" in out and not isinstance(out["difference"], bool):
+        raise BadInput(
+            "difference must be a boolean",
+            next="difference=true on a measurand that is a change, not a level",
+        )
 
     conds = out.get("required_conditions")
     if conds is not None and (

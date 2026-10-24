@@ -227,6 +227,21 @@ def _resolve(
     return resolved
 
 
+def _table_line_cells(text: str) -> list[tuple[int, int, int]]:
+    """``(start, end, cell_count)`` for every line that reads as a
+    pipe-table row — at least one ``|`` separating cells. An empty cell
+    still counts: it keeps its column ('| a | | b |' is three cells)."""
+    rows = []
+    pos = 0
+    for line in text.splitlines():
+        start, end = pos, pos + len(line)
+        pos = end + 1
+        if "|" not in line:
+            continue
+        rows.append((start, end, len(line.strip().strip("|").split("|"))))
+    return rows
+
+
 def build_runs(
     reply: dict[str, Any],
     *,
@@ -245,6 +260,11 @@ def build_runs(
     """
     out = Outcome()
     index = _anchors.anchor_index([(chunk_id, chunk_text)])
+    # Pipe-table bookkeeping for gr512370: a data row with fewer cells
+    # than the header misaligns every column left of the gap — the
+    # reader picks the wrong column and nothing downstream can see it.
+    table_rows = _table_line_cells(chunk_text)
+    header_cells = table_rows[0][2] if table_rows and table_rows[0][2] > 1 else None
     results = reply.get("results")
     if not isinstance(results, list):
         out.dropped.append(
@@ -346,7 +366,43 @@ def build_runs(
                 }
             )
             continue
+        # A value the sentence frames as a design target or a comparator
+        # ('such that', 'intended to produce', 'targets of') is context,
+        # not an outcome — it drops as cited_context whatever attribution
+        # the reader gave it (gr512369).
+        cue = _verify.design_hint(span_text)
+        if cue is not None:
+            out.dropped.append(
+                {
+                    "location": location,
+                    "reason": "cited_context",
+                    "detail": (
+                        f"{literal!r} sits in design/comparator wording "
+                        f"{cue!r}: {span_text[:100]!r}"
+                    ),
+                }
+            )
+            continue
         flags: list[str] = []
+        spec_escalation: list[dict[str, Any]] = []
+        if header_cells is not None:
+            row_idx = next(
+                (i for i, (s, e, _c) in enumerate(table_rows) if s <= start < e),
+                None,
+            )
+            if (
+                row_idx is not None
+                and row_idx > 0
+                and table_rows[row_idx][2] < header_cells
+            ):
+                flags.append("table_misaligned")
+                spec_escalation.append(
+                    {
+                        "rule": "table_misaligned",
+                        "row_cells": table_rows[row_idx][2],
+                        "header_cells": header_cells,
+                    }
+                )
         unit = raw.get("unit")
         if not _verify.unit_has_text_support(unit, chunk_text):
             flags.append("unit_without_text_support")
@@ -603,6 +659,8 @@ def build_runs(
                 "prompt": READER_PROMPT_VERSION,
             },
         }
+        if spec_escalation:
+            meta["escalation"] = spec_escalation
         output = MeasureSpec(
             measurand_ref_id=entry.ref_id,
             literal=literal,
@@ -637,4 +695,24 @@ def build_runs(
         out.proposals.append(
             RunProposal(output=output, inputs=inputs, location=location, flags=flags)
         )
+
+    # Sibling results from one chunk that share measurand, subject and
+    # conditions are indistinguishable — the region, column or sector
+    # that set them apart was never written (gr512367).
+    siblings: dict[tuple[Any, ...], list[RunProposal]] = {}
+    for prop in out.proposals:
+        key = (
+            prop.output.measurand_ref_id,
+            prop.output.subject or "",
+            tuple(sorted((prop.output.conditions or {}).items())),
+        )
+        siblings.setdefault(key, []).append(prop)
+    for group in siblings.values():
+        if len(group) < 2:
+            continue
+        for prop in group:
+            prop.flags.append("sibling_condition_collision")
+            prop.output.meta.setdefault("escalation", []).append(
+                {"rule": "sibling_condition_collision", "siblings": len(group)}
+            )
     return out

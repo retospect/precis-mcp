@@ -48,9 +48,10 @@ def literal_normalize(value: str) -> str:
 
 
 def _ws_free(value: str) -> str:
-    """``literal_normalize`` with every space removed — a quantity split
-    across table cells or lines still contains itself."""
-    return re.sub(r"\s+", "", value)
+    """``literal_normalize`` with spaces and brackets removed — a quantity
+    split across table cells or lines ('-1.91 ( ± | 0.63)') still contains
+    itself (gr512368)."""
+    return re.sub(r"[\s()\[\]{}]+", "", value)
 
 
 #: The phrasings a sentence uses where a ``<``/``>`` would sit: the bound
@@ -134,6 +135,25 @@ def sign_hint_after(suffix_text: str) -> int | None:
     if _DECREASE_AFTER.match(literal_normalize(suffix_text)):
         return -1
     return None
+
+
+#: The phrasings that frame a value as a design target or a comparator,
+#: not an outcome the paper produced (gr512369): 'such that the MCB ERF
+#: is -1.8 W m-2', 'intended to produce', 'targets of 0.5-2 Gt CO2 yr-1',
+#: 'comparable with BECCS rates'.
+_DESIGN_TARGET_CUES = re.compile(
+    r"\b(?:such that|intended to|designed to|meant to|aims? to|aimed at|"
+    r"targets?\s+(?:of|for|to|at|the|that)|targeting|as a target|"
+    r"comparab\w+\s+(?:with|to)|comparator|benchmark(?:ed)?)\b",
+    re.IGNORECASE,
+)
+
+
+def design_hint(span_text: str) -> str | None:
+    """The matched cue when ``span_text`` frames its value as a design
+    target or comparator rather than an outcome — ``None`` otherwise."""
+    match = _DESIGN_TARGET_CUES.search(literal_normalize(span_text))
+    return match.group(0) if match else None
 
 
 _SPREAD_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"

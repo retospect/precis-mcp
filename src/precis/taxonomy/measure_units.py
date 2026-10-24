@@ -168,27 +168,64 @@ def basis_normalization(label: str) -> str:
     return f"per {label}"
 
 
-def pint_unit_text(raw_unit: str) -> tuple[str, str | None]:
-    """``(text pint can parse, basis label or None)`` for a printed unit.
-    Markup is folded first (:func:`precis.utils.text.markup_unit` —
-    ``W m^{-2}``/``m<sup>−</sup><sup>2</sup>`` -> ``W m^-2``,
-    ``<sub>`` -> ``_`` keeps basis labels) so the spelling a paper's
-    extraction left behind still reaches pint (gr511458)."""
+#: A greenhouse-gas qualifier on a per-tonne / per-year unit — 'Gt CO2 yr-1',
+#: 'USD/t CO2-eq', 't CH4' — is the *what*, not the unit. It is stripped
+#: before pint sees the text and lands as the row's ``gas`` condition
+#: (gr512368). A bare 'C' counts only beside a mass token: 'Gt C' is
+#: gigatonnes of carbon but 'A C' is ampere-coulombs.
+_GAS_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w.])(CO2-?eq|CO2e|CO2|CH4|N2O)(?![\w.])", re.IGNORECASE
+)
+_MASS_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w.])(?:Gt|Mt|kt|kg|g|mg|t|ton|tonne)(?![\w.])"
+)
+
+
+def _strip_gas_qualifier(unit_text: str) -> tuple[str, str | None]:
+    """``'Gt CO2 yr^-1'`` -> ``('Gt yr^-1', 'CO2')``."""
+    match = _GAS_TOKEN_RE.search(unit_text)
+    if match is None and _MASS_TOKEN_RE.search(unit_text):
+        match = re.search(r"(?<![\w.])C(?![\w.])", unit_text)
+    if match is None:
+        return unit_text, None
+    gas = match.group(1)
+    text = (unit_text[: match.start()] + " " + unit_text[match.end() :]).strip()
+    return re.sub(r" {2,}", " ", text), gas
+
+
+def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
+    """``(text pint can parse, basis label, gas qualifier)``."""
     stripped, label = split_basis_label(markup_unit(raw_unit.strip()))
     text = _normalize_unit_candidate(stripped)
+    text, gas = _strip_gas_qualifier(text)
     if text.replace(" ", "") in ("%", "percent", "mol%"):
         # mol% is a percent of an amount fraction: dimensionless like %, which
         # pint would read as mol * percent (the legacy catalyst_loading unit)
         text = "percent"
     else:
         text = text.replace("%", " percent ")
+    return text, label, gas
+
+
+def pint_unit_text(raw_unit: str) -> tuple[str, str | None]:
+    """``(text pint can parse, basis label or None)`` for a printed unit.
+    Markup is folded first (:func:`precis.utils.text.markup_unit` —
+    ``W m^{-2}``/``m<sup>−</sup><sup>2</sup>`` -> ``W m^-2``,
+    ``<sub>`` -> ``_`` keeps basis labels) so the spelling a paper's
+    extraction left behind still reaches pint (gr511458); a gas qualifier
+    is stripped the same way (:func:`_pint_unit_ex`)."""
+    text, label, _gas = _pint_unit_ex(raw_unit)
     return text, label
 
 
-def _parse_unit(raw_unit: str, *, what: str) -> tuple[Any, str | None]:
-    text, label = pint_unit_text(raw_unit)
+def _parse_unit(
+    raw_unit: str, *, what: str, delta: bool = False
+) -> tuple[Any, str | None, str | None]:
+    text, label, gas = _pint_unit_ex(raw_unit)
+    if delta:
+        text = _delta_unit_text(text)
     try:
-        return _registry().Unit(text), label
+        return _registry().Unit(text), label, gas
     except _PARSE_ERRORS as exc:
         raise BadInput(
             f"{what} unit {raw_unit!r} is not a unit pint can parse",
@@ -233,10 +270,32 @@ class Conversion:
     scale: float
     label: str | None
     error: Callable[[float], float] | None = None
+    #: A greenhouse-gas qualifier stripped from the reported unit
+    #: ('Gt CO2 yr-1' -> 'CO2') — lands as the row's ``gas`` condition.
+    gas: str | None = None
 
 
 _TOKEN_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"[\s*/]+")
 _EXPONENT_RE: Final[re.Pattern[str]] = re.compile(r"(?:\^|\*\*)\(?-?\d+(?:\.\d+)?\)?$")
+
+#: Affine temperature spellings a ``difference`` measurand reads as deltas:
+#: a 0.5 °C *change* is 0.5 K, not 273.65 K — pint converts ``degC``
+#: absolutely unless the unit is spelled ``delta_degC`` (gr512366).
+_AFFINE_TOKENS: Final[dict[str, str]] = {
+    "degc": "delta_degC",
+    "°c": "delta_degC",
+    "celsius": "delta_degC",
+    "degf": "delta_degF",
+    "°f": "delta_degF",
+    "fahrenheit": "delta_degF",
+}
+
+
+def _delta_unit_text(unit_text: str) -> str:
+    """Affine temperature tokens -> pint's delta units, token-wise, so a
+    ``'°C/yr'`` rate becomes ``'delta_degC yr'`` too."""
+    parts = _TOKEN_SPLIT_RE.split(unit_text)
+    return " ".join(_AFFINE_TOKENS.get(tok.lower(), tok) for tok in parts if tok)
 
 
 def _names_dimension(unit_text: str, dimension: str) -> bool:
@@ -258,17 +317,24 @@ def _names_dimension(unit_text: str, dimension: str) -> bool:
 
 
 def make_converter(
-    reported_unit: str, canonical_unit: str, *, molar_mass_g_mol: float | None = None
+    reported_unit: str,
+    canonical_unit: str,
+    *,
+    molar_mass_g_mol: float | None = None,
+    delta: bool = False,
 ) -> Conversion:
     """Build the converter, or raise :class:`BadInput` naming both units when
     their dimensions do not match (and no molar-mass bridge applies), or
-    :class:`NeedsMolarMass` when a bridge applies but none was given."""
+    :class:`NeedsMolarMass` when a bridge applies but none was given.
+
+    ``delta`` marks a difference measurand (``meta.difference``): affine
+    reported units (°C, °F) convert as deltas, not absolute temperatures."""
     ureg = _registry()
-    src_text, label = pint_unit_text(reported_unit)
-    dst_text, _ = pint_unit_text(canonical_unit)
+    src_text, label, gas = _pint_unit_ex(reported_unit)
+    dst_text, _, _ = _pint_unit_ex(canonical_unit)
     if src_text == dst_text:
         # same unit once normalised: no pint needed (USD, count, a ``%``)
-        return Conversion(value=lambda v: v, scale=1.0, label=label)
+        return Conversion(value=lambda v: v, scale=1.0, label=label, gas=gas)
     if is_log_unit(src_text) or is_log_unit(dst_text):
         raise BadInput(
             f"unit {reported_unit!r} cannot be converted to {canonical_unit!r}: "
@@ -276,7 +342,7 @@ def make_converter(
             next="state the number in the measurand's own scale",
         )
     try:
-        dst, _ = _parse_unit(canonical_unit, what="canonical")
+        dst, _, _ = _parse_unit(canonical_unit, what="canonical")
     except BadInput as exc:
         raise BadInput(
             f"unit {reported_unit!r} cannot be converted to the measurand's "
@@ -284,7 +350,7 @@ def make_converter(
             "convert, so only the identical unit is accepted",
             next="state the number in the canonical unit, or leave reported_unit empty",
         ) from exc
-    src, label = _parse_unit(reported_unit, what="reported")
+    src, label, gas = _parse_unit(reported_unit, what="reported", delta=delta)
     bridge: str | None = None
     if src.dimensionality != dst.dimensionality:
         ratio = src.dimensionality / dst.dimensionality
@@ -315,7 +381,7 @@ def make_converter(
             q = q * ureg.Quantity(molar_mass_g_mol, "g/mol")
         return float(q.to(dst).magnitude)
 
-    return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label)
+    return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label, gas=gas)
 
 
 # ── legacy unit -> SI form (the legacy mint verbs' edge) ──────────────────
@@ -358,7 +424,7 @@ def si_form(unit: str | None) -> SiForm | None:
     if not text or is_log_unit(text):
         return None
     try:
-        parsed, _ = _parse_unit(text, what="legacy")
+        parsed, _, _ = _parse_unit(text, what="legacy")
     except BadInput:
         return None
     ureg = _registry()
@@ -393,7 +459,7 @@ def is_coherent_si(unit: str | None) -> bool:
     if not text:
         return False
     try:
-        parsed, _ = _parse_unit(text, what="si")
+        parsed, _, _ = _parse_unit(text, what="si")
     except BadInput:
         return False
     try:
@@ -440,7 +506,7 @@ def check_canonical_unit(si_vector: str, canonical_unit: str) -> None:
             f"the coherent SI unit of si_vector {si_vector!r} ({want!r})",
             next=next_,
         )
-    parsed, _ = _parse_unit(canonical_unit, what="canonical")
+    parsed, _, _ = _parse_unit(canonical_unit, what="canonical")
     expected = _si_vector_unit(si_vector)
     base = _registry().Quantity(1, parsed).to_base_units()
     if base.dimensionality != expected.dimensionality:
@@ -530,7 +596,7 @@ def validate_display_unit(display_unit: str, canonical_unit: str | None) -> None
             next=f"display_unit={canonical_unit!r}, or drop it",
         )
     try:
-        canon_unit, _ = _parse_unit(canon, what="canonical")
+        canon_unit, _, _ = _parse_unit(canon, what="canonical")
     except BadInput as exc:
         raise BadInput(
             f"display_unit {display_unit!r} differs from canonical_unit "
@@ -538,7 +604,7 @@ def validate_display_unit(display_unit: str, canonical_unit: str | None) -> None
             "identical unit is allowed",
             next=f"display_unit={canonical_unit!r}, or drop it",
         ) from exc
-    disp_unit, _ = _parse_unit(disp, what="display")
+    disp_unit, _, _ = _parse_unit(disp, what="display")
     if disp_unit.dimensionality != canon_unit.dimensionality:
         raise BadInput(
             f"display_unit {display_unit!r} has a different dimension from "
@@ -559,7 +625,7 @@ def _compact(values: Sequence[float], canon: str) -> tuple[list[float], str]:
     if is_log_unit(canon) or not values:
         return plain
     try:
-        unit, _ = _parse_unit(canon, what="canonical")
+        unit, _, _ = _parse_unit(canon, what="canonical")
     except BadInput:
         return plain
     if unit.dimensionless or f"{unit:~P}".startswith("1/"):
