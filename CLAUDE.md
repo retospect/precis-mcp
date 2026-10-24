@@ -107,6 +107,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   A multi-line message or one carrying `'`/`` ` ``/`$` goes via
   `git commit -F scratch/commit-msg.txt`, never a quoted `-m` (→
   `docs/conventions/container-ops.md`).
+  Non-Claude builders (Devin) use the literal footer
+  `Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>` then
+  `Claude-Session: none (Devin builder, <fleet name>)`.
 
 ## Hook/gate-enforced — one-liners, detail on demand
 

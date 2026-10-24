@@ -183,13 +183,21 @@ def test_post_free_text_still_accepted(tmp_path: Path) -> None:
     assert board.read_text(encoding="utf-8").endswith("\tw1\tnot a state just words\n")
 
 
-def test_post_refuses_a_line_over_120_chars(tmp_path: Path) -> None:
+def test_post_refuses_a_note_over_120_chars(tmp_path: Path) -> None:
     board = tmp_path / "board.log"
     env = _env(board)
-    cp = _board(["post", "w1", "x" * 200], env)
+    cp = _board(["post", "w1", "x" * 121], env)
     assert cp.returncode == 2
-    assert "120" in cp.stderr and "handoff" in cp.stderr
+    assert "121" in cp.stderr and "120" in cp.stderr and "handoff" in cp.stderr
     assert not board.exists()
+
+
+def test_post_cap_counts_the_note_only(tmp_path: Path) -> None:
+    board = tmp_path / "board.log"
+    env = _env(board)
+    cp = _board(["post", "w" * 60, "x" * 120], env)
+    assert cp.returncode == 0
+    assert board.read_text(encoding="utf-8").endswith("\t" + "x" * 120 + "\n")
 
 
 def test_read_n_prints_only_the_last_n_lines(tmp_path: Path) -> None:
