@@ -268,6 +268,7 @@ def parse(
     *,
     require_units: bool = False,
     warnings: list[str] | None = None,
+    arg_prefix: str = "",
 ) -> ShapeSpec:
     """Parse a ``config`` string into a :class:`ShapeSpec`.
 
@@ -285,6 +286,13 @@ def parse(
     :func:`~precis.utils.units.parse_quantity` — e.g. an awkward-mantissa
     ``w0.000000003m`` draws "parsed as 3 nm". Warn-only; parsing is
     unchanged.
+
+    ``arg_prefix`` is prepended to every ``arg_name`` this parse reports —
+    a caller that knows where the config sat (``"line 3: "`` from
+    :mod:`precis.cad.scene`) passes it so a
+    :class:`~precis.utils.units.UnitRequiredError` names the source
+    position, matching the ``line N: @x`` convention the placement tokens
+    already use (gr514497).
     """
     if not isinstance(config, str) or ":" not in config:
         raise DslError(
@@ -310,7 +318,7 @@ def parse(
         return ShapeSpec(alias, {}, ref=ref)
 
     if alias == RELIEF_ALIAS:
-        return _parse_relief(rest, config, require_units, warnings)
+        return _parse_relief(rest, config, require_units, warnings, arg_prefix)
 
     if alias == "chamfer":
         if require_units:
@@ -328,20 +336,22 @@ def parse(
             )
             if not unit:
                 raise UnitRequiredError(
-                    float(size_num), "length", arg_name=f"{alias}:size"
+                    float(size_num), "length", arg_name=f"{arg_prefix}{alias}:size"
                 )
             if not angle_unit:
                 raise UnitRequiredError(
-                    float(angle_num), "angle", arg_name=f"{alias}:angle"
+                    float(angle_num), "angle", arg_name=f"{arg_prefix}{alias}:angle"
                 )
             size = parse_quantity(
                 f"{size_num}{unit}",
                 "length",
-                arg_name=f"{alias}:size",
+                arg_name=f"{arg_prefix}{alias}:size",
                 warnings=warnings,
             )
             angle = parse_quantity(
-                f"{angle_num}{angle_unit}", "angle", arg_name=f"{alias}:angle"
+                f"{angle_num}{angle_unit}",
+                "angle",
+                arg_name=f"{arg_prefix}{alias}:angle",
             )
             return ShapeSpec(alias, {"size": size, "angle": angle})
         m = _CHAMFER_RE.match(rest)
@@ -370,12 +380,14 @@ def parse(
                     )
                 value = float(num)
             elif not unit:
-                raise UnitRequiredError(float(num), "length", arg_name=f"{alias}:{key}")
+                raise UnitRequiredError(
+                    float(num), "length", arg_name=f"{arg_prefix}{alias}:{key}"
+                )
             else:
                 value = parse_quantity(
                     f"{num}{unit}",
                     "length",
-                    arg_name=f"{alias}:{key}",
+                    arg_name=f"{arg_prefix}{alias}:{key}",
                     warnings=warnings,
                 )
         else:
@@ -434,7 +446,11 @@ _RELIEF_KEY_KIND: dict[str, Dimension | Literal["count"]] = {
 
 
 def _parse_relief(
-    rest: str, config: str, require_units: bool, warnings: list[str] | None
+    rest: str,
+    config: str,
+    require_units: bool,
+    warnings: list[str] | None,
+    arg_prefix: str,
 ) -> ShapeSpec:
     """Parse the ``relief:`` body: numeric tokens then ``map:<sha>``."""
     m = _RELIEF_RE.match(rest.lower())
@@ -465,13 +481,13 @@ def _parse_relief(
                 value = float(num)
             elif not unit:
                 raise UnitRequiredError(
-                    float(num), kind, arg_name=f"{RELIEF_ALIAS}:{key}"
+                    float(num), kind, arg_name=f"{arg_prefix}{RELIEF_ALIAS}:{key}"
                 )
             else:
                 value = parse_quantity(
                     f"{num}{unit}",
                     kind,
-                    arg_name=f"{RELIEF_ALIAS}:{key}",
+                    arg_name=f"{arg_prefix}{RELIEF_ALIAS}:{key}",
                     warnings=warnings,
                 )
         else:

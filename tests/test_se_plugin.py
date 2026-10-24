@@ -2012,6 +2012,19 @@ def test_add_measure_guards() -> None:
         )
 
 
+def test_no_such_block_roster_counts_the_omitted() -> None:
+    """gr514500: a truncated 'Available blocks' roster says how many were
+    omitted ('… (N more)'), not the design's block total."""
+    tree = SeTree()
+    apply_ops(tree, [{"op": "add_block", "name": f"b{i}"} for i in range(10)])
+    with pytest.raises(OpError) as exc:
+        apply_ops(tree, [{"op": "add_measure", "block": "ghost", "name": "m"}])
+    msg = str(exc.value)
+    assert "Available blocks: b0, b1, b2, b3, b4, b5, b6, b7" in msg
+    assert "… (2 more)" in msg
+    assert "10 blocks total" not in msg
+
+
 def test_add_measure_forward_reference_accepted() -> None:
     # a relation source that doesn't exist YET is legal at write time
     # (spec: "unresolvable relations" is graph-DRC's read-time finding).

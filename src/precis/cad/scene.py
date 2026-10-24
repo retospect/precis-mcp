@@ -250,8 +250,14 @@ _LINEAR_RE = re.compile(
 )
 
 
-class SceneError(ValueError):
-    """A malformed design source line."""
+class SceneError(BadInput, ValueError):
+    """A malformed design source line.
+
+    Dual base like :class:`~precis.cad.dsl.DslError`: ``BadInput`` so the
+    dispatcher renders the ``line N:`` cause instead of flattening it to
+    an opaque internal error (gr514498); ``ValueError`` so every existing
+    ``except (SceneError, ValueError)`` / ``except ValueError`` call site
+    keeps catching it unchanged."""
 
 
 class PolarPattern(TypedDict):
@@ -1197,7 +1203,12 @@ def _parse_source(text: str) -> SceneSpec:
                     "design, whose dim namespace is not this one; use "
                     "unit-suffixed literal numbers, e.g. 'cyl:r3mmh12mm'"
                 )
-            pl_spec = parse(plconfig, require_units=True, warnings=_WARN_SINK.get())
+            pl_spec = parse(
+                plconfig,
+                require_units=True,
+                warnings=_WARN_SINK.get(),
+                arg_prefix=f"line {lineno}: ",
+            )
             build(pl_spec)
             plconfig = format_spec(pl_spec)  # canonicalise for storage
             if pl_spec.alias == "chamfer" and plop == "add":
@@ -1457,7 +1468,12 @@ def _parse_source(text: str) -> SceneSpec:
             # `config` is always canonical/storage-mode text, never the
             # author's unit-suffixed source (which the canonical/storage
             # parse mode used on every reload could not re-parse).
-            node_spec = parse(config, require_units=True, warnings=_WARN_SINK.get())
+            node_spec = parse(
+                config,
+                require_units=True,
+                warnings=_WARN_SINK.get(),
+                arg_prefix=f"line {lineno}: ",
+            )
             if node_spec.alias not in (FIELD_ALIAS, RELIEF_ALIAS):
                 build(node_spec)  # a field/relief builds only through its loader
             alias = node_spec.alias

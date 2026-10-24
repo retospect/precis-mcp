@@ -615,10 +615,10 @@ def _with_site(exc: BadInput, site_text: str) -> None:
 def _dsl_source_line(body: str, exc: Exception) -> str | None:
     """Best-effort ``line 3: '<source text>'`` for a cad-DSL parse
     failure — ``arg_name``'s own ``line N:`` when it carries one
-    (placement/dim/joint tokens), else the first source token that
-    re-raises the same error under a boundary parse (the shape
-    ``config`` token, whose ``alias:key`` ``arg_name`` names no line —
-    gr514246)."""
+    (placement/dim/joint tokens, and since gr514497 the shape
+    ``config`` token's unit errors too), else the first source token
+    that re-raises the same error under a boundary parse (a
+    ``DslError`` carries no ``arg_name`` — gr514246)."""
     arg = getattr(exc, "arg_name", None) or ""
     lines = body.splitlines()
     m = re.match(r"line (\d+):", arg)
@@ -647,9 +647,9 @@ def _macro_dsl_spec(entry: BlockEntry, body: str) -> SceneSpec:
     block and (best effort) the DSL line (gr514246).
     :class:`UnitRequiredError` is re-raised as the same type — its
     ``next=`` unit hint survives — with the block and line folded into
-    the cause; :class:`DslError` and :class:`SceneError` (a bare
-    ``ValueError`` today — it would surface as Internal) become
-    ``BadInput``."""
+    the cause; :class:`DslError` and :class:`SceneError` (a ``BadInput``
+    since gr514498) are re-wrapped only to fold the block name into the
+    cause."""
     try:
         return parse_source(body)
     except UnitRequiredError as exc:

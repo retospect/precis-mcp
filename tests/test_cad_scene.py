@@ -16,6 +16,8 @@ from precis.cad.scene import (
     spec_to_source,
 )
 from precis.cad.vec import identity, rotation, translation, vec3
+from precis.errors import BadInput
+from precis.utils.units import UnitRequiredError
 
 _FLANGE = """
 # a flange
@@ -377,3 +379,31 @@ def test_parse_source_warns_on_awkward_mantissa_without_blocking():
 def test_parse_source_silent_on_well_formed_and_zero():
     spec = parse_source("plate add cyl:r3mmh12mm @0mm,0mm,0mm")
     assert spec.warnings == []
+
+
+def test_bare_config_number_names_the_dsl_line() -> None:
+    """gr514497: a unit-less ``config`` token's ``UnitRequiredError``
+    carries the source line in ``arg_name`` — same ``line N:`` convention
+    the placement/dim/joint tokens already use."""
+    with pytest.raises(UnitRequiredError) as exc:
+        parse_source("# a flange\nplate add cyl:r25mmh8mm\npin cut cyl:r7h24mm\n")
+    assert exc.value.arg_name == "line 3: cyl:r"
+    assert "line 3: cyl:r" in str(exc.value)
+
+    with pytest.raises(UnitRequiredError) as exc:
+        parse_source(
+            "plate add cyl:r25mmh8mm\nport top @0mm,0mm,8mm\n"
+            "payload bolt add cyl:r3h5mm at:top\n"
+        )
+    assert exc.value.arg_name == "line 3: cyl:r"
+
+
+def test_scene_error_is_a_bad_input() -> None:
+    """gr514498: ``SceneError`` is a structured ``BadInput`` (dual base
+    like ``DslError``) so a malformed design source renders its cause at
+    the dispatcher boundary instead of flattening to Internal — while
+    still a ``ValueError`` for existing catch sites."""
+    with pytest.raises(SceneError) as exc:
+        parse_source("a frobnicate cyl:r2mmh2mm")
+    assert isinstance(exc.value, BadInput)
+    assert isinstance(exc.value, ValueError)

@@ -155,7 +155,7 @@ def _block_not_found(tree: SeTree, name: str) -> str:
     if not tree.blocks:
         return f"{base} — the design has no blocks yet"
     roster = ", ".join(sorted(tree.blocks)[:8])
-    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks)} blocks total)"
+    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks) - 8} more)"
     return f"{base}. Available blocks: {roster}{more}"
 
 

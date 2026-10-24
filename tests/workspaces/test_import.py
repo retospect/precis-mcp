@@ -105,13 +105,14 @@ def _write_out(
     trace: dict[str, Any] | None = None,
 ) -> Path:
     """Write a minimal ``out/`` tree: manifest.json + named files +
-    optional trace.json."""
+    optional trace.json. A rewrite replaces the whole tree — nothing
+    from a previous call survives (gr514501)."""
     out = tmp_path / "out"
+    if out.is_dir():
+        shutil.rmtree(out)
     texts = {"manifest.json": json.dumps(manifest), **files}
     if trace is not None:
         texts["trace.json"] = json.dumps(trace)
-    else:
-        (out / "trace.json").unlink(missing_ok=True)  # no stale trace on rewrite
     for rel, text in texts.items():
         p = out / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +184,24 @@ def test_macro_bad_unit_no_trace_same_error_no_location(
     assert "block 't_crank'" in msg and "cyl:r7h24mm" in msg
     assert " at main.py" not in msg
     assert exc.value.next
+
+
+def test_write_out_rewrite_drops_stale_files(tmp_path: Path) -> None:
+    """gr514501: a second ``_write_out`` on the same ``tmp_path`` reflects
+    only the new args — a trace.json or block file from the first call
+    cannot linger."""
+    manifest: dict[str, Any] = {"schema": 1, "blocks": []}
+    out = _write_out(
+        tmp_path,
+        manifest=manifest,
+        files={"blocks/a.cad": "a add cyl:r1mmh1mm\n"},
+        trace=_trace_doc({}),
+    )
+    assert (out / "trace.json").is_file() and (out / "blocks/a.cad").is_file()
+    out = _write_out(tmp_path, manifest=manifest, files={})
+    assert (out / "manifest.json").is_file()
+    assert not (out / "trace.json").exists()
+    assert not (out / "blocks").exists()
 
 
 def _two_block_manifest(**kw: Any) -> dict[str, Any]:
