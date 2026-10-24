@@ -1,11 +1,8 @@
 """Background work: worker passes, scheduler cadences, and job executors.
 
-Elsevier acquisition requires a structured XML body before success, including
-a preflight for PDFs: HTTP 200 and PDF magic also admit abstract previews.
-Missing body records an entitlement miss and continues the OA cascade; neither
-short body length nor OA=false denies entitled full text. The explicit-cohort
-``elsevier_abstract_backfill`` job preserves bodies/hashes/events and re-arms
-existing fetch pins, with a dry-run default and no provider/model calls.
+Elsevier acquisition requires a structured XML body (an abstract preview is
+an entitlement miss, not success); repair job:
+:mod:`.job_types.elsevier_abstract_backfill`.
 
 Derived-queue core
 -----------------------------
@@ -57,26 +54,12 @@ appear in ``host_heartbeat.meta.activity`` and Status **Now**.
 
 Job digests
 -------------
-The named reporting artifact of a pass is its **digest row**: every
-handler batch and every ref-pass invocation ends in one
-:class:`BatchResult`, which :func:`run_loop` logs at INFO carrying the
-structured ``extra={'payload': …}`` channel. The DBLogHandler persists
-that into ``worker_logs.payload`` — ``precis logs --pass <name>
---payload`` reads it directly (claimed / ok / failed / report_only /
-duration_ms), and ``activity_by_handler`` recency reads roll up the same
-row. Three rules keep the surface trustworthy:
-
-* A pass's own counters (``chased``, ``capped_per_paper``, …) ride in
-  ``BatchResult.extra``, merged into the same payload row — never a
-  second INFO row, whose duplicated ``payload.handler`` would skew the
-  ok/fail recency reads (gr514422). Core keys win on collision.
-* ``BatchResult.report_only`` marks a *blocked* claim — the pass claimed
-  rows it could not work (spent ceiling, paused producer). The count
-  still reports, but it does not count as work, so the loop idle-sleeps
-  instead of hot-spinning on unstamped rows (gr514421).
-* Crash paths log an errored row with the same ``payload.handler``
-  identity so a crash-looping pass is never structurally silent to the
-  pass-dead probe (gr328589).
+Every pass ends in one **digest row**: a :class:`.runner.BatchResult`
+that :func:`run_loop` logs into ``worker_logs.payload`` (read it with
+``precis logs --pass <name> --payload``). Pass counters ride in
+``BatchResult.extra``, blocked claims set ``report_only`` (rules on the
+class); crash paths log an errored row under the same
+``payload.handler`` so the pass-dead probe sees them (gr328589).
 
 Profiles + service registry
 ---------------------------
