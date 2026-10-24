@@ -182,6 +182,11 @@ COMMANDS: tuple[Command, ...] = (
         "Recover a real DOI for DOI-less paper refs (S2 id / title match).",
     ),
     _c(
+        "backfill-bib-cites",
+        "bib_cites_backfill",
+        "Mint paper→paper cites links from matched bib entries (gr513755).",
+    ),
+    _c(
         "backfill-glyph-health",
         "glyph_backfill",
         "Flag old papers whose PDF fonts garble Greek/micro (gr228594).",

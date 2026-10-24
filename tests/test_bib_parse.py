@@ -1203,3 +1203,328 @@ class TestCycleWiring:
         )
         r = bib_parse_mod.run_bib_parse_cycle(store, client=_FakeClient("{}"))
         assert r == drained
+
+
+# ── cites-link minting + one-shot backfill (gr513755 slice 1) ─────────
+
+
+def _cites_links(
+    store: Any, *, src: int | None = None, dst: int | None = None
+) -> list[tuple[Any, ...]]:
+    """``links`` rows for ``relation='cites'``, optionally endpoint-scoped."""
+    sql = (
+        "SELECT src_ref_id, dst_ref_id, src_chunk_id, dst_chunk_id, "
+        "set_by, meta FROM links WHERE relation = 'cites'"
+    )
+    params: list[Any] = []
+    if src is not None:
+        sql += " AND src_ref_id = %s"
+        params.append(src)
+    if dst is not None:
+        sql += " AND dst_ref_id = %s"
+        params.append(dst)
+    sql += " ORDER BY link_id"
+    with store.pool.connection() as conn:
+        return [tuple(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _seed_matched_entry(
+    store: Any, ref_id: int, marker: int, held_ref_id: int | None
+) -> int:
+    """A ``paper_bib_entries`` row as it looks after a successful match."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO paper_bib_entries (ref_id, marker, raw_text, doi, "
+            "held_ref_id, match_conf, parse_version) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                ref_id,
+                marker,
+                "A matched citation, J, 2020.",
+                "10.9/held",
+                held_ref_id,
+                0.8,
+                BIB_PARSE_VERSION,
+            ),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def _retire(store: Any, ref_id: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (ref_id,))
+        conn.commit()
+
+
+class TestBibCitesLinks:
+    def test_local_doi_match_mints_exactly_one_cites_link(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="citing paper")
+        held_id = seed_ref(store, title="the cited paper")
+        _add_id(store, held_id, "doi", "10.1002/cctc.201901234")
+        store.replace_s2_neighbors(
+            ref_id,
+            "cites",
+            [
+                {
+                    "s2_id": "S2X",
+                    "doi": "10.1002/cctc.201901234",
+                    "title": "T",
+                    "year": 2020,
+                    "held_ref_id": None,
+                }
+            ],
+        )
+        entry_id = _insert_entry(
+            store,
+            ref_id,
+            1,
+            "Some Author, ChemCatChem 2020, 12, 360, "
+            "https://doi.org/10.1002/cctc.201901234.",
+        )
+        monkeypatch.setattr(
+            "precis.utils.safe_fetch.safe_get",
+            lambda *_a, **_k: pytest.fail("local hit must not query Crossref"),
+        )
+
+        run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+
+        links = _cites_links(store, src=ref_id)
+        assert len(links) == 1
+        _src, dst, src_chunk, dst_chunk, set_by, meta = links[0]
+        assert dst == held_id
+        assert src_chunk is None and dst_chunk is None  # paper-level edge
+        assert set_by == "system"
+        assert meta["source"] == "bib_parse"
+        assert meta["bib_entry_id"] == entry_id
+
+    def test_crossref_match_mints_cites_link(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="citing paper")
+        held_id = seed_ref(store, title="the cited paper")
+        _add_id(store, held_id, "doi", "10.1/zzz")
+        _insert_entry(store, ref_id, 1, "A citation matched via Crossref.")
+        _crossref_hit(monkeypatch, _HIT)
+
+        run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+
+        links = _cites_links(store, src=ref_id, dst=held_id)
+        assert len(links) == 1
+
+    def test_rematch_sweep_match_mints_cites_link(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped citing paper")
+        held_id = seed_ref(store, title="the cited paper")
+        _add_id(store, held_id, "doi", "10.1/zzz")
+        _insert_entry(store, ref_id, 1, "A stranded citation matched by sweep.")
+        _stamp(store, ref_id)
+        _crossref_hit(monkeypatch, _HIT)
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out["matched"] == 1
+        assert len(_cites_links(store, src=ref_id, dst=held_id)) == 1
+
+    def test_ensure_is_idempotent(self, store: Any) -> None:
+        ref_id = seed_ref(store, title="citing paper")
+        held_id = seed_ref(store, title="the cited paper")
+        entry_id = _seed_matched_entry(store, ref_id, 1, held_id)
+
+        with store.pool.connection() as conn:
+            first = bib_parse_mod.ensure_bib_cites_links(
+                store, ref_id, [(entry_id, held_id)], conn=conn
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            second = bib_parse_mod.ensure_bib_cites_links(
+                store, ref_id, [(entry_id, held_id)], conn=conn
+            )
+            conn.commit()
+
+        assert first == 1 and second == 1  # ensured both times
+        assert len(_cites_links(store, src=ref_id, dst=held_id)) == 1
+
+    def test_distinct_targets_one_link_each_shared_target_collapses(
+        self, store: Any
+    ) -> None:
+        ref_id = seed_ref(store, title="citing paper")
+        held_a = seed_ref(store, title="cited A")
+        held_b = seed_ref(store, title="cited B")
+        e1 = _seed_matched_entry(store, ref_id, 1, held_a)
+        e2 = _seed_matched_entry(store, ref_id, 2, held_a)  # dup target
+        e3 = _seed_matched_entry(store, ref_id, 3, held_b)
+
+        with store.pool.connection() as conn:
+            bib_parse_mod.ensure_bib_cites_links(
+                store,
+                ref_id,
+                [(e1, held_a), (e2, held_a), (e3, held_b)],
+                conn=conn,
+            )
+            conn.commit()
+
+        links = _cites_links(store, src=ref_id)
+        assert len(links) == 2
+        a_link = next(lnk for lnk in links if lnk[1] == held_a)
+        assert a_link[5]["bib_entry_id"] == min(e1, e2)
+
+    def test_self_cite_skipped(self, store: Any) -> None:
+        ref_id = seed_ref(store, title="self-citing paper")
+        entry_id = _seed_matched_entry(store, ref_id, 1, ref_id)
+
+        with store.pool.connection() as conn:
+            ensured = bib_parse_mod.ensure_bib_cites_links(
+                store, ref_id, [(entry_id, ref_id)], conn=conn
+            )
+            conn.commit()
+
+        assert ensured == 0
+        assert _cites_links(store, src=ref_id) == []
+
+    def test_self_cite_through_match_path(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A bibliography line naming the citing paper itself: the match
+        # records held_ref_id = ref_id; no self-loop edge may be minted.
+        ref_id = seed_ref(store, title="citing paper")
+        _add_id(store, ref_id, "doi", "10.1002/self")
+        store.replace_s2_neighbors(
+            ref_id,
+            "cites",
+            [
+                {
+                    "s2_id": "SELF",
+                    "doi": "10.1002/self",
+                    "title": "T",
+                    "year": 2020,
+                    "held_ref_id": None,
+                }
+            ],
+        )
+        entry_id = _insert_entry(
+            store, ref_id, 1, "Self Cite, J 2020, https://doi.org/10.1002/self."
+        )
+        monkeypatch.setattr(
+            "precis.utils.safe_fetch.safe_get",
+            lambda *_a, **_k: pytest.fail("local hit must not query Crossref"),
+        )
+
+        run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+
+        assert _entry_row(store, entry_id)[2] == ref_id  # held = self
+        assert _cites_links(store, src=ref_id) == []
+
+    def test_retired_target_skipped(self, store: Any) -> None:
+        # held_ref_id stamped while the target was live; retired before the
+        # link was minted (the path the backfill depends on).
+        ref_id = seed_ref(store, title="citing paper")
+        held_id = seed_ref(store, title="cited, since retired")
+        entry_id = _seed_matched_entry(store, ref_id, 1, held_id)
+        _retire(store, held_id)
+
+        with store.pool.connection() as conn:
+            ensured = bib_parse_mod.ensure_bib_cites_links(
+                store, ref_id, [(entry_id, held_id)], conn=conn
+            )
+            conn.commit()
+
+        assert ensured == 0
+        assert _cites_links(store, src=ref_id) == []
+
+
+class TestBackfillBibCites:
+    def test_dry_run_counts_then_apply_writes(self, store: Any) -> None:
+        from precis.backfill.bib_cites import backfill_bib_cites
+
+        c1 = seed_ref(store, title="citer one")
+        c2 = seed_ref(store, title="citer two")
+        h1 = seed_ref(store, title="held one")
+        h2 = seed_ref(store, title="held two")
+        e1 = _seed_matched_entry(store, c1, 1, h1)
+        _seed_matched_entry(store, c1, 2, h1)  # same pair, collapsed
+        e3 = _seed_matched_entry(store, c1, 3, h2)
+        e4 = _seed_matched_entry(store, c2, 1, h1)
+        _seed_matched_entry(store, c2, 2, None)  # unmatched — never a pair
+
+        dry = backfill_bib_cites(store, apply=False)
+        assert dry.pairs_missing == 3
+        assert dry.papers == 2
+        assert _cites_links(store) == []  # dry-run wrote nothing
+
+        applied = backfill_bib_cites(store, apply=True)
+        assert applied.links_ensured == 3
+        links = _cites_links(store)
+        assert len(links) == 3
+        by_dst = {(lnk[0], lnk[1]): lnk for lnk in links}
+        assert by_dst[(c1, h1)][5]["bib_entry_id"] == e1
+        assert by_dst[(c1, h2)][5]["bib_entry_id"] == e3
+        assert by_dst[(c2, h1)][5]["bib_entry_id"] == e4
+        assert all(lnk[4] == "system" for lnk in links)
+
+        rerun = backfill_bib_cites(store, apply=False)
+        assert rerun.pairs_missing == 0
+
+    def test_existing_link_not_recounted_and_meta_untouched(self, store: Any) -> None:
+        from precis.backfill.bib_cites import backfill_bib_cites
+
+        c1 = seed_ref(store, title="citer")
+        h1 = seed_ref(store, title="held")
+        _seed_matched_entry(store, c1, 1, h1)
+        with store.pool.connection() as conn:
+            store.add_link(
+                src_ref_id=c1,
+                dst_ref_id=h1,
+                relation="cites",
+                set_by="agent",
+                meta={"via": "backfill:citation-graph"},
+                conn=conn,
+            )
+            conn.commit()
+
+        before = _cites_links(store, src=c1, dst=h1)[0]
+        result = backfill_bib_cites(store, apply=True)
+
+        assert result.pairs_missing == 0
+        assert result.links_ensured == 0
+        after = _cites_links(store, src=c1, dst=h1)
+        assert len(after) == 1
+        assert after[0][5] == before[5]  # first writer's meta wins
+
+    def test_self_cite_and_retired_target_excluded_from_dry_run(
+        self, store: Any
+    ) -> None:
+        from precis.backfill.bib_cites import backfill_bib_cites
+
+        c1 = seed_ref(store, title="citer")
+        live = seed_ref(store, title="held, live")
+        dead = seed_ref(store, title="held, retired")
+        _seed_matched_entry(store, c1, 1, c1)  # self-cite
+        _seed_matched_entry(store, c1, 2, dead)
+        _seed_matched_entry(store, c1, 3, live)
+        _retire(store, dead)
+
+        dry = backfill_bib_cites(store, apply=False)
+        assert dry.pairs_missing == 1
+
+        applied = backfill_bib_cites(store, apply=True)
+        assert applied.links_ensured == 1
+        links = _cites_links(store, src=c1)
+        assert len(links) == 1 and links[0][1] == live
+
+    def test_limit_caps_selected_pairs(self, store: Any) -> None:
+        from precis.backfill.bib_cites import backfill_bib_cites
+
+        c1 = seed_ref(store, title="citer")
+        for i in range(3):
+            _seed_matched_entry(store, c1, i + 1, seed_ref(store, title=f"h{i}"))
+
+        dry = backfill_bib_cites(store, apply=False, limit=2)
+        assert dry.pairs_missing == 2
+        applied = backfill_bib_cites(store, apply=True, limit=2)
+        assert applied.links_ensured == 2
+        assert len(_cites_links(store, src=c1)) == 2

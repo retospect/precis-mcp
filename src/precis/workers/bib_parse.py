@@ -33,7 +33,13 @@ each claimed paper it:
      stays NULL so an outage window can't permanently poison an entry.
      Since the paper is stamped regardless, those stranded entries are
      retried by ``run_bib_rematch_sweep``, run from the worker cycle only
-     once the claim pass has drained.
+     once the claim pass has drained. A resolved ``held_ref_id`` also
+     mints the paper-level ``cites`` link (citing ref → held ref) in the
+     same write transaction via :func:`ensure_bib_cites_links` — gr513755
+     slice 1: with reference chunks permanently unembedded, the
+     bibliography is reachable only through structured edges. Entries
+     matched *before* that write landed are covered by the one-shot
+     ``precis backfill-bib-cites`` (``precis.backfill.bib_cites``).
 
 The pass **always stamps** ``refs.meta.bib_parse_version`` at the end,
 even when it finds no bibliography — so a no-bibliography paper converges
@@ -55,6 +61,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import DeadlockDetected, LockNotAvailable
@@ -622,6 +629,83 @@ def _write_crossref_match(
     )
 
 
+# ── cites-link minting (gr513755 slice 1) ─────────────────────────────
+
+#: ``links.meta.source`` marker for bib_parse-authored ``cites`` rows,
+#: mirroring ``inbound_chase._LINK_SOURCE`` — a distinct value so that
+#: pass's chunk-resolution claim query (which filters on
+#: ``meta->>'source' = 'inbound_chase'``) never picks up ours.
+#:
+#: Deliberately written first-wins (``add_link``'s default, no
+#: ``merge_meta``): a ``cites`` edge another writer already minted keeps
+#: its own provenance — merging ``source`` onto it would flip an
+#: inbound_chase edge's ``meta->>'source'`` and strand that pass's
+#: follow-up chunk-resolution claim.
+_LINK_SOURCE = "bib_parse"
+
+
+def ensure_bib_cites_links(
+    store: Store,
+    ref_id: int,
+    entries: Iterable[tuple[int, int]],
+    *,
+    conn: Any,
+) -> int:
+    """Ensure one paper-level ``cites`` link per distinct ``held_ref_id``.
+
+    ``entries`` is ``(paper_bib_entries.id, held_ref_id)`` pairs for the
+    citing paper ``ref_id``; the lowest entry id per distinct target is
+    stamped as ``meta.bib_entry_id`` so a minted edge is traceable back
+    to the bibliography row that justified it. Self-cites
+    (``held_ref_id == ref_id``) are skipped — the schema refuses a
+    ref-level self-loop anyway — as are targets retired since the entry
+    was matched (``_held_ref_for_doi`` already excludes a retired ref at
+    match time; this rechecks at link time for rows stamped earlier,
+    which the ``backfill-bib-cites`` one-shot relies on). Idempotent:
+    ``store.add_link`` dedupes on the unique tuple, so a re-run writes
+    nothing new.
+
+    Same write shape as ``inbound_chase``: ``relation='cites'``,
+    ``set_by='system'``, a ``meta.source`` marker, and no explicit trust
+    context — the 0214 triggers stamp the writer's context, whatever it
+    is (unconverted here, like the other machine ``cites`` writers).
+    ``cited-by`` is the read-time reverse; no second row is written.
+
+    Returns the number of ``add_link`` calls made — edges *ensured*, not
+    necessarily inserted (a conflict is a no-op write).
+    """
+    by_held: dict[int, int] = {}
+    for entry_id, held_ref_id in entries:
+        if held_ref_id == ref_id:
+            continue
+        prev = by_held.get(held_ref_id)
+        if prev is None or entry_id < prev:
+            by_held[held_ref_id] = entry_id
+    if not by_held:
+        return 0
+    live = {
+        int(r[0])
+        for r in conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) AND retired_at IS NULL",
+            (list(by_held),),
+        ).fetchall()
+    }
+    ensured = 0
+    for held_ref_id in sorted(by_held):
+        if held_ref_id not in live:
+            continue
+        store.add_link(
+            src_ref_id=ref_id,
+            dst_ref_id=held_ref_id,
+            relation="cites",
+            set_by="system",
+            meta={"source": _LINK_SOURCE, "bib_entry_id": by_held[held_ref_id]},
+            conn=conn,
+        )
+        ensured += 1
+    return ensured
+
+
 def _match_one_entry(
     store: Store,
     ref_id: int,
@@ -650,6 +734,10 @@ def _match_one_entry(
         def _write_local() -> None:
             with store.pool.connection() as wconn:
                 _write_local_doi_match(wconn, entry_id, doi, s2_id, held_ref_id)
+                if held_ref_id is not None:
+                    ensure_bib_cites_links(
+                        store, ref_id, [(entry_id, held_ref_id)], conn=wconn
+                    )
                 wconn.commit()
 
         retry_locked(_write_local, label=f"bib_parse match entry_id={entry_id}")
@@ -692,6 +780,10 @@ def _match_one_entry(
     def _write_crossref() -> None:
         with store.pool.connection() as wconn:
             _write_crossref_match(wconn, entry_id, matched_doi, held_ref_id, match_conf)
+            if held_ref_id is not None:
+                ensure_bib_cites_links(
+                    store, ref_id, [(entry_id, held_ref_id)], conn=wconn
+                )
             wconn.commit()
 
     retry_locked(_write_crossref, label=f"bib_parse match entry_id={entry_id}")
@@ -1050,6 +1142,7 @@ def run_bib_parse_cycle(
 
 __all__ = [
     "BIB_PARSE_VERSION",
+    "ensure_bib_cites_links",
     "run_bib_parse_cycle",
     "run_bib_parse_match_pass",
     "run_bib_parse_pass",
