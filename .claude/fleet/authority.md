@@ -33,7 +33,7 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 
 ## Roles (on top of a tier)
 
-- **Coordinator:** Tier W. Launches, briefs and closes builders. Never answers another session's permission prompt; Reto does.
+- **Coordinator:** Tier W. Launches, briefs and closes builders. Never answers another session's permission prompt; Reto does. Gets compacted at ~120k tokens while no subagents are running (self via send-keys to its own pane if it has one, otherwise CHAT does it); bulky reads (logs, transcripts, `scripts/inflight --json`) go to a Haiku digest subagent that returns at most 30 lines.
 - **Release owner:** Tier W, plus `scripts/release`, `scripts/deploy` and `scripts/round`, each pinned to a release sha, and migration ordering.
 - **Catpath agents and the chat desk** (Reto 2026-10-22, first-hand: "authorize you/catpath agents to push as necessary. And to deploy as necessary"): push catpath `main` and release tags, bump the catpath version, bump precis's pinned `autocatpath` rev, and deploy that bump: `scripts/release` + `scripts/deploy` pinned to the release sha when no other release is open, otherwise it rides the release owner's next round. Migrations still go through the release owner.
 - **Host desk:** Tier R on hosts. Any host change goes through `scripts/host-ops/play` from origin/prod after the gates in me493172.
