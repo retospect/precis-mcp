@@ -66,7 +66,7 @@ Optional ship message from the user: `$ARGUMENTS`
    full-transcript path, and a final `SHIP_STATUS:` token. Tail the printed
    log for the live gate output; `--verbose` restores the old stream.
    `--remote` gates on **GitHub's computers**: the synced branch goes to
-   `ci/<branch>`, the check.yml gate shape (lint · mypy · 10 shards of
+   `ci/<branch>`, the check.yml gate shape (lint · mypy · the test shards of
    Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of
    the shards; 3.12 · macOS are nightly-only) runs there, and only
    a green run reaches

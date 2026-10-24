@@ -75,7 +75,7 @@ Optional ship message from the user: `$ARGUMENTS`
    `origin/main` (your landed sha plus whatever siblings landed before it)
    and drives the round machinery: open a round if none is open (close and
    reopen one that already deployed), `scripts/round cut --sha S` →
-   `release/r<N>`, wait for check.yml's full gate (lint + 10 shards) on that
+   `release/r<N>`, wait for check.yml's full gate (lint + all test shards) on that
    exact head, then `scripts/round deploy`, which deploys the head
    `--pinned` and moves `gated`/`prod`. Run it in the background, output to
    a log:
