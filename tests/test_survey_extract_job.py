@@ -486,11 +486,14 @@ class TestCastorTrialPrep:
         done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
         assert done.success
         stats = done.summary_meta["stats"]
-        assert stats["value_form_inferred"] == 1
+        # gr508162: every reader form but "categorical" is discarded, so the
+        # registered "point" counts as inferred too, not only the invented
+        # "point-estimate".
+        assert stats["value_form_inferred"] == 2
         esc = done.summary_meta["escalations"]
         inferred = [e for e in esc if e["kind"] == "value_form_inferred"]
-        assert len(inferred) == 1
-        assert "point-estimate" in inferred[0]["detail"]
+        assert len(inferred) == 2
+        assert any("point-estimate" in e["detail"] for e in inferred)
 
     def test_summary_meta_carries_the_counts(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
