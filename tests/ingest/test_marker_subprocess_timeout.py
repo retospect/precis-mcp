@@ -70,7 +70,9 @@ class TestExtractBlocksMarkerTimeoutFallback:
         pdf_path = tmp_path / "wedged.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
-        def _fake_marker_extract_subprocess(pdf_path, paper_id, timeout_s):
+        def _fake_marker_extract_subprocess(
+            pdf_path, paper_id, timeout_s, ocr_context=None
+        ):
             raise TimeoutError(
                 f"Marker extraction of {pdf_path.name} timed out after {timeout_s}s"
             )
@@ -108,9 +110,9 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         monkeypatch.setattr(
             "precis.ingest.marker._marker_extract_subprocess",
-            lambda pdf_path, paper_id, timeout_s: (_ for _ in ()).throw(
-                TimeoutError(f"Marker extraction of {pdf_path.name} timed out")
-            ),
+            lambda pdf_path, paper_id, timeout_s, ocr_context=None: (
+                _ for _ in ()
+            ).throw(TimeoutError(f"Marker extraction of {pdf_path.name} timed out")),
         )
         monkeypatch.setattr(
             "precis.ingest.marker._fitz_fallback",
@@ -131,7 +133,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
         pdf_path = tmp_path / "corrupt.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
-        def _raise(pdf_path, paper_id):
+        def _raise(pdf_path, paper_id, ocr_context=None):
             raise RuntimeError("llama-server binary not found")
 
         monkeypatch.setattr("precis.ingest.marker._marker_extract", _raise)
@@ -156,7 +158,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         monkeypatch.setattr(
             "precis.ingest.marker._marker_extract",
-            lambda pdf_path, paper_id: [],
+            lambda pdf_path, paper_id, ocr_context=None: [],
         )
         monkeypatch.setattr("precis.ingest.marker._release_marker_caches", lambda: None)
 
@@ -173,7 +175,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         calls: list[str] = []
 
-        def _fake_marker_extract(pdf_path, paper_id):
+        def _fake_marker_extract(pdf_path, paper_id, ocr_context=None):
             calls.append("in_process")
             return []
 
@@ -202,4 +204,4 @@ def test_marker_extract_subprocess_signature_matches_spec():
     import inspect
 
     sig = inspect.signature(_marker_extract_subprocess)
-    assert list(sig.parameters) == ["pdf_path", "paper_id", "timeout_s"]
+    assert list(sig.parameters) == ["pdf_path", "paper_id", "timeout_s", "ocr_context"]

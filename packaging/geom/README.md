@@ -147,8 +147,9 @@ print(sorted(p.name for p in o.root.iterdir()))
 ```
 
 ```text
+scratch/out/blinky: fit: ok
 scratch/out/blinky
-['manifest.json', 'trace.json']
+['.fitcache', 'fit.json', 'manifest.json', 'trace.json']
 ```
 
 If the body raises, `out.run` still writes the record — `manifest.json`
@@ -214,8 +215,9 @@ print(sorted(p.name for p in (o.root / "blocks").iterdir()))
 ```
 
 ```text
+scratch/out/hexprism: fit: ok
 scratch/out/hexprism
-['blocks', 'manifest.json', 'trace.json']
+['.fitcache', 'blocks', 'fit.json', 'manifest.json', 'trace.json']
 ['prism.bonds.json', 'prism.extxyz']
 ```
 
