@@ -205,6 +205,18 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "local model and resolves its endpoint through the model card."
         ),
     ),
+    "taproot:dedup": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Taproot dedup judgment",
+        description="Deduplicate taproot claims via the `taproot:dedup` operation.",
+    ),
+    "taproot:merge-confirm": OpDefault(
+        tier=Tier.BIG,
+        model=None,
+        label="Taproot merge confirmation",
+        description="Re-check low-confidence dedup merges via `taproot:merge-confirm`.",
+    ),
     "taproot:reword": OpDefault(
         tier=Tier.MEDIUM,
         model=None,
