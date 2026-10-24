@@ -48,6 +48,7 @@ from precis_web.routes.factory import _quests as _factory_quests
 from precis_web.routes.factory import _reserves as _factory_reserves
 from precis_web.routes.factory import _scheduler_leases as _factory_scheduler_leases
 from precis_web.routes.factory import _slots_by_host as _factory_slots_by_host
+from precis_web.routes.factory import _wait_by_class as _factory_wait_by_class
 from precis_web.timefmt import abs_ts as _abs_ts
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
@@ -1266,6 +1267,9 @@ def _services_ctx(store: Store, host: str) -> dict[str, Any]:
         "models": models,
         "service_kinds": [k.value for k in ServiceKind],
         "quests": _factory_quests(store),
+        # Slice 6 (D6): per origin-class queue-wait p50/p95 — is interactive
+        # work actually jumping the standing background bands?
+        "wait_by_class": _factory_wait_by_class(store, host),
         "llm_chains": _llm_chain_ctx(store),
         "llm_ops": _llm_ops_ctx(store),
         # §B-2 reserve mode (gr162694 §K item 4) — the selected host's own

@@ -341,6 +341,71 @@ def _quests(store: Store) -> dict[str, Any]:
         return {"window_days": 7, "budget": None, "rows": []}
 
 
+#: How far back the per-class queue-wait readout looks (slice 6, D6).
+_FAIRNESS_WINDOW = "24 hours"
+
+#: Claim-rank order of the origin classes, so the fairness table reads
+#: top (most urgent) to bottom — human first, background last. An
+#: ``unknown`` bucket (a pre-slice-1 row with no ``meta.origin``) sorts
+#: last so a stamped class never hides behind it.
+_CLASS_SORT = {"human": 0, "agent": 1, "recurring": 2, "background": 3, "unknown": 9}
+
+
+def _wait_by_class(store: Store, host: str = _ALL) -> list[dict[str, Any]]:
+    """Per origin-class queue-wait p50/p95/max over the last
+    :data:`_FAIRNESS_WINDOW` (slice 6, D6: is the fair-share ordering
+    actually keeping interactive work moving?).
+
+    Queue wait is ``meta.started_at - created_at`` (the spec's measure) for
+    every job that reached a worker in the window, grouped by
+    ``meta.origin`` — the scheduling class slice 1 stamps. A row minted
+    before slice 1 carries no origin and lands in an ``unknown`` bucket.
+    Scoped to one host (``meta.lease_host``) when the selector pins one,
+    else fleet-wide. Seconds in, rendered compact by the template. Empty
+    on error, same as every other reader here.
+    """
+    host_sql = "" if host == _ALL else " AND j.meta->>'lease_host' = %s"
+    host_params: tuple[str, ...] = () if host == _ALL else (host,)
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT COALESCE(j.meta->>'origin', 'unknown') AS cls,
+                       count(*) AS n,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY w.wait_s) AS p50,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY w.wait_s) AS p95,
+                       max(w.wait_s) AS wmax
+                  FROM refs j
+                  CROSS JOIN LATERAL (
+                        SELECT EXTRACT(EPOCH FROM (
+                                 (j.meta->>'started_at')::timestamptz - j.created_at
+                               ))::float8 AS wait_s
+                      ) w
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
+                   AND (j.meta->>'started_at') IS NOT NULL
+                   AND j.created_at > now() - %s::interval
+                   AND w.wait_s >= 0{host_sql}
+                 GROUP BY 1
+                """,
+                (_FAIRNESS_WINDOW, *host_params),
+            ).fetchall()
+    except Exception:
+        log.warning("factory: queue-wait-by-class read failed", exc_info=True)
+        return []
+    out = [
+        {
+            "cls": cls,
+            "n": int(n),
+            "p50": _duration(float(p50)) if p50 is not None else "—",
+            "p95": _duration(float(p95)) if p95 is not None else "—",
+            "max": _duration(float(wmax)) if wmax is not None else "—",
+        }
+        for cls, n, p50, p95, wmax in rows
+    ]
+    out.sort(key=lambda r: _CLASS_SORT.get(r["cls"], 8))
+    return out
+
+
 def _config_rows(store: Store) -> list[tuple[str, str, int, str | None]]:
     """All ``service_config`` rows as ``(service, host, prio, model_pref)``."""
     try:

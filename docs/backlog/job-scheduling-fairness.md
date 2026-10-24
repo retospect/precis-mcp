@@ -142,6 +142,19 @@ solve; the runtime caps of D4 are not set now.
 4. **Interactive wake (D5)** — NOTIFY on foreground put; runner runs the
    named executor pass out of turn. Reserved-slot rule for multi-process
    lanes.
+   **Deferred (2026-10-24), gated on slice-6 numbers.** Both halves need
+   new infrastructure, not a minimal change: the NOTIFY/LISTEN wake is the
+   *first* worker-side `LISTEN` consumer (no precedent — `pg_notify` today
+   is emit-only, read by the external `asa_bot`), and a job run is
+   unbounded, so folding the job executors into the existing out-of-turn
+   interleave (`runner.INTERLEAVED_SERVICES`) would wedge the collapsed
+   `--profile all` loop's other passes for the length of a 30-min job. The
+   capacity-aware reserved slot needs a per-lane process count the claim
+   query doesn't have. Meanwhile the shipped class ordering (slices 2/3/5)
+   already claims foreground before background in every pass, and slice 3's
+   `derived_drain max_running=2/host` already keeps non-drain `job_inproc`
+   processes free on the incident host — so slice 6's per-class wait metric
+   is the gate for whether the heavier D5 mechanisms are worth the risk.
 5. **Round-robin by job_type (D4 share half)** — only if slices 2–4 leave
    a measured background-vs-background starvation (e.g. conflict_sweep p50
    65 min behind other prio-8 work).
@@ -154,6 +167,13 @@ solve; the runtime caps of D4 are not set now.
    and the materialize stuck WARN/promotion fires only when the lane has
    free capacity.
 6. **Visibility (D6).**
+   **Shipped 2026-10-24.** `get(kind='job', id=N)` on a queued row shows
+   its origin class, any class promotion ageing earned it, and the
+   per-class count of rows ahead (`handlers/job.py::_queue_lines`). The
+   retired `/factory` page's Services sub-tab (`/status?tab=services`) gets
+   a "Queue wait by class" table — p50/p95/max of `started_at - created_at`
+   over 24 h per origin class, host-scoped
+   (`precis_web/routes/factory.py::_wait_by_class`).
 
 ## Acceptance criteria
 

@@ -9,7 +9,9 @@ BatchResult payloads keyed by ``payload.handler``.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
+from precis.store import Store
 from precis.workers.service_config import (
     clear_reserve,
     set_reserve,
@@ -28,7 +30,52 @@ from precis_web.routes.factory import (
     _scheduler_leases,
     _slot_desc,
     _slots_by_host,
+    _wait_by_class,
 )
+
+
+def _claimed_job(
+    store: Store, origin: str, wait_s: float, *, host: str = "melchior"
+) -> None:
+    """A job that waited ``wait_s`` from mint to claim, in the window."""
+    created = datetime.now(UTC) - timedelta(hours=1)
+    started = created + timedelta(seconds=wait_s)
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="t",
+        meta={
+            "job_type": "x",
+            "executor": "job_inproc",
+            "origin": origin,
+            "lease_host": host,
+            "started_at": started.isoformat(),
+        },
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s", (created, ref.id)
+        )
+        conn.commit()
+
+
+def test_wait_by_class_buckets_and_orders(store: Store) -> None:
+    _claimed_job(store, "agent", 30)
+    _claimed_job(store, "agent", 90)
+    _claimed_job(store, "background", 600)
+    rows = {r["cls"]: r for r in _wait_by_class(store)}
+    assert rows["agent"]["n"] == 2
+    assert rows["background"]["n"] == 1
+    assert rows["background"]["max"] == "10m"
+    # Interactive classes sort above background (claim-rank order).
+    order = [r["cls"] for r in _wait_by_class(store)]
+    assert order.index("agent") < order.index("background")
+
+
+def test_wait_by_class_scopes_to_host(store: Store) -> None:
+    _claimed_job(store, "agent", 30, host="melchior")
+    _claimed_job(store, "agent", 60, host="balthazar")
+    assert {r["cls"]: r["n"] for r in _wait_by_class(store, "melchior")} == {"agent": 1}
 
 
 def _log(conn, handler: str, *, ok: int, failed: int) -> None:

@@ -247,8 +247,9 @@ Every terminal `STATUS:` (succeeded, failed, cancelled, timeout kill) stamps `me
 search(kind="job", tags=["STATUS:queued"])
 ```
 
-`get(kind="job", id=N)` on a queued job adds `queue:` lines: its position
-in the executor's claim order (priority, then time queued), what is running
+`get(kind="job", id=N)` on a queued job adds `queue:` lines: its origin
+class, its position in the executor's claim order (class, then priority,
+then time queued) with the per-class count of rows ahead, what is running
 on that executor now, and holds it can see (operator suspension, a
 `target_node` pin, a live lease).
 

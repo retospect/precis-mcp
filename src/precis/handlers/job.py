@@ -47,6 +47,7 @@ from precis.workers.executors import (
     suspended_job_types,
 )
 from precis.workers.executors._common import (
+    _BASE_CLASS_RANK,
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
     CLAIMABLE,
@@ -59,6 +60,10 @@ from precis.workers.executors._common import (
     claim_class_rank_enabled,
 )
 from precis.workers.job_types import get_job_type, known_job_types
+
+#: Inverse of ``_BASE_CLASS_RANK`` — base-class integer -> origin class
+#: name, for the ``queue:`` hint's per-class readout (slice 6, D6).
+_CLASS_NAME_BY_RANK = {rank: name for name, rank in _BASE_CLASS_RANK.items()}
 
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
@@ -2501,11 +2506,15 @@ class JobHandler(NumericRefHandler):
         """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
         its executor's claim order and what it waits behind (gr495292: a
         queued ``pcb_route`` showed neither). Read-only, advisory — the
-        order mirrors ``claim_executor_jobs``' ``aged_prio, queued_since,
-        ref_id`` key but not its capability-scarcity re-rank, and the
-        reasons are the claim gates visible from the row itself: operator
-        suspension, a ``target_node`` pin, a live lease, and work already
-        running on the same executor.
+        order mirrors ``claim_executor_jobs``' ``(class_rank, aged_prio,
+        queued_since, ref_id)`` key (slice 6, D6: origin class first, then
+        in-class aged prio) but not its per-lane share term (gr506754) or
+        capability-scarcity re-rank. It
+        shows this row's origin class, any class promotion ageing has
+        earned it, and the per-class count of rows ahead; the reasons are
+        the claim gates visible from the row itself: operator suspension, a
+        ``target_node`` pin, a live lease, and work already running on the
+        same executor.
         """
         meta = ref.meta or {}
         executor = meta.get("executor")
@@ -2526,7 +2535,7 @@ class JobHandler(NumericRefHandler):
                 f"""
                 WITH q AS (
                   SELECT r.ref_id, q2.qs AS qs, {rank_sql} AS crank,
-                         {asql} AS aged
+                         {asql} AS aged, b.base_class AS bclass
                     FROM refs r
                     CROSS JOIN LATERAL (
                           SELECT max(rt.created_at) AS qs
@@ -2564,7 +2573,15 @@ class JobHandler(NumericRefHandler):
                 SELECT count(*),
                        count(*) FILTER (WHERE (crank, aged, qs, ref_id) <
                             (SELECT crank, aged, qs, ref_id FROM q WHERE ref_id = %s)),
-                       (SELECT qs FROM q WHERE ref_id = %s)
+                       (SELECT qs FROM q WHERE ref_id = %s),
+                       (SELECT bclass FROM q WHERE ref_id = %s),
+                       (SELECT crank FROM q WHERE ref_id = %s),
+                       (SELECT jsonb_object_agg(bclass::text, c) FROM (
+                            SELECT bclass, count(*) AS c FROM q
+                             WHERE (crank, aged, qs, ref_id) <
+                                 (SELECT crank, aged, qs, ref_id
+                                    FROM q WHERE ref_id = %s)
+                             GROUP BY bclass) s)
                   FROM q
                 """,
                 (
@@ -2581,6 +2598,9 @@ class JobHandler(NumericRefHandler):
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
                     *susp_params,
+                    ref.id,
+                    ref.id,
+                    ref.id,
                     ref.id,
                     ref.id,
                 ),
@@ -2606,15 +2626,35 @@ class JobHandler(NumericRefHandler):
                 "PRECIS_SUSPENDED_JOB_TYPES (operator hold; workers read their "
                 "own copy); a suspended type is not claimed until the hold clears"
             )
-        total, ahead, queued_since = row if row else (0, 0, None)
+        total, ahead, queued_since, bclass, crank, ahead_by_class = (
+            row if row else (0, 0, None, None, None, None)
+        )
         since = as_utc(queued_since)
         if total and since is not None:
             waited = int((datetime.now(UTC) - since).total_seconds())
+            cls_name = _CLASS_NAME_BY_RANK.get(int(bclass), "background")
+            # The claim ranks by origin class first (slice 6, D2/D3). A
+            # prio-1 row preempts across classes (claim_rank -1); otherwise
+            # note when ageing has promoted this row above its minted class.
+            aged_note = ""
+            if crank is not None and int(crank) < 0:
+                aged_note = ", prio-1 preempt (claims ahead of every class)"
+            elif crank is not None and bclass is not None and int(crank) < int(bclass):
+                aged_note = (
+                    f", aged up to {_CLASS_NAME_BY_RANK.get(int(crank), '?')} rank"
+                )
             lines.append(
                 f"queue: position {ahead + 1} of {total} queued for executor "
-                f"{executor!r} ({ahead} ahead; claim order is priority, then "
-                f"time queued); waiting {waited // 60}m{waited % 60:02d}s"
+                f"{executor!r} — class {cls_name}{aged_note} ({ahead} ahead; "
+                "claim order is class, then priority, then time queued); "
+                f"waiting {waited // 60}m{waited % 60:02d}s"
             )
+            if ahead and ahead_by_class:
+                mix = ", ".join(
+                    f"{_CLASS_NAME_BY_RANK.get(int(k), '?')} x{n}"
+                    for k, n in sorted(ahead_by_class.items())
+                )
+                lines.append(f"queue: ahead by class: {mix}")
         if running:
             mix = ", ".join(f"{t} x{n}" for t, n in running)
             lines.append(

@@ -280,6 +280,46 @@
 </section>
 {% endfor %}
 
+{# ── Queue wait by origin class (slice 6, D6) — is interactive work moving? ── #}
+<section class="mt-8">
+  <h2 class="text-sm font-semibold mb-1">Queue wait by class</h2>
+  <p class="text-xs text-fg-subtle mb-3">
+    How long each scheduling class waited from mint to claim
+    (<span class="font-mono">started_at − created_at</span>) over the last 24h
+    {% if selected_host != '*' %}on {{ selected_host }}{% else %}fleet-wide{% endif %}.
+    The claim ranks human → agent → recurring → background; interactive classes
+    should stay low while background bands absorb the backlog.
+  </p>
+  {% if not wait_by_class %}
+  <p class="text-xs text-fg-subtle">No jobs claimed in the window.</p>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-fg-subtle border-b border-line">
+          <th class="py-1 pr-3">class</th>
+          <th class="py-1 pr-3">n</th>
+          <th class="py-1 pr-3">p50</th>
+          <th class="py-1 pr-3">p95</th>
+          <th class="py-1 pr-3">max</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in wait_by_class %}
+        <tr class="border-b border-line-subtle">
+          <td class="py-1.5 pr-3 text-fg">{{ w.cls }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ w.n }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ w.p50 }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ w.p95 }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ w.max }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
 {# ── Quests tab — the other substrate: which strivings get attention ── #}
 <section class="mt-8">
   <h2 class="text-sm font-semibold mb-1">Quests</h2>
