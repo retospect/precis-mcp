@@ -229,9 +229,17 @@ def completion_from_row(
     for job in jobs[:request_limit]:
         statuses = job["statuses"] or []
         status = (
-            statuses[0]
+            ("queued" if statuses[0] == "yielded" else statuses[0])
             if len(statuses) == 1
-            and statuses[0] in ("queued", "running", "succeeded", "failed", "cancelled")
+            and statuses[0]
+            in (
+                "queued",
+                "yielded",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+            )
             else "unknown"
         )
         result = job["result_run_id"]

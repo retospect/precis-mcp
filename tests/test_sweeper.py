@@ -1134,12 +1134,14 @@ def _mint_queued_job(
     job_type: str = "struct_relax",
     params: dict | None = None,
     idem_key: str | None = None,
+    status: str = "queued",
 ) -> int:
     """Insert a ``kind='job'`` ref, tag STATUS:queued, backdate the ref.
 
     Unlike :func:`_mint_running_job` the age lives on ``refs.created_at``
     (the queued reap's grace anchor — there is no lease to anchor on), and
     ``meta.lease_until`` is deliberately absent: never claimed.
+    ``status='yielded'`` mints a released-slice row instead.
     """
     meta: dict = {"job_type": job_type, "executor": executor}
     if params is not None:
@@ -1155,7 +1157,7 @@ def _mint_queued_job(
     )
     store.add_tag(
         job.id,
-        Tag.closed("STATUS", "queued"),
+        Tag.closed("STATUS", status),
         set_by="system",
         replace_prefix=True,
     )
@@ -1968,3 +1970,86 @@ def test_swept_job_records_the_reason_on_the_record(
     assert any(
         kind == "job_event" and "claim-orphaned" in text for kind, text in chunks
     )
+
+
+def test_dead_node_queued_reaps_yielded_pinned_job(
+    handler: TodoHandler, store: Store
+) -> None:
+    """relax-slices: a yielded job pinned to a provably-dead node reaps
+    exactly like a queued one — claimable but unclaimable-forever (its
+    checkpoint file is on the dead node too, so no resume can work
+    anywhere else)."""
+    from uuid import uuid4
+
+    node = f"dead-{uuid4().hex[:8]}"
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_queued_job(
+        store,
+        rid,
+        age_seconds=1200,
+        params={"target_node": node},
+        status="yielded",
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    assert "STATUS:yielded" not in job_tags
+    assert "reaped:dead-node-queued" in job_tags
+    meta = _query(store, "SELECT meta FROM refs WHERE ref_id = %s", (job_id,))[0][0]
+    assert meta["failure_class"] == "infra"
+
+
+def test_overqueued_yielded_counts_fresh_stamp(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """relax-slices pin: a yielded row IS in the overqueued candidate
+    set (it is a claimable queue member), but the TTL clock is the
+    yield's fresh tag stamp — a long-lived job re-queued seconds ago
+    is never reaped as overqueued; a yielded tag left unclaimed past
+    the type's queue_ttl_s reaps like any stale queued row."""
+    import dataclasses
+
+    from precis.workers import job_types
+    from precis.workers.sweeper import _reap_overqueued
+
+    spec = job_types.get_job_type("embed_batch")
+    assert spec is not None
+    monkeypatch.setitem(
+        job_types._REGISTRY,
+        "embed_batch",
+        dataclasses.replace(spec, queue_ttl_s=4 * 3600),
+    )
+
+    def _yielded(status_age_h: float) -> int:
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="yielded job",
+            meta={
+                "executor": "job_inproc",
+                "job_type": "embed_batch",
+                "params": {},
+            },
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "yielded"), set_by="system")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags SET created_at = now() - %s::interval "
+                "WHERE ref_id = %s AND tag_id IN ("
+                "  SELECT tag_id FROM tags WHERE namespace='STATUS' AND value='yielded')",
+                (f"{status_age_h} hours", int(ref.id)),
+            )
+            conn.commit()
+        return int(ref.id)
+
+    fresh_yielded = _yielded(0.5)
+    stale_yielded = _yielded(9.4)
+
+    n = _reap_overqueued(store, limit=10)
+
+    assert n == 1
+    assert "STATUS:yielded" in {str(t) for t in store.tags_for(fresh_yielded)}
+    assert "STATUS:cancelled" in {str(t) for t in store.tags_for(stale_yielded)}

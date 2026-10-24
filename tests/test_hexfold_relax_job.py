@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -293,7 +294,7 @@ def test_cpu_fallback_lands_on_meta_as_a_warning(store: Any) -> None:
 # ── the same through the real ssh_node pass and a DB job row ─────────
 
 
-def _mk_job(store: Any, structure_ref_id: int) -> int:
+def _mk_job(store: Any, structure_ref_id: int, params: dict | None = None) -> int:
     ref = store.insert_ref(
         kind="job",
         slug=None,
@@ -301,11 +302,355 @@ def _mk_job(store: Any, structure_ref_id: int) -> int:
         meta={
             "executor": "ssh_node",
             "job_type": "hexfold_relax",
-            "params": {"structure_ref_id": structure_ref_id, "fragment": "none"},
+            "params": params
+            or {"structure_ref_id": structure_ref_id, "fragment": "none"},
         },
     )
     store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
     return int(ref.id)
+
+
+def _job_ctx(
+    store: Any, ref_id: int, meta: dict[str, Any]
+) -> tuple[DispatchContext, list]:
+    """Like ``_fake_ctx`` but for a real job row (the slice-yield path
+    writes refs/chunks through the DB, so ``ref_id`` must exist)."""
+    events: list[tuple[str, Any]] = []
+    ctx = DispatchContext(
+        store=store,
+        ref_id=ref_id,
+        title="hexfold_relax",
+        meta=meta,
+        set_status=lambda s: events.append(("status", s)),
+        append_chunk=lambda k, t: events.append((k, t)),
+        set_meta=lambda **kw: events.append(("meta", kw)),
+        record_failure=lambda r, **kw: events.append(("fail", {"reason": r, **kw})),
+        is_cancel_requested=lambda: False,
+    )
+    return ctx, events
+
+
+def _mk_waiter(store: Any) -> int:
+    """A second claimable ``ssh_node`` job — the waiter that arms a
+    yield once a running slice's budget is spent."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="waiter",
+        meta={"executor": "ssh_node", "job_type": "x", "params": {}},
+    )
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
+    return int(ref.id)
+
+
+def _slicing_on(monkeypatch: pytest.MonkeyPatch, cap: float = 600.0) -> None:
+    """Slice flag on + zero budget (a yield is armed at the first
+    checkpoint event) + the checkpoint-then-sleep fake child."""
+    monkeypatch.setenv("PRECIS_JOB_SLICING", "1")
+    monkeypatch.setenv("PRECIS_JOB_SLICE_S", "0")
+    monkeypatch.setattr(
+        hexfold_relax, "_relax_child", targets.emit_checkpoint_then_sleep
+    )
+    monkeypatch.setattr(hexfold_relax, "_relax_timeout_s", lambda: cap)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_POLL_S", 0.1)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_GRACE_S", 5.0)
+
+
+def test_yield_releases_claim_and_records_slice(store: Any, monkeypatch) -> None:
+    """Budget spent + a lane waiter ⇒ the job yields: ``STATUS:yielded``
+    (claimable, not failed, no ``attempts`` bump — a yield is not a
+    retry), the slice lands on the job record, lease + reservation are
+    released in one tx, and the checkpoint file stays for the resume."""
+    _slicing_on(monkeypatch)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    _mk_waiter(store)
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    status, meta = _job_state(store, rid)
+    assert status == "yielded"
+    assert not [p for k, p in events if k == "fail"]
+    assert not meta.get("attempts")
+    assert "lease_until" not in meta
+    assert "reserved" not in meta
+    [entry] = meta["relax_slices"]
+    assert entry["slice"] == 1 and entry["stage"] == "polish"
+    assert entry["stage_steps"] == 7 and entry["fmax"] == 0.51
+    ptr = meta["relax_checkpoint"]
+    assert ptr["path"] and Path(ptr["path"]).exists()
+    assert any(k == "job_event" and "yielded after slice 1" in t for k, t in events)
+
+
+def test_no_yield_when_lane_empty(store: Any, monkeypatch) -> None:
+    """Nobody waiting on the lane ⇒ the budget never costs the claim —
+    the job runs on and eventually stops the ordinary way (here: the
+    timeout cap, not a yield)."""
+    _slicing_on(monkeypatch, cap=1.0)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    _status, meta = _job_state(store, rid)
+    fails = [p for k, p in events if k == "fail"]
+    assert fails[0]["failure_class"] == "timeout"
+    assert ("status", "yielded") not in events
+    assert not meta.get("relax_slices")
+
+
+def test_flag_off_never_yields(store: Any, monkeypatch) -> None:
+    """``PRECIS_JOB_SLICING`` unset: same child, same waiter — the claim
+    behaves exactly as today; no code path can produce ``yielded``."""
+    monkeypatch.delenv("PRECIS_JOB_SLICING", raising=False)
+    monkeypatch.setenv("PRECIS_JOB_SLICE_S", "0")
+    monkeypatch.setattr(
+        hexfold_relax, "_relax_child", targets.emit_checkpoint_then_sleep
+    )
+    monkeypatch.setattr(hexfold_relax, "_relax_timeout_s", lambda: 1.0)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_POLL_S", 0.1)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_GRACE_S", 5.0)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    _mk_waiter(store)
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    _status, meta = _job_state(store, rid)
+    fails = [p for k, p in events if k == "fail"]
+    assert fails[0]["failure_class"] == "timeout"
+    assert ("status", "yielded") not in events
+    assert not meta.get("relax_slices")
+
+
+@pytest.mark.slow
+def test_no_yield_when_waiter_loses_claim_order(store: Any, monkeypatch) -> None:
+    """A waiter the running job would beat anyway never costs it a
+    slice: a human-class job does NOT yield to a background waiter —
+    otherwise every slice pays a model reload for nothing."""
+    _slicing_on(monkeypatch, cap=1.0)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    _mk_waiter(store)  # background band
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "origin": "human",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    _status, meta = _job_state(store, rid)
+    fails = [p for k, p in events if k == "fail"]
+    assert fails[0]["failure_class"] == "timeout"
+    assert ("status", "yielded") not in events
+    assert not meta.get("relax_slices")
+
+
+def test_unverified_kill_fails_infra_not_yield(store: Any, monkeypatch) -> None:
+    """A yield only fires when the child is VERIFIED dead: with
+    kill_verified false the claim is NOT released (a second claim could
+    otherwise resume the checkpoint while the first child still writes
+    it) — an honest infra failure instead."""
+    _slicing_on(monkeypatch)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    _mk_waiter(store)
+
+    def _stub_run(*_a: Any, **_kw: Any) -> Any:
+        from precis.workers.child_compute import ChildStopped
+
+        raise ChildStopped(
+            "yield", {"pid": 424242, "stopped": "yield", "kill_verified": False}
+        )
+
+    monkeypatch.setattr(hexfold_relax, "run_in_child", _stub_run)
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    status, meta = _job_state(store, rid)
+    fails = [p for k, p in events if k == "fail"]
+    assert fails[0]["failure_class"] == "infra"
+    assert "not verified dead" in fails[0]["reason"]
+    assert status != "yielded" and not meta.get("relax_slices")
+
+
+def test_raced_cancel_beats_the_yield(store: Any, monkeypatch) -> None:
+    """cancel_requested landing between the stop decision and the
+    release tx is NOT overwritten by yielded: the release re-reads the
+    live status under lock and the job terminalizes as the ordinary
+    cancel write-back."""
+    _slicing_on(monkeypatch)
+    ref = _plain_structure(store)
+    rid = _mk_job(store, ref.id)
+    set_status(store, rid, "running")
+    _mk_waiter(store)
+    ckpt_file = hexfold_relax._ckpt_dir(rid) / "checkpoint.json"
+
+    def _cancel_side_effect(ctx: Any) -> str | None:
+        # The operator's cancel lands in the window should_stop cannot
+        # see (between the arming poll and the release tx): write it to
+        # the row directly once the checkpoint is on disk, then always
+        # report "no reason" so only the yield arm fires.
+        if ckpt_file.exists():
+            set_status(store, rid, "cancel_requested")
+        return None
+
+    monkeypatch.setattr(hexfold_relax, "job_stop_reason", _cancel_side_effect)
+    ctx, events = _job_ctx(
+        store,
+        rid,
+        {
+            "executor": "ssh_node",
+            "job_type": "hexfold_relax",
+            "params": {"structure_ref_id": ref.id, "fragment": "none"},
+        },
+    )
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    status, meta = _job_state(store, rid)
+    # The raced tag kept standing; the yield did not overwrite it and
+    # the cancel write-back ran (same shape as a normal cancel).
+    assert status == "cancel_requested"
+    assert ("status", "cancelled") in events
+    assert ("status", "yielded") not in events
+    assert not [p for k, p in events if k == "fail"]
+    assert not meta.get("relax_slices")
+    ref2 = store.get_ref(kind="structure", id=ref.id)
+    assert int(ref2.meta["version"]) == 2
+    record = ref2.meta["generated"]["relax"]
+    assert record["interrupted"]["reason"] == "cancel"
+
+
+@pytest.mark.slow
+def test_yield_then_resume_completes(store: Any, monkeypatch) -> None:
+    """A real child yielded mid-polish (budget + waiter): the same job's
+    next dispatch resumes from the flushed checkpoint pointer and runs
+    through to ``STATUS:succeeded`` — and the yielded-and-resumed run
+    reproduces an uninterrupted run's trajectory: identical fmax
+    curve, equal polish step count, equal final positions."""
+    monkeypatch.setattr(hexfold_relax, "_relax_child", targets.relax_child_emt_xtb)
+    monkeypatch.setattr(hexfold_relax, "_relax_timeout_s", lambda: 600.0)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_POLL_S", 0.1)
+    monkeypatch.setattr(hexfold_relax, "_CHILD_GRACE_S", 5.0)
+    monkeypatch.setenv("PRECIS_JOB_SLICING", "1")
+    monkeypatch.setenv("PRECIS_JOB_SLICE_S", "0")
+    se = SeHandler(hub=Hub(store=store))
+    se.put(id="hx-tun", text=json.dumps(_tunnel_ops()))
+    ref = _structure_ref(store)
+    params = {
+        "structure_ref_id": ref.id,
+        "polish": "emt",
+        "fragment": "xtb",
+        "buffer_A": 5.0,
+        "core_A": 2.0,
+        "steps": 30,
+    }
+    rid = _mk_job(store, ref.id, params)
+    set_status(store, rid, "running")
+    _mk_waiter(store)
+    meta = {"executor": "ssh_node", "job_type": "hexfold_relax", "params": params}
+    ctx, _events = _job_ctx(store, rid, meta)
+    hexfold_relax._dispatch(ctx, hexfold_relax.SPEC)
+
+    status, job_meta = _job_state(store, rid)
+    assert status == "yielded" and job_meta["relax_slices"]
+
+    # An identical structure runs the same job uninterrupted — the
+    # deterministic child makes it the trajectory baseline.
+    se.put(id="hx-tun-b", text=json.dumps(_tunnel_ops()))
+    ref_b = store.get_ref(kind="structure", id="hx-tun-b-t")
+    assert ref_b is not None
+    params_b = {**params, "structure_ref_id": ref_b.id}
+    rid_b = _mk_job(store, ref_b.id, params_b)
+
+    # Next claim: the row meta now carries the flushed checkpoint
+    # pointer; raise the slice budget so this claim runs to completion.
+    monkeypatch.setenv("PRECIS_JOB_SLICE_S", "600")
+    meta2 = {**job_meta, "params": params}
+    ctx2, events2 = _job_ctx(store, rid, meta2)
+    hexfold_relax._dispatch(ctx2, hexfold_relax.SPEC)
+
+    meta_b = {
+        "executor": "ssh_node",
+        "job_type": "hexfold_relax",
+        "params": params_b,
+    }
+    ctx_b, events_b = _job_ctx(store, rid_b, meta_b)
+    hexfold_relax._dispatch(ctx_b, hexfold_relax.SPEC)
+
+    assert not [p for k, p in events2 if k == "fail"]
+    assert ("status", "succeeded") in events2
+    assert any(k == "job_event" and "resuming from checkpoint" in t for k, t in events2)
+    assert not [p for k, p in events_b if k == "fail"]
+    assert ("status", "succeeded") in events_b
+
+    # Trajectory equality: equal polish step count, the same fmax
+    # curve within the yield-boundary replay drift (~0.001 — the resume
+    # re-runs the checkpointed step; optimizer state is re-derived, so
+    # index-0 differs by ~0.1%), identical final geometry.
+    rec_a = _structure_ref(store).meta["generated"]["relax"]
+    ref_b2 = store.get_ref(kind="structure", id="hx-tun-b-t")
+    rec_b = ref_b2.meta["generated"]["relax"]
+    assert rec_a["polish"]["n_steps"] == rec_b["polish"]["n_steps"]
+    with store.pool.connection() as conn:
+        curves = dict(
+            conn.execute(
+                "SELECT r.ref_id,"
+                "  array_agg(f.max_force ORDER BY f.step) AS curve "
+                "FROM struct_runs r JOIN struct_frames f ON f.run_id = r.id "
+                "WHERE r.ref_id = ANY(%s) AND r.fidelity = 'emt' "
+                "GROUP BY r.ref_id",
+                ([ref.id, ref_b.id],),
+            ).fetchall()
+        )
+    assert np.allclose(curves[ref.id], curves[ref_b.id], atol=1e-2)
+    scene_a, _ = store.structure_load(ref.id)
+    scene_b, _ = store.structure_load(ref_b.id)
+    assert scene_a.atoms.keys() == scene_b.atoms.keys()
+    for label, atom in scene_a.atoms.items():
+        assert np.allclose(atom.frac, scene_b.atoms[label].frac, atol=1e-3), label
 
 
 def _job_state(store: Any, ref_id: int) -> tuple[str | None, dict[str, Any]]:

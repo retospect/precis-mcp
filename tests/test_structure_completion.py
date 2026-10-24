@@ -1020,3 +1020,22 @@ def test_historic_evidence_uses_its_own_verified_cell_and_pbc() -> None:
     assert (
         out["binding"] == "historical-unavailable" and out["selected_evidence"] is None
     )
+
+
+def test_yielded_relax_request_reads_queued(store: Store) -> None:
+    """relax-slices: a ``STATUS:yielded`` struct_relax job surfaces as a
+    ``queued`` request, not ``unknown`` — a released slice is a
+    waiting-for-claim member."""
+    from precis.store.types import Tag
+
+    ref = save_pair(store)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Fixture",
+        parent_id=ref.id,
+        meta={"job_type": "struct_relax", "params": {"structure_ref_id": ref.id}},
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", "yielded"), set_by="system")
+    snap = read_snapshot(store, ref.id)
+    assert snap["requests"] and snap["requests"][0]["state"] == "queued"

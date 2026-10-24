@@ -49,6 +49,7 @@ from precis.workers.executors import (
 from precis.workers.executors._common import (
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
+    CLAIMABLE,
     QUEUED,
     RUNNING,
     STATUS_NAMESPACE,
@@ -761,9 +762,10 @@ class JobHandler(NumericRefHandler):
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
                  WHERE r.kind = 'job' AND t.namespace = 'STATUS'
-                   AND t.value = 'queued'
+                   AND t.value = ANY(%s)
                  GROUP BY 1 ORDER BY 1
-                """
+                """,
+                (list(CLAIMABLE),),
             ).fetchall()
             beating = conn.execute(
                 "SELECT host FROM host_heartbeat WHERE ts >= %s ORDER BY host",
@@ -2336,6 +2338,7 @@ class JobHandler(NumericRefHandler):
     #: finish the request (gr494725).
     _AGENT_TRANSITIONS: dict[str, frozenset[str]] = {
         "queued": frozenset({"cancelled", "cancel_requested", "failed"}),
+        "yielded": frozenset({"cancelled", "cancel_requested", "failed"}),
         "submitted": frozenset({"cancel_requested", "failed"}),
         "running": frozenset({"cancel_requested", "failed"}),
         "waiting_children": frozenset({"cancel_requested", "failed"}),
@@ -2383,7 +2386,7 @@ class JobHandler(NumericRefHandler):
                         f"{sorted('STATUS:' + v for v in allowed)}"
                     ),
                 )
-            if current == "queued" and t.value == "cancel_requested":
+            if current in ("queued", "yielded") and t.value == "cancel_requested":
                 t = Tag.closed("STATUS", "cancelled")
             out.append(t)
         return out
@@ -2457,8 +2460,26 @@ class JobHandler(NumericRefHandler):
             lines.append(
                 f"ran_on: {ran_on} (code {meta.get('lease_code') or 'unstamped'})"
             )
-        if status == "queued":
+        if status in ("queued", "yielded"):
             lines.extend(self._queue_lines(ref))
+        slices = meta.get("relax_slices")
+        if isinstance(slices, list) and slices:
+            last = slices[-1]
+            lines.append(
+                f"slices: {len(slices)} yielded (last: "
+                f"{last.get('stage_steps')} {last.get('stage')} steps"
+                + (
+                    f"/{last.get('fragment')}"
+                    if isinstance(last, dict) and last.get("fragment")
+                    else ""
+                )
+                + (
+                    f", fmax {last.get('fmax')}"
+                    if isinstance(last, dict) and last.get("fmax") is not None
+                    else ""
+                )
+                + ")"
+            )
         lines.append("")
         if ref.title:
             lines.append(ref.title)
@@ -2511,7 +2532,7 @@ class JobHandler(NumericRefHandler):
                           SELECT max(rt.created_at) AS qs
                             FROM ref_tags rt JOIN tags t USING (tag_id)
                            WHERE rt.ref_id = r.ref_id
-                             AND t.namespace = %s AND t.value = %s
+                             AND t.namespace = %s AND t.value = ANY(%s)
                         ) q2
                     CROSS JOIN LATERAL (
                           SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q2.qs))::float8, 0)
@@ -2528,7 +2549,7 @@ class JobHandler(NumericRefHandler):
                                    SELECT 1 FROM ref_tags rt3
                                      JOIN tags t3 USING (tag_id)
                                     WHERE rt3.ref_id = r3.ref_id
-                                      AND t3.namespace = %s AND t3.value = %s
+                                      AND t3.namespace = %s AND t3.value = ANY(%s)
                                  )
                              AND COALESCE(r3.prio, %s)::float8 <> 1
                         ) t
@@ -2537,7 +2558,7 @@ class JobHandler(NumericRefHandler):
                      AND EXISTS (SELECT 1 FROM ref_tags rt
                                    JOIN tags t USING (tag_id)
                                   WHERE rt.ref_id = r.ref_id
-                                    AND t.namespace = %s AND t.value = %s)
+                                    AND t.namespace = %s AND t.value = ANY(%s))
                      {susp_sql}
                 )
                 SELECT count(*),
@@ -2549,16 +2570,16 @@ class JobHandler(NumericRefHandler):
                 (
                     *aparams,
                     STATUS_NAMESPACE,
-                    QUEUED,
+                    list(CLAIMABLE),
                     _DEFAULT_JOB_PRIO,
                     _DEFAULT_JOB_PRIO,
                     executor,
                     STATUS_NAMESPACE,
-                    QUEUED,
+                    list(CLAIMABLE),
                     _DEFAULT_JOB_PRIO,
                     executor,
                     STATUS_NAMESPACE,
-                    QUEUED,
+                    list(CLAIMABLE),
                     *susp_params,
                     ref.id,
                     ref.id,

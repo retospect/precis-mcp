@@ -25,7 +25,12 @@ from fastapi.responses import HTMLResponse
 from precis import health_checks
 from precis.alerts import STATE_OPEN, STATE_RESOLVED
 from precis.store._body_predicate import has_body_sql
-from precis.workers.executors._common import QUEUED, RUNNING, STATUS_NAMESPACE, TERMINAL
+from precis.workers.executors._common import (
+    CLAIMABLE,
+    RUNNING,
+    STATUS_NAMESPACE,
+    TERMINAL,
+)
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
 from precis_web.config import WebConfig
@@ -743,10 +748,10 @@ def _now_jobs(store: Store) -> dict[str, Any]:
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job' AND r.retired_at IS NULL
-               AND t.namespace = %s AND t.value = %s
+               AND t.namespace = %s AND t.value = ANY(%s)
              ORDER BY r.created_at ASC
             """,
-            (STATUS_NAMESPACE, QUEUED),
+            (STATUS_NAMESPACE, list(CLAIMABLE)),
         ).fetchall()
         terminal_rows = conn.execute(
             """

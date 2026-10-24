@@ -123,6 +123,7 @@ from precis.store.types import Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
+    CLAIMABLE,
     JOB_EVENT_KIND,
     append_chunk,
     effective_requires,
@@ -676,11 +677,11 @@ def _alert_unschedulable_jobs(store: Store) -> int:
              WHERE r.kind = 'job'
                AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
-               AND t.value = 'queued'
+               AND t.value = ANY(%s)
              ORDER BY r.ref_id
              LIMIT %s
             """,
-            (_UNSCHEDULABLE_SCAN_CAP,),
+            (list(CLAIMABLE), _UNSCHEDULABLE_SCAN_CAP),
         ).fetchall()
     n = 0
     live: set[str] = set()
@@ -1232,7 +1233,7 @@ def _enumerate_dead_node_queued(
              WHERE r.kind = 'job'
                AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
-               AND t.value = 'queued'
+               AND t.value = ANY(%(claimable)s)
                AND (r.meta->>'lease_until') IS NULL
                AND (r.meta->'params'->>'target_node') IS NOT NULL
                AND COALESCE(r.meta->>'idem_key', '') NOT LIKE 'quest_tick:%%'
@@ -1256,6 +1257,7 @@ def _enumerate_dead_node_queued(
                 "procs": list(WORKER_CONTINUOUS_PROCESSES),
                 "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
                 "limit": limit,
+                "claimable": list(CLAIMABLE),
             },
         ).fetchall()
     return [
@@ -1297,7 +1299,7 @@ def _transition_dead_node_queued_to_failed(
                AND r.kind = 'job'
                AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
-               AND t.value = 'queued'
+               AND t.value = ANY(%(claimable)s)
                AND (r.meta->>'lease_until') IS NULL
                AND (r.meta->'params'->>'target_node') = %(node)s
                AND r.created_at < now() - %(grace)s::interval
@@ -1320,6 +1322,7 @@ def _transition_dead_node_queued_to_failed(
                 "node": orphan.target_node,
                 "procs": list(WORKER_CONTINUOUS_PROCESSES),
                 "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+                "claimable": list(CLAIMABLE),
             },
         ).fetchone()
         if row is None:
@@ -1502,14 +1505,14 @@ def _reap_overqueued(store: Store, *, limit: int) -> int:
              WHERE r.kind = 'job'
                AND r.retired_at IS NULL
                AND t.namespace = 'STATUS'
-               AND t.value = 'queued'
+               AND t.value = ANY(%s)
                AND r.meta->>'job_type' = ANY(%s)
                AND rt.created_at < now() - make_interval(secs => %s)
              ORDER BY r.ref_id
              LIMIT %s
                FOR UPDATE OF r SKIP LOCKED
             """,
-            (sorted(ttls), oldest, limit),
+            (list(CLAIMABLE), sorted(ttls), oldest, limit),
         ).fetchall()
         n = 0
         for ref_id, jt in rows:
@@ -1520,8 +1523,8 @@ def _reap_overqueued(store: Store, *, limit: int) -> int:
                 "SELECT extract(epoch from now() - rt.created_at) "
                 "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
                 "WHERE rt.ref_id = %s AND t.namespace = 'STATUS' "
-                "AND t.value = 'queued'",
-                (ref_id,),
+                "AND t.value = ANY(%s)",
+                (ref_id, list(CLAIMABLE)),
             ).fetchone()
             if age is None or float(age[0]) < ttl:
                 continue
@@ -1634,7 +1637,7 @@ _PINNED_CANDIDATE_SQL = """
        AND (r.meta->>'executor') IS NOT NULL
        AND COALESCE(r.meta->>'idem_key', '') NOT LIKE 'quest_tick:%%'
        AND (
-            (t.value = 'queued'
+            (t.value = ANY(%(claimable)s)
              AND r.created_at < now() - make_interval(secs => %(qgrace)s))
          OR (t.value = 'running'
              AND r.meta->>'executor' = ANY(%(lease_owning)s)
@@ -1702,7 +1705,7 @@ def _transition_off_lane_to_failed(
                AND r.meta->'params'->>'target_node' = %(node)s
                AND r.meta->>'executor' = %(executor)s
                AND (
-                    t.value = 'queued'
+                    t.value = ANY(%(claimable)s)
                  OR (r.meta->>'lease_until')::timestamptz
                       < now() - make_interval(secs => %(rgrace)s)
                )
@@ -1714,6 +1717,7 @@ def _transition_off_lane_to_failed(
                 "node": job.target_node,
                 "executor": job.executor,
                 "rgrace": running_grace_s,
+                "claimable": list(CLAIMABLE),
             },
         ).fetchone()
         if row is None:
@@ -1821,6 +1825,7 @@ def _reap_off_lane_pinned(store: Store, *, limit: int) -> int:
     params = {
         "qgrace": _dead_node_queued_grace_s(),
         "rgrace": running_grace_s,
+        "claimable": list(CLAIMABLE),
         "lease_owning": sorted(_LEASE_OWNING_EXECUTORS),
     }
     with store.pool.connection() as conn:

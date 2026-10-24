@@ -52,6 +52,16 @@ starting over (a deploy costs at most one step); on timeout, cancel or
 kill the checkpoint becomes the structure's next version with
 ``converged=false`` and the step count, so a re-step job
 (``on_version``) continues from it.
+
+Slice yields (relax-slices, flag-gated OFF by default): while
+``claim.slicing.<executor>`` / ``PRECIS_JOB_SLICING`` is set, a claim
+past its ``claim.slice_s.<executor>`` wall budget (default 20 min)
+checks — on each step's checkpoint event — whether another job is
+waiting on the lane. With a waiter it releases the claim as
+``STATUS:yielded`` (a clean release: reservation refunded, lease
+cleared, ``meta.relax_slices`` appended) and re-queues behind the
+jobs already waiting; the next claim resumes from the checkpoint
+file like any reclaim. Nobody waiting ⇒ it runs on.
 """
 
 from __future__ import annotations
@@ -64,6 +74,7 @@ import signal
 import socket
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +85,11 @@ from precis.workers.child_compute import (
     ChildStopped,
     job_stop_reason,
     run_in_child,
+)
+from precis.workers.executors._common import (
+    lane_has_waiters,
+    slice_budget_s,
+    yield_claim,
 )
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types.struct_relax import _relax_timeout_s
@@ -779,6 +795,115 @@ def _settled_note(saved: tuple[int, int] | None) -> str:
     return f"; stopped at step {total_steps} — checkpoint saved as version {version}"
 
 
+#: ``meta.relax_slices`` cap — one entry per yield; a very long run is
+#: still bounded (oldest slices drop off the tail).
+_SLICES_CAP = 200
+
+
+def _yielded(
+    ctx: Any,
+    stop: ChildStopped,
+    latest: dict[str, Any],
+    ckpt_dir: Path,
+    version_loaded: int,
+    started: float,
+    cap: float,
+    settle: Callable[[str], tuple[int, int] | None],
+) -> None:
+    """Slice release (relax-slices): flush the checkpoint pointer, record
+    the slice on the job, and release the claim into ``STATUS:yielded``
+    through :func:`precis.workers.executors._common.yield_claim` — not
+    failed, not a retry; the reservation is refunded and the lease
+    cleared in the same tx. The job re-queues behind the rows already
+    waiting (the fresh tag stamp IS the queue clock); its next claim
+    resumes from the checkpoint file through ``_resume_state`` like any
+    reclaim.
+
+    Two guards before the release: the child must be VERIFIED dead
+    (``kill_verified`` — else a second claim could resume the same
+    checkpoint while the first child still writes it → infra failure,
+    not a yield), and the row must still be ``STATUS:running`` inside
+    the release tx (a raced ``cancel_requested`` becomes the ordinary
+    cancel write-back; anything else keeps its status with a note)."""
+    if not stop.handle.get("kill_verified"):
+        ctx.record_failure(
+            f"hexfold_relax: slice yield requested but child pid "
+            f"{stop.handle.get('pid')} was not verified dead — refusing "
+            "to release the claim while it may still write the checkpoint",
+            failure_class="infra",
+        )
+        return
+    ptr = latest.get("ptr")
+    ckpt_path: str | None = None
+    if isinstance(ptr, dict) and ptr.get("path"):
+        ckpt_path = str(ptr["path"])
+    else:
+        direct = ckpt_dir / "checkpoint.json"
+        if direct.exists():
+            ckpt_path = str(direct)
+    payload = (
+        _read_ckpt_file(ckpt_path, job_id=int(ctx.ref_id), base_version=version_loaded)
+        if ckpt_path
+        else None
+    )
+    wall_s = time.monotonic() - started
+    slices = [
+        s for s in ((ctx.meta or {}).get("relax_slices") or []) if isinstance(s, dict)
+    ]
+    curve = [
+        x for x in ((payload or {}).get("curve") or []) if isinstance(x, (int, float))
+    ]
+    polish = (payload or {}).get("polish") or {}
+    entry: dict[str, Any] = {
+        "slice": len(slices) + 1,
+        "at": datetime.now(UTC).isoformat(),
+        "wall_s": round(wall_s, 1),
+        "kill_verified": bool(stop.handle.get("kill_verified")),
+    }
+    if payload:
+        entry.update(
+            stage=payload.get("stage"),
+            fragment=payload.get("fragment"),
+            stage_steps=int(payload.get("stage_steps") or 0),
+            fmax=curve[-1] if curve else None,
+            energy=polish.get("energy"),
+        )
+    slices = (slices + [entry])[-_SLICES_CAP:]
+    updates: dict[str, Any] = {"relax_slices": slices}
+    if isinstance(ptr, dict):
+        # The meta pointer lags the file by up to the throttle interval —
+        # flush it so the next claim's ``_resume_from_file`` sees the
+        # write it just took.
+        updates[_CHECKPOINT_META_KEY] = ptr
+    raced = yield_claim(ctx.store, int(ctx.ref_id), meta_updates=updates)
+    if raced is not None:
+        if raced == "cancel_requested":
+            # An operator cancel landed between the stop decision and
+            # the release tx — drive the ordinary cancel write-back
+            # instead of yielding.
+            _terminalize_stopped(ctx, ChildStopped("cancel", stop.handle), cap, settle)
+            return
+        ctx.append_chunk(
+            "job_event",
+            f"hexfold_relax: slice yield declined — job moved to "
+            f"STATUS:{raced or 'unset'} before the release; "
+            "checkpoint kept for the next claim",
+        )
+        return
+    ctx.append_chunk(
+        "job_event",
+        f"hexfold_relax: yielded after slice {entry['slice']} ({wall_s:.0f}s"
+        + (
+            f", {entry['stage_steps']} {entry.get('stage')} steps"
+            + (f"/{entry['fragment']}" if entry.get("fragment") else "")
+            + (f", fmax {entry['fmax']}" if entry.get("fmax") is not None else "")
+            if payload
+            else ""
+        )
+        + ") — claim released, re-queued behind waiting jobs",
+    )
+
+
 def _terminalize_stopped(
     ctx: Any,
     stop: ChildStopped,
@@ -911,6 +1036,30 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         "base_version": version_loaded,
     }
     latest: dict[str, Any] = {}
+    started = time.monotonic()
+    executor = str((ctx.meta or {}).get("executor") or "")
+    node = os.environ.get("PRECIS_NODE")
+    budget: float | None = None
+    with ctx.store.pool.connection() as _conn:
+        budget = slice_budget_s(_conn, executor)
+    yield_due = {"due": False}
+
+    def _maybe_yield() -> None:
+        """Arm the yield once past the slice budget AND work is waiting
+        on this lane — checked on each checkpoint event (the step
+        boundary), so an empty lane never costs a running job its turn."""
+        if budget is None or yield_due["due"]:
+            return
+        if time.monotonic() - started < budget:
+            return
+        with ctx.store.pool.connection() as conn:
+            if lane_has_waiters(
+                conn,
+                executor=executor,
+                node=node,
+                exclude_ref_id=int(ctx.ref_id),
+            ):
+                yield_due["due"] = True
 
     def _event(kind: str, payload: Any) -> None:
         # The child's per-step event is only the small file pointer; the
@@ -932,6 +1081,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 ctx.set_meta(**{_CHECKPOINT_META_KEY: ptr})
                 latest["ptr_at"] = now
                 latest["ptr_stage"] = ptr.get("stage")
+            _maybe_yield()
             return
         _on_child_event(ctx, kind, payload)
 
@@ -983,7 +1133,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             (scene, generated, kwargs, cuda_requested, resume, ckpt),
             label=f"hexfold_relax job {ctx.ref_id}",
             timeout_s=cap,
-            should_stop=lambda: job_stop_reason(ctx),
+            should_stop=lambda: (
+                job_stop_reason(ctx) or ("yield" if yield_due["due"] else None)
+            ),
             on_start=lambda handle: ctx.set_meta(compute_child=handle),
             on_event=_event,
             on_end=lambda handle: ctx.set_meta(compute_child=handle),
@@ -991,6 +1143,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             grace_s=_CHILD_GRACE_S,
         )
     except ChildStopped as stop:
+        if stop.reason == "yield":
+            _yielded(
+                ctx,
+                stop,
+                latest,
+                ckpt_dir,
+                version_loaded,
+                started,
+                cap,
+                _settle,
+            )
+            return
         _terminalize_stopped(ctx, stop, cap, _settle)
         return
     except ChildDied as exc:

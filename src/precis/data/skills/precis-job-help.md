@@ -339,7 +339,8 @@ tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 # a still-queued (never claimed) job goes straight to STATUS:cancelled
 ```
 
-Agents drive only these `tag` edges: queued -> cancel_requested|cancelled;
+Agents drive only these `tag` edges: queued|yielded ->
+cancel_requested|cancelled;
 running/submitted/waiting_* -> cancel_requested|failed; cancel_requested ->
 cancelled. Any other STATUS (running, succeeded, queued) is
 worker-owned and refused; re-run a failed job with `mode='retry'`.
@@ -462,6 +463,7 @@ shapes for the LLM-facing call.
 | Tag                       | Meaning                                |
 |---------------------------|----------------------------------------|
 | `STATUS:queued`           | Filed, waiting for a runner            |
+| `STATUS:yielded`          | Sliced job released mid-run; claimable |
 | `STATUS:submitted`        | Handed to an external system (cluster) |
 | `STATUS:running`          | A runner has claimed it                |
 | `STATUS:succeeded`        | Finished cleanly; check `job_summary`  |

@@ -1134,6 +1134,7 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             "waiting_time",
             "waiting_ask_user",
             "waiting_manual_kick",
+            "yielded",
         }
     ),
 }
@@ -1224,6 +1225,11 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "waiting_time",
             "waiting_ask_user",
             "waiting_manual_kick",
+            # relax-slices: a checkpointed job that released its claim
+            # past its slice budget. Claimable like ``queued`` — NOT a
+            # waiting_* park (nothing wakes it; it competes in the
+            # claim order) and not terminal.
+            "yielded",
             # quest lifecycle (migration 0065 / ``quest-layer`` (git-only)).
             # A quest is a perpetual striving — it has NO `done`. `active` (we
             # strive) → `dormant` (set aside, may reawaken) → `abandoned`

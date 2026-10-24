@@ -649,6 +649,7 @@ def idle_lanes(
     # hit, so the expensive no-match walk only happens when a lane really is
     # idle beside its queue.
     from precis.store._todo_sql import _doable_exclusion_clause
+    from precis.workers.executors._common import CLAIMABLE
 
     rows = conn.execute(
         f"""
@@ -664,7 +665,7 @@ def idle_lanes(
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
             JOIN tags t ON t.tag_id = rt.tag_id
            WHERE r.kind = 'job' AND r.retired_at IS NULL
-             AND t.namespace = 'STATUS' AND t.value = 'queued'
+             AND t.namespace = 'STATUS' AND t.value = ANY(%(claimable)s)
              AND r.meta->>'executor' IS NOT NULL
              AND r.meta->>'executor' <> ALL(%(exempt)s)
            GROUP BY 1
@@ -693,6 +694,7 @@ def idle_lanes(
             "exempt": list(_IDLE_LANE_EXEMPT_EXECUTORS),
             "mins": queued_min_minutes,
             "w": window_s,
+            "claimable": list(CLAIMABLE),
         },
     ).fetchall()
     return [

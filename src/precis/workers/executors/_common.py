@@ -69,6 +69,19 @@ WAITING_MANUAL_KICK = "waiting_manual_kick"
 #: still-running either: a finalize pass must leave these alone.
 WAITING = (WAITING_CHILDREN, WAITING_TIME, WAITING_ASK_USER, WAITING_MANUAL_KICK)
 
+#: A clean mid-run claim release (relax-slices): a checkpointed job past
+#: its slice budget with work waiting behind it stops, yields its claim
+#: and re-queues — NOT a coordinator ``waiting_*`` park (no wake
+#: condition owns it; it is claimable immediately) and NOT terminal.
+#: The fresh tag stamp is the re-queue: the row lands behind jobs
+#: already waiting, at its unchanged prio/origin.
+YIELDED = "yielded"
+
+#: Statuses the fresh-work claim may take — ``queued`` plus ``yielded``.
+#: Order inside the queue is unchanged: the status tag's ``created_at``
+#: is the queue clock, and a yield re-stamps it.
+CLAIMABLE = (QUEUED, YIELDED)
+
 # Terminal STATUS values — a row carrying any of these is not
 # claimable. Waiting statuses are NOT terminal; they're paused.
 TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
@@ -124,6 +137,243 @@ _BASE_CLASS_RANK = {"human": 0, "agent": 1, "recurring": 2, "background": 3}
 #: in ``app_state`` (an int; ``0`` suspends the type entirely).
 _MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 2}
 _MAX_RUNNING_KEY_PREFIX = "claim.max_running."
+
+# ── Job slicing (docs/backlog/relax-slices.md) ────────────────────────
+#: Feature flag — OFF by default until r91 shows a real checkpoint
+#: resume on prod. Enabled per lane by env OR ``app_state``
+#: ``claim.slicing.<executor>`` (a live flip, no redeploy). Off ⇒ no
+#: code path can produce ``STATUS:yielded``.
+SLICING_ENV = "PRECIS_JOB_SLICING"
+_SLICING_KEY_PREFIX = "claim.slicing."
+
+#: Per-claim wall budget (seconds) for one slice: wall time, not steps —
+#: a resume pays model load + setup (MACE ~10-30 s), so slices are
+#: minutes. ``PRECIS_JOB_SLICE_S`` overrides the default; ``app_state``
+#: ``claim.slice_s.<executor>`` overrides both (the
+#: ``claim.max_running.<job_type>`` code-default + DB-override pattern).
+DEFAULT_SLICE_S = 1200.0
+SLICE_S_ENV = "PRECIS_JOB_SLICE_S"
+_SLICE_S_KEY_PREFIX = "claim.slice_s."
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def slice_budget_s(conn: Connection, executor: str) -> float | None:
+    """The lane's per-claim wall budget in seconds — ``None`` while
+    slicing is off (flag unset on env AND ``app_state``).
+
+    Enable: ``PRECIS_JOB_SLICING`` truthy, or ``app_state``
+    ``claim.slicing.<executor>`` truthy (per-lane live flip). Budget:
+    ``app_state`` ``claim.slice_s.<executor>`` wins, else
+    ``PRECIS_JOB_SLICE_S``, else :data:`DEFAULT_SLICE_S`.
+    """
+    rows: dict[str, Any] = dict(
+        conn.execute(
+            "SELECT key, value FROM app_state WHERE key = ANY(%s)",
+            (
+                [
+                    f"{_SLICING_KEY_PREFIX}{executor}",
+                    f"{_SLICE_S_KEY_PREFIX}{executor}",
+                ],
+            ),
+        ).fetchall()
+    )
+    if not (
+        _truthy(os.environ.get(SLICING_ENV))
+        or _truthy(rows.get(f"{_SLICING_KEY_PREFIX}{executor}"))
+    ):
+        return None
+    raw = rows.get(f"{_SLICE_S_KEY_PREFIX}{executor}", os.environ.get(SLICE_S_ENV))
+    if raw is None:
+        return DEFAULT_SLICE_S
+    try:
+        return max(0.0, float(str(raw)))
+    except ValueError:
+        log.warning(
+            "claim: %s%s=%r is not a number; using %gs",
+            _SLICE_S_KEY_PREFIX,
+            executor,
+            raw,
+            DEFAULT_SLICE_S,
+        )
+        return DEFAULT_SLICE_S
+
+
+def lane_has_waiters(
+    conn: Connection,
+    *,
+    executor: str,
+    node: str | None,
+    exclude_ref_id: int,
+) -> bool:
+    """True when a waiter would claim this lane AHEAD of the running
+    row once it re-queues — otherwise a high-class job would yield to a
+    waiter it beats anyway and pay a model reload (10-30 s on MACE)
+    every slice for nothing.
+
+    Lane gates mirror :func:`claim_executor_jobs` for this host: same
+    ``meta.executor``, the ``target_node`` pin check, a claimable
+    status, a free lease, not operator-suspended. The ranking compares
+    each waiter's full claim key — ``(claim_rank, aged_prio,
+    queued_since, ref_id)`` from :func:`_claim_order_sql` — against the
+    running job's key evaluated as-if-just-yielded: its base class (the
+    yield re-stamps the tag, so no accumulated age or promotion;
+    ``-1`` for prio 1), its raw aged prio, ``now()`` as its queue
+    stamp. ``now()`` is after every real tag stamp, so a waiter that
+    ties on rank+aged still wins the age tiebreak — exactly the
+    "behind jobs already waiting" rule."""
+    age_step = claim_age_step_s()
+    class_age = claim_class_age_s()
+    class_rank = claim_class_rank_enabled()
+    rank_sql, aged_sql, order_params = _claim_order_sql(
+        age_step, class_age, class_rank=class_rank
+    )
+    suspend_sql = ""
+    suspend_params: tuple[list[str], ...] = ()
+    suspended = suspended_job_types()
+    if suspended:
+        suspend_sql = " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"
+        suspend_params = (sorted(suspended),)
+    if class_rank:
+        my_key = (
+            "(CASE WHEN me.prio = 1 THEN -1 ELSE me.base_class END,"
+            " GREATEST(me.prio,"
+            "  LEAST(me.prio,"
+            "   CASE WHEN me.base_class < 2 THEN 5 ELSE 2 END)),"
+            " now(), me.ref_id)"
+        )
+        waiter_key = "(o.crank, o.aged, q.qs, r.ref_id)"
+    else:
+        # Kill switch (PRECIS_CLAIM_CLASS_RANK=0): order is
+        # (aged_prio, queued_since, ref_id) — no classes.
+        my_aged = (
+            "GREATEST(me.prio, LEAST(me.prio, 1.5))" if age_step > 0 else "me.prio"
+        )
+        my_key = f"({my_aged}, now(), me.ref_id)"
+        waiter_key = "(o.aged, q.qs, r.ref_id)"
+    row = conn.execute(
+        f"""
+        WITH me AS (
+          SELECT r.ref_id AS ref_id,
+                 {_CLASS_RANK_CASE} AS base_class,
+                 COALESCE(r.prio, %s)::float8 AS prio
+            FROM refs r WHERE r.ref_id = %s
+        )
+        SELECT 1
+          FROM refs r
+          CROSS JOIN me
+          CROSS JOIN LATERAL (
+                SELECT max(rt.created_at) AS qs
+                  FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = %s AND t.value = ANY(%s)
+              ) q
+          CROSS JOIN LATERAL (
+                SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q.qs))::float8, 0)
+                       AS age_s,
+                       {_CLASS_RANK_CASE} AS base_class
+              ) b
+          CROSS JOIN LATERAL (
+                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class
+                  FROM refs r3
+                 WHERE r3.kind = 'job' AND r3.retired_at IS NULL
+                   AND r3.meta->>'executor' = %s
+                   AND EXISTS (
+                         SELECT 1 FROM ref_tags rt3 JOIN tags t3 USING (tag_id)
+                          WHERE rt3.ref_id = r3.ref_id
+                            AND t3.namespace = %s AND t3.value = ANY(%s)
+                       )
+                   AND COALESCE(r3.prio, %s)::float8 <> 1
+              ) t
+          CROSS JOIN LATERAL (
+                SELECT {rank_sql} AS crank, {aged_sql} AS aged
+              ) o
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.ref_id <> %s
+           AND r.meta->>'executor' = %s
+           AND (
+                (r.meta->'params'->>'target_node') IS NULL
+             OR (r.meta->'params'->>'target_node') = %s
+           )
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = ANY(%s)
+               )
+           AND (
+                (r.meta->>'lease_until') IS NULL
+             OR (r.meta->>'lease_until')::timestamptz < now()
+           ){suspend_sql}
+           AND {waiter_key} < {my_key}
+         LIMIT 1
+        """,
+        (
+            _DEFAULT_JOB_PRIO,
+            _DEFAULT_JOB_PRIO,
+            exclude_ref_id,
+            STATUS_NAMESPACE,
+            list(CLAIMABLE),
+            _DEFAULT_JOB_PRIO,
+            _DEFAULT_JOB_PRIO,
+            executor,
+            STATUS_NAMESPACE,
+            list(CLAIMABLE),
+            _DEFAULT_JOB_PRIO,
+            *order_params,
+            exclude_ref_id,
+            executor,
+            node,
+            STATUS_NAMESPACE,
+            list(CLAIMABLE),
+            *suspend_params,
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def yield_claim(
+    store: Store,
+    ref_id: int,
+    *,
+    meta_updates: dict[str, Any] | None = None,
+) -> str | None:
+    """Release a running claim into ``STATUS:yielded`` — one transaction.
+
+    Returns ``None`` when the yield applied, or the live STATUS value
+    when the row left ``running`` between the executor's stop decision
+    and this transaction (e.g. an operator ``cancel_requested`` landed
+    in between — the yield must not silently overwrite it; the caller
+    drives the raced transition instead).
+
+    On a yield it refunds ``meta.reserved`` (the slot frees for the
+    next claim, as at a terminal transition), clears
+    ``meta.lease_until`` (a live lease would keep the row unclaimable
+    AND read as an orphaned claim to the sweeper/reconciler paths —
+    the ``wake_runner._clear_lease`` precedent), merges
+    ``meta_updates`` (the caller's slice record), then flips the
+    status. The fresh ``STATUS:yielded`` tag stamp IS the re-queue:
+    the row lands behind jobs already waiting, at unchanged
+    prio/origin — no attempts bump, no failure write."""
+    with store.tx() as conn:
+        conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = %s",
+            (ref_id, STATUS_NAMESPACE),
+        ).fetchone()
+        live = row[0] if row else None
+        if live != RUNNING:
+            return live
+        release_job_reservation(conn, ref_id)
+        conn.execute(
+            "UPDATE refs SET meta = (meta - 'lease_until') || %s::jsonb "
+            "WHERE ref_id = %s",
+            (Jsonb(mask_secrets_deep(_finite_json(meta_updates or {}))), ref_id),
+        )
+        set_status(store, ref_id, YIELDED, conn=conn)
+        return None
 
 
 def job_type_running_caps(conn: Connection) -> dict[str, int]:
@@ -690,7 +940,9 @@ def claim_executor_jobs(
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
     Claimable = ``kind='job'``, ``meta.executor`` matches,
-    ``STATUS:queued``, not terminal, lease expired or absent — and the
+    ``STATUS:queued`` or ``STATUS:yielded`` (a released slice re-queues
+    here behind the rows already waiting), not terminal, lease expired
+    or absent — and the
     row's ``meta.job_type`` is not operator-suspended
     (:func:`~precis.workers.executors.suspended_job_types`,
     ``PRECIS_SUSPENDED_JOB_TYPES``): a suspended type's rows wait queued,
@@ -1258,9 +1510,9 @@ def claim_executor_jobs(
                 claimed.append(claim)
 
     # ── Fresh-work pass (unchanged ordering/semantics) ──────────────────
-    # ``STATUS:queued`` only — the reclaim pre-pass above already handled
-    # this cycle's bounded slice of stale-running candidates, so this query
-    # no longer carries the running-row OR-arms (moved above).
+    # ``STATUS:queued|yielded`` only — the reclaim pre-pass above already
+    # handled this cycle's bounded slice of stale-running candidates, so
+    # this query no longer carries the running-row OR-arms (moved above).
     # ``queued_since`` is needed twice — as a column and inside the aged
     # Per-job_type running caps (D4 cap half): code-shipped
     # :data:`_MAX_RUNNING_DEFAULTS` plus ``app_state``
@@ -1370,7 +1622,7 @@ def claim_executor_jobs(
                 SELECT max(rt.created_at) AS qs
                   FROM ref_tags rt JOIN tags t USING (tag_id)
                  WHERE rt.ref_id = r.ref_id
-                   AND t.namespace = %s AND t.value = %s
+                   AND t.namespace = %s AND t.value = ANY(%s)
               ) q
           CROSS JOIN LATERAL (
                 SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q.qs))::float8, 0)
@@ -1385,7 +1637,7 @@ def claim_executor_jobs(
                    AND EXISTS (
                          SELECT 1 FROM ref_tags rt3 JOIN tags t3 USING (tag_id)
                           WHERE rt3.ref_id = r3.ref_id
-                            AND t3.namespace = %s AND t3.value = %s
+                            AND t3.namespace = %s AND t3.value = ANY(%s)
                        )
                    AND COALESCE(r3.prio, %s)::float8 <> 1
               ) t{share_join_sql}
@@ -1399,7 +1651,7 @@ def claim_executor_jobs(
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = %s
+                    AND t.namespace = %s AND t.value = ANY(%s)
                )
            AND (
                 (r.meta->>'lease_until') IS NULL
@@ -1419,18 +1671,18 @@ def claim_executor_jobs(
         (
             *order_params,
             STATUS_NAMESPACE,
-            QUEUED,
+            list(CLAIMABLE),
             _DEFAULT_JOB_PRIO,
             _DEFAULT_JOB_PRIO,
             executor,
             STATUS_NAMESPACE,
-            QUEUED,
+            list(CLAIMABLE),
             _DEFAULT_JOB_PRIO,
             *share_params,
             executor,
             node,
             STATUS_NAMESPACE,
-            QUEUED,
+            list(CLAIMABLE),
             STATUS_NAMESPACE,
             list(TERMINAL),
             *suspend_params,

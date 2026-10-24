@@ -437,3 +437,28 @@ def test_share_term_off_under_kill_switch(store: Store, monkeypatch: Any) -> Non
     )
     monkeypatch.setenv(CLAIM_CLASS_RANK_ENV, "0")
     assert _claim(store, limit=1) == [older_cls]
+
+
+def test_yielded_is_claimable(store: Store) -> None:
+    """relax-slices: ``STATUS:yielded`` is a claimable queue member —
+    a released slice is taken like a queued row, not parked."""
+    yielded = _job(store, origin="background", prio=8, status="yielded")
+    assert _claim(store) == [yielded]
+
+
+def test_yielded_requeues_behind_waiters(store: Store) -> None:
+    """The decided queue-age rule, pinned: a yield re-stamps the status
+    tag, so the row lands behind jobs already waiting — the accumulated
+    age restarts (it does NOT keep the pre-claim stamp)."""
+    older = _job(store, origin="background", prio=8, queued_s_ago=60)
+    yielded = _job(store, origin="background", prio=8, status="yielded")
+    assert _claim(store)[:2] == [older, yielded]
+
+
+def test_yielded_keeps_class_human_first(store: Store) -> None:
+    """A yielded background row re-queues at its ORIGINAL prio/origin —
+    a fresh human-origin job still claims first after the yield
+    (Reto 2026-10-22 human precedence)."""
+    yielded = _job(store, origin="background", prio=5, status="yielded")
+    human = _job(store, origin="human", prio=5)
+    assert _claim(store)[:2] == [human, yielded]
