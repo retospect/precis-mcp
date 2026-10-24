@@ -490,6 +490,25 @@ def finish(
         from precis_pathway.persist import persist_result
 
         pathway_extra: dict[str, Any] = {"produced_by": produced_by, "slice": 1}
+        # kinetics v2 slice 10 (D10): the validation manifest and its id ride
+        # on the result ref, the D8 record and this job; None on an engine
+        # < 0.38 or any build fault (provenance never fails a result).
+        from precis_pathway import manifest as vm
+
+        manifest = (
+            vm.build_safely(
+                config=artifact["config"],
+                config_snapshot_yaml=artifact["config_snapshot_yaml"],
+                results=artifact["results_json"],
+                autocatpath_version=artifact["autocatpath_version"],
+            )
+            if artifact.get("config_snapshot_yaml") and artifact.get("config")
+            else None
+        )
+        manifest_id = vm.stamp_results(artifact["results_json"], manifest)
+        if manifest is not None:
+            pathway_extra["validation_manifest"] = manifest
+            pathway_extra["manifest_id"] = manifest_id
         # kinetics v2 slice 2 (D8): the engine (>= 0.33) returns the typed
         # ``kinetics_v2`` record BESIDE the v1 block — a sibling key on
         # results_json, never nested inside ``kinetics``; lift it to the
@@ -525,6 +544,7 @@ def finish(
         content_key=artifact["content_key"],
         n_states=len(r["nodes"]),
         pathway_ref=pathway_ref_id,
+        **({"manifest_id": manifest_id} if manifest_id else {}),
         **summary,
     )
     b_s = f", barrier {summary['barrier']:g} eV" if "barrier" in summary else ""

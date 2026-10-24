@@ -1267,6 +1267,50 @@ where the paper gives them and records `theta0` otherwise.
     published Zenodo bundle: `catpath-repro-bundle.md` (its slice 3 waits on
     this slice). The macOS arm64 cross-platform check is a manual
     post-deploy check, not a gate.
+    shipped: catpath v0.38.0 (`autocatpath.manifest`: the record, the
+    tolerance table with both columns per row as `Bound(rule, value)`,
+    `unsatisfied`, `observables`, `compare`; `__git_sha__` from a hatch
+    wheel hook, else PEP 610 `direct_url.json`), precis: the commit adding
+    this line (`precis_pathway/manifest.py` stamps, `revalidate_job.py`,
+    `put(mode='revalidate')`, `view='manifest'`; `view='kinetics-sweep'`
+    was missing from the handler's accepted views and is added). Found:
+    the CPU legs re-run from the stored nodes/edges with `n_samples = 0`
+    (the MC draw count is wall-clock calibrated, so it is no reproducible
+    input, and the band is no D10 observable); the min-energy-path leg
+    (GPU seed lane) and TPD (slice 9) are reported `not_run`, so today's
+    best verdict is `reproduced_partial(energies,tpd)` with `complete:
+    false` — NOT validated; only a bare `reproduced` (every leg re-run, a
+    stamped engine on both sides) is `complete`, and an empty comparison is
+    `failed(nothing-compared)`. The refusal also covers the engine version
+    and, when both sides are stamped, its commit; an unstamped engine is a
+    caveat (`engine-unstamped-then|now`) that withholds completeness. The
+    catpath build hook stamps the sdist and the wheel (so the default
+    sdist-then-wheel `uv build` keeps the commit) and warns loudly when it
+    cannot.
+    Cluster hosts install from git with no `uv.lock`; the lock hashed there
+    is deploy's `/opt/precis/constraints.txt` export (`lock_source`), so a
+    manifest stamped on a dev checkout refuses on a host and vice versa.
+    `weights_sha256` is resolved on the stamping host (the aggregate's CPU
+    worker usually has no checkpoint, so it is `None` and stated); the
+    seed jobs stamping their own weights hash is open. Nothing auto-mints
+    `autocatpath_revalidate`.
+    Manual post-deploy check (macOS arm64, not automated): (1) pick a
+    pathway whose `view='manifest'` shows a manifest and a `reproduced`
+    same-platform re-validation from a Linux worker; (2) on the Mac, in a
+    checkout at the manifest's `code.precis_sha` with `uv sync --frozen
+    --extra catalyst`, point `PRECIS_UV_LOCK` at the file matching the
+    manifest's `lock.lock_source` — that checkout's `uv.lock`, or for a
+    cluster-stamped `constraints.txt` the output of the `uv export`
+    command in `deploy/playbooks/03-precis-constraints.yml` run in that
+    checkout, saved as `constraints.txt` (its header comment names the
+    `-o` path, so only the pin lines are hashed); a refusal naming
+    `uv_lock_sha256` means the checkout is not the stamped one; (3) run
+    `precis_pathway.revalidate_job.revalidate(meta, manifest_id)` with the
+    ref's meta read through the session MCP; (4) expect `column =
+    cross_platform`, both platforms named, and
+    `reproduced_partial(energies,tpd)` (every judged observable inside the
+    cross-platform column) or a named `drifted(...)`; (5) record the entry
+    on the pathway's gripe/finding, not in prod meta.
 
 **Cross-repo handoff.** Every engine + glue slice is two builds in one
 sequence: the catpath commit lands first (version bump, tag, push), then

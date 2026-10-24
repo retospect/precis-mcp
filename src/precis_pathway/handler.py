@@ -204,13 +204,17 @@ class PathwayHandler(Handler):
         # 'preview' builds the reaction network cheaply (no ML compute) so the
         # LLM can read + argue with the intermediates/steps before spending
         # relax/NEB. Re-put without it to run.
-        modes=("preview",),
+        # 'revalidate' (kinetics v2 D10) mints autocatpath_revalidate for a
+        # stored result's validation manifest — no config body needed.
+        modes=("preview", "revalidate"),
         views=(
             "analysis",
             "compare",
             "intermediates",
             "steps",
             "kinetics",
+            "kinetics-sweep",
+            "manifest",
             "trust",
             "warnings",
             "profile",
@@ -250,6 +254,8 @@ class PathwayHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if mode == "revalidate":  # engine-free: the job checks the host
+            return self._revalidate(id, args)
         from . import runner
 
         if not text or not text.strip():
@@ -436,6 +442,59 @@ class PathwayHandler(Handler):
             )
         )
 
+    def _revalidate(
+        self, ident: str | int | None, args: dict[str, Any] | None
+    ) -> Response:
+        """``mode='revalidate'``: mint ``autocatpath_revalidate`` for the
+        pathway's stored validation manifest (kinetics v2 D10). The job, not
+        this call, checks the lock hash on the host that runs it."""
+        store = self.hub.live_store
+        if ident is None:
+            raise BadInput(
+                "mode='revalidate' needs the pathway handle (id=)",
+                next="put(kind='pathway', id='pw123', mode='revalidate', "
+                "args={'manifest': '<manifest_id>'})",
+            )
+        ref = _lookup(store, str(ident))
+        if ref is None:
+            raise BadInput(
+                f"no pathway '{ident}'", next="get(kind='pathway') lists all"
+            )
+        stored = (ref.meta or {}).get("manifest_id")
+        if not stored:
+            raise BadInput(
+                f"pathway '{ident}' carries no validation manifest (aggregated "
+                "before autocatpath 0.38)",
+                next=f"re-run it on the current engine, then get(kind='pathway', "
+                f"id={str(ident)!r}, view='manifest')",
+            )
+        want = str((args or {}).get("manifest") or stored)
+        if want != stored:
+            raise BadInput(
+                f"manifest {want[:12]} is not this pathway's ({str(stored)[:12]})",
+                next=f"put(kind='pathway', id={str(ident)!r}, mode='revalidate', "
+                f"args={{'manifest': {stored!r}}})",
+            )
+        from precis.handlers.job import JobHandler
+
+        job = JobHandler(hub=self.hub).put(
+            job_type="autocatpath_revalidate",
+            executor="ssh_node",
+            parent_id=ref.id,
+            idem_key=f"autocatpath_revalidate:{ref.id}:{stored}",
+            requires={},
+            params={
+                "pathway_ref_id": ref.id,
+                "manifest_id": stored,
+            },
+        )
+        return Response(
+            body=(
+                f"re-validation of manifest {str(stored)[:12]} queued. {job.body}\n"
+                f"Verdict: get(kind='pathway', id={str(ident)!r}, view='manifest')"
+            )
+        )
+
     def accepted_views(self, *, id: Any = None) -> list[str]:
         return list(self.spec.views)
 
@@ -576,6 +635,10 @@ class PathwayHandler(Handler):
             return Response(body=body or "(no methods)")
         if v == "mermaid":
             return Response(body=self._mermaid(meta))
+        if v == "manifest":
+            from .manifest import manifest_text
+
+            return Response(body=manifest_text(meta))
         if v == "compare":
             return Response(body=self._compare(store, ref, meta, U=U))
         if v == "staircase":

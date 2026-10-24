@@ -127,6 +127,32 @@ objective:                        # stored now; the (T, p_total) sweep acts on i
   (folded into the network basis: measures compare only on an equal
   environment) and per-step reversibility in `view='kinetics'`.
 
+## Reproducible validation (manifest + re-validate)
+
+A result aggregated on autocatpath >= 0.38 carries a validation manifest:
+code shas, lock and weights hashes, platform, seeds, input hashes and the
+drift tolerances. `view='manifest'` shows it with every re-validation.
+Before calling a result validated, re-run it:
+
+```python
+put(kind="pathway", id="no-nh3-pd", mode="revalidate",
+    args={"manifest": "<manifest_id from view='manifest'>"})
+```
+
+The `autocatpath_revalidate` job refuses, naming the field, when the host's
+lock hash or engine version/commit differs. Otherwise it re-runs the
+kinetics and sweep legs and reports `reproduced`, `reproduced_partial(...)`,
+`drifted(<observables>)` or `failed(<leg>)`. It uses the same-platform
+tolerance column when arch, OS and accelerator match, else the
+cross-platform column.
+
+**A result is validated only when a re-validation says `complete: true`.**
+Today the relax/NEB leg and TPD are not re-run, so every re-validation is
+`reproduced_partial(energies,tpd)` with `complete: false`: the kinetics
+reproduce, but the result is NOT validated. An engine without a stamped
+commit gives `reproduced_partial(engine-unstamped-…)`, also not validated.
+`view='manifest'` prints `validated: NO` until a complete run exists.
+
 ## The potential lever (CHE electrochemistry)
 
 NOx reduction is *electro*catalysis: applied potential `U` (V vs **RHE**) is a

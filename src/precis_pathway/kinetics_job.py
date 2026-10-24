@@ -9,7 +9,9 @@ persists ``meta.kinetics_sweep`` (the competitive coverage map +
 optimum; from engine 0.36 also ``kmc_points`` — the lattice KMC at the
 corners, centre and optimum, each with ``tof_kmc`` and
 ``correlation_effect``) and the refreshed ``meta.kinetics_v2`` onto the
-pathway ref.
+pathway ref. From engine 0.38 (slice 10, D10) it also restamps
+``meta.validation_manifest``/``meta.manifest_id`` on the ref and
+``manifest_id`` on its own meta and the D8 record.
 Minted by ``autocatpath_aggregate``'s dispatch on every verify-tier
 pathway — never user-facing.
 """
@@ -114,10 +116,27 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (a sibling job may have touched it), merge the sweep block into
     # meta.results — the same place the aggregate's kinetics record lives
     # — and stamp wholesale (persist.py:129).
+    manifest_id: str | None = None
     try:
         cur = dict(
             (ctx.store.get_ref(kind="pathway", id=pathway_ref_id) or ref).meta or {}
         )
+        # slice 10 (D10): the manifest is built from the STORED effective
+        # config + snapshot — the same inputs the aggregate stamped from, so
+        # the id agrees — and folded into the refreshed D8 record.
+        from precis_pathway import manifest as vm
+
+        if cur.get("config_snapshot_yaml"):
+            manifest = vm.build_safely(
+                config=dict(cur.get("config") or config),
+                config_snapshot_yaml=str(cur["config_snapshot_yaml"]),
+                results={**(cur.get("results") or {}), **results},
+                autocatpath_version=str(cur.get("autocatpath_version") or ""),
+            )
+            manifest_id = vm.stamp_results(results, manifest)
+            if manifest is not None:
+                cur["validation_manifest"] = manifest
+                cur["manifest_id"] = manifest_id
         res_meta = dict(cur.get("results") or {})
         res_meta.update(
             {
@@ -155,7 +174,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 "kinetics_sweep": sweep,
             }
         )
-        ctx.set_meta({**scalars, "n_sweep_points": n_pts})
+        stamp = {**scalars, "n_sweep_points": n_pts}
+        if manifest_id:
+            stamp["manifest_id"] = manifest_id
+        ctx.set_meta(stamp)
     except Exception:
         log.warning("autocatpath_kinetics: scalar stamp failed", exc_info=True)
 

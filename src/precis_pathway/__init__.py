@@ -87,6 +87,13 @@ sits behind the ``pathway.kinetics_mint_enabled`` setting
 for env-only boots). Explicit, human-requested ``autocatpath_kinetics``
 jobs never touch the flag.
 
+Validation (kinetics v2 D10, ``manifest.py``): from engine 0.38 every
+persisted result carries ``meta.validation_manifest`` + ``meta.manifest_id``
+(also on the producing job and the D8 record). ``autocatpath_revalidate``
+(``revalidate_job.py``) re-runs the CPU legs from it and judges drift; only
+``put(mode='revalidate')`` or a direct job put mints it, so there is no
+auto-mint and no flag.
+
 Gated on **dependency presence**, not a feature flag: with no
 ``autocatpath``/``[catalyst]`` extra installed the handler raises
 ``InitError`` at registration and the ``pathway`` kind just doesn't

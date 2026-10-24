@@ -327,11 +327,15 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    (per-site MCAMC `bkl`/`mcamc_s2`/`mcamc_bfs` behind the pluggable
    accelerator seam, channel-scaling fallback, `kmc.compare`; the
    `Acceleration` record gates KMC trust in `_kinetics_scalars`) is
-   catpath v0.37.0; slice 9 (TPD validation) is next.
+   catpath v0.37.0; slice 10 (validation manifest, `autocatpath_revalidate`,
+   `view='manifest'`) is catpath v0.38.0 (cc81fb1, tagged locally, not
+   pushed pending review; the precis pin moves after the push); slice 9
+   (TPD validation) is next.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing
-   else; slice 3 waits on kinetics-engine-v2 slice 10. Ranked after 5a
+   else; slice 3's tolerance contract is `autocatpath.manifest` (catpath
+   v0.38.0: `ValidationManifest.tolerances`, `compare`). Ranked after 5a
    because it consumes the validation manifest.
 6. **backlog/electrochem-mlip-ladder.md** (filed 2026-10-19 from Ringe's
    talk, draft) — the σ side of Horizon 5: `a_i = ∂ΔE_i/∂σ` from three

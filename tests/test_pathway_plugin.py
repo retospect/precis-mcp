@@ -1297,7 +1297,7 @@ def test_put_typo_mode_raises_and_mints_no_job(
 
     with pytest.raises(BadInput) as exc_info:
         h.put(id="typo_mode_test", text=SMOKE, mode="previw")
-    assert exc_info.value.options == ["preview"]
+    assert exc_info.value.options == ["preview", "revalidate"]
 
     assert pathway_store.get_ref(kind="pathway", id="typo-mode-test") is None
     with pathway_store.pool.connection() as c:
@@ -1338,15 +1338,17 @@ def test_get_unknown_view_raises_bad_input_naming_accepted_set(
 
 
 def test_all_declared_views_dispatch(pathway_store: Store) -> None:
-    """Every one of the 13 views the KindSpec declares must still pass
+    """Every one of the 15 views the KindSpec declares must still pass
     through `get` (not itself get rejected as 'unknown') once the view=
-    validation lands."""
+    validation lands. kinetics-sweep (slice 4) was routed but undeclared,
+    so get rejected it; manifest is kinetics v2 slice 10."""
     h = _handler(pathway_store)
     slug = "views-smoke"
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 13
+    assert len(declared) == 15
+    assert {"kinetics-sweep", "manifest"} <= set(declared)
     for view in declared:
         resp = h.get(id=slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"
