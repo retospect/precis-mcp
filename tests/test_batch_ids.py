@@ -153,10 +153,12 @@ def test_search_filter_accepts_an_in_use_unregistered_axis(
     # gr504808: machine-stamped axes (MATERIAL:, METHOD:, …) live in the
     # tags table without a _CLOSED_VOCAB entry — a read filter naming one
     # must pass, while a truly-unknown axis still refuses (writes stay
-    # strict via Tag.parse_strict).
+    # strict via Tag.parse_strict). MATERIAL itself is registered since
+    # ontology-v2 slice 0 (data/axes yaml) and kind-gated off gripe, so the
+    # probe uses an axis no registry knows.
     handler, ids = _gripes(hub, 1)
-    store.add_tag(ids[0], Tag.closed("MATERIAL", "mof"), set_by="agent")
-    body = handler.search(q="batch gripe", tags=["MATERIAL:mof"]).body
+    store.add_tag(ids[0], Tag.closed("PROBEAXIS", "mof"), set_by="agent")
+    body = handler.search(q="batch gripe", tags=["PROBEAXIS:mof"]).body
     assert f"gripe {ids[0]}" in body
     with pytest.raises(BadInput, match="unknown closed-prefix axis"):
         handler.search(q="batch gripe", tags=["STATSU:open"])
