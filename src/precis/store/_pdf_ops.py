@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -53,6 +53,17 @@ def _location_ttl_days() -> int:
         return max(1, int(raw))
     except ValueError:
         return 7
+
+
+#: Body-volume ceilings under which a one-page-numbered ref still reads as
+#: a publisher preview. A single printed page yields at most ~8 body
+#: chunks (~6k chars) at the DEFAULT_CHUNK_SIZE waterline; beyond either
+#: bound the corpus demonstrably holds real body content and the
+#: ONE-PAGE SOURCE banner would lie (gr514187 — a 6-page scroll-PDF SI
+#: whose blocks all landed on page 0 still stamped ``pdfs.page_count=1``
+#: but carried 11 body chunks).
+_PREVIEW_MAX_BODY_CHUNKS = 8
+_PREVIEW_MAX_BODY_CHARS = 6000
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +116,64 @@ class PdfMixin:
             return _do(conn)
         with self.pool.connection() as c:
             return _do(c)
+
+    def pdf_page_count(
+        self, pdf_sha256: str, *, conn: Connection | None = None
+    ) -> int | None:
+        """The physical page count recorded at ingest, or ``None``.
+
+        ``pdfs.page_count`` is the real PDF page total — unlike
+        ``refs.pdf_pages`` (the *numbered* span Marker's block-page
+        assignment produces), so a scroll-PDF or a PDF whose pages never
+        carried a number still corroborates here.
+        """
+
+        def _do(c: Connection) -> int | None:
+            row = c.execute(
+                "SELECT page_count FROM pdfs WHERE pdf_sha256 = %s", (pdf_sha256,)
+            ).fetchone()
+            return int(row[0]) if row else None
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def is_one_page_preview(self, ref: Any) -> bool:
+        """Corroborated one-page-preview verdict (gr514187).
+
+        ``Ref.is_one_page_pdf`` reads the *numbered* page span alone — a
+        single signal that lies two ways: a scroll-PDF SI whose blocks all
+        land on page 0 stamps ``[0,1)``, and a one-page-numbered file can
+        still carry a full body (a markup refetch, or a dense single-page
+        SI). The banner/evidence verdict must therefore also consult the
+        physical page count and the body volume:
+
+        * ``pdfs.page_count > 1`` — the file literally has more pages; the
+          numbered span was wrong (or a preview cover was attached beside
+          a markup body).
+        * body volume over :data:`_PREVIEW_MAX_BODY_CHUNKS` chunks or
+          :data:`_PREVIEW_MAX_BODY_CHARS` chars — a single printed page
+          cannot produce that much text, so the corpus genuinely holds
+          methods/results and the preview warning would lie.
+        """
+        if not ref.is_one_page_pdf:
+            return False
+        if ref.pdf_sha256:
+            pages = self.pdf_page_count(ref.pdf_sha256)
+            if pages is not None and pages > 1:
+                return False
+        with self.pool.connection() as c:
+            row = c.execute(
+                "SELECT count(*), coalesce(sum(length(text)), 0) "
+                "FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref.id,),
+            ).fetchone()
+        n_chunks = int(row[0]) if row else 0
+        n_chars = int(row[1]) if row else 0
+        return n_chunks <= _PREVIEW_MAX_BODY_CHUNKS and n_chars <= (
+            _PREVIEW_MAX_BODY_CHARS
+        )
 
     def set_pdf_storage_path(
         self, pdf_sha256: str, path: str, *, conn: Connection | None = None

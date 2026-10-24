@@ -411,7 +411,11 @@ def _run_in_subprocess_with_timeout[R](
 
 
 def _marker_extract_subprocess(
-    pdf_path: Path, paper_id: str, timeout_s: float
+    pdf_path: Path,
+    paper_id: str,
+    timeout_s: float,
+    *,
+    ocr_context: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run :func:`_marker_extract` in a spawned child, killed if it hangs.
 
@@ -426,6 +430,7 @@ def _marker_extract_subprocess(
     return _run_in_subprocess_with_timeout(
         _marker_extract,
         args=(pdf_path, paper_id),
+        kwargs={"ocr_context": ocr_context},
         timeout_s=timeout_s,
         label=f"Marker extraction of {pdf_path.name}",
     )
@@ -438,6 +443,7 @@ def extract_blocks_marker(
     timeout_s: float | None = None,
     fallback_info: dict[str, Any] | None = None,
     glyph_health: dict[str, Any] | None = None,
+    ocr_context: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -477,9 +483,11 @@ def extract_blocks_marker(
     """
     try:
         if timeout_s and timeout_s > 0:
-            blocks = _marker_extract_subprocess(pdf_path, paper_id, timeout_s)
+            blocks = _marker_extract_subprocess(
+                pdf_path, paper_id, timeout_s, ocr_context=ocr_context
+            )
         else:
-            blocks = _marker_extract(pdf_path, paper_id)
+            blocks = _marker_extract(pdf_path, paper_id, ocr_context=ocr_context)
     except TimeoutError as exc:
         log.warning(
             "Marker timed out after %ss on %s (%s), using fitz fallback",
@@ -593,7 +601,80 @@ def _patch_surya_config() -> None:
         pass
 
 
-def _marker_extract(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
+def _ocr_context(title: str, abstract: str) -> str | None:
+    """Document-context clause for the surya OCR prompt override.
+
+    ``None`` when neither field carries text (the prompt then stays
+    stock). The abstract is truncated — it rides along on every OCR
+    request as fixed prompt context, not per figure.
+    """
+    parts = [p for p in (title.strip(), abstract.strip()[:600]) if p]
+    return " ".join(parts) or None
+
+
+def _figure_ocr_prompt(base_prompt: str, context: str) -> str:
+    """``base_prompt`` plus a domain-context clause and a hedging directive
+    for generated figure descriptions (gr514187).
+
+    surya's VLM writes a free-text ``<img alt>`` description for every
+    figure region it OCRs; with no domain signal it happily names a
+    Pt(111) fcc/hcp site diagram "a polymer chain" (the F/H site labels
+    read as atoms). Telling the model what document it is reading — and
+    to hedge when a label is ambiguous — steers it toward faithful
+    description without a new model or backend.
+    """
+    return (
+        f"{base_prompt}\n"
+        f"Document context: {context} When the page contains a figure or "
+        "diagram, describe it faithfully in the <img> alt attribute; when a "
+        "label or symbol is ambiguous (e.g. single letters that may be site "
+        "labels rather than element names), use hedged wording such as "
+        "'labeled' or 'appears to be' instead of inventing chemical "
+        "identities."
+    )
+
+
+def _apply_surya_ocr_context(context: str | None) -> dict[str, str]:
+    """Point surya's two HTML-OCR prompts at context-extended versions.
+
+    Returns the previous mapping entries for restore. ``None`` context or
+    a missing surya leaves the stock prompts untouched. Layout/table_rec
+    prompts are JSON-schema contracts — never extended.
+    """
+    saved: dict[str, str] = {}
+    if not context:
+        return saved
+    try:
+        from surya.inference import prompts as surya_prompts
+    except ImportError:
+        return saved
+    mapping = getattr(surya_prompts, "PROMPT_MAPPING", None)
+    if not isinstance(mapping, dict):
+        return saved
+    for key in ("block", "high_accuracy_bbox"):
+        base = mapping.get(key)
+        if isinstance(base, str):
+            saved[key] = base
+            mapping[key] = _figure_ocr_prompt(base, context)
+    return saved
+
+
+def _restore_surya_prompts(saved: dict[str, str]) -> None:
+    """Undo :func:`_apply_surya_ocr_context` — never leaks one document's
+    context into the next ingest's prompt."""
+    if not saved:
+        return
+    try:
+        from surya.inference import prompts as surya_prompts
+
+        surya_prompts.PROMPT_MAPPING.update(saved)
+    except Exception:  # pragma: no cover — restore is best-effort
+        log.debug("surya prompt restore failed", exc_info=True)
+
+
+def _marker_extract(
+    pdf_path: Path, paper_id: str, *, ocr_context: str | None = None
+) -> list[dict[str, Any]]:
     """Run Marker and parse its MarkdownOutput into block schema."""
     import warnings
 
@@ -605,7 +686,11 @@ def _marker_extract(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
     from marker.models import create_model_dict
 
     converter = PdfConverter(artifact_dict=create_model_dict())
-    rendered = converter(str(pdf_path))
+    _saved_prompts = _apply_surya_ocr_context(ocr_context)
+    try:
+        rendered = converter(str(pdf_path))
+    finally:
+        _restore_surya_prompts(_saved_prompts)
 
     # Marker's per-PDF output sometimes contains mojibake even after
     # marker's own internal ``ftfy`` passes (e.g. on PDFs whose
@@ -711,6 +796,10 @@ def _marker_extract(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
                         break
 
             blocks.append(block)
+
+    # Continuation-page tables can come back with a scrambled repeated
+    # header over canonical-order data — reconcile before chunking.
+    blocks = _reconcile_continuation_table_headers(blocks)
 
     # Match figure captions
     blocks = _match_captions(blocks)
@@ -824,6 +913,64 @@ def _encode_pil_image(img: Any) -> tuple[str, str]:
     img.save(buf, format=fmt)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return b64, mime
+
+
+def _table_cells(line: str) -> list[str]:
+    """Cell texts of a markdown table row."""
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    """Markdown separator row: every cell is dashes (optional colons)."""
+    cells = _table_cells(line)
+    return bool(cells) and all(re.fullmatch(r":?-{2,}:?", c) for c in cells)
+
+
+def _reconcile_continuation_table_headers(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rewrite a continuation table's header when it is the previous
+    table's header multiset in a scrambled order (gr514187).
+
+    Multi-page tables come back as separate markdown blocks; the
+    continuation page's repeated header row can be emitted with its
+    cells permuted while the data rows keep the canonical column order
+    (the SI Table 1 continuation showed ``Maps Number | Coverage |
+    FCC sites | E_F`` over ``Coverage | E_F | FCC | Maps`` data).
+    Same cell multiset, different order → the previous table's header
+    (and separator line) wins; anything else is a genuinely different
+    table and is left alone. Only ADJACENT table blocks reconcile — a
+    prose break ends the run.
+    """
+    prev_header: str | None = None
+    prev_sep: str | None = None
+    prev_cells: list[str] | None = None
+    for block in blocks:
+        if block.get("type") != "table":
+            prev_header = prev_sep = prev_cells = None
+            continue
+        lines = (block.get("text") or "").split("\n")
+        if not lines or not lines[0].lstrip().startswith("|"):
+            prev_header = prev_sep = prev_cells = None
+            continue
+        cells = _table_cells(lines[0])
+        sep = lines[1] if len(lines) > 1 else ""
+        if (
+            prev_cells is not None
+            and len(cells) >= 2
+            and len(cells) == len(prev_cells)
+            and cells != prev_cells
+            and sorted(cells) == sorted(prev_cells)
+        ):
+            lines[0] = prev_header or lines[0]
+            if len(lines) > 1 and _is_table_separator(sep):
+                lines[1] = prev_sep or sep
+            block["text"] = "\n".join(lines)
+        else:
+            prev_header = lines[0]
+            prev_sep = sep
+            prev_cells = cells
+    return blocks
 
 
 def _match_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

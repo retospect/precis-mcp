@@ -1283,8 +1283,9 @@ def attach_evidence(
                 edge_meta["caveats"] = caveats
         # One-page PDF source (gr372863): the edge says it rests on a
         # preview, as a ``coverage`` key plus a caveat the existing evidence
-        # renderers already show.
-        if src.is_one_page_pdf:
+        # renderers already show. Corroborated with the physical page count
+        # and body volume (gr514187) — the numbered span alone misfires.
+        if store.is_one_page_preview(src):
             edge_meta = dict(edge_meta or {})
             edge_meta["coverage"] = "one_page"
             caveats = list(edge_meta.get("caveats") or [])

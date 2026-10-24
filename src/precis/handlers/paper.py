@@ -3421,7 +3421,7 @@ class PaperHandler(Handler):
         n_blocks = self.store.chunks.count_chunks(ref.id)
 
         lines: list[str] = []
-        banner = _paper_banner(ref)
+        banner = _paper_banner(ref, store=self.store)
         if banner:
             lines.append(banner)
             lines.append("")
@@ -4071,7 +4071,7 @@ class PaperHandler(Handler):
                 hi = tail[0].ord
 
         lines: list[str] = []
-        banner = _paper_banner(ref)
+        banner = _paper_banner(ref, store=self.store)
         if banner:
             lines.append(banner)
             lines.append("")
@@ -4322,7 +4322,7 @@ class PaperHandler(Handler):
         )
         table = render_agent_table(rows, schema=["handle", "summary", "keywords"])
         body = f"{head}\n\n{table}"
-        banner = _paper_banner(ref)
+        banner = _paper_banner(ref, store=self.store)
         if banner:
             body = f"{banner}\n\n{body}"
         return Response(body=body)
@@ -4364,7 +4364,7 @@ class PaperHandler(Handler):
             if scope is None
             else None,
         )
-        banner = _paper_banner(ref)
+        banner = _paper_banner(ref, store=self.store)
         if banner:
             body = f"{banner}\n\n{body}"
         return Response(body=body)
@@ -4709,16 +4709,24 @@ def _retraction_banner(ref: Ref) -> str | None:
     return " ".join(parts)
 
 
-def _paper_banner(ref: Ref) -> str | None:
+def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
     line in the same ``> [!]`` style, then a one-page-PDF coverage line
-    (gr372863). ``None`` when none applies."""
+    (gr372863). ``None`` when none applies.
+
+    The one-page line corroborates via :meth:`Store.is_one_page_preview`
+    when a store is passed — the numbered-page span alone is not enough:
+    the physical page count and the body volume must also say "preview"
+    (gr514187). Without a store it falls back to the raw span check."""
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
         lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
-    if ref.is_one_page_pdf:
+    one_page = (
+        store.is_one_page_preview(ref) if store is not None else ref.is_one_page_pdf
+    )
+    if one_page:
         lines.append(f"> [!] **{ONE_PAGE_COVERAGE_NOTE}**")
     out = [ln for ln in lines if ln]
     return "\n".join(out) if out else None

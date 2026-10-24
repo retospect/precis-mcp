@@ -43,6 +43,65 @@ def test_banner_flags_only_one_page(store: Any) -> None:
     assert _paper_banner(_paper(store, "onep07a", None)) is None
 
 
+def _attach_pdf(store: Any, ref_id: int, *, page_count: int) -> str:
+    sha = "ab" * 32
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, %s, 1, '')",
+            (sha, sha, page_count),
+        )
+        conn.execute("UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, ref_id))
+    return sha
+
+
+def _add_body_chunks(store: Any, ref_id: int, n: int, *, chars: int = 40) -> None:
+    with store.pool.connection() as conn:
+        for i in range(n):
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+                "VALUES (%s, 'system', %s, 'paragraph', %s)",
+                (ref_id, i, "x" * chars),
+            )
+
+
+def test_banner_suppressed_by_real_page_count(store: Any) -> None:
+    """A one-page-numbered ref whose file physically has more pages is not
+    a preview — the numbered span lied (gr514187)."""
+    ref = _paper(store, "onep11a", "[1,2)")
+    _attach_pdf(store, ref.id, page_count=6)
+    assert _paper_banner(store.get_ref(kind="paper", id="onep11a"), store=store) is None
+
+
+def test_banner_suppressed_by_substantial_body(store: Any) -> None:
+    """A one-page-numbered ref carrying a real body (scroll-PDF / markup
+    refetch) is not a preview either — the corpus holds the methods."""
+    ref = _paper(store, "onep12a", "[1,2)")
+    _attach_pdf(store, ref.id, page_count=1)
+    _add_body_chunks(store, ref.id, 11, chars=900)
+    assert _paper_banner(store.get_ref(kind="paper", id="onep12a"), store=store) is None
+
+
+def test_banner_still_fires_for_true_preview(store: Any) -> None:
+    """One numbered page + a thin body + a physically one-page file: the
+    preview warning still applies."""
+    ref = _paper(store, "onep13a", "[1,2)")
+    _attach_pdf(store, ref.id, page_count=1)
+    _add_body_chunks(store, ref.id, 3, chars=400)
+    banner = _paper_banner(store.get_ref(kind="paper", id="onep13a"), store=store)
+    assert banner is not None and "ONE-PAGE SOURCE" in banner
+
+
+def test_preview_verdict_without_pdf_row(store: Any) -> None:
+    """No pdfs row → the body-volume leg alone corroborates."""
+    thin = _paper(store, "onep14a", "[1,2)")
+    banner = _paper_banner(thin, store=store)
+    assert banner is not None and "ONE-PAGE SOURCE" in banner
+    full = _paper(store, "onep14b", "[1,2)")
+    _add_body_chunks(store, full.id, 20, chars=800)
+    assert _paper_banner(store.get_ref(kind="paper", id="onep14b"), store=store) is None
+
+
 def _edge_meta(store: Any, hub: int, paper: Any) -> dict[str, Any]:
     attach_evidence(
         store,

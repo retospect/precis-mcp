@@ -42,7 +42,7 @@ from precis.identity import (
 from precis.ingest.article_spread import trim_to_article
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.lookup import lookup_doi
-from precis.ingest.marker import extract_blocks_marker
+from precis.ingest.marker import _ocr_context, extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import get_paper_by_id
 from precis.utils.authors import author_names as _shared_author_names
@@ -378,6 +378,7 @@ def extract_body(
     pdf_bytes: bytes | None = None,
     target_title: str = "",
     target_doi: str | None = None,
+    ocr_context: str | None = None,
 ) -> BodyExtraction:
     """Run the body leg of :func:`extract_paper` alone: Marker → blocks →
     mojibake repair → body chunks (+ reference re-tagging), with the
@@ -413,6 +414,7 @@ def extract_body(
         timeout_s=marker_timeout_s,
         fallback_info=fallback_info,
         glyph_health=glyph_health_info,
+        ocr_context=ocr_context,
     )
     blocks = _repair_mojibake(blocks)
     # Page stats stay on the whole PDF: a trimmed spread is not a preview.
@@ -554,6 +556,7 @@ def extract_paper(
             pdf_bytes=pdf_bytes,
             target_title=target_title or metadata.title or "",
             target_doi=target_doi or doi,
+            ocr_context=_ocr_context(metadata.title or "", metadata.abstract or ""),
         )
         blocks = body.blocks
         if not metadata.title and not online:
@@ -606,7 +609,12 @@ def extract_paper(
         pdf_pages_last=pdf_pages_last,
         pdf_role="main",
         pdf_storage_path=str(pdf_path),
-        pdf_page_count=page_count or len(blocks) or 1,
+        # ``pdfs.page_count`` is the PHYSICAL page total — the marker path's
+        # ``body.page_count`` only counts the distinct pages blocks landed
+        # on, which collapses to 1 whenever page assignment can't anchor
+        # (unnumbered SI pages → everything on page 0; gr514187). Prefer
+        # fitz's true count; the block-page count stays the fallback.
+        pdf_page_count=_pdf_page_count(pdf_bytes) or page_count or len(blocks) or 1,
         pdf_size_bytes=len(pdf_bytes),
         doi=doi,
         arxiv_id=arxiv_id,
