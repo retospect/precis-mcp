@@ -139,6 +139,18 @@ class PaperToWrite:
     chunks: list[ChunkToWrite] = field(default_factory=list)
 
 
+def _pdf_pages_range(paper: PaperToWrite) -> str | None:
+    """The ``[first,last]`` int4range literal for ``refs.pdf_pages`` —
+    ``None`` when the span is unplaceable. Page 0 is Marker's "no page
+    number" sentinel: a ``first`` of 0/None used to write ``[0,1)``,
+    which made every such paper read as a one-page preview (gr510135)."""
+    if not paper.pdf_pages_first or paper.pdf_pages_last is None:
+        return None
+    # INT4RANGE literal — inclusive on both ends matches Marker's
+    # 1-indexed page numbers.
+    return f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
+
+
 @dataclass(frozen=True)
 class WriteResult:
     """Outcome of a successful :func:`write_paper` call."""
@@ -349,11 +361,7 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
         )
 
     # 3. refs row
-    pdf_pages: str | None = None
-    if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
-        # INT4RANGE literal — inclusive on both ends matches Marker's
-        # 1-indexed page numbers.
-        pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
+    pdf_pages = _pdf_pages_range(paper)
 
     row = conn.execute(
         "INSERT INTO refs "
@@ -661,9 +669,7 @@ def register_aliases_and_maybe_upgrade(
     # lands body chunks — the new file is the real full-text copy, the
     # stored one only ever produced a preview/empty extraction.
     if paper.pdf_sha256 and (not already_has_pdf or (not has_body and new_body > 0)):
-        pdf_pages: str | None = None
-        if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
-            pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
+        pdf_pages = _pdf_pages_range(paper)
         if already_has_pdf:
             # The stored range described the old (bodiless) file, so
             # overwrite rather than COALESCE.

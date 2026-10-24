@@ -1,4 +1,6 @@
-"""One-page-PDF coverage flag (gr372863): paper read banner + hub evidence edge."""
+"""One-page-PDF coverage flag (gr372863): paper read banner + hub evidence edge.
+Page 0 is Marker's "no page number" sentinel — a ``[0,1)`` span means the
+body blocks never carried a page, not that the PDF has one page (gr510135)."""
 
 from __future__ import annotations
 
@@ -27,16 +29,17 @@ def _paper(store: Any, slug: str, pages: str | None) -> Any:
 
 
 def test_is_one_page_pdf(store: Any) -> None:
-    assert _paper(store, "onep01a", "[0,1)").is_one_page_pdf
-    assert _paper(store, "onep02a", "[1,1]").is_one_page_pdf
+    assert _paper(store, "onep01a", "[1,2)").is_one_page_pdf
+    assert not _paper(store, "onep02a", "[0,1)").is_one_page_pdf
     assert not _paper(store, "onep03a", "[1,13)").is_one_page_pdf
     assert not _paper(store, "onep04a", None).is_one_page_pdf
 
 
 def test_banner_flags_only_one_page(store: Any) -> None:
-    banner = _paper_banner(_paper(store, "onep05a", "[0,1)"))
+    banner = _paper_banner(_paper(store, "onep05a", "[1,2)"))
     assert banner is not None and "ONE-PAGE SOURCE" in banner
-    assert _paper_banner(_paper(store, "onep06a", "[1,13)")) is None
+    assert _paper_banner(_paper(store, "onep06a", "[0,1)")) is None
+    assert _paper_banner(_paper(store, "onep06b", "[1,13)")) is None
     assert _paper_banner(_paper(store, "onep07a", None)) is None
 
 
@@ -58,9 +61,12 @@ def _edge_meta(store: Any, hub: int, paper: Any) -> dict[str, Any]:
 
 def test_hub_edge_carries_flag_only_for_one_page(store: Any) -> None:
     hub = mint_hub(store, _CLAIM)
-    flagged = _edge_meta(store, hub, _paper(store, "onep08a", "[0,1)"))
+    flagged = _edge_meta(store, hub, _paper(store, "onep08a", "[1,2)"))
     assert flagged["coverage"] == "one_page"
     assert ONE_PAGE_COVERAGE_NOTE in flagged["caveats"]
-    normal = _edge_meta(store, hub, _paper(store, "onep09a", "[1,13)"))
+    unknown = _edge_meta(store, hub, _paper(store, "onep09a", "[0,1)"))
+    assert "coverage" not in unknown
+    assert not unknown.get("caveats")
+    normal = _edge_meta(store, hub, _paper(store, "onep10a", "[1,13)"))
     assert "coverage" not in normal
     assert not normal.get("caveats")

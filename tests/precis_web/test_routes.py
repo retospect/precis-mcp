@@ -1899,6 +1899,18 @@ def test_paper_meta_tab_shows_journal_type_keywords_and_s2_fields(
     assert "nitrate reduction" in resp.text
 
 
+def test_paper_meta_tab_shows_handle_not_raw_id(client) -> None:
+    """gr513173: the Meta tab showed the same number twice — the pa
+    handle and a bare ``#<id>`` row. The id row is gone; the handle
+    row stays."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert ">handle</dt>" in resp.text
+    assert "pa10" in resp.text
+    assert ">id</dt>" not in resp.text
+    assert "<dd>#10</dd>" not in resp.text
+
+
 def test_paper_meta_tab_retraction_banner(client, runtime) -> None:
     """A retracted paper shows a visible retraction notice on the Meta
     tab (display-only — the web never writes these columns)."""

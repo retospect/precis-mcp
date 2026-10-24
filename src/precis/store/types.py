@@ -552,9 +552,15 @@ class Ref:
         """True when ``pdf_pages`` spans exactly one page - the shape of an
         entitlement-preview PDF (docs/runbooks/elsevier-preview-pdf-
         remediation.md). The single definition read surfaces and evidence
-        attach share; a ref with no recorded span is not flagged."""
+        attach share. A lower bound of 0 is Marker's "no page number"
+        sentinel, not a real first page (gr510135); a ref with no
+        recorded span is not flagged."""
         m = _INT4RANGE_RE.fullmatch((self.pdf_pages or "").strip())
-        return m is not None and int(m.group(2)) - int(m.group(1)) == 1
+        return (
+            m is not None
+            and int(m.group(1)) >= 1
+            and int(m.group(2)) - int(m.group(1)) == 1
+        )
 
     @property
     def public_id(self) -> str:

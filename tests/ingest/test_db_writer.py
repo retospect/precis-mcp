@@ -288,6 +288,57 @@ class TestWritePaper:
         assert chunk_count is not None and chunk_count[0] == 3
         assert card_count is not None and card_count[0] == 1
 
+    def test_unknown_page_zero_writes_null_pdf_pages(self, store):
+        """gr510135: page 0 is Marker's "no page number" sentinel — the
+        old ``[0,1)`` write made every unpaged full paper read as a
+        one-page preview. A ``first`` of 0/None stores NULL instead."""
+        sha0, sha1 = "7" * 64, "8" * 64
+        unpaged = PaperToWrite(
+            title="Unpaged PDF",
+            authors=[{"name": "Doe, Jane"}],
+            year=2024,
+            paper_id="u0p1a2g3",
+            cite_key_prefix="doe24",
+            doi="10.1/unpaged",
+            pdf_sha256=sha0,
+            content_hash="a" * 64,
+            pdf_storage_path="/corpus/d/doe24.pdf",
+            pdf_page_count=30,
+            pdf_size_bytes=900_000,
+            pdf_pages_first=0,
+            pdf_pages_last=0,
+            pdf_role="main",
+        )
+        paged = PaperToWrite(
+            title="Paged PDF",
+            authors=[{"name": "Roe, Jane"}],
+            year=2024,
+            paper_id="p4g5e6d7",
+            cite_key_prefix="roe24",
+            doi="10.1/paged",
+            pdf_sha256=sha1,
+            content_hash="b" * 64,
+            pdf_storage_path="/corpus/r/roe24.pdf",
+            pdf_page_count=1,
+            pdf_size_bytes=90_000,
+            pdf_pages_first=1,
+            pdf_pages_last=1,
+            pdf_role="main",
+        )
+        with store.pool.connection() as conn:
+            r0 = write_paper(unpaged, conn=conn)
+            r1 = write_paper(paged, conn=conn)
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, pdf_pages::text FROM refs WHERE ref_id = ANY(%s)",
+                ([r0.ref_id, r1.ref_id],),
+            ).fetchall()
+        by_id = {row[0]: row[1] for row in rows}
+        assert by_id[r0.ref_id] is None
+        assert by_id[r1.ref_id] == "[1,2)"
+
     def test_pdf_dedup_on_conflict(self, store):
         """Inserting two refs that point at the same pdf_sha256 must
         not duplicate the pdfs row (ON CONFLICT DO NOTHING)."""

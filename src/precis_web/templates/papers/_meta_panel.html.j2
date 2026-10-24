@@ -16,7 +16,6 @@
   </dd></div>
   {% endif %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">id</dt><dd>#{{ paper.id }}</dd></div>
   {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
   {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">chunks</dt><dd>{{ n_chunks }}</dd></div>
