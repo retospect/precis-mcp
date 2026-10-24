@@ -75,3 +75,74 @@ def test_llm_nav_links_never_404(client: TestClient) -> None:
     assert "/llm" in seen
     assert "/llm/chain" in seen
     assert "/llm/op" in seen
+    assert "/llm/rules" in seen
+
+
+def test_llm_rules_page_renders(client: TestClient) -> None:
+    """The keyword-rules section renders (empty table) on the FakeStore —
+    the snapshot fails open to the (empty) code defaults."""
+    resp = client.get("/llm/rules")
+    assert resp.status_code == 200
+    assert "Keyword rules" in resp.text
+
+
+def test_keyword_route_preview_no_match(client: TestClient) -> None:
+    """The preview endpoint degrades to ``matched: false``, never a 4xx."""
+    resp = client.get("/api/llm/keyword-route", params={"text": "hello"})
+    assert resp.status_code == 200
+    assert resp.json() == {"matched": False}
+
+
+def test_keyword_route_preview_match(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seeded rule fires in the preview and carries its resolved plan."""
+    from precis.utils.llm import keyword_route
+
+    rule = keyword_route.KeywordRule(
+        rule_id="3",
+        pattern="opus",
+        is_regex=False,
+        target={"model": "claude-opus-4-8"},
+        compiled=keyword_route._compile("opus", False, "3"),
+    )
+    monkeypatch.setattr(keyword_route, "_refresh_snapshot", lambda: [rule])
+    try:
+        resp = client.get("/api/llm/keyword-route", params={"text": "ask opus"})
+    finally:
+        keyword_route.reset_cache()
+    assert resp.status_code == 200
+    row = resp.json()
+    assert row["matched"] is True
+    assert row["rule_id"] == "3"
+    assert row["target"] == {"model": "claude-opus-4-8"}
+    # The plan either names the model or the reason it can't run here —
+    # both are informative preview output, never an error.
+    assert "model" in row or "fallback" in row
+
+
+def test_llm_rule_posts_never_500(client: TestClient) -> None:
+    """The write endpoints degrade to a redirect when the store can't
+    take the write (FakeStore has no pool)."""
+    resp = client.post(
+        "/llm/rules/add",
+        data={
+            "pattern": "opus",
+            "target_kind": "model",
+            "target_value": "claude-opus-4-8",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    resp = client.post(
+        "/llm/rules/toggle",
+        data={"rule_id": "1", "enabled": "false"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    resp = client.post(
+        "/llm/rules/move",
+        data={"rule_id": "1", "direction": "up"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303

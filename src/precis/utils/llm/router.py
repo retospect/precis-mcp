@@ -64,6 +64,7 @@ from precis.utils.claude_agent import (
 )
 from precis.utils.claude_p import ClaudePResult, call_claude_p
 from precis.utils.llm import failure as _failure
+from precis.utils.llm import keyword_route as _keyword_route
 from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
 from precis.utils.rate_limit import RateLimited
 
@@ -1298,6 +1299,11 @@ class LlmRequest:
     #: route-log features so the Budget tab can count degraded routing.
     #: ``None`` ⇒ an ordinary call.
     degraded_from: str | None = None
+    #: The keyword rule that retargeted this call, stamped by :func:`route`
+    #: when a :mod:`precis.utils.llm.keyword_route` rule matched (the
+    #: ``llm_keyword_routes.id`` / ``code:<n>`` id, logged into the route-log
+    #: features). Always ``None`` on a caller-built request.
+    keyword_rule: str | None = None
     #: Write this call to the route-log at all. ``False`` = no row.
     log_call: bool = True
     #: Store the full request/response text (the ``llm_blob`` replay
@@ -2519,6 +2525,113 @@ def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:
     return "budget"
 
 
+def _keyword_model_rung(model: str, *, tools_needed: bool) -> Rung:
+    """The single rung for a bare-model keyword target — the transport the
+    model id implies: a ``claude*`` id rides the claude wire, a model served
+    on this host the local wire, anything else the hosted-OSS wire
+    (:func:`_rung_unavailable` then drops the rung when that wire isn't
+    configured here)."""
+    if model.startswith("claude"):
+        return Rung(
+            Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P,
+            model=model,
+            label="keyword",
+        )
+    from precis.utils.llm import local_serving as _local
+
+    if _local.served_locally(model):
+        return Rung(
+            Transport.OPENAI_TOOLS if tools_needed else Transport.LOCAL,
+            model=model,
+            label="keyword",
+        )
+    return Rung(
+        Transport.OPENAI_TOOLS if tools_needed else Transport.OPENAI_COMPAT,
+        model=model,
+        label="keyword",
+    )
+
+
+def _keyword_plan(
+    rule: _keyword_route.KeywordRule, req: LlmRequest, *, backend: Backend
+) -> tuple[list[Rung], str, Tier] | str:
+    """Resolve a matched keyword ``rule`` to its ``(ladder, model, tier)``
+    plan, or a one-line reason it can't run — the caller falls back to the
+    normal resolution on a reason string.
+
+    The target reuses the ``llm.op.*`` override grammar:
+    ``{"tier"}`` remaps onto that tier's chain, ``{"chain"}`` carries the
+    full rung grammar, and ``{"model"}`` alone synthesizes a single rung
+    (:func:`_keyword_model_rung`). The candidate ladder runs the **same**
+    filters the normal ladder faces — the placement pin, the cloud
+    throttle, the host-availability drop, a non-tallying limiter probe and
+    window admission — so a rule never bypasses a gate, and a target that
+    can't take the call is a logged miss, not a dispatch.
+    """
+    target = rule.target
+    tier = req.tier
+    raw_tier = target.get("tier")
+    if raw_tier:
+        try:
+            tier = Tier(str(raw_tier))
+        except ValueError:
+            return f"target tier {raw_tier!r} is not a capability tier"
+    model = target.get("model")
+    raw_chain = target.get("chain")
+    if raw_chain is not None:
+        rungs, bad = parse_chain_rungs(raw_chain)
+        if bad is not None:
+            reason, i, detail = bad
+            return f"chain rung {i} {reason} ({detail!r})"
+        if req.tools_needed:
+            rungs = filter_tool_rungs(rungs, f"keyword rule {rule.rule_id}", warn=False)
+            if not rungs:
+                return "its chain has no tool-carrying rung for a tools-needed call"
+        ladder = rungs
+    elif model:
+        ladder = [_keyword_model_rung(str(model), tools_needed=req.tools_needed)]
+    else:
+        ladder = resolve_chain(tier, tools_needed=req.tools_needed, backend=backend)
+    ladder = _apply_placement(ladder, req.placement)
+    if not ladder:
+        return f"no {req.placement} rung under the call's placement pin"
+    ladder = _apply_cloud_throttle(ladder)
+    if not ladder:
+        return "cloud is disabled and its chain has no local rung"
+    kw_model = (
+        str(model)
+        if model
+        else (ladder[0].model or resolve_model(tier, backend=backend))
+    )
+    ladder = _skip_unserved_local_rung(ladder, kw_model)
+    ladder, dropped = _drop_unavailable_rungs(ladder, kw_model)
+    if not ladder:
+        return "no usable rung on this host: " + "; ".join(
+            reason for _, reason in dropped
+        )
+    from precis.budget import breaker as _breaker
+
+    trip = _breaker.gate_tier(
+        tier,
+        transport=ladder[0].transport.value,
+        local=not _rung_is_cloud(ladder[0]),
+        bare=ladder[0].bare,
+        work_class=req.work_class,
+        tally=False,
+        degraded=bool(req.degraded_from),
+    )
+    if trip is not None:
+        return f"over its limiter: {trip}"
+    from precis.utils.llm import admit as _admit
+
+    refusal = _admit.check_dispatch(
+        req, model=ladder[0].model or kw_model, transport=ladder[0].transport
+    )
+    if refusal is not None:
+        return f"window admission refused: {refusal}"
+    return ladder, kw_model, tier
+
+
 def route(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
@@ -2571,6 +2684,29 @@ def route(req: LlmRequest) -> LlmResult:
         model = _op_model or resolve_model(req.tier, backend=backend)
     else:
         model = req.model or resolve_model(req.tier, backend=backend)
+    # Keyword routing (docs/backlog/llm-keyword-route.md): a matched rule
+    # retargets the call to its own (tier, model, ladder), outranking the
+    # op override — committed only when _keyword_plan's probe-gates pass,
+    # so an unavailable/over-limiter target keeps the normal resolution.
+    # A call-site `req.model` pin is never routed (functional pins).
+    _kw_ladder: list[Rung] | None = None
+    _kw_rule = _keyword_route.match_request(req) if req.model is None else None
+    if _kw_rule is not None:
+        try:
+            _kw_plan = _keyword_plan(_kw_rule, req, backend=backend)
+        except Exception as exc:
+            _kw_plan = f"plan fault: {exc}"
+        if isinstance(_kw_plan, str):
+            log.warning(
+                "llm-keyword: rule %s matched but is unusable (%s) — normal routing",
+                _kw_rule.rule_id,
+                _kw_plan,
+            )
+        else:
+            _kw_ladder, model, _kw_tier = _kw_plan
+            if _kw_tier is not req.tier:
+                req = _replace(req, tier=_kw_tier)
+            req = _replace(req, keyword_rule=_kw_rule.rule_id)
     # Gen-param passthrough: resolve the tier's (thinking, temperature)
     # default (_tier_gen_defaults) unless the caller already pinned one.
     # Reassigning `req` here (vs. threading two extra locals) means every
@@ -2594,14 +2730,18 @@ def route(req: LlmRequest) -> LlmResult:
         _operations.resolve_op_chain(
             req.source, tools_needed=req.tools_needed, backend=backend
         )
-        if req.source
+        if req.source and _kw_ladder is None
         else None
     )
-    ladder = _op_chain or resolve_chain(
-        req.tier, tools_needed=req.tools_needed, backend=backend
+    ladder = (
+        _kw_ladder
+        or _op_chain
+        or resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
     )
     _chain_name = (
-        f"llm.op.{req.source} chain" if _op_chain else f"{req.tier.value} chain"
+        f"keyword rule {_kw_rule.rule_id}"
+        if _kw_ladder is not None and _kw_rule is not None
+        else (f"llm.op.{req.source} chain" if _op_chain else f"{req.tier.value} chain")
     )
     # Structured placement filter (strict — unlike the cloud throttle below,
     # an emptied nonempty chain here is an *error* result, not a silent
@@ -3027,6 +3167,11 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
+    # Keyword parity with route(): a matched rule delegates to the sync
+    # path — the retargeted call gives up the on_event stream but keeps
+    # every gate (and, on an unusable target, the normal resolution).
+    if req.model is None and _keyword_route.match_request(req) is not None:
+        return route(req)
     model = req.model or resolve_model(req.tier, backend=backend)
     # Resolve the primary transport through the always-on chain, same as sync route() — the streaming decision keys on rung 0.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
@@ -3353,6 +3498,8 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
     }
     if req.degraded_from:
         feats["degraded_from"] = req.degraded_from
+    if req.keyword_rule:
+        feats["keyword_rule"] = req.keyword_rule
     if result is not None:
         stop = result.stop_reason
         terminal = result.terminal_reason

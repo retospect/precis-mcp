@@ -120,5 +120,23 @@ migration `NNNN_llm_keyword_routes.sql` (number via builder-ce),
 - **Keyword rules beat the op override when both apply** (content signal is
   the more specific operator intent; a miss/fallback re-runs the full
   normal path including `llm.op.*`).
-- **Migration number**: not picked here — when the SQL is ready this tree
-  signals `needs migration number from builder-ce` on its purpose line.
+- **Migration number**: assigned by builder-ce — `0237_llm_keyword_routes.sql`,
+  landing after 0236 (order 0235 trust-2b, 0236 se-charge-dipole-si, 0237).
+
+  ```sql
+  BEGIN;
+  CREATE TABLE IF NOT EXISTS llm_keyword_routes (
+      id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      position   integer NOT NULL,
+      pattern    text NOT NULL,
+      is_regex   boolean NOT NULL DEFAULT false,
+      target     jsonb NOT NULL,
+      sources    text[] NULL,
+      tiers      text[] NULL,
+      enabled    boolean NOT NULL DEFAULT true,
+      note       text NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  COMMIT;
+  ```
