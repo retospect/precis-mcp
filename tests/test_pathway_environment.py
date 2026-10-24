@@ -661,6 +661,48 @@ def test_kinetics_subprocess_carries_kinetics_v2(fx: dict[str, Any]) -> None:
     assert isinstance(v2, dict) and v2["schema"] == "kinetics"
 
 
+def test_kinetics_subprocess_accepts_a_v2_only_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D8 reader flip: once the engine retires the v1 block the child's
+    envelope carries ``kinetics_v2`` alone — the parent folds it in
+    instead of reporting an error, and fabricates no v1 key."""
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        out_path = cmd[-1]
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump({"kinetics_v2": {"tof_mf": 2.0e-3}}, fh)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    artifact = cast(
+        "PathwayArtifact",
+        {"results_json": {"nodes": {}, "edges": []}},
+    )
+    runner.run_kinetics_subprocess({"name": "x"}, artifact, timeout=30)
+    rj = artifact["results_json"]
+    assert "kinetics_error" not in rj
+    assert "kinetics" not in rj  # tolerated missing, never fabricated
+    assert rj["kinetics_v2"]["tof_mf"] == 2.0e-3
+
+
+def test_kinetics_child_writes_a_v2_only_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The child half the same way: a solve that produced only
+    ``kinetics_v2`` is a result to write back, not ``kinetics_error``."""
+
+    def _fake_run(config: Any, artifact: Any, **kw: Any) -> None:
+        artifact["results_json"]["kinetics_v2"] = {"tof_mf": 1.0}
+
+    monkeypatch.setattr(runner, "run_kinetics", _fake_run)
+    out = tmp_path / "result.json"
+    runner._kinetics_child({"config": {}, "nodes": {}, "edges": []}, str(out))
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload == {"kinetics_v2": {"tof_mf": 1.0}}
+
+
 def test_finish_stamps_kinetics_v2_on_the_pathway_meta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

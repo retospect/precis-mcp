@@ -1864,9 +1864,11 @@ def run_kinetics_subprocess(
             )
             return
 
-    if "kinetics" in payload:
-        results_json["kinetics"] = payload["kinetics"]
-        # the v2 record rides beside v1 (D8); a pre-0.33 child never
+    if "kinetics" in payload or isinstance(payload.get("kinetics_v2"), dict):
+        if "kinetics" in payload:
+            results_json["kinetics"] = payload["kinetics"]
+        # the v2 record rides beside v1 (D8) — and stands alone on an
+        # engine that stops writing the v1 block; a pre-0.33 child never
         # emits it and none is fabricated
         if isinstance(payload.get("kinetics_v2"), dict):
             results_json["kinetics_v2"] = payload["kinetics_v2"]
@@ -2218,7 +2220,7 @@ def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int
         rj = artifact["results_json"]
         payload = (
             {k: rj[k] for k in ("kinetics", "kinetics_v2") if k in rj}
-            if "kinetics" in rj
+            if "kinetics" in rj or "kinetics_v2" in rj
             else {"kinetics_error": rj.get("kinetics_error", "no result")}
         )
     except Exception as exc:  # pragma: no cover - run_kinetics never raises

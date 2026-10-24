@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis_web.pathway_kinetics import kinetics_payload, kinetics_verdict
 
 
@@ -278,3 +280,85 @@ def test_payload_and_verdict_survive_drifted_shapes() -> None:
     assert ml["coverages"] == {} and ml["drc"] == {} and ml["production"] == {}
     assert ml["bracket"] is None
     assert ml["warnings"] == [] and ml["transitions"] == []
+
+
+# ── D8 reader flip: the v2 record renders the panel ────────────────────
+
+
+def _v2_record() -> dict[str, Any]:
+    """A D8 record on the current pin — the shape prod takes once the
+    engine stops writing the v1 block."""
+    return {
+        "tof_chain": 1.0e-4,
+        "tof_mf": 9.1e-3,
+        "tof_span_limit": 8.0e-3,
+        "coverages": {"fcc": {"NO": 0.61, "H": 0.2, "*": 0.19}},
+        "drc": {"NO*->NOH*": 0.8},
+        "trc": {"NO@fcc": -0.7},
+        "selectivity": {"NH3": 0.9, "N2O": 0.1},
+        "uncertainty": {
+            "log_tof_p50": -2.0,
+            "log_tof_p5": -5.0,
+            "log_tof_p95": -1.0,
+            "n_samples": 200,
+            "controlling_step": {"NO*->NOH*": 0.6},
+        },
+        "warnings": ["kinetics: no barrier carries a spread"],
+        "environment": {
+            "T": 500.0,
+            "gases": {"inputs": {"NO": 0.05}, "outputs": {"NH3": 1e-3}},
+        },
+    }
+
+
+def test_payload_renders_a_v2_only_record() -> None:
+    """No ``kinetics`` block at all: the record's shared fields fold into
+    the trim shape — ranked MF TOF, flat DRC/TRC back under X_RC/X_TRC,
+    per-class coverages as ``token@class``, the log band inverted to a
+    linear sensitivity band, the resolved environment as conditions."""
+    out = kinetics_payload({"kinetics_v2": _v2_record(), "score": {"target": "NH3"}})
+    assert out is not None and set(out) == {"ml"}
+    ml = out["ml"]
+    assert ml["tof"] == 9.1e-3 and ml["tof_span_limit"] == 8.0e-3
+    assert ml["drc"] == {"NO*->NOH*": 0.8}
+    assert ml["trc"] == {"NO@fcc": -0.7}
+    assert ml["coverages"]["NO@fcc"] == 0.61
+    assert ml["coverages"]["*@fcc"] == 0.19 and ml["n_coverages"] == 3
+    assert ml["product"] == "NH3" and ml["selectivity"] == 0.9
+    assert ml["sensitivity"]["tof"]["median"] == pytest.approx(1e-2)
+    assert ml["sensitivity"]["n_samples"] == 200
+    assert ml["conditions"] == {
+        "temperature": 500.0,
+        "pressures": {"NO": 0.05, "NH3": 1e-3},
+    }
+    assert ml["warnings"] == ["kinetics: no barrier carries a spread"]
+    assert ml["verdict"]["headline"].startswith("Turns over")
+    # v1-only content absent on the record — never fabricated
+    assert ml["bracket"] is None and ml["transitions"] == []
+
+
+def test_payload_v2_fields_outrank_v1_but_v1_only_fields_survive() -> None:
+    """Both blocks present: the ranked (MF) numbers win; the transitions
+    table, bracket, production and tier stay from the v1 block the record
+    cannot carry."""
+    rec = _record(tof=3.2e-4)
+    v2 = {"tof_mf": 7.0, "drc": {"mf_step": 1.0}, "warnings": []}
+    out = kinetics_payload({"kinetics": rec, "kinetics_v2": v2})
+    assert out is not None
+    ml = out["ml"]
+    assert ml["tof"] == 7.0
+    assert ml["drc"] == {"mf_step": 1.0}
+    # the trim keeps the panel's key subset off the v1 transition rows
+    assert [t["name"] for t in ml["transitions"]] == [
+        t["name"] for t in rec["transitions"]
+    ]
+    assert ml["bracket"]["agree"] is True
+    assert ml["warnings"] == rec["warnings"]  # empty v2 list never erases
+    assert ml["verdict"]["headline"].startswith("Turns over")
+    # a kmc median outranks the MF TOF the same way the scalars rank it
+    kmc = {
+        **v2,
+        "tof_kmc": {"median": 5.5, "p5": 5.0, "p95": 6.0},
+    }
+    out2 = kinetics_payload({"kinetics": rec, "kinetics_v2": kmc})
+    assert out2 is not None and out2["ml"]["tof"] == 5.5

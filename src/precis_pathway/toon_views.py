@@ -524,7 +524,8 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     Honest v1 only: no steady-state coverages, no degree-of-rate-control — both
     need a full microkinetic solve (site balance, reverse rates) this view does
     not attempt; faking them would be worse than not having them. When the
-    aggregate's chain solve is present (``results.kinetics``, engine >= 0.32)
+    aggregate's solve record is present (``results.kinetics_v2``, the v1
+    ``results.kinetics`` block filling what the record lacks, engine >= 0.33)
     its environment, Q/K and per-transition reversibility follow the Eyring
     table, read verbatim from that record (:func:`_solve_lines`).
     """
@@ -570,9 +571,22 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         "A = k_B·T/h ≈ 6.2e12 /s at 300 K; residence times ignore reverse "
         "reactions and surface-coverage effects."
     )
-    kin = (meta.get("results") or {}).get("kinetics")
+    results = meta.get("results") or {}
+    kin = results.get("kinetics")
+    v2 = results.get("kinetics_v2")
+    # D8 reader flip: the v2 record answers first; the v1 block fills what
+    # the record lacks (``environment_basis``, ``product`` — it holds
+    # neither) through a shallow merge — a v1 value survives only where the
+    # record's own is absent (``None`` fields never erase).
+    if isinstance(v2, dict):
+        merged = dict(kin) if isinstance(kin, dict) else {}
+        merged.update({k: val for k, val in v2.items() if val is not None})
+        kin = merged
     if isinstance(kin, dict):
-        lines += ["", *_solve_lines(kin)]
+        lines += [
+            "",
+            *_solve_lines(kin, product=results.get("target") or target),
+        ]
     return "\n".join(lines)
 
 
@@ -826,10 +840,12 @@ def _environment_line(env: dict[str, Any], basis: Any) -> str:
     return "Environment: " + "; ".join(parts)
 
 
-def _solve_lines(kin: dict[str, Any]) -> list[str]:
+def _solve_lines(kin: dict[str, Any], product: str | None = None) -> list[str]:
     """The steady-state solve's environment, Q/K and per-step reversibility
-    (``results_json['kinetics']``, engine >= 0.32); empty on an older solve
-    that carries none of them."""
+    (``results_json['kinetics_v2']`` — the v1 block's fields survive the
+    caller's merge where the record lacks them); empty on an older solve
+    that carries none of them.  ``product`` is the pathway target — the
+    record itself holds no product field."""
     out: list[str] = []
     env = kin.get("environment")
     if isinstance(env, dict):
@@ -837,7 +853,7 @@ def _solve_lines(kin: dict[str, Any]) -> list[str]:
     qk = kin.get("q_over_k")
     if isinstance(qk, (int, float)):
         out.append(
-            f"Q/K (overall {kin.get('product')} formation) = {_num_str(qk)}"
+            f"Q/K (overall {kin.get('product') or product or 'product'} formation) = {_num_str(qk)}"
             " — 1 is equilibrium, ≪ 1 is driven forward"
         )
     z = kin.get("reversibility")

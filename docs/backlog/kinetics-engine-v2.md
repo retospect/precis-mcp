@@ -831,6 +831,10 @@ band from v2; slice 4 `_kinetics_scalars` lifts `tof`, `log_tof`,
 'kinetics'` render v2; slice 10 retires the v1 writer (readers fall back
 to v2 only; the harvest keys move with slice 4).
 
+> Naming clash (noted 2026-10-24): the "slice 10" above is the v1-writer
+> retirement (kin-v1retire-catpath.md), not §Slices' slice 10, which is the
+> validation manifest — same number, different numbering.
+
 precis `_kinetics_scalars` lifts `tof` (= `tof_kmc.median` when present,
 else `tof_mf`), `log_tof` band, `kinetics_method`, `bep_flux_share`,
 `order_<gas>`, `q_over_k`, `drc_top`, `tpd_max_offset_eV`,

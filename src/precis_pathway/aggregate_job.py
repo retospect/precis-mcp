@@ -243,10 +243,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # legible `kinetics timed out` instead of silence.
     runner.run_kinetics_subprocess(artifact["config"], artifact)
     r = artifact["results_json"]
-    if isinstance(r.get("kinetics"), dict):
-        tof = r["kinetics"].get("tof")
-        tof_s = f"{tof:.3e} /site/s" if isinstance(tof, (int, float)) else "no TOF"
-        mb = r["kinetics"].get("mc_budget")
+    kin = r.get("kinetics")
+    kin = kin if isinstance(kin, dict) else {}
+    v2 = r.get("kinetics_v2")
+    v2 = v2 if isinstance(v2, dict) else {}
+    if kin or v2:
+        # D8 reader flip: the ranked TOF comes off the v2 record first; the
+        # v1 block answers only on a pre-0.33 engine. mc_budget stays a v1
+        # read — run_kinetics stamps it on the v1 result dict alone.
+        from precis_pathway._dispatch_common import _ranked_tof
+
+        tof, _method = _ranked_tof(v2, kin)
+        tof_s = f"{tof:.3e} /site/s" if tof is not None else "no TOF"
+        mb = kin.get("mc_budget")
         note = (
             f" — reduced samples ({mb['n_samples']} of {mb['configured']}, budget)"
             if isinstance(mb, dict)

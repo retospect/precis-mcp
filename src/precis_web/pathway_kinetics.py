@@ -246,6 +246,102 @@ def kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _v2_tof(v2: dict[str, Any]) -> float | None:
+    """The D8 ranked TOF off the record — KMC median (finite, > 0), then
+    MF, then chain. Mirrors ``precis_pathway._dispatch_common._ranked_tof``:
+    this module ports the engine's report shape and re-derives, never
+    imports, the pathway side (the ``p50``/``p5``/``p95`` KMC interval is
+    left on the record — the panel has no column for it)."""
+    med = _fin(_dict(v2.get("tof_kmc")).get("median"))
+    if math.isfinite(med) and med > 0:
+        return med
+    for key in ("tof_mf", "tof_chain"):
+        v = _fin(v2.get(key))
+        if math.isfinite(v):
+            return v
+    return None
+
+
+def _target(results: dict[str, Any]) -> Any:
+    """The pathway's product gas under a v2-only record — the record holds
+    no ``product`` field; the aggregate's score block and the sweep both
+    name the target (``runner._run_kinetics_sweep`` reads it the same way)."""
+    t = _dict(results.get("score")).get("target")
+    if isinstance(t, str) and t:
+        return t
+    return _dict(results.get("kinetics_sweep")).get("target")
+
+
+def _v2_overlay(v2: dict[str, Any], product: Any) -> dict[str, Any]:
+    """The D8 record's shared fields folded back into the v1 solve shape
+    the trim reads — the D8 reader flip done at the trim boundary, so the
+    vendored script and the verdict see one record shape. The flat MF
+    ``drc``/``trc`` land back under ``X_RC``/``X_TRC``; per-class coverages
+    (``{site_class: {token: θ}}``) flatten to ``token@class`` state names;
+    the log-space uncertainty band inverts to a linear sensitivity band;
+    ``selectivity``'s per-product map reduces to the target's share; the
+    resolved environment fills ``conditions``. Only non-empty values are
+    emitted — a record field that is absent or ``null`` never erases the
+    v1 block's answer."""
+    out: dict[str, Any] = {}
+    tof = _v2_tof(v2)
+    if tof is not None:
+        out["tof"] = tof
+    drc = _dict(v2.get("drc"))
+    if drc:
+        out["drc"] = {"X_RC": drc}
+    trc = _dict(v2.get("trc"))
+    if trc:
+        out["thermodynamic_drc"] = {"X_TRC": trc}
+    flat: dict[str, Any] = {}
+    for cls, table in _dict(v2.get("coverages")).items():
+        if isinstance(table, dict):
+            for tok, th in table.items():
+                flat[f"{tok}@{cls}"] = th
+    if flat:
+        out["coverages"] = flat
+    warns = _strlist(v2.get("warnings"))
+    if warns:
+        out["warnings"] = warns
+    env = _dict(v2.get("environment"))
+    if env:
+        gases = _dict(env.get("gases"))
+        out["conditions"] = {
+            "temperature": env.get("T"),
+            "pressures": {
+                **_dict(gases.get("inputs")),
+                **_dict(gases.get("outputs")),
+                **_dict(gases.get("inerts")),
+            },
+        }
+    sel = _dict(v2.get("selectivity"))
+    if isinstance(product, str) and product:
+        share = _fin(sel.get(product))
+        if math.isfinite(share):
+            out["selectivity"] = share
+        out["product"] = product
+    unc = _dict(v2.get("uncertainty"))
+    if unc:
+        band = {
+            dst: 10.0**lv
+            for src, dst in (
+                ("log_tof_p50", "median"),
+                ("log_tof_p5", "p5"),
+                ("log_tof_p95", "p95"),
+            )
+            if math.isfinite(lv := _fin(unc.get(src)))
+        }
+        if band:
+            out["sensitivity"] = {
+                "tof": band,
+                "n_samples": unc.get("n_samples"),
+                "controlling": unc.get("controlling_step"),
+            }
+    if math.isfinite(span := _fin(v2.get("tof_span_limit"))):
+        out["tof_span_limit"] = span
+    return out
+
+
 def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
     """What the panel shows, keyed by tier (``ml``/``dft``) — the shape the
     vendored panel script expects. A trim, not a transform. ``None`` when the
@@ -256,9 +352,19 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
     stored record rather than a run folder: the input is ``meta.results``
     (one record, tier named inside it) instead of two side-car files, and
     there is no ``file`` link for the tier table's record column.
+
+    D8 reader flip: the v2 record (``meta.results.kinetics_v2``) answers
+    first — its shared fields are folded into the v1 solve shape by
+    :func:`_v2_overlay` — so a stored run whose engine stopped writing the
+    v1 block still renders the panel, and a run carrying both shows the
+    ranked (KMC > MF > chain) numbers rather than the chain's.
     """
-    d = results.get("kinetics")
-    if not isinstance(d, dict) or "tof" not in d:
+    rec = results.get("kinetics")
+    d = dict(rec) if isinstance(rec, dict) else {}
+    v2 = results.get("kinetics_v2")
+    if isinstance(v2, dict):
+        d.update(_v2_overlay(v2, product=d.get("product") or _target(results)))
+    if "tof" not in d:
         return None
     cov = _dict(d.get("coverages"))
     sens = _dict(d.get("sensitivity"))

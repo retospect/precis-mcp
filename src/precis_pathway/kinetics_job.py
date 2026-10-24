@@ -174,9 +174,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     # stamp the job's own meta with the lifted scalars so the harvest lane
-    # reads them without opening the artifact.  The aggregate's v1 block
-    # goes in too: _kinetics_scalars lifts nothing (not even the sweep
-    # optimum) without it, so the slice-4 stamp carried n_sweep_points only.
+    # reads them without opening the artifact.  The v2 record alone is a
+    # complete input to _kinetics_scalars (the D8 reader flip); the
+    # aggregate's v1 block still rides in as the fallback for fields the
+    # record lacks.
     try:
         from precis_pathway._dispatch_common import _kinetics_scalars
 

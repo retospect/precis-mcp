@@ -11,9 +11,12 @@ engine.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -482,3 +485,274 @@ def test_kinetics_scalars_lift_the_optimum_acceleration():
             p["acceleration"]["tof_scaling_drift"] = 0.4
     out2 = _kinetics_scalars({"kinetics": {"tof": 1.0}, "kinetics_sweep": drifted})
     assert out2["optimum_kmc_trusted"] is False
+
+
+# --- D8 reader flip: the v2 record is a complete input, v1 the fallback ----
+
+
+def _v2_record() -> dict[str, Any]:
+    """A D8 record shaped like the engine's ``KineticsResult.as_dict()`` on
+    the current pin — the chain/MF scalars plus band, orders and optimum."""
+    return {
+        "schema": "kinetics",
+        "schema_version": 2,
+        "tof_chain": 1.0e-4,
+        "tof_mf": 9.1e-3,
+        "drc": {"NO@N->NOH": 0.82, "NOH->NH3": 0.15},
+        "trc": {"NO@N": -0.7},
+        "orders": {"NO": 0.5, "NH3": -0.1},
+        "q_over_k": 1e-31,
+        "bep_flux_share": 0.0,
+        "uncertainty": {"log_tof_p5": -4.0, "log_tof_p95": -2.0},
+        "optimum": {"T": 450.0, "p_total": 8.0},
+        "warnings": [],
+    }
+
+
+def test_kinetics_scalars_v2_only_yields_the_v1_plus_v2_lift():
+    """D8 reader flip (the spec's migration paragraph): a results payload
+    carrying ONLY ``kinetics_v2`` — no ``kinetics`` block, the shape prod
+    takes once the engine stops writing v1 — yields the same scalars as
+    the equivalent v1+v2 payload, minus the v1-only ``environment_basis``
+    (the record carries the resolved environment, never the hash)."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    v2 = _v2_record()
+    v1 = {
+        "tof": v2["tof_chain"],  # the record copies the chain TOF through
+        "drc": {"X_RC": {"s1": 0.9}},
+        "q_over_k": v2["q_over_k"],
+        "environment_basis": "ab" * 32,
+        "warnings": [],
+    }
+    both = _kinetics_scalars({"kinetics": v1, "kinetics_v2": v2})
+    only = _kinetics_scalars({"kinetics_v2": v2})
+    assert only == {k: v for k, v in both.items() if k != "environment_basis"}
+    assert "environment_basis" not in only
+    # spot-check the lift itself: ranked MF tof gates the log band
+    assert only["tof"] == 9.1e-3 and only["kinetics_method"] == "mf"
+    assert only["log_tof"] == pytest.approx(math.log10(9.1e-3))
+    assert only["optimum_T"] == 450.0 and only["optimum_p_total"] == 8.0
+
+
+def test_kinetics_scalars_v2_only_falls_back_through_the_tof_chain():
+    """v2-only ranking: tof_kmc.median outranks tof_mf outranks tof_chain;
+    a record whose MF leg failed still reports the chain TOF as 'chain'."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    v2 = {
+        **_v2_record(),
+        "tof_kmc": {
+            "median": 98.7,
+            "p5": 95.1,
+            "p95": 102.3,
+            "n_events": 1,
+            "replicas": 4,
+            "accelerator": "none",
+        },
+        "correlation_effect": -0.0057,
+    }
+    out = _kinetics_scalars({"kinetics_v2": v2})
+    assert out["tof"] == 98.7 and out["kinetics_method"] == "kmc"
+    assert (out["tof_kmc_p5"], out["tof_kmc_p95"]) == (95.1, 102.3)
+    assert out["correlation_effect"] == -0.0057 and out["tof_mf"] == 9.1e-3
+
+    chain_only = _kinetics_scalars(
+        {"kinetics_v2": {"tof_chain": 1.0e-4, "warnings": []}}
+    )
+    assert chain_only["tof"] == 1.0e-4
+    assert chain_only["kinetics_method"] == "chain"
+    assert chain_only["kinetics_trusted"] is True
+
+
+def test_kinetics_scalars_v1_only_is_unchanged():
+    """Old engine (pre-0.33, no v2 record): the v1 block behaves exactly as
+    before the flip — chain tof, sensitivity band, nested drc."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars(
+        {
+            "kinetics": {
+                "tof": 2.0,
+                "q_over_k": 1e-31,
+                "environment_basis": "ab" * 32,
+                "sensitivity": {"tof": {"p5": 1.0, "p95": 4.0}},
+                "drc": {"X_RC": {"s1": 0.9}},
+            }
+        }
+    )
+    assert out["tof"] == 2.0 and out["kinetics_method"] == "chain"
+    assert out["log_tof_p5"] == pytest.approx(0.0)
+    assert out["log_tof_p95"] == pytest.approx(math.log10(4.0))
+    assert out["drc_top"] == "s1" and out["environment_basis"] == "ab" * 32
+    # and a missing-v1 error string still reports the engine's reason
+    err = _kinetics_scalars({"kinetics_error": "engine 0.13.0 lacks kinetics"})
+    assert err == {
+        "kinetics_trusted": False,
+        "kinetics_note": "engine 0.13.0 lacks kinetics",
+    }
+
+
+# --- D8 reader flip: the trust gate on a v2-only payload ----------------------
+
+
+def test_v2_only_gate_trips_on_each_reason():
+    """Every trust-gate reason trips from a payload with NO v1 block:
+    ranked tof not finite / non-positive, bep_flux_share over the
+    threshold, an uncited sticking coefficient in the record's own
+    warnings, a drifted/leaky accelerator, and a failed-not-corrected
+    TPD check.  The v1-only ``tof_bracket`` guard has no v2 field —
+    what it bracketed as excluded is BEP-priced on the record, which is
+    what ``bep_flux_share`` measures (the spec's gate set, D8)."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    # tof anomalies, off the ranked (MF) source
+    out = _kinetics_scalars({"kinetics_v2": {"tof_mf": float("nan")}})
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "tof not finite" and "tof" not in out
+    for bad in (0.0, -3.5):
+        out = _kinetics_scalars({"kinetics_v2": {"tof_mf": bad}})
+        assert out["kinetics_trusted"] is False
+        assert out["tof"] == bad and "log_tof" not in out
+        assert out["kinetics_note"] == "tof non-positive (solver anomaly)"
+    # no tof-bearing field at all
+    out = _kinetics_scalars({"kinetics_v2": {"bep_flux_share": 0.1}})
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "tof not finite"
+
+    # BEP-heavy
+    out = _kinetics_scalars({"kinetics_v2": {"tof_mf": 1e-3, "bep_flux_share": 0.9}})
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "bep_flux_share=0.90"
+
+    # uncited sticking, read off the record's own warnings
+    out = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_mf": 5.0,
+                "warnings": [
+                    "kinetics: no barrier carries a spread",
+                    "sticking uncited: H2",
+                ],
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "sticking uncited: H2"
+
+    # the accelerator gates — same reasons, no v1 block
+    drifted = _kinetics_scalars({"kinetics_v2": _kmc_v2("channel_scaling", drift=0.31)})
+    assert drifted["kinetics_trusted"] is False
+    assert drifted["kinetics_note"] == "tof_scaling_drift=0.31"
+    assert "log_tof" not in drifted
+    leaky = _kinetics_scalars({"kinetics_v2": _kmc_v2("mcamc_bfs", leak=2e-3)})
+    assert leaky["kinetics_trusted"] is False
+    assert leaky["kinetics_note"] == "amc_leak=0.002"
+
+    # TPD failed and not corrected
+    tpd = {
+        "CO": {
+            "applied": False,
+            "status": "mismatch",
+            "offset_eV": None,
+        }
+    }
+    out = _kinetics_scalars({"kinetics_v2": {"tof_mf": 2.0e-3, "tpd": tpd}})
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "tpd check failed, not corrected: CO mismatch"
+    applied = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_mf": 2.0e-3,
+                "tpd": {
+                    "CO": {
+                        "applied": True,
+                        "status": "corrected",
+                        "offset_eV": -0.12,
+                    }
+                },
+            }
+        }
+    )
+    assert applied["kinetics_trusted"] is True
+    assert applied["tpd_max_offset_eV"] == pytest.approx(0.12)
+
+
+def test_v2_only_warning_union_dedupes_v1_and_v2():
+    """Both records carry the same engine warnings list; with both present
+    the uncited note reads once per gas (v1's order), not twice."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    warns = ["sticking uncited: H2", "sticking uncited: NO"]
+    out = _kinetics_scalars(
+        {
+            "kinetics": {"tof": 1.0e-4, "warnings": list(warns)},
+            "kinetics_v2": {"tof_mf": 2.0e-3, "warnings": list(warns)},
+        }
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "sticking uncited: H2; sticking uncited: NO"
+
+
+_GRAPH: dict[str, Any] = {
+    "directed": True,
+    "nodes": [{"id": "A"}, {"id": "B"}],
+    "links": [
+        {
+            "source": "A",
+            "target": "B",
+            "barrier": 0.5,
+            "delta_e": -0.1,
+            "low_confidence": False,
+            "kind": "reaction",
+        }
+    ],
+}
+
+
+def test_kinetics_view_reads_the_v2_record():
+    """view='kinetics' lifts environment/Q-K/reversibility off the v2
+    record alone (D8 reader flip); the pathway target names the product
+    the record does not carry, and v1-only keys (the basis hash) fall back
+    through the merge when a v1 block rides along."""
+    from precis_pathway.toon_views import kinetics_text
+
+    v2 = {
+        "environment": {
+            "T": 500.0,
+            "p_total": 1.05,
+            "p_total_stated": False,
+            "gases": {
+                "inputs": {"NO": 0.05},
+                "outputs": {"NH3": 1e-3},
+                "unlisted": "refuse",
+            },
+        },
+        "q_over_k": 1e-31,
+        "reversibility": {"NO*->NOH*": 0.01},
+    }
+    meta = {
+        "graph": _GRAPH,
+        "results": {"pathway": ["A", "B"], "target": "NH3", "kinetics_v2": v2},
+    }
+    body = kinetics_text(meta)
+    assert "Environment: T = 500.0 K" in body
+    assert "Q/K (overall NH3 formation) = 1.00e-31" in body
+    assert "NO*->NOH*" in body  # reversibility off the record
+    # v1 block beside it: the record's fields win, the v1-only basis hash
+    # survives the merge
+    meta2 = {
+        "graph": _GRAPH,
+        "results": {
+            "pathway": ["A", "B"],
+            "target": "NH3",
+            "kinetics": {
+                "q_over_k": 5.0,
+                "environment_basis": "ab" * 32,
+            },
+            "kinetics_v2": v2,
+        },
+    }
+    body2 = kinetics_text(meta2)
+    assert "Q/K (overall NH3 formation) = 1.00e-31" in body2
+    assert f"basis {('ab' * 32)[:12]}" in body2  # _environment_line truncates

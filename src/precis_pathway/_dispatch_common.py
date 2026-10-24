@@ -164,45 +164,85 @@ def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
 _BEP_FLUX_SHARE_MAX = 0.5
 
 
-def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
-    """Lift microkinetics scalars from ``results_json["kinetics"]`` (folded
-    in by :func:`precis_pathway.runner.run_kinetics`, right after the
-    aggregate) — same "read the already-computed artifact" move as
-    :func:`_selectivity_scalars` above, for the ``solve()`` payload instead
-    of the score card.
+def _ranked_tof(
+    v2: dict[str, Any], kin: dict[str, Any]
+) -> tuple[float | None, str | None]:
+    """The D8 ranked TOF and the model behind it — ``(tof, method)``.
 
-    Trust gate: a solve is trusted iff its ``tof`` is a finite float **> 0**
-    (a turnover frequency can be arbitrarily small but never zero/negative —
-    a non-positive value is a solver anomaly, not a dead catalyst) AND
-    (there is no ``tof_bracket``, or its ``agree`` isn't literally ``False``
-    — the guard against excluded-step barriers that turn out load-bearing at
-    their optimistic bound) AND no ``sticking uncited: <gas>`` warning (the
-    kinetics v2 environment-block rule; the note names the gases). Every
-    solve also surfaces ``q_over_k`` and ``environment_basis`` when the
-    engine (>= 0.32) reports them. An untrusted solve still surfaces its raw
-    ``tof`` (never ``log_tof``/``log_tof_p5``/``log_tof_p95`` — those stay
-    gated on trust) plus a ``kinetics_note`` reason string, so the harvest
-    lane (:mod:`precis.quest.compute`) can decide what to keep off the
+    kinetics v2 record first: the lattice-KMC median (finite, > 0) outranks
+    the mean-field TOF, which outranks the chain solve's.  ``tof_chain`` IS
+    the v1 block's ``tof`` (the engine copies it through), so the last
+    resort — the v1 block itself — only matters on an engine that predates
+    the v2 record entirely (< 0.33).  ``method`` is ``kmc`` / ``mf`` /
+    ``chain``, naming the model the ranked number came from.
+    """
+    tof_kmc = v2.get("tof_kmc")
+    med = _finite_num(tof_kmc.get("median")) if isinstance(tof_kmc, dict) else None
+    if med is not None and med > 0.0:
+        return med, "kmc"
+    mf = _finite_num(v2.get("tof_mf"))
+    if mf is not None:
+        return mf, "mf"
+    ch = _finite_num(v2.get("tof_chain"))
+    if ch is not None:
+        return ch, "chain"
+    tof = _finite_num(kin.get("tof"))
+    return (tof, "chain") if tof is not None else (None, None)
+
+
+def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
+    """Lift microkinetics scalars — the v2 record
+    (``results_json["kinetics_v2"]``, D8) first, the v1
+    ``results_json["kinetics"]`` block only where the record lacks the
+    field (or the engine predates it, < 0.33) — same "read the
+    already-computed artifact" move as :func:`_selectivity_scalars` above.
+    A payload carrying ONLY the v2 record is a complete result: once the
+    engine stops writing the v1 block (spec's migration paragraph), this
+    lift is unchanged.
+
+    Trust gate: a solve is trusted iff its ranked ``tof``
+    (:func:`_ranked_tof`) is a finite float **> 0** (a turnover frequency
+    can be arbitrarily small but never zero/negative — a non-positive value
+    is a solver anomaly, not a dead catalyst) AND (the v1 block carries no
+    ``tof_bracket`` whose ``agree`` is literally ``False`` — the guard
+    against excluded-step barriers that turn out load-bearing at their
+    optimistic bound; v2 has no bracket field — what v1 bracketed as
+    excluded is BEP-priced on the record and covered by the
+    ``bep_flux_share`` gate) AND no ``sticking uncited: <gas>`` warning on
+    either record (the kinetics v2 environment-block rule; the note names
+    the gases). Every solve also surfaces ``q_over_k`` and
+    ``environment_basis`` when reported (the basis hash is v1-only — the
+    record carries the resolved environment verbatim, not the hash). An
+    untrusted solve still surfaces its raw ``tof`` (never
+    ``log_tof``/``log_tof_p5``/``log_tof_p95`` — those stay gated on trust)
+    plus a ``kinetics_note`` reason string, so the harvest lane
+    (:mod:`precis.quest.compute`) can decide what to keep off the
     candidate's ranked measures.
 
     ``kinetics_trusted`` is emitted whenever kinetics was attempted at all —
-    either a ``kinetics`` dict or a ``kinetics_error`` string is present
-    (:func:`precis_pathway.runner.run_kinetics` always sets exactly one) —
-    never fabricated when neither key is on ``results``.
+    a ``kinetics`` or ``kinetics_v2`` dict, or a ``kinetics_error`` string,
+    is present (:func:`precis_pathway.runner.run_kinetics` always sets one
+    of them) — never fabricated when none is on ``results``.
     """
     out: dict[str, Any] = {}
     kin = results.get("kinetics")
-    err = results.get("kinetics_error")
-    if not isinstance(kin, dict):
+    v2 = results.get("kinetics_v2")
+    if not isinstance(kin, dict) and not isinstance(v2, dict):
+        err = results.get("kinetics_error")
         if isinstance(err, str) and err:
             out["kinetics_trusted"] = False
             out["kinetics_note"] = err
         return out
+    kin = kin if isinstance(kin, dict) else {}
+    v2 = v2 if isinstance(v2, dict) else {}
 
-    tof = _finite_num(kin.get("tof"))
+    tof, method = _ranked_tof(v2, kin)
     if tof is not None:
         out["tof"] = tof
-    q_over_k = _finite_num(kin.get("q_over_k"))
+        out["kinetics_method"] = method
+    q_over_k = _finite_num(v2.get("q_over_k"))
+    if q_over_k is None:
+        q_over_k = _finite_num(kin.get("q_over_k"))
     if q_over_k is not None:
         out["q_over_k"] = q_over_k
     basis = kin.get("environment_basis")
@@ -212,21 +252,26 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     bracket_ok = not (isinstance(bracket, dict) and bracket.get("agree") is False)
     # kinetics v2 D1: an uncited sticking coefficient (engine warning
     # ``sticking uncited: <gas>``, emitted only under an environment block)
-    # keeps the solve off the ranked measures
-    warns = kin.get("warnings")
-    uncited = [
-        w
-        for w in (warns if isinstance(warns, list) else [])
-        if isinstance(w, str) and w.startswith("sticking uncited: ")
-    ]
+    # keeps the solve off the ranked measures.  The engine writes the same
+    # warnings on both records; union them so the gate holds v2-only.
+    warns: list[Any] = []
+    for src in (kin, v2):
+        w_list = src.get("warnings")
+        if isinstance(w_list, (list, tuple)):
+            warns.extend(w_list)
+    uncited = list(
+        dict.fromkeys(
+            w
+            for w in warns
+            if isinstance(w, str) and w.startswith("sticking uncited: ")
+        )
+    )
     # kinetics v2 slice 3 (D4/D8): bep_flux_share is the fraction of the
     # net step flux whose barrier was BEP-priced rather than measured —
     # above the threshold the TOF depends on predicted barriers, so the
     # solve is untrusted with the share named in the note.  The v2
     # uncertainty band (log-space percentiles of the correlated draws)
     # supersedes the v1 sensitivity band when the engine writes it.
-    v2 = results.get("kinetics_v2")
-    v2 = v2 if isinstance(v2, dict) else {}
     share = _finite_num(v2.get("bep_flux_share"))
     if share is not None:
         out["bep_flux_share"] = share
@@ -272,35 +317,35 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 if p95v is not None and p95v > 0.0:
                     out["log_tof_p95"] = math.log10(max(p95v, 1e-30))
 
-    drc = kin.get("drc")
-    x_rc = drc.get("X_RC") if isinstance(drc, dict) else None
-    if isinstance(x_rc, dict):
-        finite_x_rc = {k: v for k, v in x_rc.items() if _finite_num(v) is not None}
-        if finite_x_rc:
-            out["drc_top"] = max(finite_x_rc, key=lambda k: abs(finite_x_rc[k]))
+    # kinetics v2 slice 4 (D8): the record's flat ``drc`` (step -> X_RC,
+    # records.py — the MF map when it ran, else the chain's) supplies
+    # drc_top; the v1 block's nested ``drc.X_RC`` is the fallback.
+    drc_mf = v2.get("drc")
+    if isinstance(drc_mf, dict):
+        finite_mf = {k: v for k, v in drc_mf.items() if _finite_num(v) is not None}
+        if finite_mf:
+            out["drc_top"] = max(finite_mf, key=lambda k: abs(finite_mf[k]))
+    if "drc_top" not in out:
+        drc = kin.get("drc")
+        x_rc = drc.get("X_RC") if isinstance(drc, dict) else None
+        if isinstance(x_rc, dict):
+            finite_x_rc = {k: v for k, v in x_rc.items() if _finite_num(v) is not None}
+            if finite_x_rc:
+                out["drc_top"] = max(finite_x_rc, key=lambda k: abs(finite_x_rc[k]))
 
-    # kinetics v2 slice 4 (D8): the MF record lifts the headline scalars —
-    # tof_mf from the site-balance solve, apparent orders per gas, the
-    # sweep optimum.  ``v2.drc`` is FLAT (step -> X_RC, records.py), and
-    # the kinetics_sweep optimum carries ``value`` + ``objective``.
+    # kinetics v2 slice 5 (D8): the ranked tof's model — a lattice-KMC TOF
+    # on the record outranks the MF one; its interval and
+    # correlation_effect ride along only where both exist (D7)
     tof_mf = _finite_num(v2.get("tof_mf"))
     if tof_mf is not None:
-        out["tof"] = tof_mf  # D8: the MF TOF is the ranked one
         out["tof_mf"] = tof_mf
-    # kinetics v2 slice 5 (D8): a lattice-KMC TOF on the record (the KMC ran
-    # at the record's own point) outranks the MF one; kinetics_method names
-    # the model behind the ranked tof, and correlation_effect rides along
-    # only where both exist (D7)
     tof_kmc = v2.get("tof_kmc")
-    kmc_med = _finite_num(tof_kmc.get("median")) if isinstance(tof_kmc, dict) else None
-    if kmc_med is not None and kmc_med > 0.0 and isinstance(tof_kmc, dict):
-        out["tof"] = kmc_med
-        out["tof_kmc"] = kmc_med
+    if method == "kmc" and isinstance(tof_kmc, dict):
+        out["tof_kmc"] = tof
         for band in ("p5", "p95"):
             val = _finite_num(tof_kmc.get(band))
             if val is not None:
                 out[f"tof_kmc_{band}"] = val
-        out["kinetics_method"] = "kmc"
         effect = _finite_num(v2.get("correlation_effect"))
         if effect is not None:
             out["correlation_effect"] = effect
@@ -316,15 +361,7 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 out["kinetics_note"] = "; ".join(reasons)
                 for key in ("log_tof", "log_tof_p5", "log_tof_p95"):
                     out.pop(key, None)
-    elif tof_mf is not None:
-        out["kinetics_method"] = "mf"
-    elif tof is not None:
-        out["kinetics_method"] = "chain"
-    drc_mf = v2.get("drc")
-    if isinstance(drc_mf, dict):
-        finite_mf = {k: v for k, v in drc_mf.items() if _finite_num(v) is not None}
-        if finite_mf:
-            out["drc_top"] = max(finite_mf, key=lambda k: abs(finite_mf[k]))
+
     orders = v2.get("orders")
     if isinstance(orders, dict):
         for gas, val in orders.items():
@@ -341,6 +378,20 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                 out["optimum_T"] = t_opt
             if p_opt is not None:
                 out["optimum_p_total"] = p_opt
+    # the D8 record's own ``optimum`` (slice 4, when the engine writes one)
+    # is the fallback once no sweep payload rides along
+    if "optimum_T" not in out or "optimum_p_total" not in out:
+        rec_opt = v2.get("optimum")
+        if isinstance(rec_opt, dict):
+            if "optimum_T" not in out:
+                t_opt = _finite_num(rec_opt.get("T"))
+                if t_opt is not None:
+                    out["optimum_T"] = t_opt
+            if "optimum_p_total" not in out:
+                p_opt = _finite_num(rec_opt.get("p_total"))
+                if p_opt is not None:
+                    out["optimum_p_total"] = p_opt
+    if isinstance(sweep, dict):
         # slice 5 (D7): the KMC confirmation at the MF optimum — the
         # sweep's kmc_points are the only rows with tof_kmc/correlation_effect
         kmc_points = sweep.get("kmc_points")
