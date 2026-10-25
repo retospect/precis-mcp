@@ -113,6 +113,15 @@ services:
     # --selected run plateaued at ~14.4 GiB; an 8g cap thrashed). Deliberately
     # no CPU cap — CPU contention just slows a gate, memory was the killer.
     mem_limit: 24g
+    environment:
+      # Tool caches must NOT live under /app: that path is the bind-mounted
+      # worktree, so a container mypy run would write ./.mypy_cache over the
+      # host's and a later host (or gate) run died with a bare
+      # "INTERNAL ERROR" on the foreign cache files (gr515069). The
+      # gate-cache volume is per-worktree, so sibling trees never collide —
+      # same scheme precis-gate already uses below.
+      MYPY_CACHE_DIR: /home/precis/.cache/mypy
+      RUFF_CACHE_DIR: /home/precis/.cache/ruff
     volumes:
       # Share the warm gate's persistent cache: bind-fallback gate runs and
       # scripts/test then resolve the uv env — including the project's

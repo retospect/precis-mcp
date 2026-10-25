@@ -14,10 +14,10 @@ the source tree, where the marker is irrelevant, so it stayed green.
 Strict equality both ways is the ratchet: a wheel package missing the
 marker must be listed in ``PY_TYPED_PENDING``, and shipping the marker
 must shrink the list — new packages ship ``py.typed`` from day one. The
-remaining entries are untested-typing packages whose markers land as
-their own batches; marking e.g. ``precis_web`` today would surface
-import-not-found on its ``[web]``-extra deps inside a host venv, which is
-a separate fix.
+list is empty now: the extra-gated third-party deps whose absence made a
+host venv report import-not-found inside the newly-typed packages
+(fastapi, discord, slack_*, …) are on ``ignore_missing_imports``, so the
+markers landed all at once.
 
 gr514897 is the same host/container parity bug on the third-party side:
 ``jinja2`` lives behind the ``[web]`` extra, which a bare host
@@ -36,18 +36,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SRC = REPO_ROOT / "src"
 
-# Declared wheel packages that do not yet ship py.typed. Shrink-only.
-PY_TYPED_PENDING: frozenset[str] = frozenset(
-    {
-        "asa_bot",
-        "asa_slack",
-        "precis_bio",
-        "precis_chem",
-        "precis_estimate",
-        "precis_surface",
-        "precis_web",
-    }
-)
+# Declared wheel packages that do not yet ship py.typed. Shrink-only —
+# empty since the extras-surface ignore list let every marker land.
+PY_TYPED_PENDING: frozenset[str] = frozenset()
 
 
 def _declared_wheel_packages() -> set[str]:

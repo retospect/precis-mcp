@@ -940,7 +940,14 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
-warn_unused_configs = true
+# Explicitly off (the flag defaults off upstream; the repo had opted in):
+# the overrides below deliberately carry entries that are never imported
+# in a given environment (optional extras installed only in the container,
+# plus per-module suppressions), so with the flag on every run — full or
+# single-file — prints a ~40-line "unused section(s)" note that buries the
+# real errors (gr514976). The stale-entry audit it provided is not worth
+# per-call noise; drop dead entries by hand when a dep moves.
+warn_unused_configs = false
 check_untyped_defs = true
 warn_unused_ignores = true
 # `mypy src tests` (the gate's scope) never passes `scripts/` as a target,
@@ -953,7 +960,12 @@ warn_unused_ignores = true
 # import its modules the same way (`sys.path` insert; the directory is
 # hyphenated, so it can never be a package). Resolution only — the miner's
 # own files still aren't in the checked set.
-mypy_path = "scripts:scripts/mine-sessions"
+# `src` is first so a host ``uv run --frozen mypy <file>`` resolves the
+# first-party packages from the tree even when the host venv's editable
+# install is stale or absent (gr514869 — ``--frozen`` never re-syncs, so a
+# wheel built before a package existed can't resolve it). The editable
+# install resolves to the same paths, so nothing double-loads.
+mypy_path = "src:scripts:scripts/mine-sessions"
 # Burn-down complete 2026-08-02: every once-disabled error code
 # (no-any-return, valid-type, dict-item, method-assign, var-annotated,
 # union-attr, type-var, assignment, operator, index) is now enforced.
@@ -968,6 +980,13 @@ mypy_path = "scripts:scripts/mine-sessions"
 # (anki, chgnet, pdf2doi, acatome_store, acatome_extract) aren't even
 # installed in the container image — they're optional runtime deps behind
 # try/except ImportError guards, never resolvable regardless of extras.
+# A second group IS installed and typed in the container but absent from a
+# host ``uv run --frozen`` venv, which syncs no extras (gr514869, gr515001):
+# fastapi/jinja2/markupsafe (web), discord (asa), slack_* (asa-slack),
+# torch/transformers/sentence_transformers (paper/embed), kokoro_onnx
+# (tts), mace (dft-ml), rapidfuzz (paper), aiohttp (asa). For those the
+# override only bites where the dep is missing; the container keeps full
+# checking, so host and gate verdicts stay aligned.
 # Replaces the old blanket ``ignore_missing_imports = true``: first-party
 # modules now get real import-resolution checking, so a broken/first-party
 # import path surfaces as an error instead of silently becoming ``Any``.
@@ -977,13 +996,19 @@ module = [
     "acatome_store.*",
     "agox",
     "agox.*",
+    "aiohttp",
+    "aiohttp.*",
     "anki",
     "anki.*",
     "autocatpath",
     "autocatpath.*",
     "chgnet.*",
+    "discord",
+    "discord.*",
     "epo_ops",
     "epo_ops.*",
+    "fastapi",
+    "fastapi.*",
     "fitz",
     "fontTools",  # no py.typed marker (ingest/glyph_outline.py)
     "fontTools.*",
@@ -995,8 +1020,14 @@ module = [
     # only in the container. Typed upstream — real types where installed.
     "jinja2",
     "jinja2.*",
+    "kokoro_onnx",
+    "kokoro_onnx.*",
+    "mace",
+    "mace.*",
     "manifold3d",
     "marker.*",
+    "markupsafe",
+    "markupsafe.*",
     "mendeleev",
     "mendeleev.*",
     "mermaidx",
@@ -1014,6 +1045,8 @@ module = [
     "pymatgen",
     "pymatgen.*",
     "pysbd",
+    "rapidfuzz",
+    "rapidfuzz.*",
     "ray",  # pulled by [struct-search] (agox); absent from the gate image like agox itself
     "ray.*",
     "rdkit",
@@ -1028,17 +1061,27 @@ module = [
     "RNA",
     "semanticscholar",
     "semanticscholar.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
     "shapely",
     "shapely.*",
     "sklearn.*",
+    "slack_bolt",
+    "slack_bolt.*",
+    "slack_sdk",
+    "slack_sdk.*",
     "soundfile",
     "surya.*",
     "sympy",
     "sympy.*",
     "tblite",
     "tblite.*",
+    "torch",
+    "torch.*",
     "torch_dftd",
     "torch_dftd.*",
+    "transformers",
+    "transformers.*",
     "wolframalpha",
 ]
 ignore_missing_imports = true
@@ -1054,7 +1097,9 @@ ignore_missing_imports = true
 module = [
     "tests.test_tts_kokoro",
     "tests.precis_web.test_todo",
+    "tests.precis_web.test_routes",
     "tests.test_asa_slash",
+    "tests.test_asa_briefing_outbound",
     "precis.ingest.marker",
     "precis.structure.relax",
     "precis.structure.preflight",

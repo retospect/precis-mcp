@@ -193,6 +193,18 @@ entire DB suite.
 that gets you to a green gate cheaply — the gate is what actually decides
 mergeability.
 
+The typecheck has the same split. `scripts/test --typecheck` runs
+`mypy src tests` in the dev container, where every extra is baked (torch,
+fastapi, autocatpath, …) — that is the gate. A host
+`uv run --frozen mypy <files>` now returns the same verdict for import
+resolution: every first-party wheel package ships `py.typed`, `mypy_path`
+includes `src` (so a stale/absent editable install can't phantom-fail a
+first-party import), and the extras a bare host `uv sync` skips are on the
+`ignore_missing_imports` override list in `pyproject.toml` — the overrides
+only bite where the dep is missing, so container checking is unchanged.
+Host mypy is an honest fast-loop check; the container run is still the
+verdict (gr514869, gr514401, gr514976, gr515001).
+
 **The local gate's default lane is `-m 'not slow'`.** The `slow` cluster is a
 handful of tests holding a large share of wall-clock: on 2026-09-25 a full
 local gate took 2h08m and spent 90+ of those minutes on the last ~5% of the
