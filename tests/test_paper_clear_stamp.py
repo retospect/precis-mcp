@@ -2,14 +2,19 @@
 (gr514347).
 
 The context_sentence pass converges a paper by stamping
-``refs.meta['context_sentence_failed']`` / ``['context_sentence_no_abstract']``
-and its ``_claim`` query never selects that ref again; until this door,
-un-stamping a cohort needed raw ``UPDATE refs SET meta = meta - key``
-prod SQL. These tests pin: the allow-list refusal naming allowed keys,
-the cleared/already-clear count shape on one ref and on a batch, the
-``metadata_edited`` ref_event, and — the acceptance criterion — that
-clearing the stamp makes the worker's own selection query pick the ref
-up again.
+``refs.meta['context_sentence_failed']`` / ``['context_sentence_no_abstract']``;
+until this door, un-stamping a cohort needed raw
+``UPDATE refs SET meta = meta - key`` prod SQL. These tests pin: the
+allow-list refusal naming allowed keys, the cleared/already-clear count
+shape on one ref and on a batch, the ``metadata_edited`` ref_event, and —
+the acceptance criterion — that clearing the stamp makes the worker's own
+selection query pick the ref up again.
+
+Since gr514381 the stamps are not permanent gates: ``_claim`` keeps
+selecting ``no_abstract`` rows (self-heal) and any ``failed`` stamp older
+than the current pass version (a legacy bare ``true`` included) earns one
+re-trial. Only a ``failed`` stamp AT the current version gates — that is
+the shape the reclaim tests below stamp.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from precis.handlers.paper import PaperHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.workers.context_sentence import (
+    _PASS_VERSION,
     META_FAILED_KEY,
     META_NO_ABSTRACT_KEY,
     _claim,
@@ -42,7 +48,14 @@ def _claim_ids(store: Store, ref_id: int) -> list[int]:
 
 
 def _stamp(store: Store, ref_id: int, key: str) -> None:
-    store.update_ref(ref_id, meta_patch={key: True})
+    """A stamp that actually GATES ``_claim``: a bare ``true`` reads as
+    version 0 and earns a re-trial either way (gr514381) — only a
+    current-version stamp gates, and for ``no_abstract`` that means
+    ``{"v", "at"}`` with ``at`` newer than the ref's ``updated_at``."""
+    value: object = {"v": _PASS_VERSION}
+    if key == META_NO_ABSTRACT_KEY:
+        value = {"v": _PASS_VERSION, "at": "9999-12-31T00:00:00Z"}
+    store.update_ref(ref_id, meta_patch={key: value})
 
 
 def _meta(store: Store, ref_id: int) -> dict:
@@ -82,6 +95,8 @@ class TestClearAndReclaim:
     def test_clearing_no_abstract_stamp_makes_the_ref_claimable_again(
         self, store: Store, handler: PaperHandler
     ) -> None:
+        """A current-version no_abstract stamp gates ``_claim`` until the
+        ref changes (gr514381) — clearing it re-arms the selection."""
         ref_id = seed_ref(store, title="A DFT study")
         _stamp(store, ref_id, META_NO_ABSTRACT_KEY)
         assert _claim_ids(store, ref_id) == []

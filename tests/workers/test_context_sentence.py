@@ -10,6 +10,7 @@ LLM client — no network, mirroring ``test_paper_glossary``/
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,7 @@ from precis.store import ChunkInsert
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
+    _PASS_VERSION,
     META_FAILED_KEY,
     META_KEY,
     META_NO_ABSTRACT_KEY,
@@ -26,12 +28,15 @@ from precis.workers.context_sentence import (
     TransientFailure,
     _claim,
     _generate_with_lint,
+    _stamp_no_abstract,
     backfill_candidate_ref_ids,
     is_decline,
+    lead_body_block,
     lint_violation,
     propose_context_sentence,
     retrieve_body_block,
     run_context_sentence_pass,
+    stamps_gate_claim,
     usable_context,
 )
 from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_ref
@@ -184,6 +189,32 @@ class TestGenerateWithLint:
         out = _generate_with_lint(client, "T", "A")
         assert out == "Computational study; DFT-only, no synthesis."
         assert len(client.calls) == 2
+
+    def test_retry_prompt_carries_the_rejected_draft_and_the_rule(self) -> None:
+        """A resend of the identical request invites the identical answer
+        — prod's 36266 echoed the same blocklisted word twice (gr514381).
+        The retry must say WHICH rule the dropped draft broke."""
+        client = _FakeClient(
+            [
+                "This proves the mechanism beyond doubt.",
+                "Computational study; DFT-only, no synthesis.",
+            ]
+        )
+        _generate_with_lint(client, "T", "A")
+
+        assert len(client.calls) == 2
+        first_user = client.calls[0][-1]["content"]
+        retry_user = client.calls[1][-1]["content"]
+        assert retry_user != first_user
+        assert "This proves the mechanism beyond doubt." in retry_user
+        assert "claim-strength word 'proves'" in retry_user
+
+    def test_dispatch_failure_retry_gets_no_hint(self) -> None:
+        """An outage is not a verdict — there is no rejected draft to
+        carry into the retry."""
+        client = _FakeClient(["", "Computational study; DFT-only, no synthesis."])
+        _generate_with_lint(client, "T", "A")
+        assert client.calls[0][-1]["content"] == client.calls[1][-1]["content"]
 
     def test_violation_twice_drops_the_sentence(self) -> None:
         client = _FakeClient(
@@ -367,6 +398,35 @@ _REFS_UNSECTIONED = (
     "23. Brown, L. Phil. Mag. 30, 55-70 (1990)."
 )
 
+#: Front-matter furniture that scrapes the ``usable_context`` word
+#: floor: a licence run and a correspondence run are ordinary
+#: lowercase prose over the 25-word floor, so only
+#: ``_FRONT_MATTER_RE`` keeps them out of the lead block (gr514381
+#: review — the masthead alone never exercised the regex).
+_BYLINE = "Sumio Iijima and colleagues"
+_CC_BY = (
+    "© The Author(s) 2024. This article is licensed under a Creative "
+    "Commons Attribution 4.0 International License, which permits use, "
+    "sharing, adaptation, distribution and reproduction in any medium "
+    "or format, as long as you give appropriate credit to the original "
+    "author and the source."
+)
+_CORRESPONDENCE = (
+    "Correspondence and requests for materials should be addressed to "
+    "the corresponding author at the department listed in the author "
+    "information section of this published research article."
+)
+
+#: "Laboratory measurements of ..." is content, not an affiliation
+#: line — the ``_FRONT_MATTER_RE`` affiliation alternatives fire only
+#: with a comma or "of" directly after the word (gr514381 review).
+_LAB_PROSE = (
+    "Laboratory measurements of the elastic response used atomic force "
+    "microscopy indentation, fitting each force-displacement curve to a "
+    "nonlinear elastic model across independently prepared samples in "
+    "two separate measurement campaigns."
+)
+
 
 def _seed_body(
     store: Any, title: str, pieces: list[tuple[str, list[str] | None]]
@@ -544,8 +604,33 @@ class TestPassOverBody:
         assert client.calls == []
         assert result == {"claimed": 1, "ok": 0, "failed": 0}
         meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
-        assert meta.get(META_NO_ABSTRACT_KEY) is True
+        stamp = meta.get(META_NO_ABSTRACT_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
         assert META_FAILED_KEY not in meta
+
+    def test_front_matter_furniture_stamps_no_abstract_without_a_call(
+        self, store: Any
+    ) -> None:
+        """Byline + CC-BY licence + correspondence and no prose: the
+        licence/correspondence runs pass the ``usable_context`` floor on
+        their own, so this exercises ``_FRONT_MATTER_RE``, not the word
+        count (gr514381 review)."""
+        assert usable_context("Helical microtubules", _CC_BY)
+        assert usable_context("Helical microtubules", _CORRESPONDENCE)
+        ref_id, _ = _seed_body(
+            store,
+            "Helical microtubules",
+            [(_BYLINE, None), (_CC_BY, None), (_CORRESPONDENCE, None)],
+        )
+        client = _FakeClient(["Never asked."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert client.calls == []
+        assert result == {"claimed": 1, "ok": 0, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        stamp = meta.get(META_NO_ABSTRACT_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
 
     def test_per_ref_log_names_the_chunk_ids(
         self, store: Any, caplog: pytest.LogCaptureFixture
@@ -701,7 +786,7 @@ class TestRunPass:
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
-        assert ref.meta.get(META_FAILED_KEY) is True
+        assert ref.meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
 
     def test_transient_failure_leaves_the_paper_unstamped(self, store: Any) -> None:
         ref_id, _chunk = _seed_paper(store, title="A paper")
@@ -730,22 +815,88 @@ class TestRunPass:
         assert client.calls == []
         assert result == {"claimed": 1, "ok": 0, "failed": 0}
         meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
-        assert meta.get(META_NO_ABSTRACT_KEY) is True
+        stamp = meta.get(META_NO_ABSTRACT_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
         assert META_KEY not in meta
         # NOT the terminal stamp: no model ever gave a verdict here.
         assert META_FAILED_KEY not in meta
 
-    def test_a_no_abstract_paper_is_not_reclaimed(self, store: Any) -> None:
+    def test_an_unusable_paper_converges_at_the_current_version(
+        self, store: Any
+    ) -> None:
+        """Churn guard (gr514381): a stale-version no_abstract stamp earns
+        ONE re-claim so a heal can land; a still-unusable outcome re-stamps
+        at the current version and the paper leaves the claim set — a
+        permanently masthead-only body must not churn every sweep."""
         ref_id, _chunk = _seed_paper(
             store, title="Helical microtubules", body=_MASTHEAD
         )
         run_context_sentence_pass(store, client=_FakeClient(["x"]), ref_ids=[ref_id])
+        stamp = (store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}).get(
+            META_NO_ABSTRACT_KEY
+        )
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
+        assert isinstance(stamp.get("at"), str)
 
-        again = run_context_sentence_pass(
+        client = _FakeClient(["never asked"])
+        again = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert again == {"claimed": 0, "ok": 0, "failed": 0}
+        assert client.calls == []
+
+    def test_a_legacy_true_stamp_is_reclaimed_once_then_converges(
+        self, store: Any
+    ) -> None:
+        ref_id, _chunk = _seed_paper(
+            store, title="Helical microtubules", body=_MASTHEAD
+        )
+        store.update_ref(ref_id, meta_patch={META_NO_ABSTRACT_KEY: True})
+
+        first = run_context_sentence_pass(
             store, client=_FakeClient(["x"]), ref_ids=[ref_id]
         )
+        assert first["claimed"] == 1
+        stamp = (store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}).get(
+            META_NO_ABSTRACT_KEY
+        )
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
 
-        assert again["claimed"] == 0
+        second = run_context_sentence_pass(
+            store, client=_FakeClient(["x"]), ref_ids=[ref_id]
+        )
+        assert second["claimed"] == 0
+
+    def test_a_later_meta_abstract_reclaims_a_stamped_paper(self, store: Any) -> None:
+        """``refs.updated_at`` newer than the stamp's ``at`` is the heal
+        signal — an abstract backfill re-arms the claim."""
+        ref_id, _ = _seed_body(store, "Helical microtubules", [(_MASTHEAD, None)])
+        claimed_at = store.fetch_refs_by_ids([ref_id])[ref_id].updated_at
+        _stamp_no_abstract(store, ref_id, claimed_at)
+        gated = run_context_sentence_pass(
+            store, client=_FakeClient(["x"]), ref_ids=[ref_id]
+        )
+        assert gated["claimed"] == 0
+
+        store.update_ref(ref_id, meta_patch={"abstract": _ABSTRACT})
+        result = run_context_sentence_pass(
+            store,
+            client=_FakeClient(["Helical microtubules were observed by TEM."]),
+            ref_ids=[ref_id],
+        )
+        assert result["ok"] == 1
+
+    def test_stamped_rows_claim_after_unstamped_ones(self, store: Any) -> None:
+        """A permanently-thin cohort must not starve fresh claims off the
+        ``ORDER BY ... LIMIT``."""
+        low, _ = _seed_paper(store, title="stamped earlier ref")
+        high, _ = _seed_paper(store, title="clean later ref")
+        store.update_ref(
+            low,
+            meta_patch={META_NO_ABSTRACT_KEY: {"v": _PASS_VERSION, "at": "9999-12-31"}},
+        )
+        with store.pool.connection() as conn:
+            rows = _claim(conn, limit=1, ref_ids=[low, high])
+        assert [r[0] for r in rows] == [high]
 
     def test_skips_a_paper_that_already_has_a_sentence(self, store: Any) -> None:
         ref_id, _chunk = _seed_paper(store, title="Already sentenced")
@@ -769,3 +920,227 @@ class TestRunPass:
         assert (
             ref.meta.get(META_KEY) == "Computational study; scheduled sweep found it."
         )
+
+
+# ── lead-body fallback + self-healing stamps (gr514381) ────────────────
+
+#: Lead-of-body prose that matches NONE of the method-seeking queries —
+#: only the leading-prose arm of ``lead_body_block`` can reach it, so a
+#: test feeding it exercises that arm rather than the retrieval one.
+_LEAD_PROSE = (
+    "The microtubules consist of concentric graphitic sheets rolled into "
+    "helical tubes with diameters ranging from a few nanometres up to "
+    "several tens of nanometres, each tube closed by a fullerene cap."
+)
+
+#: Refs 783/1209's shape on prod: the paper's own "Abstract" paragraph
+#: sits in the body at ord 1 with no card_abstract and no meta.abstract,
+#: so retrieval used to walk straight past it.
+_ABSTRACT_HEAD = "Abstract\n\n" + _ABSTRACT
+
+
+class TestLeadBodyBlock:
+    def test_abstract_headed_paragraph_starts_the_block(self, store: Any) -> None:
+        ref_id, ids = _seed_body(
+            store,
+            "Carbon nanobuds paper",
+            [(_MASTHEAD, None), (_ABSTRACT_HEAD, None), (_LEAD_PROSE, None)],
+        )
+        block, chunk_ids = lead_body_block(
+            store, title="Carbon nanobuds paper", ref_id=ref_id, abstract_only=True
+        )
+        assert _ABSTRACT in block
+        assert _LEAD_PROSE in block
+        assert "Iijima" not in block
+        assert ids[0] not in chunk_ids
+        assert ids[1] in chunk_ids
+
+    def test_no_abstract_heading_falls_back_to_leading_prose(self, store: Any) -> None:
+        ref_id, _ = _seed_body(
+            store, "A paper", [(_MASTHEAD, None), (_LEAD_PROSE, None)]
+        )
+        block, _ = lead_body_block(store, title="A paper", ref_id=ref_id)
+        assert _LEAD_PROSE in block
+
+    def test_leading_prose_skips_end_matter(self, store: Any) -> None:
+        ref_id, ids = _seed_body(
+            store, "A paper", [(_REFS_UNSECTIONED, None), (_LEAD_PROSE, None)]
+        )
+        block, chunk_ids = lead_body_block(store, title="A paper", ref_id=ref_id)
+        assert block == _LEAD_PROSE
+        assert ids[0] not in chunk_ids
+
+    def test_abstract_head_wins_over_earlier_prose(self, store: Any) -> None:
+        """The headed paragraph wins over position: an ord-0 lead that
+        isn't the abstract must not shadow the real one at ord 1."""
+        ref_id, _ = _seed_body(
+            store, "A paper", [(_LEAD_PROSE, None), (_ABSTRACT_HEAD, None)]
+        )
+        block, _ = lead_body_block(store, title="A paper", ref_id=ref_id)
+        assert _ABSTRACT in block
+        assert _LEAD_PROSE not in block
+
+    def test_laboratory_lead_prose_is_not_front_matter(self, store: Any) -> None:
+        """The affiliation alternatives fire only with a comma or "of"
+        directly after the word — "Laboratory measurements of ..."
+        is content (gr514381 review)."""
+        ref_id, _ = _seed_body(store, "A paper", [(_LAB_PROSE, None)])
+        block, _ = lead_body_block(store, title="A paper", ref_id=ref_id)
+        assert block == _LAB_PROSE
+
+
+class TestSelfHealingStamps:
+    """gr514381: a no_abstract stamp marks missing context, not a verdict —
+    when usable context appears the paper heals without an operator
+    clear, and a written sentence removes both stamp keys."""
+
+    def test_stale_no_abstract_heals_on_a_later_meta_abstract(self, store: Any) -> None:
+        ref_id, _ = _seed_body(store, "Helical microtubules", [(_MASTHEAD, None)])
+        store.update_ref(
+            ref_id,
+            meta_patch={META_NO_ABSTRACT_KEY: True, META_FAILED_KEY: True},
+        )
+        store.update_ref(ref_id, meta_patch={"abstract": _ABSTRACT})
+        client = _FakeClient(["Helical microtubules were observed by TEM."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_KEY) == "Helical microtubules were observed by TEM."
+        assert META_NO_ABSTRACT_KEY not in meta
+        assert META_FAILED_KEY not in meta
+
+    def test_stale_no_abstract_heals_on_an_abstract_paragraph(self, store: Any) -> None:
+        """The abstract was in the body all along (the 11-paper prod
+        cohort): the stamp alone must not keep the pass from finding it."""
+        ref_id, _ = _seed_body(
+            store,
+            "Carbon nanobuds paper",
+            [(_MASTHEAD, None), (_ABSTRACT_HEAD, None)],
+        )
+        store.update_ref(ref_id, meta_patch={META_NO_ABSTRACT_KEY: True})
+        client = _FakeClient(["Carbon nanobuds were observed by TEM."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result["ok"] == 1
+        user = client.calls[0][-1]["content"]
+        assert _ABSTRACT in user
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert META_NO_ABSTRACT_KEY not in meta
+
+    def test_abstract_paragraph_feeds_the_model(self, store: Any) -> None:
+        """No stamp at all: ord-1 "Abstract ..." prose reaches the model
+        instead of the method-query passages or a decline."""
+        ref_id, _ = _seed_body(
+            store,
+            "Carbon nanobuds paper",
+            [(_MASTHEAD, None), (_ABSTRACT_HEAD, None), (_LEAD_PROSE, None)],
+        )
+        client = _FakeClient(["Carbon nanobuds were observed by TEM."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result["ok"] == 1
+        user = client.calls[0][-1]["content"]
+        assert _ABSTRACT in user
+        assert "Iijima" not in user
+
+    def test_leading_prose_feeds_the_model_when_nothing_else_can(
+        self, store: Any
+    ) -> None:
+        ref_id, _ = _seed_body(
+            store, "Helical microtubules", [(_MASTHEAD, None), (_LEAD_PROSE, None)]
+        )
+        client = _FakeClient(["Helical microtubules were observed by TEM."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result["ok"] == 1
+        assert _LEAD_PROSE in client.calls[0][-1]["content"]
+
+
+class TestStampsGateClaim:
+    """The lazy-enqueue prefilter runs inside the render path — a
+    malformed stamp or ref timestamp must gate, never raise
+    (gr514381 review)."""
+
+    def test_a_naive_stamp_at_is_malformed_not_a_crash(self) -> None:
+        meta = {
+            META_NO_ABSTRACT_KEY: {
+                "v": _PASS_VERSION,
+                "at": "2026-10-25 11:00:00",
+            }
+        }
+        assert stamps_gate_claim(meta, ref_updated_at=datetime.now(UTC))
+
+    def test_a_missing_or_naive_ref_updated_at_gates(self) -> None:
+        meta = {
+            META_NO_ABSTRACT_KEY: {"v": _PASS_VERSION, "at": "2999-01-01T00:00:00Z"}
+        }
+        assert stamps_gate_claim(meta, ref_updated_at=None)
+        assert stamps_gate_claim(meta, ref_updated_at=datetime(2026, 1, 1))
+
+    def test_a_newer_ref_updated_at_reopens_the_gate(self) -> None:
+        meta = {
+            META_NO_ABSTRACT_KEY: {"v": _PASS_VERSION, "at": "2026-01-01T00:00:00Z"}
+        }
+        assert not stamps_gate_claim(
+            meta, ref_updated_at=datetime(2026, 10, 25, tzinfo=UTC)
+        )
+
+    def test_a_stale_version_stamp_never_gates(self) -> None:
+        meta = {META_NO_ABSTRACT_KEY: True, META_FAILED_KEY: True}
+        assert not stamps_gate_claim(meta, ref_updated_at=datetime.now(UTC))
+
+
+class TestVersionedFailedStamp:
+    """gr514381: ``context_sentence_failed`` carries the pass version —
+    a stamp older than :data:`_PASS_VERSION` earns exactly one re-trial,
+    so this fix re-runs the prod cohort without a manual clear."""
+
+    def test_legacy_true_stamp_earns_one_retrial(self, store: Any) -> None:
+        ref_id, _ = _seed_paper(store, title="A DFT paper")
+        store.update_ref(ref_id, meta_patch={META_FAILED_KEY: True})
+        client = _FakeClient(["Computational study; DFT-calculated properties only."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert META_FAILED_KEY not in meta
+        assert meta.get(META_KEY) == (
+            "Computational study; DFT-calculated properties only."
+        )
+
+    def test_decline_on_the_retrial_restamps_at_the_current_version(
+        self, store: Any
+    ) -> None:
+        """A legacy ``true`` failed stamp is claimed once; a NO_CONTEXT
+        verdict on the retry re-stamps at :data:`_PASS_VERSION` and the
+        paper is not claimed again (wrong-paper text stays declined)."""
+        ref_id, _ = _seed_paper(store, title="A DFT paper")
+        store.update_ref(ref_id, meta_patch={META_FAILED_KEY: True})
+        client = _FakeClient([NO_CONTEXT])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result == {"claimed": 1, "ok": 0, "failed": 1}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
+
+        client2 = _FakeClient([NO_CONTEXT])
+        again = run_context_sentence_pass(store, client=client2, ref_ids=[ref_id])
+        assert again["claimed"] == 0
+        assert client2.calls == []
+
+    def test_current_version_failed_stamp_is_not_reclaimed(self, store: Any) -> None:
+        ref_id, _ = _seed_paper(store, title="A DFT paper")
+        store.update_ref(ref_id, meta_patch={META_FAILED_KEY: {"v": _PASS_VERSION}})
+        client = _FakeClient([NO_CONTEXT])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result["claimed"] == 0
+        assert client.calls == []

@@ -18,10 +18,17 @@ blocklist (``proof``/``definitive``/``confirms``/``demonstrates``/
 authors report", "This paper presents", "We show", ...), and a ~35-word cap
 are enforced IN CODE (:func:`lint_violation`) — the model is not trusted.
 On a lint violation
-the pass regenerates ONCE; a second violation drops the sentence entirely
+the pass regenerates ONCE, the retry prompt carrying the rejected draft
+and the violated rule so the second attempt is not a resend of an
+identical request; a second violation drops the sentence entirely
 ("no sentence beats a bad one") and stamps
 ``refs.meta['context_sentence_failed']`` so the paper converges rather
-than being re-billed every sweep. Only a *model verdict* (decline, or two
+than being re-billed every sweep. The stamp is VERSIONED
+(``{"v": _PASS_VERSION}``; a legacy bare ``true`` reads as version 0):
+a failed paper earns exactly one re-trial whenever the pass version
+moves ahead of its stamp, so a fix like the lint-hint retry re-runs the
+old cohort without a manual stamp clear. Only a *model verdict*
+(decline, or two
 lint violations) earns that stamp: a sweep where the model never answered
 (dispatch failure, empty completion — e.g. the cloud rung rate-limited)
 raises :class:`TransientFailure` and leaves the paper untouched for the
@@ -60,7 +67,15 @@ address), and ``NO_CONTEXT`` does not fire because the text *does* belong
 to the paper — it is just empty. :func:`usable_context` therefore refuses
 to call the model at all on such a block and stamps the NON-terminal
 :data:`META_NO_ABSTRACT_KEY`: the paper needs an abstract, not a retry
-(gr346458).
+(gr346458). The stamp is self-healing (gr514381): it carries the pass
+version and the stamp time, and ``_claim`` re-selects a stamped paper
+when its version is stale or the ref gained newer content — the block is
+then re-resolved through the whole fallback chain — ``card_abstract``,
+``meta.abstract``, the paper's own "Abstract" paragraph, retrieved method
+passages, leading body prose — and a success clears both stamp keys, so
+an abstract arriving after the stamp (or one sitting unrecognized in the
+body all along) heals without an operator clear. A still-unusable
+re-claim re-stamps at the current version and leaves the claim set.
 
 To force a retry after either stamp, clear it through
 ``edit(kind='paper', id=<ref|[refs]>, args={'clear_stamp': '<key>'})``
@@ -97,6 +112,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from precis.store import SEMANTIC_DISTANCE_FLOOR
@@ -114,10 +130,12 @@ __all__ = [
     "TransientFailure",
     "backfill_candidate_ref_ids",
     "is_decline",
+    "lead_body_block",
     "lint_violation",
     "propose_context_sentence",
     "retrieve_body_block",
     "run_context_sentence_pass",
+    "stamps_gate_claim",
     "usable_context",
 ]
 
@@ -125,23 +143,132 @@ __all__ = [
 META_KEY = "context_sentence"
 
 #: ``refs.meta`` key stamped when a paper converged on "no sentence" (both
-#: the original proposal and its one regenerate failed the lint) — without
-#: this a permanently-failing paper would be re-claimed and re-billed on
-#: every backfill/scheduler sweep.
+#: the original proposal and its one regenerate failed the lint, or the
+#: model declined with :data:`NO_CONTEXT`) — without this a
+#: permanently-failing paper would be re-claimed and re-billed on
+#: every backfill/scheduler sweep. Written as ``{"v": _PASS_VERSION}``:
+#: ``_claim`` re-claims a stamped paper once when the stamp's version is
+#: older than the pass's, so a pass fix self-retries the old cohort
+#: (gr514381). A legacy bare ``true`` reads as version 0.
 META_FAILED_KEY = "context_sentence_failed"
+
+#: Current pass version stamped into :data:`META_FAILED_KEY`. Bump when
+#: the pass's inputs or verdict logic change enough that a previously
+#: failed paper deserves one re-trial; each paper retries once per
+#: version, not once per bump-and-forget.
+_PASS_VERSION = 1
 
 #: ``refs.meta`` key stamped when the paper's context block carried no
 #: paper prose to characterize (:func:`usable_context`) — the model was
 #: never called, so this is deliberately NOT :data:`META_FAILED_KEY`,
-#: which asserts a model verdict. Non-terminal by intent: an abstract
-#: backfill that gives the paper real text must clear this key to make it
-#: claimable again.
+#: which asserts a model verdict. Written as ``{"v": _PASS_VERSION,
+#: "at": <utc iso>}`` (legacy bare ``true`` reads as version 0 with no
+#: ``at``): ``_claim`` re-selects a stamped paper when its version is
+#: stale — the one-time heal when the block-resolution logic moves — or
+#: when the ref's ``updated_at`` / a live chunk's ``created_at`` is newer
+#: than ``at``, the cheap "context may have arrived" signal. A
+#: still-unusable re-claim re-stamps at the current version so a
+#: permanently masthead-only paper converges instead of churning the
+#: claim set every sweep (gr514381).
 META_NO_ABSTRACT_KEY = "context_sentence_no_abstract"
 
-#: Both stamps gate ``_claim`` and are operator-clearable via
+#: Both stamps are operator-clearable via
 #: ``edit(kind='paper', id=…, args={'clear_stamp': '<key>'})`` — forcing
 #: a re-run for a cohort = clearing its stamp, no prod SQL (gr514347).
 register_retry_stamps("context_sentence", META_FAILED_KEY, META_NO_ABSTRACT_KEY)
+
+#: ``to_char`` format for the ``at`` member of a versioned stamp — UTC
+#: ISO text, so ``_claim`` compares stamp-vs-row timestamps as STRINGS:
+#: a malformed hand-edit degrades to a string compare rather than a
+#: cast error that would kill the whole claim query.
+_STAMP_TS_FMT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+
+
+def _stamp_version(value: Any) -> int:
+    """Pass version carried by a stamp value: ``{"v": N}`` → N; a legacy
+    bare ``true`` (or anything unrecognized) → 0."""
+    if isinstance(value, dict):
+        v = value.get("v")
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v
+    return 0
+
+
+def _stamp_at(value: Any) -> datetime | None:
+    """The ``at`` recorded by :func:`_stamp_no_abstract`, parsed back to a
+    tz-aware UTC datetime; ``None`` when absent or malformed — a naive
+    parse counts as malformed (comparing it against the tz-aware
+    ``refs.updated_at`` would raise)."""
+    raw = value.get("at") if isinstance(value, dict) else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def stamps_gate_claim(meta: dict[str, Any] | None, *, ref_updated_at: Any) -> bool:
+    """The stamp half of ``_claim``'s gate, mirrored in Python for
+    callers that already hold the ref (``precis_web.nanopub_render``'s
+    lazy enqueue prefilter). True when a current-version
+    :data:`META_FAILED_KEY` stamp, or a current-version
+    :data:`META_NO_ABSTRACT_KEY` stamp whose ``at`` is not older than the
+    ref's ``updated_at``, blocks the paper. ``_claim``'s third arm — a
+    live chunk newer than ``at`` — needs a chunk read and stays inside
+    the pass: a True here is definitive on ref-level evidence, a False is
+    advisory (the sweep still re-checks chunk freshness)."""
+    if not meta:
+        return False
+    if _stamp_version(meta.get(META_FAILED_KEY)) >= _PASS_VERSION:
+        return True
+    no_abstract = meta.get(META_NO_ABSTRACT_KEY)
+    if no_abstract is None or _stamp_version(no_abstract) < _PASS_VERSION:
+        return False
+    at = _stamp_at(no_abstract)
+    # Malformed ``at``, or a missing/naive ``ref_updated_at``: gate
+    # rather than compare — this runs in the render path and must never
+    # raise on hand-edited meta.
+    if at is None or getattr(ref_updated_at, "tzinfo", None) is None:
+        return True
+    return ref_updated_at <= at
+
+
+def _stamp_no_abstract(store: Any, ref_id: int, claimed_at: Any) -> bool:
+    """Write the versioned ``{"v": _PASS_VERSION, "at": now}`` stamp —
+    ``at`` rendered off the statement's own ``now()``, identical to the
+    ``updated_at`` bump in the same UPDATE, so ``updated_at > at`` stays
+    false until a LATER write (an abstract backfill, an operator edit)
+    lands and the heal arms in ``_claim`` open.
+
+    ``claimed_at`` is the ``refs.updated_at`` :func:`_claim` read; the
+    UPDATE carries ``AND updated_at = claimed_at`` so a ref touched
+    between the claim read and this write is left alone — its newer
+    ``updated_at`` re-arms the heal arms on the next sweep anyway.
+    Returns True when the stamp landed."""
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "    %(key)s::text,"
+            "    jsonb_build_object('v', %(v)s::int,"
+            "        'at', to_char(now() AT TIME ZONE 'UTC', %(fmt)s))),"
+            "    updated_at = now() "
+            "WHERE ref_id = %(id)s AND retired_at IS NULL"
+            " AND updated_at = %(claimed)s",
+            {
+                "key": META_NO_ABSTRACT_KEY,
+                "v": _PASS_VERSION,
+                "fmt": _STAMP_TS_FMT,
+                "id": ref_id,
+                "claimed": claimed_at,
+            },
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
 
 #: Hard word cap (spec: "≤ ~35 words") — enforced in code, not just prompted.
 MAX_WORDS = 35
@@ -338,6 +465,34 @@ _METHOD_QUERIES: tuple[str, ...] = (
 _MAX_PASSAGES = 4
 _RETRIEVAL_LIMIT = 12
 
+#: Paragraph ord window the lead-body fallback scans. An abstract sits at
+#: the head of the body — on prod every "Abstract" paragraph in the
+#: stamped cohort was inside the first dozen body chunks — so looking
+#: deeper would only risk adopting a figure caption or a section named
+#: "Abstract of ...". The leading-prose arm reads the same window: what
+#: leads the body is what characterizes the paper.
+_LEAD_SCAN_ORDS = 24
+
+#: Section opener marking the paper's own abstract paragraph — matches
+#: "Abstract", "ABSTRACT.", "**Abstract**" at the start of a chunk after
+#: any leading non-word (markup/whitespace/punctuation) characters.
+_ABSTRACT_HEAD_RE = re.compile(r"^\W*abstract\b", re.IGNORECASE)
+
+#: Front-matter furniture a lead paragraph must not contribute — licence
+#: and copyright lines, correspondence/keywords blocks, received/accepted
+#: date lines, affiliation runs. Belt over the per-paragraph
+#: :func:`usable_context` check: a long licence paragraph could scrape
+#: the word floor, and none of it is method content (gr346458's byline
+#: cohort, generalized).
+_FRONT_MATTER_RE = re.compile(
+    r"^\W*(?:"
+    r"©|copyright|licen[cs]e|creative\s+commons|all\s+rights\s+reserved|"
+    r"correspondence|keywords?|received|accepted|revised|"
+    r"(?:department|university|institut\w*|laborator\w*)\s*(?:,|of\b)"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def retrieve_body_block(
     store: Any, *, embedder: Any, ref_id: int
@@ -389,6 +544,103 @@ def retrieve_body_block(
     return "\n\n".join(parts), chunk_ids
 
 
+def _lead_paragraphs(store: Any, ref_id: int) -> list[tuple[int, str, Any]]:
+    """``(chunk_id, text, section_path)`` for the ref's first
+    :data:`_LEAD_SCAN_ORDS` live ``paragraph`` chunks, in ord order — the
+    head of the body where an abstract or lead prose would sit.
+    ``section_path`` prefers the meta mirror (test seeds put it there)
+    over the real column, the same pair :func:`_row_to_chunk` merges."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, text, meta, section_path FROM chunks "
+            "WHERE ref_id = %s AND retired_at IS NULL "
+            "AND chunk_kind = 'paragraph' AND ord >= 0 AND ord < %s "
+            "ORDER BY ord",
+            (ref_id, _LEAD_SCAN_ORDS),
+        ).fetchall()
+    return [
+        (
+            int(chunk_id),
+            str(text or ""),
+            (meta or {}).get("section_path") or section_path,
+        )
+        for chunk_id, text, meta, section_path in rows
+    ]
+
+
+def _lead_window(
+    paras: list[tuple[int, str, Any]], title: str | None = None
+) -> tuple[str, list[int]]:
+    """Assemble ``(chunk_id, text, section_path)`` tuples into a block —
+    same ``\\n\\n`` join, :data:`_MAX_PASSAGES` and :data:`_ABSTRACT_CHARS`
+    bounds as :func:`retrieve_body_block`.
+
+    Every paragraph is skipped that is end-matter (:func:`_end_matter`),
+    front-matter furniture (:data:`_FRONT_MATTER_RE`), or — when
+    ``title`` is given — too thin to stand on its own
+    (:func:`usable_context` PER PARAGRAPH, not on the joined block: a
+    byline + licence + correspondence run must not score as prose in
+    aggregate, gr346458). ``title=None`` (the abstract-headed arm) keeps
+    every non-end-matter paragraph — the continuations belong to the
+    abstract however short they are."""
+    parts: list[str] = []
+    chunk_ids: list[int] = []
+    joined_len = 0
+    for chunk_id, text, section_path in paras:
+        stripped = text.strip()
+        if (
+            not stripped
+            or _end_matter(stripped, section_path)
+            or _FRONT_MATTER_RE.match(stripped)
+            or (title is not None and not usable_context(title, stripped))
+        ):
+            continue
+        room = _ABSTRACT_CHARS - joined_len - (2 if parts else 0)
+        if room <= 0 or len(parts) >= _MAX_PASSAGES:
+            break
+        parts.append(stripped[:room])
+        chunk_ids.append(chunk_id)
+        joined_len += len(stripped[:room]) + 2
+    return "\n\n".join(parts), chunk_ids
+
+
+def lead_body_block(
+    store: Any, *, title: str, ref_id: int, abstract_only: bool = False
+) -> tuple[str, list[int]]:
+    """The lead-of-body context block — the last resort before a paper is
+    stamped :data:`META_NO_ABSTRACT_KEY` (gr514381).
+
+    Scans the ref's first :data:`_LEAD_SCAN_ORDS` paragraph chunks. When a
+    chunk opens with "Abstract" (:data:`_ABSTRACT_HEAD_RE`) the block
+    starts there — the paper's own abstract paragraph plus the following
+    non-end-matter paragraphs — which is the right input for a large
+    share of held papers that have no ``card_abstract`` chunk and no
+    ``meta.abstract`` (prod: 11 of the stamped cohort). Otherwise the
+    block is the first paragraphs that each stand on their own as prose
+    (``title`` feeds that per-paragraph :func:`usable_context` check —
+    front-matter furniture is dropped, not joined). With
+    ``abstract_only=True`` only the headed block counts — the pass runs
+    that arm before :func:`retrieve_body_block` and the plain
+    leading-prose arm after it.
+
+    Returns ``(block_text, source_chunk_ids)``; an empty block means the
+    lead window was all masthead/front-matter/end-matter."""
+    paras = _lead_paragraphs(store, ref_id)
+    head = next(
+        (
+            i
+            for i, (_id, text, sp) in enumerate(paras)
+            if not _end_matter(text, sp) and _ABSTRACT_HEAD_RE.match(text)
+        ),
+        None,
+    )
+    if head is not None:
+        return _lead_window(paras[head:])
+    if abstract_only:
+        return "", []
+    return _lead_window(paras, title)
+
+
 # ── lint (belt over the LLM) ─────────────────────────────────────────────
 
 
@@ -429,23 +681,32 @@ def _clean_sentence(raw: str) -> str:
 # ── the LLM call ─────────────────────────────────────────────────────────
 
 
-def _build_messages(title: str, abstract: str) -> list[dict[str, str]]:
+def _build_messages(
+    title: str, abstract: str, retry_note: str | None = None
+) -> list[dict[str, str]]:
     user = f"PAPER TITLE: {title}"
     if abstract:
         user += f"\n\nABSTRACT:\n{abstract[:_ABSTRACT_CHARS]}"
+    if retry_note:
+        user += f"\n\n{retry_note}"
     return [
         {"role": "system", "content": _SYS},
         {"role": "user", "content": user},
     ]
 
 
-def propose_context_sentence(client: Any, title: str, abstract: str) -> str | None:
+def propose_context_sentence(
+    client: Any, title: str, abstract: str, *, retry_note: str | None = None
+) -> str | None:
     """One proposal call. Returns the cleaned candidate sentence, or
     ``None`` on a dispatch failure / empty completion — never raises (the
     caller counts it as a failed attempt and moves on, same contract as
-    ``hub_tagline.propose_tagline``)."""
+    ``hub_tagline.propose_tagline``). ``retry_note`` appends a correction
+    to the user turn — :func:`_generate_with_lint` uses it to tell the
+    model which rule its rejected draft broke, so the retry is not a
+    resend of an identical request (gr514381)."""
     try:
-        out = client.complete(_build_messages(title, abstract))
+        out = client.complete(_build_messages(title, abstract, retry_note))
     except Exception:
         log.warning("context_sentence: propose call failed", exc_info=True)
         return None
@@ -479,6 +740,11 @@ def _generate_with_lint(
     model verdict — a ``None`` from :func:`propose_context_sentence` is an
     outage, not an opinion, and must not converge the paper.
 
+    The retry carries the rejection back to the model — the dropped draft
+    and the rule it broke — because a resend of the identical request
+    invites the identical answer (prod's 36266 echoed the same blocklisted
+    word twice, gr514381).
+
     Every drop is logged with the rejected text. Without that the pass
     emits only a batch count, and diagnosing a converging paper means
     replaying the claim query and the model call by hand against prod
@@ -487,16 +753,22 @@ def _generate_with_lint(
     if sentence is not None and is_decline(sentence):
         log.info("context_sentence: ref_id=%s model declined (NO_CONTEXT)", ref_id)
         return None
-    if sentence is not None and lint_violation(sentence) is None:
+    reason = lint_violation(sentence) if sentence is not None else None
+    if sentence is not None and reason is None:
         return sentence
+    retry_note = None
     if sentence is not None:
         log.info(
             "context_sentence: ref_id=%s lint rejected %r (%s); regenerating",
             ref_id,
             sentence,
-            lint_violation(sentence),
+            reason,
         )
-    retry = propose_context_sentence(client, title, abstract)
+        retry_note = (
+            f"Your previous sentence was rejected: {sentence[:300]!r} — "
+            f"{reason}. Write a different sentence that obeys every rule."
+        )
+    retry = propose_context_sentence(client, title, abstract, retry_note=retry_note)
     if retry is not None and is_decline(retry):
         log.info(
             "context_sentence: ref_id=%s model declined (NO_CONTEXT) on retry", ref_id
@@ -561,29 +833,46 @@ def backfill_candidate_ref_ids(conn: Any) -> list[int]:
 
 def _claim(
     conn: Any, *, limit: int, ref_ids: list[int] | None
-) -> list[tuple[int, str, str, list[int]]]:
-    """``(ref_id, title, block, block_chunk_ids)`` for up to ``limit``
-    still-unsentenced live papers. ``ref_ids``, when given, IS the
-    candidate set (the lazy single-paper enqueue, or a targeted
-    backfill/test run); ``None`` sweeps
+) -> list[tuple[int, str, str, list[int], bool, bool, Any]]:
+    """``(ref_id, title, block, block_chunk_ids, no_abstract_stamped,
+    failed_stamped, claimed_at)``
+    for up to ``limit`` still-unsentenced live papers. ``ref_ids``, when
+    given, IS the candidate set (the lazy single-paper enqueue, or a
+    targeted backfill/test run); ``None`` sweeps
     :func:`backfill_candidate_ref_ids`. Excludes a paper already carrying
-    a sentence, one that converged on "no sentence"
-    (:data:`META_FAILED_KEY`), and one whose context block had nothing to
-    work with (:data:`META_NO_ABSTRACT_KEY`).
+    a sentence and one that converged on "no sentence" AT THE CURRENT
+    pass version — a :data:`META_FAILED_KEY` stamp older than
+    :data:`_PASS_VERSION` (a legacy bare ``true`` counts as version 0)
+    earns exactly one re-trial (gr514381).
+    :data:`META_NO_ABSTRACT_KEY` papers are claimed only when the stamp
+    is stale-versioned (the one-time heal for new resolution logic) or
+    the ref gained content since ``at`` — ``refs.updated_at`` or a live
+    chunk's ``created_at`` newer than the stamp. Timestamp arms compare
+    :data:`_STAMP_TS_FMT` STRINGS so a malformed hand-edit degrades to a
+    string compare, not a cast error that kills the whole claim. Stamped
+    rows sort last so a permanently-thin cohort can't starve fresh
+    claims; ``no_abstract_stamped``/``failed_stamped`` tell the pass
+    which stamp keys are present (cleared on a verdict, so the clear
+    write is skipped entirely on an unstamped paper), and ``claimed_at``
+    is the ``updated_at`` this claim read — the stamp write's race guard
+    (:func:`_stamp_no_abstract`).
 
-    ``block`` here is only the two authoritative sources — the
-    ``card_abstract`` chunk (whose ``chunk_id`` lands in
-    ``block_chunk_ids`` for the per-ref log) or a prose
-    ``refs.meta['abstract']``. The body-retrieval fallback needs the
-    store, not this connection, so the pass resolves it per row (see
-    :func:`retrieve_body_block`)."""
+    ``block`` here is only the two authoritative sources — a
+    :func:`usable_context` ``card_abstract`` chunk (whose ``chunk_id``
+    lands in ``block_chunk_ids`` for the per-ref log) or a prose
+    ``refs.meta['abstract']``. The body fallbacks need the store, not
+    this connection, so the pass resolves them per row (see
+    :func:`lead_body_block` and :func:`retrieve_body_block`)."""
     candidates = ref_ids if ref_ids is not None else backfill_candidate_ref_ids(conn)
     if not candidates:
         return []
     rows = conn.execute(
         """
         SELECT r.ref_id, r.title, card.chunk_id, card.text,
-               r.meta->>'abstract'
+               r.meta->>'abstract',
+               r.meta ? %(no_abstract_key)s,
+               r.meta ? %(failed_key)s,
+               r.updated_at
           FROM refs r
           LEFT JOIN LATERAL (
                SELECT chunk_id, text FROM chunks
@@ -594,9 +883,24 @@ def _claim(
          WHERE r.ref_id = ANY(%(ids)s)
            AND r.retired_at IS NULL
            AND r.meta->>%(key)s IS NULL
-           AND r.meta->>%(failed_key)s IS DISTINCT FROM 'true'
-           AND r.meta->>%(no_abstract_key)s IS DISTINCT FROM 'true'
-         ORDER BY r.ref_id
+           AND COALESCE((r.meta->%(failed_key)s->>'v')::int, 0)
+               < %(pass_version)s
+           AND (
+                 NOT (r.meta ? %(no_abstract_key)s)
+                 OR COALESCE((r.meta->%(no_abstract_key)s->>'v')::int, 0)
+                    < %(pass_version)s
+                 OR to_char(r.updated_at AT TIME ZONE 'UTC', %(ts_fmt)s)
+                    > r.meta->%(no_abstract_key)s->>'at'
+                 OR EXISTS (
+                      SELECT 1 FROM chunks nc
+                       WHERE nc.ref_id = r.ref_id
+                         AND nc.retired_at IS NULL
+                         AND to_char(nc.created_at AT TIME ZONE 'UTC',
+                                     %(ts_fmt)s)
+                             > r.meta->%(no_abstract_key)s->>'at'
+                    )
+               )
+         ORDER BY (r.meta ? %(no_abstract_key)s), r.ref_id
          LIMIT %(limit)s
         """,
         {
@@ -604,17 +908,41 @@ def _claim(
             "key": META_KEY,
             "failed_key": META_FAILED_KEY,
             "no_abstract_key": META_NO_ABSTRACT_KEY,
+            "pass_version": _PASS_VERSION,
+            "ts_fmt": _STAMP_TS_FMT,
             "limit": limit,
         },
     ).fetchall()
-    out: list[tuple[int, str, str, list[int]]] = []
-    for ref_id, title, card_id, card_text, meta_abstract in rows:
+    out: list[tuple[int, str, str, list[int], bool, bool, Any]] = []
+    for (
+        ref_id,
+        title,
+        card_id,
+        card_text,
+        meta_abstract,
+        has_no_abstract,
+        has_failed,
+        claimed_at,
+    ) in rows:
         title = str(title or "")
-        block = str(card_text or "")
-        chunk_ids = [int(card_id)] if block and card_id is not None else []
+        block = ""
+        chunk_ids: list[int] = []
+        if card_text and usable_context(title, str(card_text)):
+            block = str(card_text)
+            chunk_ids = [int(card_id)]
         if not block and meta_abstract and usable_context(title, str(meta_abstract)):
             block = str(meta_abstract)
-        out.append((int(ref_id), title, block, chunk_ids))
+        out.append(
+            (
+                int(ref_id),
+                title,
+                block,
+                chunk_ids,
+                bool(has_no_abstract),
+                bool(has_failed),
+                claimed_at,
+            )
+        )
     return out
 
 
@@ -633,10 +961,21 @@ def run_context_sentence_pass(
     enqueue / targeted backfill / tests); ``None`` sweeps
     :func:`backfill_candidate_ref_ids` — the live-publish-row grounding
     cohort. Never raises on a single paper's failure; a dropped/lint-failed
-    sentence bumps ``failed`` and stamps :data:`META_FAILED_KEY` so the
-    paper is not re-claimed forever. ``embedder`` feeds the semantic legs
+    sentence bumps ``failed`` and stamps :data:`META_FAILED_KEY` at
+    :data:`_PASS_VERSION` so the paper is not re-claimed until the pass
+    logic next moves. ``embedder`` feeds the semantic legs
     of the body-passage retrieval (:func:`retrieve_body_block`); ``None``
     degrades that search to its lexical legs.
+
+    The context block is resolved in order — ``card_abstract``,
+    ``meta.abstract``, the paper's own "Abstract" paragraph, retrieved
+    method passages, leading body prose (:func:`lead_body_block`,
+    :func:`retrieve_body_block`) — and the first source whose text is
+    :func:`usable_context` wins. A paper whose sources are all
+    masthead-thin stamps :data:`META_NO_ABSTRACT_KEY` before any model
+    call; the stamp is versioned and self-healing so a later-arriving
+    abstract re-runs the chain on the next sweep, and a written sentence
+    clears both stamp keys (gr514381).
 
     Two outcomes converge a paper WITHOUT a model verdict and so stay out
     of ``failed``, which counts verdicts: a content-free context block
@@ -650,12 +989,29 @@ def run_context_sentence_pass(
         return {"claimed": 0, "ok": 0, "failed": 0}
 
     ok = failed = deferred = no_abstract = 0
-    for ref_id, title, block, chunk_ids in rows:
+    for (
+        ref_id,
+        title,
+        block,
+        chunk_ids,
+        was_no_abstract,
+        was_failed,
+        claimed_at,
+    ) in rows:
         try:
-            if not block:
+            if not usable_context(title, block):
+                # The paper's own "Abstract" paragraph wins over generic
+                # method-passage retrieval (it IS the context), and both
+                # beat a body that leads with prose.
+                block, chunk_ids = lead_body_block(
+                    store, title=title, ref_id=ref_id, abstract_only=True
+                )
+            if not usable_context(title, block):
                 block, chunk_ids = retrieve_body_block(
                     store, embedder=embedder, ref_id=ref_id
                 )
+            if not usable_context(title, block):
+                block, chunk_ids = lead_body_block(store, title=title, ref_id=ref_id)
             log.info(
                 "context_sentence: ref_id=%s context block %s",
                 ref_id,
@@ -666,7 +1022,12 @@ def run_context_sentence_pass(
             if not usable_context(title, block):
                 # No paper prose to characterize — calling the model here
                 # buys background recall dressed as provenance (gr346458).
-                store.update_ref(ref_id, meta_patch={META_NO_ABSTRACT_KEY: True})
+                # Re-stamp at the current version on every unusable
+                # outcome: the fresh ``at`` is what lets the heal arms in
+                # _claim tell "new content arrived" from "still nothing"
+                # (gr514381). The write no-ops when the ref moved since
+                # the claim read — that bump already re-arms the heal.
+                _stamp_no_abstract(store, ref_id, claimed_at)
                 no_abstract += 1
                 continue
             try:
@@ -675,10 +1036,29 @@ def run_context_sentence_pass(
                 deferred += 1
                 continue
             if sentence is None:
-                store.update_ref(ref_id, meta_patch={META_FAILED_KEY: True})
+                store.update_ref(
+                    ref_id, meta_patch={META_FAILED_KEY: {"v": _PASS_VERSION}}
+                )
+                if was_no_abstract:
+                    # The paper DID have usable context this sweep — the
+                    # no-abstract stamp is stale, only the model verdict
+                    # should remain.
+                    store.clear_ref_meta_keys(
+                        ref_id, [META_NO_ABSTRACT_KEY], source="context_sentence"
+                    )
                 failed += 1
                 continue
             store.update_ref(ref_id, meta_patch={META_KEY: sentence})
+            stamped = [
+                key
+                for key, present in (
+                    (META_NO_ABSTRACT_KEY, was_no_abstract),
+                    (META_FAILED_KEY, was_failed),
+                )
+                if present
+            ]
+            if stamped:
+                store.clear_ref_meta_keys(ref_id, stamped, source="context_sentence")
             ok += 1
         except Exception:
             log.exception("context_sentence: failed ref_id=%s", ref_id)

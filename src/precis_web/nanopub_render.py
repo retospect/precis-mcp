@@ -831,6 +831,8 @@ def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
     if not ref_ids:
         return
     try:
+        from precis.workers.context_sentence import stamps_gate_claim
+
         refs = store.fetch_refs_by_ids(ref_ids)
     except Exception:
         log.warning("context_sentence: lazy lookup failed", exc_info=True)
@@ -838,8 +840,14 @@ def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
     for ref_id in ref_ids:
         ref = refs.get(ref_id)
         meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
-        if not meta.get("context_sentence"):
-            _enqueue_context_sentence(store, ref_id)
+        if meta.get("context_sentence"):
+            continue
+        # A converged stamp gates the pass inside _claim too — skip the
+        # thread spawn for papers the pass would immediately drop
+        # (a current-version stamp with no newer ref content).
+        if stamps_gate_claim(meta, ref_updated_at=getattr(ref, "updated_at", None)):
+            continue
+        _enqueue_context_sentence(store, ref_id)
 
 
 def _source_drift(store: Any, row: Any) -> list[dict[str, Any]]:
