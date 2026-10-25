@@ -3,7 +3,9 @@
 The client registry entry vanished while the server stayed healthy and the
 fleet ran blind (gr513664, 2026-10-24). The preflight goes through
 ``claude mcp`` only — a fake ``claude`` and a fake ensure script on PATH /
-PRECIS_MCP_ENSURE keep the real registry and server out of the test.
+PRECIS_MCP_ENSURE keep the real registry and server out of the test. The
+``--for-hook`` block covers the SessionStart form: heal-or-warn in one
+line, never a failure, naming the restart runbook.
 """
 
 from __future__ import annotations
@@ -161,3 +163,95 @@ def test_usage_error(rig: dict[str, str]) -> None:
     result = _run(rig, "--bogus")
     assert result.returncode == 2
     assert "usage" in result.stderr
+
+
+# --- --for-hook (the SessionStart form, gr513664) -----------------------------
+
+
+def test_for_hook_present_entry_is_silent(rig: dict[str, str]) -> None:
+    Path(rig["FAKE_CLAUDE_STATE"]).touch()
+    result = _run(rig, "--for-hook")
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_for_hook_heals_and_names_the_runbook(rig: dict[str, str]) -> None:
+    result = _run(rig, "--for-hook")
+    assert result.returncode == 0, result.stderr
+    # Exactly one line: healed, and the restart runbook named.
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 1
+    assert "re-added" in lines[0]
+    assert "docs/runbooks/session-restart.md" in lines[0]
+    assert Path(rig["FAKE_CLAUDE_STATE"]).exists()
+    assert "TESTTOKEN" not in result.stdout + result.stderr
+
+
+def test_for_hook_heal_failure_still_exits_zero(rig: dict[str, str]) -> None:
+    ensure = _write(
+        Path(rig["FAKE_ENSURE_CALLS"]).parent / "ensure-fail.sh",
+        "#!/usr/bin/env bash\nexit 1\n",
+    )
+    rig["PRECIS_MCP_ENSURE"] = str(ensure)
+    result = _run(rig, "--for-hook")
+    assert result.returncode == 0
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 1
+    assert "MISSING" in lines[0]
+    assert "docs/runbooks/session-restart.md" in lines[0]
+
+
+def test_for_hook_no_ensure_script_warns_once(rig: dict[str, str]) -> None:
+    # Both candidates absent: PRECIS_MCP_ENSURE unset falls to a HOME path
+    # (the rig's HOME is the empty tmp_path), and the repo-copy fallback is
+    # avoided by invoking a COPY of the script outside the repo tree.
+    rig.pop("PRECIS_MCP_ENSURE")
+    copy = _write(
+        Path(rig["FAKE_ENSURE_CALLS"]).parent / "mcp-entry-preflight",
+        SCRIPT.read_text(encoding="utf-8"),
+    )
+    result = subprocess.run(
+        ["bash", str(copy), "--for-hook"],
+        env={**os.environ, **rig},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 1
+    assert "MISSING" in lines[0]
+    assert "docs/runbooks/session-restart.md" in lines[0]
+
+
+def test_for_hook_no_claude_cli_is_silent(rig: dict[str, str], tmp_path: Path) -> None:
+    # No registry to check is not a missing entry: a non-claude harness
+    # would otherwise false-warn every session start.
+    rig["PRECIS_MCP_CLAUDE"] = str(tmp_path / "no-such-claude")
+    result = _run(rig, "--for-hook")
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_http_install_for_hook_runs_the_preflight(rig: dict[str, str]) -> None:
+    # scripts/mcp-http-install --for-hook is the wired SessionStart check;
+    # it must hand off to the entry preflight. PRECIS_MCP_ENSURE pointing
+    # at the repo copy keeps its own drift check silent, so only the
+    # preflight's heal line shows.
+    rig["PRECIS_MCP_ENSURE"] = str(
+        SCRIPT.parents[1] / "deploy" / "mcp-http" / "precis-mcp-http-ensure.sh"
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT.parents[1] / "scripts" / "mcp-http-install"), "--for-hook"],
+        env={**os.environ, **rig},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "re-added" in result.stdout
+    assert "docs/runbooks/session-restart.md" in result.stdout

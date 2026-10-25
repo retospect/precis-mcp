@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# scripts/fixup <commit> — fold the STAGED changes into an earlier commit,
+# non-interactively (gr514887): `git commit --fixup <commit>` followed by
+# `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash <commit>^`.
+#
+# Interactive rebase is off-limits to the agent shell (an editor would hang
+# a non-tty), so a fix that belongs in an earlier commit used to land as a
+# follow-up commit instead. The editor is only ever the todo-list editor:
+# with GIT_SEQUENCE_EDITOR=: the sequence file is accepted as generated
+# and the whole fold is mechanical.
+#
+# Protocol: stage the fix (git add -p …), then `scripts/fixup <commit>`.
+# The target must be an ancestor of HEAD (fixing HEAD itself is just
+# --amend; the script still handles it). `--autostash` carries any
+# UNSTAGED changes across the rebase — safe here because the index is
+# empty after the fixup commit (the gr514868 flattening only loses
+# STAGED state).
+#
+# Exit: 0 folded; 1 usage/not-a-repo/bad commit; 2 nothing staged;
+#     3 target not an ancestor of HEAD; 4 a rebase is already in progress;
+#     the rebase's own code on conflict (left IN PROGRESS for the caller).
+set -euo pipefail
+
+die() { echo "fixup: $1" >&2; exit "${2:-1}"; }
+
+[ $# -eq 1 ] || die "usage: scripts/fixup <commit> — stage the fix first" 1
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository" 1
+
+target="$(git rev-parse --verify "$1^{commit}" 2>/dev/null)" \
+    || die "not a commit: $1" 1
+
+if [ -d "$(git rev-parse --git-path rebase-merge)" ] || \
+   [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+    die "a rebase is already in progress — finish or abort it first" 4
+fi
+
+git merge-base --is-ancestor "$target" HEAD \
+    || die "$1 is not an ancestor of HEAD — fixup only folds into your own history" 3
+
+git diff --cached --quiet \
+    && die "nothing staged — stage the fix (git add -p …), then re-run" 2
+
+git commit --fixup "$target" >/dev/null
+
+# The autosquash range starts at the target's parent, so the generated
+# todo moves the fixup! line directly under its target. A root target
+# has no parent — rebase --root replays from the branch root instead.
+base="$target^"
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || base="--root"
+
+if ! GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash --autostash "$base"; then
+    echo "fixup: rebase stopped (conflict or unstoppable autostash) —" \
+        "resolve, then 'git rebase --continue'" >&2
+    exit 5
+fi
+echo "fixup: folded into $(git rev-parse --short "$target")" \
+    "($(git show -s --format=%s "$target"))"

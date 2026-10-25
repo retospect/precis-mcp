@@ -2,7 +2,10 @@
 # Compare (or --apply) the installed mcp-http ensure script against the repo copy.
 #   scripts/mcp-http-install           check only; one line; exit 0 either way
 #   scripts/mcp-http-install --for-hook  SessionStart form: silent when in sync
-#                                      (gr499042), prints only the DIFFERS line
+#                                      (gr499042), prints only the DIFFERS line;
+#                                      then runs scripts/mcp-entry-preflight
+#                                      --for-hook — the client-entry half of
+#                                      the same check (gr513664)
 #   scripts/mcp-http-install --apply   show the diff, back up the installed copy
 #                                      to <installed>.bak-<UTC stamp>, copy the
 #                                      repo file over it (mode 755)
@@ -58,5 +61,13 @@ if [ -n "$repo_sha" ] && [ "$repo_sha" = "$inst_sha" ]; then
   [ "${1:-}" = "--for-hook" ] || echo "mcp-http ensure script: in sync"
 else
   echo "mcp-http ensure script DIFFERS from repo (installed ${inst_sha:0:8}, repo ${repo_sha:0:8}): run scripts/mcp-http-install --apply, then $installed --recreate (or --migrate if --status says LEGACY)"
+fi
+
+# The client-entry half of the same SessionStart check (gr513664): the
+# ensure script can be in sync while the user-scope `precis` entry in
+# ~/.claude.json is gone — the preflight re-adds it and prints one line
+# naming the restart runbook. Fail-open like the drift check above.
+if [ "${1:-}" = "--for-hook" ] && [ -x "$root/scripts/mcp-entry-preflight" ]; then
+  "$root/scripts/mcp-entry-preflight" --for-hook || true
 fi
 exit 0

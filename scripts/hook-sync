@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# scripts/hook-sync — REPORT drift between repo hooks (scripts/hooks/*) and
+# the live global copies (~/.claude/hooks/*) (gr516942).
+#
+# The live globals are hand copies: ~/.claude/settings.json's `cmp -s "$P"
+# "$G"` shims run the GLOBAL whenever it differs from the repo copy, so a
+# stale global silently serves old code (read-dedup.py stale since
+# gr514450; compact-state-note.sh + _devin-detect.sh stale after
+# 40a266845). Nothing synced them; this is the check half — it only ever
+# REPORTS (~/.claude is Reto-owned), printing the diff and the exact cp
+# command for each drifted file.
+#
+#   scripts/hook-sync             report every drift + a summary line
+#   scripts/hook-sync --for-hook  SessionStart form: silent when in sync
+#                                 (gr499042)
+#
+# Check set: every file in the live dir, every hook name the user
+# settings reference ($HOME/.claude/hooks/<name>), and every _<helper>.{sh,py}
+# name the live hooks source (helpers like _devin-detect.sh are copied
+# siblings, not settings entries — a missing one breaks the hook that
+# sources it).
+#
+# Never writes ~/.claude. Exit 0 always (2 on usage).
+# Test seams: PRECIS_HOOKS_LIVE (live dir), PRECIS_HOOKS_SETTINGS (the
+# settings.json whose $HOME/.claude/hooks/ references define the expected
+# set).
+set -uo pipefail
+
+case "${1:-}" in
+    ""|--for-hook) ;;
+    *)  echo "usage: $(basename "$0") [--for-hook]" >&2
+        exit 2 ;;
+esac
+forhook="${1:-}"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_hooks="$root/scripts/hooks"
+live="${PRECIS_HOOKS_LIVE:-$HOME/.claude/hooks}"
+settings="${PRECIS_HOOKS_SETTINGS:-$HOME/.claude/settings.json}"
+
+sha() { shasum -a 256 "$1" 2>/dev/null | cut -c1-64; }
+
+names="$(mktemp)" || exit 0
+trap 'rm -f "$names"' EXIT
+if [ ! -d "$live" ]; then
+    # No live hook dir (e.g. a container or a host without ~/.claude):
+    # nothing to drift — one line, not a MISSING report per settings ref.
+    [ "$forhook" = "--for-hook" ] || echo "hook-sync: no live hook dir at $live — nothing to compare"
+    exit 0
+fi
+find "$live" -maxdepth 1 -type f ! -name '.*' -exec basename {} \; >>"$names"
+# Sourced helpers (_devin-detect.sh, _symbol_heuristic.py) appear as
+# bare names in the hooks that source them. The left-boundary class keeps
+# fragments like `_heuristic.py` out of `read_dedup`/`_symbol_heuristic`.
+grep -ohE '[^A-Za-z0-9_-]_[A-Za-z0-9_.-]+\.(sh|py)' "$live"/* 2>/dev/null \
+    | grep -oE '_[A-Za-z0-9_.-]+\.(sh|py)' >>"$names" || true
+if [ -f "$settings" ]; then
+    grep -oE '\.claude/hooks/[A-Za-z0-9_.-]+' "$settings" | sed 's|.*/hooks/||' >>"$names" || true
+fi
+sort -u -o "$names" "$names"
+
+drift=0
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    r="$repo_hooks/$name"
+    g="$live/$name"
+    rs="$(sha "$r")"
+    gs="$(sha "$g")"
+    if [ -z "$rs" ]; then
+        echo "hook-sync: $name has a live copy but NO repo counterpart — investigate before removing or syncing"
+        drift=1
+    elif [ -z "$gs" ]; then
+        echo "hook-sync: $name MISSING from $live — install with:"
+        echo "  cp \"$r\" \"$g\""
+        drift=1
+    elif [ "$rs" != "$gs" ]; then
+        echo "hook-sync: $name DIFFERS from the repo copy — sync with:"
+        echo "  cp \"$r\" \"$g\""
+        diff -u "$g" "$r" 2>/dev/null | head -25 | sed 's/^/    /'
+        drift=1
+    fi
+done <"$names"
+
+if [ "$drift" = 0 ] && [ "$forhook" != "--for-hook" ]; then
+    echo "hook-sync: live hooks in sync with scripts/hooks/"
+fi
+exit 0

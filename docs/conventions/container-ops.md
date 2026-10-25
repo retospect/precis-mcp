@@ -180,6 +180,18 @@ A log audit found ~60% of Bash calls carried a redundant
 which is why this is called out explicitly rather than left as an assumed
 default.
 
+### Amending a non-HEAD commit: `scripts/fixup`
+
+Interactive rebase is forbidden (an editor hangs a non-tty shell), so a
+fix that belongs in an earlier commit used to land as a follow-up commit
+(gr514887). `scripts/fixup <commit>` is the non-interactive fold: stage
+the fix, run the script — it does `git commit --fixup <commit>` then
+`GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash <commit>^`, carrying
+unstaged changes across with `--autostash` (the index is empty after the
+fixup commit, so the gr514868 staged-flattening cannot bite). The target
+must be an ancestor of HEAD; fixing HEAD itself is just `--amend`, which
+the script also handles.
+
 ## Fresh worktrees seed `.venv`, never build one (gr514738)
 
 The first `uv run` in a fresh worktree used to resolve and install ~160

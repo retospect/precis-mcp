@@ -1,13 +1,16 @@
 """Canonical-checkout guard (gr515239) for the mcp-http ensure script and
 ``scripts/mcp-http-install --apply``.
 
-2026-10-24: a run whose ``PRECIS_MCP_REPO`` — or the plural-"projects"
-built-in default — resolved to a stale SECOND copy of this repo recreated
-the live backend, which then mounted and served that copy's tree. The
-ensure script now records the canonical main checkout in
-``$STATE_DIR/main-checkout`` on its first pass and refuses (exit 3) when a
-later run resolves a different physical path; ``mcp-http-install --apply``
-refuses to install from a tree that is not the recorded one.
+2026-10-24: a run whose ``PRECIS_MCP_REPO`` — or the built-in default
+(then a nonexistent plural-"projects" path) — resolved to a stale SECOND
+copy of this repo recreated the live backend, which then mounted and
+served that copy's tree. The ensure script now records the canonical
+main checkout in ``$STATE_DIR/main-checkout`` on its first pass, refuses
+(exit 3) when a later run resolves a different physical path OR a path
+that is not a checkout at all (gr515239 follow-up: a moved marker target
+crash-looped a standby backend on 2026-10-25), and never silently falls
+back to the default; ``mcp-http-install --apply`` refuses to install
+from a tree that is not the recorded one.
 
 No docker needed here: the guard runs under the lock before the first
 docker call, so a refusal is exit 3 and a passing run next stops at the
@@ -115,7 +118,9 @@ def test_refuses_when_repo_differs_from_the_recorded_checkout(
     canon = tmp_path / "canon"
     (canon / ".git").mkdir(parents=True)
     other = tmp_path / "other"
-    other.mkdir()
+    # A stale second copy IS a real checkout — the not-a-checkout refusal
+    # runs first, so the non-canonical path needs .git to reach it.
+    (other / ".git").mkdir(parents=True)
     state = Path(env["PRECIS_MCP_HTTP_STATE"])
     state.mkdir()
     (state / "main-checkout").write_text(str(canon) + "\n", encoding="utf-8")
@@ -141,7 +146,7 @@ def test_first_pass_records_the_env_checkout_then_enforces_it(
     assert _ensure(env).returncode == 2
     # … and one resolving elsewhere refuses.
     other = tmp_path / "other"
-    other.mkdir()
+    (other / ".git").mkdir(parents=True)  # a stale copy is a real checkout
     env["PRECIS_MCP_REPO"] = str(other)
     r = _ensure(env)
     assert r.returncode == 3 and "non-canonical" in r.stderr
@@ -160,25 +165,59 @@ def test_recorded_marker_is_the_repo_when_env_is_unset(
     assert "non-canonical" not in r.stderr
 
 
+def _rig_checkout(tmp_path: Path) -> Path:
+    """A throwaway precis-mcp-named clone the invoker probe can resolve:
+    invoker_main_checkout needs a real git dir (for --git-common-dir) and
+    an origin remote naming precis-mcp — both work container and host,
+    unlike _main_checkout() whose host path the gate container can't cd."""
+    repo = tmp_path / "invoker"
+    _git("init", "-b", "main", str(repo))
+    _git(
+        "-C",
+        str(repo),
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/precis-mcp.git",
+    )
+    return repo
+
+
 def test_invokers_checkout_is_recorded_and_the_bare_default_refused(
-    env: dict[str, str],
+    env: dict[str, str], tmp_path: Path
 ) -> None:
     """The incident shape: env unset, no marker, invoked from inside a
     precis-mcp tree. The invoker's MAIN checkout is recorded as canonical
-    and the unresolved built-in default refuses — flagging the plural
-    'projects' path — instead of silently serving it."""
-    if not _git("rev-parse", "--git-common-dir", cwd=_ROOT):
-        pytest.skip("the tests are not running inside a git checkout")
-    url = _git("remote", "get-url", "origin", cwd=_ROOT)
-    if "precis-mcp" not in url:
-        pytest.skip("the checkout's origin does not name precis-mcp")
-    want = _main_checkout()
-    assert want is not None
-    r = _ensure(env, cwd=_ROOT)
+    and the unresolved built-in default refuses — it has no .git dir
+    under the rig's fake HOME — instead of silently serving it."""
+    want = os.path.realpath(_rig_checkout(tmp_path))
+    r = _ensure(env, cwd=Path(want))
     assert r.returncode == 3, r.stderr
-    assert str(want) in r.stderr and "plural" in r.stderr
+    assert want in r.stderr and "built-in default" in r.stderr
     marker = Path(env["PRECIS_MCP_HTTP_STATE"]) / "main-checkout"
-    assert marker.read_text(encoding="utf-8").strip() == str(want)
+    assert marker.read_text(encoding="utf-8").strip() == want
+
+
+def test_marker_naming_a_missing_path_refuses_then_recovers(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """The crash-loop shape (2026-10-25): the marker names a checkout that
+    moved or was deleted. The run must refuse with a next= instead of
+    falling back to the default; with the invoker's checkout recoverable
+    the marker is re-recorded, so the NEXT run passes the guard."""
+    want = os.path.realpath(_rig_checkout(tmp_path))
+    state = Path(env["PRECIS_MCP_HTTP_STATE"])
+    state.mkdir()
+    gone = tmp_path / "moved-away"
+    (state / "main-checkout").write_text(str(gone) + "\n", encoding="utf-8")
+    r = _ensure(env, cwd=Path(want))
+    assert r.returncode == 3, r.stderr
+    assert "not a git checkout" in r.stderr and "next=" in r.stderr
+    assert str(gone) in r.stderr
+    # The marker was re-recorded to the invoker's main checkout …
+    assert (state / "main-checkout").read_text(encoding="utf-8").strip() == want
+    # … so the next run resolves a real checkout and reaches the image check.
+    assert _ensure(env, cwd=Path(want)).returncode == 2
 
 
 # --- scripts/mcp-http-install --apply ------------------------------------------

@@ -75,16 +75,23 @@ STATE_DIR="${PRECIS_MCP_HTTP_STATE:-${HOME}/.cache/precis-mcp-http}"
 # the parent of the prod clone below. Per-host: PRECIS_MCP_REPO, else the
 # single path in ${STATE_DIR}/main-checkout, else the default layout. One
 # path for all three, so a host never builds from one clone while its
-# agents work in another.
+# agents work in another. A resolved REPO with no .git dir refuses in
+# require_canonical_checkout — no silent fallback (gr515239 follow-up:
+# a marker pointing at a moved checkout crash-looped a standby backend).
 REPO="${PRECIS_MCP_REPO:-}"
+REPO_FROM="PRECIS_MCP_REPO"
 if [ -z "$REPO" ] && [ -f "${STATE_DIR}/main-checkout" ]; then
     REPO="$(tr -d '[:space:]' < "${STATE_DIR}/main-checkout")"
-    if [ ! -d "${REPO}/.git" ]; then
-        printf "precis-mcp: main-checkout: '%s' is not a git checkout; using the default\n" "$REPO" >&2
-        REPO=""
-    fi
+    # A marker naming a moved/deleted checkout must NOT fall back to the
+    # default: that is how a run resolved to a nonexistent path and
+    # crash-looped a standby backend (2026-10-25). Keep the marker's value
+    # as REPO so require_canonical_checkout can refuse it with a next=.
+    [ -n "$REPO" ] && REPO_FROM="the recorded marker ${STATE_DIR}/main-checkout"
 fi
-REPO="${REPO:-${HOME}/work/projects/code/precis-mcp}"
+if [ -z "$REPO" ]; then
+    REPO="${HOME}/work/project/code/precis-mcp"
+    REPO_FROM="the built-in default"
+fi
 # What the server SERVES: a plain clone kept on origin/prod (the sha the
 # cluster runs) — by scripts/deploy on the deploying machine, and by
 # follow_prod below everywhere. REPO stays the build context for the image.
@@ -238,10 +245,23 @@ require_canonical_checkout() {
         printf '%s\n' "$canon" > "$marker"
         note "canonical main checkout recorded as ${canon} (${marker})"
     fi
+    # Whatever the resolution source left in REPO must BE a checkout: a
+    # marker whose path moved, or a host whose layout differs from the
+    # default, used to slip past here and crash-loop the backend.
+    if [ ! -d "${REPO}/.git" ]; then
+        cat >&2 <<EOF
+precis-mcp: REFUSING: the resolved main checkout is not a git checkout:
+  ${REPO} (resolved from ${REPO_FROM})
+  the recorded canonical checkout is ${canon}
+next= re-run with PRECIS_MCP_REPO=<the real main checkout>; if ${REPO}
+came from ${marker}, correct or delete that file (one line) first.
+EOF
+        exit 3
+    fi
     [ "$resolved" = "$canon" ] && return 0
-    if [ "$resolved" = "${HOME}/work/projects/code/precis-mcp" ]; then
+    if [ "$resolved" = "${HOME}/work/project/code/precis-mcp" ]; then
         extra="
-  (${resolved} is the built-in default — the stale copy lived at the plural 'projects' path)"
+  (${resolved} is the built-in default — this machine's layout differs; set PRECIS_MCP_REPO)"
     fi
     cat >&2 <<EOF
 precis-mcp: REFUSING to run from a non-canonical checkout (gr515239):

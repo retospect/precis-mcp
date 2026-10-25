@@ -573,6 +573,34 @@ def warn_post_migration() -> None:
     )
 
 
+def warn_hook_drift() -> None:
+    """Report drifted live copies of scripts/hooks/* at release time.
+
+    The ~/.claude/hooks globals are hand copies of scripts/hooks/* and the
+    user settings' `cmp -s` shims run the GLOBAL whenever it differs — a
+    stale global silently serves old code (gr516942). scripts/hook-sync
+    only reports (the exact `cp` per drifted file); never fails a release.
+    """
+    script = ROOT / "scripts" / "hook-sync"
+    if not script.exists():
+        return
+    try:
+        cp = subprocess.run(
+            ["bash", str(script)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        say(f"hook-sync check skipped: {type(e).__name__}")
+        return
+    for line in cp.stdout.strip().splitlines():
+        say(line)
+
+
 def wait_ci(branch: str, args: argparse.Namespace) -> int:
     """0 = release head is green; else the exit code to return."""
     deadline = time.monotonic() + args.ci_timeout * 60
@@ -659,6 +687,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    warn_hook_drift()  # gr516942: report (never write) ~/.claude hook drift
     races = 0
     while True:
         fetch()
